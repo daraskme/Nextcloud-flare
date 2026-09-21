@@ -12,6 +12,7 @@ interface GalleryCursor {
   rootId: string;
   recursive: boolean;
   treeGeneration: number;
+  viewRevision: string;
   capturedAt: number;
   updatedAt: number;
   nodeId: string;
@@ -96,6 +97,8 @@ async function verifyCursor(env: Env, value: string): Promise<GalleryCursor> {
     typeof cursor.rootId !== "string" ||
     typeof cursor.recursive !== "boolean" ||
     !Number.isSafeInteger(cursor.treeGeneration) ||
+    typeof cursor.viewRevision !== "string" ||
+    cursor.viewRevision.length > 128 ||
     !Number.isSafeInteger(cursor.capturedAt) ||
     !Number.isSafeInteger(cursor.updatedAt) ||
     typeof cursor.nodeId !== "string" ||
@@ -105,6 +108,23 @@ async function verifyCursor(env: Env, value: string): Promise<GalleryCursor> {
     throw new RangeError("Gallery cursor is invalid");
   }
   return cursor as GalleryCursor;
+}
+
+async function viewRevision(
+  env: Env,
+  rootId: string,
+  userId: string,
+  recursive: boolean,
+): Promise<string> {
+  const scope = recursive
+    ? "WITH RECURSIVE scope(id,depth) AS (SELECT ?1,0 UNION ALL SELECT n.id,scope.depth+1 FROM nodes n JOIN scope ON n.parent_id=scope.id WHERE n.deleted_at IS NULL AND scope.depth<64 LIMIT 50001)"
+    : "WITH scope(id,depth) AS (SELECT id,0 FROM nodes WHERE parent_id=?1 AND deleted_at IS NULL)";
+  const row = await env.DB.prepare(
+    `${scope} SELECT printf('%d:%d:%d:%d',COUNT(*),COALESCE(MAX(n.updated_at),0),COALESCE(SUM(n.revision),0),SUM(CASE WHEN m.node_id IS NULL THEN 0 ELSE 1 END)) value FROM scope JOIN nodes n ON n.id=scope.id LEFT JOIN node_media m ON m.node_id=n.id AND m.blob_id=n.current_blob_id AND m.generator_version=?2 WHERE n.owner_id=?3 AND n.deleted_at IS NULL`,
+  )
+    .bind(rootId, GENERATOR_VERSION, userId)
+    .first<{ value: string }>();
+  return row?.value ?? "0:0:0:0";
 }
 
 function mediaFilter(): string {
@@ -163,6 +183,12 @@ export async function listGallery(
   const root = await getOwnedNode(env, input.userId, input.rootId);
   if (root.kind === "file") throw new Error("not_a_folder");
   const workspace = await getOwnerWorkspace(env, input.userId);
+  const currentViewRevision = await viewRevision(
+    env,
+    input.rootId,
+    input.userId,
+    input.recursive,
+  );
   let capturedAt = Number.MAX_SAFE_INTEGER;
   let updatedAt = Number.MAX_SAFE_INTEGER;
   let nodeId = "~";
@@ -172,7 +198,8 @@ export async function listGallery(
       cursor.userId !== input.userId ||
       cursor.rootId !== input.rootId ||
       cursor.recursive !== input.recursive ||
-      cursor.treeGeneration !== workspace.treeGeneration
+      cursor.treeGeneration !== workspace.treeGeneration ||
+      cursor.viewRevision !== currentViewRevision
     ) {
       throw new RangeError("Gallery cursor does not match this view");
     }
@@ -204,6 +231,7 @@ export async function listGallery(
             rootId: input.rootId,
             recursive: input.recursive,
             treeGeneration: workspace.treeGeneration,
+            viewRevision: currentViewRevision,
             capturedAt: last.capturedAt,
             updatedAt: last.updatedAt,
             nodeId: last.id,

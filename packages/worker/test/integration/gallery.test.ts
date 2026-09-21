@@ -146,6 +146,17 @@ describe("Phase 8A gallery", () => {
         expect.objectContaining({ id: "movie", mediaKind: "video" }),
       ]),
     );
+    await env.DB.prepare(
+      "INSERT INTO node_media(node_id,blob_id,generator_version,width,height,taken_at,duration_ms,orientation,dominant_color,camera_make,camera_model) VALUES('queued-photo','queued','image-v1',800,600,NULL,NULL,1,NULL,NULL,NULL)",
+    ).run();
+    await expect(
+      listGallery(env, {
+        userId: "user",
+        rootId: "gallery",
+        recursive: true,
+        cursor: nextCursor,
+      }),
+    ).rejects.toThrow("does not match");
     await expect(
       listGallery(env, {
         userId: "user",
