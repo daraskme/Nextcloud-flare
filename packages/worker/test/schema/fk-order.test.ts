@@ -21,6 +21,7 @@ describe("foundation schema FK graph", () => {
       "node_props",
       "node_tags",
       "node_media",
+      "audio_jobs",
       "node_audio",
       "library_roots",
       "library_items",

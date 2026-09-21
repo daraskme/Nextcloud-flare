@@ -9,3 +9,4 @@ export * from "./shares.js";
 export * from "./credentials.js";
 export * from "./gallery.js";
 export * from "./library.js";
+export * from "./audio.js";

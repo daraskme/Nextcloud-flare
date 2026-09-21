@@ -20,6 +20,7 @@ export const exportTables = [
   "node_tags",
   "node_media",
   "media_jobs",
+  "audio_jobs",
   "node_audio",
   "library_roots",
   "library_items",

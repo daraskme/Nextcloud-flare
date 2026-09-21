@@ -1,5 +1,6 @@
 import type {
   AppPasswordSummary,
+  AudioAlbum,
   BreadcrumbItem,
   CreatedAppPassword,
   ChildrenPage,
@@ -198,6 +199,13 @@ export const api = {
     request<GalleryPage>(
       `/api/v1/nodes/${encodeURIComponent(rootId)}/gallery?recursive=${recursive}${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
     ),
+  tracks: (folderId: string) =>
+    request<AudioAlbum>(`/api/v1/nodes/${encodeURIComponent(folderId)}/tracks`),
+  savePlaybackState: (nodeId: string, positionMs: number) =>
+    request<undefined>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/playback-state`, {
+      method: "PUT",
+      body: JSON.stringify({ positionMs }),
+    }),
   libraryItems: () => request<{ items: LibraryItemSummary[] }>("/api/v1/library/items"),
   libraryItem: (itemId: string) =>
     request<{ item: LibraryItemSummary; entries: EpubEntrySummary[] }>(

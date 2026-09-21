@@ -5,6 +5,7 @@ export const purgeOrder = [
   "node_tags",
   "media_jobs",
   "node_media",
+  "audio_jobs",
   "node_audio",
   "library_jobs",
   "archive_index",

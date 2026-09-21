@@ -3,6 +3,7 @@ import {
   Cloud,
   Files,
   HardDrive,
+  Headphones,
   Image as ImageIcon,
   Link2,
   Moon,
@@ -17,6 +18,7 @@ import { useEffect, useState } from "react";
 
 import type { NodeSummary } from "@ncf/shared";
 
+import { AudioView } from "./features/audio/AudioView";
 import { FileBrowser } from "./features/files/FileBrowser";
 import { GalleryView } from "./features/gallery/GalleryView";
 import { LibraryView } from "./features/library/LibraryView";
@@ -27,6 +29,7 @@ import { TrashView } from "./features/trash/TrashView";
 import { UploadManager } from "./features/uploads/UploadManager";
 import { t } from "./i18n";
 import { api } from "./lib/api";
+import { MiniPlayer } from "./player/MiniPlayer";
 
 interface Workspace {
   rootId: string;
@@ -51,7 +54,7 @@ export function App(): React.JSX.Element {
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [section, setSection] = useState<
-    "files" | "trash" | "shares" | "shared" | "gallery" | "library" | "settings"
+    "files" | "trash" | "shares" | "shared" | "gallery" | "library" | "audio" | "settings"
   >("files");
   const [navigateTo, setNavigateTo] = useState<string>();
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
@@ -149,6 +152,12 @@ export function App(): React.JSX.Element {
             <BookOpen className="h-4 w-4" /> {t("app.bookshelf")}
           </button>
           <button
+            className={`nav-item ${section === "audio" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("audio")}
+          >
+            <Headphones className="h-4 w-4" /> {t("app.audio")}
+          </button>
+          <button
             className="nav-item"
             onClick={() => window.dispatchEvent(new Event("ncf-search"))}
           >
@@ -225,6 +234,8 @@ export function App(): React.JSX.Element {
             <GalleryView rootId={workspace.rootId} />
           ) : section === "library" ? (
             <LibraryView rootId={workspace.rootId} />
+          ) : section === "audio" ? (
+            <AudioView rootId={workspace.rootId} />
           ) : section === "settings" ? (
             <AppPasswords />
           ) : (
@@ -262,6 +273,7 @@ export function App(): React.JSX.Element {
           onCompleted={() => setRefreshKey((value) => value + 1)}
         />
       )}
+      {workspace !== null && <MiniPlayer />}
     </main>
   );
 }

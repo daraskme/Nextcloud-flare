@@ -2,6 +2,12 @@ import { Hono } from "hono";
 
 import { BudgetDO } from "./do/BudgetDO.js";
 import {
+  discoverAudioJobs,
+  dispatchPendingAudioJobs,
+  processAudioJob,
+  type AudioJobMessage,
+} from "./jobs/audio.js";
+import {
   dispatchPendingCopyJobs,
   processCrossOwnerCopy,
   type CopyJobMessage,
@@ -55,6 +61,12 @@ function isLibraryJobMessage(value: unknown): value is LibraryJobMessage {
   return message.kind === "library-index" && typeof message.jobId === "string";
 }
 
+function isAudioJobMessage(value: unknown): value is AudioJobMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const message = value as Partial<AudioJobMessage>;
+  return message.kind === "audio-extract" && typeof message.jobId === "string";
+}
+
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch, env: Env): Promise<void> {
@@ -64,6 +76,7 @@ export default {
         else if (isMediaJobMessage(message.body)) await processMediaJob(env, message.body.jobId);
         else if (isLibraryJobMessage(message.body))
           await processLibraryJob(env, message.body.jobId);
+        else if (isAudioJobMessage(message.body)) await processAudioJob(env, message.body.jobId);
         else throw new Error("unknown_job_kind");
         message.ack();
       } catch {
@@ -78,6 +91,8 @@ export default {
     await dispatchPendingMediaJobs(env);
     await discoverLibraryJobs(env);
     await dispatchPendingLibraryJobs(env);
+    await discoverAudioJobs(env);
+    await dispatchPendingAudioJobs(env);
     await discoverGcCandidates(env);
     await runGarbageCollection(env);
     await reapExpiredZipManifests(env);

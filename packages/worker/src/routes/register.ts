@@ -2,6 +2,14 @@ import type { Hono } from "hono";
 
 import { enforceCsrf, handleCsrf, handleLogout, handleOperation } from "../api/account.js";
 import {
+  handleAudioCover,
+  handlePlaybackState,
+  handlePublicAudioCover,
+  handlePublicTracks,
+  handleTracks,
+  handleUpdateAudio,
+} from "../api/audio.js";
+import {
   handleCancelPublicTicket,
   handleCancelTicket,
   handleContentSessionAccept,
@@ -146,6 +154,11 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/nodes/:nodeId/preview", handleThumbnail],
   ["HEAD /api/v1/nodes/:nodeId/preview", handleThumbnail],
   ["GET /api/v1/nodes/:nodeId/gallery", handleGallery],
+  ["GET /api/v1/nodes/:nodeId/tracks", handleTracks],
+  ["GET /api/v1/nodes/:nodeId/audio/cover", handleAudioCover],
+  ["HEAD /api/v1/nodes/:nodeId/audio/cover", handleAudioCover],
+  ["PATCH /api/v1/nodes/:nodeId/audio", handleUpdateAudio],
+  ["PUT /api/v1/nodes/:nodeId/playback-state", handlePlaybackState],
   ["GET /api/v1/library/items", handleLibraryItems],
   ["GET /api/v1/library/items/:itemId", handleLibraryItem],
   ["PATCH /api/v1/library/items/:itemId", handleUpdateLibraryItem],
@@ -191,6 +204,9 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/public/shares/:shareId/thumb/:nodeId", handlePublicThumbnail],
   ["HEAD /api/v1/public/shares/:shareId/thumb/:nodeId", handlePublicThumbnail],
   ["GET /api/v1/public/shares/:shareId/gallery", handlePublicGallery],
+  ["GET /api/v1/public/shares/:shareId/tracks", handlePublicTracks],
+  ["GET /api/v1/public/shares/:shareId/audio/:nodeId/cover", handlePublicAudioCover],
+  ["HEAD /api/v1/public/shares/:shareId/audio/:nodeId/cover", handlePublicAudioCover],
   ["GET /api/v1/public/shares/:shareId/library/:nodeId", handlePublicLibraryItem],
   ["GET /api/v1/public/shares/:shareId/library/:nodeId/pages/:page", handlePublicLibraryPage],
   ["HEAD /api/v1/public/shares/:shareId/library/:nodeId/pages/:page", handlePublicLibraryPage],

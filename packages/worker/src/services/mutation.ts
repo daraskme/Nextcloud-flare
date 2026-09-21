@@ -118,6 +118,20 @@ export function auditAndOutbox(
       targetId,
       input.userId,
     ),
+    env.DB.prepare(
+      "INSERT INTO audio_jobs(id,node_id,blob_id,owner_id,generator_version,saved_principal_json,epoch,state,attempt,claim_token,claim_expires_at,last_error,created_at,updated_at) SELECT ?1,n.id,n.current_blob_id,n.owner_id,'audio-v1',?2,?3,'pending',0,NULL,NULL,NULL,?4,?4 FROM nodes n JOIN blobs b ON b.id=n.current_blob_id WHERE n.id=?5 AND n.owner_id=?6 AND n.kind='file' AND n.deleted_at IS NULL AND b.state='committed' AND (lower(n.name) LIKE '%.mp3' OR lower(n.name) LIKE '%.flac' OR lower(n.name) LIKE '%.ogg' OR lower(n.name) LIKE '%.opus' OR lower(n.name) LIKE '%.m4a' OR lower(n.name) LIKE '%.m4b' OR lower(n.name) LIKE '%.mp4' OR lower(n.name) LIKE '%.wav') ON CONFLICT(node_id,blob_id,generator_version) DO NOTHING",
+    ).bind(
+      `audio_${crypto.randomUUID().replaceAll("-", "")}`,
+      JSON.stringify({
+        kind: input.credentialKind === "app_password" ? "app_password" : "user",
+        userId: input.userId,
+        credentialId: input.credentialId ?? `as:${input.sessionId}`,
+      }),
+      input.epoch,
+      now,
+      targetId,
+      input.userId,
+    ),
     ...operationStep(env, input.operationId, step + 1, "outbox.insert", input.outboxId),
   ];
 }
