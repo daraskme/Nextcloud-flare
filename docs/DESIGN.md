@@ -1,10 +1,10 @@
-# Next-cloud-flare — 設計・実装方針 (v0.3)
+# Next-cloud-flare — 設計・実装方針 (v0.4)
 
 Cloudflare のサービスだけで完結する、Google Drive / Nextcloud ライクなセルフホスト型ストレージ管理アプリ。
 
-> ステータス: **Astra ラウンド1・2 反映済み**。本書を v1 の実装契約とし、未決事項は安全側の制限を置いて §18 へ送る。
+> ステータス: **Astra ラウンド1〜3 反映済み / ギャラリー・本棚・オーディオ追加**。本書を v1 の実装契約とし、未決事項は安全側の制限を置いて §18 へ送る。
 >
-> 制限定義と公式仕様の確認基準日: 2026-09-21。数値の正本は §13 とし、契約・環境依存値はリリース時に staging で再確認する。
+> 制限定義と公式仕様の確認基準日: 2026-09-21。数値の正本は §13 とし、契約・環境依存値はリリース時に分離 staging で再確認する。
 
 ---
 
@@ -13,30 +13,32 @@ Cloudflare のサービスだけで完結する、Google Drive / Nextcloud ラ�
 ### 0.1 ゴール
 
 - **Cloudflare 完結**: Workers、Workers Static Assets、R2、D1、KV、Durable Objects、Queues、Cron Triggers、Cloudflare Access のみを実行基盤とする。Google IdP は Access の認証元としてのみ利用する。
-- **正本の分離**: R2 は不変のファイル内容、D1 は論理名前空間・参照・権限・操作状態の正本とする。D1 外の復旧制御は `ControlDO` を正本とする。
-- **線形化された書き込み**: REST、WebDAV、upload complete、Queue consumer の名前空間変更を `fsMutation` に集約し、全 operand 認可、lock reservation、operation claim、期待 revision、tree generation、quota を一つの確定契約で扱う。
-- **必須機能**: Web UI、WebDAV Class 1/2、期限・パスワード付きリンク共有、内部共有、upload-only 共有、回収箱、名前検索、再開可能 multipart、プレビュー、サムネイル、クォータ、監査。
+- **正本の分離**: R2 は不変のファイル内容と派生物、D1 は論理名前空間・参照・権限・操作状態の正本とする。D1 外の復旧制御は `ControlDO` を正本とする。
+- **線形化された書き込み**: REST、WebDAV、upload complete、Queue consumer の名前空間変更を `fsMutation` に集約し、全 operand 認可、lock reservation、operation claim、期待 revision、tree generation、quota、recovery epoch を一つの確定契約で扱う。
+- **必須機能**: Web UI、WebDAV Class 1/2、期限・パスワード付きリンク共有、内部共有、upload-only 共有、回収箱、名前検索、再開可能 multipart、プレビュー、サムネイル、クォータ、監査に加え、ギャラリー、本棚、オーディオライブラリを提供する。
 - **障害復旧**: 日次 D1 export、D1 Time Travel、GC 停止、recovery epoch 更新を含む復旧手順と演習をリリース条件にする。
 - **安全な既定値**: 仕様や実測が未確定な機能は v1 で狭く制限し、上限値は §13 に一元化する。
 
 ### 0.2 非ゴール
 
-- Office/Collabora 相当の同時編集、E2E 暗号化、デスクトップ同期クライアント、本文検索・OCR、サーバ側マルウェア検査、厳密な DRM。
+- Office/Collabora 相当の同時編集、E2E 暗号化、デスクトップ同期クライアント、サーバ側マルウェア検査、取得済みデータや転送済み共有 capability の DRM 的な回収。
+- OCR、本文全文検索、DRM 付き EPUB、サーバ側 EPUB→画像変換、外部メタデータ DB 照合、RAR/CBR/7z 展開、波形表示、歌詞同期表示。RAR/7z と波形等の候補は §18 に限定して記載する。
 - Nextcloud 固有 discovery、capability、chunking、全 API との互換。WebDAV 対応と Nextcloud client 互換は別であり、後者は保証しない。
 - R2 bucket の直接操作。R2 key は論理 path ではなく、直接書き込みと `r2.dev` 公開を禁止する。
 - 無料 plan での動作保証。Workers Paid は前提だが、zone の HTTP body 上限を引き上げるものではない。
+- Cloudflare account 全権管理者に対する機密性・完全性。最小権限、MFA、配備承認、外部保全で運用上のリスクを下げる。
 
 ### 0.3 client / transfer support
 
 | 経路 | v1 の扱い | 競合・上限 |
 |---|---|---|
-| Web UI | 専用 multipart | §13 の upload 上限。ETag 競合は 412。 |
-| REST 単発 | 一つの HTTP request | `MAX_REQUEST_BYTES`。`Content-Length` 必須。 |
+| Web UI | 専用 multipart | §13 の upload 上限。file content 競合は 412。 |
+| REST 単発 | 一つの HTTP request | `MAX_REQUEST_BYTES`。body 付き route は `Content-Length` 必須。 |
 | WebDAV | Class 1/2、一 request PUT | `MAX_REQUEST_BYTES`。独自 multipart は使わない。 |
 | CLI 大容量 | 後段 | v1 は通常 WebDAV 上限まで。 |
 | Nextcloud client | 非目標 | 基本 WebDAV が動く範囲のみ。固有 chunking は保証しない。 |
 
-同期競合では `If-Match` を要求する。server は conflicted copy を自動生成せず、再取得・別名保存は client 責務とする。
+`If-Match` を必須にするのは既存ファイル content の PUT だけとする。server は conflicted copy を自動生成せず、再取得・別名保存は client 責務とする。collection、PROPPATCH、metadata mutation は内部 revision CAS を使い、競合は 409 とし、weak comparison を 412 の根拠にしない。
 
 ---
 
@@ -44,19 +46,19 @@ Cloudflare のサービスだけで完結する、Google Drive / Nextcloud ラ�
 
 | 役割 | サービス | 設計上の扱い |
 |---|---|---|
-| API / WebDAV / share page | Workers + Hono + TypeScript | 全 surface を単一 route manifest と共通 service へ集約する。 |
+| API / WebDAV / share page | Workers + Hono + TypeScript | 宣言的 route manifest と共通 service へ全 surface を集約する。 |
 | SPA | Workers Static Assets | `run_worker_first` で shell を含む全 request を Worker に通す。 |
 | 内容・派生物・backup | R2 | 本体は不変 blob。public access は無効。 |
-| 名前空間・状態 | D1 | node、参照、quota、operation、outbox、audit の正本。 |
-| WebDAV lock | `LockDO(spaceId)` | `node_id` 単位 lock と lock generation / commit reservation の正本。 |
+| 名前空間・状態 | D1 | node、参照、quota、operation、outbox、audit、epoch 複製値の正本。 |
+| WebDAV lock | `LockDO(spaceId)` | `node_id` 単位 lock、lock generation、commit reservation の正本。 |
 | multipart | `UploadDO(uploadId)` | session、part、in-flight barrier、terminal result の正本。 |
 | 復旧制御 | singleton `ControlDO` | D1 外の `epoch`、`gc_paused`、maintenance mode の正本。 |
-| download budget | `TicketDO(ticketId)` | ticket の byte、request、並列 budget を厳密に消費する。 |
-| thumbnail | Queues + Images binding / 制限付き WASM | result claim と outbox により at-least-once を費用面でも制限する。 |
-| 短命 cache | KV | JWKS、read-only path hint、feature flag。認可・mutation・mutex には使わない。 |
+| download budget | `TicketDO(ticketId)` | 署名検証後だけ生成し、byte、request、並列 budget を厳密に消費する。 |
+| 派生物・索引・タグ | Queues + Images binding / 制限付き parser | outbox、世代、result claim で at-least-once と費用を制限する。 |
+| 短命 cache | KV | JWKS、read-only path hint、feature flag。認可・失効・mutation・mutex には使わない。 |
 | 定期処理 | Cron Triggers | lease と checkpoint で再開可能 job を起動する。 |
-| 認証 | Cloudflare Access | private app の入口。share と WebDAV は Worker が認証する。 |
-| rate limit | Workers Rate Limiting binding + DO | binding は一次防御、重要上限は DO で厳密化する。 |
+| 認証 | Cloudflare Access | private user / service route の入口。share と WebDAV は Worker が認証する。 |
+| rate limit | Workers Rate Limiting binding + DO | binding は一次防御、KDF・ticket 等の全体上限は DO で厳密化する。 |
 
 Images binding 有り・無しの Wrangler environment を分け、binding 不足を runtime fallback で隠さない。
 
@@ -65,11 +67,11 @@ Images binding 有り・無しの Wrangler environment を分け、binding 不�
 ## 2. 全体アーキテクチャとルート境界
 
 ```text
-Browser ─ Access ─┐                         ┌─ D1: namespace/auth/state/outbox
+Browser ─ Access ─┐                         ┌─ D1: namespace/auth/state/outbox/control
                   ├─ Worker / routes.ts ────┼─ R2: immutable blobs/derivatives/backups
-WebDAV ─ Basic ───┤ authorize + fsMutation ├─ LockDO / UploadDO / TicketDO
-Share capability ─┘                         └─ Queue / Cron / KV(read hint)
-                                    ControlDO(epoch, maintenance, gc_paused)
+WebDAV ─ Basic ───┤ authenticate/authorize ├─ LockDO / UploadDO / TicketDO
+Share capability ─┘       + fsMutation      └─ Queue / Cron / KV(JWKS/read hint)
+                                      ControlDO(epoch, maintenance, gc_paused)
 ```
 
 ### 2.1 monorepo
@@ -97,23 +99,40 @@ Next-cloud-flare/
   docs/
 ```
 
-### 2.2 route manifest と型境界
+### 2.2 宣言的 route manifest と型境界
 
-`routes.ts` を Hono、Static Assets、CSRF、CORS、Access IaC、smoke test が共有する唯一の route 定義とする。URL、Request URI、DAV `Destination`、tagged URI は同じ decoder で percent decode を一度だけ行い、NUL、encoded slash、backslash、二重 decode の余地を拒否する。
+`routes.ts` は次の宣言を唯一の route 定義とし、Hono 登録、Static Assets 境界、CSRF、CORS、Access IaC、監査イベント、negative test を manifest から生成する。
+
+```ts
+type Route = {
+  method: HttpMethod;
+  path: RouteTemplate;
+  auth: 'access' | 'app_password' | 'share' | 'public' | 'service';
+  operation: Operation;
+  operands: readonly OperandBinding[]; // param/body/claim -> node, parent, upload, job, share...
+  adminOnly: boolean;
+};
+```
+
+- handler は manifest から解決した全 operand を渡す `authorize` の戻り値 `Authorized<Operation, Operands>` を必須引数にする。認証済み context だけでは object 認可済みとしない。
+- CI は「登録された全 route が manifest に一意に存在」「各 operation の handler が `authorize` を呼ぶ」「auth と principal 型が一致」「全 param が operand へ束縛」を静的検査と生成 E2E で証明する。未分類 route は compile error にする。
+- URL、Request URI、DAV `Destination`、tagged URI は同じ decoder で percent decode を一度だけ行い、不正 percent / UTF-8、NUL、encoded slash、backslash、dot segment、二重 decode を拒否する。JSON の名前は percent decode しない。
 
 | surface | 絶対 path | Access | Worker 側認証 |
 |---|---|---|---|
-| private SPA/API | `/`、assets、`/api/v1/*` の private allowlist | 必須 | Access user。 |
-| public API | `/api/v1/public/*` の完全一致 allowlist | Bypass | share capability / CSRF。 |
-| share page | `/s` と `/s/*` の完全一致 allowlist | Bypass | SSR capability flow。 |
+| private SPA/API | `/`、assets、private `/api/v1/*` allowlist | private app 必須 | Access user JWT。 |
+| service automation | `/api/v1/automation/*` の method+template allowlist | Service Auth policy | Access service JWT と登録 mapping。 |
+| public API | `/api/v1/public/*` の完全一致 allowlist | Bypass | share session / capability / CSRF。 |
+| share page | `/s` と `/s/:shareId` | Bypass | secret を含まない landing。 |
 | WebDAV | `/dav` と `/dav/*` | Bypass | app password Basic のみ。 |
+| content host | content 用 allowlist のみ | private API を置かない | short-lived content ticket のみ。 |
 | well-known | 個別 allowlist path のみ | 必要時だけ Bypass | wildcard は置かない。 |
 
-- public prefix 配下は allowlist の完全一致だけを dispatch し、未知 method/path は 404。private router、SPA、asset へ fallthrough しない。
-- private handler は `AuthedContext` を引数に取る型だけ登録できる。Access middleware だけが `Context` を `AuthedContext` へ変換でき、型なし handler を private manifest に登録すると compile error にする。
-- `run_worker_first=true` とし、private SPA shell も Worker の Access 検査後だけ返す。public shell は置かない。
-- Bypass request に Access JWT が付いても user principal へ昇格・合成しない。
-- 本番では `workers.dev`、preview URL、想定外 host、R2 public access を無効化する。
+- public / service prefix 配下は method+template の完全一致だけを dispatch し、未知経路は 404。private router、SPA、asset へ fallthrough しない。
+- `run_worker_first=true` とし、private SPA shell も Worker の JWT 検証後だけ返す。public shell は share landing に限定する。
+- Bypass request に Access JWT が付いても user / service principal へ昇格・合成しない。Bypass の認証監査と rate limit はアプリ自身で行い、Access log を防御根拠にしない。
+- `workers.dev`、preview URL、想定外 host、古い alias、R2 public access を全環境で無効化する。app / content の全 custom domain で HTTPS を強制し、DAV の HTTP request は credential を読む前に拒否して redirect しない。
+- Access application path は `/dav` と `/dav/*`、`/s` と `/s/*` の双方を明示する。具体 path 優先規則に依存せず、Worker allowlist を最終境界とする。
 
 ---
 
@@ -129,7 +148,7 @@ CREATE TABLE users (
   access_iss TEXT NOT NULL,
   access_sub TEXT NOT NULL,
   email TEXT NOT NULL,
-  role TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('member','app_admin')),
   quota_bytes INTEGER,
   used_bytes INTEGER NOT NULL DEFAULT 0,
   physical_bytes INTEGER NOT NULL DEFAULT 0,
@@ -137,6 +156,15 @@ CREATE TABLE users (
   disabled_at INTEGER,
   created_at INTEGER NOT NULL,
   UNIQUE(access_iss, access_sub)
+);
+
+CREATE TABLE control (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  epoch INTEGER NOT NULL,
+  bootstrap_done_at INTEGER,
+  bootstrap_iss TEXT,
+  bootstrap_sub TEXT,
+  updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE spaces (
@@ -185,31 +213,12 @@ CREATE TABLE blobs (
   last_op_id TEXT
 );
 
-CREATE TABLE node_versions (
-  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-  blob_id TEXT NOT NULL REFERENCES blobs(id),
-  revision INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  created_by TEXT,
-  operation_id TEXT NOT NULL,
-  PRIMARY KEY(node_id, revision)
-);
-
-CREATE TABLE trash_ops (
-  id TEXT PRIMARY KEY,
-  actor_id TEXT,
-  root_node_id TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('deleting','trashed','restoring','purging','purged','failed')),
-  reason TEXT,
-  created_at INTEGER NOT NULL,
-  purge_after INTEGER,
-  checkpoint TEXT
-);
-
 CREATE TABLE operations (
   id TEXT PRIMARY KEY,
   principal_fingerprint TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
   space_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
   kind TEXT NOT NULL,
   request_digest TEXT NOT NULL,
   claim_token TEXT NOT NULL UNIQUE,
@@ -225,98 +234,214 @@ CREATE TABLE operations (
 );
 ```
 
-`trash_ops.root_node_id` は監査用の論理 ID であり `nodes` への FK にしない。これにより `nodes.deleted_op_id` との循環 FK を作らない。terminal upload の `parent_id` は `ON DELETE SET NULL` とし、`parent_snapshot_id` を監査用に残す。`activity`、完了 job、operation result の node ID も論理 ID とし、purge を妨げる FK にしない。
+`node_versions(node_id,blob_id,revision,created_at,created_by,operation_id)` は `(node_id,revision)` を主鍵とする。`trash_ops(id,actor_id,root_node_id,state,reason,created_at,purge_after,checkpoint)` の state は `deleting|trashed|restoring|purging|purged|failed` に限定する。`trash_ops.root_node_id`、terminal upload の snapshot ID、activity / job / operation result の node ID は監査用論理 ID とし、purge を妨げる循環 FK を作らない。
 
-追加 table:
+認証・状態 table:
 
-- `uploads(id,owner_id,creator_fingerprint,credential_id,share_id,share_version,parent_id,parent_snapshot_id,target_node_id,name,blob_id,declared_size,reserved_bytes,physical_charge_state,state,reason,operation_id,result_node_id,result_revision,...)`。
-- `shares`、`app_passwords`、`service_principals`、`node_props`、`user_node_state`。
-- server derivative 用 `derivative_results(blob_id,variant,generator_version,state,attempts,claim_expires_at,r2_key,...)` と client thumb 用 `client_thumbs(node_id,blob_id,variant,generator_version,...)`。
-- `gc_candidates(blob_id,reason,first_seen_at,delete_after,last_verified_at,state)`、`blob_pins(blob_id,pin_type,pin_id,expires_at)`。
+- `uploads(id,owner_id,creator_fingerprint,credential_id,share_id,share_version,epoch,parent_id,parent_snapshot_id,target_node_id,name,blob_id,declared_size,reserved_bytes,physical_charge_state,state,reason,operation_id,result_node_id,result_revision,...)`。
+- `shares`、`share_sessions(session_id,share_id,share_version,expires_at,revoked_at)`、`app_passwords`、`service_principals`、`node_props`、`user_node_state`。
+- `derivative_results(blob_id,variant,generator_version,state,attempts,claim_expires_at,r2_key,...)`、`client_thumbs`、`gc_candidates`、`blob_pins`。
 - `outbox`、`job_leases`、`backup_runs`、`mutation_journal`、`bulk_jobs`、`folder_stats`、`node_search`、`activity`。
 
-### 3.2 tree invariants
+メディア table:
+
+```sql
+CREATE TABLE node_media (
+  node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+  blob_id TEXT NOT NULL REFERENCES blobs(id),
+  width INTEGER, height INTEGER, taken_at INTEGER, duration_ms INTEGER,
+  orientation INTEGER, dominant_color TEXT, camera_make TEXT, camera_model TEXT,
+  generator_version INTEGER NOT NULL
+);
+
+CREATE TABLE library_items (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL UNIQUE REFERENCES nodes(id) ON DELETE CASCADE,
+  blob_id TEXT REFERENCES blobs(id),
+  format TEXT NOT NULL,
+  title TEXT, authors TEXT, series TEXT, volume TEXT, publisher TEXT, language TEXT,
+  page_count INTEGER, cover_thumb_key TEXT,
+  index_state TEXT NOT NULL CHECK(index_state IN ('pending','ready','failed','unsupported')),
+  index_key TEXT, revision INTEGER NOT NULL DEFAULT 1,
+  user_override TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE user_reading_state (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  position TEXT, page INTEGER, percent REAL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY(user_id,node_id)
+);
+
+CREATE TABLE tags (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  UNIQUE(owner_id,name)
+);
+CREATE TABLE node_tags (
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY(node_id,tag_id)
+);
+CREATE TABLE library_roots (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  PRIMARY KEY(user_id,node_id)
+);
+
+CREATE TABLE node_audio (
+  node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+  blob_id TEXT NOT NULL REFERENCES blobs(id),
+  title TEXT, artist TEXT, album TEXT, album_artist TEXT,
+  track_no INTEGER, disc_no INTEGER, duration_ms INTEGER,
+  codec TEXT, bitrate INTEGER, sample_rate INTEGER,
+  has_cover INTEGER NOT NULL DEFAULT 0, cover_thumb_key TEXT,
+  lyrics_present INTEGER NOT NULL DEFAULT 0,
+  tag_state TEXT NOT NULL CHECK(tag_state IN ('pending','ready','failed','unsupported')),
+  generator_version INTEGER NOT NULL, user_override TEXT
+);
+
+CREATE TABLE user_playback_state (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  position_ms INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY(user_id,node_id)
+);
+```
+
+GPS、任意 EXIF、埋め込み原画像、未検証 XML/HTML は D1 に保存しない。`authors` 等の複数値の実 schema は正規化 table または size-bounded JSON とし、検索 index は表示上書き後の値を使う。
+
+### 3.2 tree invariants と EffectiveLive
 
 - space 作成時に実体 root node を一つ作る。root だけ `parent_id IS NULL`。root の rename、MOVE、trash、purge は禁止する。
 - 親は同一 space の未削除 `folder|root`。削除中、別 space、file は親にできない。
 - namespace 構造変更は `spaces.tree_generation` を期待値付きで `+1` する statement と同じ D1 batch で確定する。MOVE、COPY、create、rename、DELETE、restore、purge は同一 space 内で直列化される。
-- MOVE の確定 statement は再帰 CTE を使い、destination が source の子孫でないこと、深さ上限、全祖先の未削除、space 一致を同じ batch 内で再確認する。更新は `INSERT ... SELECT ... WHERE NOT EXISTS(...)` で step proof を作り、事前検査だけに依存しない。
+- `EffectiveLive(node)` は、node 自身から space root までを再帰 CTE 一クエリで辿り、深さ ≤ 64、全 node の `deleted_at IS NULL`、各辺の同一 space、循環なし、root 到達を満たすこととする。孤児、上限超過、別 space、root 未到達は拒否する。
+- `authorize` は content、HEAD/Range、thumb、children、search/count、ZIP、gallery、tracks、library、ticket 発行を含む**全 read**で `EffectiveLive` を確認する。共有 root への到達性と space root までの有効性は別々に証明し、応答 path だけ共有 root で打ち切る。
+- 共有 root より上の祖先が trash に入った時点で共有は同期的に無効となる。`shares.disabled_reason='trashed'` の非同期設定は表示最適化にすぎない。
+- trash / restore 専用 operation だけが、明示された state と op ID の下で削除済み operand を扱える。
+- MOVE の確定 statement は再帰 CTE で destination が source の子孫でないこと、深さ、全祖先、space、epoch を同じ batch 内で再確認する。
 - owner / space をまたぐ MOVE は v1 では拒否する。cross-owner は copy job 完了後の明示 delete とする。
-- 名前は NFC、`name_ci` は決定的 Unicode casefold。保存名 policy と深さ等の上限は §13 を正本とする。
 
-### 3.3 path と予約領域
+### 3.3 path、名前、出力前提
 
-検証順は「decode 一回 → separator / control 拒否 → NFC → portable check → casefold」。`.DS_Store` と `._*` は `hidden=1` で保存できる。`/dav/Shared/` は仮想予約 prefix とし、root 直下の実 folder 名として禁止する。mount 名は share ID 由来の stable ID を含み、表示名変更で解決先を変えない。
+検証順は「decode 一回（URL のみ）→ UTF-8 / separator / control 拒否 → NFC → portable check → byte / 文字数 → locale 非依存 Unicode casefold」。casefold / Unicode version は migration と config に固定し、version変更は衝突scanを伴う。空、`.`、`..`、末尾 dot/space、`CON` 等 Windows 予約名、drive / ADS の colon、slash、backslash、NUL、不正 Unicode を拒否する。`/dav/Shared/` 予約名は casefold 後に検査する。検索用 NFKC は名前解決に使わない。上限は §13。
+
+`.DS_Store` と `._*` は `hidden=1` で保存できる。mount 名は share ID 由来の stable ID を含み、表示名変更で解決先を変えない。名前正規化は出力エンコードの代用ではなく、§10.5 を必ず適用する。
 
 ### 3.4 immutable blob、generation、COW
 
 - 本体 key は `u/<ownerId>/b/<blobId>`。同じ key を上書きしない。`committed` blob だけ content API から配信する。
-- metadata ETag は revision、content ETag は `content_etag`。DAV path validator は §7 の node identity 付き形式を使う。
+- metadata ETag は revision、content ETag は `content_etag`。DAV collection validator は §7 の node identity 付き strong ETag を使う。
 - 内容更新は新 key へ書き、R2 object の実在と実 size を容量台帳へ反映してから、期待 revision 付き D1 参照切替を確定する。D1 参照切替が利用者から見た確定点である。
-- `ref_count` は current node、保持中 version、明示 pin の参照を同じ batch で整合させる。直接の無条件加減算は禁止する。
-- same-owner COPY は COW とし、元 node / blob generation を固定する。blob ごとの COW 参照上限は §13。
-- cross-owner COPY は source pin と destination quota reservation を先に作り、Range GET と destination multipart upload を checkpoint 付き job で実行する。一発の巨大 `get() -> put()` を公称 file 上限の根拠にしない。成功時だけ destination node を公開し、失敗時は §6 の物理台帳に従って回収する。
-- folder COPY は開始時 snapshot manifest ではなく、source `tree_generation` と pin 付き cursor を使う。share、lock、client thumb は copy しない。
+- `ref_count` は current node、保持中 version、明示 pin の参照を同じ batch で整合させる。無条件加減算は禁止する。
+- same-owner COPY は COW。cross-owner COPY は source pin と destination quota reservation を作り、Range GET と multipart upload を checkpoint 付き job で実行する。folder COPY は source `tree_generation` と cursor を固定し、share、lock、client thumb、reading / playback state は copy しない。
 
-### 3.5 D1 boundary
+### 3.5 D1 boundary と epoch
 
-- D1 `batch()` は bind、SQL、query、実行時間の §13 budget で分割する。大規模操作は checkpoint 付き job にする。
-- 条件付き statement の影響行ゼロは SQL error ではない。`fsMutation` は §5.2 の step proof と commit barrier で、単なる row count 後確認を atomicity の代用にしない。
-- list は複合 keyset cursor。offset pagination は管理用小規模画面以外で使わない。
-- 認可、share 失効、quota、operation claim、tree / lock 確定は primary を読む。read replica / KV は権威にしない。
-- path cache key は `space_id + tree_generation`。mutation 前は再帰 CTE で primary の現在 path / ancestor を再検証する。
+- D1 `batch()` は bind、SQL、query、実行時間の §13 budget で分割し、大規模操作は checkpoint 付き job にする。
+- 条件付き statement の影響行ゼロは SQL error ではない。step proof と commit barrier で rollback を強制する。
+- 認可、user / credential / share / job 失効、quota、operation claim、tree / lock 確定は primary を読む。KV と read replica は権威にしない。DB adapter は `withSession("first-primary")` を session 全 query の primary 保証と解釈せず、権威 query ごとに primary 契約を満たす。
+- path cache key は `space_id + tree_generation`。mutation 前は primary の再帰 CTE で現在 path / ancestor を再検証する。
+- `control` 一行へ ControlDO の current epoch を複製する。全 mutation / job の D1 batch は `WHERE (SELECT epoch FROM control WHERE singleton=1)=:request_epoch` を step proof と final barrier の双方に含め、旧 epoch の commit を D1 側で拒否する。
 
 ---
 
 ## 4. 認証、principal、認可、初期化
 
-### 4.1 principal と operand
+### 4.1 JWT 受入プロファイルと principal
+
+private / service route の JWT 入力は、重複のない単一 `Cf-Access-Jwt-Assertion` header **だけ**とする。`CF_Authorization` Cookie、raw `CF-Access-Client-Id`、query、body へ fallback しない。CONTENT_HOST 等、Access が header を付けない経路に private API を置かない。
+
+検証契約:
+
+- JOSE `alg=RS256` と `typ=JWT`、payload `type=app` のみ。`none`、HMAC、`jku`、`x5u`、埋め込み key を拒否する。
+- `iss` は設定済み `https://<team>.cloudflareaccess.com` と厳密一致し、JWKS URL はこの設定値からのみ構成する。
+- `aud` は一要素の文字列配列として型検証し、manifest の route / environment ごとに固定した private app AUD または service app AUD と厳密一致させる。単なる全 AUD 集合や別 Access app の AUD を受けない。
+- `exp` と `iat` は全 tokenで、`nbf` はuser tokenで必須の有限整数とする。service tokenは`nbf`省略を許すが存在時は必ず評価する。clock skewは60秒で、未来`iat`、未来`nbf`、期限切れ、`iat`から24hを超える寿命を拒否する。
+- user token は非空文字列 `sub` と `email` を必須とし、`principal=user(iss,sub,user_id)` にする。
+- service token は非空 `common_name` で識別し、空 `sub` を user として保存しない。検証済み `iss + aud + common_name` を既存 `service_principals` へ mapping して `principal=service(...)` にする。未登録 / 停止 mapping、停止 mapped user は拒否する。
+- service principal は `/api/v1/automation/*` の allowlist だけで受理し、owner bootstrap、通常 session、DAV credential へ変換しない。権限は service scope、mapped user の現在権限、対象 space の積集合とする。
+
+JWKS は固定 issuer 単位で KV に 1 時間 cache し、取得 timeout 5 秒、応答 256 KiB、RSA key 数 16 の上限を置く。既知 `kid` は cache を使う。未知 `kid` は issuer ごとの single-flight で一回だけ再取得し、更新は 1 分 10 回まで、1 分 cooldown と容量 64 の negative cache を適用する。超過は 503。取得失敗時は既存 cache が取得から 24 時間以内なら既知 key に限り使用し、それ以外または cache 無しは fail closed。重複 `kid`、RSA 以外、不整合 key は拒否する。
+
+principal 型:
 
 ```text
-user(iss, sub)
+user(iss, sub, user_id, credential_id=access-session)
 app_password(user_id, credential_id, scope, optional_root)
 link_share(share_id, share_version, session_id, actions, root)
-service_token(service_principal_id, mapped_user, space, scope)
+service(service_principal_id, credential_id, mapped_user, space, scope)
+job(saved_principal, credential_id, epoch, operation)
 ```
 
-認証情報は暗黙に合成しない。認可 API は node 一個ではなく次を唯一の形とする。
+### 4.2 `authorize` と endpoint 被覆
 
 ```ts
-authorize(principal, operation, operands: Operand[]): AuthorizationProof
+authorize(
+  principal: Principal,
+  operation: Operation,
+  operands: Operand[],
+): Authorized<Operation, typeof operands>
 ```
 
-`Operand` は source node / source parent / destination parent / overwrite target / ancestor chain / blob generation / upload / job / share / ticket / operation key を型付きで表す。MOVE / COPY は両側、DELETE / restore / complete は対象と全祖先、bulk は manifest の各 scope を検査する。内部 share の表示 path は認可 root で打ち切り、private ancestor 名を返さない。
+`Operand` は source node / parent、destination parent、overwrite target、ancestor chain、blob generation、upload、job、share、ticket、operation key を型付きで表す。`AuthorizationProof` は principal / credential、grant version、operation、全 operand ID、space / tree generation、revision、epoch を束縛し、別 operation で再利用できない。
 
-`upload_id`、`job_id`、`share_id`、ticket、operation / idempotency key は、作成 principal fingerprint または同じ space の owner にだけ結び付ける。ID の推測困難性を認可に使わない。同じ key を異なる principal、space、operation kind、request digest で再利用した場合は拒否する。
+Allow は「route が principal 型を許可」「principal / credential / grant / user が primary で現在有効」「epoch と用途一致」「全 operand の権限」「EffectiveLive または trash 専用規則」「node / parent / space / blob 世代」「lock / revision 条件」の論理積とする。
 
-### 4.2 Access identity と bootstrap
+upload / job / idempotency / operation の ID 所有関係は権限を拡張しない。terminal result の再生は**作成時と同じ principal fingerprint かつ同じ `credential_id`**に限り、再生前に user / credential / share / scope と結果開示権限を再検査する。停止・scope 縮小後は node 名、path、result を返さず 403 とする。space owner や同一 user であることを制限付き credential の例外にしない。
 
-- identity key は `iss + sub`。email は属性であり、同一 email の別 sub を自動結合しない。
-- JWT は許可 algorithm、署名、issuer、audience、expiry、not-before、必須 claim を検証する。未知 key ID では JWKS を一度更新し、失敗は fail closed。
-- disabled user は Access 通過後も 403。
-- `OWNER_EMAILS` は必須。該当 identity だけが atomic bootstrap で owner になれる。未設定または Access 設定欠落時は全 request を 503。
-- signup は既定無効。owner 移譲は監査し、最後の owner の停止・削除を禁止する。
-- Service Token は mapping 済み REST automation だけで使い、WebDAV credential にはしない。
+### 4.3 権限表
 
-### 4.3 operation permission
+`space owner` は対象 space だけ、`app admin` は監査された全体管理 operation だけに効く。一般 member が自分の space を所有しても他 space の admin にはならない。
 
-| action | owner/admin | internal read | internal edit | app password | link read/edit | upload-only | service token |
+| operation | space owner | app admin | member / internal grant | app password | link share | upload-only | service |
 |---|---|---|---|---|---|---|---|
-| list / metadata / content | 許可 | 許可 | 許可 | scope 内 | capability subtree | 禁止 | mapping scope |
-| create | 許可 | 禁止 | destination に許可 | rw scope | edit subtree | 新規受取のみ | mapping scope |
-| overwrite / rename / MOVE / delete | 許可 | 禁止 | 全 operand に許可 | rw scope | edit subtree | 禁止 | mapping scope |
-| COPY | 両 operand に許可 | source のみ | source read + destination write | scope 内 | edit subtree | 禁止 | mapping scope |
-| share / quota | owner/admin | 禁止 | 禁止 | 禁止 | 禁止 | 禁止 | admin scope |
-| LOCK | 許可 | 禁止 | 許可 | rw scope | 禁止 | 禁止 | 禁止 |
-| client thumb | node write | 禁止 | node write | rw scope | edit node | 禁止 | write scope |
-| upload complete | commit 時再認可 | 禁止 | commit 時再認可 | rw scope | commit 時再認可 | receipt upload のみ | mapping scope |
+| `read`, gallery/tracks | 対象 space | support policy が許す時だけ | own space / read grant | scope∩current grant | capability subtree | 禁止 | scope∩mapped user |
+| `library.read` | 対象 space | 原則禁止 | node read と同じ | read scope | capability subtree | 禁止 | read scope |
+| create / write / MOVE / delete | 対象 space | 原則禁止 | own / edit grant、全 operand | rw scope∩current grant | edit capability | 新規受取のみ | write scope |
+| COPY | src read + dst write | 原則禁止 | grant ごとに両側 | scope ごとに両側 | edit subtree 内 | 禁止 | scope ごとに両側 |
+| trash list / restore / purge | 対象 space | repair operation のみ | own space または明示 grant | rw scope 内 | 禁止 | 禁止 | 明示 scope |
+| share 管理 / quota | 対象 space | global policy | 禁止 | 禁止 | 禁止 | 禁止 | admin scope のみ |
+| 自分の app password | 自分 | disable / audit のみ | 自分 | 禁止 | 禁止 | 禁止 | 禁止 |
+| job status/cancel/retry | 同 credential で現在権限あり | admin job のみ | 同 principal+credential | 同 credential | 同 share session | 自分の receipt のみ | 同 service credential |
+| DLQ / requeue / user admin | 禁止 | `adminOnly=true` | 禁止 | 禁止 | 禁止 | 禁止 | 専用 admin scope |
+| LOCK | 対象 space write | repair のみ | edit grant | rw scope | 禁止 | 禁止 | 禁止 |
+| reading/playback state | 自分 | 禁止 | 自分 | 禁止 | 禁止 | 禁止 | 禁止 |
+| library metadata / audio override | 対象 node write | 禁止 | node write | rw scope | edit capability | 禁止 | write scope |
 
-### 4.4 credential と recovery epoch
+HEAD、Range、conditional response、thumb / preview / count / cursor も元の read operation と同じ認可を通す。Queue / Cron は保存 principal と `credential_id` を復元し、各 chunk と公開確定時に current user、grant、scope、epoch、全 operand を再認可する。
 
-- app password は CSPRNG secret を一度だけ表示し、`HMAC-SHA256(APP_PASSWORD_HMAC_KEY, epoch || typ || secret)` のみ保存して timing-safe 比較する。epoch 上昇後は全 app password を再発行する。
-- share password は random salt と versioned PBKDF2-SHA256。iteration と token entropy は §13。
-- unlock Cookie、download / ZIP ticket、upload session capability、job / lease token は `typ`、`aud`、`epoch` と型ごとの必須 claim を持ち、署名 / HMAC 入力を `epoch || typ || payload` とする。route は期待 `typ` 以外、余分な用途 claim、許可外 algorithm / key を拒否する。
-- 高コスト KDF の前に per-IP と per-share / credential の安価な rate limit を適用し、重要な全体上限は DO で補完する。
+### 4.4 bootstrap と失効連携
+
+- `OWNER_EMAILS` は初回 bootstrap 候補の設定であり secret ではない。Google IdP と MFA を要求する Access policy からの user token に限り、email を trim + Unicode NFC + ASCII case-insensitive 比較し、dot / plus 除去等の provider 固有変換をしない。
+- 初回一致 identity を `iss+sub` へ固定し、`control.bootstrap_done_at IS NULL` の条件付き UPDATE、`app_admin` 付与、personal space owner 作成を同じ batch で一度だけ成功させる。以後 `OWNER_EMAILS` を無視し、space owner / app admin 追加は fresh `iat` 5 分以内を要求する監査付きアプリ内操作だけにする。
+- bootstrap 完了済み状態は backup / recovery 後にも current ControlDO / 運用記録と照合し、巻き戻りなら maintenance を解除しない。email 再利用、別 sub、削除・再追加で再 bootstrap しない。
+- Access session は 24h 以下を推奨し、アプリは `iat` から 24h 超の JWT を拒否する。Access / IdP 側失効の private request への上限は既発行 JWT の残存時間であり、即時失効とは主張しない。Access / IdP停止だけではBypassのDAV/shareを止めないため、運用runbookは同時にアプリ管理APIでuser停止を確定する。
+- `users.disabled_at` は全 private / service request で D1 primary から一クエリで確認し、KV cache しない。user停止時は mapped service、app password、job、uploadと、そのuserが所有するlink/internal shareを同期的に拒否する。share version更新と進行中jobのterminal化はoutboxで追従してもよいが、各requestのowner停止joinを失効判定の正本とする。
+- app password、share / share session、job、upload は各 request / part / status / terminal replay で D1 primary の状態を cache 無しで確認する。app password は Access logout と独立し、revoke / expiry / user disable で即時拒否する。
+- `POST /api/v1/auth/logout` は自分の share unlock Cookie と upload capability、IndexedDB / memory / Cache Storage の認証関連状態を消し、`BroadcastChannel` で他 tab に通知してから同一 app domain の `/cdn-cgi/access/logout` へ 303 redirect する。開始済み stream の受信済み bytes は回収できず、新規 request から拒否する。
+
+### 4.5 token / secret 仕様
+
+全署名 payload は canonical JSON / 長さ区切り encoding を HMAC-SHA256 で署名し、曖昧な文字列連結をしない。HMAC JSON は共通 claim `typ,kid,aud,iat,exp,epoch` と用途固有 claim を必須にし、未知field、許可外typ/aud/kidを拒否する。全 bearer secret / nonce は CSPRNG ≥128 bit、既定 256 bit。random ID は bearer secret と分け、ID の秘匿性を認可に使わない。
+
+| 種別 | `typ` / 構造 | entropy・保存 | 期限 | 失効 | Cookie 属性 |
+|---|---|---|---|---|---|
+| Access user / service | JOSE `typ=JWT` の Cloudflare RS256 JWT、payload `type=app` | 外部発行、保存なし | `iat` から最大24h | Access expiry + D1 user/mapping停止 | Access 管理。本アプリは Cookie を読まない |
+| link secret | `typ=share-link` の DB参照不透明256-bit secret | D1は HMAC/hash のみ | share expiry 以下 | share version / revoke / epoch | なし。fragment または POST body |
+| unlock session | `typ=share-unlock` HMAC JSON。`kid,aud,epoch,share_id,share_version,session_id,iat,exp` | 128-bit session ID、D1は session state | min(share expiry, 7日) | session revoke、share version、epoch | `__Host-ncf_share_<shareIdShort>`; Secure; HttpOnly; SameSite=Lax; Path=/; host-only |
+| app password | `typ=app-password` の 128-bit base64url credential ID + 256-bit secret | IDと `HMAC-SHA256(key, canonical(epoch,typ,secret))` のみ | 既定90日、最大365日、20件/user | revoke、user停止、expiry、epoch、key削除 | なし。Basic over HTTPS |
+| download / ZIP / content ticket | `typ=download|zip-download|content-host` HMAC JSON + random `jti` | 128-bit `jti`、TicketDOは検証後に作成 | ≤6h。share時はshare expiry以下 | ticket cancel / budget、principal/credentialまたはshare version、epoch、鍵 | なし |
+| upload capability | `typ=upload` HMAC JSON。upload / creator / credential / share version / aud を束縛 | 256-bit nonce、D1/DOは digest | upload deadline 以下 | abort / terminal、credential / share失効、epoch | private browser は memory/IndexedDB、Cookieなし |
+| DAV lock token | `typ=dav-lock` の不透明 `opaquelocktoken` | 256-bit secret、LockDOはhashのみ | `Second-N`≤604800 | expiry、UNLOCK、MOVE source終了、epoch / admin強制解除 | なし |
+| one-time CSRF | `typ=csrf` HMAC JSON。session / share / method / operation / nonce | 128-bit nonce、消費 ledger | 10分 | atomic one-time consume / session失効 | form時だけ Lax sessionと併用 |
+| operation / job / lease ID | `typ=operation-id|job-id|lease-id` のDB参照不透明ID、bearerではない | ≥128 bit、D1 row | row retention | current principal+同 credential 認可 | なし |
+
+secret は operations result、audit、journal、URL、error に平文保存しない。app password HMAC は固定32 byteを runtime の timing-safe API で比較する。scope 変更は in-place 拡張せず、新 credential 発行 + 旧 credential revoke とする。
+
+共有 password は random salt 16 byte、derived key 32 byte、password UTF-8 ≤ 1 KiB、KDF version / parameter を保存する。既定は PBKDF2-HMAC-SHA256 600,000 回とし、staging 実測で §18 の scrypt 条件を満たす場合だけ全環境 config を一括変更する。KDF 前に有効 ID の安価な照合を行うが、存在 oracle は返さない。上限は per-share 10回/分、Cloudflare が提供する client IP per-IP 30回/分、global DO 600回/分、同時 KDF 20。任意転送 header を IP 根拠にせず、無効 ID ごとに DO を生成しない。
 
 ---
 
@@ -324,83 +449,90 @@ authorize(principal, operation, operands: Operand[]): AuthorizationProof
 
 ### 5.1 API surface
 
-private base は `/api/v1`、public base は `/api/v1/public`。
+private base は `/api/v1`、public base は `/api/v1/public`。下表の全行を §2.2 manifest へ登録する。`operands` は代表値であり、MOVE / COPY 等は source / parents / target / ancestors を全て列挙する。
 
-| Method | Path | 概要 |
-|---|---|---|
-| GET | `/api/v1/me` | user、quota、feature flag |
-| GET | `/api/v1/nodes/:id` と children / path / content / thumb / preview suffix | metadata / content |
-| POST/PATCH/DELETE | `/api/v1/nodes...` | folder、rename、MOVE、COPY、trash |
-| POST | `/api/v1/nodes/:id/zip` | 制限付き ZIP ticket |
-| POST/PUT/GET/DELETE | `/api/v1/uploads...` | private upload create / content / part / status / complete / abort |
-| GET/POST | `/api/v1/trash`、`.../restore`、`.../purge` | trash operation |
-| GET/POST/PATCH/DELETE | `/api/v1/shares...` | link / internal share |
-| POST | `/api/v1/nodes/:id/thumbs` | node 単位 client thumb |
-| GET/POST/DELETE | `/api/v1/app-passwords` | credential 管理 |
-| GET/POST/DELETE | `/api/v1/jobs...` | progress / cancel / retry |
-| GET/POST | `/api/v1/admin/dlq[/requeue]` | DLQ operation |
-| GET/POST | `/api/v1/public/shares/:token` と unlock / children / download-tickets suffix | public share |
-| POST | `/api/v1/public/shares/:token/uploads` | public upload create |
-| GET/PUT/POST/DELETE | `/api/v1/public/shares/:token/uploads/:uploadId`、`.../parts/:n`、`.../complete` | public status / part / complete / abort |
-| GET | `/api/v1/public/shares/:token/content`、`.../zip`、`.../thumb` | typed ticket 配信 |
+| Method | Path | auth | operation / operands | adminOnly |
+|---|---|---|---|---|
+| GET | `/api/v1/me` | access | `account.read` / current user | false |
+| POST | `/api/v1/auth/logout` | access | `account.logout` / current session | false |
+| GET | `/api/v1/search`, `/api/v1/recent`, `/api/v1/starred`, `/api/v1/stats` | access | `read` / scope root, result nodes, cursor | false |
+| GET/HEAD | `/api/v1/nodes/:id[/children|/path|/content|/thumb|/preview]` | access | `read` / node, ancestors, blob | false |
+| POST/PATCH/DELETE | `/api/v1/nodes...` | access | `write|move|copy|trash` / all operands | false |
+| POST | `/api/v1/nodes/:id/zip` | access | `read` / subtree, blobs, ticket | false |
+| GET | `/api/v1/nodes/:id/gallery` | access | `read` / folder, candidates | false |
+| GET | `/api/v1/nodes/:id/tracks` | access | `read` / folder, audio nodes | false |
+| PATCH | `/api/v1/nodes/:id/audio` | access | `write` / audio node, current blob | false |
+| GET/PATCH | `/api/v1/library/items...`, `/api/v1/library/:nodeId...` | access | `library.read|library.write` / node, blob, index | false |
+| GET | `/api/v1/library/:nodeId/pages/:n[/thumb]`, `/api/v1/library/:nodeId/entries/*path` | access | `library.read` / node, blob, index entry | false |
+| GET/POST/DELETE | `/api/v1/library/roots...` | access | `library.read|library.write` / root node | false |
+| PUT | `/api/v1/library/:nodeId/reading-state`, `/api/v1/nodes/:id/playback-state` | access | `state.write` / current user, node | false |
+| POST/PUT/GET/DELETE | `/api/v1/uploads...` | access | `upload.*` / upload, parent, target, blob | false |
+| GET/POST | `/api/v1/trash`, `.../restore`, `.../purge` | access | `trash.*` / op, node, destination | false |
+| GET/POST/PATCH/DELETE | `/api/v1/shares...` | access | `share.manage` / share, root | false |
+| POST | `/api/v1/nodes/:id/thumbs` | access | `write` / node, blob | false |
+| GET/POST/DELETE | `/api/v1/app-passwords` | access | `credential.manage` / current user | false |
+| GET/POST/DELETE | `/api/v1/jobs...` | access | `job.read|cancel|retry` / job and source operands | false |
+| GET/POST | `/api/v1/admin/dlq[/requeue]` | access | `admin.dlq` / job | true |
+| POST | `/api/v1/automation/...` | service | manifest 固有 / all operands | routeごと |
+| GET | `/api/v1/public/shares/:shareId` と children/content/thumb | share | `read` / share, node, ancestors | false |
+| POST | `/api/v1/public/shares/:shareId/unlock|tickets|logout` | public/share | `share.unlock|read|logout` / share, session | false |
+| GET | `/api/v1/public/shares/:shareId/gallery`, `/tracks`, `/library/...` | share | `read|library.read` / capability subtree | false |
+| POST/PATCH/DELETE | `/api/v1/public/shares/:shareId/nodes...` | share | `write` / capability subtree all operands | false |
+| POST | `/api/v1/public/shares/:shareId/uploads` | share | `upload.create` / share, parent | false |
+| GET/PUT/POST/DELETE | `/api/v1/public/shares/:shareId/uploads/:uploadId...` | share | `upload.*` / share, upload, credential | false |
 
-public multipart は private upload path を Bypass せず、public allowlist 内の専用 path だけで完結する。REST error は RFC 9457、DAV error は §7 の XML。
+`unlock`、ticket 発行、upload-only の create / complete / abort、public edit は POST/PATCH/DELETE だけで、GET mutation は禁止する。公開 JSON mutation は正確な app Origin のみ許可し、`Origin: null` と欠落、CONTENT_HOST origin を拒否する。`Sec-Fetch-Site` は `same-origin` のみ、`Content-Type: application/json` を必須とし、share/session/method/operation に束縛した one-time CSRF を原子的に消費する。通常 content GET の ticket budget 消費はこの mutation 分類とは別である。
+
+public multipart は private upload path を Bypass せず public allowlist 内で完結する。REST error は RFC 9457、DAV error は §7 の XML。
 
 ### 5.2 `fsMutation` 確定 protocol
 
-R2 transfer は先に終え、lock reservation は短い namespace commit だけを囲む。`claimOperation` は primary 上の既存 operation を調べ、同じ principal / space / kind / digest の `committed` なら保存済み結果、`failed` なら同じ失敗を返す。未登録時だけ一回限りの `claimToken` を生成する。
+R2 transfer は先に終え、lock reservation は短い namespace commit だけを囲む。terminal result の早期 return より先に current principal / credential と結果開示を再認可する。
 
 ```ts
 async function fsMutation(req: MutationRequest): Promise<MutationResult> {
   const control = await ControlDO.read();
   assertWritable(control);
+  assertEqual(req.epoch, control.epoch);
 
-  const claim = await claimOperation(req.opId, req.principal, req.digest, control.epoch);
-  if (claim.terminal) return claim.result;
+  const existing = await readOperationPrimary(req.opId);
+  if (existing?.terminal) {
+    await authorizeTerminalReplay(req.principal, req.credentialId, existing);
+    return existing.result;
+  }
 
+  const claim = await claimOperation(req, control.epoch);
   const snapshot = await readOperandsAndAncestorsPrimary(req.operands);
   const auth = authorize(req.principal, req.operation, snapshot.allOperands);
-  assertOwnerBindings(req.ids, req.principal, snapshot.spaceOwner);
+  assertIdBindings(req.ids, req.principal, req.credentialId);
 
   const preparedBlob = await finishOrVerifyImmutableR2Object(req);
   await chargePhysicalBeforeReservationRelease(preparedBlob, req.uploadId);
-
-  const inspected = await LockDO.inspectCanonicalNodes({
-    spaceId: snapshot.spaceId,
-    nodeIds: snapshot.lockOperands,
-    submittedTokens: req.lockTokens,
-    principal: req.principal
-  });
-  const permit = await LockDO.beginCommit({
-    operationId: req.opId,
-    expectedGeneration: inspected.generation,
-    nodeIds: snapshot.lockOperands
-  });
+  const inspected = await LockDO.inspectCanonicalNodes(req, control.epoch);
+  const permit = await LockDO.beginCommit(req.opId, inspected.generation, control.epoch);
 
   try {
     const statements = [
+      requireControlEpoch(control.epoch),
       insertClaim(req, claim.claimToken, permit.generation),
       ...conditionalOperandUpdates(req, auth, claim.claimToken),
       verifyAndIncrementTreeGeneration(req, snapshot.treeGeneration, claim.claimToken),
       ...dependentReferenceQuotaAndActivityUpdates(req, claim.claimToken),
-      ...stepProofsUsingReturningOrImmediateSelect(req, claim.claimToken),
-      insertOutboxAndItsStepProof(req, claim.claimToken),
-      commitOperationOnlyIfEveryStepExists(req, claim.claimToken),
-      insertFinalBarrierThatRequiresCommittedCompositeFK(req, claim.claimToken)
+      ...stepProofs(req, claim.claimToken, control.epoch),
+      insertOutboxAndStepProof(req, claim.claimToken),
+      commitOperationOnlyIfEveryStepExists(req, claim.claimToken, control.epoch),
+      finalBarrierRequiringClaimCredentialAndControlEpoch(req, claim.claimToken, control.epoch)
     ];
-
     const result = await D1.batch(statements);
     assertEveryReturningCount(result, req.expectedCounts);
     return await readCommittedResultPrimary(req.opId);
   } catch (error) {
     const concurrent = await resolveConcurrentClaim(req, claim.claimToken, error);
-    if (concurrent) return concurrent;
-
-    await recordFailedClaimCompensation({
-      operationId: req.opId,
-      claimToken: claim.claimToken,
-      error: classifyMutationFailure(error)
-    });
+    if (concurrent) {
+      await authorizeTerminalReplay(req.principal, req.credentialId, concurrent);
+      return concurrent;
+    }
+    await recordFailedClaimCompensation(req, claim.claimToken, error);
     throw mapMutationError(error);
   } finally {
     await LockDO.endCommit(permit);
@@ -410,102 +542,38 @@ async function fsMutation(req: MutationRequest): Promise<MutationResult> {
 
 確定規則:
 
-1. claim INSERT は `operations.id` PK 競合で冪等化する。全従属 statement は `claim_token` と `state='claimed'` を条件にし、他 request の claim を利用できない。事前 read 後に同じ ID の claim が競合した場合は loser batch を rollback し、principal / space / kind / digest が一致する既存 result を待って返す。不一致なら 409 とし、相手の claim を `failed` にしない。
-2. node / parent / ancestor / share version / credential / upload / job / expected revision / tree generation を commit batch 内で再検査する。upload complete は parent の存在、未削除、space 一致も同時に証明する。
-3. 各更新と outbox INSERT は `RETURNING` または直後の `SELECT` で operation 固有の `last_op_id` / step row を証明する。全 statement の expected step がある時だけ operation を `committed` にする。
-4. 最後の commit barrier は `(operation_id,'committed',claim_token)` への composite FK または同等の migration-tested trigger で SQL error を強制する。別 request の committed row では claimant token が一致しない。条件付き UPDATE の影響行ゼロだけでは batch が失敗しないため、この barrier が一件でも欠けた batch 全体を rollback する。
-5. claim 競合以外の rollback 後は、別の補償 transaction で claim を `failed` に INSERT / UPDATE する。`claim_token` が一致しない既存 operation は変更しない。未公開 blob は GC candidate、予約は §6 の物理課金を残したまま解放する。
-6. outbox row とその step proof は final barrier より前の同じ atomic batch に置く。D1 commit 後の Queue dispatch は応答と独立し、response は保存済み operation result から返す。
-7. `LockDO.beginCommit(gen)` は generation が変わっていれば再検査を要求する。permit と交差する新規 LOCK は 423 または短時間待機とし、permit expiry まで成功させない。D1 operation に lock generation を保存し、Worker 停止時は短い lease expiry で解放する。
-8. lock permit は R2 upload 全体を囲まない。upload / copy の長時間 I/O と namespace commit を分離する。
+1. claim は operation ID、principal fingerprint、`credential_id`、space、kind、digest、epoch を束縛する。不一致再利用は 409。
+2. node / parent / ancestors / share version / credential / user / service mapping / upload / job / revision / tree generation / epoch を commit batch 内で再検査する。
+3. 各更新と outbox は operation 固有 step proof を作り、全 step がある時だけ `committed` にする。final barrier は composite FK / tested trigger と `control.epoch` guard で一件でも欠ければ batch 全体を rollback する。
+4. rollback 後の補償 transaction は同じ claim token のみを `failed` にし、未公開 blob を GC candidate 化する。
+5. `LockDO.beginCommit` は generation / epoch 不一致で再検査を要求する。permit は R2 I/O を囲まない。
+6. ControlDO が epoch を上げる時は先に D1 `control.epoch` を maintenance transaction で更新する。順序途中は maintenance で fail closed とし、旧 HTTP request は D1 barrier を通れない。
 
 ### 5.3 conditional request、bulk、ZIP
 
-- `If-Match` / `If-None-Match:*` 失敗は 412。revision 以外の状態競合は 409、lock は 423、quota は 507。
-- bulk は principal / space / digest に束縛した `Idempotency-Key`、job ID、cursor、項目別結果、cancel state を返す。job 全体の受付上限も §13 で検査する。
-- v1 ZIP は STORE 方式に固定し、manifest の UTF-8 file name、local header、data descriptor、central directory、EOCD を含む正確な出力 size を開始前に計算する。entry、R2 GET、manifest、単体、payload、最終 offset の全上限は §13。超過時は 413 と page 分割案内を返し、途中までの ZIP は開始しない。
-- 一つの ZIP は一つの typed ticket を使い、ticket に entry manifest hash、各 `node_id + blob_id`、share ID / version、epoch を束縛する。各 entry は発行時と配信時に認可する。
-- path は relative NFC にし、absolute、drive prefix、`..` を除去する。disconnect 時は upstream R2 read を cancel し、TicketDO の budget は保守的に消費済みとする。
+- file content PUT の `If-Match` / create の `If-None-Match:*` 失敗は 412。その他の revision 競合は 409、lock は 423、quota は 507。
+- bulk は principal / credential / space / digest に束縛した idempotency key、job ID、cursor、項目別結果、cancel state を返す。
+- v1 ZIP は STORE / non-ZIP64 に固定し、全 header 込み出力 size を開始前に計算する。一つの typed ticket に manifest hash、各 `node_id+blob_id`、share version、epoch を束縛する。
+- ZIP entry path は安全な認可済み node tree から再生成する。absolute、drive、UNC、`.`、`..`、backslash、control、symlink、変換後重複、portable policy 違反が一件でもあれば ZIP 全体を開始前に拒否し、危険部分だけ除去して継続しない。
 
-### 5.4 UploadDO 状態機械
+### 5.4 UploadDO と epoch
 
-`reason` は全 terminal failure に必須。D1 の `nodes.revision` と operation result が commit の真実で、DO は cache / coordination state である。
+`initiating → active → completing → committed|failed`、`active → aborting → aborted`、`initiating|active → expired` を状態機械とし、terminal state は巻き戻さない。全 terminal failure に `reason` を必須とし、D1 の node revision / operation result を正本とする。
 
-| 状態 | event | 次状態 | 副作用 | 失敗時 |
-|---|---|---|---|---|
-| `initiating` | D1 reservation と R2 multipart ID を照合 | `active` | ID、epoch、creator、part policy を永続化 | deadline / orphan は `expired`、理由と回収 job |
-| `active` | valid part slot 取得 | `active` | expected size を upload 前検査し in-flight を登録 | budget 超過は `failed`、I/O failure は slot 解放 |
-| `active` | complete claim | `completing` | 新 part / abort を拒否し in-flight barrier を閉じる | barrier deadline は `failed` |
-| `completing` | in-flight zero、R2 complete、D1 commit 成功 | `committed` | `node_id/revision` を DO に保存 | DO 保存前停止は reconciler が D1 から修復 |
-| `completing` | auth / revision / parent / share / tree guard 失敗 | `failed` | blob を物理課金済み GC candidate、予約解放 | 同じ reason を冪等に返す |
-| `completing` | R2 lifecycle / checksum / size failure | `failed` | multipart abort / orphan repair | retry で terminal を変えない |
-| `initiating` / `active` | explicit abort | `aborting` | 新 part を拒否し、存在する R2 upload の in-flight を cancel / drain | deadline 超過は repair 継続 |
-| `aborting` | R2 abort 確認 | `aborted` | reservation を一度だけ解放 | R2 不明は `failed` + repair |
-| `initiating` / `active` | expiry | `expired` | upload capability 無効化、R2 abort、予約解放 | orphan list repair |
-| terminal | retry / status | 同じ terminal | 保存済み result / reason を返す | 状態を巻き戻さない |
+- UploadDO は起動 / wake ごとに ControlDO epoch と保存 epoch を照合し、不一致なら `stale` を永続化して status を含む全操作を 409 で拒否する。
+- part / status / abort / complete の全てで current principal、同一 credential、user / share / app password 状態を再検査する。
+- `completing` は `acceptParts=false` と barrier generation を永続化し、in-flight zero 後にだけ R2 complete と D1 commit を行う。
+- D1 committed と DO 非 terminal の不一致は D1 を正として修復し、二重課金・再確定しない。
 
-D1 が committed で DO が非 terminal なら DO を `committed` へ修復する。DO が committed でも D1 result が異なる場合は D1 を正として DO の node ID / revision を上書きし、二重課金・再確定しない。
+### 5.5 trash、GC、lease、outbox、backup
 
-### 5.5 trash_ops 状態機械
+次の状態機械を v0.4 の確定契約とする。
 
-| 状態 | event | 次状態 | 副作用 | 失敗時 |
-|---|---|---|---|---|
-| `deleting` | delete chunk | `deleting` | `state='deleting' AND deleted_op_id IS NULL` guard で tag | checkpoint から retry |
-| `deleting` | 全 subtree tag 完了 | `trashed` | share を disabled、operation result 確定 | invariant failure は `failed` |
-| `trashed` | restore CAS claim | `restoring` | `WHERE state='trashed'` で排他取得 | 0行は 409 |
-| `restoring` | restore chunk | `restoring` | target op の tag だけ解除、tree generation guard | retryable は checkpoint、fatal は `failed` |
-| `restoring` | 完了 | row removal | restore result / activity を残し active ledger を閉じる | old delete job は state 不一致で停止 |
-| `trashed` | purge CAS claim | `purging` | claim 後に現在 subtree manifest を再生成 | 0行は 409 |
-| `purging` | purge chunk | `purging` | target op / state guard と子→親順で D1 削除 | checkpoint から retry |
-| `purging` | 全 D1 参照解除 | `purged` | blob を GC candidate 化。R2 はまだ削除しない | fatal invariant は `failed` |
-| `failed` | admin repair | prior safe state | 監査付き invariant repair のみ | 自動で公開しない |
-
-### 5.6 gc_candidates 状態機械
-
-| 状態 | event | 次状態 | 副作用 | 失敗時 |
-|---|---|---|---|---|
-| `candidate` | pin 作成 | `pinned` | COPY / ZIP / ticket / backup pin を記録 | pin 不明は削除しない |
-| `pinned` | 最終 pin 解放 | `candidate` | grace を再計算 | retry |
-| `candidate` | grace 終了、参照 / pin 無し、GC permit | `deleting` | 条件付き UPDATE で不可逆点を確定 | 0行は停止 |
-| `deleting` | R2 delete 成功 / already absent | `deleted` | `physical_bytes` を一度だけ減算、blob tombstone | retry。参照追加は禁止のまま |
-| `deleted` | retry | `deleted` | 保存済み result | blob 復元を試みない |
-
-### 5.7 job_leases 状態機械
-
-| 状態 | event | 次状態 | 副作用 | 失敗時 |
-|---|---|---|---|---|
-| `idle` / `expired` | epoch 一致で acquire | `leased` | fence increment、holder、expiry、checkpoint | 0行は他 holder に譲る |
-| `leased` | heartbeat | `leased` | 同じ epoch / fence で expiry 更新 | 失敗後は副作用禁止 |
-| `leased` | checkpoint commit | `leased` | D1 副作用と同じ batch で fence guard | 0行は rollback |
-| `leased` | pause / epoch change | `quiescing` | 新 work を取らず外部 I/O を収束 | deadline 後は expired 扱い |
-| `leased` / `quiescing` | release / complete | `idle` | checkpoint と結果を保存 | retryable release |
-| `leased` | expiry | `expired` | 新 fence だけが D1 更新可能 | 外部副作用は対象別 protocol で冪等化 |
-
-lease fence だけで R2 delete を安全にしない。GC は §5.6 の不可逆 state、thumbnail は unique result claim、backup は immutable generation key を併用する。
-
-### 5.8 outbox 状態機械
-
-| 状態 | event | 次状態 | 副作用 | 失敗時 |
-|---|---|---|---|---|
-| `pending` | dispatcher claim | `dispatching` | outbox ID を論理 job ID に固定 | claim expiry で pending |
-| `dispatching` | Queue send accepted | `sent` | delivery ID / attempt 保存 | send 不明は同じ ID で再送 |
-| `sent` | consumer result commit | `completed` | result table と同じ batch で完了 | duplicate は保存済み result |
-| `sent` | retention / ack 欠損を repair が検出 | `pending` | terminal result が無い時だけ再送 | attempt budget 超過は `failed` |
-| `pending` / `dispatching` / `sent` | permanent error | `failed` | DLQ / admin reason | 手動 requeue は新 attempt ledger |
-| `completed` / `failed` | retry delivery | 同じ terminal | no-op | 状態を巻き戻さない |
-
-### 5.9 backup journal 状態機械
-
-`mutation_journal` は commit 順 sequence、table、primary key、`upsert|delete`、row image または tombstone を同じ D1 mutation batch で記録する。
-
-| 状態 | event | 次状態 | 副作用 | 失敗時 |
-|---|---|---|---|---|
-| `scanning` | start watermark 後に base keyset scan | `scanning` | immutable export part と checksum | checkpoint retry |
-| `scanning` | base 完了 | `catching_up` | end watermark を固定 | watermark 取得失敗は retry |
-| `catching_up` | journal upsert / tombstone 適用 | `catching_up` | commit 順に export generation 更新 | current row 再読だけで delete を推測しない |
-| `catching_up` | end watermark 到達 | `verifying` | manifest、schema、件数を固定 | gap は `failed` |
-| `verifying` | checksum / restore probe 成功 | `complete` | generation を公開し、verified watermark 以前の journal は §13 retention 終了後だけ prune | mismatch は `failed` |
-| nonterminal | error | `failed` | incomplete generation を非公開、journal を保持 | 新 run で再開 / 再生成 |
+- `trash_ops`: `deleting → trashed → restoring|purging → removed|purged`、fatal は `failed`。root を先に不可視化し、全 chunk を state + op ID + epoch で guard する。
+- `gc_candidates`: `candidate ↔ pinned → deleting → deleted`。`deleting` が不可逆点で、新参照を禁止する。
+- `job_leases`: `idle|expired → leased → quiescing|idle`。epoch / fence / checkpoint を D1 副作用と同じ batch で検査する。
+- `outbox`: `pending → dispatching → sent → completed|failed`。outbox ID を論理 job ID とし、consumer result と同じ batch で完了する。
+- backup journal: base scan の start/end watermark 間の upsert / tombstone を commit 順に適用し、checksum / restore probe 後だけ generation を公開する。
 
 ---
 
@@ -513,42 +581,23 @@ lease fence だけで R2 delete を安全にしない。GC は §5.6 の不可�
 
 ### 6.1 size / route
 
-全 size、part、deadline、retry 値は §13。REST / WebDAV は `Content-Length` 必須で、長さ不明 body は 411。edge が Worker より先に 413 を返す場合がある。UI は選択した part size から `partSize × MAX_PARTS` を計算し、公称値ではなく実効 file 上限を表示する。
+全 size、part、deadline、retry 値は §13。body 付き REST / WebDAV は `Content-Length` 必須で、非負整数・route 上限・expected part size を stream 前後で照合する。長さ不明は 411、宣言超過は開始前 413、実 bytes の超過 / 短縮も失敗とする。全 body をメモリ化しない。
 
-public upload-only multipart も §5.1 の public route で同じ UploadDO を使う。part number から導く expected size と宣言 size を R2 upload 前に検査し、complete 時だけの検査に遅延しない。
+public upload-only multipart も同じ UploadDO を使う。part number から expected size を upload 前に検査し、complete まで遅延しない。
 
 ### 6.2 logical / physical quota ledger
 
-- `used_bytes`: 利用者から参照可能または version / trash として論理保持する、owner 内 unique blob の bytes。
+- `used_bytes`: current / version / trash として論理保持する owner 内 unique blob bytes。
 - `reserved_bytes`: 未確定 upload / cross-owner copy の宣言 bytes。
-- `physical_bytes`: R2 に実在する owner の全本体 blob。current、version、失敗 upload、orphan 確認済み blob、GC 待ちを含み、server derivative は含めない。
+- `physical_bytes`: R2 に実在する owner の全本体 blob。失敗 upload、orphan、GC 待ちを含み、server derivative は別 budget とする。
 
-予約は一つの条件付き UPDATE で次の両方を満たす時だけ成功する。`PHYSICAL_HEADROOM_FACTOR` の値は §13。
+予約は `used+reserved` と `physical+reserved ≤ quota×PHYSICAL_HEADROOM_FACTOR` の両方を一つの条件付き UPDATE で満たす時だけ成功する。R2 完成後は reservation 解放前に physical charge を D1 へ確定し、公開成功時だけ logical charge を増やす。R2 delete 成功時だけ physical charge を減らす。
 
-```sql
-UPDATE users
-SET reserved_bytes = reserved_bytes + :new
-WHERE id = :owner
-  AND (quota_bytes IS NULL OR used_bytes + reserved_bytes + :new <= quota_bytes)
-  AND (quota_bytes IS NULL OR physical_bytes + reserved_bytes + :new
-      <= quota_bytes * :physical_headroom_factor)
-RETURNING id;
-```
+### 6.3 part cost / browser resume
 
-R2 object が完成したら reservation を解放する前に `physical_bytes` と upload の `physical_charge_state` を同じ D1 batch で確定する。公開成功時は `used_bytes` も増やす。認可 / CAS 失敗時は reservation を解放しても `physical_bytes` は GC 完了まで残す。論理参照が最後に外れた時に `used_bytes` を減らし、R2 delete 成功時だけ `physical_bytes` を減らす。purge は物理容量を減らさない。
+同一 part 送信、session call、累積受信 bytes、in-flight、wall deadline は §13。upload-only share では file / count / cumulative bytes / concurrent session を atomic に予約し、匿名利用者へ残量を出さない。
 
-R2 完成と D1 charge の間で停止した object は reserved bytes を保持し、reconciler が object 実在を確認して charge または abort するまで新規予約の余地に戻さない。
-
-### 6.3 part cost / barrier
-
-- 同じ part number の送信試行、session 全体の uploadPart call、累積受信 bytes、in-flight、wall deadline は §13 で制限する。同じ size / ETag の再送も call budget を消費する。
-- `completing` 遷移は UploadDO 内で `acceptParts=false` と barrier generation を永続化し、開始済み part slot が zero になるまで待つ。開始済み part は generation 一致時だけ結果を記録できる。
-- R2 multipart lifecycle より十分前に application deadline を置く。lifecycle により消滅した upload は `failed` terminal にする。
-- owner quota と upload-only share の file / count / cumulative bytes / concurrent session budget をそれぞれ atomic に予約する。匿名利用者へ残量を表示しない。
-
-### 6.4 browser resume / checksum
-
-IndexedDB に upload ID、epoch、file fingerprint、part state を保存する。再選択時は name、size、mtime、sample hash を照合する。SHA-256 は Web Worker の incremental implementation で計算し、declared と verified を分離する。未検証 checksum を dedupe や保存省略の根拠にしない。
+IndexedDB には upload ID、暗号化しない bearer capability を必要最小期間だけ、epoch、file fingerprint、part state と共に保存する。logout / abort / terminal で削除する。name、size、mtime、sample hash を再照合し、未検証 checksum を dedupe 根拠にしない。
 
 ---
 
@@ -556,92 +605,202 @@ IndexedDB に upload ID、epoch、file fingerprint、part state を保存する�
 
 ### 7.1 auth / path
 
-v1 WebDAV は app password の Basic over HTTPS のみ。Cookie、Access JWT、mapped Service Token へ fallback しない。CORS は公開せず、browser 由来の `Origin` 付き request は拒否する。
+v1 WebDAV は app password の Basic over HTTPS のみ。Cookie、Access JWT、Service Tokenへ fallback しない。CORS は公開せず、browser の `Origin` 付き request は拒否する。`Authorization` は一個の Basic だけを受け、decode後512 byte以下の `128-bit base64url credential_id:256-bit base64url secret` に固定し、不正Base64、colon不足/追加、重複headerを拒否する。user、credential、scope、optional root、epoch を各 request で D1 primary から確認する。
 
-path は再帰 CTE で解決し、mutation 前に current node、parent、ancestor、revision、tree generation を primary で再検証する。`X-OC-Mtime` は `client_mtime` として受け、server `updated_at` と分ける。
+path は再帰 CTE で解決し、read でも `EffectiveLive`、mutation では全 operand / revision / tree generation / epoch を再検証する。`X-OC-Mtime` は `client_mtime` とする。
 
-### 7.2 Class 1/2 semantics
+### 7.2 bounded parser と Class 1/2 semantics
 
-OPTIONS、PROPFIND、PROPPATCH、MKCOL、GET、HEAD、PUT、DELETE、COPY、MOVE、LOCK、UNLOCK を実装する。
+OPTIONS、PROPFIND、PROPPATCH、MKCOL、GET、HEAD、PUT、DELETE、COPY、MOVE、LOCK、UNLOCK を manifest へ operation / operands 付きで登録する。
 
-- PROPFIND は `allprop`、`propname`、指定 `prop`、Depth 0/1。infinity は明示 error。件数・rows read・XML response を preflight し、§13 budget 超過時は response 開始前に 507 を返す。partial 207 を pagination として返さない。
-- PROPPATCH は document order で検証し、全 property を一 transaction で成功または失敗させる。protected property は expanded name で判定する。
-- XML parser は DTD / entity / external entity を無効化し、body、nesting、property count / value / cumulative metadata の §13 上限を適用する。
-- `Destination` は同一 host、`/dav/` prefix、同じ decoder を通った path だけ許可する。source、source parent、destination parent、overwrite target の全 scope を認可する。
-- COPY / MOVE の Depth / Overwrite / status は RFC 4918 に従う。大規模 collection operation は mutation 前に拒否して Web UI bulk job を案内する。
+- XML は `fast-xml-parser` の `processEntities:false`、DTD / custom entity / external entity / XInclude / schema fetch 禁止。§13 の body、深さ、要素、property、値上限を parse 中に適用する。
+- PROPFIND は `allprop`、`propname`、指定 `prop`、Depth 0/1。infinity は parse 後 403。件数 / rows / response を preflight し、超過は開始前 507、partial 207 を返さない。
+- PROPPATCH は document order で検証し、全 property を一 transaction にする。保存 dead property / LOCK owner を raw XML として連結しない。
+- `Destination` は構成済み HTTPS app origin と port の完全一致、query / fragment / userinfo 無し、`/dav/` prefix 必須。外部 URI を fetch しない。
+- `Depth` parser は `0|1|infinity` だけを受け、未指定時の既定を含む method ごとの RFC 規則でさらに狭める。`Timeout` は単一 `Second-N`、N は §13 以下。`Infinite` と複数候補は拒否し、実際に採用した `Second-N` を応答する。
+- `Range` は単一 bytes range だけを実装する。複数 range は 416 にせず Range を無視して budget を予約できる場合だけ全体 200、できなければ開始前 429/413。範囲外の単一 range は 416。HEAD は R2 body を読まない。
+- `If` は header byte / list / condition / tagged URI / token 長を制限し、boolean 評価と lock token 提示を分離する。重複 Authorization / Content-Length、不正 Base64、巨大整数を拒否する。
 
-### 7.3 `LockDO(spaceId)`
+### 7.3 `LockDO(spaceId)` と RFC 整合
 
-- lock の正準 resource は `node_id`。URI は表示属性で、owner path、shared mount alias、casefold 表記が同じ node を解決すれば同じ lock が効く。lock-null resource も空 node を作って node ID を割り当てる。
-- collection depth lock は root node ID と現在の ancestor relation で検査する。MOVE 後も同じ node の lock は継続し、display URI だけ更新する。overwrite target と destination ancestor の lock も検査する。
-- SQLite に token hash、creator principal fingerprint、node ID、display URI、depth、expiry、generation を保存する。各 request で expiry を検査する。
-- `If:` の boolean 評価と、対象 resource に必要な lock token の提出検査を分離する。tagged / untagged list、`Not`、ETag を RFC 通り評価し、常真 branch だけで lock を満たしたことにしない。他 space の token は拒否する。
-- valid write 権限と対象 lock token の提示で許可される mutation は RFC の token semantics に従う。UNLOCK と refresh は token に加え creator principal 一致を必須とする。`lockdiscovery.owner` は表示情報であり認可主体ではない。token は creator principal 以外の `lockdiscovery` response に返さない。
-- `fsMutation` は inspect generation の後に `beginCommit(expectedGeneration)` を取り、短い commit reservation 中に交差する新規 LOCK を 423 / 待機にする。reservation は §5.2 の D1 commit 直後に解放する。
-- collection `getetag` は `W/"<node_id>-<revision>"`。同じ URI に別 node が配置されても stale validator は一致しない。
-- timeout 等の数値は §13。管理 recovery は token を偽装せず監査付き強制解除を行う。
+- lock の正準 resource は `node_id`。owner path、shared mount alias、casefold 表記が同じ node を解決すれば同じ lock が効く。lock-null は空 node を作り node ID を割り当てる。
+- collection depth lock は root node ID と current ancestor relation で検査する。overwrite target と destination ancestor の lock も検査する。
+- token hash、creator principal fingerprint、creator credential ID、node ID、display URI、depth、expiry、generation、epoch を SQLite に保存する。DAVのcreator principal同一性は `user_id + credential_id` とし、別app passwordは別principalとして扱う。
+- locked resource の PUT、PROPPATCH、DELETE、MOVE、overwrite 等は、current write 権限と `If` header による対象 lock token の提示で許可し、通常 mutation では creator 一致を要求しない。token を他 principal の `lockdiscovery` に返さない。
+- refresh は有効 token 提示だけを要求する。UNLOCK は token に加え lock creator principal または同 space owner に限定し、異なる principal は 403。管理強制解除は別の監査付き operation とする。
+- MOVE 成功時に source lock を destination へ引き継がない。source lock を commit と同時に終了し、destination ancestor / overwrite target の既存 lock は通常どおり満たす。node ID による alias 解決と lock 継承を混同しない。
+- `LockDO.beginCommit(expectedGeneration,epoch)` 中は交差 LOCK を 423 / 短時間待機にする。LockDO は起動時 epoch 不一致なら `stale` にして全操作を 409 で拒否する。
+- collection ETag は strong `"<node_id>-<revision>"`。同 URI の node 置換で一致しない。HTTP `If-Match` の strong comparison と DAV `If` 内 ETag 評価を混同しない。必須 `If-Match` は file content PUT だけで、collection / PROPPATCH は内部 revision CAS 競合を 409 とする。
 
 ---
 
 ## 8. share
 
-### 8.1 capability / typed token
+### 8.1 capability、URL、Cookie
 
-link token は §13 の entropy を持ち、D1 には hash だけ保存する。capability は share root、その現在の子孫、action、expiry、share version に限定する。password、permission、root、expiry の変更と revocation で version を進める。
+link secret は 256-bit とし、D1 には HMAC/hash だけ保存する。share root、current subtree、action、expiry、share version に限定し、password / permission / root / expiry 変更と revoke で version を進める。
 
-unlock Cookie は `typ=share-unlock`、download は `typ=download`、ZIP は `typ=zip-download`、content-host は `typ=content-host`、upload は `typ=share-upload` とする。各 token は `aud`、epoch、share ID / version と用途固有 claim を持ち、別種 token の流用を拒否する。
+共有 URL は `/s/<shareId>#<secret>` とする。fragment は server / Workers Logs / Referrer に送られず、landing JS が読み、history から即時除去して POST body で unlock / ticket API に渡す。JS 無効時に token を path で受ける `/s/<shareId>/t/<secret>` は実装しない。招待 API / QR も同形式だけを出力する。
+
+unlock 成功時は §4.5 の host-only `__Host-` Cookie を設定する。値に `share_id`、version、session ID、kid を含め、他 share で無効。`POST .../logout` は D1 session を revoke して当該 Cookie を削除する。全 share session の一括失効は share version を進める。
 
 ### 8.2 download ticket / cache / budget
 
-- file ticket は `node_id + blob_id + share_id + share_version + epoch` を含む。配信ごとに share が有効で、node が未削除かつ現在も share root の子孫であることを primary の tree generation で検査する。blob は ticket 発行時の固定 generation として pin する。
-- ZIP ticket は §5.3 の manifest hash と entry ごとの node / blob を持つ。
-- ticket 発行数を `download_count` とし、発行時に atomic に上限を消費する。同一 ticket の Range は追加 download count にしない。
-- ticket は単一 IP / User-Agent に束縛しない。`TicketDO` が §13 の TTL、対象 size 比の総転送 bytes、request 数、並列数を厳密に制限し、Range 並列を許しつつ増幅を止める。share / owner / global の rate budget も適用する。
-- share content は `Cache-Control: private, no-store`。thumbnail だけ §13 の private short cache。受信済み bytes の回収は保証しない。
+- file ticket は node、blob、epoch、aud、exp、kid、jti に加え、private user用は principal fingerprint / credential / grant version、share用は share / version / sessionを含む。発行 / 配信ごとに対応するcurrent user / credentialまたはshare / sessionと `EffectiveLive`、認可 root 到達性を primary で検査する。blob は固定 generation として pin する。
+- ZIP / gallery / archive page / EPUB / audio ticket も元 node と capability root を束縛する。CONTENT_HOST 交換で byte budget を新規付与しない。
+- 署名、typ、epoch、expiry を検証する前に ticket ID 由来の DO state を作らない。
+- TicketDO は TTL、対象 size 比 bytes、request、並列を厳密に消費する。`If-Range` 不一致の全体 200 も全 bytes を先に予約する。
+- content / JSON / HTML は `private, no-store`。thumb と不変 archive index のみ §13 の private short cache。206 / redirect / error にも安全 header を付ける。
 
-### 8.3 upload-only / internal share
+### 8.3 upload-only / internal / public edit
 
-- upload-only は create だけを許可し、list、read、overwrite、任意 node ID、rename、delete を禁止する。
-- name collision は常に server が `name (n)` 形式で自動 rename し、collision の有無にかかわらず 201 と同形の receipt ID だけを返す。匿名 response に確定名、競合 flag、異なる timing / error を出さず存在 oracle を作らない。
-- internal share は `read|edit`。保存先 owner の space / quota を使う。trash 時は disabled とし、restore で自動復活させない。
-- WebDAV mount は `/dav/Shared/<stable-mount>/`。別名を認可・lock の別 resource として扱わない。
+- upload-only は create と自分の同 credential receipt / upload status だけを許可し、list、read、overwrite、任意 node ID、rename、delete を禁止する。
+- name collision は server が `name (n)` へ変更し、常に同形 201 receipt だけを返す。確定名、競合 flag、異なる timing / error を出さない。
+- public edit は manifest に明示した endpoint だけで、全 operand、EffectiveLive、capability action、version、Origin / CSRF を検査する。複数 share Cookie を一操作へ合成しない。
+- internal share は `read|edit`。保存先 owner の quota を使う。祖先 trash で即時 read 拒否し、restore で自動復活させない。
+- WebDAV mount は `/dav/Shared/<stable-mount>/`。別名を認可・lock の別 resource としない。
 
 ---
 
 ## 9. Web UI
 
-stack は React、TypeScript、Vite、Tailwind CSS、shadcn/ui、TanStack Router / Query / Virtual。採用 dependency は package manifest で固定する。
+stack は React、TypeScript、Vite、Tailwind CSS、shadcn/ui、TanStack Router / Query / Virtual。dependency は package manifest で固定する。
 
-- My Drive、Shared、Recent、Starred、Trash、quota、upload panel、job progress を提供する。
+- My Drive、Shared、Recent、Starred、Trash、Gallery、Bookshelf、Audio、quota、upload panel、job progress を提供する。
 - name conflict、restore destination、bulk cancel / retry、項目別結果を表示する。upload-only uploader には server 確定名を表示しない。
-- optimistic update は 412 / 409 で rollback し、Idempotency-Key を reload 後も再利用する。
+- optimistic update は 412 / 409 で rollback し、同 principal / credential の間だけ idempotency key を再利用する。
 - virtual list は screen reader metadata、roving focus、non-virtual fallback、touch、reduced motion、AA contrast を持つ。
-- PWA は versioned shell asset だけを cache し、auth response、API、content、share page は保存しない。logout で browser cache と memory credential を消す。
-- font / avatar は同梱または local。外部 CDN を取得しない。
+- PWA は versioned shell asset だけを cache し、auth response、API、content、share page を保存しない。logout は §4.4 の削除と他 tab 通知後に Access logout へ遷移する。
+- filename、タグ、EXIF、error は React text node として表示し、`dangerouslySetInnerHTML` を禁止する。Markdown だけは §10.4 の sanitizer 出力を専用 isolated component へ渡す。
+- font / avatar は同梱または local。外部 CDN、外部画像 proxy は使わない。
 
 ---
 
-## 10. thumbnail、preview、content delivery
+## 9A. メディアライブラリ (ギャラリー / 本棚 / オーディオ)
 
-### 10.1 server derivative と費用冪等
+### 9A.1 Gallery
 
-server derivative key は `u/<ownerId>/t/b/<blobId>/<variant>-g<generatorVersion>.webp`。`variant` と generator version は allowlist からだけ選ぶ。
+任意 folder の画像・動画を対象とし、recursive option を許可する。`node_media` は current blob の header / EXIF から width、height、taken_at、duration、orientation、dominant color、任意 camera make/model を抽出する。GPS と機微 EXIF は保存しない。
 
-重い変換前に `derivative_results` の unique key `(blob_id,variant,generator_version)` を conditional claim する。`ready` / terminal `failed` は再変換しない。claim lease を一 worker だけが持ち、失敗 budget は §13。上限到達で `failed` 固定とする。結果保存前の停止は claim lease 後に同じ attempt として再開し、別 worker が並列変換しない。owner ごとの生成 rate / storage budget も適用する。
+- variant は `sm=256px`、`md=768px`、`lg=1600px`。`lg` は初回要求時 lazy job とし、同一 `(blob,variant,generatorVersion)` を一回だけ変換する。
+- `GET /api/v1/nodes/:id/gallery?recursive=1&cursor=&sort=taken_at|name|updated_at` は keyset cursor、最大 200 件。幅、高さ、dominant color を返す。recursive は深さ64、候補50,000まで。
+- public share は `/api/v1/public/shares/:shareId/gallery` を使い、同じ share session と EffectiveLive を適用する。
+- UI は justified / masonry 仮想 scroll、日付 grouping、timeline scrubber、dominant-color placeholder、Lightbox、前後2件 prefetch、pinch zoom、keyboard、slideshow、Range 動画再生、EXIF panel を提供する。selection から download / share / delete / MOVE を各 operation の権限で実行する。
 
-thumbnail は namespace / content を変更しない派生物なので WebDAV write lock の対象外。consumer は node が未削除かつ current blob 一致の時だけ表示参照を更新し、長期 lock で retry / DLQ を消費しない。
+### 9A.2 Bookshelf / reader
 
-### 10.2 transform safety
+| format | v1 の扱い |
+|---|---|
+| EPUB | ZIP container を索引化し、XHTML/CSS/image/font を CONTENT_HOST の sandbox iframe で script 無し表示。単一 host は attachment のみで reader 無効。 |
+| ZIP / CBZ | stored / deflate entry を索引化し、image page 単位で配信。その他 method は `unsupported`。 |
+| PDF | pdf.js client 描画。表紙は client-generated thumb。外部 URL / 添付を自動取得しない。 |
+| folder images | current children list を本の index として開く。 |
+| CBR / RAR / 7z | `unsupported`。展開しない。 |
 
-Images / WASM の input、pixel、frame、memory、retry 上限は §13。header を安全に読めない、上限超過、unsupported format は transform しない。EXIF、GPS、comment は除去し、WebP へ再 encode する。isolate 内の同時 invocation を含む peak memory は staging gate とする。
+EPUB OPF (`dc:title` / creator 等)、CBZ `ComicInfo.xml` を bounded parser で抽出し、無い場合は filename / parent から `[Author] Title 第01巻` 等の versioned allowlist pattern で候補を作る。metadata は user が編集でき、`library_items.revision` で競合制御する。タグは汎用 `tags/node_tags` を使い、series / author / tag / unread / reading / finished で絞る。
 
-### 10.3 client-generated thumbnail
+archive index job `{jobId,nodeId,blobId,generatorVersion}` は R2 Range GET で末尾の EOCD / ZIP64 EOCD（探索最大1 MiB）と central directory（最大8 MiB）だけを読み、次の bounded JSON を `u/<ownerId>/x/<blobId>/index-g<gen>.json` へ保存する。
 
-client thumb は node 権限境界で保存し、key は `u/<ownerId>/t/n/<nodeId>/<variant>-c.webp`。COW 共有 server derivative と参照・削除を分離する。POST は対象 node の write 権限、current blob、variant、generation を検査し、read-only principal は保存できない。`(node_id,current_blob_id,variant,generator_version)` の unique result claim を再 encode 前に取得し、同じ tuple は一つの論理変換だけを共有し、失敗 attempt は §13 で打ち切る。node purge はその node の client thumb だけを削除する。
+```text
+path, method, compressed_size, uncompressed_size,
+local_header_offset, crc32, is_image, is_dir
+```
 
-### 10.4 preview security
+path は NFC relative とし、absolute、drive、UNC、backslash、control、`.` / `..`、重複 canonical path、symlink を拒否する。page は jpeg/png/webp/gif/avif だけ、数字を数値比較する natural sort。D1 は件数、state、index key だけを持つ。認可済み browser へ返す index JSON は `Cache-Control: private, max-age=3600` と `ETag: <index_key>` を使い、share expiry / version と EffectiveLive を再検査する。
 
-推奨構成は別 host `CONTENT_HOST` の配信 Worker と typed short-lived ticket。app origin から script 実行可能 content を inline で返さない。単一 host fallback は危険 MIME を attachment、`nosniff`、strict CSP で返す。preview iframe は sandbox と surface 別 `frame-ancestors` を使う。
+`GET /api/v1/library/:nodeId/pages/:n` と EPUB 用 `/entries/*path` は、index の offset から local header（固定30 byte + bounded name/extra）と compressed data を別 Range GET し、stored は直接、deflate は `DecompressionStream('deflate-raw')` で output bytes を数えながら streaming 展開する。CRC / size 不一致は response 開始前、または stream error で失敗し cache しない。`GET /api/v1/library/:nodeId/pages/:n/thumb` は展開画像を Images で 256px WebP にし、`u/<ownerId>/x/<blobId>/p/<n>-sm-g<gen>.webp` へ lazy 保存する。並行生成は本ごと4、各 page / generation 一回。cover は ComicInfo 指定または最初の image page。
+
+共有 reader は `/api/v1/public/shares/:shareId/library/:nodeId/...` を使い、同じ entry index / ticket を capability subtree と share session に束縛する。
+
+reader UI:
+
+- image reader: single / spread、right-to-left / left-to-right、日本語 comic は既定 right、vertical scroll、keyboard / swipe、前後3 page prefetch、fit width/height/original、thumb strip、fullscreen。
+- EPUB reader: TOC、pagination / scroll、font size、line height、dark / sepia、`writing-mode: vertical-rl` 尊重、CFI 位置保存。sandbox から親への message は schema / origin / source window を検証する。
+- reading state は user のみ。CFI / page / percent を5秒 debounce で保存・復帰する。share principal には保存しない。
+- bookshelf: dominant-color placeholder 付き cover grid、series grouping、continue / unread shelf、added/title/author/last-read sort。`library_roots` へ folder を登録すると current subtree の対応 file を候補化し、変更 outbox から index job を投入する。
+
+### 9A.3 Audio library
+
+MP3 (ID3v2.3/2.4, ID3v1)、FLAC (Vorbis comment + PICTURE)、OGG/Opus、M4A/MP4 (`ilst`)、WAV (`INFO`) を対象とする。tag job は先頭2 MiBと末尾128 byteだけを基本にし、MP4 `moov` 探索だけ最大4 MiB。上限を超える / duration を header から得られない場合は全体を読まず、metadata を `unsupported` または duration `null` とする。
+
+- title、artist、album、album_artist、track/disc、duration、codec、bitrate、sample rate を UTF-8 NFC にし、各 field 1 KiB 以下。`user_override` は抽出結果を表示上書きし、不変 blob を書き換えない。
+- APIC / PICTURE / `covr` は20 MiB以下だけを Images で `sm/md` WebP へ再 encode し、元 byte は配信しない。無ければ同 folder の `cover.jpg|folder.jpg|単一 *.jpg` を `node_media` から候補表示する。
+- folder を作品単位とし、`disc_no, track_no, natural(name)` で最大2,000 track を並べる。album tag が揃わなければ folder 名を使い、超過時は folder 分割を案内する。
+- content は既存 single Range endpoint と CONTENT_HOST ticket を使う。`Accept-Ranges: bytes`、sniff 済み audio MIME、206 を返す。
+- playback state は user ごとに5秒 debounce で保存し、`last_opened_at` も更新する。
+- UI は title fallback filename、artist、duration、cover、total time を React text node で表示し、tag 文字列を `Content-Disposition` filename に流用しない。root 直下の `<audio>` により SPA navigation 中も mini-player を維持し、queue、continuous、shuffle、repeat、speed、sleep timer、keyboard、MediaSession、Range seek、resume を提供する。
+- Audio view は作品 cover grid、recent / unplayed、artist / tag filter を持つ。title / artist / album は §12 の search index へ入れる。共有では `GET /api/v1/public/shares/:shareId/tracks` を同じ capability / EffectiveLive 契約で提供する。
+
+### 9A.4 共通認可・費用
+
+media route は manifest の `read` / `write` / `library.read` / `library.write` と全 operand を使い、EffectiveLive、current blob、share root、credential scope を検査する。index / tag / thumbnail job は outbox、epoch、saved principal、generation、unique result claim、attempt budget を使い、stale blob の結果を公開しない。上限と費用単位は §13、配信 matrix は §10.4 を正本とする。
+
+---
+
+## 10. thumbnail、Queue job、preview、content delivery
+
+### 10.1 派生物と費用冪等
+
+server derivative key は generation 付き immutable key とする。thumbnail は `u/<ownerId>/t/b/<blobId>/<variant>-g<generatorVersion>.webp`、archive index / page は §9A、audio cover は `u/<ownerId>/t/<blobId>/cover-<variant>-g<gen>.webp`。
+
+重処理前に result table の unique tuple `(kind,blob_id,variant_or_index,generator_version)` を conditional claim する。`ready` / terminal `failed` は再処理せず、claim lease の一 worker だけが実行する。attempt 上限で `failed` 固定。consumer は epoch、saved principal、node EffectiveLive、current blob を公開前に再検査する。
+
+### 10.2 Queue job catalog
+
+| job | input / 読取り | output | 固有 guard |
+|---|---|---|---|
+| media metadata | image/video header、bounded EXIF | `node_media` + sm/md、lg lazy | GPS破棄、pixel/frame上限 |
+| archive index | EOCD探索≤1MiB + central dir≤8MiB | immutable index JSON + `library_items` | zip bomb / path / method上限 |
+| page thumbnail | local header + one entry data | 256px WebP | per-book並列4、entry output上限 |
+| EPUB metadata | bounded OPF / container XML | `library_items` metadata | DTD/entity禁止、script保存なし |
+| audio tags | head≤2MiB + tail128B、MP4探索≤4MiB | `node_audio` + re-encoded cover | field / atom / cover上限 |
+| search / tag sync | current normalized metadata | `node_search` | current revision / blob CAS |
+
+全 job は namespace mutation と同じ outbox から発行し、`{jobId,nodeId,blobId,generatorVersion,epoch,principal,credentialId}` を持つ。Queue duplicate は保存済み result を返し、R2 書込み key は generation で不変にする。
+
+### 10.3 transform safety / client thumb
+
+Images / WASM の input、pixel、frame、memory、retry 上限は §13。安全に header を読めない、unsupported、上限超過は transform しない。server image derivative は metadata / EXIF / comment を除去して WebP へ再 encode する。
+
+client thumb は node 権限境界の `u/<ownerId>/t/n/<nodeId>/<variant>-c.webp`。対象 node write、current blob、generation を検査し、read-only principal は保存できない。COW derivative と lifecycle を分離する。
+
+### 10.4 content delivery matrix
+
+全 response に server-sniffed `Content-Type`、`X-Content-Type-Options:nosniff`、`Referrer-Policy:no-referrer`、適切な `Cache-Control` を付け、206 / error でも落とさない。CONTENT_HOST は app Cookie の Domain を共有せず、credential CORS、private router、SPA fallback、Service Worker 登録を許可しない。short-lived audience 固有 ticket だけを受ける。
+
+`sandbox CSP` は `Content-Security-Policy: sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'`。iframe にも sandbox を設定し、`allow-scripts` と `allow-same-origin` を同時付与しない。
+
+| 種別 | server Content-Type | CONTENT_HOST あり | 単一 host | CSP / sandbox |
+|---|---|---|---|---|
+| image | sniffed `image/jpeg|png|webp|gif|avif` | inline | inline | active SVGをimage扱いしない、script禁止 |
+| video | sniffed allowlist | inline / Range | inline / Range | media専用、外部接続なし |
+| audio | sniffed allowlist | inline / Range | inline / Range | media専用、外部接続なし |
+| PDF | `application/pdf` | inline、sandbox viewer | inline、検証済み pdf.js / browser viewer | object/base/form/connectを禁止、外部URLを取得しない |
+| plain text | `text/plain; charset=utf-8` | inline | inline | strict CSP、HTML解釈しない |
+| Markdown | `text/plain; charset=utf-8` | inline取得後client sanitize | attachment | server renderなし、下記allowlist |
+| HTML | `text/html; charset=utf-8` | inline | attachment | sandbox CSP、script禁止 |
+| SVG | `image/svg+xml` | inline | attachment | sandbox CSP、script / 外部resource禁止 |
+| Office / executable | sniffed type / octet-stream | attachment | attachment | `default-src 'none'` |
+| その他 | `application/octet-stream` | attachment | attachment | `default-src 'none'` |
+| archive image page | sniffed image allowlist | inline | attachment | 展開上限・nosniff、元archiveもattachment |
+| EPUB XHTML | `application/xhtml+xml` | inline | attachment | sandbox CSP、script禁止 |
+| EPUB CSS/image/font | allowlisted exact type | inline、EPUB ticket scope | attachment | XHTML sandboxから同一ticket resourceだけ、外部通信禁止 |
+
+Markdown は server で HTML 化せず、client parser の raw HTML を無効化し、sanitize allowlist (`p,br,em,strong,code,pre,blockquote,ul,ol,li,h1-h6,a,img`) だけを DOM node として構築する。link は `https` と同一 app 内 relative、image は認可済み同一 app resource または size-bounded `data:image/jpeg|png|webp|gif|avif` のみ許可する。`javascript:`、画像以外の `data:`、data SVG、style/event 属性を禁止し、外部画像は proxy せず非表示にする。
+
+app / share landing は `frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'`。preview は埋込み可能な app origin だけを `frame-ancestors` に指定する。単一 host で matrix 外の active preview は無効にする。
+
+### 10.5 出力先別 encoding
+
+| 出力先 | 契約 |
+|---|---|
+| `Content-Disposition` | RFC 6266 `filename*=UTF-8''<percent-encoded>` + CR/LF/NULを除いた quoted ASCII fallback。直接連結禁止。 |
+| React / HTML | text node の文脈別 escape。`dangerouslySetInnerHTML` 禁止。URL属性は scheme検証。 |
+| PROPFIND / LOCK XML | XML writer で text / attribute escape、制御文字除去。href は path encode 後 XML escape。 |
+| CSV | RFC quoting に加え、BOM / space / controlを検査上読み飛ばした最初の文字が `= + - @ \t \r` の cell を安全なtextとしてquote/prefixし、表計算試験を行う。 |
+| JSON | 標準 serializer、safe integer / schema、raw fragment連結禁止。 |
+| ZIP | 認可済み安全 tree から entry名を再生成し、危険名・重複は全体拒否。 |
+| log | secret mask 後の構造化 JSON。request object / raw header / URL を丸ごと出さない。 |
 
 ---
 
@@ -649,48 +808,38 @@ client thumb は node 権限境界で保存し、key は `u/<ownerId>/t/n/<nodeI
 
 ### 11.1 delete / restore / purge
 
-- delete は `trash_ops.state='deleting'` を作り、root を先に不可視化する。chunk は `state='deleting'` と operation ID の両方を guard し、restore claim 後の旧 delete job は一行も変更できない。
-- restore は `state='trashed'` だけを conditional UPDATE して `restoring` を claim する。元 parent の有効性、space、tree generation、name conflict を `fsMutation` で再検査する。
-- purge は `state='trashed' -> 'purging'` を claim してから manifest を再生成する。以前固定した manifest を再利用しない。
-- target subtree 内に別 trash operation の node が残る場合、その独立 trash subtree root を同じ space の root 直下へ hidden のまま reparent し、その `deleted_op_id` を変えない。これにより古い child FK が parent purge を妨げない。
-- active upload は purge 前に失敗終端へ移し、terminal upload の `parent_id` は NULL にする。監査用 snapshot ID は FK を持たない。
-- FK-bearing data は各 batch で `node.deleted_op_id=:op AND trash_ops.state='purging'` を再検査し、次の順で消す: `user_node_state` → `node_props` → `shares`（node delete の CASCADE を含む）→ `node_versions` → `node_search` → `nodes`。node は子から親へ削除する。client thumb は node CASCADE と対応する R2 cleanup ledger で処理する。
-- R2 object は purge 中に削除しない。参照減算と GC candidate 作成までを D1 で確定し、物理 quota は GC だけが精算する。
+- delete は `trash_ops.state='deleting'` を作り root を先に不可視化する。この瞬間から `EffectiveLive` が全 descendant read を拒否する。
+- restore は `trashed` だけを CAS claim し、元 parent の EffectiveLive、space、tree generation、name conflict、epoch を `fsMutation` で再検査する。
+- purge は `trashed→purging` を claim 後に current subtree manifest を再生成する。別 trash subtree は hidden のまま safe root へ reparent して op ID を変えない。
+- FK-bearing media state (`user_reading_state`,`user_playback_state`,`node_media`,`node_audio`,`library_items`,`node_tags`,`library_roots`) を既存 user state / props / share / version / search と共に子→親順で削除する。
+- R2 object は purge 中に削除せず、参照減算と GC candidate までを D1 で確定する。
 
-### 11.2 versions
+### 11.2 versions / GC
 
-current から外れた blob は §13 の count / age policy で保持する。pruning は ref count と `used_bytes` を同じ batch で更新し、最後の論理参照が消えた時だけ GC candidate を作る。v1 の user-facing history UI は §18。
+current から外れた blob は §13 policy で保持する。GC は current、versions、uploads、outbox、media indexes / derivatives、pins を primary で確認し、`candidate→deleting` を不可逆点としてから R2 を削除する。`deleting` への新参照は禁止し、成功 / object absent 後だけ physical bytes を減らす。
 
-### 11.3 GC irreversible point / pins
+### 11.3 ControlDO と recovery
 
-- grace は `GC_GRACE_DAYS` とし、`TIME_TRAVEL_DAYS + D1_BACKUP_RETENTION_DAYS` 以上にする。値と関係は §13。
-- COPY、ZIP / download ticket、backup export が blob を必要とする間は `blob_pins` を作る。単なる manifest 作成を pin の代用にしない。
-- delete 直前に primary で current、versions、uploads、outbox、pins、candidate state を確認し、`candidate -> deleting` を conditional UPDATE で確定する。これが不可逆点である。
-- `deleting` blob への新しい node / version / pin 参照を全 write path と FK / trigger で禁止する。以降に D1 restore しても blob を復元・再参照しない。
-- R2 delete は lease fence を理解しない。したがって lease は作業重複防止、`deleting` は R2 副作用の安全性に使う。成功または object absent を確認した後だけ `deleted` と物理容量減算を確定する。
+ControlDO は D1 restore の外に epoch、maintenance、gc pause を保持する。D1 `control.epoch` は進行中 commit を閉じる複製 guard である。
 
-### 11.4 ControlDO と recovery
+1. maintenance と GC pause を有効化し、新受付を止める。D1 `control.epoch` を条件付きで +1 し、その後 ControlDO epoch を同値へ確定する。途中不一致は全 mutation を fail closed にする。
+2. Queue / Cron / HTTP commit permit を quiesce し、既に不可逆 `deleting` の GC inventory を確定する。旧 request は D1 epoch barrier で commit 不能。
+3. D1 を restore / migrate し、`control.epoch` を新 epoch へ上書きする。UploadDO / LockDO は wake 時に不一致を `stale` として 409 を返す。
+4. R2 existence、quota、ref、operation、upload、outbox、journal、media index / derivative を再計算する。旧 epoch row は実行しない。
+5. share は recovery-disabled + version 更新、app password は再発行、service / user disable と bootstrap identity は再確認。lock は全失効、upload は D1 正本から commit 修復または abort。
+6. restore drill gate 後だけ maintenance、最後に GC を再開する。
 
-`ControlDO` は D1 restore の外にあり、`epoch`、`gc_paused`、`maintenance` を durable storage に保持する。全 request / job は epoch を読み、job、lease、download / ZIP / unlock / upload ticket、app password HMAC に含める。
-
-Time Travel / export recovery 手順:
-
-1. `ControlDO` で maintenance と `gc_paused` を有効化し、epoch を increment する。旧 job、lease、ticket、upload capability、app password は直ちに無効。
-2. Queue / Cron の新規取得を止め、job を quiesce する。既に `deleting` の GC は不可逆なので完了 / inventory 確定まで待つ。
-3. D1 を restore し schema migration を適用する。restore 後 DB の `deleting|deleted` / R2 absent blob は再参照せず、参照する recovery point は不適格として別 point を選ぶ。
-4. R2 existence、physical / used / ref count、operation、upload、outbox、journal を再計算する。旧 epoch row は実行しない。
-5. 全 link share を recovery-disabled にして `share_version` と token を更新し、owner の明示操作まで再公開しない。app password は再発行、service principal と復旧で巻き戻り得る user disable は管理者が再確認する。lock は全失効、未完了 upload は D1 正本で commit 修復または abort。
-6. 照合と restore drill gate 合格後だけ maintenance を解除し、最後に GC を再開する。
-
-RPO / RTO、Time Travel、D1 backup retention、GC grace は §13。R2 だけから論理 namespace を再構築できるとは主張しない。
+RPO / RTO、retention、GC grace は §13。R2 だけから namespace を再構築できるとは主張しない。
 
 ---
 
 ## 12. search
 
-`node_search(node_id,name_norm,name_bigram)` と FTS external content を使う。保存名は NFC、検索値は NFKC + Unicode casefold + かな統一。bigram は候補抽出だけに使い、最終的な順序・連続性を `name_norm` で照合する。
+`node_search` と FTS external content を使う。保存名は NFC、検索値は NFKC + locale 非依存 Unicode casefold + かな統一。bigram は候補抽出だけで、最終照合は normalized value で行う。
 
-一文字 query は認可 folder / owner scope 内の bounded fallback。共有検索は現在の tree generation と capability root の子孫へ join し、snippet / count でも scope 外情報を漏らさない。trigger / outbox で同期し、rebuild job を持つ。scan / pattern 上限は §13。
+name に加え、library title / author / series / tag と audio title / artist / album を bounded column として index する。trigger / outbox は current node / blob / metadata revision と generation を検査する。
+
+全 result、snippet、count、facet、cursor は `authorize` と `EffectiveLive` を通し、owner / internal grant / share capability root 外を漏らさない。一文字 query は認可 root 内 bounded fallback。scan / pattern 上限は §13。
 
 ---
 
@@ -698,78 +847,68 @@ RPO / RTO、Time Travel、D1 backup retention、GC grace は §13。R2 だけか
 
 ### 13.1 数値の唯一の正本
 
-他章の symbolic limit はこの表を参照する。変更は migration / config version、staging 実測、security review を伴う。
-
 | 定数 / 項目 | v1 値・契約 |
 |---|---|
-| `MAX_REQUEST_BYTES` | 95,000,000 bytes。 |
-| `DEFAULT_PART_BYTES` / range | 64 MiB / 8–90 MiB。 |
-| `MAX_PARTS` / `MAX_FILE_BYTES` | 10,000 / `min(partSize × MAX_PARTS, 500 GiB)`。 |
-| upload expiry | 最終 progress から 24h、作成から最大 6日。R2 incomplete multipart lifecycle は 7日以上に固定し、application failure を先に確定。 |
-| part cost budget | 同一 part number 3 attempts、uploadPart call は予定 parts × 3、累積受信 bytes は declared × 3、browser in-flight 4、part wall deadline 15分。 |
-| `PHYSICAL_HEADROOM_FACTOR` | 1.2。logical quota を守り、GC 待ち物理量には 20% のみ余裕。 |
-| version retention | node ごと直近 10 generation または 30日以内。prune は両条件の外だけ。 |
-| `TIME_TRAVEL_DAYS` / `D1_BACKUP_RETENTION_DAYS` / `GC_GRACE_DAYS` | 30日 / 5日 / 35日。`GC_GRACE_DAYS >= TIME_TRAVEL_DAYS + D1_BACKUP_RETENTION_DAYS` を維持。古い export metadata を長期保存しても blob recovery 保証は backup retention まで。 |
-| backup objective | RPO 24h、RTO 手動。 |
-| ticket | TTL 6h、転送 byte 上限は対象 size × 3、request 1,024、並列 8。単一 IP / UA binding なし。 |
-| share cache | content / JSON / HTML は `private, no-store`。thumb のみ `private, max-age=300`。 |
-| v1 ZIP | entry ≤ 1,000、payload total < 4 GiB、各 entry < 4 GiB、R2 GET ≤ 1,000、manifest ≤ 8 MiB、全 header 込み output / offset ≤ UINT32_MAX。STORE のみ。 |
-| user metadata | node ≤ 200,000 / user、children ≤ 2,000 / folder、COW refs ≤ 1,000 / blob。 |
-| dead property | total ≤ 8 KiB / node、≤ 8 MiB / user、property count ≤ 256 / request、単一 value ≤ 8 KiB。 |
-| PROPFIND / XML | body ≤ 1 MiB、nesting ≤ 32、response ≤ 32 MiB、Depth 0/1。preflight 超過は 507、partial response 禁止。 |
-| name / tree | UTF-8 name ≤ 255 bytes、tree depth ≤ 64。portable names を既定。 |
-| lock | timeout ≤ 1h。commit reservation は 30s lease。 |
-| share token / Cookie | token entropy ≥ 128 bits、cookie value ≤ 2 KiB、同時 unlock ≤ 16。 |
-| PBKDF2 | SHA-256 300,000 iterations を基準に staging CPU gate。 |
-| Images / WASM | Images input ≤ 20 MB。WASM input ≤ 8 MiB かつ ≤ 12 MP。transform attempts ≤ 3 / `(blob,variant,generatorVersion)`。 |
-| audit | D1 90日、R2 archive 1年。operation / outbox terminal は 90日後 compact。 |
-| search | LIKE/GLOB pattern ≤ 50 bytes、candidate / fallback scan は request 当たり 10,000 rows。 |
-| bulk acceptance | node ≤ 100,000、manifest ≤ 16 MiB / job。超過は分割。 |
+| `MAX_REQUEST_BYTES` | 95,000,000 bytes。body付きrouteはContent-Length必須。 |
+| JSON | body≤1MiB、nesting≤32、route schema、未知/重複key拒否、配列/文字列はroute別上限。 |
+| URL / header | URL≤8KiB、query項目≤100、header数≤100、個別credential/token長≤2KiB。 |
+| name / tree | NFC UTF-8≤255 bytes かつ255文字未満、path深さ≤64。 |
+| XML / PROPFIND | body≤1MiB、深さ≤32、要素≤10,000、属性合計≤20,000、namespace宣言≤100、property≤100/request、value≤8KiB、response≤32MiB。 |
+| DAV `If` | header≤8KiB、list/tagged URI≤16、条件≤64、token≤2KiB。 |
+| DAV controls | Destination=設定済み同一HTTPS origin + `/dav/`、Depth=`0|1|infinity`、Timeout=`Second-N`, N≤604800。 |
+| Range | 単一bytes range。複数はRangeを無視した全体200。巨大整数/重複header拒否。 |
+| upload part | default 64MiB、8–90MiB、parts≤10,000、file≤min(partSize×parts,500GiB)。 |
+| upload lifetime / cost | progressから24h、作成から6日、同part 3 attempts、calls≤parts×3、受信≤declared×3、in-flight4、part15分。 |
+| quota headroom | `PHYSICAL_HEADROOM_FACTOR=1.2`。 |
+| versions / recovery | 直近10または30日、Time Travel30日、D1 backup5日、GC grace35日、RPO24h。 |
+| ticket | TTL≤6h、bytes≤size×3、request≤1,024、並列≤8。share expiryを越えない。 |
+| cache | private API / content / share JSON / HTML=`private,no-store`、thumb=`private,max-age=300`、archive index=`private,max-age=3600` + `ETag=index_key`。 |
+| share / auth secret | bearer既定256-bit、最低128-bit。unlock同時16、app password20/user、default90日/max365日。 |
+| KDF | PBKDF2-HMAC-SHA256 600,000、salt16B、DK32B。試行 share10/min、IP30/min、global600/min、同時20。 |
+| v1 ZIP download | entry≤1,000、payload<4GiB、各entry<4GiB、R2 GET≤1,000、manifest≤8MiB、全output≤UINT32_MAX、STOREのみ。 |
+| archive index | entry≤10,000、単entry uncompressed≤64MiB、合計≤8GiB、central dir≤8MiB、EOCD探索≤1MiB、stored/deflateのみ。 |
+| archive page | local name+extra≤64KiB、compressed dataはindex値以下、stream output≤64MiB、per-book thumb並列4。 |
+| Gallery | page≤200、recursive深さ≤64、候補≤50,000、Lightbox prefetch前後2。 |
+| Audio | tracks/folder≤2,000、head≤2MiB、tail=128B、MP4 moov探索≤4MiB、tag field≤1KiB、cover≤20MiB。 |
+| image transform | input≤20MiB、≤40MP、frame≤1、WASM input≤8MiB/12MP、attempt≤3/tuple。 |
+| user metadata | node≤200,000/user、children≤2,000/folder、COW refs≤1,000/blob。 |
+| dead property | total≤8KiB/node、≤8MiB/user、value≤8KiB。 |
+| search / bulk | pattern≤50B、candidate/fallback≤10,000 rows、bulk≤100,000 node / 16MiB manifest。 |
+| audit / terminal | D1 90日、R2 archive1年、operation/outboxは90日後compact。 |
 
-Cloudflare platform limits は release ごとに公式資料で確認する。現在の設計入力:
-
-| platform 項目 | 確認値・反映 |
-|---|---|
-| Worker body | zone plan 依存。app は `MAX_REQUEST_BYTES` 以下。 |
-| Worker memory | 128 MB / isolate。thumbnail 同時 decode を避ける。 |
-| Worker HTTP CPU | Paid default 30s、config max 300s。wall time と別。 |
-| Worker subrequests | Paid default 10,000 / invocation。ZIP は app 上限をさらに狭くする。 |
-| outbound connections | 6。stream 並列を bounded にする。 |
-| R2 multipart | 10,000 parts、公称 5 MiB–5 GiB。app range は上表。 |
-| R2 object | 公称約 5 TiB。app は上表。 |
-| R2 list / delete | 最大 1,000 / call。cursor 必須。 |
-| D1 DB | Paid 10 GB / DB、増枠不可。 |
-| D1 row / value | 最大 2,000,000 bytes。 |
-| D1 SQL | SQL 100,000 bytes、bind 100、query 30s。 |
-| D1 invocation | Paid 1,000 queries / invocation。 |
-| D1 transaction | `batch()` は atomic。条件付き更新ゼロは error ではない。 |
-| DO SQLite | 10 GB / object。single-threaded は外部 I/O の自動排他ではない。 |
-| Queue | message 128 KB、batch 100、at-least-once、retention 最大 14日、consumer wall 最大15分。 |
-| Cron | UTC、Paid trigger 上限と interval 別 CPU を release 時確認。 |
+Cloudflare platform limit は release ごとに公式資料で確認する。現在の設計入力は Worker memory 128MB、Paid CPU default30s/config max300s、subrequest default10,000、outbound connection6、R2 multipart10,000 parts、D1 10GB/DB・bind100・query30s・1,000 queries/invocation、Queue message128KiB/batch100/retention14日/consumer wall15分。app 上限は platform 上限より常に狭くする。
 
 ### 13.2 CSRF / CSP / MIME
 
-- private Cookie REST mutation: strict Origin allowlist + custom header。GET mutation 禁止。
-- WebDAV: Cookie auth なし、CORS 非公開、Origin 付き request 拒否、app password Basic のみ。
-- share SSR form: one-time CSRF + Origin check。
-- app、share landing、untrusted preview の CSP を分離し、`nosniff`、surface 別 `frame-ancestors`、`Referrer-Policy: no-referrer`。
-- R2 / content host の public direct URL を発行しない。
+- private browser mutation: strict Origin + custom header、GET mutation禁止。
+- public JSON mutation: exact app Origin、`Origin:null` / missing拒否、`Sec-Fetch-Site:same-origin`、JSON Content-Type、one-time CSRF。
+- WebDAV: Cookie無し、CORS無し、Origin付きrequest拒否、Basicのみ。
+- response matrix と CSP は §10.4 を正本とし、R2 / content direct public URL を発行しない。
 
 ### 13.3 audit / log
 
-`activity` は application principal に対して append-only。Cloudflare account / D1 管理者は trust boundary 内であり、その管理者への暗号学的改竄耐性は v1 保証外。Authorization、Cookie、password、CSRF、ticket、token、share URL token を全 log / trace で mask する。CSV export は formula injection を neutralize する。
+`activity` は application principal に対して append-only。Cloudflare account / D1 管理者は trust boundary 内であり、その管理者への暗号学的改竄耐性は保証外。
+
+Workers Logs の invocation logs が request URL を自動記録する前提で、capability / credential / PII を URL と query に置かない。Authorization、Cookie、JWT、Basic、Service Token、password、CSRF、upload capability、ticket、fragment から受けた share secret、D1 bind 値を application log / trace / exception に出さない。logger は allowlist field の構造化 JSON だけを出し、mask 後に serialize する。Tail の heuristic redactionや `Referrer-Policy` を platform log / browser history のsecret除去保証に使わない。Workers Logs、Tail、Logpush、trace、WAF / HTTP log、D1 error を canary で棚卸しする。
+
+CSV export は §10.5 の formula neutralization を行う。管理者操作、Access / secret / deploy 設定変更は MFA、最小権限、承認、外部 audit archive を要求する。
 
 ### 13.4 monitoring / cost
 
-D1 size / rows、Queue / outbox age、UploadDO anomaly、reservation、physical / logical quota 差分、GC state、trash backlog、ticket bytes / request、ZIP abort、thumbnail attempts、backup age / journal gap、epoch、unauthenticated route test を監視する。
+D1 size / rows、Queue / outbox age、UploadDO / LockDO stale、quota差分、GC、trash、ticket、ZIP、transform、archive/audio attempts、backup / journal、epoch、JWKS refresh / KDF rate、unauthenticated route test を監視する。
 
-単価は release 時の公式単価 `P_*` と telemetry から low / base / high worksheet を作る。R2 Class A/B、D1 rows、Images unique transform、DO request / duration、Queue、backup / GC / Range retry を含め、Workers Paid 基本料だけを総費用としない。
+release 時の公式単価を `P_*` とし telemetry から low/base/high worksheet を作る。最低限、次を別行で積算する。
+
+- Gallery page: D1 rows ≤200 + thumb cache miss時 Images unique transform + R2 derivative read。
+- archive index: R2 Range 最大 `1MiB + 8MiB`、Queue、index R2 write。page view は原則 R2 Class B×2（local header + data）、thumb miss は Images×1 + R2 write。
+- EPUB resource: entryごと header/data Range、ticket request/byte budget。Audio tag は通常 head+tail 2 read、MP4 は探索 read を上限化。
+- R2 Class A/B、D1 rows、Images transform、DO request/duration、Queue、backup / GC / retryを含め、Workers Paid基本料だけを総費用としない。
 
 ---
 
-## 14. config、deploy、ControlDO、Cron / job
+## 14. config、deploy、secrets、ControlDO、Cron / job
 
-### 14.1 Wrangler
+### 14.1 Wrangler / environment
 
 ```jsonc
 {
@@ -784,66 +923,85 @@ D1 size / rows、Queue / outbox age、UploadDO anomaly、reservation、physical 
     "run_worker_first": true
   },
   "triggers": { "crons": ["17 * * * *", "23 2 * * *", "0 3 * * SUN"] },
-  "observability": { "enabled": true }
+  "observability": {
+    "logs": { "enabled": true, "invocation_logs": true }
+  }
 }
 ```
 
-`unsafe.bindings` を使わない。dev / staging / production の D1、R2、KV、DO、Queue、Access app を分離する。vars は Access audience / domain、owner emails、content host、versioned limit config。secrets は HMAC / Cookie key ring。`DEV_BYPASS_ACCESS` は local test のみで、本番に存在すれば CI と startup を失敗させる。
+`unsafe.bindings` を使わない。development / staging / production の D1、R2、KV、DO、Queue、Access app、custom domain、key を分離する。Workers Logs の `invocation_logs` と URL 記録範囲は各 environment の IaC review / canary test で明示し、raw request logging を実装しない。canary secretが残るlog productはrelease前に`invocation_logs`または当該sinkを無効化し、allowlist型application auditだけを残す。
 
-### 14.2 ControlDO / lease
+`DEV_BYPASS_ACCESS` は `env.production` / `env.staging` に定義不可と CI schema で拒否する。code は `env.ENVIRONMENT !== 'development'` なら値が存在しても無視して起動 warning / security event を出し、local auth adapter を登録しない。文字列 truthiness で判定しない。
 
-全 mutation と job は `ControlDO` の epoch / maintenance を先に確認する。lease row は epoch、state、holder、fence、expiry、checkpoint を持つ。D1 副作用は同じ batch の fence guard、R2 副作用は §5 の対象別 protocol で保護する。
+### 14.2 secret inventory / rotation
 
-schedule は upload / trash / outbox repair、daily export / activity archive、weekly R2 orphan reconciliation に分ける。正確な cron と platform budget は §13 / Wrangler config を正本とする。各 job は node、blob、D1 / R2 call、CPU / wall time を別予算にし、checkpoint から再開する。
+| 名称 | 保管 | 用途 |
+|---|---|---|
+| `SIGNING_KEYS` | `wrangler secret`、`[{kid,status,key}]` JSON | unlock、ticket、upload、CSRF HMAC。environment別。 |
+| `APP_PASSWORD_HMAC_KEYS` | `wrangler secret` key ring | app password digest。signing keyと分離。 |
+| Cloudflare deploy token | CI secret manager | deploy限定。runtimeへ渡さない。 |
+| Service Token client secret | 利用client側secret store | D1 / frontend / logへ保存しない。 |
+| Access issuer/AUD、CONTENT_HOST、limits | vars | 非secretだが変更承認対象。 |
+| `OWNER_EMAILS` | vars | 初回だけのPII/権限設定。bootstrap後無視。 |
 
-### 14.3 deploy gate
+鍵は用途 / environment ごとに `openssl rand -base64 32` で最低256 bitを生成し、値を shell history / Git に残さず `wrangler secret put <NAME> --env <env>` で登録する。
 
-Access policy は route manifest から生成・diff する。deploy 後に private SPA / API の未認証拒否、public share / DAV の expected response、未知 public route の 404、想定外 host、workers.dev、preview URL、R2 public access を実 HTTP で検査する。TypeScript test は `AuthedContext` なしの private handler 登録が compile 失敗することも確認する。
+通常 `SIGNING_KEYS` rotation は (1) 新 `kid` を active 追加、(2) 全 instance 配備後24h待つ、(3) 旧 keyを verify-only、(4) 7日後に削除。token TTL はこの窓を越えない。緊急時は旧 key 削除、epoch +1、share session / ticket / upload capabilityを全失効する。通常 rotation と recovery epoch は混同しない。
+
+app-password key rotation は新 key で発行し旧 keyを verify-onlyにする。旧 keyで成功した credentialは同一 transactionで新 digestへ再hashする。7日後に未移行 credentialを revokeして旧 keyを削除し、利用者へ再発行を要求する。secret変更、Access policy、custom domain、deployはMFA + two-person approval + audit対象。
+
+### 14.3 ControlDO / job / deploy gate
+
+全 mutation / job は ControlDO と D1 epoch、maintenanceを確認する。schedule は upload / trash / outbox repair、daily export / activity archive、weekly R2 orphan reconciliation、media index / search repairに分ける。各 job は node、blob、Range bytes、D1/R2 call、CPU/wallを別予算にしcheckpointから再開する。
+
+Access policyはmanifestから生成 / diffする。deploy後、private SPA/API、service route、public share、DAV、content host、未知 route、想定外 host、workers.dev、preview URL、R2 public access、HTTPSを実HTTPで検査する。CONTENT_HOSTにprivate APIがなく、全host/aliasで同じ境界が効くことを確認する。
 
 ---
 
 ## 15. test plan / acceptance
 
-### 15.1 normal / protocol / cost
+### 15.1 normal / protocol / media
 
-- unit / integration: tree CTE、authorize operand matrix、operation barrier、quota ledger、全 §5 state machine、search normalization、XML parser。
-- WebDAV: litmus basic / copymove / props / locks、rclone、cadaver、Finder、Explorer。alias mount、lock-null、複合 `If:`、URI ABA を含む。
-- E2E: upload resume、share、upload-only non-oracle response、trash / restore / purge、bulk、logout cache clear、a11y。
-- cost: ticket Range、part resend、duplicate Queue、Depth:1 allprop、zero-byte node、COW、ZIP disconnect が §13 budget 内で停止すること。
+- unit / integration: tree CTE、EffectiveLive、authorize matrix、manifest被覆、epoch barrier、quota、全state machine、search、JSON/XML/header parser、output encoding。
+- WebDAV: litmus basic / copymove / props / locks、rclone、cadaver、Finder、Explorer。alias、lock-null、複合 `If`、MOVE lock終了、strong collection ETagを含む。
+- media: gallery 50,000候補境界、EXIF GPS破棄、ZIP64/EOCD/central directory/path/CRC/zip bomb、deflate stream上限、EPUB CSP、audio atom/tag/cover上限、stale generation job。
+- E2E: upload resume、share fragment、unlock logout、upload-only non-oracle、trash、bulk、Access logout、PWA cache、reader/player state、a11y。
+- cost: Range、part resend、duplicate Queue、Depth:1、ZIP disconnect、archive page、thumb/tag retryが§13内で停止すること。
 
-### 15.2 failure boundary release gate
+### 15.2 security / failure release gate
 
-- 同一 revision PUT と D1 response loss。全 step の一つをゼロ行にして batch 全体が rollback すること。
-- 相互 MOVE、MOVE と upload complete、share revoke / ancestor MOVE / DELETE と complete。
-- LOCK inspect と commit の間の新 LOCK、mount alias、permit holder crash。
-- upload initiating / in-flight part / completing / R2 lifecycle / D1 committed-DO stale の全遷移。
-- delete chunk と restore、restore と purge、別 op の deleted child、全 FK 順序。
-- GC candidate / pin / deleting、R2 delete response loss、recovery pause と不可逆 worker。
-- Time Travel 後に epoch が上がり、旧 app password、ticket、job、lease、upload capability が無効なこと。
-- outbox send response loss、Queue retention loss、consumer response loss、backup delete tombstone / journal gap。
-- physical quota を CAS 失敗 upload の反復で迂回できないこと。
-- ZIP exact output preflight、ticket byte budget、thumbnail transform claim / retry 固定。
-- public multipart が public route だけで完了し、private router へ fallthrough しないこと。
+- 間違った AUD / issuer / alg、未来 `nbf` / `iat`、未知 kid 連打、Cookieのみ、重複header、user/service混同を拒否し、JWKS refreshが10/minを越えたら503となる。
+- 別 Access app JWT、Bypass routeへのJWT添付、CONTENT_HOSTからprivate API、old alias、HTTP DAVを拒否する。
+- `P/S/F` の `P` をtrash開始した直後、S共有からcontent / thumb / children / search / count / ZIP / gallery / tracks / library / ticketを拒否する。
+- credential revoke / expiry / scope縮小 / user停止 / share version更新後、upload part/status/complete、job、terminal result再生を拒否し、metadataを漏らさない。
+- 旧epochで認証・R2 I/Oまで進めたHTTP mutationをrecovery後に再開しても、D1 control barrierでcommitできない。UploadDO/LockDOがstale 409となる。
+- public JSON mutationへのcross-origin、missing / `Origin:null`、CONTENT_HOST origin、wrong Sec-Fetch-Site、non-JSON、CSRF replayを拒否する。
+- HTML / SVG / PDF / Markdown / Office / archive page / EPUB resourceと悪意あるfilename/tag/propertyを全surface、直接URL、206、errorで開き、matrix、CSP、sanitize、encodingを満たす。
+- lock tokenを知る別principalはcurrent write権限があれば通常mutation可能、権限無しなら403。UNLOCKはcreator/space owner以外403、refreshはtokenで可能、MOVE後source lockは継承されず、weak ETagをIf-Matchへ使わない。
+- canary JWT、Cookie、Basic、Service secret、share secret、CSRF、upload capability、ticketを含むrequestがWorkers Logs / Tail / Logpush / trace / WAF / exception / D1 errorへ残らない。
+- 同一revision PUT、D1 response loss、各step zero-row、claim競合、lock inspect/commit race、part barrier、trash/restore/purge、GC/delete response loss、outbox/Queue/backup lossをfailure injectionし、barrierと冪等性を証明する。
+- bootstrapは同一iss+subで一度だけ成功し、email再利用、別sub、Access IdP追加、recovery巻戻りでownerを増やさない。
 
-### 15.3 staging cloud gate
+### 15.3 staging cloud / browser gate
 
-Miniflare だけで合格にしない。zone body / edge 413、D1 batch assertion / Time Travel、R2 multipart lifecycle / Range / delete、DO restart / SQLite、Queue duplicate / retention、Images contract / peak memory、Access route IaC、実 WebDAV client、CONTENT_HOST、restore drill を分離 staging で実測する。
+Miniflareだけで合格にしない。zone body / framing、D1 batch / Time Travel、R2 multipart / Range、DO restart、Queue duplicate、Images peak、JWKS rotation、Access logout伝播、実Set-Cookie、Origin / Sec-Fetch-Site、Workers Logs canary、CONTENT_HOST sandbox、実DAV client、restore drillを分離stagingで実測する。
 
 ---
 
 ## 16. 実装 phase
 
-1. **Foundation / invariants**: route 型境界、schema、ControlDO、principal / operand 認可、operation barrier、tree / lock generation、logical / physical quota、failure injection。
-2. **Files core**: immutable blob、metadata / content ETag、create / rename / MOVE、COW、cross-owner copy job、Range。
-3. **Multipart**: UploadDO 全状態、barrier、public / private route、browser resume、reconciliation。
-4. **Trash / GC / recovery**: exclusive trash state、FK purge、pins、irreversible GC、journal backup、epoch restore drill。
+1. **Foundation / invariants**: manifest、JWT user/service、schema/control、principal/operand認可、EffectiveLive、operation/epoch barrier、tree/lock generation、quota、failure injection。
+2. **Files core**: immutable blob、metadata/content ETag、create/rename/MOVE、COW、cross-owner copy、Range、safe delivery matrix。
+3. **Multipart**: UploadDO全状態、stale epoch、public/private route、resume、reconciliation。
+4. **Trash / GC / recovery**: exclusive state、FK purge、pins、irreversible GC、journal backup、epoch restore drill。
 5. **Search / stats**: FTS、bounded fallback、folder aggregation、metadata quota。
-6. **Thumbnail / preview**: outbox、result claim、node client thumb、CONTENT_HOST。
-7. **Sharing**: typed capability、TicketDO、internal / upload-only、ZIP budget。
-8. **WebDAV**: Class 1、Class 2、node lock、commit reservation、real client matrix。
-9. **Operations / polish**: admin / DLQ、cost metric、PWA、i18n、a11y。
+6. **Thumbnail / preview**: outbox、result claim、client thumb、CONTENT_HOST、CSP/browser gate。
+7. **Sharing**: fragment secret、unlock session、typed ticket、internal/upload-only/public edit、ZIP budget。
+8. **WebDAV**: Class 1、Class 2、RFC lock、commit reservation、real client matrix。
+9. **Media library**: **Gallery → Bookshelf → Audio**。各段階でindex/tag cost gateとsandbox acceptanceを通す。
+10. **Operations / polish**: admin/DLQ、cost metric、PWA、i18n、a11y。
 
-Foundation の invariants と §15 failure gate が通るまで Files core へ進まない。各 phase は migration test、lint、typecheck、unit、relevant integration を必須にする。
+Foundation の invariants と §15 failure gate が通るまで Files core へ進まない。各 phase は migration test、lint、typecheck、unit、relevant integrationを必須にする。
 
 ---
 
@@ -851,18 +1009,16 @@ Foundation の invariants と §15 failure gate が通るまで Files core へ�
 
 | 項目 | 判定 | 内容 |
 |---|---|---|
-| file history | v1 / 後段 | v1 は内部保持、UI / user restore は §18。 |
-| sync conflict | v1 | revision / ETag 412。conflicted copy なし。 |
-| change token | 後段 | v1 は標準 PROPFIND を途中 truncate しない。 |
-| mtime / checksum | v1 | client mtime と server time、declared / verified hash を分離。 |
-| team / group share | 後段 | v1 は personal owner space。 |
-| share accept / reshare / notification | 後段 | v1 は owner 作成と activity。 |
-| app credential | v1 | scope、expiry、revoke、epoch invalidation。 |
-| user disable / transfer | v1 | credential / job 停止、owner transfer。 |
-| user import / export | 後段 | operational backup は v1。R2 direct write 禁止。 |
-| bulk progress | v1 | job ID、result、cancel / retry、budget。 |
-| search | v1 | name / filter。full-text / OCR は非目標。 |
-| backup | v1 | §11 / §13 の限定 recovery window。 |
+| file history | v1 / 後段 | v1は内部保持、UI/user restoreは§18。 |
+| sync conflict | v1 | file PUT strong ETag 412。conflicted copyなし。 |
+| change token | 後段 | v1は標準PROPFINDをtruncateしない。 |
+| team / group share | 後段 | v1はpersonal owner space。 |
+| app credential / user disable | v1 | scope、finite TTL、revoke、primary照合、epoch。 |
+| bulk / search / backup | v1 | bounded job、name/media metadata search、限定recovery window。 |
+| Gallery | v1 | folder image/video、timeline、Lightbox、share view。 |
+| Bookshelf | v1 | EPUB、ZIP/CBZ、PDF、folder images、reading state。 |
+| Audio | v1 | bounded tags、folder album、Range player、playback state。 |
+| OCR / full-text / DRM | 非目標 | v1では実装しない。 |
 
 ---
 
@@ -870,13 +1026,13 @@ Foundation の invariants と §15 failure gate が通るまで Files core へ�
 
 v1 で安全な制限が置けない機能は有効化しない。
 
-1. **ZIP64**: v1.1 候補。v1 は STORE / non-ZIP64 と §13 の exact output 上限を維持する。
-2. **大容量 CLI / Nextcloud chunking / change token**: v1.1 以降。v1 DAV は単発 request 上限のまま。
-3. **version history UI / user restore、team space、group / reshare、通知、user import / export**: data model と認可を別設計 review する。
-4. **Service Token の DAV 対応**: v1 では不採用。REST mapping の実績後に credential semantics を再 review する。
-5. **Images codec / contract、WASM peak memory、PBKDF2 latency**: staging 結果で対応 format を狭めることはできるが、§13 上限を無検証で緩めない。
-6. **cross-owner copy の最大実効 throughput**: Range multipart job と source pin の実測後に UI 公称値を決める。一発 stream copy へ戻さない。
-7. **D1 FTS / DB 容量、search fallback、backup journal throughput**: 実 dataset と restore drill で測り、node / metadata 上限を緩める場合は migration と再 review を行う。
-8. **CONTENT_HOST、別 account R2 replication、長期 backup**: v1 の同一 account threat model を越える option として設計する。
-9. **WebDAV client 差異**: Finder / Explorer / rclone の sidecar、case-only rename、lock-null、複合 `If:` を support matrix に固定する。
-10. **料金と platform 可変値**: release 時公式値で worksheet と Wrangler budget を更新する。安全性の根拠を課金 plan の暗黙値に置かない。
+1. **ZIP64 download**: v1.1候補。archive indexはZIP64 EOCDをboundedに読めるが、download ZIP生成はSTORE/non-ZIP64のまま。
+2. **大容量CLI / Nextcloud chunking / change token**: v1.1以降。DAVは単発request上限。
+3. **version history UI、team/group/reshare、通知、user import/export**: data modelと認可を別reviewする。
+4. **Service TokenのDAV対応**: v1不採用。REST mapping実績後に再reviewする。
+5. **codec / runtime**: Images/WASM peak、PDF viewer、PBKDF2 latencyをstagingで測る。scrypt `N=2^15,r=8,p=1` はruntime実装、memory、global concurrencyがgateを満たす場合だけPBKDF2の代替としてversioned configへ採用し、requestごとの選択は許さない。
+6. **cross-owner copy throughput / D1容量 / search / backup journal**: 実datasetとrestore drill後に上限を再reviewし、一発stream copyへ戻さない。
+7. **RAR/CBR/7z、波形、歌詞同期、外部metadata照合、サーバEPUB変換**: v1.1以降の候補。v1は`unsupported`で、archiveを全体展開しない。
+8. **CONTENT_HOSTの別account化、R2 replication、長期backup**: v1の同一account threat modelを越えるoption。CONTENT_HOST自体はv1のactive content / EPUB reader標準構成で、単一host fallbackではそれらをattachmentにする。
+9. **WebDAV client差異**: Finder / Explorer / rcloneのsidecar、case-only rename、lock-null、複合`If`をsupport matrixに固定する。
+10. **料金とplatform可変値**: release時公式値でworksheet、Wrangler、JWKS/logout/log挙動を更新し、安全性の根拠を暗黙のplan値に置かない。
