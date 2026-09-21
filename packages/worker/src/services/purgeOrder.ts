@@ -6,6 +6,7 @@ export const purgeOrder = [
   "media_jobs",
   "node_media",
   "node_audio",
+  "library_jobs",
   "archive_index",
   "user_reading_state",
   "user_playback_state",
@@ -21,6 +22,7 @@ export const purgeOrder = [
   "locks",
   "search_index",
   "library_items",
+  "library_roots",
   "nodes",
 ] as const;
 

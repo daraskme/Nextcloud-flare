@@ -85,6 +85,19 @@ export const routeManifest = [
   route("GET", "/api/v1/library/items", "access", "library.read", 8),
   route("GET", "/api/v1/library/items/:itemId", "access", "library.read", 8),
   route("PATCH", "/api/v1/library/items/:itemId", "access", "library.write", 8),
+  route("GET", "/api/v1/library/items/:itemId/pages/:page", "access", "library.read", 8),
+  route("HEAD", "/api/v1/library/items/:itemId/pages/:page", "access", "library.read", 8),
+  route("GET", "/api/v1/library/items/:itemId/cover", "access", "library.read", 8),
+  route("HEAD", "/api/v1/library/items/:itemId/cover", "access", "library.read", 8),
+  route("GET", "/api/v1/library/items/:itemId/entries/:entryId", "access", "library.read", 8),
+  route("HEAD", "/api/v1/library/items/:itemId/entries/:entryId", "access", "library.read", 8),
+  route(
+    "PUT",
+    "/api/v1/library/items/:itemId/reading-state",
+    "access",
+    "reading_state.write",
+    8,
+  ),
   route("GET", "/api/v1/library/:nodeId", "access", "library.read", 8),
   route("GET", "/api/v1/library/:nodeId/pages/:page", "access", "library.read", 8),
   route("HEAD", "/api/v1/library/:nodeId/pages/:page", "access", "library.read", 8),
@@ -193,6 +206,7 @@ export const routeManifest = [
   route("HEAD", "/c/:nodeId/:blobId/entries/:entryToken", "content_cookie", "content.read", 8, "same-origin-json", "content"),
   route("GET", "/reader/index.html", "public", "reader.shell", 8, "same-origin-json", "content"),
   route("GET", "/reader/:asset", "public", "reader.shell", 8, "same-origin-json", "content"),
+  route("GET", "/reader-assets/:asset", "public", "reader.shell", 8, "same-origin-json", "content"),
 ] satisfies readonly RouteDefinition[];
 
 export function routeKey(routeDefinition: Pick<RouteDefinition, "method" | "template">): string {

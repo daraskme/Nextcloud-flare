@@ -25,12 +25,15 @@ export default defineConfig({
       input: {
         app: fileURLToPath(new URL("./index.html", import.meta.url)),
         "public-share": fileURLToPath(new URL("./public-share.html", import.meta.url)),
+        reader: fileURLToPath(new URL("./reader.html", import.meta.url)),
       },
       output: {
         entryFileNames: (chunk) =>
           chunk.name === "public-share"
             ? "public-assets/public-share.[hash].js"
-            : "assets/[name].[hash].js",
+            : chunk.name === "reader"
+              ? "reader-assets/reader.[hash].js"
+              : "assets/[name].[hash].js",
         chunkFileNames: "assets/[name].[hash].js",
         assetFileNames: "assets/[name].[hash][extname]",
       },

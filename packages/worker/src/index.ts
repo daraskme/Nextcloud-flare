@@ -12,6 +12,12 @@ import {
   processMediaJob,
   type MediaJobMessage,
 } from "./jobs/media.js";
+import {
+  discoverLibraryJobs,
+  dispatchPendingLibraryJobs,
+  processLibraryJob,
+  type LibraryJobMessage,
+} from "./jobs/library.js";
 import { reconcileExpiredUploads } from "./jobs/uploads.js";
 import { discoverGcCandidates, runGarbageCollection } from "./services/gc.js";
 import { reapExpiredZipManifests } from "./services/zip.js";
@@ -43,6 +49,12 @@ function isMediaJobMessage(value: unknown): value is MediaJobMessage {
   return message.kind === "media-extract" && typeof message.jobId === "string";
 }
 
+function isLibraryJobMessage(value: unknown): value is LibraryJobMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const message = value as Partial<LibraryJobMessage>;
+  return message.kind === "library-index" && typeof message.jobId === "string";
+}
+
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch, env: Env): Promise<void> {
@@ -50,6 +62,8 @@ export default {
       try {
         if (isCopyJobMessage(message.body)) await processCrossOwnerCopy(env, message.body.jobId);
         else if (isMediaJobMessage(message.body)) await processMediaJob(env, message.body.jobId);
+        else if (isLibraryJobMessage(message.body))
+          await processLibraryJob(env, message.body.jobId);
         else throw new Error("unknown_job_kind");
         message.ack();
       } catch {
@@ -62,6 +76,8 @@ export default {
     await dispatchPendingCopyJobs(env);
     await discoverMediaJobs(env);
     await dispatchPendingMediaJobs(env);
+    await discoverLibraryJobs(env);
+    await dispatchPendingLibraryJobs(env);
     await discoverGcCandidates(env);
     await runGarbageCollection(env);
     await reapExpiredZipManifests(env);

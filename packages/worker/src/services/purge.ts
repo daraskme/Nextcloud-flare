@@ -87,6 +87,9 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
       "DELETE FROM node_audio WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
+      "DELETE FROM library_jobs WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
       "DELETE FROM archive_index WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
@@ -148,6 +151,9 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
     ).bind(encoded),
     env.DB.prepare(
       "DELETE FROM library_items WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM library_roots WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
       "DELETE FROM node_props WHERE node_id IN (SELECT value FROM json_each(?1))",

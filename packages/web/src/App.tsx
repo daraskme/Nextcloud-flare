@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   Cloud,
   Files,
   HardDrive,
@@ -18,6 +19,7 @@ import type { NodeSummary } from "@ncf/shared";
 
 import { FileBrowser } from "./features/files/FileBrowser";
 import { GalleryView } from "./features/gallery/GalleryView";
+import { LibraryView } from "./features/library/LibraryView";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { AppPasswords } from "./features/settings/AppPasswords";
 import { SharesView } from "./features/shares/SharesView";
@@ -49,7 +51,7 @@ export function App(): React.JSX.Element {
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [section, setSection] = useState<
-    "files" | "trash" | "shares" | "shared" | "gallery" | "settings"
+    "files" | "trash" | "shares" | "shared" | "gallery" | "library" | "settings"
   >("files");
   const [navigateTo, setNavigateTo] = useState<string>();
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
@@ -141,6 +143,12 @@ export function App(): React.JSX.Element {
             <ImageIcon className="h-4 w-4" /> {t("app.gallery")}
           </button>
           <button
+            className={`nav-item ${section === "library" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("library")}
+          >
+            <BookOpen className="h-4 w-4" /> {t("app.bookshelf")}
+          </button>
+          <button
             className="nav-item"
             onClick={() => window.dispatchEvent(new Event("ncf-search"))}
           >
@@ -215,6 +223,8 @@ export function App(): React.JSX.Element {
             <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
           ) : section === "gallery" ? (
             <GalleryView rootId={workspace.rootId} />
+          ) : section === "library" ? (
+            <LibraryView rootId={workspace.rootId} />
           ) : section === "settings" ? (
             <AppPasswords />
           ) : (

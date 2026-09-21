@@ -4,7 +4,11 @@ import type {
   CreatedAppPassword,
   ChildrenPage,
   GalleryPage,
+  LibraryItemSummary,
+  LibraryRootSummary,
   NodeSummary,
+  ReadingPosition,
+  EpubEntrySummary,
   NodeVersionSummary,
   ShareKind,
   ShareMode,
@@ -194,6 +198,35 @@ export const api = {
     request<GalleryPage>(
       `/api/v1/nodes/${encodeURIComponent(rootId)}/gallery?recursive=${recursive}${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
     ),
+  libraryItems: () => request<{ items: LibraryItemSummary[] }>("/api/v1/library/items"),
+  libraryItem: (itemId: string) =>
+    request<{ item: LibraryItemSummary; entries: EpubEntrySummary[] }>(
+      `/api/v1/library/items/${encodeURIComponent(itemId)}`,
+    ),
+  libraryRoots: () => request<{ items: LibraryRootSummary[] }>("/api/v1/library/roots"),
+  addLibraryRoot: (nodeId: string) =>
+    request<{ items: LibraryRootSummary[] }>("/api/v1/library/roots", {
+      method: "POST",
+      body: JSON.stringify({ nodeId }),
+    }),
+  removeLibraryRoot: (nodeId: string) =>
+    request<undefined>(`/api/v1/library/roots/${encodeURIComponent(nodeId)}`, {
+      method: "DELETE",
+    }),
+  libraryPageUrl: (itemId: string, page: number) =>
+    `/api/v1/library/items/${encodeURIComponent(itemId)}/pages/${page}`,
+  epubEntry: async (itemId: string, entryId: string) => {
+    const response = await fetch(
+      `/api/v1/library/items/${encodeURIComponent(itemId)}/entries/${encodeURIComponent(entryId)}`,
+    );
+    if (!response.ok) throw await responseError(response);
+    return response.text();
+  },
+  saveReadingState: (itemId: string, position: ReadingPosition) =>
+    request<undefined>(`/api/v1/library/items/${encodeURIComponent(itemId)}/reading-state`, {
+      method: "PUT",
+      body: JSON.stringify(position),
+    }),
   recent: () => request<{ items: NodeSummary[] }>("/api/v1/recent"),
   starred: () => request<{ items: NodeSummary[] }>("/api/v1/starred"),
   setStar: (nodeId: string, starred: boolean) =>
