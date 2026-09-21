@@ -93,10 +93,28 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
       "DELETE FROM user_playback_state WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
+      "UPDATE blobs SET ref_count=ref_count-(SELECT COUNT(*) FROM blob_pins p JOIN zip_manifests z ON p.pin_id=z.id||':'||p.blob_id WHERE p.blob_id=blobs.id AND p.purpose='zip' AND z.root_node_id IN (SELECT value FROM json_each(?1))) WHERE EXISTS(SELECT 1 FROM blob_pins p JOIN zip_manifests z ON p.pin_id=z.id||':'||p.blob_id WHERE p.blob_id=blobs.id AND p.purpose='zip' AND z.root_node_id IN (SELECT value FROM json_each(?1)))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM blob_pins WHERE purpose='zip' AND EXISTS(SELECT 1 FROM zip_manifests z WHERE pin_id=z.id||':'||blob_id AND z.root_node_id IN (SELECT value FROM json_each(?1)))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM content_sessions WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (SELECT value FROM json_each(?1)))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM content_tickets WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (SELECT value FROM json_each(?1)))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM zip_manifests WHERE root_node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
       "DELETE FROM share_grants WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (SELECT value FROM json_each(?1)))",
     ).bind(encoded),
     env.DB.prepare(
-      "DELETE FROM shares WHERE root_node_id IN (SELECT value FROM json_each(?1))",
+      "DELETE FROM sessions WHERE id IN (SELECT ss.id FROM share_sessions ss JOIN shares s ON s.id=ss.share_id WHERE s.root_node_id IN (SELECT value FROM json_each(?1)))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM share_sessions WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (SELECT value FROM json_each(?1)))",
     ).bind(encoded),
     env.DB.prepare("DELETE FROM locks WHERE node_id IN (SELECT value FROM json_each(?1))").bind(
       encoded,
@@ -106,6 +124,9 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
     ).bind(encoded),
     env.DB.prepare(
       "DELETE FROM uploads WHERE state IN ('completed','failed','aborted','expired') AND (parent_id IN (SELECT value FROM json_each(?1)) OR target_node_id IN (SELECT value FROM json_each(?1)))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM shares WHERE root_node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
       "DELETE FROM bulk_jobs WHERE state IN ('completed','failed') AND destination_parent_id IN (SELECT value FROM json_each(?1))",

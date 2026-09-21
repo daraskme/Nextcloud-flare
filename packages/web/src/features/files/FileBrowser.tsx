@@ -2,6 +2,7 @@ import type { BreadcrumbItem, NodeSummary } from "@ncf/shared";
 import {
   ChevronRight,
   Copy,
+  Download,
   File,
   Folder,
   FolderInput,
@@ -11,11 +12,13 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Share2,
   Trash2,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
+import { ShareDialog } from "./ShareDialog";
 
 type ViewMode = "grid" | "list";
 
@@ -61,6 +64,7 @@ export function FileBrowser({
     localStorage.getItem("ncf-view") === "list" ? "list" : "grid",
   );
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [shareItem, setShareItem] = useState<NodeSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const dragged = useRef<string[]>([]);
@@ -155,6 +159,19 @@ export function FileBrowser({
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not copy item");
+    }
+  };
+
+  const download = async (item: NodeSummary) => {
+    try {
+      if (item.kind === "file") {
+        window.open(`/api/v1/nodes/${encodeURIComponent(item.id)}/content`, "_blank", "noopener");
+        return;
+      }
+      const archive = await api.createZip(item.id);
+      window.open(`/api/v1/zips/${encodeURIComponent(archive.id)}`, "_blank", "noopener");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not prepare download");
     }
   };
 
@@ -348,6 +365,18 @@ export function FileBrowser({
           <button className="context-item" onClick={() => void copy(menu.item)}>
             <Copy className="h-4 w-4" /> Make a copy
           </button>
+          <button className="context-item" onClick={() => void download(menu.item)}>
+            <Download className="h-4 w-4" /> Download
+          </button>
+          <button
+            className="context-item"
+            onClick={() => {
+              setShareItem(menu.item);
+              setMenu(null);
+            }}
+          >
+            <Share2 className="h-4 w-4" /> Share
+          </button>
           <button className="context-item" onClick={() => setMenu(null)}>
             <FolderInput className="h-4 w-4" /> Move with drag & drop
           </button>
@@ -357,6 +386,7 @@ export function FileBrowser({
           </button>
         </div>
       )}
+      {shareItem !== null && <ShareDialog item={shareItem} onClose={() => setShareItem(null)} />}
     </section>
   );
 }

@@ -8,6 +8,7 @@ import {
 } from "./jobs/copy.js";
 import { reconcileExpiredUploads } from "./jobs/uploads.js";
 import { discoverGcCandidates, runGarbageCollection } from "./services/gc.js";
+import { reapExpiredZipManifests } from "./services/zip.js";
 import { ControlDO } from "./do/ControlDO.js";
 import { LockDO } from "./do/LockDO.js";
 import { UploadDO } from "./do/UploadDO.js";
@@ -16,7 +17,7 @@ import { registerRoutes } from "./routes/register.js";
 
 export const app = new Hono<{ Bindings: Env }>();
 
-registerRoutes(app, 5);
+registerRoutes(app, 6);
 
 app.notFound((context) =>
   context.json({ error: { code: "not_found", message: "Route not found" } }, 404),
@@ -48,5 +49,6 @@ export default {
     await dispatchPendingCopyJobs(env);
     await discoverGcCandidates(env);
     await runGarbageCollection(env);
+    await reapExpiredZipManifests(env);
   },
 } satisfies ExportedHandler<Env>;

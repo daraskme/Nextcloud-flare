@@ -5,12 +5,20 @@ interface BudgetState {
   consumedBytes: number;
   requests: number;
   active: number;
+  windowStartedAt?: number;
 }
 
 interface LeaseRequest {
   maxBytes: number;
   bytes: number;
 }
+
+interface LeaseState {
+  bytes: number;
+  expiresAt: number;
+}
+
+const LEASE_TTL_MS = 10 * 60 * 1000;
 
 function validLeaseRequest(value: unknown): value is LeaseRequest {
   if (typeof value !== "object" || value === null) {
@@ -45,12 +53,19 @@ export class BudgetDO {
   private async acquire(input: LeaseRequest): Promise<Response> {
     const id = leaseId();
     const accepted = await this.state.storage.transaction(async (transaction) => {
-      const current = (await transaction.get<BudgetState>("budget")) ?? {
-        maxBytes: input.maxBytes,
-        consumedBytes: 0,
-        requests: 0,
-        active: 0,
-      };
+      const now = Date.now();
+      const stored = await transaction.get<BudgetState>("budget");
+      const current =
+        stored === undefined ||
+        (stored.active === 0 && now - (stored.windowStartedAt ?? 0) >= LEASE_TTL_MS)
+          ? {
+              maxBytes: input.maxBytes,
+              consumedBytes: 0,
+              requests: 0,
+              active: 0,
+              windowStartedAt: now,
+            }
+          : stored;
       if (
         current.maxBytes !== input.maxBytes ||
         current.active >= 8 ||
@@ -66,9 +81,17 @@ export class BudgetDO {
         active: current.active + 1,
       };
       await transaction.put("budget", next);
-      await transaction.put(`lease:${id}`, input.bytes);
+      await transaction.put<LeaseState>(`lease:${id}`, {
+        bytes: input.bytes,
+        expiresAt: Date.now() + LEASE_TTL_MS,
+      });
       return true;
     });
+    if (accepted) {
+      const alarm = await this.state.storage.getAlarm();
+      const expiresAt = Date.now() + LEASE_TTL_MS;
+      if (alarm === null || alarm > expiresAt) await this.state.storage.setAlarm(expiresAt);
+    }
     return accepted
       ? Response.json({ lease_id: id })
       : Response.json({ error: "budget_exceeded" }, { status: 429 });
@@ -76,7 +99,7 @@ export class BudgetDO {
 
   private async settle(id: string): Promise<Response> {
     await this.state.storage.transaction(async (transaction) => {
-      const lease = await transaction.get<number>(`lease:${id}`);
+      const lease = await transaction.get<LeaseState>(`lease:${id}`);
       if (lease === undefined) {
         return;
       }
@@ -87,6 +110,33 @@ export class BudgetDO {
       await transaction.delete(`lease:${id}`);
     });
     return new Response(null, { status: 204 });
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    let nextAlarm: number | undefined;
+    await this.state.storage.transaction(async (transaction) => {
+      const leases = await transaction.list<LeaseState>({ prefix: "lease:" });
+      let expired = 0;
+      for (const [key, lease] of leases) {
+        if (lease.expiresAt <= now) {
+          await transaction.delete(key);
+          expired += 1;
+        } else if (nextAlarm === undefined || lease.expiresAt < nextAlarm) {
+          nextAlarm = lease.expiresAt;
+        }
+      }
+      if (expired > 0) {
+        const current = await transaction.get<BudgetState>("budget");
+        if (current !== undefined) {
+          await transaction.put("budget", {
+            ...current,
+            active: Math.max(0, current.active - expired),
+          });
+        }
+      }
+    });
+    if (nextAlarm !== undefined) await this.state.storage.setAlarm(nextAlarm);
   }
 
   async fetch(request: Request): Promise<Response> {

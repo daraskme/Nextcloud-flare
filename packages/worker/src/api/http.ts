@@ -6,7 +6,7 @@ export type AppContext = Context<{ Bindings: Env }>;
 
 export function jsonError(
   context: AppContext,
-  status: 400 | 401 | 403 | 404 | 409 | 411 | 412 | 413 | 423 | 428 | 500 | 503 | 507,
+  status: 400 | 401 | 403 | 404 | 409 | 411 | 412 | 413 | 423 | 428 | 429 | 500 | 503 | 507,
   code: string,
   message: string,
 ): Response {
@@ -57,6 +57,28 @@ export function mapError(context: AppContext, error: unknown): Response {
   }
   if (message === "locked") {
     return jsonError(context, 423, "locked", "The item is locked");
+  }
+  if (message === "share_unlock_rate_limited" || message === "budget_owner_limit") {
+    return jsonError(context, 429, "rate_limited", "Too many active requests");
+  }
+  if (message === "budget_exceeded") {
+    return jsonError(context, 429, "budget_exceeded", "The transfer budget is exhausted");
+  }
+  if (
+    message === "share_action_forbidden" ||
+    message === "content_target_forbidden" ||
+    message === "csrf_failed"
+  ) {
+    return jsonError(context, 403, "forbidden", "This capability does not allow the request");
+  }
+  if (
+    message === "share_not_found" ||
+    message === "share_session_required" ||
+    message === "share_unlock_failed" ||
+    message === "content_session_required" ||
+    message === "content_ticket_invalid"
+  ) {
+    return jsonError(context, 401, "authentication_required", "Authentication failed");
   }
   if (error instanceof RangeError) {
     return jsonError(context, 400, "invalid_input", error.message);

@@ -1,10 +1,23 @@
-import { Cloud, Files, HardDrive, Moon, Search, Settings, Sun, Trash2, Upload } from "lucide-react";
+import {
+  Cloud,
+  Files,
+  HardDrive,
+  Link2,
+  Moon,
+  Search,
+  Settings,
+  Share2,
+  Sun,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { NodeSummary } from "@ncf/shared";
 
 import { FileBrowser } from "./features/files/FileBrowser";
 import { SearchPalette } from "./features/search/SearchPalette";
+import { SharesView } from "./features/shares/SharesView";
 import { TrashView } from "./features/trash/TrashView";
 import { UploadManager } from "./features/uploads/UploadManager";
 import { api } from "./lib/api";
@@ -20,7 +33,7 @@ export function App(): React.JSX.Element {
   const [dark, setDark] = useState(() => localStorage.getItem("ncf-theme") !== "light");
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [section, setSection] = useState<"files" | "trash">("files");
+  const [section, setSection] = useState<"files" | "trash" | "shares" | "shared">("files");
   const [navigateTo, setNavigateTo] = useState<string>();
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
 
@@ -88,6 +101,18 @@ export function App(): React.JSX.Element {
             <Files className="h-4 w-4" /> My Drive
           </button>
           <button
+            className={`nav-item ${section === "shares" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("shares")}
+          >
+            <Link2 className="h-4 w-4" /> 共有中
+          </button>
+          <button
+            className={`nav-item ${section === "shared" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("shared")}
+          >
+            <Share2 className="h-4 w-4" /> 自分と共有
+          </button>
+          <button
             className="nav-item"
             onClick={() => window.dispatchEvent(new Event("ncf-search"))}
           >
@@ -144,8 +169,24 @@ export function App(): React.JSX.Element {
               onNavigate={setCurrentFolder}
               navigateTo={navigateTo}
             />
-          ) : (
+          ) : section === "trash" ? (
             <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
+          ) : (
+            <SharesView
+              mode={section === "shares" ? "owned" : "shared"}
+              onOpen={(nodeId, kind) => {
+                if (kind === "file") {
+                  window.open(
+                    `/api/v1/nodes/${encodeURIComponent(nodeId)}/content`,
+                    "_blank",
+                    "noopener",
+                  );
+                } else {
+                  setNavigateTo(nodeId);
+                  setSection("files");
+                }
+              }}
+            />
           )
         ) : (
           <div className="grid min-h-screen place-items-center">

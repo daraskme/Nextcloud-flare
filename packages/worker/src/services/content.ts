@@ -1,9 +1,11 @@
 import type { Env } from "../env.js";
 import { isEffectiveLive } from "./effectiveLive.js";
 
-interface ContentDescriptor {
+export interface ContentDescriptor {
   nodeId: string;
   blobId: string;
+  ownerId: string;
+  rootId: string;
   key: string;
   size: number;
   etag: string;
@@ -59,25 +61,24 @@ function contentDisposition(name: string): string {
   return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
-async function descriptor(env: Env, userId: string, nodeId: string): Promise<ContentDescriptor> {
+export async function getContentDescriptor(env: Env, nodeId: string): Promise<ContentDescriptor> {
   const row = await env.DB.prepare(
-    "SELECT n.id nodeId,n.name,n.current_blob_id blobId,b.r2_key key,b.size,b.content_etag etag,COALESCE(b.mime_sniffed,'application/octet-stream') mime,s.root_node_id rootId FROM nodes n JOIN blobs b ON b.id=n.current_blob_id JOIN spaces s ON s.id=n.space_id WHERE n.id=?1 AND n.owner_id=?2 AND n.kind='file' AND n.deleted_at IS NULL AND b.state='committed'",
+    "SELECT n.id nodeId,n.owner_id ownerId,n.name,n.current_blob_id blobId,b.r2_key key,b.size,b.content_etag etag,COALESCE(b.mime_sniffed,'application/octet-stream') mime,s.root_node_id rootId FROM nodes n JOIN blobs b ON b.id=n.current_blob_id JOIN spaces s ON s.id=n.space_id WHERE n.id=?1 AND n.kind='file' AND n.deleted_at IS NULL AND b.state='committed'",
   )
-    .bind(nodeId, userId)
-    .first<ContentDescriptor & { rootId: string }>();
+    .bind(nodeId)
+    .first<ContentDescriptor>();
   if (row === null || !(await isEffectiveLive(env, nodeId, row.rootId))) {
     throw new Error("node_not_found");
   }
   return row;
 }
 
-export async function serveNodeContent(
+export async function serveNodeContentById(
   env: Env,
-  userId: string,
   nodeId: string,
   request: Request,
 ): Promise<Response> {
-  const item = await descriptor(env, userId, nodeId);
+  const item = await getContentDescriptor(env, nodeId);
   const commonHeaders = new Headers({
     "Accept-Ranges": "bytes",
     "Cache-Control": "private, no-store",
@@ -131,4 +132,15 @@ export async function serveNodeContent(
   }
   commonHeaders.set("Content-Length", String(item.size));
   return new Response(object.body, { headers: commonHeaders });
+}
+
+export async function serveNodeContent(
+  env: Env,
+  userId: string,
+  nodeId: string,
+  request: Request,
+): Promise<Response> {
+  const item = await getContentDescriptor(env, nodeId);
+  if (item.ownerId !== userId) throw new Error("node_not_found");
+  return serveNodeContentById(env, nodeId, request);
 }

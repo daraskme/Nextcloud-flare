@@ -2,6 +2,15 @@ import type { Hono } from "hono";
 
 import { enforceCsrf, handleCsrf, handleLogout, handleOperation } from "../api/account.js";
 import {
+  handleCancelPublicTicket,
+  handleCancelTicket,
+  handleContentSessionAccept,
+  handleContentSessionOptions,
+  handleContentSessionRead,
+  handleCreateContentSession,
+  handleCreatePublicContentSession,
+} from "../api/contentSession.js";
+import {
   handleRecent,
   handleSearch,
   handleSetStar,
@@ -20,6 +29,30 @@ import {
   handleRename,
 } from "../api/nodes.js";
 import type { AppContext } from "../api/http.js";
+import {
+  handleCreateShareUpload,
+  handleCompleteShareUpload,
+  handleAbortShareUpload,
+  handleGetShareUpload,
+  handlePutShareUpload,
+  handleUnsupportedSharePart,
+} from "../api/shareUploads.js";
+import {
+  handleCreateShare,
+  handleDisableShare,
+  handleGetShare,
+  handleListShares,
+  handleLogoutShare,
+  handlePublicAsset,
+  handlePublicChildren,
+  handlePublicContent,
+  handlePublicCsrf,
+  handlePublicShare,
+  handleSharedWithMe,
+  handleShareLanding,
+  handleUnlockShare,
+  handleUpdateShare,
+} from "../api/shares.js";
 import { handleCreateTag, handleDeleteTag, handleListTags, handleUpdateTag } from "../api/tags.js";
 import {
   handleListTrash,
@@ -35,6 +68,13 @@ import {
   handleSingleContent,
   handleUploadPart,
 } from "../api/uploads.js";
+import {
+  handleCreatePublicZip,
+  handleCreateZip,
+  handleDownloadPublicZip,
+  handleDownloadZip,
+} from "../api/zip.js";
+import { verifyShareCsrf } from "../auth/share.js";
 import type { Env } from "../env.js";
 import { routeKey, routesThroughPhase, type RouteDefinition } from "./manifest.js";
 
@@ -49,6 +89,17 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/recent", handleRecent],
   ["GET /api/v1/starred", handleStarred],
   ["GET /api/v1/stats", handleStats],
+  ["GET /api/v1/shared-with-me", handleSharedWithMe],
+  ["GET /api/v1/shares", handleListShares],
+  ["POST /api/v1/shares", handleCreateShare],
+  ["GET /api/v1/shares/:shareId", handleGetShare],
+  ["PATCH /api/v1/shares/:shareId", handleUpdateShare],
+  ["DELETE /api/v1/shares/:shareId", handleDisableShare],
+  ["POST /api/v1/content-session", handleCreateContentSession],
+  ["DELETE /api/v1/tickets/:ticketId", handleCancelTicket],
+  ["GET /public-assets/:asset", handlePublicAsset],
+  ["GET /s", handleShareLanding],
+  ["GET /s/:shareId", handleShareLanding],
   ["GET /api/v1/nodes/:nodeId", handleGetNode],
   ["GET /api/v1/nodes/:nodeId/path", handlePath],
   ["GET /api/v1/nodes/:nodeId/children", handleChildren],
@@ -60,6 +111,8 @@ const handlers = new Map<string, RouteHandler>([
   ["POST /api/v1/nodes/:nodeId/move", handleMove],
   ["POST /api/v1/nodes/:nodeId/copy", handleCopy],
   ["PUT /api/v1/nodes/:nodeId/star", handleSetStar],
+  ["POST /api/v1/nodes/:nodeId/zip", handleCreateZip],
+  ["GET /api/v1/zips/:id", handleDownloadZip],
   ["DELETE /api/v1/nodes/:nodeId", handleTrashNode],
   ["POST /api/v1/uploads", handleCreateUpload],
   ["GET /api/v1/uploads/:uploadId", handleGetUpload],
@@ -74,12 +127,45 @@ const handlers = new Map<string, RouteHandler>([
   ["POST /api/v1/tags", handleCreateTag],
   ["PATCH /api/v1/tags/:tagId", handleUpdateTag],
   ["DELETE /api/v1/tags/:tagId", handleDeleteTag],
+  ["GET /api/v1/public/shares/:shareId", handlePublicShare],
+  ["GET /api/v1/public/shares/:shareId/children/:nodeId", handlePublicChildren],
+  ["GET /api/v1/public/shares/:shareId/content/:nodeId", handlePublicContent],
+  ["HEAD /api/v1/public/shares/:shareId/content/:nodeId", handlePublicContent],
+  ["POST /api/v1/public/shares/:shareId/csrf", handlePublicCsrf],
+  ["POST /api/v1/public/shares/:shareId/unlock", handleUnlockShare],
+  ["POST /api/v1/public/shares/:shareId/logout", handleLogoutShare],
+  ["POST /api/v1/public/shares/:shareId/tickets", handleCreatePublicContentSession],
+  ["DELETE /api/v1/public/shares/:shareId/tickets/:ticketId", handleCancelPublicTicket],
+  ["POST /api/v1/public/shares/:shareId/content-session", handleCreatePublicContentSession],
+  ["POST /api/v1/public/shares/:shareId/nodes/:nodeId/zip", handleCreatePublicZip],
+  ["GET /api/v1/public/shares/:shareId/zips/:zipId", handleDownloadPublicZip],
+  ["POST /api/v1/public/shares/:shareId/uploads", handleCreateShareUpload],
+  ["GET /api/v1/public/shares/:shareId/uploads/:uploadId", handleGetShareUpload],
+  ["PUT /api/v1/public/shares/:shareId/uploads/:uploadId/content", handlePutShareUpload],
+  [
+    "PUT /api/v1/public/shares/:shareId/uploads/:uploadId/parts/:partNumber",
+    handleUnsupportedSharePart,
+  ],
+  ["POST /api/v1/public/shares/:shareId/uploads/:uploadId/complete", handleCompleteShareUpload],
+  ["DELETE /api/v1/public/shares/:shareId/uploads/:uploadId", handleAbortShareUpload],
+  ["OPTIONS /session", handleContentSessionOptions],
+  ["POST /session", handleContentSessionAccept],
+  ["GET /c/:nodeId/:blobId", handleContentSessionRead],
+  ["HEAD /c/:nodeId/:blobId", handleContentSessionRead],
 ]);
 
 function isMutation(definition: RouteDefinition): boolean {
   return (
     !["GET", "HEAD", "OPTIONS"].includes(definition.method) &&
     definition.csrf === "same-origin-json"
+  );
+}
+
+function isPublicMutation(definition: RouteDefinition): boolean {
+  return (
+    !["GET", "HEAD", "OPTIONS"].includes(definition.method) &&
+    definition.csrf === "public-form" &&
+    definition.operation !== "share.unlock"
   );
 }
 
@@ -105,6 +191,22 @@ export function registerRoutes(
         const rejected = await enforceCsrf(context);
         if (rejected !== null) {
           return rejected;
+        }
+      }
+      if (isPublicMutation(definition)) {
+        const sameOrigin =
+          context.req.header("Origin") === context.env.APP_ORIGIN &&
+          context.req.header("Sec-Fetch-Site") === "same-origin";
+        const shareId = context.req.param("shareId");
+        const valid =
+          sameOrigin && shareId !== undefined
+            ? await verifyShareCsrf(context.env, context.req.raw, shareId).catch(() => false)
+            : false;
+        if (!valid) {
+          return context.json(
+            { error: { code: "csrf_failed", message: "The CSRF token is invalid" } },
+            403,
+          );
         }
       }
       return handler(context);

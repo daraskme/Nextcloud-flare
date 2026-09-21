@@ -5,3 +5,4 @@ export * from "./limits.js";
 export * from "./uploadState.js";
 export * from "./uploads.js";
 export * from "./trash.js";
+export * from "./shares.js";

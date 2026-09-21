@@ -2,6 +2,10 @@ import type {
   BreadcrumbItem,
   ChildrenPage,
   NodeSummary,
+  ShareKind,
+  ShareMode,
+  ShareSummary,
+  SharedMount,
   TrashPage,
   UploadInfo,
   UploadMode,
@@ -153,6 +157,37 @@ export const api = {
   purgeTrash: (opId: string) =>
     request<{ purged: boolean; members: number }>(
       `/api/v1/trash/${encodeURIComponent(opId)}/purge`,
+      { method: "POST", body: "{}" },
+    ),
+  shares: () => request<{ items: ShareSummary[] }>("/api/v1/shares"),
+  createShare: (input: {
+    rootNodeId: string;
+    kind: ShareKind;
+    mode: ShareMode;
+    expiresAt?: number | null;
+    password?: string;
+    granteeEmail?: string;
+  }) =>
+    request<ShareSummary>("/api/v1/shares", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateShare: (
+    shareId: string,
+    input: { mode?: ShareMode; expiresAt?: number | null; password?: string | null },
+  ) =>
+    request<ShareSummary>(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  disableShare: (shareId: string) =>
+    request<undefined>(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
+      method: "DELETE",
+    }),
+  sharedWithMe: () => request<{ items: SharedMount[] }>("/api/v1/shared-with-me"),
+  createZip: (nodeId: string) =>
+    request<{ id: string; size: number; expiresAt: number }>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/zip`,
       { method: "POST", body: "{}" },
     ),
 };

@@ -2,10 +2,11 @@ import { LIMITS } from "@ncf/shared";
 
 import { authenticateAccessUser } from "../auth/httpAuth.js";
 import { markStagedBlobOrphan, transferImmutableBlob } from "../services/blobs.js";
-import { serveNodeContent } from "../services/content.js";
+import { serveNodeContent, serveNodeContentById } from "../services/content.js";
 import { overwriteFile } from "../services/fileMutations.js";
 import { getOwnedNode, getOwnerWorkspace } from "../services/nodes.js";
 import { reserveQuota } from "../services/quota.js";
+import { findInternalShare } from "../services/shares.js";
 import { acquireMutation } from "./mutation.js";
 import { type AppContext, jsonError, mapError } from "./http.js";
 
@@ -18,12 +19,14 @@ function randomId(prefix: string): string {
 export async function handleContent(context: AppContext): Promise<Response> {
   try {
     const user = await authenticateAccessUser(context.env, context.req.raw);
-    return await serveNodeContent(
-      context.env,
-      user.principal.userId,
-      context.req.param("nodeId"),
-      context.req.raw,
-    );
+    const nodeId = context.req.param("nodeId");
+    try {
+      return await serveNodeContent(context.env, user.principal.userId, nodeId, context.req.raw);
+    } catch {
+      const share = await findInternalShare(context.env, user.principal.userId, nodeId, "read");
+      if (share === null) throw new Error("node_not_found");
+      return await serveNodeContentById(context.env, nodeId, context.req.raw);
+    }
   } catch (error) {
     return mapError(context, error);
   }

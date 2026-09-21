@@ -11,6 +11,12 @@ import { moveNode } from "../services/fileMutations.js";
 import { createFolder } from "../services/fsMutation.js";
 import { listChildren } from "../services/listing.js";
 import { getOwnedNode, getOwnedPath, getOwnerWorkspace } from "../services/nodes.js";
+import {
+  findInternalShare,
+  getShareNode,
+  getSharePath,
+  listShareChildren,
+} from "../services/shares.js";
 import { acquireMutation } from "./mutation.js";
 import { type AppContext, mapError } from "./http.js";
 
@@ -36,9 +42,14 @@ export async function handleMe(context: AppContext): Promise<Response> {
 export async function handleGetNode(context: AppContext): Promise<Response> {
   try {
     const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json(
-      await getOwnedNode(context.env, user.principal.userId, context.req.param("nodeId")),
-    );
+    const nodeId = context.req.param("nodeId");
+    try {
+      return context.json(await getOwnedNode(context.env, user.principal.userId, nodeId));
+    } catch {
+      const share = await findInternalShare(context.env, user.principal.userId, nodeId, "read");
+      if (share === null) throw new Error("node_not_found");
+      return context.json(await getShareNode(context.env, share, nodeId));
+    }
   } catch (error) {
     return mapError(context, error);
   }
@@ -47,14 +58,27 @@ export async function handleGetNode(context: AppContext): Promise<Response> {
 export async function handleChildren(context: AppContext): Promise<Response> {
   try {
     const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json(
-      await listChildren(
-        context.env,
-        user.principal.userId,
-        context.req.param("nodeId"),
-        context.req.query("cursor"),
-      ),
-    );
+    const nodeId = context.req.param("nodeId");
+    try {
+      return context.json(
+        await listChildren(context.env, user.principal.userId, nodeId, context.req.query("cursor")),
+      );
+    } catch {
+      if (context.req.query("cursor") !== undefined)
+        throw new RangeError("Shared cursor is invalid");
+      const share = await findInternalShare(context.env, user.principal.userId, nodeId, "read");
+      if (share === null) throw new Error("node_not_found");
+      const generation = await context.env.DB.prepare(
+        "SELECT tree_generation value FROM nodes n JOIN spaces s ON s.id=n.space_id WHERE n.id=?1",
+      )
+        .bind(share.rootNodeId)
+        .first<{ value: number }>();
+      return context.json({
+        items: await listShareChildren(context.env, share, nodeId),
+        nextCursor: null,
+        treeGeneration: generation?.value ?? 0,
+      });
+    }
   } catch (error) {
     return mapError(context, error);
   }
@@ -63,9 +87,16 @@ export async function handleChildren(context: AppContext): Promise<Response> {
 export async function handlePath(context: AppContext): Promise<Response> {
   try {
     const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json({
-      items: await getOwnedPath(context.env, user.principal.userId, context.req.param("nodeId")),
-    });
+    const nodeId = context.req.param("nodeId");
+    try {
+      return context.json({
+        items: await getOwnedPath(context.env, user.principal.userId, nodeId),
+      });
+    } catch {
+      const share = await findInternalShare(context.env, user.principal.userId, nodeId, "read");
+      if (share === null) throw new Error("node_not_found");
+      return context.json({ items: await getSharePath(context.env, share, nodeId) });
+    }
   } catch (error) {
     return mapError(context, error);
   }
