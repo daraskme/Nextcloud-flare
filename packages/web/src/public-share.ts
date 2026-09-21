@@ -184,7 +184,7 @@ function renderToolbar(current: PublicNode): HTMLElement {
     download.addEventListener("click", () => {
       if (current.kind === "file") {
         window.location.assign(
-          `/api/v1/public/shares/${encodeURIComponent(shareId ?? "")}/content/${encodeURIComponent(current.id)}`,
+          `/api/v1/public/shares/${encodeURIComponent(shareId ?? "")}/content/${encodeURIComponent(current.id)}?download=1`,
         );
       } else {
         void downloadZip(current.id, download);
@@ -208,6 +208,8 @@ async function downloadZip(nodeId: string, button: HTMLButtonElement): Promise<v
     window.location.assign(
       `/api/v1/public/shares/${encodeURIComponent(shareId ?? "")}/zips/${encodeURIComponent(archive.id)}`,
     );
+    button.disabled = false;
+    button.textContent = t("public.downloadZip");
   } catch (cause) {
     button.disabled = false;
     button.textContent = cause instanceof Error ? cause.message : t("public.downloadFailed");
@@ -257,7 +259,7 @@ function renderFiles(current: PublicNode, items: PublicNode[]): void {
         void browse(item);
       } else if (share?.mode === "download") {
         window.location.assign(
-          `/api/v1/public/shares/${encodeURIComponent(shareId ?? "")}/content/${encodeURIComponent(item.id)}`,
+          `/api/v1/public/shares/${encodeURIComponent(shareId ?? "")}/content/${encodeURIComponent(item.id)}?download=1`,
         );
       }
     });

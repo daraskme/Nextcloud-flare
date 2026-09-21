@@ -52,13 +52,13 @@ function parseRange(value: string, size: number): ByteRange | "multiple" | null 
   return { offset: start, length: Math.min(end, size - 1) - start + 1 };
 }
 
-function contentDisposition(name: string): string {
+function contentDisposition(name: string, attachment: boolean): string {
   const fallback =
     Array.from(name, (character) => {
       const code = character.codePointAt(0) ?? 0;
       return code >= 32 && code <= 126 && character !== '"' && character !== "\\" ? character : "_";
     }).join("") || "download";
-  return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+  return `${attachment ? "attachment" : "inline"}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 export async function getContentDescriptor(env: Env, nodeId: string): Promise<ContentDescriptor> {
@@ -82,7 +82,10 @@ export async function serveNodeContentById(
   const commonHeaders = new Headers({
     "Accept-Ranges": "bytes",
     "Cache-Control": "private, no-store",
-    "Content-Disposition": contentDisposition(item.name),
+    "Content-Disposition": contentDisposition(
+      item.name,
+      new URL(request.url).searchParams.get("download") === "1",
+    ),
     "Content-Type": item.mime,
     ETag: item.etag,
     "Referrer-Policy": "no-referrer",

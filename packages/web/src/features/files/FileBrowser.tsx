@@ -171,7 +171,7 @@ export function FileBrowser({
   const download = async (item: NodeSummary) => {
     try {
       if (item.kind === "file") {
-        window.open(`/api/v1/nodes/${encodeURIComponent(item.id)}/content`, "_blank", "noopener");
+        window.location.assign(`/api/v1/nodes/${encodeURIComponent(item.id)}/content?download=1`);
         return;
       }
       const archive = await api.createZip(item.id);

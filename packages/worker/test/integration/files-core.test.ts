@@ -237,6 +237,16 @@ describe("Files core", () => {
       new Request("https://app.test/file", { headers: { "If-None-Match": '"b-content"' } }),
     );
     expect(unchanged.status).toBe(304);
+
+    expect(partial.headers.get("content-disposition")).toMatch(/^inline; /u);
+    const attachment = await serveNodeContent(
+      env,
+      "user",
+      "file",
+      new Request("https://app.test/file?download=1"),
+    );
+    expect(attachment.status).toBe(200);
+    expect(attachment.headers.get("content-disposition")).toMatch(/^attachment; /u);
     await env.DB.prepare("UPDATE nodes SET deleted_at=?1 WHERE id='file'").bind(Date.now()).run();
     await expect(
       serveNodeContent(env, "user", "file", new Request("https://app.test/file")),
