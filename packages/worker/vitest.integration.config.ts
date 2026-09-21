@@ -36,6 +36,7 @@ export default defineConfig({
             CURSOR_KEY: "test-only-cursor-signing-key-000000000000",
             DEV_CSRF_KEY: "test-only-csrf-signing-key-00000000000000",
             CONTENT_SESSION_KEY: "test-only-content-signing-key-00000000000",
+            APP_PASSWORD_PEPPER: "test-only-app-password-pepper-000000000000000",
             TEST_MIGRATIONS: migrations,
           },
         },

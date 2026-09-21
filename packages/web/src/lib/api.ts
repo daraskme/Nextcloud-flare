@@ -1,5 +1,7 @@
 import type {
+  AppPasswordSummary,
   BreadcrumbItem,
+  CreatedAppPassword,
   ChildrenPage,
   NodeSummary,
   ShareKind,
@@ -185,6 +187,16 @@ export const api = {
       method: "DELETE",
     }),
   sharedWithMe: () => request<{ items: SharedMount[] }>("/api/v1/shared-with-me"),
+  appPasswords: () => request<{ items: AppPasswordSummary[] }>("/api/v1/app-passwords"),
+  createAppPassword: (label: string, expiresInDays: number) =>
+    request<CreatedAppPassword>("/api/v1/app-passwords", {
+      method: "POST",
+      body: JSON.stringify({ label, expiresInDays }),
+    }),
+  revokeAppPassword: (credentialId: string) =>
+    request<undefined>(`/api/v1/app-passwords/${encodeURIComponent(credentialId)}`, {
+      method: "DELETE",
+    }),
   createZip: (nodeId: string) =>
     request<{ id: string; size: number; expiresAt: number }>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/zip`,

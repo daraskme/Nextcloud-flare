@@ -6,19 +6,33 @@ export interface UserMutationContext {
   epoch: number;
   userId: string;
   sessionId: string;
+  credentialKind?: "access" | "app_password";
+  credentialId?: string;
+  appPasswordId?: string;
   spaceId: string;
   auditId: string;
   outboxId: string;
 }
 
 export function mutationGuards(env: Env, input: UserMutationContext): D1PreparedStatement[] {
+  const appPassword = input.credentialKind === "app_password";
+  const credentialGuard = appPassword
+    ? env.DB.prepare(
+        "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id JOIN app_passwords ap ON ap.session_id=s.id AND ap.user_id=u.id JOIN operations o ON o.op_id=?1 WHERE u.id=?2 AND u.disabled_at IS NULL AND s.id=?3 AND s.kind='app_password' AND s.revoked_at IS NULL AND s.expires_at>(strftime('%s','now')*1000) AND ap.id=?4 AND ap.revoked_at IS NULL AND ap.expires_at>(strftime('%s','now')*1000) AND o.principal_kind='app_password' AND o.credential_id=ap.id)",
+      ).bind(input.operationId, input.userId, input.sessionId, input.appPasswordId ?? "")
+    : env.DB.prepare(
+        "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id JOIN operations o ON o.op_id=?1 WHERE u.id=?2 AND u.disabled_at IS NULL AND s.id=?3 AND s.kind='access' AND s.revoked_at IS NULL AND s.expires_at>(strftime('%s','now')*1000) AND o.principal_kind='user' AND o.credential_id=?4)",
+      ).bind(
+        input.operationId,
+        input.userId,
+        input.sessionId,
+        input.credentialId ?? `as:${input.sessionId}`,
+      );
   return [
     env.DB.prepare(
       "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM permits p JOIN operations o ON o.permit_id=p.permit_id JOIN control c ON c.singleton=1 WHERE p.permit_id=?1 AND p.state='open' AND p.epoch=?2 AND p.space_id=?3 AND p.expires_at>(strftime('%s','now')*1000) AND o.op_id=?4 AND o.state='claimed' AND o.epoch=?2 AND o.space_id=?3 AND o.claimed_expires_at=p.expires_at AND c.epoch=?2)",
     ).bind(input.permitId, input.epoch, input.spaceId, input.operationId),
-    env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id WHERE u.id=?1 AND u.disabled_at IS NULL AND s.id=?2 AND s.kind='access' AND s.revoked_at IS NULL AND s.expires_at>(strftime('%s','now')*1000))",
-    ).bind(input.userId, input.sessionId),
+    credentialGuard,
   ];
 }
 

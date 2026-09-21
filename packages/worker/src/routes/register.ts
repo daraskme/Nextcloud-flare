@@ -11,6 +11,11 @@ import {
   handleCreatePublicContentSession,
 } from "../api/contentSession.js";
 import {
+  handleCreateAppPassword,
+  handleListAppPasswords,
+  handleRevokeAppPassword,
+} from "../api/credentials.js";
+import {
   handleRecent,
   handleSearch,
   handleSetStar,
@@ -75,6 +80,7 @@ import {
   handleDownloadZip,
 } from "../api/zip.js";
 import { verifyShareCsrf } from "../auth/share.js";
+import { handleDav } from "../dav/methods.js";
 import type { Env } from "../env.js";
 import { routeKey, routesThroughPhase, type RouteDefinition } from "./manifest.js";
 
@@ -97,6 +103,9 @@ const handlers = new Map<string, RouteHandler>([
   ["DELETE /api/v1/shares/:shareId", handleDisableShare],
   ["POST /api/v1/content-session", handleCreateContentSession],
   ["DELETE /api/v1/tickets/:ticketId", handleCancelTicket],
+  ["GET /api/v1/app-passwords", handleListAppPasswords],
+  ["POST /api/v1/app-passwords", handleCreateAppPassword],
+  ["DELETE /api/v1/app-passwords/:credentialId", handleRevokeAppPassword],
   ["GET /public-assets/:asset", handlePublicAsset],
   ["GET /s", handleShareLanding],
   ["GET /s/:shareId", handleShareLanding],
@@ -153,6 +162,24 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /c/:nodeId/:blobId", handleContentSessionRead],
   ["HEAD /c/:nodeId/:blobId", handleContentSessionRead],
 ]);
+
+for (const method of [
+  "OPTIONS",
+  "PROPFIND",
+  "PROPPATCH",
+  "MKCOL",
+  "GET",
+  "HEAD",
+  "PUT",
+  "DELETE",
+  "COPY",
+  "MOVE",
+  "LOCK",
+  "UNLOCK",
+] as const) {
+  handlers.set(`${method} /dav`, handleDav);
+  handlers.set(`${method} /dav/*`, handleDav);
+}
 
 function isMutation(definition: RouteDefinition): boolean {
   return (

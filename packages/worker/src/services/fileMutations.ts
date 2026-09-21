@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { upsertSearchStatements } from "../search/sync.js";
+import { davOverwriteStatements, type DavOverwriteTarget } from "./davOverwrite.js";
 import { normalizePortableName } from "./fsMutation.js";
 import {
   assertChanged,
@@ -193,15 +194,20 @@ interface MoveInput extends StructuralMutationContext {
   expectedNodeRevision: number;
   expectedSourceParentRevision: number;
   expectedDestinationParentRevision?: number;
+  overwrite?: DavOverwriteTarget;
 }
 
 export async function moveNode(env: Env, input: MoveInput): Promise<void> {
   const normalized = normalizePortableName(input.name);
   const now = Date.now();
   const sameParent = input.sourceParentId === input.destinationParentId;
-  const steps = sameParent ? 5 : 6;
+  const offset = input.overwrite === undefined ? 0 : 1;
+  const steps = (sameParent ? 5 : 6) + offset;
   const statements: D1PreparedStatement[] = [
     ...mutationGuards(env, input),
+    ...(input.overwrite === undefined
+      ? []
+      : davOverwriteStatements(env, { ...input, overwrite: input.overwrite }, 1)),
     env.DB.prepare(
       "INSERT INTO _assert(v) SELECT 1 WHERE EXISTS(WITH RECURSIVE d(id,depth) AS (SELECT id,0 FROM nodes WHERE id=?1 UNION ALL SELECT n.id,d.depth+1 FROM nodes n JOIN d ON n.parent_id=d.id WHERE n.deleted_at IS NULL AND d.depth<64) SELECT 1 FROM d WHERE id=?2)",
     ).bind(input.nodeId, input.destinationParentId),
@@ -234,21 +240,21 @@ export async function moveNode(env: Env, input: MoveInput): Promise<void> {
       text: normalized.name,
       revision: input.expectedNodeRevision + 1,
     }),
-    ...operationStep(env, input.operationId, 1, "node.move", input.nodeId),
+    ...operationStep(env, input.operationId, offset + 1, "node.move", input.nodeId),
     env.DB.prepare(
-      "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL",
+      `UPDATE nodes SET revision=revision+${sameParent && input.overwrite !== undefined ? 2 : 1},updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL`,
     ).bind(now, input.operationId, input.sourceParentId, input.expectedSourceParentRevision),
     assertChanged(env),
-    ...operationStep(env, input.operationId, 2, "source.revision", input.sourceParentId),
+    ...operationStep(env, input.operationId, offset + 2, "source.revision", input.sourceParentId),
   ];
-  let nextStep = 3;
+  let nextStep = offset + 3;
   if (!sameParent) {
     if (input.expectedDestinationParentRevision === undefined) {
       throw new RangeError("Destination revision is required");
     }
     statements.push(
       env.DB.prepare(
-        "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL",
+        `UPDATE nodes SET revision=revision+${input.overwrite === undefined ? 1 : 2},updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL`,
       ).bind(
         now,
         input.operationId,
@@ -268,7 +274,7 @@ export async function moveNode(env: Env, input: MoveInput): Promise<void> {
   }
   statements.push(
     env.DB.prepare(
-      "UPDATE spaces SET tree_generation=tree_generation+1 WHERE id=?1 AND owner_id=?2 AND tree_generation=?3",
+      `UPDATE spaces SET tree_generation=tree_generation+${input.overwrite === undefined ? 1 : 2} WHERE id=?1 AND owner_id=?2 AND tree_generation=?3`,
     ).bind(input.spaceId, input.userId, input.expectedTreeGeneration),
     assertChanged(env),
     ...operationStep(env, input.operationId, nextStep, "space.generation", input.spaceId),

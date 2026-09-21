@@ -17,6 +17,7 @@ import type { NodeSummary } from "@ncf/shared";
 
 import { FileBrowser } from "./features/files/FileBrowser";
 import { SearchPalette } from "./features/search/SearchPalette";
+import { AppPasswords } from "./features/settings/AppPasswords";
 import { SharesView } from "./features/shares/SharesView";
 import { TrashView } from "./features/trash/TrashView";
 import { UploadManager } from "./features/uploads/UploadManager";
@@ -33,7 +34,9 @@ export function App(): React.JSX.Element {
   const [dark, setDark] = useState(() => localStorage.getItem("ncf-theme") !== "light");
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [section, setSection] = useState<"files" | "trash" | "shares" | "shared">("files");
+  const [section, setSection] = useState<"files" | "trash" | "shares" | "shared" | "settings">(
+    "files",
+  );
   const [navigateTo, setNavigateTo] = useState<string>();
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
 
@@ -148,7 +151,10 @@ export function App(): React.JSX.Element {
             {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{" "}
             {dark ? "Light mode" : "Dark mode"}
           </button>
-          <div className="flex items-center gap-3 border-t border-slate-200 px-2 pt-4 dark:border-white/[0.08]">
+          <button
+            className={`nav-item border-t border-slate-200 pt-4 dark:border-white/[0.08] ${section === "settings" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("settings")}
+          >
             <div className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-violet-400 to-fuchsia-600 text-xs font-bold text-white">
               {workspace?.email.slice(0, 1).toUpperCase() ?? "N"}
             </div>
@@ -157,7 +163,7 @@ export function App(): React.JSX.Element {
               <p className="text-[10px] text-emerald-500">Private workspace</p>
             </div>
             <Settings className="h-4 w-4 text-slate-500" />
-          </div>
+          </button>
         </div>
       </aside>
       <div className="relative flex min-w-0 flex-1 flex-col">
@@ -171,6 +177,8 @@ export function App(): React.JSX.Element {
             />
           ) : section === "trash" ? (
             <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
+          ) : section === "settings" ? (
+            <AppPasswords />
           ) : (
             <SharesView
               mode={section === "shares" ? "owned" : "shared"}

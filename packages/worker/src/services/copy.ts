@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { upsertSearchStatements } from "../search/sync.js";
+import { davOverwriteStatements, type DavOverwriteTarget } from "./davOverwrite.js";
 import { normalizePortableName } from "./fsMutation.js";
 import {
   assertChanged,
@@ -130,12 +131,17 @@ interface CommitCopyInput extends UserMutationContext {
   expectedTreeGeneration: number;
   expectedDestinationRevision: number;
   manifest: CopyManifest;
+  overwrite?: DavOverwriteTarget;
 }
 
 export async function commitSameOwnerCopy(env: Env, input: CommitCopyInput): Promise<void> {
   const now = Date.now();
   const statements: D1PreparedStatement[] = [...mutationGuards(env, input)];
   let step = 1;
+  if (input.overwrite !== undefined) {
+    statements.push(...davOverwriteStatements(env, { ...input, overwrite: input.overwrite }, step));
+    step += 1;
+  }
   const idMap = new Map(
     input.manifest.entries.map((entry) => [entry.sourceId, entry.destinationId]),
   );
@@ -193,7 +199,7 @@ export async function commitSameOwnerCopy(env: Env, input: CommitCopyInput): Pro
   }
   statements.push(
     env.DB.prepare(
-      "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND owner_id=?4 AND revision=?5 AND deleted_at IS NULL",
+      `UPDATE nodes SET revision=revision+${input.overwrite === undefined ? 1 : 2},updated_at=?1,last_op_id=?2 WHERE id=?3 AND owner_id=?4 AND revision=?5 AND deleted_at IS NULL`,
     ).bind(
       now,
       input.operationId,
@@ -210,7 +216,7 @@ export async function commitSameOwnerCopy(env: Env, input: CommitCopyInput): Pro
       input.manifest.destinationParentId,
     ),
     env.DB.prepare(
-      "UPDATE spaces SET tree_generation=tree_generation+1 WHERE id=?1 AND owner_id=?2 AND tree_generation=?3",
+      `UPDATE spaces SET tree_generation=tree_generation+${input.overwrite === undefined ? 1 : 2} WHERE id=?1 AND owner_id=?2 AND tree_generation=?3`,
     ).bind(input.spaceId, input.userId, input.expectedTreeGeneration),
     assertChanged(env),
     ...operationStep(env, input.operationId, step + 1, "space.generation", input.spaceId),

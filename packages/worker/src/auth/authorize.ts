@@ -17,6 +17,7 @@ const operationScopes: Readonly<Partial<Record<Operation, readonly Scope[]>>> = 
   "upload.abort": ["upload:write"],
   "upload.complete": ["upload:write"],
   "share.manage": ["share:manage"],
+  "credential.read": ["credential:manage"],
   "credential.create": ["credential:manage"],
   "credential.revoke": ["credential:manage"],
   "job.read": ["job:read"],

@@ -1,3 +1,4 @@
+import type { AuthenticatedAppPassword } from "../auth/appPassword.js";
 import type { AuthenticatedUser } from "../auth/httpAuth.js";
 import type { Env } from "../env.js";
 import { claimOperation } from "../services/operations.js";
@@ -26,13 +27,14 @@ export interface MutationLease {
 
 export async function acquireMutation(
   env: Env,
-  user: AuthenticatedUser,
+  user: AuthenticatedUser | AuthenticatedAppPassword,
   input: {
     spaceId: string;
     kind: string;
     expectedSteps: number;
     intent: unknown;
     nodeIds?: string[];
+    lockTokenDigests?: string[];
   },
 ): Promise<MutationLease> {
   const control = await env.DB.prepare("SELECT epoch FROM control WHERE singleton=1").first<{
@@ -53,18 +55,24 @@ export async function acquireMutation(
       epoch: control.epoch,
       ttlMs: 30_000,
       nodeIds: input.nodeIds ?? [],
+      creatorUserId: user.principal.userId,
+      lockTokenDigests: input.lockTokenDigests ?? [],
     }),
   });
   if (!response.ok) {
     throw new Error(response.status === 423 ? "locked" : "permit_denied");
   }
   const permit: { expires_at: number } = await response.json();
+  const appPassword = "sessionId" in user;
   await claimOperation(env, {
     operationId,
     permitId,
     spaceId: input.spaceId,
     userId: user.principal.userId,
-    sessionId: user.principal.sessionId,
+    sessionId: appPassword ? user.sessionId : user.principal.sessionId,
+    credentialKind: appPassword ? "app_password" : "access",
+    credentialId: user.principal.credentialId,
+    ...(appPassword ? { appPasswordId: user.principal.appPasswordId } : {}),
     epoch: control.epoch,
     kind: input.kind,
     requestDigest: await digest(input.intent),

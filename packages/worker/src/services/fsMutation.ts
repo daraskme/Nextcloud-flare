@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { upsertSearchStatements } from "../search/sync.js";
+import { mutationGuards, type UserMutationContext } from "./mutation.js";
 
 const RESERVED_NAMES = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
 
@@ -22,20 +23,12 @@ export function normalizePortableName(name: string): { name: string; nameCi: str
   return { name: normalized, nameCi: normalized.toLowerCase() };
 }
 
-export interface CreateFolderMutation {
-  operationId: string;
-  permitId: string;
-  epoch: number;
-  userId: string;
-  sessionId: string;
-  spaceId: string;
+export interface CreateFolderMutation extends UserMutationContext {
   parentId: string;
   nodeId: string;
   name: string;
   expectedParentRevision: number;
   expectedTreeGeneration: number;
-  outboxId: string;
-  auditId: string;
 }
 
 export async function createFolder(env: Env, input: CreateFolderMutation): Promise<void> {
@@ -48,12 +41,7 @@ export async function createFolder(env: Env, input: CreateFolderMutation): Promi
     env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
   ];
   const statements = [
-    env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM permits p JOIN operations o ON o.permit_id=p.permit_id JOIN control c ON c.singleton=1 WHERE p.permit_id=?1 AND p.state='open' AND p.epoch=?2 AND p.space_id=?3 AND p.expires_at>(strftime('%s','now')*1000) AND o.op_id=?4 AND o.state='claimed' AND o.epoch=?2 AND o.space_id=?3 AND o.claimed_expires_at=p.expires_at AND c.epoch=?2)",
-    ).bind(input.permitId, input.epoch, input.spaceId, input.operationId),
-    env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id WHERE u.id=?1 AND u.disabled_at IS NULL AND u.role IN ('member','app_admin') AND s.id=?2 AND s.kind='access' AND s.revoked_at IS NULL AND s.expires_at>(strftime('%s','now')*1000))",
-    ).bind(input.userId, input.sessionId),
+    ...mutationGuards(env, input),
     env.DB.prepare(
       "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (SELECT id,parent_id,space_id,owner_id,kind,deleted_at,0,'/'||id||'/' FROM nodes WHERE id=?1 UNION ALL SELECT p.id,p.parent_id,p.space_id,p.owner_id,p.kind,p.deleted_at,a.depth+1,a.path||p.id||'/' FROM nodes p JOIN a ON p.id=a.parent_id WHERE a.depth<64 AND p.space_id=a.space_id AND instr(a.path,'/'||p.id||'/')=0) SELECT 1 FROM a JOIN spaces s ON s.id=?2 WHERE (SELECT COUNT(*) FROM a) BETWEEN 1 AND 65 AND (SELECT MIN(deleted_at IS NULL) FROM a)=1 AND (SELECT MAX(CASE WHEN kind='root' AND parent_id IS NULL THEN id END) FROM a)=s.root_node_id AND (SELECT MIN(space_id=?2 AND owner_id=?3) FROM a)=1)",
     ).bind(input.parentId, input.spaceId, input.userId),
