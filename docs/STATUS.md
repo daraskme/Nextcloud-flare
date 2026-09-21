@@ -90,7 +90,7 @@ Phase 0〜8C の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - `pnpm lint`: pass
 - `pnpm typecheck`: pass（shared / web / worker）
 - `pnpm test`: pass
-  - unit: 24 files / 65 tests
+  - unit: 25 files / 74 tests
   - Workers integration・schema・spike: 38 files / 82 tests
 - `pnpm build`: pass
   - shared TypeScript build
@@ -101,6 +101,18 @@ Phase 0〜8C の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - Bookshelf integration: upload同一batch job、stored/deflate、natural page順、Range index/local header/CRC、cover、reading state、public share budget、EPUB sanitize/CSP、PDF、path traversal/zip bomb/RAR拒否をMiniflareで確認した。
 - Audio unit/integration: MP3/FLAC/OGG・Opus/M4A・MP4/WAV parser、upload同一batch job、cover、album tracks、blob-bound位置、private/public Rangeを確認した。
 - 実Cloudflare Images codec/metadata除去、実D1 rows_read/duration、実DAV client、browser別EPUB/PDF/audio MediaSessionはstaging/release gateに残る。
+
+## ブラウザ E2E 第2ラウンドの修正（Phase 9 準備）
+
+ローカル（Vite 5173 + Worker 8787、dev principal）で実施した2回目のブラウザ E2E の指摘に対する修正:
+
+- `1c5afa8` Vite dev proxy を `^/s(?:/|$)` 等に固定し `/src` が `/s` に吸われる問題を修正。`cc27aea` で `/c` `/public-assets` `/reader` `/reader-assets` も Worker へ proxy。
+- `cf3cd88` handler の無い `library/:nodeId` 系 route が `/library/roots` を遮蔽していた問題を manifest から除去し、contract test で「handled literal route を deferred param route が遮蔽しない」ことを固定。
+- `ddead8f` blob commit 時に先頭 64B から MIME を sniff（PNG/JPEG/GIF/WebP/PDF/FLAC/MP3/OGG/MP4/ZIP/EPUB/RAR/7z 等）。ブラウザ宣言 MIME は passive 型のみ fallback として採用。file create/overwrite 後に library/audio job を Queue へ dispatch（development では Images binding が無いため media-extract は dispatch しない。test では dispatch しない）。DAV XML parser が標準 `<?xml ...?>` 宣言を受理（DTD/ENTITY/XInclude は引き続き 400）。`GET /` と `/assets/:asset` を Worker の明示 handler にし、Wrangler assets の SPA fallback (`not_found_handling`) を無効化。
+- `2d4de3f` 画像/PDF/テキスト/音声/動画のアプリ内 PreviewDialog（ダブルクリックで開く、Esc/overlay で閉じる、新規タブ/ダウンロード）。狭幅（<lg）向けの top bar + drawer（Upload/検索/セクション nav）。同一不正名の再送で operations の request digest が衝突し `name_conflict` と誤表示される問題を、明示 idempotency key が無い場合は operation 毎 nonce、未開始 claim の revoke 時削除、`duplicate_request` への map で修正。
+- `cc27aea` Gallery を Files で最後に開いたフォルダにスコープ（header にパス表示）。
+- `0abec6c` public-share / reader を single-entry の自己完結 bundle として別 build（`vite build --mode public-share|reader`）。以前は i18n chunk が `/assets/*`（auth: access）に共有され、public landing が本番でも Access 越しに壊れる構成だった。
+- share session / content session cookie の `__Host-` prefix を `ENVIRONMENT=development` かつ `APP_ORIGIN` が `http://` のときだけ外す（`auth/cookies.ts`）。Chrome は plain http（localhost 含む）で `__Host-` cookie を `InvalidPrefix` として破棄するため、local dev では正しいパスワードで unlock 200 の直後に GET が 401 になっていた。`Secure`/`HttpOnly`/`SameSite` 属性と production の名前は変更していない。
 
 ## 未実装
 
@@ -123,7 +135,11 @@ Phase 0〜8C の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - recovery drill scriptは明示的`--confirm-staging`がない限りdry-runであり、このrunでは実restoreを実行していない。
 - Gallery 50,000 candidate、PROPFIND 1,000×20 propertyの実D1予算はlocal correctnessのみ。rows_read/duration gateはstaging未検証。
 - app password production利用前に`APP_PASSWORD_PEPPER`を32文字以上のsecretとして設定する必要がある。development/testだけはlocal専用値を使う。
-- upload時の`mime_sniffed`列は現行経路ではrequest Content-Type由来であり、独立magic-byte sniff pipelineは未実装。不正画像はImages jobがfail closedになるがGallery種別表示の精度は今後改善が必要。
+- `mime_sniffed`は先頭64Bのmagic-byte判定で、判定不能時のみpassiveなブラウザ宣言MIMEにfallbackする。EPUB判定は`mimetype`が先頭entryで無圧縮という標準layoutを前提とし、それ以外のEPUBは`application/zip`になる（Bookshelfはentry走査で別途判定する）。
+- Starred / Tags のUI操作（context menu・Details）は未提供。
+- WebDAV: 削除直後の同名collection再作成はtrash中のnodeと衝突し409を返す。別名か回収箱からの完全削除後は成功する。
+- Audio: 前トラック終了後のqueue遷移でUIがPause表示のまま再生位置0で停止するケースがある。ネストしたフォルダ内のalbumがalbum pickerに現れない。MP3 durationのbounded推定はffprobeと数秒ずれる。
+- local devでは`/s/*`のpublic shellから同一originの`/api/v1/me`を叩くとdev principalで200になる。これはloopback限定のdev bypassの副作用で、productionではAccessが`/api/v1/me`をgateする。
 - local Galleryは要件どおりImages fallbackを閉じてplaceholderを返すため、実thumbnail表示はstagingまたはproduction Images bindingでのみ確認できる。
 - EPUB sanitizerは安全側のtext-only XHTMLを生成するため、publication由来の複雑なlayout/CSS/画像埋込みは保持しない。完全なOPF spine/nav/CFIはPhase 9以降のbrowser gateに残る。
 - MP3 durationは先頭MPEG frameのbitrateからのbounded推定で、VBR精密durationは未提供。OGG durationはtail 128B内に最終page headerがない場合nullになる。

@@ -13,8 +13,7 @@ function bytes(...parts: (number[] | string)[]): Uint8Array {
 
 describe("sniffMime", () => {
   it("recognises the media formats used by gallery, bookshelf and audio", () => {
-    expect(sniffMime(bytes([0x89], "PNG", [0x0d, 0x0a, 0x1a, 0x0a], "....")))
-      .toBe("image/png");
+    expect(sniffMime(bytes([0x89], "PNG", [0x0d, 0x0a, 0x1a, 0x0a], "...."))).toBe("image/png");
     expect(sniffMime(bytes([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
     expect(sniffMime(bytes("RIFF", [1, 2, 3, 4], "WEBPVP8 "))).toBe("image/webp");
     expect(sniffMime(bytes("fLaC", [0, 0, 0, 0x22]))).toBe("audio/flac");

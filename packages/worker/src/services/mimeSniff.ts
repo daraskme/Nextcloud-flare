@@ -6,7 +6,11 @@ function startsWith(bytes: Uint8Array, signature: number[], offset = 0): boolean
 }
 
 function ascii(bytes: Uint8Array, text: string, offset = 0): boolean {
-  return startsWith(bytes, Array.from(text, (char) => char.charCodeAt(0)), offset);
+  return startsWith(
+    bytes,
+    Array.from(text, (char) => char.charCodeAt(0)),
+    offset,
+  );
 }
 
 export function sniffMime(bytes: Uint8Array): string | null {
@@ -20,7 +24,8 @@ export function sniffMime(bytes: Uint8Array): string | null {
   if (ascii(bytes, "%PDF-")) return "application/pdf";
   if (ascii(bytes, "fLaC")) return "audio/flac";
   if (ascii(bytes, "ID3")) return "audio/mpeg";
-  if (bytes.length >= 2 && bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe6) === 0xe2) return "audio/mpeg";
+  if (bytes.length >= 2 && bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe6) === 0xe2)
+    return "audio/mpeg";
   if (ascii(bytes, "OggS")) {
     if (ascii(bytes, "OpusHead", 28)) return "audio/opus";
     return "audio/ogg";
@@ -60,7 +65,8 @@ export function resolveBlobMime(sniffed: string | null, declared: string | undef
   if (candidate === undefined || candidate === "" || candidate === "application/octet-stream") {
     return "application/octet-stream";
   }
-  if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(candidate)) return "application/octet-stream";
+  if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(candidate))
+    return "application/octet-stream";
   const passive =
     ((candidate.startsWith("image/") && candidate !== "image/svg+xml") ||
       candidate.startsWith("audio/") ||

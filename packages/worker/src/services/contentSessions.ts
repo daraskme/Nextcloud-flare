@@ -1,5 +1,6 @@
 import type { ContentPurpose } from "@ncf/shared";
 
+import { hostCookieName } from "../auth/cookies.js";
 import type { AuthenticatedUser } from "../auth/httpAuth.js";
 import type { AuthenticatedShare } from "../auth/share.js";
 import { randomToken, sha256, signToken, verifyToken } from "../auth/tokens.js";
@@ -9,7 +10,7 @@ import { getContentDescriptor, serveNodeContentById, type ContentDescriptor } fr
 import { assertShareNode, findInternalShare, type ShareCapability } from "./shares.js";
 
 const CONTENT_SESSION_TTL_MS = 10 * 60 * 1000;
-const CONTENT_COOKIE = "__Host-ncf_cs";
+const CONTENT_COOKIE = "ncf_cs";
 
 interface ContentTarget {
   nodeId: string;
@@ -31,14 +32,15 @@ function signingKey(env: Env): string {
   return key;
 }
 
-function cookieValue(request: Request): string | null {
+function cookieValue(env: Env, request: Request): string | null {
   const header = request.headers.get("Cookie");
   if (header === null) return null;
+  const name = hostCookieName(env, CONTENT_COOKIE);
   const matches = header
     .split(";")
     .map((part) => part.trim())
-    .filter((part) => part.startsWith(`${CONTENT_COOKIE}=`));
-  return matches.length === 1 ? (matches[0]?.slice(CONTENT_COOKIE.length + 1) ?? null) : null;
+    .filter((part) => part.startsWith(`${name}=`));
+  return matches.length === 1 ? (matches[0]?.slice(name.length + 1) ?? null) : null;
 }
 
 async function createTicket(
@@ -276,7 +278,7 @@ export async function acceptContentTicket(
     env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
   ]);
   return {
-    cookie: `${CONTENT_COOKIE}=${sessionId}; Path=/; Max-Age=${Math.floor((row.expiresAt - now) / 1000)}; Secure; HttpOnly; SameSite=None`,
+    cookie: `${hostCookieName(env, CONTENT_COOKIE)}=${sessionId}; Path=/; Max-Age=${Math.floor((row.expiresAt - now) / 1000)}; Secure; HttpOnly; SameSite=None`,
     expiresAt: row.expiresAt,
   };
 }
@@ -289,7 +291,7 @@ async function contentSession(
   purpose: ContentPurpose,
   now = Date.now(),
 ): Promise<{ descriptor: ContentDescriptor; budgetId: string; maxBytes: number }> {
-  const sessionId = cookieValue(request);
+  const sessionId = cookieValue(env, request);
   if (sessionId === null || !/^cs_[A-Za-z0-9_-]{20,}$/u.test(sessionId)) {
     throw new Error("content_session_required");
   }

@@ -1,6 +1,7 @@
 import type { Principal } from "@ncf/shared";
 
 import type { Env } from "../env.js";
+import { hostCookieName } from "./cookies.js";
 import { issueCsrfToken, verifyCsrfToken } from "./csrf.js";
 import {
   capability,
@@ -21,8 +22,8 @@ export interface AuthenticatedShare {
   budgetMaxBytes: number;
 }
 
-function cookieName(shareId: string): string {
-  return `__Host-ncf_share_${shareId}`;
+function cookieName(env: Env, shareId: string): string {
+  return hostCookieName(env, `ncf_share_${shareId}`);
 }
 
 function cookieValue(request: Request, name: string): string | null {
@@ -116,7 +117,7 @@ export async function unlockShare(
         rootNodeId: share.rootNodeId,
       },
     },
-    cookie: `${cookieName(share.id)}=${sessionId}.${opaque}; Path=/; Max-Age=${Math.floor((expiresAt - now) / 1000)}; Secure; HttpOnly; SameSite=Lax`,
+    cookie: `${cookieName(env, share.id)}=${sessionId}.${opaque}; Path=/; Max-Age=${Math.floor((expiresAt - now) / 1000)}; Secure; HttpOnly; SameSite=Lax`,
   };
 }
 
@@ -127,7 +128,7 @@ export async function authenticateShare(
   now = Date.now(),
 ): Promise<AuthenticatedShare> {
   const share = capability(await loadPublicShare(env, shareId, now));
-  const value = cookieValue(request, cookieName(shareId));
+  const value = cookieValue(request, cookieName(env, shareId));
   if (value === null || value.length > 512) throw new Error("share_session_required");
   const separator = value.indexOf(".");
   if (separator < 1) throw new Error("share_session_required");
@@ -204,5 +205,5 @@ export async function logoutShare(
       "UPDATE content_sessions SET revoked_at=?1 WHERE issued_by_credential_id=?2 AND revoked_at IS NULL",
     ).bind(now, authentication.sessionId),
   ]);
-  return `${cookieName(shareId)}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`;
+  return `${cookieName(env, shareId)}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`;
 }
