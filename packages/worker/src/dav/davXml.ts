@@ -21,6 +21,8 @@ const parser = new XMLParser({
   parseTagValue: false,
   trimValues: false,
   processEntities: false,
+  ignoreDeclaration: true,
+  ignorePiTags: true,
 });
 
 function escapeText(value: string): string {

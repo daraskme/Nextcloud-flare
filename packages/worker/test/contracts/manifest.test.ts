@@ -21,8 +21,6 @@ describe("route manifest", () => {
 
   it("only leaves the known deferred routes without a handler", () => {
     const deferred = [
-      "GET /",
-      "GET /assets/:asset",
       "GET /api/v1/jobs/:jobId",
       "POST /api/v1/jobs/:jobId/cancel",
       "POST /api/v1/jobs/:jobId/retry",

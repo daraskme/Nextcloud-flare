@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { dispatchNodeJobs } from "../jobs/dispatch.js";
 import { upsertSearchStatements } from "../search/sync.js";
 import { davOverwriteStatements, type DavOverwriteTarget } from "./davOverwrite.js";
 import { normalizePortableName } from "./fsMutation.js";
@@ -104,6 +105,7 @@ export async function createFile(env: Env, input: FileCreateInput): Promise<void
     ...auditAndOutbox(env, input, "node.created", input.nodeId, 6, now),
     ...finishMutation(env, input, { node_id: input.nodeId, revision: 1 }, now),
   ]);
+  await dispatchNodeJobs(env, input.nodeId).catch(() => undefined);
 }
 
 interface OverwriteInput extends UserMutationContext {
@@ -184,6 +186,7 @@ export async function overwriteFile(env: Env, input: OverwriteInput): Promise<vo
       now,
     ),
   ]);
+  await dispatchNodeJobs(env, input.nodeId).catch(() => undefined);
 }
 
 interface MoveInput extends StructuralMutationContext {

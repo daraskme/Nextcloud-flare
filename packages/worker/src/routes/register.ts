@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 
 import { enforceCsrf, handleCsrf, handleLogout, handleOperation } from "../api/account.js";
+import { handleAppAsset, handleAppShell } from "../api/app.js";
 import {
   handleAudioCover,
   handlePlaybackState,
@@ -120,6 +121,8 @@ import { routeKey, routesThroughPhase, type RouteDefinition } from "./manifest.j
 type RouteHandler = (context: AppContext) => Response | Promise<Response>;
 
 export const handlers = new Map<string, RouteHandler>([
+  ["GET /", handleAppShell],
+  ["GET /assets/:asset", handleAppAsset],
   ["GET /api/v1/me", handleMe],
   ["POST /api/v1/auth/logout", handleLogout],
   ["POST /api/v1/csrf", handleCsrf],

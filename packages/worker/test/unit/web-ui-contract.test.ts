@@ -35,8 +35,9 @@ describe("web UI regression contract", () => {
     expect(web("src/features/shares/SharesView.tsx")).toContain('t("shares.disabled")');
     expect(web("src/App.tsx")).toContain("formatBytes(storageUsed)");
     const vite = web("vite.config.ts");
-    expect(vite).toContain('"/api"');
-    expect(vite).toContain('"/dav"');
-    expect(vite).toContain('"/s"');
+    expect(vite).toContain('"^/api(?:/|$)"');
+    expect(vite).toContain('"^/dav(?:/|$)"');
+    expect(vite).toContain('"^/s(?:/|$)"');
+    expect(vite).not.toContain('"/s"');
   });
 });

@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { resolveBlobMime, sniffObjectMime } from "./mimeSniff.js";
 import { putKnownLength } from "./streaming.js";
 
 export interface StagedBlob {
@@ -45,7 +46,7 @@ export async function transferImmutableBlob(
     size: input.size,
     contentEtag: `"b-${input.blobId}"`,
     r2Etag: object.httpEtag,
-    mime: input.mime ?? "application/octet-stream",
+    mime: resolveBlobMime(await sniffObjectMime(env.BLOBS, key), input.mime),
   };
   await env.DB.batch([
     env.DB.prepare(
@@ -99,7 +100,7 @@ export async function recordCompletedBlob(
     size: input.size,
     contentEtag: `"b-${input.id}"`,
     r2Etag: input.r2Etag,
-    mime: input.mime ?? "application/octet-stream",
+    mime: resolveBlobMime(await sniffObjectMime(env.BLOBS, key), input.mime),
   };
   await env.DB.batch([
     env.DB.prepare(

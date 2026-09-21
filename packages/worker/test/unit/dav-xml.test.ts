@@ -27,6 +27,16 @@ describe("DAV XML adapter", () => {
     });
   });
 
+  it("accepts an XML declaration before the root element", async () => {
+    const root = await parseDavXml(
+      xmlRequest(
+        '<?xml version="1.0" encoding="utf-8"?>\n<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope></D:lockinfo>',
+      ),
+      true,
+    );
+    expect(root).toMatchObject({ namespace: "DAV:", localName: "lockinfo" });
+  });
+
   it("rejects DTD, entities, XInclude and invalid scalar references", async () => {
     await expect(
       parseDavXml(xmlRequest('<!DOCTYPE x><D:propfind xmlns:D="DAV:"/>'), true),
