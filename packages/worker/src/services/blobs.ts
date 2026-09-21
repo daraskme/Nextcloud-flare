@@ -70,6 +70,60 @@ export async function transferImmutableBlob(
   return blob;
 }
 
+export async function recordCompletedBlob(
+  env: Env,
+  input: {
+    id: string;
+    ownerId: string;
+    size: number;
+    r2Etag: string;
+    mime?: string;
+    operationId?: string;
+  },
+): Promise<StagedBlob> {
+  const key = immutableBlobKey(input.ownerId, input.id);
+  const existing = await env.DB.prepare(
+    "SELECT id,owner_id ownerId,r2_key key,size,content_etag contentEtag,r2_etag r2Etag,COALESCE(mime_sniffed,'application/octet-stream') mime FROM blobs WHERE id=?1 AND owner_id=?2 AND state='staging' AND ref_count=0",
+  )
+    .bind(input.id, input.ownerId)
+    .first<StagedBlob>();
+  if (existing !== null) {
+    if (existing.size !== input.size || existing.key !== key)
+      throw new Error("staged_blob_mismatch");
+    return existing;
+  }
+  const blob: StagedBlob = {
+    id: input.id,
+    ownerId: input.ownerId,
+    key,
+    size: input.size,
+    contentEtag: `"b-${input.id}"`,
+    r2Etag: input.r2Etag,
+    mime: input.mime ?? "application/octet-stream",
+  };
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO blobs(id,owner_id,r2_key,size,sha256_verified,client_sha256,content_etag,r2_etag,mime_sniffed,ref_count,state,created_at,last_op_id) VALUES(?1,?2,?3,?4,NULL,NULL,?5,?6,?7,0,'staging',?8,?9)",
+    ).bind(
+      blob.id,
+      blob.ownerId,
+      blob.key,
+      blob.size,
+      blob.contentEtag,
+      blob.r2Etag,
+      blob.mime,
+      Date.now(),
+      input.operationId ?? null,
+    ),
+    env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
+    env.DB.prepare(
+      "UPDATE users SET physical_bytes=physical_bytes+?1 WHERE id=?2 AND disabled_at IS NULL AND reserved_bytes>=?1",
+    ).bind(blob.size, blob.ownerId),
+    env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
+  ]);
+  return blob;
+}
+
 export async function markStagedBlobOrphan(
   env: Env,
   blobId: string,

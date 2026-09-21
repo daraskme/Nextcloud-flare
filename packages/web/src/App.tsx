@@ -2,6 +2,7 @@ import { Cloud, Files, HardDrive, Moon, Search, Settings, Sun, Trash2, Upload } 
 import { useEffect, useState } from "react";
 
 import { FileBrowser } from "./features/files/FileBrowser";
+import { UploadManager } from "./features/uploads/UploadManager";
 import { api } from "./lib/api";
 
 interface Workspace {
@@ -13,6 +14,8 @@ export function App(): React.JSX.Element {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem("ncf-theme") !== "light");
+  const [currentFolder, setCurrentFolder] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -42,7 +45,10 @@ export function App(): React.JSX.Element {
             <p className="text-[10px] uppercase tracking-[.22em] text-slate-500">Cloudflare</p>
           </div>
         </div>
-        <button className="primary-button mt-7 w-full justify-center">
+        <button
+          className="primary-button mt-7 w-full justify-center"
+          onClick={() => window.dispatchEvent(new Event("ncf-upload"))}
+        >
           <Upload className="h-4 w-4" /> Upload
         </button>
         <nav className="mt-7 space-y-1">
@@ -86,7 +92,11 @@ export function App(): React.JSX.Element {
       </aside>
       <div className="relative flex min-w-0 flex-1 flex-col">
         {workspace !== null ? (
-          <FileBrowser rootId={workspace.rootId} />
+          <FileBrowser
+            rootId={workspace.rootId}
+            refreshKey={refreshKey}
+            onNavigate={setCurrentFolder}
+          />
         ) : (
           <div className="grid min-h-screen place-items-center">
             <div className="text-center">
@@ -98,6 +108,12 @@ export function App(): React.JSX.Element {
           </div>
         )}
       </div>
+      {workspace !== null && (
+        <UploadManager
+          parentId={currentFolder ?? workspace.rootId}
+          onCompleted={() => setRefreshKey((value) => value + 1)}
+        />
+      )}
     </main>
   );
 }

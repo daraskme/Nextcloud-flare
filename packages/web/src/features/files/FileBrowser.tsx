@@ -20,6 +20,8 @@ type ViewMode = "grid" | "list";
 
 interface FileBrowserProps {
   rootId: string;
+  refreshKey: number;
+  onNavigate: (nodeId: string) => void;
 }
 
 interface MenuState {
@@ -43,7 +45,11 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
-export function FileBrowser({ rootId }: FileBrowserProps): React.JSX.Element {
+export function FileBrowser({
+  rootId,
+  refreshKey,
+  onNavigate,
+}: FileBrowserProps): React.JSX.Element {
   const [currentId, setCurrentId] = useState(rootId);
   const [items, setItems] = useState<NodeSummary[]>([]);
   const [path, setPath] = useState<BreadcrumbItem[]>([]);
@@ -75,8 +81,9 @@ export function FileBrowser({ rootId }: FileBrowserProps): React.JSX.Element {
   };
 
   useEffect(() => {
+    onNavigate(currentId);
     void load();
-  }, [currentId]);
+  }, [currentId, refreshKey]);
 
   useEffect(() => {
     const close = () => setMenu(null);

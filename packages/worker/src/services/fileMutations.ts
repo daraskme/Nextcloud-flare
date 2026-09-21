@@ -19,6 +19,13 @@ interface FileCreateInput extends StructuralMutationContext {
   nodeId: string;
   blobId: string;
   name: string;
+  uploadId?: string;
+  copyJob?: {
+    jobId: string;
+    pinId: string;
+    sourceBlobId: string;
+    claimToken: string;
+  };
 }
 
 export async function createFile(env: Env, input: FileCreateInput): Promise<void> {
@@ -51,6 +58,31 @@ export async function createFile(env: Env, input: FileCreateInput): Promise<void
     ).bind(input.userId, input.blobId),
     assertChanged(env),
     ...operationStep(env, input.operationId, 3, "quota.commit", input.userId),
+    ...(input.uploadId === undefined
+      ? []
+      : [
+          env.DB.prepare(
+            "UPDATE uploads SET state='completed',target_node_id=?1,updated_at=?2 WHERE id=?3 AND owner_id=?4 AND blob_id=?5 AND state='completing'",
+          ).bind(input.nodeId, now, input.uploadId, input.userId, input.blobId),
+          assertChanged(env),
+        ]),
+    ...(input.copyJob === undefined
+      ? []
+      : [
+          env.DB.prepare("DELETE FROM blob_pins WHERE pin_id=?1 AND blob_id=?2").bind(
+            input.copyJob.pinId,
+            input.copyJob.sourceBlobId,
+          ),
+          assertChanged(env),
+          env.DB.prepare(
+            "UPDATE blobs SET ref_count=ref_count-1,last_op_id=?1 WHERE id=?2 AND ref_count>0 AND state='committed'",
+          ).bind(input.operationId, input.copyJob.sourceBlobId),
+          assertChanged(env),
+          env.DB.prepare(
+            "UPDATE bulk_jobs SET state='completed',operation_id=?1,updated_at=?2 WHERE id=?3 AND state='claimed' AND claim_token=?4",
+          ).bind(input.operationId, now, input.copyJob.jobId, input.copyJob.claimToken),
+          assertChanged(env),
+        ]),
     env.DB.prepare(
       "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL",
     ).bind(now, input.operationId, input.parentId, input.expectedParentRevision),
@@ -73,6 +105,7 @@ interface OverwriteInput extends UserMutationContext {
   versionId: string;
   expectedNodeRevision: number;
   expectedParentRevision: number;
+  uploadId?: string;
 }
 
 export async function overwriteFile(env: Env, input: OverwriteInput): Promise<void> {
@@ -118,6 +151,14 @@ export async function overwriteFile(env: Env, input: OverwriteInput): Promise<vo
     ).bind(input.userId, input.blobId),
     assertChanged(env),
     ...operationStep(env, input.operationId, 4, "quota.commit", input.userId),
+    ...(input.uploadId === undefined
+      ? []
+      : [
+          env.DB.prepare(
+            "UPDATE uploads SET state='completed',target_node_id=?1,updated_at=?2 WHERE id=?3 AND owner_id=?4 AND blob_id=?5 AND state='completing'",
+          ).bind(input.nodeId, now, input.uploadId, input.userId, input.blobId),
+          assertChanged(env),
+        ]),
     env.DB.prepare(
       "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND owner_id=?4 AND revision=?5 AND deleted_at IS NULL",
     ).bind(now, input.operationId, input.parentId, input.userId, input.expectedParentRevision),

@@ -13,6 +13,14 @@ import {
   handleRename,
 } from "../api/nodes.js";
 import type { AppContext } from "../api/http.js";
+import {
+  handleAbortUpload,
+  handleCompleteUpload,
+  handleCreateUpload,
+  handleGetUpload,
+  handleSingleContent,
+  handleUploadPart,
+} from "../api/uploads.js";
 import type { Env } from "../env.js";
 import { routeKey, routesThroughPhase, type RouteDefinition } from "./manifest.js";
 
@@ -33,6 +41,12 @@ const handlers = new Map<string, RouteHandler>([
   ["PUT /api/v1/nodes/:nodeId/content", handlePutContent],
   ["POST /api/v1/nodes/:nodeId/move", handleMove],
   ["POST /api/v1/nodes/:nodeId/copy", handleCopy],
+  ["POST /api/v1/uploads", handleCreateUpload],
+  ["GET /api/v1/uploads/:uploadId", handleGetUpload],
+  ["PUT /api/v1/uploads/:uploadId/content", handleSingleContent],
+  ["PUT /api/v1/uploads/:uploadId/parts/:partNumber", handleUploadPart],
+  ["POST /api/v1/uploads/:uploadId/complete", handleCompleteUpload],
+  ["DELETE /api/v1/uploads/:uploadId", handleAbortUpload],
 ]);
 
 function isMutation(definition: RouteDefinition): boolean {

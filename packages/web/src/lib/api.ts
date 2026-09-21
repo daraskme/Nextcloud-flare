@@ -1,4 +1,10 @@
-import type { BreadcrumbItem, ChildrenPage, NodeSummary } from "@ncf/shared";
+import type {
+  BreadcrumbItem,
+  ChildrenPage,
+  NodeSummary,
+  UploadInfo,
+  UploadMode,
+} from "@ncf/shared";
 
 interface MeResponse {
   user: { id: string; email: string; role: "member" | "app_admin" };
@@ -34,7 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!["GET", "HEAD"].includes(method)) {
     headers.set("X-CSRF-Token", await csrf());
     headers.set("Sec-Fetch-Site", "same-origin");
-    if (init?.body !== undefined && !headers.has("Content-Type")) {
+    if (typeof init?.body === "string" && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
   }
@@ -75,5 +81,39 @@ export const api = {
     request<NodeSummary>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/copy`, {
       method: "POST",
       body: JSON.stringify({ destinationParentId, name }),
+    }),
+  createUpload: (parentId: string, name: string, declaredSize: number, mode: UploadMode) =>
+    request<UploadInfo>("/api/v1/uploads", {
+      method: "POST",
+      body: JSON.stringify({ parentId, name, declaredSize, mode }),
+    }),
+  uploadStatus: (uploadId: string, capability: string) =>
+    request<UploadInfo>(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
+      headers: { "Upload-Capability": capability },
+    }),
+  putSingle: (uploadId: string, capability: string, body: Blob) =>
+    request<UploadInfo>(`/api/v1/uploads/${encodeURIComponent(uploadId)}/content`, {
+      method: "PUT",
+      headers: { "Upload-Capability": capability },
+      body,
+    }),
+  putPart: (uploadId: string, capability: string, partNumber: number, body: Blob) =>
+    request<{ partNumber: number; size: number; etag: string }>(
+      `/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/${partNumber}`,
+      {
+        method: "PUT",
+        headers: { "Upload-Capability": capability },
+        body,
+      },
+    ),
+  completeUpload: (uploadId: string, capability: string) =>
+    request<NodeSummary>(`/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
+      method: "POST",
+      headers: { "Upload-Capability": capability },
+    }),
+  abortUpload: (uploadId: string, capability: string) =>
+    request<undefined>(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
+      method: "DELETE",
+      headers: { "Upload-Capability": capability },
     }),
 };
