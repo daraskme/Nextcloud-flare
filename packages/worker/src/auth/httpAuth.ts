@@ -20,11 +20,15 @@ function randomId(prefix: string): string {
   return `${prefix}_${value}`;
 }
 
-function devEnabled(env: Env): boolean {
+function devEnabled(env: Env, request: Request): boolean {
   if (env.DEV_PRINCIPAL_EMAIL === undefined) {
     return false;
   }
-  if (env.ENVIRONMENT !== "development" && env.ENVIRONMENT !== "test") {
+  const hostname = new URL(request.url).hostname;
+  if (
+    (env.ENVIRONMENT !== "development" && env.ENVIRONMENT !== "test") ||
+    (hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "::1")
+  ) {
     throw new Error("development_principal_forbidden");
   }
   return true;
@@ -123,7 +127,7 @@ export async function authenticateAccessUser(
   env: Env,
   request: Request,
 ): Promise<AuthenticatedUser> {
-  if (devEnabled(env)) {
+  if (devEnabled(env, request)) {
     return ensureDevUser(env);
   }
   const token = request.headers.get("Cf-Access-Jwt-Assertion");

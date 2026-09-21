@@ -63,7 +63,7 @@ export function FileBrowser({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const dragged = useRef<string | null>(null);
+  const dragged = useRef<string[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -158,15 +158,21 @@ export function FileBrowser({
     }
   };
 
+  const startDrag = (item: NodeSummary) => {
+    dragged.current = selected.has(item.id) ? [...selected] : [item.id];
+  };
+
   const drop = async (destination: NodeSummary) => {
-    const source = dragged.current;
-    dragged.current = null;
-    if (source === null || source === destination.id || destination.kind !== "folder") return;
+    const sources = dragged.current;
+    dragged.current = [];
+    if (sources.length === 0 || destination.kind !== "folder") return;
     try {
-      await api.move(source, destination.id);
+      for (const source of sources) {
+        if (source !== destination.id) await api.move(source, destination.id);
+      }
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not move item");
+      setError(cause instanceof Error ? cause.message : "Could not move selected items");
     }
   };
 
@@ -240,7 +246,7 @@ export function FileBrowser({
               <article
                 key={item.id}
                 draggable
-                onDragStart={() => (dragged.current = item.id)}
+                onDragStart={() => startDrag(item)}
                 onDragOver={(event) => item.kind === "folder" && event.preventDefault()}
                 onDrop={() => void drop(item)}
                 onClick={(event) => {
@@ -287,7 +293,7 @@ export function FileBrowser({
               <div
                 key={item.id}
                 draggable
-                onDragStart={() => (dragged.current = item.id)}
+                onDragStart={() => startDrag(item)}
                 onDragOver={(event) => item.kind === "folder" && event.preventDefault()}
                 onDrop={() => void drop(item)}
                 onClick={(event) => {
