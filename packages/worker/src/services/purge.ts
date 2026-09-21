@@ -152,6 +152,9 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
     env.DB.prepare(
       "DELETE FROM node_props WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM trash_members WHERE trash_op_id<>?2 AND node_id IN (SELECT value FROM json_each(?1)) AND EXISTS(SELECT 1 FROM trash_ops t WHERE t.op_id=trash_members.trash_op_id AND t.state='restored' AND t.actor_id=?3 AND t.space_id=?4)",
+    ).bind(encoded, input.trashOpId, input.userId, input.spaceId),
     ...operationStep(env, input.operationId, 3, "trash.dependents.purge", input.trashOpId),
     env.DB.prepare("DELETE FROM trash_members WHERE trash_op_id=?1").bind(input.trashOpId),
     assertChanged(env, trash.members),

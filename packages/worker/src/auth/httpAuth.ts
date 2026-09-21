@@ -24,7 +24,15 @@ function devEnabled(env: Env, request: Request): boolean {
   if (env.DEV_PRINCIPAL_EMAIL === undefined) {
     return false;
   }
-  const hostname = new URL(request.url).hostname;
+  const url = new URL(request.url);
+  if (
+    url.pathname === "/s" ||
+    url.pathname.startsWith("/s/") ||
+    url.pathname.startsWith("/api/v1/public/")
+  ) {
+    return false;
+  }
+  const hostname = url.hostname;
   if (
     (env.ENVIRONMENT !== "development" && env.ENVIRONMENT !== "test") ||
     (hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "::1")

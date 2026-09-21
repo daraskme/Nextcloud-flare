@@ -3,6 +3,20 @@
 @tailwind utilities;
 
 :root {
+  --fg: #0f172a;
+  --fg-muted: #475569;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-muted: #f1f5f9;
+  --surface-hover: #e2e8f0;
+  --border: #cbd5e1;
+  --accent: #0369a1;
+  --accent-fg: #ffffff;
+  --danger: #be123c;
+  --success: #047857;
+  --warning: #a16207;
+  --overlay: rgb(15 23 42 / 72%);
+  --overlay-fg: #ffffff;
   font-family:
     Inter,
     ui-sans-serif,
@@ -16,7 +30,21 @@
   text-rendering: optimizeLegibility;
 }
 
-:root.dark {
+:root[data-theme="dark"] {
+  --fg: #f8fafc;
+  --fg-muted: #cbd5e1;
+  --bg: #080b11;
+  --surface: #0f172a;
+  --surface-muted: #172033;
+  --surface-hover: #243044;
+  --border: #334155;
+  --accent: #38bdf8;
+  --accent-fg: #082f49;
+  --danger: #fda4af;
+  --success: #6ee7b7;
+  --warning: #fcd34d;
+  --overlay: rgb(2 6 23 / 78%);
+  --overlay-fg: #ffffff;
   color-scheme: dark;
 }
 
@@ -28,6 +56,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 button {
@@ -36,36 +66,113 @@ button {
 
 @layer components {
   .primary-button {
-    @apply inline-flex items-center gap-2 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-sky-500/15 transition duration-200 hover:-translate-y-0.5 hover:bg-sky-400 active:translate-y-0;
+    @apply inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium shadow-lg transition duration-200 hover:-translate-y-0.5 active:translate-y-0;
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
+
+  .primary-button:hover {
+    filter: brightness(1.08);
   }
 
   .icon-button {
-    @apply grid h-9 w-9 place-items-center rounded-xl border border-slate-200 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:border-white/10 dark:text-slate-500 dark:hover:bg-white/5 dark:hover:text-white;
+    @apply grid h-9 w-9 place-items-center rounded-xl border transition;
+    border-color: var(--border);
+    color: var(--fg-muted);
+  }
+
+  .icon-button:hover {
+    background: var(--surface-hover);
+    color: var(--fg);
   }
 
   .view-button {
-    @apply grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:text-slate-900 dark:hover:text-white;
+    @apply grid h-7 w-7 place-items-center rounded-lg transition;
+    color: var(--fg-muted);
   }
 
+  .view-button:hover,
   .view-button-active {
-    @apply bg-white text-slate-900 shadow-sm dark:bg-white/10 dark:text-white dark:shadow-none;
+    background: var(--surface);
+    color: var(--fg);
   }
 
   .nav-item {
-    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-white/[0.045] dark:hover:text-white;
+    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition;
+    color: var(--fg-muted);
+  }
+
+  .nav-item:hover {
+    background: var(--surface-hover);
+    color: var(--fg);
   }
 
   .nav-item kbd {
-    @apply ml-auto rounded border border-slate-200 px-1.5 py-0.5 text-[9px] dark:border-white/10;
+    @apply ml-auto rounded border px-1.5 py-0.5 text-[9px];
+    border-color: var(--border);
   }
 
   .nav-item-active {
-    @apply bg-sky-500/10 font-medium text-sky-600 dark:text-sky-400;
+    @apply font-medium;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
   }
 
   .context-item {
-    @apply flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-slate-300 transition hover:bg-white/[0.08] hover:text-white;
+    @apply flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition;
+    color: var(--fg);
   }
+
+  .context-item:hover {
+    background: var(--surface-hover);
+  }
+}
+
+.text-slate-100,
+.text-slate-200,
+.text-slate-300 {
+  color: var(--fg) !important;
+}
+
+.text-slate-400,
+.text-slate-500,
+.text-slate-600 {
+  color: var(--fg-muted) !important;
+}
+
+.text-sky-300,
+.text-sky-400,
+.text-sky-500,
+.text-sky-600 {
+  color: var(--accent) !important;
+}
+
+.text-red-500,
+.text-rose-200,
+.text-rose-300,
+.text-rose-400 {
+  color: var(--danger) !important;
+}
+
+.text-emerald-400,
+.text-emerald-500,
+.text-emerald-600 {
+  color: var(--success) !important;
+}
+
+.text-amber-400 {
+  color: var(--warning) !important;
+}
+
+[class*="border-white"],
+[class*="border-slate-"] {
+  border-color: var(--border) !important;
+}
+
+[class~="bg-white"],
+[class*="bg-white/"],
+[class*="dark:bg-white"] {
+  background-color: var(--surface-muted) !important;
 }
 
 ::selection {

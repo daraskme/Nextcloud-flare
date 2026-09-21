@@ -126,6 +126,7 @@ export async function authenticateShare(
   shareId: string,
   now = Date.now(),
 ): Promise<AuthenticatedShare> {
+  const share = capability(await loadPublicShare(env, shareId, now));
   const value = cookieValue(request, cookieName(shareId));
   if (value === null || value.length > 512) throw new Error("share_session_required");
   const separator = value.indexOf(".");
@@ -140,7 +141,6 @@ export async function authenticateShare(
   if (session?.budgetId == null || session.budgetMaxBytes === null) {
     throw new Error("share_session_required");
   }
-  const share = capability(await loadPublicShare(env, shareId, now));
   if (share.version !== session.shareVersion) throw new Error("share_session_required");
   return {
     sessionId,

@@ -2,6 +2,7 @@ import type { NodeSummary } from "@ncf/shared";
 import { File, Folder, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { t } from "../../i18n";
 import { api } from "../../lib/api";
 
 interface SearchPaletteProps {
@@ -67,11 +68,11 @@ export function SearchPalette({ rootId, onSelect }: SearchPaletteProps): React.J
   if (!open) return <></>;
   return (
     <div
-      className="fixed inset-0 z-[80] flex justify-center bg-slate-950/70 px-4 pt-[12vh] backdrop-blur-sm"
+      className="fixed inset-0 z-[80] flex justify-center bg-[var(--overlay)] px-4 pt-[12vh] backdrop-blur-sm"
       onMouseDown={() => setOpen(false)}
     >
       <section
-        className="h-fit w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-[#0d121c]/98 shadow-[0_30px_100px_rgba(0,0,0,.55)]"
+        className="h-fit w-full max-w-2xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_30px_100px_rgba(0,0,0,.35)]"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="flex items-center gap-3 border-b border-white/10 px-5">
@@ -82,23 +83,23 @@ export function SearchPalette({ rootId, onSelect }: SearchPaletteProps): React.J
             ref={input}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search files and folders…"
-            className="h-16 min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-slate-600"
+            placeholder={t("search.placeholder")}
+            className="h-16 min-w-0 flex-1 bg-transparent text-base text-[var(--fg)] outline-none placeholder:text-slate-600"
           />
           <kbd className="rounded-md border border-white/10 px-2 py-1 text-[10px] text-slate-600">
             ESC
           </kbd>
-          <button className="text-slate-600 hover:text-white" onClick={() => setOpen(false)}>
+          <button className="text-slate-600 hover:text-[var(--fg)]" onClick={() => setOpen(false)}>
             <X className="h-4 w-4" />
           </button>
         </header>
         <div className="max-h-[55vh] overflow-auto p-2">
           {query.trim() === "" ? (
-            <div className="px-4 py-10 text-center text-sm text-slate-600">
-              Type a name, substring, or one character to search this workspace.
-            </div>
+            <div className="px-4 py-10 text-center text-sm text-slate-600">{t("search.hint")}</div>
           ) : results.length === 0 && !loading ? (
-            <div className="px-4 py-10 text-center text-sm text-slate-600">No matching items</div>
+            <div className="px-4 py-10 text-center text-sm text-[var(--fg-muted)]">
+              {t("search.none")}
+            </div>
           ) : (
             results.map((item) => (
               <button
@@ -117,18 +118,18 @@ export function SearchPalette({ rootId, onSelect }: SearchPaletteProps): React.J
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-200">{item.name}</p>
+                  <p className="truncate text-sm font-medium text-[var(--fg)]">{item.name}</p>
                   <p className="mt-0.5 text-xs text-slate-600">
-                    {item.kind === "folder" ? "Folder" : (item.mime ?? "File")}
+                    {item.kind === "folder" ? t("files.folder") : (item.mime ?? t("files.file"))}
                   </p>
                 </div>
-                <span className="text-xs text-slate-600">Open</span>
+                <span className="text-xs text-[var(--fg-muted)]">{t("search.open")}</span>
               </button>
             ))
           )}
           {truncated && (
             <p className="px-4 py-2 text-center text-xs text-amber-400/70">
-              Results were truncated to stay within the search budget.
+              {t("search.truncated")}
             </p>
           )}
         </div>

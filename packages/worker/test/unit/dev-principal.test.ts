@@ -15,6 +15,15 @@ describe("development principal boundary", () => {
     ).rejects.toThrow("development_principal_forbidden");
   });
 
+  it.each(["/s/share", "/api/v1/public/shares/share"])(
+    "never applies the development principal to public route %s",
+    async (path) => {
+      await expect(
+        authenticateAccessUser(developmentEnv, new Request(`http://127.0.0.1${path}`)),
+      ).rejects.toThrow("access_token_required");
+    },
+  );
+
   it("fails closed on a production environment at loopback", async () => {
     await expect(
       authenticateAccessUser(

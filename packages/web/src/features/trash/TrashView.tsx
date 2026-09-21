@@ -2,10 +2,11 @@ import type { TrashItem } from "@ncf/shared";
 import { File, Folder, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { t } from "../../i18n";
 import { api } from "../../lib/api";
 
 function size(bytes: number | null): string {
-  if (bytes === null) return "Folder";
+  if (bytes === null) return t("files.folder");
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -23,7 +24,7 @@ export function TrashView({ onChanged }: { onChanged: () => void }): React.JSX.E
     try {
       setItems((await api.trash()).items);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load trash");
+      setError(cause instanceof Error ? cause.message : t("trash.loadError"));
     } finally {
       setLoading(false);
     }
@@ -40,24 +41,21 @@ export function TrashView({ onChanged }: { onChanged: () => void }): React.JSX.E
       await load();
       onChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Restore failed");
+      setError(cause instanceof Error ? cause.message : t("trash.restoreError"));
     } finally {
       setBusy(null);
     }
   };
 
   const purge = async (item: TrashItem) => {
-    if (
-      !window.confirm(`Permanently delete “${item.name}” and ${item.memberCount - 1} nested items?`)
-    )
-      return;
+    if (!window.confirm(`${t("trash.confirm")}\n${item.name} (${item.memberCount})`)) return;
     setBusy(item.opId);
     try {
       await api.purgeTrash(item.opId);
       await load();
       onChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Permanent delete failed");
+      setError(cause instanceof Error ? cause.message : t("trash.deleteError"));
     } finally {
       setBusy(null);
     }
@@ -65,14 +63,14 @@ export function TrashView({ onChanged }: { onChanged: () => void }): React.JSX.E
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-white/[0.08] px-6 py-5 lg:px-8">
+      <header className="flex items-center justify-between border-b border-[var(--border)] px-6 py-5 lg:px-8">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight text-slate-100">Trash</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Items are retained for 30 days before garbage collection.
-          </p>
+          <h2 className="text-lg font-semibold tracking-tight text-[var(--fg)]">
+            {t("trash.title")}
+          </h2>
+          <p className="mt-1 text-xs text-[var(--fg-muted)]">{t("trash.retention")}</p>
         </div>
-        <button className="icon-button" onClick={() => void load()} aria-label="Refresh trash">
+        <button className="icon-button" onClick={() => void load()} aria-label={t("files.refresh")}>
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </header>
@@ -91,10 +89,8 @@ export function TrashView({ onChanged }: { onChanged: () => void }): React.JSX.E
               <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-emerald-400/10">
                 <Trash2 className="h-8 w-8 text-emerald-400" />
               </div>
-              <h3 className="mt-5 text-lg font-medium text-white">Trash is empty</h3>
-              <p className="mt-2 text-sm text-slate-500">
-                Deleted files and folders will appear here.
-              </p>
+              <h3 className="mt-5 text-lg font-medium text-[var(--fg)]">{t("trash.emptyTitle")}</h3>
+              <p className="mt-2 text-sm text-[var(--fg-muted)]">{t("trash.emptyBody")}</p>
             </div>
           </div>
         ) : (
@@ -112,25 +108,25 @@ export function TrashView({ onChanged }: { onChanged: () => void }): React.JSX.E
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-200">{item.name}</p>
+                  <p className="truncate text-sm font-medium text-[var(--fg)]">{item.name}</p>
                   <p className="mt-1 text-xs text-slate-600">
-                    {size(item.size)} · {item.memberCount} item{item.memberCount === 1 ? "" : "s"} ·
-                    deleted {new Date(item.deletedAt).toLocaleDateString()}
+                    {size(item.size)} · {item.memberCount} {t("trash.items")} · {t("trash.deleted")}{" "}
+                    {new Date(item.deletedAt).toLocaleDateString("ja-JP")}
                   </p>
                 </div>
                 <button
-                  className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-slate-400 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
+                  className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-slate-400 transition hover:bg-white/[0.06] hover:text-[var(--fg)] disabled:opacity-40"
                   disabled={busy === item.opId}
                   onClick={() => void restore(item)}
                 >
-                  <RotateCcw className="h-3.5 w-3.5" /> Restore
+                  <RotateCcw className="h-3.5 w-3.5" /> {t("trash.restore")}
                 </button>
                 <button
                   className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-rose-400 transition hover:bg-rose-400/10 disabled:opacity-40"
                   disabled={busy === item.opId}
                   onClick={() => void purge(item)}
                 >
-                  <Trash2 className="h-3.5 w-3.5" /> Delete forever
+                  <Trash2 className="h-3.5 w-3.5" /> {t("trash.deleteForever")}
                 </button>
               </article>
             ))}

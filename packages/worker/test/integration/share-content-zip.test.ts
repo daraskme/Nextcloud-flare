@@ -141,7 +141,7 @@ describe("Phase 6 share capability", () => {
         new Request("https://app.test.invalid", { headers: { Cookie: cookie ?? "" } }),
         created.id,
       ),
-    ).rejects.toThrow("share_session_required");
+    ).rejects.toThrow("share_gone");
   });
 
   it("invalidates a share as soon as its root has a deleted ancestor", async () => {

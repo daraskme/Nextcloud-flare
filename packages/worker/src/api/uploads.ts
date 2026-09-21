@@ -105,8 +105,25 @@ export async function handleUploadPart(context: AppContext): Promise<Response> {
 export async function handleCompleteUpload(context: AppContext): Promise<Response> {
   try {
     const user = await authenticateAccessUser(context.env, context.req.raw);
+    const mode = context.req.query("mode");
+    if (mode !== undefined && mode !== "overwrite" && mode !== "rename") {
+      throw new RangeError("Upload conflict mode is invalid");
+    }
+    const expected = context.req.query("expectedRevision");
+    const expectedRevision = expected === undefined ? undefined : Number(expected);
+    if (
+      expected !== undefined &&
+      (expectedRevision === undefined ||
+        !Number.isSafeInteger(expectedRevision) ||
+        expectedRevision < 1)
+    ) {
+      throw new RangeError("Expected revision is invalid");
+    }
     return context.json(
-      await completeUpload(context.env, user, context.req.param("uploadId"), capability(context)),
+      await completeUpload(context.env, user, context.req.param("uploadId"), capability(context), {
+        ...(mode === undefined ? {} : { conflictMode: mode }),
+        ...(expectedRevision === undefined ? {} : { expectedRevision }),
+      }),
     );
   } catch (error) {
     return mapError(context, error);

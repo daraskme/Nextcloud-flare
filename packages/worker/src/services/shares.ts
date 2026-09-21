@@ -315,12 +315,13 @@ export async function loadPublicShare(
   shareId: string,
   now = Date.now(),
 ): Promise<ShareRow> {
-  const row = await env.DB.prepare(
-    `${shareSelect} WHERE s.id=?1 AND s.kind='link' AND s.disabled_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>?2)`,
-  )
-    .bind(shareId, now)
+  const row = await env.DB.prepare(`${shareSelect} WHERE s.id=?1 AND s.kind='link'`)
+    .bind(shareId)
     .first<ShareRow>();
   if (row?.linkSecretDigest == null) throw new Error("share_not_found");
+  if (row.disabledAt !== null || (row.expiresAt !== null && row.expiresAt <= now)) {
+    throw new Error("share_gone");
+  }
   if (
     row.rootOwnerId !== row.ownerId ||
     !(await isEffectiveLive(env, row.rootNodeId, row.ownerRootId))

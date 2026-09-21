@@ -11,6 +11,7 @@ import { moveNode } from "../services/fileMutations.js";
 import { createFolder } from "../services/fsMutation.js";
 import { listChildren } from "../services/listing.js";
 import { getOwnedNode, getOwnedPath, getOwnerWorkspace } from "../services/nodes.js";
+import { listVersions, restoreFileVersion } from "../services/versions.js";
 import {
   findInternalShare,
   getShareNode,
@@ -18,7 +19,7 @@ import {
   listShareChildren,
 } from "../services/shares.js";
 import { acquireMutation } from "./mutation.js";
-import { type AppContext, mapError } from "./http.js";
+import { type AppContext, jsonError, mapError } from "./http.js";
 
 function randomId(prefix: string): string {
   const bytes = new Uint8Array(12);
@@ -51,6 +52,72 @@ export async function handleGetNode(context: AppContext): Promise<Response> {
       return context.json(await getShareNode(context.env, share, nodeId));
     }
   } catch (error) {
+    return mapError(context, error);
+  }
+}
+
+export async function handleListVersions(context: AppContext): Promise<Response> {
+  try {
+    const user = await authenticateAccessUser(context.env, context.req.raw);
+    return context.json({
+      items: await listVersions(context.env, user.principal.userId, context.req.param("nodeId")),
+    });
+  } catch (error) {
+    return mapError(context, error);
+  }
+}
+
+export async function handleRestoreVersion(context: AppContext): Promise<Response> {
+  let lease: Awaited<ReturnType<typeof acquireMutation>> | undefined;
+  try {
+    const user = await authenticateAccessUser(context.env, context.req.raw);
+    const body = await context.req.json<{ expectedRevision?: unknown }>();
+    const expectedRevision = body.expectedRevision;
+    if (typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision)) {
+      throw new RangeError("Expected revision is required");
+    }
+    const node = await getOwnedNode(
+      context.env,
+      user.principal.userId,
+      context.req.param("nodeId"),
+    );
+    if (node.kind !== "file" || node.parentId === null) throw new Error("not_a_file");
+    if (node.revision !== expectedRevision) {
+      return jsonError(context, 412, "precondition_failed", "The file changed before restoration");
+    }
+    const parent = await getOwnedNode(context.env, user.principal.userId, node.parentId);
+    const workspace = await getOwnerWorkspace(context.env, user.principal.userId);
+    lease = await acquireMutation(context.env, user, {
+      spaceId: workspace.spaceId,
+      kind: "node.content.write",
+      expectedSteps: 6,
+      intent: {
+        nodeId: node.id,
+        versionId: context.req.param("versionId"),
+        revision: node.revision,
+      },
+      nodeIds: [node.id, parent.id],
+    });
+    await restoreFileVersion(context.env, {
+      operationId: lease.operationId,
+      permitId: lease.permitId,
+      epoch: lease.epoch,
+      userId: user.principal.userId,
+      sessionId: user.principal.sessionId,
+      spaceId: workspace.spaceId,
+      auditId: lease.auditId,
+      outboxId: lease.outboxId,
+      nodeId: node.id,
+      parentId: parent.id,
+      versionId: context.req.param("versionId"),
+      replacementVersionId: randomId("ver"),
+      expectedNodeRevision: node.revision,
+      expectedParentRevision: parent.revision,
+    });
+    await lease.release();
+    return context.json(await getOwnedNode(context.env, user.principal.userId, node.id));
+  } catch (error) {
+    await lease?.revoke().catch(() => undefined);
     return mapError(context, error);
   }
 }

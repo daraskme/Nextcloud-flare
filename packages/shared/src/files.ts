@@ -40,3 +40,11 @@ export interface ChildrenPage {
   nextCursor: string | null;
   treeGeneration: number;
 }
+
+export interface NodeVersionSummary {
+  id: string | null;
+  blobId: string;
+  size: number;
+  createdAt: number;
+  current: boolean;
+}

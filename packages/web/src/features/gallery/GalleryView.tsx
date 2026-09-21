@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { GalleryItem } from "@ncf/shared";
 
+import { t } from "../../i18n";
 import { api } from "../../lib/api";
 
 interface HeaderBlock {
@@ -142,30 +143,30 @@ function Lightbox({ items, index, onIndex, onClose }: LightboxProps): React.JSX.
 
   if (item === undefined) return <></>;
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 text-white backdrop-blur-xl">
+    <div className="fixed inset-0 z-50 flex flex-col bg-[var(--overlay)] text-[var(--overlay-fg)] backdrop-blur-xl">
       <header className="flex h-16 items-center gap-3 border-b border-white/10 px-4">
-        <button className="icon-button border-white/10 text-white" onClick={onClose}>
+        <button className="icon-button border-white/10 text-[var(--overlay-fg)]" onClick={onClose}>
           <X className="h-4 w-4" />
         </button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{item.name}</p>
-          <p className="text-xs text-slate-400">
-            {index + 1} of {items.length} · {dateLabel(item)}
+          <p className="text-xs text-[var(--overlay-fg)]/80">
+            {index + 1} {t("gallery.of")} {items.length} · {dateLabel(item)}
           </p>
         </div>
         {item.mediaKind === "image" && (
           <>
             <button
-              className="icon-button border-white/10 text-white"
+              className="icon-button border-white/10 text-[var(--overlay-fg)]"
               onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}
             >
               <ZoomOut className="h-4 w-4" />
             </button>
-            <span className="w-12 text-center text-xs text-slate-400">
+            <span className="w-12 text-center text-xs text-[var(--overlay-fg)]/80">
               {Math.round(zoom * 100)}%
             </span>
             <button
-              className="icon-button border-white/10 text-white"
+              className="icon-button border-white/10 text-[var(--overlay-fg)]"
               onClick={() => setZoom((value) => Math.min(4, value + 0.25))}
             >
               <ZoomIn className="h-4 w-4" />
@@ -173,9 +174,9 @@ function Lightbox({ items, index, onIndex, onClose }: LightboxProps): React.JSX.
           </>
         )}
         <button
-          className="icon-button border-white/10 text-white"
+          className="icon-button border-white/10 text-[var(--overlay-fg)]"
           onClick={() => setPlaying((value) => !value)}
-          title="Slideshow (S)"
+          title={`${t("gallery.slideshow")} (S)`}
         >
           {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </button>
@@ -244,7 +245,7 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
         setItems((current) => (next === undefined ? page.items : [...current, ...page.items]));
         setCursor(page.nextCursor);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Could not load gallery");
+        setError(cause instanceof Error ? cause.message : t("gallery.loadError"));
       } finally {
         setLoading(false);
       }
@@ -289,14 +290,16 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
   }, [cursor, gallery.height, load, loading, scrollTop, viewportHeight]);
 
   return (
-    <section className="flex min-h-screen flex-col bg-slate-50 dark:bg-[#080b11]">
-      <header className="flex flex-wrap items-center gap-4 border-b border-slate-200 bg-white/80 px-5 py-4 backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0b0f17]/90 sm:px-8">
-        <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-fuchsia-500 to-violet-600 text-white shadow-lg shadow-violet-500/20">
+    <section className="flex min-h-screen flex-col bg-[var(--bg)] text-[var(--fg)]">
+      <header className="flex flex-wrap items-center gap-4 border-b border-[var(--border)] bg-[var(--surface)] px-5 py-4 backdrop-blur-xl sm:px-8">
+        <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-fuchsia-500 to-violet-600 text-[var(--overlay-fg)] shadow-lg shadow-violet-500/20">
           <ImageIcon className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium uppercase tracking-[.18em] text-violet-500">Media</p>
-          <h2 className="text-xl font-semibold tracking-tight">Gallery</h2>
+          <p className="text-xs font-medium uppercase tracking-[.18em] text-violet-600 dark:text-violet-400">
+            {t("gallery.media")}
+          </p>
+          <h2 className="text-xl font-semibold tracking-tight">{t("gallery.title")}</h2>
         </div>
         <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-white/10">
           <input
@@ -304,9 +307,9 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
             onChange={(event) => setRecursive(event.target.checked)}
             type="checkbox"
           />
-          Include subfolders
+          {t("gallery.include")}
         </label>
-        <button className="icon-button" onClick={() => void load()} title="Refresh">
+        <button className="icon-button" onClick={() => void load()} title={t("gallery.refresh")}>
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </header>
@@ -327,8 +330,8 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
               <div className="mx-auto grid h-16 w-16 place-items-center rounded-3xl bg-violet-500/10 text-violet-500">
                 <Search className="h-7 w-7" />
               </div>
-              <h3 className="mt-5 font-medium">No photos or videos here</h3>
-              <p className="mt-2 text-sm text-slate-500">Upload media or include subfolders.</p>
+              <h3 className="mt-5 font-medium">{t("gallery.emptyTitle")}</h3>
+              <p className="mt-2 text-sm text-[var(--fg-muted)]">{t("gallery.emptyBody")}</p>
             </div>
           </div>
         )}
@@ -364,11 +367,11 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
                       src={item.thumbUrl}
                     />
                     {item.mediaKind === "video" && (
-                      <span className="absolute left-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/55 text-white backdrop-blur">
+                      <span className="absolute left-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/55 text-[var(--overlay-fg)] backdrop-blur">
                         <Play className="h-4 w-4 fill-current" />
                       </span>
                     )}
-                    <span className="absolute inset-x-0 bottom-0 translate-y-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-3 pt-10 text-xs font-medium text-white opacity-0 transition group-hover:translate-y-0 group-hover:opacity-100">
+                    <span className="absolute inset-x-0 bottom-0 translate-y-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-3 pt-10 text-xs font-medium text-[var(--overlay-fg)] opacity-0 transition group-hover:translate-y-0 group-hover:opacity-100">
                       {item.name}
                     </span>
                   </button>
@@ -378,8 +381,8 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
           )}
         </div>
         {loading && (
-          <div className="sticky bottom-5 mx-auto flex w-fit items-center gap-2 rounded-full bg-slate-900/90 px-4 py-2 text-xs text-white shadow-xl">
-            <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Loading media
+          <div className="sticky bottom-5 mx-auto flex w-fit items-center gap-2 rounded-full bg-[var(--surface)] px-4 py-2 text-xs text-[var(--fg)] shadow-xl">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin" /> {t("gallery.loading")}
           </div>
         )}
       </div>

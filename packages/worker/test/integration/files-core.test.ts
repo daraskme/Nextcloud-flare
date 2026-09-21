@@ -6,6 +6,7 @@ import { serveNodeContent } from "../../src/services/content.js";
 import { buildCopyManifest, commitSameOwnerCopy } from "../../src/services/copy.js";
 import { createFile, moveNode, overwriteFile } from "../../src/services/fileMutations.js";
 import { reserveQuota } from "../../src/services/quota.js";
+import { listVersions, restoreFileVersion } from "../../src/services/versions.js";
 import { seedFoundation } from "../helpers/foundation.js";
 
 function stream(value: string): ReadableStream<Uint8Array> {
@@ -160,6 +161,43 @@ describe("Files core", () => {
       { id: "old", ref_count: 1, state: "committed" },
     ]);
     expect(user).toEqual({ used_bytes: 9, reserved_bytes: 0, physical_bytes: 9 });
+    const versions = await listVersions(env, "user", "file");
+    expect(versions).toHaveLength(2);
+    expect(versions[0]).toMatchObject({
+      id: null,
+      blobId: "new",
+      size: 4,
+      current: true,
+    });
+    expect(versions[1]).toMatchObject({
+      id: "version-old",
+      blobId: "old",
+      size: 5,
+      current: false,
+    });
+    expect(versions.every((entry) => Number.isSafeInteger(entry.createdAt))).toBe(true);
+
+    await seedOperation("restore-version", "permit-restore-version", "node.content.write", 6);
+    await restoreFileVersion(env, {
+      ...context("restore-version", "permit-restore-version"),
+      nodeId: "file",
+      parentId: "root",
+      versionId: "version-old",
+      replacementVersionId: "version-new",
+      expectedNodeRevision: 2,
+      expectedParentRevision: 2,
+    });
+    const restored = await env.DB.prepare(
+      "SELECT current_blob_id,revision FROM nodes WHERE id='file'",
+    ).first();
+    const restoredRefs = await env.DB.prepare(
+      "SELECT id,ref_count FROM blobs WHERE id IN ('new','old') ORDER BY id",
+    ).all();
+    expect(restored).toEqual({ current_blob_id: "old", revision: 3 });
+    expect(restoredRefs.results).toEqual([
+      { id: "new", ref_count: 1 },
+      { id: "old", ref_count: 2 },
+    ]);
   });
 
   it("serves HEAD, strong validators and a single Range only after EffectiveLive", async () => {

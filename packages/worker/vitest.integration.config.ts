@@ -11,7 +11,7 @@ export default defineConfig({
       return {
         main: "./src/index.ts",
         miniflare: {
-          compatibilityDate: "2026-08-13",
+          compatibilityDate: "2026-03-01",
           compatibilityFlags: ["nodejs_compat"],
           isolatedStorage: true,
           d1Databases: ["DB"],

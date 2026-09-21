@@ -10,17 +10,16 @@ export function normalizePortableName(name: string): { name: string; nameCi: str
   if (
     bytes.byteLength < 1 ||
     bytes.byteLength > 255 ||
-    !/^[\x20-\x7E]+$/u.test(normalized) ||
+    /\p{Cc}/u.test(normalized) ||
     normalized === "." ||
     normalized === ".." ||
-    normalized.endsWith(".") ||
-    normalized.endsWith(" ") ||
+    /^[.\s]|[.\s]$/u.test(normalized) ||
     /[:/\\]/u.test(normalized) ||
     RESERVED_NAMES.test(normalized)
   ) {
-    throw new RangeError("Name is outside the Foundation-safe subset");
+    throw new RangeError("invalid_name");
   }
-  return { name: normalized, nameCi: normalized.toLowerCase() };
+  return { name: normalized, nameCi: normalized.toLowerCase().normalize("NFC") };
 }
 
 export interface CreateFolderMutation extends UserMutationContext {

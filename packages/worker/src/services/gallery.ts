@@ -183,12 +183,7 @@ export async function listGallery(
   const root = await getOwnedNode(env, input.userId, input.rootId);
   if (root.kind === "file") throw new Error("not_a_folder");
   const workspace = await getOwnerWorkspace(env, input.userId);
-  const currentViewRevision = await viewRevision(
-    env,
-    input.rootId,
-    input.userId,
-    input.recursive,
-  );
+  const currentViewRevision = await viewRevision(env, input.rootId, input.userId, input.recursive);
   let capturedAt = Number.MAX_SAFE_INTEGER;
   let updatedAt = Number.MAX_SAFE_INTEGER;
   let nodeId = "~";

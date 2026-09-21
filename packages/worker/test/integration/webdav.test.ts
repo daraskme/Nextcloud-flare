@@ -214,6 +214,47 @@ describe("WebDAV Class 1/2", () => {
     expect((await dav(credentials, "", "OPTIONS")).status).toBe(401);
   }, 15_000);
 
+  it("applies the Unicode portable-name validator to PUT, MKCOL, and MOVE", async () => {
+    const credentials = await createAppPassword(env, user, { label: "Unicode DAV" });
+    expect((await dav(credentials, "/%E6%9B%B8%E9%A1%9E", "MKCOL")).status).toBe(201);
+    expect(
+      (
+        await dav(
+          credentials,
+          "/%E6%9B%B8%E9%A1%9E/%E5%90%8C%E4%BA%BA%E8%AA%8C%20vol.1.cbz",
+          "PUT",
+          { "Content-Length": "0" },
+          "",
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await dav(
+          credentials,
+          "/%E6%9B%B8%E9%A1%9E/%E5%90%8C%E4%BA%BA%E8%AA%8C%20vol.1.cbz",
+          "MOVE",
+          {
+            Destination: "https://app.test.invalid/dav/%E6%9B%B8%E9%A1%9E/%F0%9F%93%9A.cbz",
+            Overwrite: "F",
+          },
+        )
+      ).status,
+    ).toBe(201);
+    expect((await dav(credentials, "/bad.", "MKCOL")).status).toBe(400);
+    expect((await dav(credentials, "/bad.", "PUT", { "Content-Length": "0" }, "")).status).toBe(
+      400,
+    );
+    expect(
+      (
+        await dav(credentials, "/%E6%9B%B8%E9%A1%9E/%F0%9F%93%9A.cbz", "MOVE", {
+          Destination: "https://app.test.invalid/dav/%E6%9B%B8%E9%A1%9E/bad.",
+          Overwrite: "F",
+        })
+      ).status,
+    ).toBe(400);
+  });
+
   it("creates a locked empty resource for a missing LOCK URL", async () => {
     const credentials = await createAppPassword(env, user, { label: "Lock null" });
     const lockXml =

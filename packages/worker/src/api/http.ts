@@ -1,12 +1,13 @@
 import type { Context } from "hono";
 
 import type { Env } from "../env.js";
+import { NameConflictError } from "../services/nameConflict.js";
 
 export type AppContext = Context<{ Bindings: Env }>;
 
 export function jsonError(
   context: AppContext,
-  status: 400 | 401 | 403 | 404 | 409 | 411 | 412 | 413 | 423 | 428 | 429 | 500 | 503 | 507,
+  status: 400 | 401 | 403 | 404 | 409 | 410 | 411 | 412 | 413 | 423 | 428 | 429 | 500 | 503 | 507,
   code: string,
   message: string,
 ): Response {
@@ -15,6 +16,27 @@ export function jsonError(
 
 export function mapError(context: AppContext, error: unknown): Response {
   const message = error instanceof Error ? error.message : "internal_error";
+  if (message === "invalid_name") {
+    return jsonError(
+      context,
+      400,
+      "invalid_name",
+      "The name contains a forbidden character or exceeds 255 UTF-8 bytes",
+    );
+  }
+  if (error instanceof NameConflictError) {
+    return context.json(
+      {
+        error: {
+          code: "name_conflict",
+          message: "An item with this name already exists",
+          existingNodeId: error.existingNodeId,
+          revision: error.revision,
+        },
+      },
+      409,
+    );
+  }
   if (message.includes("UNIQUE constraint") || message === "name_conflict") {
     return jsonError(context, 409, "name_conflict", "An item with this name already exists");
   }
@@ -74,8 +96,13 @@ export function mapError(context: AppContext, error: unknown): Response {
   ) {
     return jsonError(context, 403, "forbidden", "This capability does not allow the request");
   }
+  if (message === "share_not_found") {
+    return jsonError(context, 404, "not_found", "The share was not found");
+  }
+  if (message === "share_gone") {
+    return jsonError(context, 410, "share_gone", "The share is no longer available");
+  }
   if (
-    message === "share_not_found" ||
     message === "share_session_required" ||
     message === "share_unlock_failed" ||
     message === "content_session_required" ||

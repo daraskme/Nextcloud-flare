@@ -3,10 +3,11 @@ import { useEffect, useState } from "react";
 
 import type { AppPasswordSummary, CreatedAppPassword } from "@ncf/shared";
 
+import { t } from "../../i18n";
 import { api } from "../../lib/api";
 
 function formatDate(value: number): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(value);
+  return new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium" }).format(value);
 }
 
 export function AppPasswords(): React.JSX.Element {
@@ -23,7 +24,7 @@ export function AppPasswords(): React.JSX.Element {
       .appPasswords()
       .then((response) => setItems(response.items))
       .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : "Could not load app passwords"),
+        setError(cause instanceof Error ? cause.message : t("settings.loadError")),
       );
 
   useEffect(() => {
@@ -41,7 +42,7 @@ export function AppPasswords(): React.JSX.Element {
       setLabel("");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create app password");
+      setError(cause instanceof Error ? cause.message : t("settings.createError"));
     } finally {
       setBusy(false);
     }
@@ -54,7 +55,7 @@ export function AppPasswords(): React.JSX.Element {
       await api.revokeAppPassword(id);
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not revoke app password");
+      setError(cause instanceof Error ? cause.message : t("settings.revokeError"));
     } finally {
       setBusy(false);
     }
@@ -69,12 +70,12 @@ export function AppPasswords(): React.JSX.Element {
           </div>
           <div>
             <p className="text-xs font-medium uppercase tracking-[.18em] text-violet-500">
-              Security
+              {t("settings.security")}
             </p>
-            <h2 className="mt-1 text-2xl font-semibold tracking-tight">App passwords</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Use WebDAV without exposing your account session.
-            </p>
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight">
+              {t("settings.appPasswords")}
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">{t("settings.description")}</p>
           </div>
         </div>
 
@@ -83,7 +84,7 @@ export function AppPasswords(): React.JSX.Element {
           onSubmit={(event) => void create(event)}
         >
           <label className="text-xs font-medium text-slate-500">
-            Label
+            {t("settings.label")}
             <input
               className="mt-2 w-full rounded-xl border border-slate-200 bg-transparent px-3 py-2.5 text-sm outline-none transition focus:border-sky-400 dark:border-white/10"
               maxLength={64}
@@ -93,16 +94,16 @@ export function AppPasswords(): React.JSX.Element {
             />
           </label>
           <label className="text-xs font-medium text-slate-500">
-            Expires
+            {t("settings.expires")}
             <select
               className="mt-2 w-full rounded-xl border border-slate-200 bg-transparent px-3 py-2.5 text-sm outline-none dark:border-white/10"
               value={days}
               onChange={(event) => setDays(Number(event.target.value))}
             >
-              <option value={30}>30 days</option>
-              <option value={90}>90 days</option>
-              <option value={180}>180 days</option>
-              <option value={365}>1 year</option>
+              <option value={30}>{t("settings.days30")}</option>
+              <option value={90}>{t("settings.days90")}</option>
+              <option value={180}>{t("settings.days180")}</option>
+              <option value={365}>{t("settings.year1")}</option>
             </select>
           </label>
           <button
@@ -110,7 +111,7 @@ export function AppPasswords(): React.JSX.Element {
             disabled={busy || label.trim() === ""}
             type="submit"
           >
-            <Plus className="h-4 w-4" /> Create
+            <Plus className="h-4 w-4" /> {t("settings.create")}
           </button>
         </form>
 
@@ -135,15 +136,15 @@ export function AppPasswords(): React.JSX.Element {
                     <span
                       className={`rounded-full px-2 py-0.5 text-[10px] ${inactive ? "bg-slate-500/10 text-slate-500" : "bg-emerald-500/10 text-emerald-500"}`}
                     >
-                      {inactive ? "Inactive" : "Active"}
+                      {inactive ? t("settings.inactive") : t("settings.active")}
                     </span>
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-slate-500">{item.id}</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Expires {formatDate(item.expiresAt)}
+                    {t("settings.expires")} {formatDate(item.expiresAt)}
                     {item.lastUsedAt === null
-                      ? " · Never used"
-                      : ` · Last used ${formatDate(item.lastUsedAt)}`}
+                      ? ` · ${t("settings.neverUsed")}`
+                      : ` · ${t("settings.lastUsed")} ${formatDate(item.lastUsedAt)}`}
                   </p>
                 </div>
                 {!inactive && (
@@ -152,7 +153,7 @@ export function AppPasswords(): React.JSX.Element {
                     disabled={busy}
                     onClick={() => void revoke(item.id)}
                   >
-                    <ShieldOff className="h-3.5 w-3.5" /> Revoke
+                    <ShieldOff className="h-3.5 w-3.5" /> {t("settings.revoke")}
                   </button>
                 )}
               </article>
@@ -160,24 +161,22 @@ export function AppPasswords(): React.JSX.Element {
           })}
           {items.length === 0 && (
             <div className="rounded-2xl border border-dashed border-slate-300 p-12 text-center text-sm text-slate-500 dark:border-white/10">
-              No app passwords yet.
+              {t("settings.empty")}
             </div>
           )}
         </div>
       </div>
 
       {created !== null && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#101620] p-6 text-slate-100 shadow-2xl">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-[var(--overlay)] p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6 text-[var(--fg)] shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-medium uppercase tracking-[.18em] text-emerald-400">
-                  Created
+                  {t("settings.created")}
                 </p>
-                <h3 className="mt-2 text-xl font-semibold">Save this password now</h3>
-                <p className="mt-2 text-sm text-slate-400">
-                  It will never be shown again. Use the ID as your Basic username.
-                </p>
+                <h3 className="mt-2 text-xl font-semibold">{t("settings.saveNow")}</h3>
+                <p className="mt-2 text-sm text-slate-400">{t("settings.once")}</p>
               </div>
               <button className="icon-button" onClick={() => setCreated(null)}>
                 <X className="h-4 w-4" />
@@ -185,11 +184,11 @@ export function AppPasswords(): React.JSX.Element {
             </div>
             <div className="mt-5 space-y-3 rounded-2xl bg-black/30 p-4 font-mono text-xs">
               <div>
-                <span className="text-slate-500">Username</span>
+                <span className="text-slate-500">{t("settings.username")}</span>
                 <p className="mt-1 break-all">{created.id}</p>
               </div>
               <div>
-                <span className="text-slate-500">Password</span>
+                <span className="text-slate-500">{t("settings.password")}</span>
                 <p className="mt-1 break-all text-sky-300">{created.secret}</p>
               </div>
             </div>
@@ -201,7 +200,7 @@ export function AppPasswords(): React.JSX.Element {
               }}
             >
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {copied ? "Copied" : "Copy credentials"}
+              {copied ? t("share.copied") : t("settings.copyCredentials")}
             </button>
           </div>
         </div>

@@ -5,6 +5,7 @@ import type {
   ChildrenPage,
   GalleryPage,
   NodeSummary,
+  NodeVersionSummary,
   ShareKind,
   ShareMode,
   ShareSummary,
@@ -21,9 +22,35 @@ interface MeResponse {
 
 let csrfToken: string | null = null;
 
-async function errorMessage(response: Response): Promise<string> {
-  const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-  return body?.error?.message ?? `Request failed (${response.status})`;
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly existingNodeId: string | undefined;
+  readonly revision: number | undefined;
+
+  constructor(
+    status: number,
+    error: { code?: string; message?: string; existingNodeId?: string; revision?: number },
+  ) {
+    super(error.message ?? `Request failed (${status})`);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = error.code ?? "request_failed";
+    this.existingNodeId = error.existingNodeId;
+    this.revision = error.revision;
+  }
+}
+
+async function responseError(response: Response): Promise<ApiError> {
+  const body = (await response.json().catch(() => null)) as {
+    error?: {
+      code?: string;
+      message?: string;
+      existingNodeId?: string;
+      revision?: number;
+    };
+  } | null;
+  return new ApiError(response.status, body?.error ?? {});
 }
 
 async function csrf(): Promise<string> {
@@ -35,7 +62,7 @@ async function csrf(): Promise<string> {
     headers: { "Sec-Fetch-Site": "same-origin" },
   });
   if (!response.ok) {
-    throw new Error(await errorMessage(response));
+    throw await responseError(response);
   }
   const body = (await response.json()) as { token: string };
   csrfToken = body.token;
@@ -57,7 +84,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (response.status === 403) {
       csrfToken = null;
     }
-    throw new Error(await errorMessage(response));
+    throw await responseError(response);
   }
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }
@@ -90,6 +117,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ destinationParentId, name }),
     }),
+  versions: (nodeId: string) =>
+    request<{ items: NodeVersionSummary[] }>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/versions`,
+    ),
+  restoreVersion: (nodeId: string, versionId: string, expectedRevision: number) =>
+    request<NodeSummary>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/versions/${encodeURIComponent(versionId)}/restore`,
+      { method: "POST", body: JSON.stringify({ expectedRevision }) },
+    ),
   createUpload: (parentId: string, name: string, declaredSize: number, mode: UploadMode) =>
     request<UploadInfo>("/api/v1/uploads", {
       method: "POST",
@@ -114,11 +150,25 @@ export const api = {
         body,
       },
     ),
-  completeUpload: (uploadId: string, capability: string) =>
-    request<NodeSummary>(`/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
-      method: "POST",
-      headers: { "Upload-Capability": capability },
-    }),
+  completeUpload: (
+    uploadId: string,
+    capability: string,
+    options?: { mode: "overwrite"; expectedRevision: number } | { mode: "rename" },
+  ) => {
+    const query =
+      options === undefined
+        ? ""
+        : options.mode === "overwrite"
+          ? `?mode=overwrite&expectedRevision=${options.expectedRevision}`
+          : "?mode=rename";
+    return request<NodeSummary>(
+      `/api/v1/uploads/${encodeURIComponent(uploadId)}/complete${query}`,
+      {
+        method: "POST",
+        headers: { "Upload-Capability": capability },
+      },
+    );
+  },
   abortUpload: (uploadId: string, capability: string) =>
     request<undefined>(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
       method: "DELETE",

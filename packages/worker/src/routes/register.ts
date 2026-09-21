@@ -34,10 +34,12 @@ import {
   handleCopy,
   handleCreateFolder,
   handleGetNode,
+  handleListVersions,
   handleMe,
   handleMove,
   handlePath,
   handleRename,
+  handleRestoreVersion,
 } from "../api/nodes.js";
 import type { AppContext } from "../api/http.js";
 import {
@@ -118,6 +120,8 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/nodes/:nodeId", handleGetNode],
   ["GET /api/v1/nodes/:nodeId/path", handlePath],
   ["GET /api/v1/nodes/:nodeId/children", handleChildren],
+  ["GET /api/v1/nodes/:nodeId/versions", handleListVersions],
+  ["POST /api/v1/nodes/:nodeId/versions/:versionId/restore", handleRestoreVersion],
   ["GET /api/v1/nodes/:nodeId/content", handleContent],
   ["HEAD /api/v1/nodes/:nodeId/content", handleContent],
   ["GET /api/v1/nodes/:nodeId/thumb", handleThumbnail],

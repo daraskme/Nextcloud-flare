@@ -75,6 +75,88 @@ describe("upload state machine", () => {
     });
   });
 
+  it("accepts normalized Japanese, spaced CBZ, and emoji upload names", async () => {
+    const names = ["旅行メモ.txt", "同人誌 vol.1.cbz", "写真📷.jpg"];
+    for (const name of names) {
+      const upload = await createUpload(env, user, {
+        parentId: "root",
+        name,
+        declaredSize: 0,
+        mode: "single",
+      });
+      await putSingleContent(env, user, upload.id, capability(upload), bytes(0), 0);
+      await expect(completeUpload(env, user, upload.id, capability(upload))).resolves.toMatchObject(
+        {
+          name,
+        },
+      );
+    }
+  });
+
+  it("reports conflict metadata and resolves overwrite, auto-rename, and skip", async () => {
+    const original = await createUpload(env, user, {
+      parentId: "root",
+      name: "same.txt",
+      declaredSize: 0,
+      mode: "single",
+    });
+    await putSingleContent(env, user, original.id, capability(original), bytes(0), 0);
+    const existing = await completeUpload(env, user, original.id, capability(original));
+
+    const overwrite = await createUpload(env, user, {
+      parentId: "root",
+      name: "same.txt",
+      declaredSize: 4,
+      mode: "single",
+    });
+    await putSingleContent(env, user, overwrite.id, capability(overwrite), bytes(4), 4);
+    await expect(
+      completeUpload(env, user, overwrite.id, capability(overwrite)),
+    ).rejects.toMatchObject({
+      message: "name_conflict",
+      existingNodeId: existing.id,
+      revision: existing.revision,
+    });
+    await expect(
+      getUploadStatus(env, user, overwrite.id, capability(overwrite)),
+    ).resolves.toMatchObject({
+      state: "receiving",
+    });
+    const replaced = await completeUpload(env, user, overwrite.id, capability(overwrite), {
+      conflictMode: "overwrite",
+      expectedRevision: existing.revision,
+    });
+    expect(replaced).toMatchObject({ id: existing.id, revision: existing.revision + 1, size: 4 });
+
+    const renamed = await createUpload(env, user, {
+      parentId: "root",
+      name: "same.txt",
+      declaredSize: 0,
+      mode: "single",
+    });
+    await putSingleContent(env, user, renamed.id, capability(renamed), bytes(0), 0);
+    await expect(
+      completeUpload(env, user, renamed.id, capability(renamed), { conflictMode: "rename" }),
+    ).resolves.toMatchObject({ name: "same (1).txt" });
+
+    const skipped = await createUpload(env, user, {
+      parentId: "root",
+      name: "same.txt",
+      declaredSize: 0,
+      mode: "single",
+    });
+    await putSingleContent(env, user, skipped.id, capability(skipped), bytes(0), 0);
+    await expect(completeUpload(env, user, skipped.id, capability(skipped))).rejects.toThrow(
+      "name_conflict",
+    );
+    await abortUpload(env, user, skipped.id, capability(skipped));
+    await expect(
+      getUploadStatus(env, user, skipped.id, capability(skipped)),
+    ).resolves.toMatchObject({
+      state: "aborted",
+    });
+  });
+
   it("rejects a false single size without consuming the one allowed PUT", async () => {
     const upload = await createUpload(env, user, {
       parentId: "root",

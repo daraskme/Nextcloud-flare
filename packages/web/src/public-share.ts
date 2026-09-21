@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 interface PublicNode {
   id: string;
   parentId: string | null;
@@ -41,7 +43,7 @@ function element<K extends keyof HTMLElementTagNameMap>(
 }
 
 function formatSize(bytes: number | null): string {
-  if (bytes === null) return "Folder";
+  if (bytes === null) return t("files.folder");
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -91,7 +93,7 @@ function shell(content: HTMLElement): void {
   brandText.append(escapeText("Next Cloud"));
   brand.append(mark, brandText);
   const badge = element("span", "privacy-badge");
-  badge.append(escapeText("Private share"));
+  badge.append(escapeText(t("public.privateShare")));
   header.append(brand, badge);
   const frame = element("div", "public-frame");
   frame.append(content);
@@ -113,27 +115,23 @@ function message(title: string, detail: string): void {
 function unlockForm(error?: string): void {
   const card = element("section", "unlock-card");
   const eyebrow = element("p", "eyebrow");
-  eyebrow.append(escapeText("Secure link"));
+  eyebrow.append(escapeText(t("public.secureLink")));
   const heading = element("h1");
-  heading.append(escapeText("A private space was shared with you"));
+  heading.append(escapeText(t("public.sharedTitle")));
   const description = element("p", "lede");
   description.append(
-    escapeText(
-      secret === ""
-        ? "Open the original share link again. Its secret never leaves your browser history."
-        : "Enter the optional password to continue. Access expires automatically.",
-    ),
+    escapeText(secret === "" ? t("public.originalLink") : t("public.enterPassword")),
   );
   const form = element("form", "unlock-form");
   const password = element("input");
   password.type = "password";
-  password.placeholder = "Share password (if required)";
+  password.placeholder = t("public.password");
   password.autocomplete = "current-password";
   password.disabled = secret === "";
   const button = element("button", "action-button");
   button.type = "submit";
   button.disabled = secret === "";
-  button.append(escapeText("Open shared space"));
+  button.append(escapeText(t("public.open")));
   form.append(password, button);
   if (error !== undefined) {
     const alert = element("p", "alert");
@@ -143,9 +141,9 @@ function unlockForm(error?: string): void {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     button.disabled = true;
-    button.textContent = "Opening…";
+    button.textContent = t("public.opening");
     void unlock(password.value).catch((cause: unknown) => {
-      unlockForm(cause instanceof Error ? cause.message : "Could not unlock this share");
+      unlockForm(cause instanceof Error ? cause.message : t("public.unlockError"));
     });
   });
   card.append(eyebrow, heading, description, form);
@@ -153,7 +151,7 @@ function unlockForm(error?: string): void {
 }
 
 async function unlock(password = ""): Promise<void> {
-  if (shareId === undefined || secret === "") throw new Error("The share link is incomplete");
+  if (shareId === undefined || secret === "") throw new Error(t("public.incomplete"));
   const response = await publicFetch(
     `/api/v1/public/shares/${encodeURIComponent(shareId)}/unlock`,
     {
@@ -171,14 +169,18 @@ function renderToolbar(current: PublicNode): HTMLElement {
   const toolbar = element("div", "share-toolbar");
   const titleBlock = element("div");
   const eyebrow = element("p", "eyebrow");
-  eyebrow.append(escapeText(share?.mode === "download" ? "Download share" : "View-only share"));
+  eyebrow.append(
+    escapeText(share?.mode === "download" ? t("public.downloadShare") : t("public.viewShare")),
+  );
   const heading = element("h1");
-  heading.append(escapeText(current.name || "Shared files"));
+  heading.append(escapeText(current.name || t("public.sharedFiles")));
   titleBlock.append(eyebrow, heading);
   toolbar.append(titleBlock);
   if (share?.mode === "download") {
     const download = element("button", "action-button compact");
-    download.append(escapeText(current.kind === "file" ? "Download file" : "Download folder ZIP"));
+    download.append(
+      escapeText(current.kind === "file" ? t("public.downloadFile") : t("public.downloadZip")),
+    );
     download.addEventListener("click", () => {
       if (current.kind === "file") {
         window.location.assign(
@@ -195,7 +197,7 @@ function renderToolbar(current: PublicNode): HTMLElement {
 
 async function downloadZip(nodeId: string, button: HTMLButtonElement): Promise<void> {
   button.disabled = true;
-  button.textContent = "Preparing…";
+  button.textContent = t("public.preparing");
   try {
     const response = await mutation(
       `/api/v1/public/shares/${encodeURIComponent(shareId ?? "")}/nodes/${encodeURIComponent(nodeId)}/zip`,
@@ -208,7 +210,7 @@ async function downloadZip(nodeId: string, button: HTMLButtonElement): Promise<v
     );
   } catch (cause) {
     button.disabled = false;
-    button.textContent = cause instanceof Error ? cause.message : "Download failed";
+    button.textContent = cause instanceof Error ? cause.message : t("public.downloadFailed");
   }
 }
 
@@ -221,7 +223,7 @@ function renderBreadcrumbs(): HTMLElement {
       navigation.append(separator);
     }
     const button = element("button");
-    button.append(escapeText(node.name || "Shared files"));
+    button.append(escapeText(node.name || t("public.sharedFiles")));
     button.addEventListener("click", () => {
       trail.splice(index + 1);
       void browse(node);
@@ -237,7 +239,7 @@ function renderFiles(current: PublicNode, items: PublicNode[]): void {
   const grid = element("div", "file-grid");
   if (items.length === 0) {
     const empty = element("div", "empty-state");
-    empty.append(escapeText("This folder is empty"));
+    empty.append(escapeText(t("public.empty")));
     grid.append(empty);
   }
   for (const item of items) {
@@ -278,23 +280,19 @@ async function browse(current: PublicNode): Promise<void> {
 function renderUpload(): void {
   const card = element("section", "upload-card");
   const eyebrow = element("p", "eyebrow");
-  eyebrow.append(escapeText("Upload-only drop"));
+  eyebrow.append(escapeText(t("public.uploadOnly")));
   const heading = element("h1");
-  heading.append(escapeText("Send files securely"));
+  heading.append(escapeText(t("public.sendFiles")));
   const description = element("p", "lede");
-  description.append(
-    escapeText(
-      "Files are delivered without revealing this folder, existing names, or other uploads.",
-    ),
-  );
+  description.append(escapeText(t("public.uploadDescription")));
   const drop = element("label", "drop-zone");
   const input = element("input");
   input.type = "file";
   input.multiple = true;
   const label = element("strong");
-  label.append(escapeText("Drop files or choose from your device"));
+  label.append(escapeText(t("public.chooseFiles")));
   const note = element("span");
-  note.append(escapeText("Each file can be up to 95 MB"));
+  note.append(escapeText(t("public.maxSize")));
   drop.append(input, label, note);
   const queue = element("div", "upload-queue");
   const uploadFiles = (files: FileList | File[]) => {
@@ -320,7 +318,7 @@ async function uploadFile(file: File, queue: HTMLElement): Promise<void> {
   const name = element("strong");
   name.append(escapeText(file.name));
   const status = element("span");
-  status.append(escapeText("Preparing"));
+  status.append(escapeText(t("public.preparingFile")));
   row.append(name, status);
   queue.prepend(row);
   try {
@@ -337,7 +335,7 @@ async function uploadFile(file: File, queue: HTMLElement): Promise<void> {
     });
     if (!create.ok) throw new Error(await errorMessage(create));
     const receipt = (await create.json()) as { receipt_id: string };
-    status.textContent = "Uploading";
+    status.textContent = t("public.uploading");
     const put = await mutation(
       `${base}/uploads/${encodeURIComponent(receipt.receipt_id)}/content`,
       {
@@ -346,23 +344,23 @@ async function uploadFile(file: File, queue: HTMLElement): Promise<void> {
       },
     );
     if (!put.ok) throw new Error(await errorMessage(put));
-    status.textContent = "Saving";
+    status.textContent = t("public.saving");
     const complete = await mutation(
       `${base}/uploads/${encodeURIComponent(receipt.receipt_id)}/complete`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
     );
     if (!complete.ok) throw new Error(await errorMessage(complete));
     row.classList.add("complete");
-    status.textContent = "Delivered";
+    status.textContent = t("public.delivered");
   } catch (cause) {
     row.classList.add("failed");
-    status.textContent = cause instanceof Error ? cause.message : "Upload failed";
+    status.textContent = cause instanceof Error ? cause.message : t("public.uploadFailed");
   }
 }
 
 async function loadShare(): Promise<void> {
   if (shareId === undefined) {
-    message("Share not found", "This link is incomplete or no longer available.");
+    message(t("public.notFound"), t("public.notFoundBody"));
     return;
   }
   const response = await publicFetch(`/api/v1/public/shares/${encodeURIComponent(shareId)}`);
@@ -387,7 +385,7 @@ async function loadShare(): Promise<void> {
 void (async () => {
   try {
     if (shareId === undefined) {
-      message("Share not found", "This link is incomplete or no longer available.");
+      message(t("public.notFound"), t("public.notFoundBody"));
       return;
     }
     const existing = await publicFetch(`/api/v1/public/shares/${encodeURIComponent(shareId)}`);
@@ -405,6 +403,6 @@ void (async () => {
       unlockForm();
     }
   } catch (cause) {
-    unlockForm(cause instanceof Error ? cause.message : "Could not open this share");
+    unlockForm(cause instanceof Error ? cause.message : t("public.loadError"));
   }
 })();

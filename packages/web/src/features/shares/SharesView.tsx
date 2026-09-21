@@ -2,11 +2,18 @@ import type { ShareSummary, SharedMount } from "@ncf/shared";
 import { ExternalLink, File, Folder, Link2, RefreshCw, ShieldOff, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { t } from "../../i18n";
 import { api } from "../../lib/api";
 
 interface SharesViewProps {
   mode: "owned" | "shared";
   onOpen: (nodeId: string, kind: "root" | "folder" | "file") => void;
+}
+
+function shareMode(mode: ShareSummary["mode"]): string {
+  if (mode === "view") return t("share.view");
+  if (mode === "download") return t("share.download");
+  return t("share.uploadOnly");
 }
 
 export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element {
@@ -22,7 +29,7 @@ export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element
       if (mode === "owned") setOwned((await api.shares()).items);
       else setShared((await api.sharedWithMe()).items);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load shares");
+      setError(cause instanceof Error ? cause.message : t("shares.loadError"));
     } finally {
       setLoading(false);
     }
@@ -37,7 +44,7 @@ export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element
       await api.disableShare(shareId);
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not disable share");
+      setError(cause instanceof Error ? cause.message : t("shares.disableError"));
     }
   };
 
@@ -45,16 +52,16 @@ export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-white/[0.08] px-6 py-5 lg:px-8">
+      <header className="flex items-center justify-between border-b border-[var(--border)] px-6 py-5 lg:px-8">
         <div>
-          <p className="text-xs font-medium uppercase tracking-[.2em] text-sky-400">
-            {mode === "owned" ? "Sharing" : "Collaboration"}
+          <p className="text-xs font-medium uppercase tracking-[.2em] text-[var(--accent)]">
+            {mode === "owned" ? t("shares.ownedEyebrow") : t("shares.sharedEyebrow")}
           </p>
-          <h2 className="mt-1 text-xl font-semibold text-white">
-            {mode === "owned" ? "共有中" : "自分と共有"}
+          <h2 className="mt-1 text-xl font-semibold text-[var(--fg)]">
+            {mode === "owned" ? t("app.sharing") : t("app.sharedWithMe")}
           </h2>
         </div>
-        <button className="icon-button" onClick={() => void load()} aria-label="Refresh shares">
+        <button className="icon-button" onClick={() => void load()} aria-label={t("files.refresh")}>
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </header>
@@ -74,11 +81,9 @@ export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element
                   <UserRound className="h-6 w-6" />
                 )}
               </div>
-              <h3 className="mt-4 font-medium text-white">No shares yet</h3>
-              <p className="mt-1 text-sm text-slate-500">
-                {mode === "owned"
-                  ? "Share a file or folder from its context menu."
-                  : "Items shared directly with you appear here."}
+              <h3 className="mt-4 font-medium text-[var(--fg)]">{t("shares.emptyTitle")}</h3>
+              <p className="mt-1 text-sm text-[var(--fg-muted)]">
+                {mode === "owned" ? t("shares.emptyOwned") : t("shares.emptyShared")}
               </p>
             </div>
           </div>
@@ -98,29 +103,36 @@ export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element
                           <Folder className="h-5 w-5" />
                         )}
                       </div>
-                      <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-slate-400">
-                        {share.mode}
-                      </span>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[10px] font-medium text-[var(--fg-muted)]">
+                          {shareMode(share.mode)}
+                        </span>
+                        {share.disabledAt !== null && (
+                          <span className="rounded-full bg-rose-500/15 px-2.5 py-1 text-[10px] font-semibold text-rose-700 dark:text-rose-300">
+                            {t("shares.disabled")}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <h3 className="mt-4 truncate font-medium text-white">
-                      {share.root.name || "My Drive"}
+                    <h3 className="mt-4 truncate font-medium text-[var(--fg)]">
+                      {share.root.name || t("app.myDrive")}
                     </h3>
                     <p className="mt-1 truncate text-xs text-slate-500">
-                      {share.kind === "link" ? "Link share" : share.granteeEmail}
-                      {share.passwordProtected ? " · Password protected" : ""}
+                      {share.kind === "link" ? t("shares.link") : share.granteeEmail}
+                      {share.passwordProtected ? ` · ${t("shares.password")}` : ""}
                     </p>
                     <div className="mt-5 flex items-center justify-between border-t border-white/[0.07] pt-4">
                       <span className="text-[11px] text-slate-600">
                         {share.expiresAt === null
-                          ? "No expiration"
-                          : `Expires ${new Date(share.expiresAt).toLocaleDateString()}`}
+                          ? t("shares.noExpiration")
+                          : `${t("shares.expires")} ${new Date(share.expiresAt).toLocaleDateString("ja-JP")}`}
                       </span>
                       {share.disabledAt === null && (
                         <button
                           className="flex items-center gap-1.5 text-xs text-rose-300 transition hover:text-rose-200"
                           onClick={() => void disable(share.id)}
                         >
-                          <ShieldOff className="h-3.5 w-3.5" /> Disable
+                          <ShieldOff className="h-3.5 w-3.5" /> {t("shares.disable")}
                         </button>
                       )}
                     </div>
@@ -142,10 +154,14 @@ export function SharesView({ mode, onOpen }: SharesViewProps): React.JSX.Element
                       </div>
                       <ExternalLink className="h-4 w-4 text-slate-600 transition group-hover:text-sky-400" />
                     </div>
-                    <h3 className="mt-4 truncate font-medium text-white">{mount.root.name}</h3>
-                    <p className="mt-1 truncate text-xs text-slate-500">From {mount.ownerEmail}</p>
+                    <h3 className="mt-4 truncate font-medium text-[var(--fg)]">
+                      {mount.root.name}
+                    </h3>
+                    <p className="mt-1 truncate text-xs text-[var(--fg-muted)]">
+                      {t("shares.from")} {mount.ownerEmail}
+                    </p>
                     <p className="mt-4 text-[10px] uppercase tracking-wider text-slate-600">
-                      {mount.mountName} · {mount.mode}
+                      {mount.mountName} · {shareMode(mount.mode)}
                     </p>
                   </button>
                 ))}

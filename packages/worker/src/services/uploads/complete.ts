@@ -3,12 +3,25 @@ import type { Env } from "../../env.js";
 import { acquireMutation } from "../../api/mutation.js";
 import { immutableBlobKey, recordCompletedBlob } from "../blobs.js";
 import { createFile, overwriteFile } from "../fileMutations.js";
+import { normalizePortableName } from "../fsMutation.js";
+import { NameConflictError } from "../nameConflict.js";
 import { getOwnedNode, getOwnerWorkspace } from "../nodes.js";
 import { loadUpload, randomUploadId, uploadInfo, uploadStub } from "./common.js";
 
 interface DurableStatus {
   metadata: { multipartUploadId?: string; state: string } | null;
   parts: { partNumber: number; size: number; etag: string }[];
+}
+
+interface CompletionOptions {
+  conflictMode?: "overwrite" | "rename";
+  expectedRevision?: number;
+}
+
+interface ExistingNode {
+  id: string;
+  revision: number;
+  kind: "root" | "folder" | "file";
 }
 
 async function durableStatus(env: Env, uploadId: string): Promise<DurableStatus> {
@@ -28,11 +41,57 @@ async function ensureCompleting(env: Env, uploadId: string): Promise<void> {
   ]);
 }
 
+async function conflictingNode(
+  env: Env,
+  parentId: string,
+  nameCi: string,
+): Promise<ExistingNode | null> {
+  return env.DB.prepare(
+    "SELECT id,revision,kind FROM nodes WHERE parent_id=?1 AND name_ci=?2 AND deleted_at IS NULL",
+  )
+    .bind(parentId, nameCi)
+    .first<ExistingNode>();
+}
+
+function splitName(name: string): { base: string; extension: string } {
+  const dot = name.lastIndexOf(".");
+  return dot > 0
+    ? { base: name.slice(0, dot), extension: name.slice(dot) }
+    : { base: name, extension: "" };
+}
+
+async function availableName(env: Env, parentId: string, requested: string): Promise<string> {
+  const normalized = normalizePortableName(requested);
+  if ((await conflictingNode(env, parentId, normalized.nameCi)) === null) return normalized.name;
+  const parts = splitName(normalized.name);
+  for (let index = 1; index <= 1000; index += 1) {
+    const candidate = normalizePortableName(`${parts.base} (${index})${parts.extension}`);
+    if ((await conflictingNode(env, parentId, candidate.nameCi)) === null) return candidate.name;
+  }
+  throw new Error("name_conflict");
+}
+
+function assertOverwriteTarget(
+  conflict: ExistingNode | null,
+  expectedRevision: number | undefined,
+): asserts conflict is ExistingNode & { kind: "file" } {
+  if (
+    conflict === null ||
+    conflict.kind !== "file" ||
+    !Number.isSafeInteger(expectedRevision) ||
+    expectedRevision !== conflict.revision
+  ) {
+    if (conflict !== null) throw new NameConflictError(conflict.id, conflict.revision);
+    throw new Error("upload_target_changed");
+  }
+}
+
 export async function completeUpload(
   env: Env,
   user: AuthenticatedUser,
   uploadId: string,
   capability: string | undefined,
+  options: CompletionOptions = {},
 ) {
   let upload = await loadUpload(env, user, uploadId, capability);
   if (upload.state === "completed" && upload.targetNodeId !== null) {
@@ -41,6 +100,16 @@ export async function completeUpload(
   if (upload.state !== "receiving" && upload.state !== "completing") {
     throw new Error("upload_complete_forbidden");
   }
+  const conflict =
+    upload.targetNodeId === null
+      ? await conflictingNode(env, upload.parentId, upload.nameCi)
+      : null;
+  if (upload.targetNodeId === null && options.conflictMode === "overwrite") {
+    assertOverwriteTarget(conflict, options.expectedRevision);
+  } else if (conflict !== null && options.conflictMode !== "rename") {
+    throw new NameConflictError(conflict.id, conflict.revision);
+  }
+
   let durable = await durableStatus(env, upload.id);
   if (upload.mode === "multipart" && durable.metadata?.state !== "completing") {
     const sealed = await uploadStub(env, upload.id).fetch("https://upload.internal/seal", {
@@ -78,19 +147,38 @@ export async function completeUpload(
     size: upload.declaredSize,
     r2Etag: object.httpEtag,
   });
-  const parent = await getOwnedNode(env, user.principal.userId, upload.parentId);
   const workspace = await getOwnerWorkspace(env, user.principal.userId);
-  const target =
+  const requestedTarget =
     upload.targetNodeId === null
-      ? null
+      ? conflict
       : await getOwnedNode(env, user.principal.userId, upload.targetNodeId);
+  const target =
+    requestedTarget === null
+      ? null
+      : await getOwnedNode(env, user.principal.userId, requestedTarget.id);
+  if (options.conflictMode === "overwrite") {
+    assertOverwriteTarget(
+      target === null ? null : { id: target.id, revision: target.revision, kind: target.kind },
+      options.expectedRevision,
+    );
+  }
   const lease = await acquireMutation(env, user, {
     spaceId: workspace.spaceId,
-    kind: target === null ? "node.create" : "node.content.write",
+    kind:
+      target === null || options.conflictMode === "rename" ? "node.create" : "node.content.write",
     expectedSteps: 7,
-    intent: { uploadId: upload.id, blobId: upload.blobId },
+    intent: {
+      uploadId: upload.id,
+      blobId: upload.blobId,
+      conflictMode: options.conflictMode ?? "fail",
+    },
     nodeIds: [upload.parentId, ...(target === null ? [] : [target.id])],
   });
+  const parent = await getOwnedNode(env, user.principal.userId, upload.parentId);
+  const name =
+    options.conflictMode === "rename"
+      ? await availableName(env, parent.id, upload.name)
+      : upload.name;
   const common = {
     operationId: lease.operationId,
     permitId: lease.permitId,
@@ -107,12 +195,19 @@ export async function completeUpload(
   };
   let nodeId: string;
   try {
-    if (target === null) {
+    if (target === null || options.conflictMode === "rename") {
+      const lateConflict = await conflictingNode(
+        env,
+        upload.parentId,
+        normalizePortableName(name).nameCi,
+      );
+      if (lateConflict !== null)
+        throw new NameConflictError(lateConflict.id, lateConflict.revision);
       nodeId = randomUploadId("nod");
       await createFile(env, {
         ...common,
         nodeId,
-        name: upload.name,
+        name,
         expectedTreeGeneration: workspace.treeGeneration,
       });
     } else {
@@ -127,6 +222,9 @@ export async function completeUpload(
     await lease.release();
   } catch (error) {
     await lease.revoke().catch(() => undefined);
+    if (error instanceof NameConflictError) throw error;
+    const lateConflict = await conflictingNode(env, upload.parentId, upload.nameCi);
+    if (lateConflict !== null) throw new NameConflictError(lateConflict.id, lateConflict.revision);
     throw error;
   }
   await uploadStub(env, upload.id).fetch("https://upload.internal/completed", { method: "POST" });
