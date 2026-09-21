@@ -7,7 +7,7 @@ Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node
 
 - `packages/shared/src/contracts.ts`: scope、operation、state と single upload 遷移。
 - `packages/worker/src/routes/manifest.ts`: 設計表を元にした147経路。R6 の CSRF issue / operation lookup credential を適用。すべて未有効化。
-- `0001`〜`0005`: 53通常テーブル、FTS5 external-content index、構造・失効・terminal state と容量/参照会計の guards。
+- `0001`〜`0006`: 53通常テーブル、FTS5 external-content index、構造・失効・terminal state、容量/参照会計、permit identity の guards。
 - timestamps はミリ秒。permit/session expiry は DB 側時計で評価する。
 - `control.maintenance/gc_paused` は ControlDO 正本の D1 mirror。初期値は両方1。`control.epoch=1` は初期 schema の値であり、新規 permit 発行許可ではない。
 - `spaces.root_node_id` / `trash_ops.root_node_id` / audit affected ID は設計どおり論理参照。root は insert guard で owner/space 一致を検査し、通常更新・削除不可。
@@ -134,6 +134,20 @@ GET/HEAD、DAV、content-origin や upload binary の扱いは各 HTTP profile �
 migration 0005 は既存 node/version/pin と予約行から logical/ref/reserved を再計算する。以前の実装は physical 会計を公開していないため、既存 physical_bytes が非0なら migration を拒否し、先に個別 inventory 移行を要求する。物理実在を推定して埋めない。
 
 ## 検証の境界
+
+### D1 permit 基盤
+
+`db/permits.ts` は LockDO から利用する内部 primitive。LockDO 自体の admission/lock graph/RPC はまだ未実装。
+`0006` は space あたり open permit 一つを unique index で強制し、permit の ID/space/epoch/expiry 変更を禁止する。
+追加前に open permit が無いことを migration で要求する。
+
+- grant は current epoch/maintenance解除を検査し、期限切れ open→revoked と関連 claimed→failed を同じ batch で終えてから次の open 行を作る。
+- lease は D1 時刻から最大30秒。LockDO が事前に永続化する request ID を使い、再送や commit 応答喪失は同じ行へ収束する。lease 延長や terminal permit 再利用はしない。
+- commit assertion は ID/space/epoch/expiry の一致に加えて open・D1時計の期限・current epoch・maintenance解除を要求する。
+- 正常 release は未完了 claim があれば拒否。maintenance revoke は open と claimed を一緒に収束させ、committed/failed を変えない。
+- permit は現在の credential/全 operand の認可を代替しない。grant 前の ControlDO admission と lock graph 確認、commit batch 内の operation/current authorization は呼出し側で必須。
+
+### 実サービス gate
 
 native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd の SQLite DO/R2/D1 で eviction・storage loss・write failure を検証。
 固定 pool 0.22 の RPC 拒否例外は後続 invocation の cleanup を停止させるため、意図的な拒否試験は `runInDurableObject` 内で捕捉し、成功時は実 stub RPC を使用する。

@@ -25,6 +25,7 @@
 | 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch assertion | read/create/automation 4 operation の内部基盤。全 operation の認可は未完了 |
 | R6 #7 CSRF | session 束縛 HMAC、TTL1h、再利用・再発行、purpose/aud/epoch/credential、current session/share、Origin 境界 | 内部サービスと D1 テスト実装済み。HTTP profile 接続待ち |
 | 1 quota/ref/pin | owner/share reservation、unique logical、R2 HEAD physical、ref≤1,000、pin-only除外、各再送の一度だけ計上 | migration/内部サービス実装済み。GC/repair/namespace mutation 接続待ち |
+| 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。LockDO admission/lock graph/RPC は未実装 |
 
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
@@ -51,9 +52,9 @@ LockDO/UploadDO/BudgetDO は引き続き拒否実装。実装契約・残る境�
 
 ## M/U/I/R と復旧
 
-- **M**: `0001`〜`0005` を追加し、隔離 D1 と SQLite へ適用して FK/CHECK/trigger/FTS/会計を確認。リモート DB は未変更。probe schema は別 test file に隔離。
+- **M**: `0001`〜`0006` を追加し、隔離 D1 と SQLite へ適用して FK/CHECK/trigger/FTS/会計/permit を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
-- **I**: Windows のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[ec8729d の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35623582169) は Windows/Ubuntu 両方で成功（270 tests 時点）。
+- **I**: Windows のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[a01db99 の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35624873897) は Windows/Ubuntu 両方で成功（CSRF/会計込み295 tests 時点）。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
@@ -62,6 +63,6 @@ LockDO/UploadDO/BudgetDO は引き続き拒否実装。実装契約・残る境�
 - 2026-09-22、Windows / Node 24.21.0 / pnpm 12.4.1 で `pnpm check` 成功。
 - Biome、TypeScript、contracts/config verifier: 成功。
 - Node 単体: 7 files / 141 tests 成功。
-- ローカル Workers 統合: 13 files / 154 tests 成功（合計295 tests）。
+- ローカル Workers 統合: 14 files / 164 tests 成功（合計305 tests）。
 - Vite build と Wrangler deploy **dry-run**: 成功。配備や remote migration は実行していない。
 - Windows sandbox 内で esbuild の親 directory 読取りが拒否されたため、テストと dry-run build は承認された制限外プロセスで実行。Cloudflare の本番資格情報は使用していない。
