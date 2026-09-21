@@ -4,7 +4,7 @@
 
 - ラウンド3の A1〜A5、Z1〜Z4、T1〜T6、C1〜C2、I1〜I2、W1〜W3、S1〜S4、§8 必須修正 P0/P1、追加受入試験を全件追跡する。
 - 「採用」は v0.4 の実装契約へ反映済み。「後段」は v1 に安全な制限を置き、`DESIGN.md` §18 に明記したものを示す。
-- 不採用はない。W1 は依頼時の確定方針に従い、通常 mutation は write 権限 + token、refresh は token、UNLOCK だけ creator または同 space owner に限定した。
+- ラウンド3時点の不採用はない。W1 は当時の確定方針に従ったが、**R4 で再変更（通常 mutation / refresh / UNLOCK すべて creator 一致を採用）**した。
 
 ## 1. Cloudflare Access 統合
 
@@ -49,9 +49,9 @@
 
 | ID | 反映章 | 採用・不採用・後段 | 一言 |
 |---|---|---|---|
-| W1 | §7.3, §15.2 | 採用（確定方針） | 通常 locked mutation は current write権限 + `If` tokenで許可しcreator照合なし、refreshはtokenのみ、UNLOCKだけcreatorまたはspace ownerに限定した。 |
-| W2 | §7.3, §15.1–15.2 | 採用 | MOVE commit時にsource lockを終了しdestinationへ引き継がず、node ID alias解決とlock lifecycleを分離した。 |
-| W3 | §0.3, §5.3, §7.3, §15.2 | 採用 | collection ETagをstrong `"<node_id>-<revision>"` にし、必須If-Matchをfile content PUTだけへ限定、他revision競合を409にした。 |
+| W1 | §7.3, §15.2 | 採用（確定方針） | 通常 locked mutation は current write権限 + `If` tokenで許可しcreator照合なし、refreshはtokenのみ、UNLOCKだけcreatorまたはspace ownerに限定した。**R4 で再変更（creator 一致を採用）**。 |
+| W2 | §7.3, §15.1–15.2 | 採用 | MOVE commit時にsource lockを終了しdestinationへ引き継がず、node ID alias解決とlock lifecycleを分離した。**R4 で再変更（creator 一致を採用）**。 |
+| W3 | §0.3, §5.3, §7.3, §15.2 | 採用 | collection ETagをstrong `"<node_id>-<revision>"` にし、必須If-Matchをfile content PUTだけへ限定、他revision競合を409にした。**R4 で再変更（creator 一致を採用）**。 |
 
 ## 6. 秘密情報、bootstrap、ログ、development bypass
 
