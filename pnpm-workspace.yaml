@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+minimumReleaseAge: 10080
+strictPeerDependencies: true
+allowBuilds:
+  esbuild: true
+  workerd: true

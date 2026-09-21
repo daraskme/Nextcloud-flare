@@ -4,6 +4,8 @@
 
 状態: **v0.6 で R5 ゲート項目を是正済み。Astra R6 再ゲート = 条件付き Go（`docs/reviews/round6-astra.md`）。Phase 0 → 1 の順に着手可。R6 の 10 条件は §8 の確定事項で閉じ、Phase 1 完了前に fixture で証明する。**
 
+実装進捗（2026-09-22）: Phase 0 と Phase 1 の一部（schema/契約/epoch/session/JWT/bootstrap/node 認可）を追加し、270 tests と build が成功。全 operation の認可・CSRF・ledger/permit/create と実 D1・Images 等の staging gate は未完了。詳細・実行手順・次の実装は [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) と [`FOUNDATION.md`](FOUNDATION.md) を参照。
+
 - Phase 0 gate 1 で D1 `_assert`、`changes()`、EXISTS fallback と G01 三反例を最初に実証する。
 - 設計の安全性に関わる空欄を実装者の推測で埋めず、`docs/DESIGN.md` v0.6 と `docs/reviews/round5-resolution.md` を正本とする。
 - Phase 1 完了前に Files core、upload、trash/GC の本実装へ進まない。
@@ -44,7 +46,7 @@
 
 ## 2. 実装順序・完了条件・テスト
 
-以下のパスは作成予定の成果物名であり、現リポジトリに存在することを意味しない。
+以下のパスは最終的な成果物名であり、すべてが現在存在することを意味しない。作成済み範囲は進捗記録を参照。
 
 ```text
 W = packages/worker
@@ -113,7 +115,7 @@ pnpm verify:contracts
 pnpm verify:config
 ```
 
-これらは実装時に定義するコマンドであり、現在存在するコマンドではない。
+`test:e2e` はブラウザ機能実装時に追加する。それ以外は定義済み。`verify:contracts` は toolchain/limit/禁止API と route/operation の設計照合を行う。schema/FK/state の検査は unit/integration tests に含めるが、Phase 1 後半の認可・台帳・permit gate は未完了。
 
 ## 5. CI 構成
 

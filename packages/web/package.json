@@ -1,0 +1,12 @@
+{
+  "name": "@next-cloud-flare/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "vite": "7.3.6"
+  }
+}

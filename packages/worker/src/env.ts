@@ -1,0 +1,40 @@
+import type { ControlDO } from "./do/ControlDO";
+
+export interface Env {
+  DB: D1Database;
+  BLOBS: R2Bucket;
+  BACKUPS: R2Bucket;
+  CACHE: KVNamespace;
+  CONTROL: DurableObjectNamespace<ControlDO>;
+  LOCKS: DurableObjectNamespace;
+  UPLOADS: DurableObjectNamespace;
+  BUDGETS: DurableObjectNamespace;
+  JOBS: Queue;
+  IMAGES: ImagesBinding;
+  EDGE_LIMITER: RateLimit;
+  ASSETS: Fetcher;
+  ENVIRONMENT: "development" | "staging" | "production";
+  APP_ORIGIN: string;
+  CONTENT_ORIGIN: string;
+  PBKDF2_ITERATIONS: string;
+  EPOCH_FLOOR?: string;
+}
+
+export const REQUIRED_BINDINGS = [
+  "DB",
+  "BLOBS",
+  "BACKUPS",
+  "CACHE",
+  "CONTROL",
+  "LOCKS",
+  "UPLOADS",
+  "BUDGETS",
+  "JOBS",
+  "IMAGES",
+  "EDGE_LIMITER",
+  "ASSETS",
+] as const satisfies readonly (keyof Env)[];
+
+export function hasBindings(env: Partial<Env>): env is Env {
+  return REQUIRED_BINDINGS.every((name) => env[name] !== undefined && env[name] !== null);
+}

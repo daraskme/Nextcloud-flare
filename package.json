@@ -1,0 +1,35 @@
+{
+  "name": "next-cloud-flare",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.4.1",
+  "engines": {
+    "node": "24.21.0",
+    "pnpm": "12.4.1"
+  },
+  "scripts": {
+    "dev": "pnpm build:web && wrangler dev --local",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "build:web": "pnpm --filter @next-cloud-flare/web build",
+    "build": "pnpm build:web && wrangler deploy --dry-run --outdir dist/worker",
+    "test": "pnpm test:unit && pnpm test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "pnpm build:web && vitest run --config vitest.config.ts",
+    "verify:contracts": "node scripts/verify-contracts.mjs",
+    "verify:config": "node scripts/verify-config.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm verify:contracts && pnpm verify:config && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.13",
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260911.1",
+    "@types/node": "24.13.4",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.11",
+    "wrangler": "4.131.1"
+  }
+}

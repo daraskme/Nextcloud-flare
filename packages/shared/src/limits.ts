@@ -1,0 +1,17 @@
+export const LIMITS = {
+  requestBytes: 95_000_000,
+  d1Bindings: 100,
+  d1SqlBytes: 100_000,
+  d1Statements: 1_000,
+  treeDepth: 64,
+  imageBytes: 20_000_000,
+  imageDimension: 12_000,
+  imagePixels: 40_000_000,
+  pbkdf2Iterations: 100_000,
+  zipEntries: 1_000,
+  zipBytes: 4_294_967_295,
+  streamChunkBytes: 65_536,
+  streamQueueBytes: 1_048_576,
+  reconciliationAttempts: 3,
+  reconciliationMs: 5_000,
+} as const;

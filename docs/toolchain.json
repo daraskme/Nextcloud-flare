@@ -1,0 +1,126 @@
+{
+  "selectedAt": "2026-09-21",
+  "cutoff": "2026-09-14T00:00:00.000Z",
+  "registry": "https://registry.npmjs.org",
+  "versions": {
+    "jose": {
+      "version": "6.2.12",
+      "publishedAt": "2026-09-05T09:17:12.608Z",
+      "selectedAt": "2026-09-22",
+      "engines": {},
+      "peers": {},
+      "review": "Dependency-free ESM/WebCrypto implementation; upstream supports Cloudflare Workers. JWT verification tested in Node and workerd."
+    },
+    "node": {
+      "version": "24.21.0",
+      "publishedAt": "2026-09-10T00:48:28.813Z",
+      "engines": {
+        "npm": ">=5.0.0"
+      },
+      "peers": {}
+    },
+    "pnpm": {
+      "version": "12.4.1",
+      "publishedAt": "2026-09-10T17:06:43.260Z",
+      "engines": {
+        "node": ">=18.*"
+      },
+      "peers": {}
+    },
+    "wrangler": {
+      "version": "4.131.1",
+      "publishedAt": "2026-09-11T14:01:47.833Z",
+      "engines": {
+        "node": ">=22.0.0"
+      },
+      "peers": {
+        "@cloudflare/workers-types": "^5.20260911.1"
+      }
+    },
+    "typescript": {
+      "version": "5.9.3",
+      "publishedAt": "2025-09-30T21:19:38.784Z",
+      "engines": {
+        "node": ">=14.17"
+      },
+      "peers": {}
+    },
+    "vitest": {
+      "version": "4.1.11",
+      "publishedAt": "2026-08-18T14:27:07.240Z",
+      "engines": {
+        "node": "^20.0.0 || ^22.0.0 || >=24.0.0"
+      },
+      "peers": {
+        "vite": "^6.0.0 || ^7.0.0 || ^8.0.0",
+        "jsdom": "*",
+        "happy-dom": "*",
+        "@vitest/ui": "4.1.11",
+        "@types/node": "^20.0.0 || ^22.0.0 || >=24.0.0",
+        "@edge-runtime/vm": "*",
+        "@opentelemetry/api": "^1.9.0",
+        "@vitest/coverage-v8": "4.1.11",
+        "@vitest/browser-preview": "4.1.11",
+        "@vitest/coverage-istanbul": "4.1.11",
+        "@vitest/browser-playwright": "4.1.11",
+        "@vitest/browser-webdriverio": "4.1.11"
+      }
+    },
+    "@cloudflare/vitest-pool-workers": {
+      "version": "0.22.0",
+      "publishedAt": "2026-08-18T13:00:31.841Z",
+      "engines": {},
+      "peers": {
+        "vitest": "^4.1.0",
+        "@vitest/runner": "^4.1.0",
+        "@vitest/snapshot": "^4.1.0"
+      }
+    },
+    "@cloudflare/workers-types": {
+      "version": "5.20260911.1",
+      "publishedAt": "2026-09-11T01:16:03.373Z",
+      "engines": {},
+      "peers": {}
+    },
+    "@types/node": {
+      "version": "24.13.4",
+      "publishedAt": "2026-09-09T18:10:47.240Z",
+      "engines": {},
+      "peers": {}
+    },
+    "@biomejs/biome": {
+      "version": "2.5.13",
+      "publishedAt": "2026-09-10T11:09:56.675Z",
+      "engines": {
+        "node": ">=14.21.3"
+      },
+      "peers": {}
+    },
+    "fflate": {
+      "version": "0.8.3",
+      "publishedAt": "2026-05-16T00:14:03.449Z",
+      "engines": {},
+      "peers": {}
+    },
+    "vite": {
+      "version": "7.3.6",
+      "publishedAt": "2026-06-25T01:51:49.605Z",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peers": {
+        "tsx": "^4.8.1",
+        "jiti": ">=1.21.0",
+        "less": "^4.0.0",
+        "sass": "^1.70.0",
+        "yaml": "^2.4.2",
+        "stylus": ">=0.54.8",
+        "terser": "^5.16.0",
+        "sugarss": "^5.0.0",
+        "@types/node": "^20.19.0 || >=22.12.0",
+        "lightningcss": "^1.21.0",
+        "sass-embedded": "^1.70.0"
+      }
+    }
+  }
+}
