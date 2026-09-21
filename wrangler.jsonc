@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "next-cloud-flare",
+  "main": "packages/worker/src/index.ts",
+  "compatibility_date": "2026-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 300000 },
+  "assets": {
+    "directory": "packages/web/dist",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": true,
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ncf-dev",
+      "database_id": "<D1_ID>",
+      "migrations_dir": "packages/worker/migrations",
+    },
+  ],
+  "r2_buckets": [
+    { "binding": "BLOBS", "bucket_name": "ncf-dev-blobs" },
+    { "binding": "BACKUPS", "bucket_name": "ncf-dev-backups" },
+  ],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "<KV_ID>" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "LOCKS", "class_name": "LockDO" },
+      { "name": "UPLOADS", "class_name": "UploadDO" },
+      { "name": "BUDGETS", "class_name": "BudgetDO" },
+      { "name": "CONTROL", "class_name": "ControlDO" },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1-sqlite-do",
+      "new_sqlite_classes": ["LockDO", "UploadDO", "BudgetDO", "ControlDO"],
+    },
+  ],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "ncf-dev-jobs" }],
+    "consumers": [
+      {
+        "queue": "ncf-dev-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "dead_letter_queue": "ncf-dev-jobs-dlq",
+        "max_concurrency": 8,
+      },
+    ],
+  },
+  "images": { "binding": "IMAGES" },
+  "ratelimits": [
+    {
+      "name": "EDGE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 300, "period": 60 },
+    },
+  ],
+  "triggers": { "crons": ["17 * * * *", "23 2 * * *", "0 3 * * SUN"] },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "APP_ORIGIN": "http://localhost:5173",
+    "CONTENT_ORIGIN": "http://localhost:8788",
+    "ACCESS_ISSUER": "<ACCESS_ISSUER>",
+    "ACCESS_USER_AUD": "<ACCESS_USER_AUD>",
+    "ACCESS_SERVICE_AUD": "<ACCESS_SERVICE_AUD>",
+    "PBKDF2_ITERATIONS": "100000",
+    "OWNER_EMAILS": "<OWNER_EMAILS>",
+  },
+}

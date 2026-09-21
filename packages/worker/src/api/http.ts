@@ -1,0 +1,125 @@
+import type { Context } from "hono";
+
+import type { Env } from "../env.js";
+import { NameConflictError } from "../services/nameConflict.js";
+
+export type AppContext = Context<{ Bindings: Env }>;
+
+export function jsonError(
+  context: AppContext,
+  status: 400 | 401 | 403 | 404 | 409 | 410 | 411 | 412 | 413 | 423 | 428 | 429 | 500 | 503 | 507,
+  code: string,
+  message: string,
+): Response {
+  return context.json({ error: { code, message } }, status);
+}
+
+export function mapError(context: AppContext, error: unknown): Response {
+  const message = error instanceof Error ? error.message : "internal_error";
+  if (message === "invalid_name") {
+    return jsonError(
+      context,
+      400,
+      "invalid_name",
+      "The name contains a forbidden character or exceeds 255 UTF-8 bytes",
+    );
+  }
+  if (error instanceof NameConflictError) {
+    return context.json(
+      {
+        error: {
+          code: "name_conflict",
+          message: "An item with this name already exists",
+          existingNodeId: error.existingNodeId,
+          revision: error.revision,
+        },
+      },
+      409,
+    );
+  }
+  if (message.includes("UNIQUE constraint failed: operations.")) {
+    return jsonError(
+      context,
+      409,
+      "duplicate_request",
+      "An identical request is already in progress; retry shortly",
+    );
+  }
+  if (message.includes("UNIQUE constraint") || message === "name_conflict") {
+    return jsonError(context, 409, "name_conflict", "An item with this name already exists");
+  }
+  if (
+    message === "node_not_found" ||
+    message === "space_not_found" ||
+    message === "upload_not_found" ||
+    message === "upload_capability_required"
+  ) {
+    return jsonError(context, 404, "not_found", "The requested item was not found");
+  }
+  if (message === "blob_unrecoverable") {
+    return jsonError(context, 409, "blob_unrecoverable", "Deleted content cannot be restored");
+  }
+  if (message === "restore_gc_busy") {
+    return jsonError(context, 409, "restore_busy", "Garbage collection is still quiescing");
+  }
+  if (message === "upload_commit_unknown") {
+    return jsonError(context, 503, "commit_unknown", "Upload completion is being reconciled");
+  }
+  if (message === "not_a_folder") {
+    return jsonError(context, 409, "not_a_folder", "The destination is not a folder");
+  }
+  if (message.includes("access") || message.includes("jwt") || message.includes("token_required")) {
+    return jsonError(context, 401, "authentication_required", "Authentication failed");
+  }
+  if (message.includes("development_principal") || message.includes("configuration_invalid")) {
+    return jsonError(context, 503, "configuration_invalid", "The server configuration is invalid");
+  }
+  if (message === "completing_abort_forbidden" || message === "completed_abort_forbidden") {
+    return jsonError(context, 409, "upload_terminal_conflict", "This upload cannot be aborted");
+  }
+  if (message === "upload_size_mismatch") {
+    return jsonError(
+      context,
+      409,
+      "upload_size_mismatch",
+      "Uploaded bytes do not match the declaration",
+    );
+  }
+  if (message === "locked") {
+    return jsonError(context, 423, "locked", "The item is locked");
+  }
+  if (message === "share_unlock_rate_limited" || message === "budget_owner_limit") {
+    return jsonError(context, 429, "rate_limited", "Too many active requests");
+  }
+  if (message === "budget_exceeded") {
+    return jsonError(context, 429, "budget_exceeded", "The transfer budget is exhausted");
+  }
+  if (message === "derivative_inconsistent") {
+    return jsonError(context, 503, "derivative_inconsistent", "Generated media is unavailable");
+  }
+  if (
+    message === "share_action_forbidden" ||
+    message === "content_target_forbidden" ||
+    message === "csrf_failed"
+  ) {
+    return jsonError(context, 403, "forbidden", "This capability does not allow the request");
+  }
+  if (message === "share_not_found") {
+    return jsonError(context, 404, "not_found", "The share was not found");
+  }
+  if (message === "share_gone") {
+    return jsonError(context, 410, "share_gone", "The share is no longer available");
+  }
+  if (
+    message === "share_session_required" ||
+    message === "share_unlock_failed" ||
+    message === "content_session_required" ||
+    message === "content_ticket_invalid"
+  ) {
+    return jsonError(context, 401, "authentication_required", "Authentication failed");
+  }
+  if (error instanceof RangeError) {
+    return jsonError(context, 400, "invalid_input", error.message);
+  }
+  return jsonError(context, 409, "mutation_rejected", "The operation could not be committed");
+}

@@ -1,0 +1,67 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --reader-bg: #f8fafc;
+  --reader-fg: #0f172a;
+  --reader-border: #cbd5e1;
+  --reader-surface: #ffffff;
+}
+
+:root[data-theme="dark"] {
+  --reader-bg: #080b11;
+  --reader-fg: #f8fafc;
+  --reader-border: #334155;
+  --reader-surface: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--reader-bg);
+  color: var(--reader-fg);
+}
+
+.reader-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.reader-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--reader-border);
+  background: var(--reader-surface);
+}
+
+.reader-toolbar button {
+  border: 1px solid var(--reader-border);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  background: transparent;
+  color: inherit;
+}
+
+.reader-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-document {
+  width: min(60rem, 100%);
+  min-height: calc(100vh - 4rem);
+  margin: 0 auto;
+  border: 0;
+  background: #ffffff;
+}
