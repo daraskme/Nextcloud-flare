@@ -9,12 +9,8 @@ import { authenticateAccessUser } from "../auth/httpAuth.js";
 import { buildCopyManifest, commitSameOwnerCopy } from "../services/copy.js";
 import { moveNode } from "../services/fileMutations.js";
 import { createFolder } from "../services/fsMutation.js";
-import {
-  getOwnedNode,
-  getOwnedPath,
-  getOwnerWorkspace,
-  listOwnedChildren,
-} from "../services/nodes.js";
+import { listChildren } from "../services/listing.js";
+import { getOwnedNode, getOwnedPath, getOwnerWorkspace } from "../services/nodes.js";
 import { acquireMutation } from "./mutation.js";
 import { type AppContext, mapError } from "./http.js";
 
@@ -22,21 +18,6 @@ function randomId(prefix: string): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return `${prefix}_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function parseCursor(value: string | undefined): { name: string; id: string } {
-  if (value === undefined || value === "") {
-    return { name: "", id: "" };
-  }
-  try {
-    const parsed = JSON.parse(atob(value)) as { name?: unknown; id?: unknown };
-    if (typeof parsed.name !== "string" || typeof parsed.id !== "string") {
-      throw new Error("invalid_cursor");
-    }
-    return { name: parsed.name, id: parsed.id };
-  } catch {
-    throw new RangeError("Cursor is invalid");
-  }
 }
 
 export async function handleMe(context: AppContext): Promise<Response> {
@@ -66,14 +47,12 @@ export async function handleGetNode(context: AppContext): Promise<Response> {
 export async function handleChildren(context: AppContext): Promise<Response> {
   try {
     const user = await authenticateAccessUser(context.env, context.req.raw);
-    const cursor = parseCursor(context.req.query("cursor"));
     return context.json(
-      await listOwnedChildren(
+      await listChildren(
         context.env,
         user.principal.userId,
         context.req.param("nodeId"),
-        cursor.name,
-        cursor.id,
+        context.req.query("cursor"),
       ),
     );
   } catch (error) {

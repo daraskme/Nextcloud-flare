@@ -29,4 +29,5 @@ export interface Env {
   DEV_SPACE_ID?: string;
   DEV_ROOT_NODE_ID?: string;
   DEV_CSRF_KEY?: string;
+  CURSOR_KEY?: string;
 }

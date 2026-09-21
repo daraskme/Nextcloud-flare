@@ -117,6 +117,29 @@ export const api = {
       method: "DELETE",
       headers: { "Upload-Capability": capability },
     }),
+  search: (rootId: string, query: string, signal?: AbortSignal) =>
+    request<{ items: NodeSummary[]; truncated: boolean }>(
+      `/api/v1/search?root=${encodeURIComponent(rootId)}&q=${encodeURIComponent(query)}`,
+      signal === undefined ? undefined : { signal },
+    ),
+  stats: () =>
+    request<{
+      quotaBytes: number;
+      usedBytes: number;
+      physicalBytes: number;
+      reservedBytes: number;
+      files: number;
+      folders: number;
+      logicalBytes: number;
+      truncated: boolean;
+    }>("/api/v1/stats"),
+  recent: () => request<{ items: NodeSummary[] }>("/api/v1/recent"),
+  starred: () => request<{ items: NodeSummary[] }>("/api/v1/starred"),
+  setStar: (nodeId: string, starred: boolean) =>
+    request<undefined>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/star`, {
+      method: "PUT",
+      body: JSON.stringify({ starred }),
+    }),
   trashNode: (nodeId: string) =>
     request<{ trashOpId: string }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
       method: "DELETE",

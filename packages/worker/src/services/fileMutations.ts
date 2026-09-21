@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { upsertSearchStatements } from "../search/sync.js";
 import { normalizePortableName } from "./fsMutation.js";
 import {
   assertChanged,
@@ -52,6 +53,12 @@ export async function createFile(env: Env, input: FileCreateInput): Promise<void
       input.operationId,
     ),
     assertChanged(env),
+    ...upsertSearchStatements(env, {
+      nodeId: input.nodeId,
+      spaceId: input.spaceId,
+      text: normalized.name,
+      revision: 1,
+    }),
     ...operationStep(env, input.operationId, 2, "node.insert", input.nodeId),
     env.DB.prepare(
       "UPDATE users SET reserved_bytes=reserved_bytes-b.size,used_bytes=used_bytes+b.size FROM blobs b WHERE users.id=?1 AND b.id=?2 AND users.reserved_bytes>=b.size",
@@ -145,6 +152,10 @@ export async function overwriteFile(env: Env, input: OverwriteInput): Promise<vo
       input.expectedNodeRevision,
     ),
     assertChanged(env),
+    env.DB.prepare("UPDATE search_index SET revision=?1 WHERE node_id=?2").bind(
+      input.expectedNodeRevision + 1,
+      input.nodeId,
+    ),
     ...operationStep(env, input.operationId, 3, "node.content", input.nodeId),
     env.DB.prepare(
       "UPDATE users SET reserved_bytes=reserved_bytes-b.size,used_bytes=used_bytes+b.size FROM blobs b WHERE users.id=?1 AND b.id=?2 AND users.reserved_bytes>=b.size",
@@ -217,6 +228,12 @@ export async function moveNode(env: Env, input: MoveInput): Promise<void> {
       input.sourceParentId,
     ),
     assertChanged(env),
+    ...upsertSearchStatements(env, {
+      nodeId: input.nodeId,
+      spaceId: input.spaceId,
+      text: normalized.name,
+      revision: input.expectedNodeRevision + 1,
+    }),
     ...operationStep(env, input.operationId, 1, "node.move", input.nodeId),
     env.DB.prepare(
       "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL",

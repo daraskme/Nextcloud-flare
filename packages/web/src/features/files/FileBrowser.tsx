@@ -23,6 +23,7 @@ interface FileBrowserProps {
   rootId: string;
   refreshKey: number;
   onNavigate: (nodeId: string) => void;
+  navigateTo: string | undefined;
 }
 
 interface MenuState {
@@ -50,6 +51,7 @@ export function FileBrowser({
   rootId,
   refreshKey,
   onNavigate,
+  navigateTo,
 }: FileBrowserProps): React.JSX.Element {
   const [currentId, setCurrentId] = useState(rootId);
   const [items, setItems] = useState<NodeSummary[]>([]);
@@ -85,6 +87,10 @@ export function FileBrowser({
     onNavigate(currentId);
     void load();
   }, [currentId, refreshKey]);
+
+  useEffect(() => {
+    if (navigateTo !== undefined) setCurrentId(navigateTo);
+  }, [navigateTo]);
 
   useEffect(() => {
     const close = () => setMenu(null);

@@ -15,6 +15,7 @@ export const exportTables = [
   "outbox",
   "trash_members",
   "node_props",
+  "node_stars",
   "tags",
   "node_tags",
   "node_media",

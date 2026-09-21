@@ -1,6 +1,7 @@
 export const purgeOrder = [
   "trash_members",
   "node_props",
+  "node_stars",
   "node_tags",
   "node_media",
   "node_audio",

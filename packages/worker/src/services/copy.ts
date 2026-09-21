@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { upsertSearchStatements } from "../search/sync.js";
 import { normalizePortableName } from "./fsMutation.js";
 import {
   assertChanged,
@@ -168,6 +169,12 @@ export async function commitSameOwnerCopy(env: Env, input: CommitCopyInput): Pro
         input.operationId,
       ),
       assertChanged(env),
+      ...upsertSearchStatements(env, {
+        nodeId: entry.destinationId,
+        spaceId: input.spaceId,
+        text: entry.name,
+        revision: 1,
+      }),
       ...operationStep(env, input.operationId, step, "node.copy", entry.destinationId),
     );
     step += 1;

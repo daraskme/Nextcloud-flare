@@ -55,6 +55,12 @@ export async function trashNode(env: Env, input: TrashMutationInput): Promise<nu
       "UPDATE nodes SET orig_parent_id=parent_id,deleted_at=?1,deleted_op_id=?2,revision=revision+1,updated_at=?1,last_op_id=?3 WHERE id IN (SELECT value FROM json_each(?4)) AND deleted_at IS NULL",
     ).bind(now, input.trashOpId, input.operationId, encoded),
     assertChanged(env, ids.length),
+    env.DB.prepare(
+      "INSERT INTO search_fts(search_fts,rowid,text_norm,tokens) SELECT 'delete',rowid,text_norm,tokens FROM search_index WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM search_index WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
     ...operationStep(env, input.operationId, 3, "nodes.trash", input.nodeId),
     env.DB.prepare(
       "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND owner_id=?4 AND revision=?5 AND deleted_at IS NULL",

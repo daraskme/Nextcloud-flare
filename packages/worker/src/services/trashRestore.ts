@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { upsertSearchStatements } from "../search/sync.js";
 import { setGcPaused } from "./control.js";
 import { normalizePortableName } from "./fsMutation.js";
 import {
@@ -49,6 +50,13 @@ export async function restoreTrash(env: Env, input: RestoreInput): Promise<strin
       .bind(input.trashOpId, input.userId, input.spaceId)
       .first<{ rootId: string; name: string; members: number }>();
     if (trash === null || trash.members < 1) throw new Error("trash_not_found");
+    const restoreMembers = await env.DB.prepare(
+      "SELECT n.id,n.name,n.revision FROM trash_members m JOIN nodes n ON n.id=m.node_id WHERE m.trash_op_id=?1 ORDER BY n.id",
+    )
+      .bind(input.trashOpId)
+      .all<{ id: string; name: string; revision: number }>();
+    if (restoreMembers.results.length !== trash.members)
+      throw new Error("trash_membership_changed");
     const unrecoverable = await env.DB.prepare(
       "SELECT 1 found FROM trash_members m JOIN nodes n ON n.id=m.node_id LEFT JOIN blobs current ON current.id=n.current_blob_id LEFT JOIN node_versions v ON v.node_id=n.id LEFT JOIN blobs version ON version.id=v.blob_id WHERE m.trash_op_id=?1 AND (current.state IN ('deleting','deleted') OR version.state IN ('deleting','deleted')) LIMIT 1",
     )
@@ -87,6 +95,14 @@ export async function restoreTrash(env: Env, input: RestoreInput): Promise<strin
         input.trashOpId,
       ),
       assertChanged(env),
+      ...restoreMembers.results.flatMap((member) =>
+        upsertSearchStatements(env, {
+          nodeId: member.id,
+          spaceId: input.spaceId,
+          text: member.id === trash.rootId ? name.name : member.name,
+          revision: member.revision + 1,
+        }),
+      ),
       ...operationStep(env, input.operationId, 3, "trash.root.restore", trash.rootId),
       env.DB.prepare(
         "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND owner_id=?4 AND revision=?5 AND deleted_at IS NULL",

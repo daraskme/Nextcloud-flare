@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { upsertSearchStatements } from "../search/sync.js";
 
 const RESERVED_NAMES = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
 
@@ -69,6 +70,12 @@ export async function createFolder(env: Env, input: CreateFolderMutation): Promi
       input.operationId,
     ),
     env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
+    ...upsertSearchStatements(env, {
+      nodeId: input.nodeId,
+      spaceId: input.spaceId,
+      text: normalized.name,
+      revision: 1,
+    }),
     ...step(1, "node.insert", input.nodeId),
     env.DB.prepare(
       "UPDATE nodes SET revision=revision+1,updated_at=?1,last_op_id=?2 WHERE id=?3 AND revision=?4 AND deleted_at IS NULL",

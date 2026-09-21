@@ -114,7 +114,13 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
       "DELETE FROM node_versions WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
+      "INSERT INTO search_fts(search_fts,rowid,text_norm,tokens) SELECT 'delete',rowid,text_norm,tokens FROM search_index WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
       "DELETE FROM search_index WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
+      "DELETE FROM node_stars WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(
       "DELETE FROM library_items WHERE node_id IN (SELECT value FROM json_each(?1))",

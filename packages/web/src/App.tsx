@@ -1,7 +1,10 @@
 import { Cloud, Files, HardDrive, Moon, Search, Settings, Sun, Trash2, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import type { NodeSummary } from "@ncf/shared";
+
 import { FileBrowser } from "./features/files/FileBrowser";
+import { SearchPalette } from "./features/search/SearchPalette";
 import { TrashView } from "./features/trash/TrashView";
 import { UploadManager } from "./features/uploads/UploadManager";
 import { api } from "./lib/api";
@@ -18,6 +21,8 @@ export function App(): React.JSX.Element {
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [section, setSection] = useState<"files" | "trash">("files");
+  const [navigateTo, setNavigateTo] = useState<string>();
+  const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -34,6 +39,28 @@ export function App(): React.JSX.Element {
         setError(cause instanceof Error ? cause.message : "Could not open workspace"),
       );
   }, []);
+
+  useEffect(() => {
+    if (workspace !== null)
+      void api
+        .stats()
+        .then(setStats)
+        .catch(() => setStats(null));
+  }, [workspace, refreshKey]);
+
+  const selectSearchResult = (item: NodeSummary) => {
+    if (item.kind === "folder") {
+      setSection("files");
+      setNavigateTo(item.id);
+    } else {
+      window.open(`/api/v1/nodes/${encodeURIComponent(item.id)}/content`, "_blank", "noopener");
+    }
+  };
+
+  const storagePercent =
+    stats === null || stats.quotaBytes === 0
+      ? 0
+      : Math.min(100, ((stats.usedBytes + stats.reservedBytes) / stats.quotaBytes) * 100);
 
   return (
     <main className="flex min-h-screen bg-slate-50 text-slate-900 transition-colors duration-300 dark:bg-[#080b11] dark:text-slate-100">
@@ -60,7 +87,10 @@ export function App(): React.JSX.Element {
           >
             <Files className="h-4 w-4" /> My Drive
           </button>
-          <button className="nav-item">
+          <button
+            className="nav-item"
+            onClick={() => window.dispatchEvent(new Event("ncf-search"))}
+          >
             <Search className="h-4 w-4" /> Search <kbd>⌘K</kbd>
           </button>
           <button
@@ -76,10 +106,17 @@ export function App(): React.JSX.Element {
               <span className="flex items-center gap-2 text-slate-500">
                 <HardDrive className="h-3.5 w-3.5" /> Storage
               </span>
-              <span>—</span>
+              <span>
+                {stats === null
+                  ? "—"
+                  : `${(stats.usedBytes / 1024 ** 3).toFixed(1)} / ${(stats.quotaBytes / 1024 ** 3).toFixed(1)} GB`}
+              </span>
             </div>
             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
-              <div className="h-full w-0 rounded-full bg-sky-400" />
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-500 transition-all duration-500"
+                style={{ width: `${storagePercent}%` }}
+              />
             </div>
           </div>
           <button className="nav-item" onClick={() => setDark((value) => !value)}>
@@ -105,6 +142,7 @@ export function App(): React.JSX.Element {
               rootId={workspace.rootId}
               refreshKey={refreshKey}
               onNavigate={setCurrentFolder}
+              navigateTo={navigateTo}
             />
           ) : (
             <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
@@ -120,6 +158,9 @@ export function App(): React.JSX.Element {
           </div>
         )}
       </div>
+      {workspace !== null && (
+        <SearchPalette rootId={workspace.rootId} onSelect={selectSearchResult} />
+      )}
       {workspace !== null && section === "files" && (
         <UploadManager
           parentId={currentFolder ?? workspace.rootId}

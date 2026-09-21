@@ -33,6 +33,7 @@ export default defineConfig({
             PBKDF2_ITERATIONS: "100000",
             OWNER_EMAILS: "owner@test.invalid",
             EPOCH_FLOOR: "1",
+            CURSOR_KEY: "test-only-cursor-signing-key-000000000000",
             TEST_MIGRATIONS: migrations,
           },
         },

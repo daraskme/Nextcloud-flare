@@ -16,7 +16,7 @@ import { registerRoutes } from "./routes/register.js";
 
 export const app = new Hono<{ Bindings: Env }>();
 
-registerRoutes(app, 4);
+registerRoutes(app, 5);
 
 app.notFound((context) =>
   context.json({ error: { code: "not_found", message: "Route not found" } }, 404),
