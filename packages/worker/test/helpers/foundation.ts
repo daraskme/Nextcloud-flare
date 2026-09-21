@@ -31,6 +31,7 @@ export async function seedFoundation(now = Date.now()): Promise<void> {
     env.DB.prepare("DELETE FROM derivative_results"),
     env.DB.prepare("DELETE FROM job_leases"),
     env.DB.prepare("DELETE FROM backup_runs"),
+    env.DB.prepare("DELETE FROM recovery_runs"),
     env.DB.prepare("DELETE FROM trash_members"),
     env.DB.prepare("DELETE FROM outbox"),
     env.DB.prepare("DELETE FROM audit"),

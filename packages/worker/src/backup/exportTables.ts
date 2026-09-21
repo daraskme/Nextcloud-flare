@@ -37,6 +37,8 @@ export const exportTables = [
   "job_leases",
   "derivative_results",
   "backup_runs",
+  "bulk_jobs",
+  "recovery_runs",
   "search_index",
 ] as const;
 

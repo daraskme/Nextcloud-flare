@@ -2,6 +2,7 @@ import { Cloud, Files, HardDrive, Moon, Search, Settings, Sun, Trash2, Upload } 
 import { useEffect, useState } from "react";
 
 import { FileBrowser } from "./features/files/FileBrowser";
+import { TrashView } from "./features/trash/TrashView";
 import { UploadManager } from "./features/uploads/UploadManager";
 import { api } from "./lib/api";
 
@@ -16,6 +17,7 @@ export function App(): React.JSX.Element {
   const [dark, setDark] = useState(() => localStorage.getItem("ncf-theme") !== "light");
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [section, setSection] = useState<"files" | "trash">("files");
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -52,13 +54,19 @@ export function App(): React.JSX.Element {
           <Upload className="h-4 w-4" /> Upload
         </button>
         <nav className="mt-7 space-y-1">
-          <button className="nav-item nav-item-active">
+          <button
+            className={`nav-item ${section === "files" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("files")}
+          >
             <Files className="h-4 w-4" /> My Drive
           </button>
           <button className="nav-item">
             <Search className="h-4 w-4" /> Search <kbd>⌘K</kbd>
           </button>
-          <button className="nav-item">
+          <button
+            className={`nav-item ${section === "trash" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("trash")}
+          >
             <Trash2 className="h-4 w-4" /> Trash
           </button>
         </nav>
@@ -92,11 +100,15 @@ export function App(): React.JSX.Element {
       </aside>
       <div className="relative flex min-w-0 flex-1 flex-col">
         {workspace !== null ? (
-          <FileBrowser
-            rootId={workspace.rootId}
-            refreshKey={refreshKey}
-            onNavigate={setCurrentFolder}
-          />
+          section === "files" ? (
+            <FileBrowser
+              rootId={workspace.rootId}
+              refreshKey={refreshKey}
+              onNavigate={setCurrentFolder}
+            />
+          ) : (
+            <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
+          )
         ) : (
           <div className="grid min-h-screen place-items-center">
             <div className="text-center">
@@ -108,7 +120,7 @@ export function App(): React.JSX.Element {
           </div>
         )}
       </div>
-      {workspace !== null && (
+      {workspace !== null && section === "files" && (
         <UploadManager
           parentId={currentFolder ?? workspace.rootId}
           onCompleted={() => setRefreshKey((value) => value + 1)}

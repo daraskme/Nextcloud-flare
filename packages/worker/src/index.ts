@@ -7,6 +7,7 @@ import {
   type CopyJobMessage,
 } from "./jobs/copy.js";
 import { reconcileExpiredUploads } from "./jobs/uploads.js";
+import { discoverGcCandidates, runGarbageCollection } from "./services/gc.js";
 import { ControlDO } from "./do/ControlDO.js";
 import { LockDO } from "./do/LockDO.js";
 import { UploadDO } from "./do/UploadDO.js";
@@ -15,7 +16,7 @@ import { registerRoutes } from "./routes/register.js";
 
 export const app = new Hono<{ Bindings: Env }>();
 
-registerRoutes(app, 3);
+registerRoutes(app, 4);
 
 app.notFound((context) =>
   context.json({ error: { code: "not_found", message: "Route not found" } }, 404),
@@ -45,5 +46,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await reconcileExpiredUploads(env);
     await dispatchPendingCopyJobs(env);
+    await discoverGcCandidates(env);
+    await runGarbageCollection(env);
   },
 } satisfies ExportedHandler<Env>;

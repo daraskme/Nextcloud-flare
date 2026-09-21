@@ -14,6 +14,12 @@ import {
 } from "../api/nodes.js";
 import type { AppContext } from "../api/http.js";
 import {
+  handleListTrash,
+  handlePurgeTrash,
+  handleRestoreTrash,
+  handleTrashNode,
+} from "../api/trash.js";
+import {
   handleAbortUpload,
   handleCompleteUpload,
   handleCreateUpload,
@@ -41,12 +47,16 @@ const handlers = new Map<string, RouteHandler>([
   ["PUT /api/v1/nodes/:nodeId/content", handlePutContent],
   ["POST /api/v1/nodes/:nodeId/move", handleMove],
   ["POST /api/v1/nodes/:nodeId/copy", handleCopy],
+  ["DELETE /api/v1/nodes/:nodeId", handleTrashNode],
   ["POST /api/v1/uploads", handleCreateUpload],
   ["GET /api/v1/uploads/:uploadId", handleGetUpload],
   ["PUT /api/v1/uploads/:uploadId/content", handleSingleContent],
   ["PUT /api/v1/uploads/:uploadId/parts/:partNumber", handleUploadPart],
   ["POST /api/v1/uploads/:uploadId/complete", handleCompleteUpload],
   ["DELETE /api/v1/uploads/:uploadId", handleAbortUpload],
+  ["GET /api/v1/trash", handleListTrash],
+  ["POST /api/v1/trash/:opId/restore", handleRestoreTrash],
+  ["POST /api/v1/trash/:opId/purge", handlePurgeTrash],
 ]);
 
 function isMutation(definition: RouteDefinition): boolean {

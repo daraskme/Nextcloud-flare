@@ -40,6 +40,16 @@ export class LockDO {
   }
 
   private async issuePermit(input: PermitRequest): Promise<Response> {
+    const control = await this.env.CONTROL.get(this.env.CONTROL.idFromName("singleton")).fetch(
+      "https://control.internal/state",
+    );
+    if (!control.ok) {
+      return Response.json({ error: "control_unavailable" }, { status: 503 });
+    }
+    const controlState: { maintenance: boolean } = await control.json();
+    if (controlState.maintenance) {
+      return Response.json({ error: "maintenance" }, { status: 503 });
+    }
     const expiresAt = Date.now() + input.ttlMs;
     const locked = await this.env.DB.prepare(
       "SELECT 1 locked FROM locks WHERE expires_at>(strftime('%s','now')*1000) AND node_id IN (SELECT value FROM json_each(?1)) LIMIT 1",

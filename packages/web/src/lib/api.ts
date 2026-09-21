@@ -2,6 +2,7 @@ import type {
   BreadcrumbItem,
   ChildrenPage,
   NodeSummary,
+  TrashPage,
   UploadInfo,
   UploadMode,
 } from "@ncf/shared";
@@ -116,4 +117,19 @@ export const api = {
       method: "DELETE",
       headers: { "Upload-Capability": capability },
     }),
+  trashNode: (nodeId: string) =>
+    request<{ trashOpId: string }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
+      method: "DELETE",
+    }),
+  trash: () => request<TrashPage>("/api/v1/trash"),
+  restoreTrash: (opId: string) =>
+    request<NodeSummary>(`/api/v1/trash/${encodeURIComponent(opId)}/restore`, {
+      method: "POST",
+      body: "{}",
+    }),
+  purgeTrash: (opId: string) =>
+    request<{ purged: boolean; members: number }>(
+      `/api/v1/trash/${encodeURIComponent(opId)}/purge`,
+      { method: "POST", body: "{}" },
+    ),
 };

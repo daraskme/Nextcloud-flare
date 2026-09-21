@@ -26,6 +26,12 @@ export function mapError(context: AppContext, error: unknown): Response {
   ) {
     return jsonError(context, 404, "not_found", "The requested item was not found");
   }
+  if (message === "blob_unrecoverable") {
+    return jsonError(context, 409, "blob_unrecoverable", "Deleted content cannot be restored");
+  }
+  if (message === "restore_gc_busy") {
+    return jsonError(context, 409, "restore_busy", "Garbage collection is still quiescing");
+  }
   if (message === "upload_commit_unknown") {
     return jsonError(context, 503, "commit_unknown", "Upload completion is being reconciled");
   }

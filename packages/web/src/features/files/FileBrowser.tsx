@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 
@@ -130,6 +131,15 @@ export function FileBrowser({
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not rename item");
+    }
+  };
+
+  const trash = async (item: NodeSummary) => {
+    try {
+      await api.trashNode(item.id);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not move item to trash");
     }
   };
 
@@ -316,7 +326,7 @@ export function FileBrowser({
           className="fixed z-50 w-52 overflow-hidden rounded-xl border border-white/10 bg-slate-900/95 p-1.5 text-sm shadow-2xl backdrop-blur-xl"
           style={{
             left: Math.min(menu.x, window.innerWidth - 220),
-            top: Math.min(menu.y, window.innerHeight - 170),
+            top: Math.min(menu.y, window.innerHeight - 220),
           }}
           onClick={(event) => event.stopPropagation()}
         >
@@ -328,6 +338,10 @@ export function FileBrowser({
           </button>
           <button className="context-item" onClick={() => setMenu(null)}>
             <FolderInput className="h-4 w-4" /> Move with drag & drop
+          </button>
+          <div className="my-1 h-px bg-white/[0.08]" />
+          <button className="context-item text-rose-300" onClick={() => void trash(menu.item)}>
+            <Trash2 className="h-4 w-4" /> Move to trash
           </button>
         </div>
       )}

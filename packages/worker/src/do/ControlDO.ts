@@ -124,6 +124,25 @@ export class ControlDO {
     return this.initialization;
   }
 
+  private async controlState(): Promise<{
+    epoch: number;
+    maintenance: boolean;
+    gcPaused: boolean;
+  }> {
+    const [persistedEpoch, maintenance, gcPaused] = await Promise.all([
+      this.state.storage.get<number>("epoch"),
+      this.state.storage.get<boolean>("maintenance"),
+      this.state.storage.get<boolean>("gc_paused"),
+    ]);
+    const epoch = persistedEpoch ?? (await this.d1Epoch());
+    return { epoch, maintenance: maintenance ?? false, gcPaused: gcPaused ?? false };
+  }
+
+  private async setFlag(name: "maintenance" | "gc_paused", enabled: boolean): Promise<Response> {
+    await this.state.storage.put(name, enabled);
+    return Response.json(await this.controlState());
+  }
+
   private async bumpEpoch(reason: string): Promise<number> {
     const current = await this.getEpoch();
     const next = Math.max(current, await this.d1Epoch()) + 1;
@@ -138,6 +157,22 @@ export class ControlDO {
     try {
       if (request.method === "GET" && url.pathname === "/epoch") {
         return Response.json({ epoch: await this.getEpoch() });
+      }
+      if (request.method === "GET" && url.pathname === "/state") {
+        return Response.json(await this.controlState());
+      }
+      if (
+        request.method === "POST" &&
+        (url.pathname === "/maintenance" || url.pathname === "/gc-pause")
+      ) {
+        const body = await request.json<{ enabled?: unknown }>();
+        if (typeof body.enabled !== "boolean") {
+          return Response.json({ error: "invalid_control_flag" }, { status: 400 });
+        }
+        return await this.setFlag(
+          url.pathname === "/maintenance" ? "maintenance" : "gc_paused",
+          body.enabled,
+        );
       }
       if (request.method === "POST" && url.pathname === "/epoch/bump") {
         const body = await request.json<{ reason?: unknown }>();
