@@ -2,9 +2,9 @@
 
 ## 到達 Phase
 
-Phase 8A（Gallery）完了。
+Phase 8C（Audio）完了。
 
-Phase 0〜8A の実装を、各 Phase の lint / typecheck / unit・Workers integration test / build が通る状態で確定した。Phase 8B（Bookshelf）以降には未着手。
+Phase 0〜8C の実装を、各 Phase の lint / typecheck / unit・Workers integration test / build が通る状態で確定した。今回の run では E2E 指摘9項目を閉じ、Phase 8B（Bookshelf）と Phase 8C（Audio）を追加した。
 
 ## 今回のコミット
 
@@ -12,6 +12,9 @@ Phase 0〜8A の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - `54a4505` `feat: add fenced WebDAV access`
 - `c6941d8` `feat: deliver fenced media gallery`
 - `3dcd647` `fix: fence gallery cursor drift`
+- `d5f54e5` `fix: close E2E upload and public UI gaps`
+- `b6959c2` `feat: deliver fenced Bookshelf readers`
+- `ee15beb` `feat: add bounded audio library playback`
 
 ## Phase 0〜1 の確定事項
 
@@ -56,6 +59,30 @@ Phase 0〜8A の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - public thumbnailはshare subtree/action/sessionとBudgetDOを通す。動画は既存content single Range経路でprivate/publicとも206再生する。
 - Web UIに日付group、justified virtual layout、recursive切替、lazy page、Lightboxの前後移動/Escape/矢印/ズーム/wheel/スライドショー、video controls/Range URLを実装した。
 
+## E2E 指摘の修正
+
+- portable nameをNFC・制御文字/区切り/colon/先頭末尾space・dot/Windows予約名/UTF-8 255 bytesで検証し、日本語・空白・絵文字をFiles/upload/WebDAVで受理する。`..`/path traversalは`invalid_name`を返す。
+- upload completeの`name_conflict`に`existingNodeId/revision`を返し、UIで新version上書き・自動rename・skipを選択できる。version一覧とCAS付き復元API/UIを追加した。
+- restore後の旧`trash_members` FKが再trash→purgeを妨げる原因を修正し、current operation fenceを維持した回帰testを追加した。
+- Web UIを`--fg/--fg-muted/--bg/--surface/--border/--accent`中心のsemantic themeへ移行し、日本語既定・英語fallback辞書、adaptive容量表示、使用率bar、無効化済み共有badgeを実装した。
+- Viteは`/s`・`/api`・`/dav`をWorkerへproxyする。public shellはprivate appと別entryで、development principalをpublic routeに適用しない。password/期限切れ/無効化/匿名shell integrationを追加した。
+- Wrangler 4.71.0同梱workerdに合わせ`compatibility_date=2026-03-01`へ固定し、dry-run warningがないことを確認した。
+
+## Phase 8B の実装
+
+- `0008_bookshelf.sql`で`library_roots/library_items/archive_index/user_reading_state/library_jobs`を拡張し、upload mutation同一batchのdurable job、saved principal、epoch/current blob/claim fenceを実装した。
+- ZIP/CBZはR2 RangeでEOCD最大1MiB・central directory最大8MiB・local headerを読み、stored/deflate、offset overflow、暗号化/data descriptor/unsupported method、危険path、entry/圧縮率/展開量、CRCを検査する。CBR/RAR/7zは`unsupported_format`で閉じる。
+- archive indexはD1 page rowとimmutable R2 manifestへ保存し、`GET /api/v1/library/items/:itemId/pages/:page`でpage単位配信する。public share pageもsubtree/session/BudgetDOを通す。
+- EPUBはQueueでXHTMLをtext-onlyの安全な派生XHTMLへ変換し、immutable keyへ保存する。trusted reader shellとpublication sandboxを分離し、inner CSP、TOC、coarse CFI、theme/font-sizeを提供する。
+- coverをImagesでmetadata除去WebPへ変換し、reading stateを`(user,node,blob)`へ束縛した。本棚grid、series/tag、続きから読む、単ページ/見開き、RTL、keyboard/swipe readerを実装した。PDFはoriginal contentをbrowser readerで表示する。
+
+## Phase 8C の実装
+
+- `0009_audio.sql`で`node_audio`のtrack/disc/bitrate/coverと`audio_jobs`を追加し、upload mutation同一batchのdurable job、最大3 attempt、saved principal、epoch/current blob/claim fenceを実装した。
+- head最大2MiB、通常tail 128B、MP4 moov window最大4MiBのR2 RangeだけからMP3 ID3v2、FLAC STREAMINFO/Vorbis/Picture、OGG Vorbis/Opus、M4A/MP4 atoms、WAV fmt/INFOを抽出する。fieldとcoverをboundedにし、coverはImagesでWebP化する。
+- `GET /api/v1/nodes/:nodeId/tracks`をfolder=album、最大2,000 tracksとして実装し、disc/track順、title/artist/album/duration/codec/bitrate/cover/再生位置を返す。public tracks/cover/content Rangeもshare capabilityとBudgetDOを通す。
+- Web UIにalbum/folder view、basic queue、前後/再生停止/volume、SPA遷移中も常駐するmini-player、MediaSession、Range URL再生、10秒間隔とpause/end時のblob-bound位置保存を実装した。
+
 ## 検証結果
 
 最終実行（local Workers runtime / Miniflare。実stagingではない）:
@@ -63,44 +90,47 @@ Phase 0〜8A の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - `pnpm lint`: pass
 - `pnpm typecheck`: pass（shared / web / worker）
 - `pnpm test`: pass
-  - unit: 21 files / 40 tests
-  - Workers integration・schema・spike: 34 files / 68 tests
+  - unit: 24 files / 65 tests
+  - Workers integration・schema・spike: 38 files / 82 tests
 - `pnpm build`: pass
   - shared TypeScript build
   - web Vite production build
   - worker Wrangler dry-run build
 - WebDAV integration: Basic credential、全Class 1/2 method、428/ETag/Timeout、PROPFIND/PROPPATCH rollback、LOCK/UNLOCK/lock-null、atomic Overwrite、Range、失効をMiniflareで確認した。
 - Gallery integration: signed keyset/view drift、candidate gate縮小fixture、Queue claim/duplicate、fake Images binding metadata/derivative、local placeholder、public share BudgetDO、video RangeをMiniflareで確認した。
-- 実Cloudflare Images codec/metadata除去、実D1 rows_read/duration、実DAV clientはstaging/release gateに残る。
+- Bookshelf integration: upload同一batch job、stored/deflate、natural page順、Range index/local header/CRC、cover、reading state、public share budget、EPUB sanitize/CSP、PDF、path traversal/zip bomb/RAR拒否をMiniflareで確認した。
+- Audio unit/integration: MP3/FLAC/OGG・Opus/M4A・MP4/WAV parser、upload同一batch job、cover、album tracks、blob-bound位置、private/public Rangeを確認した。
+- 実Cloudflare Images codec/metadata除去、実D1 rows_read/duration、実DAV client、browser別EPUB/PDF/audio MediaSessionはstaging/release gateに残る。
 
 ## 未実装
 
-- Phase 8B: Bookshelf、archive index、CBZ/PDF/EPUB sanitize、reader shell、reading state。
-- Phase 8C: Audio metadata、track API、player、playback state。
 - Phase 9: release gate、README/support matrix、監視・resource inventory、a11y/touch/低性能端末、staging/production運用演習。
+- Bookshelfのfolder-images corpus、pdf.js固定asset/pagination、EPUBの完全なOPF spine/NCX/nav/標準CFI round-trip。現行はCBZ/EPUBの明示要件、browser PDF表示、entry単位coarse CFIを提供する。
 - Access service principal HTTP automation adapter。Access user、app password、share credential HTTP adapterは実装済み。
 - cross-owner copyのpublic/share HTTP admission。job coreは実装済みだがgrantのcommit時再検査経路は未提供。
 - 実Cloudflare Access、D1/R2/KV/Queues/Cron/DO placement、Images、R2 incomplete multipart 7日 lifecycle、Time Travel / logical export restoreのstaging smoke。
 - litmus/rclone/Finder/Explorer実client互換試験。local integrationはprotocol fixtureとHTTP requestのみ。
 - 大規模trash/restore/purgeの複数 invocation chunk pipeline。現在は1 operation 1,000 nodesを上限にfail closedとする。
-- exhaustiveなversion固定Unicode casefold table。portable file nameはFoundation-safe printable ASCIIに限定する。
+- exhaustiveなversion固定Unicode casefold table。現行はruntime Unicodeの`toLowerCase()+NFC`をportable uniqueness keyに使う。
 - media metadataを含む検索document、Recent / Starred専用Web画面、public share bundle専用Gallery layout。
 
 ## 既知の欠陥・制約
 
-- portable nameは安全なversion固定Unicode casefold実装が未承認のため printable ASCII subsetに限定している。
+- portable nameはUnicode NFCを受理するが、casefoldはruntime Unicodeの`toLowerCase()`に依存する。version固定full casefold tableは未実装である。
 - JWKS refresh rate / single-flightはisolate内で強制しKVをcacheに使う。PoP横断refresh stormはstaging gateで検証が必要。
 - migration rollbackはdestructive down migrationではなく、maintenance下のD1 snapshot/Time Travel restoreを前提とする。
-- local integration runtimeのcompatibility dateは同梱runtime上限に合わせた`2026-08-13`。deploy dry-runは`2026-09-21`だが同日runtimeの実検証はstaging gateに残る。
+- local integrationとdeploy dry-runの`compatibility_date`はWrangler 4.71.0同梱workerdに合わせ`2026-03-01`へ統一した。新しいruntime dateへの更新はdependency更新時に別途検証する。
 - recovery drill scriptは明示的`--confirm-staging`がない限りdry-runであり、このrunでは実restoreを実行していない。
 - Gallery 50,000 candidate、PROPFIND 1,000×20 propertyの実D1予算はlocal correctnessのみ。rows_read/duration gateはstaging未検証。
 - app password production利用前に`APP_PASSWORD_PEPPER`を32文字以上のsecretとして設定する必要がある。development/testだけはlocal専用値を使う。
 - upload時の`mime_sniffed`列は現行経路ではrequest Content-Type由来であり、独立magic-byte sniff pipelineは未実装。不正画像はImages jobがfail closedになるがGallery種別表示の精度は今後改善が必要。
 - local Galleryは要件どおりImages fallbackを閉じてplaceholderを返すため、実thumbnail表示はstagingまたはproduction Images bindingでのみ確認できる。
+- EPUB sanitizerは安全側のtext-only XHTMLを生成するため、publication由来の複雑なlayout/CSS/画像埋込みは保持しない。完全なOPF spine/nav/CFIはPhase 9以降のbrowser gateに残る。
+- MP3 durationは先頭MPEG frameのbitrateからのbounded推定で、VBR精密durationは未提供。OGG durationはtail 128B内に最終page headerがない場合nullになる。
 
 ## 次に着手すべき点
 
-Phase 8Bのarchive indexから着手する。EOCD/central directory/local header/CRC/size/pathをbounded Rangeで検証し、CBZ page streamを確定してからPDF、EPUB sanitize、reader shell、reading stateの順に進める。
+Phase 9のrelease gateへ進む。実Cloudflare bindingsでQueue/Images/Range/Cookie/CORS、browser別reader/audio、large archive/D1 budget、WebDAV実client、backup/restore、a11y/touch/低性能端末を検証し、support matrixと運用手順を確定する。
 
 ## 設計へのフィードバック
 
@@ -114,3 +144,6 @@ Phase 8Bのarchive indexから着手する。EOCD/central directory/local header
 - DESIGN §7.3の「token hashだけ保存」と、PROPFIND `lockdiscovery`でcreatorへraw tokenを再表示する期待は両立しない。実装はraw tokenを初回LOCK responseとclient提出時だけ返し、後続PROPFINDではactive lock情報だけを返す。
 - DESIGN route表の`/dav/*path`はHonoではcatch-allにならない。実装manifestは実framework表記の`/dav/*`を使う。設計上のtemplate表記とruntime router表記を分離して明記すべきである。
 - DESIGN §9A.1は高度layoutをv1.1とする一方、今回の実装指示はvirtual justified/masonryをPhase 8A必須とした。今回指示を優先してjustified virtual layoutを実装した。
+- DESIGN §3.3は`.DS_Store`/`._*`をhiddenで保存可とする一方、今回の明示指示は先頭dotを禁止する。今回指示を優先して先頭dotを`invalid_name`にしたため、v0.7でhidden例外の扱いを再確定する必要がある。
+- Foundationのmedia placeholder tableはPhase 8B/8Cで必要なstatus/job/offset/order/cover列を持たなかったため、破壊的再作成ではなく`0008_bookshelf.sql`/`0009_audio.sql`の追加migrationで拡張した。
+- DESIGN §9A.2の標準CFI round-trip/PDF pdf.js/folder-images全対応は今回の明示bulletを超える。現行実装はentry単位coarse CFI、browser PDF、CBZ/EPUBを安全側の提供範囲とし、未合格部分をsupport matrixへ載せない。
