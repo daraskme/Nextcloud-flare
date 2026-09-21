@@ -4,3 +4,4 @@ dist
 .wrangler
 .wrangler-dist
 docs/**
+packages/worker/src/routes/manifest.ts

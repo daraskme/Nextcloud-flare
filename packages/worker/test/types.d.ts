@@ -4,5 +4,7 @@ declare module "*.sql?raw" {
 }
 
 declare module "cloudflare:workers" {
-  export const env: import("../src/env.js").Env;
+  export const env: import("../src/env.js").Env & {
+    TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
+  };
 }
