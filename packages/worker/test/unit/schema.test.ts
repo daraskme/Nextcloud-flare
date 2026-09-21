@@ -30,12 +30,12 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
-it("migrates all 52 normal tables with strict types, explicit PK nullability and a complete FK graph", () => {
+it("migrates all 53 normal tables with strict types, explicit PK nullability and a complete FK graph", () => {
   const tables = db
     .prepare("PRAGMA table_list")
     .all()
     .filter((row) => row.type === "table" && !String(row.name).startsWith("sqlite_"));
-  expect(tables).toHaveLength(52);
+  expect(tables).toHaveLength(53);
   for (const table of tables) {
     expect(table.strict).toBe(1);
     const columns = db.prepare(`PRAGMA table_info('${table.name}')`).all();

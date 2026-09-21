@@ -7,7 +7,7 @@ Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node
 
 - `packages/shared/src/contracts.ts`: scope、operation、state と single upload 遷移。
 - `packages/worker/src/routes/manifest.ts`: 設計表を元にした147経路。R6 の CSRF issue / operation lookup credential を適用。すべて未有効化。
-- `0001`〜`0004`: 52通常テーブル、FTS5 external-content index、構造・失効・terminal state の guards。
+- `0001`〜`0005`: 53通常テーブル、FTS5 external-content index、構造・失効・terminal state と容量/参照会計の guards。
 - timestamps はミリ秒。permit/session expiry は DB 側時計で評価する。
 - `control.maintenance/gc_paused` は ControlDO 正本の D1 mirror。初期値は両方1。`control.epoch=1` は初期 schema の値であり、新規 permit 発行許可ではない。
 - `spaces.root_node_id` / `trash_ops.root_node_id` / audit affected ID は設計どおり論理参照。root は insert guard で owner/space 一致を検査し、通常更新・削除不可。
@@ -23,7 +23,7 @@ system operation だけは credential NULL を許可し、GC/repair/backup の�
 
 ## FK graph と purge/export
 
-`scripts/generate-schema-contracts.mjs` は SQLite PRAGMA の FK graph から `purgeOrder` と FK index を生成する。
+`scripts/generate-schema-contracts.mjs` は全 migration を適用した SQLite PRAGMA の FK graph から `purgeOrder` を生成し、FK index と operation catalogue を検査する。適用済み migration を書き換えず、追加 index/catalogue は新しい migration で更新する。
 `schema.test.ts` は migration から独立に再計算して一致を検査する。
 `purgeOrder` は全テーブルの依存順であり、全行削除を許可するスクリプトではない。
 nodes の self-edge は別扱いとし、Phase 4 の row purge は deepest-first / trash membership で制限する。
@@ -107,8 +107,31 @@ Google IdP/MFA は Access policy の staging gate であり、このローカル
 再検査では credential/grant/epoch に加えて対象 revision と tree generation を束縛する。
 これは permit、operation、quota/ref/pin の assertion の代わりではなく、create サービス自体は未実装。
 
-残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、CSRF、HTTP host/surface dispatch、app password/share secret 検証、実 listing/content handler、trash 時の share 失効、ControlDO admission/再開。
+残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、HTTP host/surface dispatch、app password/share secret 検証、実 listing/content handler、trash 時の share 失効、ControlDO admission/再開。
 認可 query が返す node metadata は content ticket/purpose/blob/pin の検査を代替しない。
+
+## CSRF
+
+`auth/csrf.ts` は R6 の session 束縛 HMAC token（TTL1h、再利用・再発行可）を実装する。
+256-bit key、用途別 key ring、kid rotation、canonical JSON、aud/epoch/credential/purpose を検査し、毎回 D1 の現在 session/share version/owner を照合する。
+private issue は POST + Sec-Fetch-Site:same-origin を要求し、既存 CSRF token は不要。Origin があれば exact match。
+public issue は exact Origin と同じ unlock credential を必須とする。
+mutation verifier は HTTPS の exact request origin / Origin / same-origin / application/json / X-CSRF-Token を検査する。
+GET/HEAD、DAV、content-origin や upload binary の扱いは各 HTTP profile への接続時に分離する。HTTP route はまだ無効。
+
+## 容量・参照会計
+
+`0005_accounting.sql` と `services/{quota,refs,physical}.ts` を追加した。
+
+- reservation の作成時に owner の used+reserved≤quota、physical+reserved≤floor(quota×6/5) と share 上限を同一 transaction で取得する。終端化で一度だけ解放し、reserved row の直接削除・identity変更・終端復帰を禁止する。
+- node current / node_versions / blob_pins の追加・除去が trigger で ref_count を同時更新する。合計1,000を超える追加は元の変更も rollback。expired pin も行がある限り参照として残す。
+- logical used は current/version/trash から参照される owner 内の unique blob。COW/複数 version で二重課金せず、pin-only blob は logical に含めない。current blob の置換は一つの trigger 内で旧参照減算→新参照加算し、trigger 実行順に依存しない。
+- `blob_storage` は R2 HEAD で実測した size/etag の会計行。staging/orphan を含めて一度だけ physical を計上する。宣言 size と違う物も実測 bytes を記録してから公開を拒否し、cleanup 完了まで課金を残す。既に存在する bytes は quota が下げられていても記録し、次の reservation を拒否する。
+- removed_at は blob deleted 後の一方向 tombstone。物理減算の DB 制約は実装したが、実 GC の lease/quiesce/R2削除/不在確認との接続は Phase 4。試験では実 R2 delete/head 後に GC 最終 batch の fixture で減算を実証した。
+- caller は reservation/pin SQL を認可・permit/operation guard と同じ batch に入れる。consume は新 logical reference 公開より先。trigger が counter を更新するため、handler から counter を重ねて加減算しない。
+- `auditOwnerLedger` は D1 集合から used/reserved/physical observation/ref count の差を診断する。R2 inventory 全走査・復旧 repair・旧 epoch reservation の回収は後続実装。
+
+migration 0005 は既存 node/version/pin と予約行から logical/ref/reserved を再計算する。以前の実装は physical 会計を公開していないため、既存 physical_bytes が非0なら migration を拒否し、先に個別 inventory 移行を要求する。物理実在を推定して埋めない。
 
 ## 検証の境界
 
@@ -116,5 +139,5 @@ native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd
 固定 pool 0.22 の RPC 拒否例外は後続 invocation の cleanup を停止させるため、意図的な拒否試験は `runInDurableObject` 内で捕捉し、成功時は実 stub RPC を使用する。
 実 Cloudflare の RPC/ネットワーク断/復旧運用の staging gate は未完了。
 
-次は残る operation tuple の認可 / CSRF → quota/ref/pin → LockDO permit → fsMutation/create/outbox。
+次は残る operation tuple の認可 → LockDO permit → fsMutation/create/outbox/repair と HTTP profile 接続。
 後半が終わるまで Files core を公開しない。

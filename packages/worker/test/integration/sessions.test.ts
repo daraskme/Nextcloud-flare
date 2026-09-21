@@ -109,7 +109,7 @@ it("a job chunk cannot commit after its initiating session logs out", async () =
     await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
       .bind(ids.user)
       .first("used_bytes"),
-  ).toBe(0);
+  ).toBe(3);
 });
 
 it.each(["disabled", "expired", "epoch"])(

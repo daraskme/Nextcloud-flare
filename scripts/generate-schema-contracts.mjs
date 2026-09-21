@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { OPERATIONS, SYSTEM_OPERATIONS } from "../packages/shared/src/contracts.ts";
@@ -6,23 +7,21 @@ import { deletionOrder } from "../packages/worker/src/db/schemaGraph.ts";
 const dir = new URL("../packages/worker/migrations/", import.meta.url);
 const db = new DatabaseSync(":memory:");
 try {
-  for (const name of (await readdir(dir))
-    .filter((name) => /^000[123]_.*\.sql$/.test(name))
-    .sort()) {
+  for (const name of (await readdir(dir)).filter((name) => /^\d+_.*\.sql$/.test(name)).sort()) {
     db.exec(await readFile(new URL(name, dir), "utf8"));
   }
   const tables = db
     .prepare("PRAGMA table_list")
     .all()
     .filter((row) => row.type === "table" && !row.name.startsWith("sqlite_"));
-  let sql = "-- Generated from the migration FK graph and shared operation contract.\n";
-  sql += `INSERT INTO operation_kinds(name) VALUES\n${[
-    ...Object.keys(OPERATIONS),
-    ...SYSTEM_OPERATIONS,
-  ]
-    .sort()
-    .map((name) => `('${name}')`)
-    .join(",\n")};\n`;
+  assert.deepEqual(
+    db
+      .prepare("SELECT name FROM operation_kinds ORDER BY name")
+      .all()
+      .map((row) => row.name),
+    [...Object.keys(OPERATIONS), ...SYSTEM_OPERATIONS].sort(),
+    "Add a forward migration for operation catalogue changes",
+  );
   const graph = [];
   for (const { name } of tables.sort((a, b) => a.name.localeCompare(b.name))) {
     const fks = db.prepare(`PRAGMA foreign_key_list('${name}')`).all();
@@ -38,13 +37,10 @@ try {
         (index) => db.prepare(`PRAGMA index_info('${index.name}')`).all()[0]?.name === fk.from,
       );
       if (!indexed) {
-        const statement = `CREATE INDEX ${name}_${fk.from}_fk ON ${name}(${fk.from});\n`;
-        db.exec(statement);
-        sql += statement;
+        throw new Error(`Add an FK index in a forward migration: ${name}.${fk.from}`);
       }
     }
   }
-  await writeFile(new URL("0004_catalogue_indexes.sql", dir), sql);
   const order = deletionOrder(graph);
   await writeFile(
     new URL("../packages/worker/src/db/schemaContract.ts", import.meta.url),
@@ -57,7 +53,9 @@ try {
         2,
       )} as const;\n`,
   );
-  console.log(`Generated ${tables.length} table contracts, FK indexes and operation catalogue.`);
+  console.log(
+    `Generated ${tables.length} table contracts; FK indexes and operation catalogue verified.`,
+  );
 } finally {
   db.close();
 }

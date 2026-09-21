@@ -172,7 +172,7 @@ it.each(["user", "app_password", "link_share", "service"] as const)(
       await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
         .bind(f.ids.user)
         .first("used_bytes"),
-    ).toBe(0);
+    ).toBe(3);
     await expect(authorizeNode(env.DB, f.principal, f.read)).rejects.toThrow();
   },
 );

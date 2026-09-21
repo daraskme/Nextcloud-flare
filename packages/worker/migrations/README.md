@@ -3,6 +3,8 @@
 Phase 1 用の forward migrations。`0001` は identity / namespace / ledger、
 `0002` は content / media / search、`0003` は不変条件の trigger、
 `0004` は機械生成した operation catalogue / FK index。
+`0005` は reservation/参照 counter trigger と R2 実在会計行。非0の旧 physical counter は個別 inventory 移行が必要なため拒否する。
+schema contract generator は適用済み migration を再生成せず、今後の catalogue/index 変更も forward migration で追加する。
 
 テストは `readD1Migrations` + `applyD1Migrations` で隔離 D1 に適用する。
 既存の Phase 0 probe schema は別 test file の隔離 DB を使い、混在させない。

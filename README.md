@@ -4,7 +4,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。
 
 現在は **Phase 0 のローカル検証基盤と Phase 1 の一部**を実装済み。
-52テーブルの migration、147経路の契約、ControlDO の epoch 復旧、Access JWT 検証・初回管理者登録・session 保存/失効、node read/create の認可基盤を追加しています。
+53テーブルの migration、147経路の契約、ControlDO の epoch 復旧、Access JWT/CSRF・初回管理者登録・session 保存/失効、node read/create の認可と容量/参照会計の基盤を追加しています。
 ファイル管理、公開 API、Web UI はまだ利用できません。HTTP 経路は未有効化です。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 

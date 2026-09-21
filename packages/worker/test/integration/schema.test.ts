@@ -13,7 +13,7 @@ beforeAll(async () => {
 it("applies the production migrations on D1 with every foreign key enabled", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); // idempotent runner, not repeated SQL
   expect((await env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(4);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(5);
   const graph = [];
   for (const name of exportTables) {
     const result = await env.DB.prepare(`PRAGMA foreign_key_list('${name}')`).all<ForeignKey>();
@@ -35,7 +35,7 @@ it("rolls back a production-schema batch when a structural guard rejects a later
     await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
       .bind(ids.user)
       .first("used_bytes"),
-  ).toBe(0);
+  ).toBe(3);
 });
 
 it("enforces depth 64/65 in actual D1 triggers", async () => {
