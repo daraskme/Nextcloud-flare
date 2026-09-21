@@ -8,7 +8,7 @@ import {
   releasePermit,
   revokeSpacePermits,
 } from "../../src/db/permits";
-import { atomicBatch } from "../../src/db/primary";
+import { assertExists, atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => {
@@ -159,6 +159,9 @@ it.each(["maintenance", "old-epoch", "wrong-space", "wrong-expiry", "released"])
 it("protects permit identity and requires closed admission before recovery", async () => {
   const f = await fixture();
   const permit = await grantPermit(env.DB, f.ids.user, f.ids.space, 1);
+  await expect(
+    grantPermit(env.DB, f.ids.user, f.ids.space, 1, undefined, [assertExists("SELECT 1 WHERE 0")]),
+  ).rejects.toThrow();
   await expect(
     env.DB.prepare("UPDATE permits SET expires_at=expires_at+1 WHERE permit_id=?")
       .bind(permit.permit_id)

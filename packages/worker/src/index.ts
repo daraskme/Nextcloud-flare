@@ -10,7 +10,7 @@ class UnavailableDO extends DurableObject<Env> {
 }
 
 export { ControlDO } from "./do/ControlDO";
-export class LockDO extends UnavailableDO {}
+export { LockDO } from "./do/LockDO";
 export class UploadDO extends UnavailableDO {}
 export class BudgetDO extends UnavailableDO {}
 

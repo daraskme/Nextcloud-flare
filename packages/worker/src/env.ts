@@ -1,4 +1,5 @@
 import type { ControlDO } from "./do/ControlDO";
+import type { LockDO } from "./do/LockDO";
 
 export interface Env {
   DB: D1Database;
@@ -6,7 +7,7 @@ export interface Env {
   BACKUPS: R2Bucket;
   CACHE: KVNamespace;
   CONTROL: DurableObjectNamespace<ControlDO>;
-  LOCKS: DurableObjectNamespace;
+  LOCKS: DurableObjectNamespace<LockDO>;
   UPLOADS: DurableObjectNamespace;
   BUDGETS: DurableObjectNamespace;
   JOBS: Queue;

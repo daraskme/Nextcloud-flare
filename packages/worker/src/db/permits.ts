@@ -49,6 +49,7 @@ export async function grantPermit(
   spaceId: string,
   epoch: number,
   leaseMs = PERMIT_LEASE_MS,
+  guards: readonly SqlStatement[] = [],
 ): Promise<Permit> {
   valid(requestId, epoch);
   valid(spaceId, epoch);
@@ -59,6 +60,7 @@ export async function grantPermit(
       assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
         epoch,
       ]),
+      ...guards,
       {
         sql: "UPDATE permits SET state='revoked' WHERE space_id=? AND state='open' AND expires_at<=strftime('%s','now')*1000",
         values: [spaceId],
@@ -79,7 +81,10 @@ export async function grantPermit(
   } catch (error) {
     // A response may be lost after commit. Only this exact durable intent can be returned.
     const permit = await readOpen(db, requestId, spaceId, epoch);
-    if (permit) return Object.freeze(permit);
+    if (permit) {
+      if (guards.length) await atomicBatch(db, [...guards, assertOpenPermit(permit)]);
+      return Object.freeze(permit);
+    }
     throw error;
   }
   const permit = await readOpen(db, requestId, spaceId, epoch);

@@ -7,7 +7,7 @@ Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node
 
 - `packages/shared/src/contracts.ts`: scope、operation、state と single upload 遷移。
 - `packages/worker/src/routes/manifest.ts`: 設計表を元にした147経路。R6 の CSRF issue / operation lookup credential を適用。すべて未有効化。
-- `0001`〜`0006`: 53通常テーブル、FTS5 external-content index、構造・失効・terminal state、容量/参照会計、permit identity の guards。
+- `0001`〜`0007`: 53通常テーブル、FTS5 external-content index、構造・失効・terminal state、容量/参照会計、permit/operation identity の guards。
 - timestamps はミリ秒。permit/session expiry は DB 側時計で評価する。
 - `control.maintenance/gc_paused` は ControlDO 正本の D1 mirror。初期値は両方1。`control.epoch=1` は初期 schema の値であり、新規 permit 発行許可ではない。
 - `spaces.root_node_id` / `trash_ops.root_node_id` / audit affected ID は設計どおり論理参照。root は insert guard で owner/space 一致を検査し、通常更新・削除不可。
@@ -137,7 +137,7 @@ migration 0005 は既存 node/version/pin と予約行から logical/ref/reserve
 
 ### D1 permit 基盤
 
-`db/permits.ts` は LockDO から利用する内部 primitive。LockDO 自体の admission/lock graph/RPC はまだ未実装。
+`db/permits.ts` は LockDO から利用する内部 primitive。
 `0006` は space あたり open permit 一つを unique index で強制し、permit の ID/space/epoch/expiry 変更を禁止する。
 追加前に open permit が無いことを migration で要求する。
 
@@ -147,11 +147,28 @@ migration 0005 は既存 node/version/pin と予約行から logical/ref/reserve
 - 正常 release は未完了 claim があれば拒否。maintenance revoke は open と claimed を一緒に収束させ、committed/failed を変えない。
 - permit は現在の credential/全 operand の認可を代替しない。grant 前の ControlDO admission と lock graph 確認、commit batch 内の operation/current authorization は呼出し側で必須。
 
+### LockDO と operation claim
+
+`do/LockDO.ts` は space 名の正規 instance だけを使い、create 用 permit の取得・release・maintenance recovery を提供する。
+ControlDO の現在 epoch/admission を確認し、SQLite に request intent を保存してから D1 へ進む。
+grant の同じ batch で現在の create 認可、parent の depth 0 lock、祖先の infinity lock を再検査する。
+token は SHA-256 のみ保存し、同じ利用者の別 credential でも現在 scope と提示 token を要求する。他利用者の token 利用は拒否する。
+再送で parent/actor/credential/share version/token 集合を変えず、D1 permit の終端行を再利用しない。
+SQLite 全喪失後に同 epoch の D1 履歴がある場合は発行を拒否し、新 epoch + maintenance recovery を要求する。
+現在の ControlDO は閉じたままなので、成功側テストは test-only admission fixture と実 DO SQLite/D1/eviction を使う。公開サービスの admission gate 合格を意味しない。
+
+`jobs/operations.ts` は create の claim と内部 lookup を実装する。body と operand は上限付き canonical JSON とし、idempotency key は initiating principal/credential の枠へ固定する。
+異なる payload/space/kind/operand/step 数は同じ operation に再利用できない。同じ claimed の再開は同一 permit/epoch/expiry のみ。
+claim 前と応答喪失後の照合で request-local authorization proof と現在の D1 認可を要求する。
+`0007` は operation identity と app password creator identity の変更を禁止する。
+lookup は同じ initiating credential と現在の元 parent の create 権限を要求し、成功結果は status と現在参照可能な node ID/revision に絞る。purge 済み node の name/path や内部診断は返さない。
+namespace の fsMutation/最初の create/terminal commit/outbox は次の実装であり、HTTP 経路は未接続。
+
 ### 実サービス gate
 
 native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd の SQLite DO/R2/D1 で eviction・storage loss・write failure を検証。
 固定 pool 0.22 の RPC 拒否例外は後続 invocation の cleanup を停止させるため、意図的な拒否試験は `runInDurableObject` 内で捕捉し、成功時は実 stub RPC を使用する。
 実 Cloudflare の RPC/ネットワーク断/復旧運用の staging gate は未完了。
 
-次は残る operation tuple の認可 → LockDO permit → fsMutation/create/outbox/repair と HTTP profile 接続。
+次は fsMutation/create/outbox/repair、残る operation tuple の認可と HTTP profile 接続。
 後半が終わるまで Files core を公開しない。
