@@ -40,4 +40,13 @@ describe("web UI regression contract", () => {
     expect(vite).toContain('"^/s(?:/|$)"');
     expect(vite).not.toContain('"/s"');
   });
+
+  it("builds the public share landing and reader as self-contained bundles", () => {
+    const vite = web("vite.config.ts");
+    expect(vite).toContain("inlineDynamicImports: true");
+    expect(vite).toContain('emptyOutDir: entry === "app"');
+    const scripts = web("package.json");
+    expect(scripts).toContain("vite build --mode public-share");
+    expect(scripts).toContain("vite build --mode reader");
+  });
 });
