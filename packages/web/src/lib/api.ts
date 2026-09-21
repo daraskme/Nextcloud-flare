@@ -3,6 +3,7 @@ import type {
   BreadcrumbItem,
   CreatedAppPassword,
   ChildrenPage,
+  GalleryPage,
   NodeSummary,
   ShareKind,
   ShareMode,
@@ -139,6 +140,10 @@ export const api = {
       logicalBytes: number;
       truncated: boolean;
     }>("/api/v1/stats"),
+  gallery: (rootId: string, recursive: boolean, cursor?: string) =>
+    request<GalleryPage>(
+      `/api/v1/nodes/${encodeURIComponent(rootId)}/gallery?recursive=${recursive}${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
+    ),
   recent: () => request<{ items: NodeSummary[] }>("/api/v1/recent"),
   starred: () => request<{ items: NodeSummary[] }>("/api/v1/starred"),
   setStar: (nodeId: string, starred: boolean) =>

@@ -16,6 +16,12 @@ import {
   handleRevokeAppPassword,
 } from "../api/credentials.js";
 import {
+  handleGallery,
+  handlePublicGallery,
+  handlePublicThumbnail,
+  handleThumbnail,
+} from "../api/gallery.js";
+import {
   handleRecent,
   handleSearch,
   handleSetStar,
@@ -114,6 +120,11 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/nodes/:nodeId/children", handleChildren],
   ["GET /api/v1/nodes/:nodeId/content", handleContent],
   ["HEAD /api/v1/nodes/:nodeId/content", handleContent],
+  ["GET /api/v1/nodes/:nodeId/thumb", handleThumbnail],
+  ["HEAD /api/v1/nodes/:nodeId/thumb", handleThumbnail],
+  ["GET /api/v1/nodes/:nodeId/preview", handleThumbnail],
+  ["HEAD /api/v1/nodes/:nodeId/preview", handleThumbnail],
+  ["GET /api/v1/nodes/:nodeId/gallery", handleGallery],
   ["POST /api/v1/nodes", handleCreateFolder],
   ["PATCH /api/v1/nodes/:nodeId", handleRename],
   ["PUT /api/v1/nodes/:nodeId/content", handlePutContent],
@@ -140,6 +151,9 @@ const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/public/shares/:shareId/children/:nodeId", handlePublicChildren],
   ["GET /api/v1/public/shares/:shareId/content/:nodeId", handlePublicContent],
   ["HEAD /api/v1/public/shares/:shareId/content/:nodeId", handlePublicContent],
+  ["GET /api/v1/public/shares/:shareId/thumb/:nodeId", handlePublicThumbnail],
+  ["HEAD /api/v1/public/shares/:shareId/thumb/:nodeId", handlePublicThumbnail],
+  ["GET /api/v1/public/shares/:shareId/gallery", handlePublicGallery],
   ["POST /api/v1/public/shares/:shareId/csrf", handlePublicCsrf],
   ["POST /api/v1/public/shares/:shareId/unlock", handleUnlockShare],
   ["POST /api/v1/public/shares/:shareId/logout", handleLogoutShare],

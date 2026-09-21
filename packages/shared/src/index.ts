@@ -7,3 +7,4 @@ export * from "./uploads.js";
 export * from "./trash.js";
 export * from "./shares.js";
 export * from "./credentials.js";
+export * from "./gallery.js";

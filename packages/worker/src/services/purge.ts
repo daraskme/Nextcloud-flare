@@ -78,6 +78,9 @@ export async function purgeTrash(env: Env, input: PurgeInput): Promise<number> {
       encoded,
     ),
     env.DB.prepare(
+      "DELETE FROM media_jobs WHERE node_id IN (SELECT value FROM json_each(?1))",
+    ).bind(encoded),
+    env.DB.prepare(
       "DELETE FROM node_media WHERE node_id IN (SELECT value FROM json_each(?1))",
     ).bind(encoded),
     env.DB.prepare(

@@ -64,6 +64,9 @@ export function mapError(context: AppContext, error: unknown): Response {
   if (message === "budget_exceeded") {
     return jsonError(context, 429, "budget_exceeded", "The transfer budget is exhausted");
   }
+  if (message === "derivative_inconsistent") {
+    return jsonError(context, 503, "derivative_inconsistent", "Generated media is unavailable");
+  }
   if (
     message === "share_action_forbidden" ||
     message === "content_target_forbidden" ||

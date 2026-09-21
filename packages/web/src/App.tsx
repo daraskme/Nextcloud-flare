@@ -2,6 +2,7 @@ import {
   Cloud,
   Files,
   HardDrive,
+  Image as ImageIcon,
   Link2,
   Moon,
   Search,
@@ -16,6 +17,7 @@ import { useEffect, useState } from "react";
 import type { NodeSummary } from "@ncf/shared";
 
 import { FileBrowser } from "./features/files/FileBrowser";
+import { GalleryView } from "./features/gallery/GalleryView";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { AppPasswords } from "./features/settings/AppPasswords";
 import { SharesView } from "./features/shares/SharesView";
@@ -34,9 +36,9 @@ export function App(): React.JSX.Element {
   const [dark, setDark] = useState(() => localStorage.getItem("ncf-theme") !== "light");
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [section, setSection] = useState<"files" | "trash" | "shares" | "shared" | "settings">(
-    "files",
-  );
+  const [section, setSection] = useState<
+    "files" | "trash" | "shares" | "shared" | "gallery" | "settings"
+  >("files");
   const [navigateTo, setNavigateTo] = useState<string>();
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
 
@@ -116,6 +118,12 @@ export function App(): React.JSX.Element {
             <Share2 className="h-4 w-4" /> 自分と共有
           </button>
           <button
+            className={`nav-item ${section === "gallery" ? "nav-item-active" : ""}`}
+            onClick={() => setSection("gallery")}
+          >
+            <ImageIcon className="h-4 w-4" /> Gallery
+          </button>
+          <button
             className="nav-item"
             onClick={() => window.dispatchEvent(new Event("ncf-search"))}
           >
@@ -177,6 +185,8 @@ export function App(): React.JSX.Element {
             />
           ) : section === "trash" ? (
             <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
+          ) : section === "gallery" ? (
+            <GalleryView rootId={workspace.rootId} />
           ) : section === "settings" ? (
             <AppPasswords />
           ) : (

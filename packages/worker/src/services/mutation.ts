@@ -87,6 +87,20 @@ export function auditAndOutbox(
       "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,dispatch_token,dispatch_expires_at,epoch,created_at,updated_at) VALUES(?1,?2,?3,?4,'pending',NULL,NULL,?5,?6,?6)",
     ).bind(input.outboxId, input.operationId, kind, targetId, input.epoch, now),
     assertChanged(env),
+    env.DB.prepare(
+      "INSERT INTO media_jobs(id,node_id,blob_id,owner_id,variant,generator_version,saved_principal_json,epoch,state,attempt,claim_token,claim_expires_at,last_error,created_at,updated_at) SELECT ?1,n.id,n.current_blob_id,n.owner_id,'metadata','image-v1',?2,?3,'pending',0,NULL,NULL,NULL,?4,?4 FROM nodes n JOIN blobs b ON b.id=n.current_blob_id WHERE n.id=?5 AND n.owner_id=?6 AND n.kind='file' AND n.deleted_at IS NULL AND b.state='committed' AND b.size<=20000000 AND lower(COALESCE(b.mime_sniffed,'')) LIKE 'image/%' AND lower(COALESCE(b.mime_sniffed,''))<>'image/svg+xml' ON CONFLICT(node_id,blob_id,variant,generator_version) DO NOTHING",
+    ).bind(
+      `media_${crypto.randomUUID().replaceAll("-", "")}`,
+      JSON.stringify({
+        kind: input.credentialKind === "app_password" ? "app_password" : "user",
+        userId: input.userId,
+        credentialId: input.credentialId ?? `as:${input.sessionId}`,
+      }),
+      input.epoch,
+      now,
+      targetId,
+      input.userId,
+    ),
     ...operationStep(env, input.operationId, step + 1, "outbox.insert", input.outboxId),
   ];
 }

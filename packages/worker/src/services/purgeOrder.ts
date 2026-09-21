@@ -3,6 +3,7 @@ export const purgeOrder = [
   "node_props",
   "node_stars",
   "node_tags",
+  "media_jobs",
   "node_media",
   "node_audio",
   "archive_index",
