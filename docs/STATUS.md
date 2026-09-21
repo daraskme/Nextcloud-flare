@@ -90,7 +90,7 @@ Phase 0〜8C の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - `pnpm lint`: pass
 - `pnpm typecheck`: pass（shared / web / worker）
 - `pnpm test`: pass
-  - unit: 25 files / 74 tests
+  - unit: 26 files / 76 tests
   - Workers integration・schema・spike: 38 files / 82 tests
 - `pnpm build`: pass
   - shared TypeScript build
@@ -113,6 +113,7 @@ Phase 0〜8C の実装を、各 Phase の lint / typecheck / unit・Workers inte
 - `cc27aea` Gallery を Files で最後に開いたフォルダにスコープ（header にパス表示）。
 - `0abec6c` public-share / reader を single-entry の自己完結 bundle として別 build（`vite build --mode public-share|reader`）。以前は i18n chunk が `/assets/*`（auth: access）に共有され、public landing が本番でも Access 越しに壊れる構成だった。
 - share session / content session cookie の `__Host-` prefix を `ENVIRONMENT=development` かつ `APP_ORIGIN` が `http://` のときだけ外す（`auth/cookies.ts`）。Chrome は plain http（localhost 含む）で `__Host-` cookie を `InvalidPrefix` として破棄するため、local dev では正しいパスワードで unlock 200 の直後に GET が 401 になっていた。`Secure`/`HttpOnly`/`SameSite` 属性と production の名前は変更していない。
+- `4750995` content endpoint が `?download=1` で `Content-Disposition: attachment` を返し、public share と Files のダウンロード操作がこれを使う（画像/PDF がインライン表示されずに保存される）。public ZIP ボタンがダウンロード開始後に「準備中」で固着する問題を修正。
 
 ## 未実装
 
