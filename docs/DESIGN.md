@@ -838,6 +838,8 @@ React、TypeScript、Vite、Tailwind、shadcn/ui、TanStack Router/Query/Virtual
 
 folder 内画像/動画、任意 recursive を対象にし keyset 最大200件。`node_media` は `width,height,taken_at,duration_ms,orientation,dominant_color` と bounded camera 情報だけ。GPS破棄。thumbnail は sm256/md768/lg1600、lg は lazy unique claim。recursive 候補は SQL で50,000を強制し、§15 gate 未合格時は10,000へ縮小する。v1 UI は grid/list、folder/recursive 切替、lightbox、次/前、共有閲覧を必須とし、高度 layout は v1.1。
 
+2026-09-22 確定要件: 事前エンコード済みの AVIF 画像と AV1 動画（MP4/WebM、Opus 音声付き/音声無し）を必須対応とする。原本を保持し、画像表示/動画再生は認可済み content URL へ直接接続する。実 codec/bit depth を取得して再生可否を判定し、未対応端末では download 導線を提供する。詳細は [`MEDIA_FORMATS.md`](MEDIA_FORMATS.md)。
+
 ### 9A.2 Bookshelf / EPUB reader
 
 EPUB、ZIP/CBZ、PDF、folder imagesをv1対象とし、CBR/RAR/7zはunsupported。archive indexはEOCD≤1MiB、central directory≤8MiBをRangeで読み、path/method/flags/size/offset/CRCを検査してR2へ保存する。entryはcentral/local header一致、暗号化/unsupported拒否、safe integer/offset overflow、enqueue前output上限、CRCを検査する。
@@ -862,6 +864,8 @@ app origin
 
 MP3/FLAC/OGG/Opus/M4A/MP4/WAV の bounded tag parser。通常 head≤2MiB+tail128B、MP4 moov探索≤4MiB。cover の追加 Range は offset/length を検証し、≤20,000,000B かつ全体 budget 内だけ実行する。field≤1KiB、folder≤2,000 tracks。content-session Cookie + single Range で再生する。v1 UI は track list、play/pause、前/次、volume、position保存、共有再生を必須とし、timeline scrubber、queue高度操作、複数layoutは v1.1。
 
+Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、client MIME/拡張子だけで codec を確定しない。再エンコードを原本再生の前提にしない。MP4 の codec parameter は `Opus`、Ogg/WebM は `opus` とする。
+
 ### 9A.4 共通認可 / job
 
 全media routeはEffectiveLive、capability root、current blob、generation、credential scopeを検査する。index/tag/sanitize/thumb jobはoutbox、saved principal、epoch、fenced result claimを使いstale結果を公開しない。
@@ -882,7 +886,7 @@ ZIP展開は自前central directory parser + `DecompressionStream('deflate-raw')
 
 ### 10.3 derivative / Images
 
-server derivative key は immutable generation。claim tuple+fence で一 Worker だけを公開者にする。Images input は20,000,000B以下、dimension/frame/app pixel budget を header で先に検査し、WebPへ re-encode して metadata を除く。AVIF input は staging 確認し未対応なら unsupported。**v1 は client thumbnail 受付を無効化し route/result row/key を作らない。** 将来有効化する条件は §18。
+server derivative key は immutable generation。claim tuple+fence で一 Worker だけを公開者にする。Images input は20,000,000B以下、dimension/frame/app pixel budget を header で先に検査し、WebPへ re-encode して metadata を除く。AVIF input は staging 確認し未対応なら derivative だけを unsupported とする。AVIF 原本の保存/表示は対応対象であり、detail は原本、grid は placeholder に fallback する。**v1 は client thumbnail 受付を無効化し route/result row/key を作らない。** 将来有効化する条件は §18。
 
 ### 10.4 delivery matrix / CSP
 
