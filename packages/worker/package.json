@@ -1,0 +1,22 @@
+{
+  "name": "@ncf/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config ../../wrangler.jsonc",
+    "build": "wrangler deploy --dry-run --config ../../wrangler.jsonc --outdir dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm test:unit && pnpm test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:contracts": "vitest run --config vitest.unit.config.ts --passWithNoTests test/contracts"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "0.19.10",
+    "@ncf/shared": "workspace:*",
+    "fflate": "0.8.2",
+    "hono": "4.9.6",
+    "zod": "3.25.76"
+  }
+}

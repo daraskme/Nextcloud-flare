@@ -1,0 +1,39 @@
+{
+  "name": "next-cloud-flare",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20 <21",
+    "pnpm": ">=9 <10"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @ncf/worker --filter @ncf/web dev",
+    "lint": "eslint . && prettier --check .",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm --filter @ncf/shared build && pnpm --filter @ncf/web build && pnpm --filter @ncf/worker build",
+    "test": "pnpm test:unit && pnpm test:integration",
+    "test:unit": "pnpm --filter @ncf/worker test:unit",
+    "test:integration": "pnpm --filter @ncf/worker test:integration",
+    "test:e2e": "pnpm --filter @ncf/web test:e2e",
+    "verify:contracts": "pnpm --filter @ncf/worker test:contracts",
+    "verify:config": "wrangler deploy --dry-run --config wrangler.jsonc --outdir .wrangler-dist"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@cloudflare/workers-types": "5.20260811.1",
+    "@eslint/js": "9.35.0",
+    "@types/node": "20.19.14",
+    "@vitest/runner": "4.1.0",
+    "@vitest/snapshot": "4.1.0",
+    "eslint": "9.35.0",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "16.3.0",
+    "prettier": "3.6.2",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.43.0",
+    "vitest": "4.1.0",
+    "wrangler": "4.71.0"
+  }
+}
