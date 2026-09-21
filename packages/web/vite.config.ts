@@ -9,6 +9,12 @@ export default defineConfig({
       "@ncf/shared": fileURLToPath(new URL("../shared/src/index.ts", import.meta.url)),
     },
   },
+  server: {
+    port: 5173,
+    proxy: {
+      "/api": "http://127.0.0.1:8787",
+    },
+  },
   build: {
     manifest: true,
     sourcemap: true,

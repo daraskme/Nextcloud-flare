@@ -2,7 +2,7 @@ import type { Env } from "../env.js";
 
 const RESERVED_NAMES = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
 
-function normalizeFoundationName(name: string): { name: string; nameCi: string } {
+export function normalizePortableName(name: string): { name: string; nameCi: string } {
   const normalized = name.normalize("NFC");
   const bytes = new TextEncoder().encode(normalized);
   if (
@@ -38,7 +38,7 @@ export interface CreateFolderMutation {
 }
 
 export async function createFolder(env: Env, input: CreateFolderMutation): Promise<void> {
-  const normalized = normalizeFoundationName(input.name);
+  const normalized = normalizePortableName(input.name);
   const now = Date.now();
   const step = (number: number, kind: string, affectedId: string) => [
     env.DB.prepare(

@@ -24,4 +24,9 @@ export interface Env {
   CONTENT_SESSION_KEY?: string;
   APP_PASSWORD_PEPPER?: string;
   EPOCH_FLOOR?: string;
+  DEV_PRINCIPAL_EMAIL?: string;
+  DEV_PRINCIPAL_ID?: string;
+  DEV_SPACE_ID?: string;
+  DEV_ROOT_NODE_ID?: string;
+  DEV_CSRF_KEY?: string;
 }

@@ -5,6 +5,7 @@ interface PermitRequest {
   spaceId: string;
   epoch: number;
   ttlMs: number;
+  nodeIds?: string[];
 }
 
 function isPermitRequest(value: unknown): value is PermitRequest {
@@ -23,7 +24,11 @@ function isPermitRequest(value: unknown): value is PermitRequest {
     Number.isSafeInteger(request.ttlMs) &&
     request.ttlMs !== undefined &&
     request.ttlMs >= 1000 &&
-    request.ttlMs <= 30_000
+    request.ttlMs <= 30_000 &&
+    (request.nodeIds === undefined ||
+      (Array.isArray(request.nodeIds) &&
+        request.nodeIds.length <= 64 &&
+        request.nodeIds.every((nodeId) => typeof nodeId === "string" && nodeId.length > 0)))
   );
 }
 
@@ -36,6 +41,14 @@ export class LockDO {
 
   private async issuePermit(input: PermitRequest): Promise<Response> {
     const expiresAt = Date.now() + input.ttlMs;
+    const locked = await this.env.DB.prepare(
+      "SELECT 1 locked FROM locks WHERE expires_at>(strftime('%s','now')*1000) AND node_id IN (SELECT value FROM json_each(?1)) LIMIT 1",
+    )
+      .bind(JSON.stringify(input.nodeIds ?? []))
+      .first<{ locked: number }>();
+    if (locked !== null) {
+      return Response.json({ error: "locked" }, { status: 423 });
+    }
     await this.env.DB.batch([
       this.env.DB.prepare(
         "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?1)",

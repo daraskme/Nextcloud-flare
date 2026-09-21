@@ -11,13 +11,75 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color-scheme: dark;
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+:root.dark {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+}
+
+button {
+  font: inherit;
+}
+
+@layer components {
+  .primary-button {
+    @apply inline-flex items-center gap-2 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-sky-500/15 transition duration-200 hover:-translate-y-0.5 hover:bg-sky-400 active:translate-y-0;
+  }
+
+  .icon-button {
+    @apply grid h-9 w-9 place-items-center rounded-xl border border-slate-200 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:border-white/10 dark:text-slate-500 dark:hover:bg-white/5 dark:hover:text-white;
+  }
+
+  .view-button {
+    @apply grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:text-slate-900 dark:hover:text-white;
+  }
+
+  .view-button-active {
+    @apply bg-white text-slate-900 shadow-sm dark:bg-white/10 dark:text-white dark:shadow-none;
+  }
+
+  .nav-item {
+    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-white/[0.045] dark:hover:text-white;
+  }
+
+  .nav-item kbd {
+    @apply ml-auto rounded border border-slate-200 px-1.5 py-0.5 text-[9px] dark:border-white/10;
+  }
+
+  .nav-item-active {
+    @apply bg-sky-500/10 font-medium text-sky-600 dark:text-sky-400;
+  }
+
+  .context-item {
+    @apply flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-slate-300 transition hover:bg-white/[0.08] hover:text-white;
+  }
+}
+
+::selection {
+  background: rgb(56 189 248 / 30%);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgb(100 116 139 / 35%);
+  background-clip: padding-box;
 }

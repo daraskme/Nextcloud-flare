@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config ../../wrangler.jsonc",
+    "dev": "wrangler d1 migrations apply ncf-dev --local --config ../../wrangler.jsonc && wrangler dev --config ../../wrangler.jsonc",
     "build": "wrangler deploy --dry-run --config ../../wrangler.jsonc --outdir dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm test:unit && pnpm test:integration",

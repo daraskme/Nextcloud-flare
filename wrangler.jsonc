@@ -64,8 +64,8 @@
   "triggers": { "crons": ["17 * * * *", "23 2 * * *", "0 3 * * SUN"] },
   "vars": {
     "ENVIRONMENT": "development",
-    "APP_ORIGIN": "https://dev.invalid",
-    "CONTENT_ORIGIN": "https://content.dev.invalid",
+    "APP_ORIGIN": "http://localhost:5173",
+    "CONTENT_ORIGIN": "http://localhost:8788",
     "ACCESS_ISSUER": "<ACCESS_ISSUER>",
     "ACCESS_USER_AUD": "<ACCESS_USER_AUD>",
     "ACCESS_SERVICE_AUD": "<ACCESS_SERVICE_AUD>",

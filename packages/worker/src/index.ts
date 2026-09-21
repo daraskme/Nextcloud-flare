@@ -5,11 +5,11 @@ import { ControlDO } from "./do/ControlDO.js";
 import { LockDO } from "./do/LockDO.js";
 import { UploadDO } from "./do/UploadDO.js";
 import type { Env } from "./env.js";
-import { registerPhaseOneRoutes } from "./routes/register.js";
+import { registerRoutes } from "./routes/register.js";
 
 export const app = new Hono<{ Bindings: Env }>();
 
-registerPhaseOneRoutes(app);
+registerRoutes(app, 2);
 
 app.notFound((context) =>
   context.json({ error: { code: "not_found", message: "Route not found" } }, 404),

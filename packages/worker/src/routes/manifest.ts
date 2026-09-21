@@ -180,3 +180,7 @@ export function routeKey(routeDefinition: Pick<RouteDefinition, "method" | "temp
 }
 
 export const phaseOneRoutes = routeManifest.filter((definition) => definition.phase === 1);
+
+export function routesThroughPhase(phase: RouteDefinition["phase"]): readonly RouteDefinition[] {
+  return routeManifest.filter((definition) => definition.phase <= phase);
+}
