@@ -105,7 +105,7 @@ Google IdP/MFA は Access policy の staging gate であり、このローカル
 
 戻り値は read=node / create=parent+space の discriminated tuple。request-local の変更不可 proof に認可 SQL を保持し、`authorizationAssertion()` で同一 mutation batch へ入れる。
 再検査では credential/grant/epoch に加えて対象 revision と tree generation を束縛する。
-これは permit、operation、quota/ref/pin の assertion の代わりではなく、create サービス自体は未実装。
+これは permit、operation、quota/ref/pin の assertion の代わりではなく、create は後述の fsMutation で各 assertion と結合する。
 
 残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、HTTP host/surface dispatch、app password/share secret 検証、実 listing/content handler、trash 時の share 失効、ControlDO admission/再開。
 認可 query が返す node metadata は content ticket/purpose/blob/pin の検査を代替しない。
@@ -162,7 +162,33 @@ SQLite 全喪失後に同 epoch の D1 履歴がある場合は発行を拒否�
 claim 前と応答喪失後の照合で request-local authorization proof と現在の D1 認可を要求する。
 `0007` は operation identity と app password creator identity の変更を禁止する。
 lookup は同じ initiating credential と現在の元 parent の create 権限を要求し、成功結果は status と現在参照可能な node ID/revision に絞る。purge 済み node の name/path や内部診断は返さない。
-namespace の fsMutation/最初の create/terminal commit/outbox は次の実装であり、HTTP 経路は未接続。
+namespace の fsMutation/最初の folder create は以下へ接続済み。HTTP 経路は未接続。
+
+### 名前・fsMutation・最初の folder create
+
+`shared/names.ts` は NFC、portable 禁止文字/予約名、UTF-8≤255B、scalar<255、full casefold≤1,024B を検査する。
+URL decode は呼出し adapter の責務であり、JSON の `%2F` 等を再 decode しない。`.DS_Store`/`._*` は hidden として保存可能。
+`unicode-case-folding@1.1.1` を exact 固定し、公式 Unicode 17.0.0 の C/F mapping と照合した。name_ci の変更は同名制約に影響するため依存更新だけで切り替えない。
+folder name の検索索引は NFKC + full casefold + かな統一と scalar bigram を分離保存し、normalization_version を付ける。media metadata 合成と検索 API は後続。
+
+`services/createFolder.ts` は canonical intent → terminal replay または LockDO permit → current create 認可 → claim → fsMutation → terminal 照合 → release を接続する。
+`services/fsMutation.ts` は先頭で permit/operation/current auth/current lock を SQL assertion にし、以下7 step と terminal を一つの D1 batch に入れる。
+
+1. folder node（operation 由来の固定 ID）、2. parent revision、3. space tree_generation、4. search_index、5. search_fts、6. activity、7. outbox。
+
+各 write の直後に `changes()=1`、各 operation_steps insert の直後にも同じ assertion を置く。terminal は step 数も照合する。
+folder は blob を持たず容量 counter を変えない。FTS と outbox が失敗しても node/parent/tree まで rollback する。
+確実な constraint rollback のみ、同じ current permit/claim を条件に別 batch で failed を記録する。network/timeout は failed と決めず、現在認可を再確認して最大3回/5秒で primary 照合する。
+未確定は operation ID 付きの commit_unknown として返す。terminal replay は現在見える ID/revision/status と安定 error code だけ。
+テストは各 step/terminal の0行、同じ claim の並行実行、応答喪失、失効・revision/tree/epoch/maintenance/lock/permit 変更を注入する。
+
+### outbox producer
+
+`jobs/outbox.ts` は D1 の current epoch/maintenance解除/committed operation を条件に30秒 dispatch lease を取得し、Queue へ `{outboxId}` だけ送る。
+送信後の sent 更新は同じ token/lease で CAS し、先に completed となった行や新しい sender の token を上書きしない。
+送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査する。
+Queue send と D1 応答喪失は注入試験。実 Queue 配信/consumer claim/result CAS/ack 喪失/DLQ は未完了。
+`index.ts` の queue は retryAll、scheduled は no-op のまま。consumer と復旧時の処理を実装するまで producer/repair helper を公開 runtime に接続しない。
 
 ### 実サービス gate
 
@@ -170,5 +196,5 @@ native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd
 固定 pool 0.22 の RPC 拒否例外は後続 invocation の cleanup を停止させるため、意図的な拒否試験は `runInDurableObject` 内で捕捉し、成功時は実 stub RPC を使用する。
 実 Cloudflare の RPC/ネットワーク断/復旧運用の staging gate は未完了。
 
-次は fsMutation/create/outbox/repair、残る operation tuple の認可と HTTP profile 接続。
+次は consumer claim/ack と repair、ControlDO 再開、残る operation tuple の認可と HTTP profile 接続。
 後半が終わるまで Files core を公開しない。

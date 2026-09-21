@@ -3,10 +3,22 @@
 Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。
 
+**別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 現在の実装範囲、次の作業、検証コマンドと資料の読み分けをまとめています。
+
 現在は **Phase 0 のローカル検証基盤と Phase 1 の一部**を実装済み。
-53テーブルの migration、147経路の契約、ControlDO の epoch 復旧、Access JWT/CSRF・初回管理者登録・session 保存/失効、node read/create の認可と容量/参照会計の基盤を追加しています。
+53テーブルの migration、147経路の契約、ControlDO の epoch 復旧、Access JWT/CSRF・初回管理者登録・session 保存/失効、認可・会計・LockDO、atomic なフォルダー作成と outbox 送信の内部サービスを追加しています。AVIF・AV1・Opus の対応契約と形式判定基盤も含みます。
 ファイル管理、公開 API、Web UI はまだ利用できません。HTTP 経路は未有効化です。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
+
+| 資料 | 用途 |
+|---|---|
+| [HANDOFF](docs/HANDOFF.md) | セッション再開の入口・直近の作業順序 |
+| [IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md) | 実装状況・検証記録・未完了 gate |
+| [FOUNDATION](docs/FOUNDATION.md) | 現在の内部サービスと DB の契約 |
+| [IMPLEMENTATION_BRIEF](docs/IMPLEMENTATION_BRIEF.md) | 全体の実装順序・R6 確定条件 |
+| [DESIGN](docs/DESIGN.md) | 製品全体の設計・受入条件 |
+| [MEDIA_FORMATS](docs/MEDIA_FORMATS.md) | AVIF・AV1・Opus の追加要件 |
+| [REVIEW_LOG](docs/REVIEW_LOG.md) | 過去レビューの経緯。関連箇所だけ参照 |
 
 ## 開発
 

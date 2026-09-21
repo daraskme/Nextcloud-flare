@@ -14,6 +14,7 @@ const packages = {
   "@biomejs/biome": /^2\./,
   fflate: /^0\./,
   jose: /^6\./,
+  "unicode-case-folding": /^1\./,
   vite: /^7\./,
 };
 const versions = {};

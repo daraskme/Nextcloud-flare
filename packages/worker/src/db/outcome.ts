@@ -19,15 +19,15 @@ export interface OperationOutcome {
   error_code: string | null;
 }
 
-export type Reconciliation =
-  | { kind: "terminal"; operation: OperationOutcome }
+export type Reconciliation<T extends OperationOutcome = OperationOutcome> =
+  | { kind: "terminal"; operation: T }
   | { kind: "commit_unknown" };
 
 /** readAuthorized must read primary and recheck the current credential every time. */
-export async function reconcileCommit(
-  readAuthorized: () => Promise<OperationOutcome | null>,
+export async function reconcileCommit<T extends OperationOutcome>(
+  readAuthorized: () => Promise<T | null>,
   options: { now?: () => number; budgetMs?: number } = {},
-): Promise<Reconciliation> {
+): Promise<Reconciliation<T>> {
   const now = options.now ?? Date.now;
   const deadline =
     now() + Math.min(options.budgetMs ?? LIMITS.reconciliationMs, LIMITS.reconciliationMs);

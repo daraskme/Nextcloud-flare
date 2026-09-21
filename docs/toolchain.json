@@ -3,6 +3,14 @@
   "cutoff": "2026-09-14T00:00:00.000Z",
   "registry": "https://registry.npmjs.org",
   "versions": {
+    "unicode-case-folding": {
+      "version": "1.1.1",
+      "publishedAt": "2025-10-01T18:38:32.834Z",
+      "selectedAt": "2026-09-22",
+      "engines": {},
+      "peers": {},
+      "review": "Dependency-free MIT ESM. All 1585 mappings and unmapped codepoints matched official Unicode 17.0.0 C/F case folding. Official CaseFolding.txt SHA256 ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183."
+    },
     "jose": {
       "version": "6.2.12",
       "publishedAt": "2026-09-05T09:17:12.608Z",

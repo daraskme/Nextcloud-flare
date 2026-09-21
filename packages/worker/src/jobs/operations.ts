@@ -131,6 +131,16 @@ function sameIntent(row: OperationRow, intent: OperationIntent, steps: number): 
   );
 }
 
+export async function findOperationIntent(
+  db: D1Database,
+  intent: OperationIntent,
+  steps: number,
+): Promise<OperationRow | null> {
+  const row = await operationRow(db, intent.id);
+  if (row && !sameIntent(row, intent, steps)) throw new Error("idempotency_conflict");
+  return row;
+}
+
 export function assertOperationClaim(claim: OperationClaim): SqlStatement {
   const { intent, permit } = claim;
   return assertExists(
@@ -155,14 +165,12 @@ export function assertOperationClaim(claim: OperationClaim): SqlStatement {
   );
 }
 
-/** A claim is not a namespace commit. Resume is restricted to the same permit. */
-export async function claimOperation(
-  db: D1Database,
+export function validateClaimAuthorization(
   intent: OperationIntent,
   permit: Permit,
   authorized: AuthorizedNode,
   steps: number,
-): Promise<{ kind: "claimed"; claim: OperationClaim } | { kind: "terminal"; row: OperationRow }> {
+): SqlStatement {
   const operands = JSON.parse(intent.operands) as { parentId?: unknown };
   if (
     authorized.operation !== "node.create" ||
@@ -185,10 +193,20 @@ export async function claimOperation(
   )
     throw new Error("invalid_operation_claim");
   // Validate the request-local proof before any operation read or write.
-  const authority = authorizationAssertion(authorized);
+  return authorizationAssertion(authorized);
+}
+
+/** A claim is not a namespace commit. Resume is restricted to the same permit. */
+export async function claimOperation(
+  db: D1Database,
+  intent: OperationIntent,
+  permit: Permit,
+  authorized: AuthorizedNode,
+  steps: number,
+): Promise<{ kind: "claimed"; claim: OperationClaim } | { kind: "terminal"; row: OperationRow }> {
+  const authority = validateClaimAuthorization(intent, permit, authorized, steps);
   const claim: OperationClaim = Object.freeze({ intent, permit, steps });
-  const existing = await operationRow(db, intent.id);
-  if (existing && !sameIntent(existing, intent, steps)) throw new Error("idempotency_conflict");
+  const existing = await findOperationIntent(db, intent, steps);
   if (existing && existing.state !== "claimed") {
     await atomicBatch(db, [authority]);
     return { kind: "terminal", row: existing };
@@ -289,9 +307,13 @@ export async function lookupOperation(
     const errorCode =
       row.error_code === null
         ? null
-        : ["permit_expired", "permit_revoked", "stale_epoch", "mutation_rejected"].includes(
-              row.error_code,
-            )
+        : [
+              "permit_expired",
+              "permit_revoked",
+              "stale_epoch",
+              "mutation_rejected",
+              "name_conflict",
+            ].includes(row.error_code)
           ? row.error_code
           : "operation_failed";
     return { id: row.op_id, state: row.state, errorCode, result: visible };

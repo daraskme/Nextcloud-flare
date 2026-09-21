@@ -1,6 +1,7 @@
 # 実装進捗
 
 更新: 2026-09-22。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
 ## 今回の実装
 
@@ -29,6 +30,9 @@
 | 1 LockDO | create 認可/ancestor lock、intent 永続化、eviction/storage loss、新 epoch recovery、同 user 別 credential の token 検査 | ローカル実装。ControlDO admission 成功側は test fixture、実再開 gate 待ち |
 | 1 operation claim | bounded canonical intent、同一 credential/key、claim 競合/応答喪失/current auth、lookup の情報制限 | create 用内部サービス実装。namespace commit/outbox/HTTP は未接続 |
 | AVIF/AV1/Opus 追加要件 | bounded container sniff、実 codec の MIME、native 再生可否 probe、AVIF 原本 fallback | 単体20件。track parser/content/UI 接続は後続 phase、詳細 `MEDIA_FORMATS.md` |
+| 1 fsMutation/create | node/parent/tree/search base/FTS/activity/outbox/terminal を一括確定。全必須 step の0行 rollback、並行再送、commit 応答喪失 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
+| 1 名前/検索索引 | NFC/portable/byte/scalar、固定 Unicode 17 full casefold、NFKC/かな統一/bigram、同名拒否 | folder create の保存・初期 FTS に接続。検索 API は未実装 |
+| 1 outbox producer | D1 lease→ID-only Queue send→sent、応答喪失/lease 回収/旧 sender/fast completed、bounded repair scan | 内部送信 helper を実装。consumer claim/ack と Cron 接続は未実装 |
 
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
@@ -39,6 +43,7 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 - 選定日 2026-09-21、公開日 cutoff 2026-09-14 00:00 UTC。直接依存の registry 証拠は `docs/toolchain.json`。
 - jose 6.2.12 は2026-09-22に追加選定、公開日2026-09-05で既存 cutoff も満たす。Node/workerd の署名検証に使用。
+- unicode-case-folding 1.1.1 は2026-09-22に追加選定、2025-10-01公開。Unicode 17.0.0 公式 C/F 表1,585件と全未割当 mapping の一致を確認。公開日・公式表の hash は `toolchain.json`。
 - `pnpm-workspace.yaml` の `minimumReleaseAge: 10080` で推移依存にも7日の公開期間を要求。
 - 使用する `@cloudflare/vitest-pool-workers@0.22.0` は Vitest 4 の `cloudflareTest` API。旧 `defineWorkersConfig` は使わない。
 - pool 同梱 workerd が 2026-08-15 のため、compatibility_date を同日へ固定。設計の例示値 2026-09-21 を設定して黙って古い runtime に fallback させない。staging もこの値で検証し、更新時に gate を再実行する。
@@ -50,14 +55,14 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 1. 承認された staging inventory で全 binding/環境 marker/Access を照合し、実 D1 で同じ SQL barrier を再実行する。今回の「応答喪失」は commit 後の fault injection であり実ネットワーク断ではない。
 2. Images 実サービスの20MB境界・codec・dimension、KDF CPU/cost、R2転送/キャンセルを計測する。ローカル Images は Miniflare 実装なので料金やサービス限界の証拠にしない。
-3. Phase 1 残り: fsMutation/create/outbox/repair と残る operation tuple の authorize/LockDO。ControlDO admission/再開と HTTP surface/CSRF の接続も必要。
+3. Phase 1 残り: outbox consumer claim/result CAS/ack と repair、残る operation tuple の authorize/LockDO。ControlDO admission/再開と HTTP surface/CSRF の接続も必要。
 4. R6 §8 の残りの fixture と仕様 v0.7 反映を Phase 1 内で閉じる。Files core/upload/trash/GC の本実装は Phase 1 gate 後。
 
 ## M/U/I/R と復旧
 
 - **M**: `0001`〜`0007` を追加し、隔離 D1 と SQLite へ適用して FK/CHECK/trigger/FTS/会計/permit/operation identity を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
-- **I**: Windows のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[8361de9 の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35628131239) は Windows/Ubuntu 両方で成功（LockDO/operation 込み330 tests 時点）。
+- **I**: Windows のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
@@ -65,7 +70,7 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 - 2026-09-22、Windows / Node 24.21.0 / pnpm 12.4.1 で `pnpm check` 成功。
 - Biome、TypeScript、contracts/config verifier: 成功。
-- Node 単体: 8 files / 161 tests 成功。
-- ローカル Workers 統合: 16 files / 189 tests 成功（合計350 tests）。
+- Node 単体: 9 files / 195 tests 成功。
+- ローカル Workers 統合: 18 files / 220 tests 成功（合計415 tests）。
 - Vite build と Wrangler deploy **dry-run**: 成功。配備や remote migration は実行していない。
 - Windows sandbox 内で esbuild の親 directory 読取りが拒否されたため、テストと dry-run build は承認された制限外プロセスで実行。Cloudflare の本番資格情報は使用していない。

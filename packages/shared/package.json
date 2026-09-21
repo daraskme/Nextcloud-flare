@@ -5,5 +5,8 @@
   "type": "module",
   "exports": {
     "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "unicode-case-folding": "1.1.1"
   }
 }
