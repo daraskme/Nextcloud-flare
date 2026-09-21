@@ -119,7 +119,7 @@ import { routeKey, routesThroughPhase, type RouteDefinition } from "./manifest.j
 
 type RouteHandler = (context: AppContext) => Response | Promise<Response>;
 
-const handlers = new Map<string, RouteHandler>([
+export const handlers = new Map<string, RouteHandler>([
   ["GET /api/v1/me", handleMe],
   ["POST /api/v1/auth/logout", handleLogout],
   ["POST /api/v1/csrf", handleCsrf],
