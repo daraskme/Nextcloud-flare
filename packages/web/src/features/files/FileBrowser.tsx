@@ -21,6 +21,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
 import { api } from "../../lib/api";
 import { FileDetails } from "./FileDetails";
+import { PreviewDialog } from "./PreviewDialog";
 import { ShareDialog } from "./ShareDialog";
 
 type ViewMode = "grid" | "list";
@@ -69,6 +70,7 @@ export function FileBrowser({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [detailsItem, setDetailsItem] = useState<NodeSummary | null>(null);
   const [shareItem, setShareItem] = useState<NodeSummary | null>(null);
+  const [previewItem, setPreviewItem] = useState<NodeSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const dragged = useRef<string[]>([]);
@@ -123,7 +125,7 @@ export function FileBrowser({
 
   const open = (item: NodeSummary) => {
     if (item.kind === "folder") setCurrentId(item.id);
-    else window.open(`/api/v1/nodes/${encodeURIComponent(item.id)}/content`, "_blank", "noopener");
+    else setPreviewItem(item);
   };
 
   const createFolder = async () => {
@@ -417,6 +419,9 @@ export function FileBrowser({
         />
       )}
       {shareItem !== null && <ShareDialog item={shareItem} onClose={() => setShareItem(null)} />}
+      {previewItem !== null && (
+        <PreviewDialog item={previewItem} onClose={() => setPreviewItem(null)} />
+      )}
     </section>
   );
 }

@@ -37,6 +37,14 @@ export function mapError(context: AppContext, error: unknown): Response {
       409,
     );
   }
+  if (message.includes("UNIQUE constraint failed: operations.")) {
+    return jsonError(
+      context,
+      409,
+      "duplicate_request",
+      "An identical request is already in progress; retry shortly",
+    );
+  }
   if (message.includes("UNIQUE constraint") || message === "name_conflict") {
     return jsonError(context, 409, "name_conflict", "An item with this name already exists");
   }

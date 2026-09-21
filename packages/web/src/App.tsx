@@ -6,8 +6,10 @@ import {
   Headphones,
   Image as ImageIcon,
   Link2,
+  Menu,
   Moon,
   Search,
+  X,
   Settings,
   Share2,
   Sun,
@@ -57,6 +59,7 @@ export function App(): React.JSX.Element {
     "files" | "trash" | "shares" | "shared" | "gallery" | "library" | "audio" | "settings"
   >("files");
   const [navigateTo, setNavigateTo] = useState<string>();
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.stats>> | null>(null);
 
   useEffect(() => {
@@ -65,6 +68,10 @@ export function App(): React.JSX.Element {
     document.documentElement.classList.toggle("dark", dark);
     localStorage.setItem("ncf-theme", theme);
   }, [dark]);
+
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [section]);
 
   useEffect(() => {
     api
@@ -100,126 +107,169 @@ export function App(): React.JSX.Element {
       ? 0
       : Math.min(100, (storageUsed / stats.quotaBytes) * 100);
 
+  const sidebar = (
+    <>
+      <div className="flex items-center gap-3 px-2 py-2">
+        <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 shadow-lg shadow-sky-500/20">
+          <Cloud className="h-5 w-5 text-[var(--accent-fg)]" />
+        </div>
+        <div>
+          <h1 className="text-sm font-semibold tracking-tight">Next Cloud</h1>
+          <p className="text-[10px] uppercase tracking-[.22em] text-[var(--fg-muted)]">
+            Cloudflare
+          </p>
+        </div>
+      </div>
+      <button
+        className="primary-button mt-7 w-full justify-center"
+        onClick={() => window.dispatchEvent(new Event("ncf-upload"))}
+      >
+        <Upload className="h-4 w-4" /> {t("app.upload")}
+      </button>
+      <nav className="mt-7 space-y-1">
+        <button
+          className={`nav-item ${section === "files" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("files")}
+        >
+          <Files className="h-4 w-4" /> {t("app.myDrive")}
+        </button>
+        <button
+          className={`nav-item ${section === "shares" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("shares")}
+        >
+          <Link2 className="h-4 w-4" /> {t("app.sharing")}
+        </button>
+        <button
+          className={`nav-item ${section === "shared" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("shared")}
+        >
+          <Share2 className="h-4 w-4" /> {t("app.sharedWithMe")}
+        </button>
+        <button
+          className={`nav-item ${section === "gallery" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("gallery")}
+        >
+          <ImageIcon className="h-4 w-4" /> {t("app.gallery")}
+        </button>
+        <button
+          className={`nav-item ${section === "library" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("library")}
+        >
+          <BookOpen className="h-4 w-4" /> {t("app.bookshelf")}
+        </button>
+        <button
+          className={`nav-item ${section === "audio" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("audio")}
+        >
+          <Headphones className="h-4 w-4" /> {t("app.audio")}
+        </button>
+        <button className="nav-item" onClick={() => window.dispatchEvent(new Event("ncf-search"))}>
+          <Search className="h-4 w-4" /> {t("app.search")} <kbd>⌘K</kbd>
+        </button>
+        <button
+          className={`nav-item ${section === "trash" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("trash")}
+        >
+          <Trash2 className="h-4 w-4" /> {t("app.trash")}
+        </button>
+      </nav>
+      <div className="mt-auto space-y-4">
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="flex items-center gap-2 text-[var(--fg-muted)]">
+              <HardDrive className="h-3.5 w-3.5" /> {t("app.storage")}
+            </span>
+            <span className="text-right tabular-nums">
+              {stats === null
+                ? "—"
+                : `${formatBytes(storageUsed)} / ${formatBytes(stats.quotaBytes)}`}
+            </span>
+          </div>
+          <div
+            className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--surface-hover)]"
+            role="progressbar"
+            aria-label={t("app.storage")}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(storagePercent)}
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-500 transition-all duration-500"
+              style={{ width: `${storagePercent}%` }}
+            />
+          </div>
+        </div>
+        <button className="nav-item" onClick={() => setDark((value) => !value)}>
+          {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{" "}
+          {dark ? t("app.lightMode") : t("app.darkMode")}
+        </button>
+        <button
+          className={`nav-item border-t border-[var(--border)] pt-4 ${section === "settings" ? "nav-item-active" : ""}`}
+          onClick={() => setSection("settings")}
+        >
+          <div className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-violet-400 to-fuchsia-600 text-xs font-bold text-[var(--accent-fg)]">
+            {workspace?.email.slice(0, 1).toUpperCase() ?? "N"}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium">
+              {workspace?.email ?? t("app.connecting")}
+            </p>
+            <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
+              {t("app.privateWorkspace")}
+            </p>
+          </div>
+          <Settings className="h-4 w-4 text-[var(--fg-muted)]" />
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <main className="flex min-h-screen bg-[var(--bg)] text-[var(--fg)] transition-colors duration-300">
       <aside className="hidden w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] p-4 backdrop-blur-xl lg:flex">
-        <div className="flex items-center gap-3 px-2 py-2">
-          <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 shadow-lg shadow-sky-500/20">
-            <Cloud className="h-5 w-5 text-[var(--accent-fg)]" />
-          </div>
-          <div>
-            <h1 className="text-sm font-semibold tracking-tight">Next Cloud</h1>
-            <p className="text-[10px] uppercase tracking-[.22em] text-[var(--fg-muted)]">
-              Cloudflare
-            </p>
-          </div>
+        {sidebar}
+      </aside>
+      {drawerOpen && (
+        <div className="fixed inset-0 z-50 flex lg:hidden">
+          <aside className="flex h-full w-72 max-w-[85vw] flex-col overflow-y-auto border-r border-[var(--border)] bg-[var(--surface)] p-4 shadow-2xl">
+            {sidebar}
+          </aside>
+          <button
+            className="flex-1 bg-[var(--overlay)] backdrop-blur-sm"
+            aria-label={t("app.closeMenu")}
+            onClick={() => setDrawerOpen(false)}
+          />
         </div>
-        <button
-          className="primary-button mt-7 w-full justify-center"
-          onClick={() => window.dispatchEvent(new Event("ncf-upload"))}
-        >
-          <Upload className="h-4 w-4" /> {t("app.upload")}
-        </button>
-        <nav className="mt-7 space-y-1">
+      )}
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 lg:hidden">
           <button
-            className={`nav-item ${section === "files" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("files")}
+            className="icon-button"
+            aria-label={drawerOpen ? t("app.closeMenu") : t("app.openMenu")}
+            onClick={() => setDrawerOpen((value) => !value)}
           >
-            <Files className="h-4 w-4" /> {t("app.myDrive")}
+            {drawerOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
+          <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-blue-600">
+            <Cloud className="h-4 w-4 text-[var(--accent-fg)]" />
+          </div>
+          <h1 className="flex-1 truncate text-sm font-semibold tracking-tight">Next Cloud</h1>
           <button
-            className={`nav-item ${section === "shares" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("shares")}
-          >
-            <Link2 className="h-4 w-4" /> {t("app.sharing")}
-          </button>
-          <button
-            className={`nav-item ${section === "shared" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("shared")}
-          >
-            <Share2 className="h-4 w-4" /> {t("app.sharedWithMe")}
-          </button>
-          <button
-            className={`nav-item ${section === "gallery" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("gallery")}
-          >
-            <ImageIcon className="h-4 w-4" /> {t("app.gallery")}
-          </button>
-          <button
-            className={`nav-item ${section === "library" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("library")}
-          >
-            <BookOpen className="h-4 w-4" /> {t("app.bookshelf")}
-          </button>
-          <button
-            className={`nav-item ${section === "audio" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("audio")}
-          >
-            <Headphones className="h-4 w-4" /> {t("app.audio")}
-          </button>
-          <button
-            className="nav-item"
+            className="icon-button"
+            aria-label={t("app.search")}
             onClick={() => window.dispatchEvent(new Event("ncf-search"))}
           >
-            <Search className="h-4 w-4" /> {t("app.search")} <kbd>⌘K</kbd>
+            <Search className="h-5 w-5" />
           </button>
-          <button
-            className={`nav-item ${section === "trash" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("trash")}
-          >
-            <Trash2 className="h-4 w-4" /> {t("app.trash")}
-          </button>
-        </nav>
-        <div className="mt-auto space-y-4">
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="flex items-center gap-2 text-[var(--fg-muted)]">
-                <HardDrive className="h-3.5 w-3.5" /> {t("app.storage")}
-              </span>
-              <span className="text-right tabular-nums">
-                {stats === null
-                  ? "—"
-                  : `${formatBytes(storageUsed)} / ${formatBytes(stats.quotaBytes)}`}
-              </span>
-            </div>
-            <div
-              className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--surface-hover)]"
-              role="progressbar"
-              aria-label={t("app.storage")}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(storagePercent)}
+          {section === "files" && (
+            <button
+              className="primary-button px-3 py-1.5"
+              onClick={() => window.dispatchEvent(new Event("ncf-upload"))}
             >
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-sky-400 to-blue-500 transition-all duration-500"
-                style={{ width: `${storagePercent}%` }}
-              />
-            </div>
-          </div>
-          <button className="nav-item" onClick={() => setDark((value) => !value)}>
-            {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{" "}
-            {dark ? t("app.lightMode") : t("app.darkMode")}
-          </button>
-          <button
-            className={`nav-item border-t border-[var(--border)] pt-4 ${section === "settings" ? "nav-item-active" : ""}`}
-            onClick={() => setSection("settings")}
-          >
-            <div className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-violet-400 to-fuchsia-600 text-xs font-bold text-[var(--accent-fg)]">
-              {workspace?.email.slice(0, 1).toUpperCase() ?? "N"}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium">
-                {workspace?.email ?? t("app.connecting")}
-              </p>
-              <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
-                {t("app.privateWorkspace")}
-              </p>
-            </div>
-            <Settings className="h-4 w-4 text-[var(--fg-muted)]" />
-          </button>
-        </div>
-      </aside>
-      <div className="relative flex min-w-0 flex-1 flex-col">
+              <Upload className="h-4 w-4" /> {t("app.upload")}
+            </button>
+          )}
+        </header>
         {workspace !== null ? (
           section === "files" ? (
             <FileBrowser

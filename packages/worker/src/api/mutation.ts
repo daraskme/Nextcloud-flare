@@ -33,6 +33,7 @@ export async function acquireMutation(
     kind: string;
     expectedSteps: number;
     intent: unknown;
+    idempotencyKey?: string | null;
     nodeIds?: string[];
     lockTokenDigests?: string[];
   },
@@ -75,12 +76,23 @@ export async function acquireMutation(
     ...(appPassword ? { appPasswordId: user.principal.appPasswordId } : {}),
     epoch: control.epoch,
     kind: input.kind,
-    requestDigest: await digest(input.intent),
+    requestDigest: await digest(
+      typeof input.idempotencyKey === "string" && input.idempotencyKey !== ""
+        ? { key: input.idempotencyKey, intent: input.intent }
+        : { nonce: operationId, intent: input.intent },
+    ),
     expectedSteps: input.expectedSteps,
     permitExpiresAt: permit.expires_at,
   });
   const close = async (action: "release" | "revoke") => {
     await stub.fetch(`https://lock.internal/permits/${permitId}/${action}`, { method: "POST" });
+  };
+  const discardUnstartedClaim = async () => {
+    await env.DB.prepare(
+      "DELETE FROM operations WHERE op_id=?1 AND state='claimed' AND NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=?1)",
+    )
+      .bind(operationId)
+      .run();
   };
   return {
     operationId,
@@ -89,6 +101,9 @@ export async function acquireMutation(
     auditId: randomId("aud"),
     outboxId: randomId("out"),
     release: () => close("release"),
-    revoke: () => close("revoke"),
+    revoke: async () => {
+      await close("revoke");
+      await discardUnstartedClaim();
+    },
   };
 }
