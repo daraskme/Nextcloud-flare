@@ -233,7 +233,15 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(700);
   const [selected, setSelected] = useState<number | null>(null);
+  const [folderPath, setFolderPath] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void api
+      .path(rootId)
+      .then((response) => setFolderPath(response.items.map((item) => item.name).join(" / ")))
+      .catch(() => setFolderPath(null));
+  }, [rootId]);
 
   const load = useCallback(
     async (next?: string) => {
@@ -300,6 +308,9 @@ export function GalleryView({ rootId }: { rootId: string }): React.JSX.Element {
             {t("gallery.media")}
           </p>
           <h2 className="text-xl font-semibold tracking-tight">{t("gallery.title")}</h2>
+          {folderPath !== null && (
+            <p className="truncate text-xs text-[var(--fg-muted)]">{folderPath}</p>
+          )}
         </div>
         <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-white/10">
           <input

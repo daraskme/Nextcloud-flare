@@ -281,7 +281,7 @@ export function App(): React.JSX.Element {
           ) : section === "trash" ? (
             <TrashView onChanged={() => setRefreshKey((value) => value + 1)} />
           ) : section === "gallery" ? (
-            <GalleryView rootId={workspace.rootId} />
+            <GalleryView rootId={currentFolder ?? workspace.rootId} />
           ) : section === "library" ? (
             <LibraryView rootId={workspace.rootId} />
           ) : section === "audio" ? (
