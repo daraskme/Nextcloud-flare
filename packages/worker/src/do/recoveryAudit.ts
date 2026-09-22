@@ -3,7 +3,7 @@ import { auditOwnerLedger } from "../services/refs";
 import { epochNumber } from "./epochHistory";
 
 export interface RecoveryCursor {
-  readonly stage: "users" | "blobs";
+  readonly stage: "users" | "blobs" | "outbox";
   readonly afterId: string;
 }
 
@@ -21,9 +21,21 @@ interface BlobRow {
   removed_at: number | null;
 }
 
+interface OutboxRow {
+  outbox_id: string;
+  state: string;
+  epoch: number;
+  dispatch_token: string | null;
+  dispatch_expires_at: number | null;
+  claim_token: string | null;
+  claim_expires_at: number | null;
+  operation_state: string | null;
+  operation_epoch: number | null;
+}
+
 function validCursor(cursor: RecoveryCursor, limit: number): void {
   if (
-    !["users", "blobs"].includes(cursor.stage) ||
+    !["users", "blobs", "outbox"].includes(cursor.stage) ||
     typeof cursor.afterId !== "string" ||
     cursor.afterId.length > 128 ||
     !Number.isInteger(limit) ||
@@ -118,6 +130,39 @@ export async function inspectRecoveryPage(
           : { stage: "blobs", afterId: "" },
     };
   }
+  if (cursor.stage === "outbox") {
+    const rows = await primary(db)
+      .prepare(`SELECT b.outbox_id,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
+        b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch
+      FROM outbox b LEFT JOIN operations o ON o.op_id=b.op_id
+      WHERE b.outbox_id>? ORDER BY b.outbox_id LIMIT ?`)
+      .bind(cursor.afterId, limit + 1)
+      .all<OutboxRow>();
+    const page = rows.results.slice(0, limit);
+    for (const row of page) {
+      if (row.operation_state === null || row.operation_epoch !== row.epoch)
+        throw new Error("recovery_outbox_provenance_mismatch");
+      if (
+        ["pending", "dispatching", "sent", "completed"].includes(row.state) &&
+        row.operation_state !== "committed"
+      )
+        throw new Error("recovery_outbox_provenance_mismatch");
+      if (
+        (row.state === "dispatching" || row.state === "sent") &&
+        (!row.dispatch_token || row.dispatch_expires_at === null)
+      )
+        throw new Error("recovery_outbox_dispatch_mismatch");
+      if ((row.claim_token === null) !== (row.claim_expires_at === null))
+        throw new Error("recovery_outbox_claim_mismatch");
+    }
+    return {
+      examined: page.length,
+      next:
+        rows.results.length > limit
+          ? { stage: "outbox", afterId: page.at(-1)?.outbox_id ?? cursor.afterId }
+          : null,
+    };
+  }
   const rows = await primary(db)
     .prepare(`SELECT b.id,b.r2_key,b.size,s.bytes,s.r2_etag,s.removed_at
     FROM blobs b LEFT JOIN blob_storage s ON s.blob_id=b.id
@@ -137,6 +182,6 @@ export async function inspectRecoveryPage(
     next:
       rows.results.length > limit
         ? { stage: "blobs", afterId: page.at(-1)?.id ?? cursor.afterId }
-        : null,
+        : { stage: "outbox", afterId: "" },
   };
 }

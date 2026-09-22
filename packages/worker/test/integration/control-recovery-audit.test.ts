@@ -46,11 +46,16 @@ it("persists page progress across DO eviction and treats completion as diagnosti
   });
   await evictDurableObject(control());
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "outbox",
     pages: 2,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 3,
     completed: true,
   });
-  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 2, completed: true });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 3, completed: true });
   expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
 });
 
@@ -66,8 +71,13 @@ it("keeps a failed page pending so repair can resume at the same cursor", async 
     await env.BLOBS.put(key, "abc");
   }
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "outbox",
     pages: 2,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 3,
     completed: true,
   });
 });

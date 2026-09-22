@@ -27,7 +27,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0008`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create 用 LockDO、operation claim/lookup を実装済み。
 
-今回の追加: ControlDO に監査 epoch/token/stage/cursor の SQLite 永続化とページ進行 RPC を追加。DO eviction 後の続行、失敗ページの再試行、旧 epoch 監査の拒否を確認した。NixOS の Node 24.20.0 / pnpm 12.3.4 で `pnpm check` **436 tests**（Node 195、workerd 241）と lint/typecheck/contracts/config/build に成功。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。前回の `70b780a` の [CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35685244610) も成功。
+今回の追加: 復旧監査に outbox ページを追加し、元操作の確定状態と epoch、dispatch lease と claim の形を検査する。既存 DO の旧監査テーブルの CHECK 制約を避けるため進捗を `recovery_audit_v2` に保存する。NixOS の Node 24.20.0 / pnpm 12.3.4 で `pnpm check` **437 tests**（Node 195、workerd 242）と lint/typecheck/contracts/config/build に成功。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。前回の `556eb28` の [CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35685773555) も成功。
 
 今回の checkpoint で追加したコード:
 
@@ -58,7 +58,7 @@ checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認す
 ## 次に進める順序
 
 1. **outbox Queue 接続 / repair**: 現在の `node.created` と ack 判定 helper を基に実 Queue/DLQ/requeue を検証し、他 kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
-2. **ControlDO admission / resume**: durable な監査進捗へ FTS/credential/share/outbox/R2 inventory と GC/Upload/Queue drain、最終 D1 fence を追加する。正本は DO、D1 は mirror。空 DB 専用の解除処理を完成形にしない。
+2. **ControlDO admission / resume**: durable な監査進捗へ FTS/credential/share/outbox の全意味検証/R2 inventory と GC/Upload/Queue drain、最終 D1 fence を追加する。正本は DO、D1 は mirror。空 DB 専用の解除処理を完成形にしない。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
 

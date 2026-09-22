@@ -20,7 +20,7 @@
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |
 | 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。admission/復旧 verifier/再開と実 GC lease drain は未完了 |
-| 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag を user/blob 各最大20件ずつ検証。ControlDO SQLite の epoch/token/cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 読み取り専用監査。FTS/credential/share/outbox/R2 inventory と最終再開 gate は未完了 |
+| 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag、outbox の operation provenance と lease shape を各最大20件ずつ検証。ControlDO SQLite の epoch/token/cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 読み取り専用監査。FTS/credential/share、outbox の全意味検証、R2 inventory と最終再開 gate は未完了 |
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
@@ -65,12 +65,13 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 - **M**: `0001`〜`0008` を追加し、隔離 D1 と SQLite へ適用して FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
-- **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の436 tests と前回の433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
+- **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の437 tests と前回の436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
 
+- 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 242 = **437 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。outbox の復旧監査を追加。ControlDO SQLite 監査進捗は診断専用であり、admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 241 = **436 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。ControlDO SQLite 監査進捗は診断専用であり、admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 238 = **433 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。復旧監査は読み取り専用・ページ単位で、再開 gate は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 234 = **429 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。ControlDO admission/復旧 verifier は未実装。
