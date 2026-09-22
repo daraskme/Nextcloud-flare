@@ -7,6 +7,7 @@ import {
 import { type ContentPurpose, contentSessionAssertion } from "../auth/contentSession";
 import type { ContentTokens } from "../auth/contentTokens";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import type { BudgetDO } from "../do/BudgetDO";
 import { parseRange } from "../platform/range";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
 
@@ -42,6 +43,13 @@ export interface ContentBlobGrant {
   readonly share?: { readonly id: string; readonly version: number };
 }
 
+export interface ContentBlobPlan {
+  readonly blob: BlobReadPlan;
+  readonly budgetId: string;
+  readonly sessionId: string;
+  readonly epoch: number;
+}
+
 /** Resolve the signed host-only cookie to a D1 principal, then apply all content read guards. */
 export async function prepareCookieBlobRead(
   db: D1Database,
@@ -51,7 +59,7 @@ export async function prepareCookieBlobRead(
   spaceId: string,
   nodeId: string,
   purpose: ContentPurpose,
-): Promise<{ readonly blob: BlobReadPlan; readonly budgetId: string }> {
+): Promise<ContentBlobPlan> {
   const sessionId = await tokens.verifyCookie(cookieHeader);
   const session = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
@@ -116,7 +124,7 @@ export async function prepareContentBlobRead(
   spaceId: string,
   nodeId: string,
   grant: ContentBlobGrant,
-): Promise<{ readonly blob: BlobReadPlan; readonly budgetId: string }> {
+): Promise<ContentBlobPlan> {
   const authorized = await authorizeNode(db, principal, {
     operation: "node.read",
     spaceId,
@@ -174,7 +182,109 @@ export async function prepareContentBlobRead(
     })
   )
     throw new Error("content_not_available");
-  return Object.freeze({ blob, budgetId: record.budgetId });
+  return Object.freeze({
+    blob,
+    budgetId: record.budgetId,
+    sessionId: grant.sessionId,
+    epoch: principal.epoch,
+  });
+}
+
+function reservedResponseBytes(plan: BlobReadPlan, request: Request): number {
+  if (request.method !== "GET" && request.method !== "HEAD") throw new Error("invalid_blob_read");
+  if (
+    request.method === "HEAD" ||
+    ifNoneMatch(request.headers.get("If-None-Match"), plan.contentEtag)
+  )
+    return 0;
+  const ifRange = request.headers.get("If-Range");
+  const range = parseRange(
+    ifRange === null || ifRange === plan.contentEtag ? request.headers.get("Range") : null,
+    plan.size,
+  );
+  return range.kind === "range" ? range.length : range.kind === "unsatisfiable" ? 0 : plan.size;
+}
+
+/** Every GET, HEAD, Range and 304 reserves one request before touching R2. */
+export async function streamBudgetedContentBlob(
+  db: D1Database,
+  bucket: R2Bucket,
+  budgets: DurableObjectNamespace<BudgetDO>,
+  tokens: ContentTokens,
+  cookieHeader: string | null,
+  spaceId: string,
+  nodeId: string,
+  purpose: ContentPurpose,
+  request: Request,
+): Promise<Response> {
+  const plan = await prepareCookieBlobRead(
+    db,
+    bucket,
+    tokens,
+    cookieHeader,
+    spaceId,
+    nodeId,
+    purpose,
+  );
+  const bytes = reservedResponseBytes(plan.blob, request);
+  const budget = budgets.get(budgets.idFromName(plan.budgetId));
+  const requestId = crypto.randomUUID();
+  await budget.reserve({
+    budgetId: plan.budgetId,
+    sessionId: plan.sessionId,
+    requestId,
+    epoch: plan.epoch,
+    bytes,
+  });
+  let response: Response;
+  try {
+    response = await streamImmutableBlob(bucket, plan.blob, request);
+  } catch (error) {
+    await budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes: 0 });
+    throw error;
+  }
+  if (!response.body) {
+    await budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes: 0 });
+    return response;
+  }
+  const reader = response.body.getReader();
+  let delivered = 0;
+  let terminal = false;
+  const settle = async (known: boolean) => {
+    if (terminal) return;
+    terminal = true;
+    await budget.settle({
+      budgetId: plan.budgetId,
+      requestId,
+      deliveredBytes: known ? delivered : null,
+    });
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          if (delivered !== bytes) throw new Error("blob_stream_length_mismatch");
+          await settle(true);
+          controller.close();
+          return;
+        }
+        if (delivered + next.value.byteLength > bytes)
+          throw new Error("blob_stream_length_mismatch");
+        delivered += next.value.byteLength;
+        controller.enqueue(next.value);
+      } catch (error) {
+        await reader.cancel(error).catch(() => undefined);
+        await settle(false).catch(() => undefined);
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+      await settle(false);
+    },
+  });
+  return new Response(body, { status: response.status, headers: response.headers });
 }
 
 async function resolveBlobRead(

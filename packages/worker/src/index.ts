@@ -24,10 +24,10 @@ class UnavailableDO extends DurableObject<Env> {
   }
 }
 
+export { BudgetDO } from "./do/BudgetDO";
 export { ControlDO } from "./do/ControlDO";
 export { LockDO } from "./do/LockDO";
 export class UploadDO extends UnavailableDO {}
-export class BudgetDO extends UnavailableDO {}
 
 export default {
   fetch(_request: Request, env: Env): Response {

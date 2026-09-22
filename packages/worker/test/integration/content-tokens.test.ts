@@ -6,7 +6,7 @@ import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { contentSessionAssertion } from "../../src/auth/contentSession";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { atomicBatch } from "../../src/db/primary";
-import { prepareCookieBlobRead, streamImmutableBlob } from "../../src/services/blobRead";
+import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -33,6 +33,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   const now = Date.now();
   const f = foundationFixture(crypto.randomUUID(), now - 1000);
   await atomicBatch(env.DB, f.statements);
+  await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
   const tokens = await codec(() => now);
   const issued = Math.floor(now / 1000);
   const expires = issued + 300;
@@ -112,12 +113,39 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
     "content",
   );
   expect(plan.budgetId).toBe(ids.budget);
-  const response = await streamImmutableBlob(
-    env.BLOBS,
-    plan.blob,
-    new Request("https://content.invalid/c"),
-  );
+  const budgeted = (request: Request) =>
+    streamBudgetedContentBlob(
+      env.DB,
+      env.BLOBS,
+      env.BUDGETS,
+      tokens,
+      cookie,
+      f.ids.space,
+      f.ids.file,
+      "content",
+      request,
+    );
+  const response = await budgeted(new Request("https://content.invalid/c"));
   expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("abc");
+  const range = await budgeted(
+    new Request("https://content.invalid/c", { headers: { Range: "bytes=1-2" } }),
+  );
+  expect(range.status).toBe(206);
+  expect(new TextDecoder().decode(await range.arrayBuffer())).toBe("bc");
+  const head = await budgeted(new Request("https://content.invalid/c", { method: "HEAD" }));
+  expect(head.status).toBe(200);
+  const unchanged = await budgeted(
+    new Request("https://content.invalid/c", {
+      headers: { "If-None-Match": plan.blob.contentEtag },
+    }),
+  );
+  expect(unchanged.status).toBe(304);
+  expect(await env.BUDGETS.get(env.BUDGETS.idFromName(ids.budget)).status()).toMatchObject({
+    requests: 4,
+    bytesCharged: 5,
+    active: 0,
+    byteLimit: 9,
+  });
   await atomicBatch(env.DB, [
     contentSessionAssertion(
       { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch: 1 },
@@ -161,6 +189,7 @@ it("redeems an anonymous share ticket and rejects a changed share version", asyn
   const now = Date.now();
   const f = foundationFixture(crypto.randomUUID(), now - 1000);
   await atomicBatch(env.DB, f.statements);
+  await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
   const tokens = await codec(() => now);
   const issued = Math.floor(now / 1000);
   const expires = issued + 300;

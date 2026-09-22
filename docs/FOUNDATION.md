@@ -69,7 +69,8 @@ credential の復旧監査では、有効な app password と service の scope 
 
 `auth/contentSession.ts` は content session・ticket・target set・budget の同一 credential/epoch/対象と、有効期限・失効・share version/grant を D1 assertion で検査する内部部品。使用時は node 認可 assertion と同じ batch に入れる。
 `services/targetManifest.ts` と `prepareContentBlobRead` は R2 manifest を 1MiB 以下で読み、SHA-256・target の node/blob/purpose/size と D1 total bytes を検証する。current node 認可、content session assertion、manifest hash/ref/owner、blob 物理行を同じ D1 batch で再確認する。復旧監査は target manifest も hash/構造を照合する。
-`auth/contentTokens.ts` は専用 kid ring で audience/purpose/credential/epoch/target hash/budget を束縛した HS256 ticket と、署名済み host-only Cookie を発行・検証する。`auth/contentAccept.ts` は D1 ticket/credential/share/target/budget の現行状態を batch で照合し、発行元 `ticket_id` を持つ content session を作る。`prepareCookieBlobRead` は Cookie から現行 principal と ticket を復元し、上記の読み取り証明に接続する。BudgetDO lease と公開 route は未接続。
+`auth/contentTokens.ts` は専用 kid ring で audience/purpose/credential/epoch/target hash/budget を束縛した HS256 ticket と、署名済み host-only Cookie を発行・検証する。`auth/contentAccept.ts` は D1 ticket/credential/share/target/budget の現行状態を batch で照合し、発行元 `ticket_id` を持つ content session を作る。`prepareCookieBlobRead` は Cookie から現行 principal と ticket を復元し、上記の読み取り証明に接続する。
+`do/BudgetDO.ts` は `budget_id` ごとの SQLite counter と最大10分の lease を保持する。初回 target bytes×3 を固定上限として、1,024 requests/10分、並列8、unknown transfer 全額消費を守る。credential/share/session/ticket の D1 現行状態を lease 前に再確認し、alarm は期限切れ lease の並列枠だけを解放する。`streamBudgetedContentBlob` は GET/HEAD/Range/304 の各 request を reserve し、body 完了時に実 byte、キャンセルや結果不明時に全額を精算する。owner あたり active budget 数制限、予算発行、公開 HTTP route、CORS は未接続。
 
 `auth/sessions.ts` は JWT 検証済み claims を受ける内部サービス。`auth/login.ts` が JWT 検証→bootstrap（未初期化時だけ）→session 登録を接続する。HTTP route は未有効化。
 既存 user の iss+sub を照合し、email だけでは identity を結合しない。

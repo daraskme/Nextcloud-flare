@@ -1,3 +1,4 @@
+import type { BudgetDO } from "./do/BudgetDO";
 import type { ControlDO } from "./do/ControlDO";
 import type { LockDO } from "./do/LockDO";
 
@@ -9,7 +10,7 @@ export interface Env {
   CONTROL: DurableObjectNamespace<ControlDO>;
   LOCKS: DurableObjectNamespace<LockDO>;
   UPLOADS: DurableObjectNamespace;
-  BUDGETS: DurableObjectNamespace;
+  BUDGETS: DurableObjectNamespace<BudgetDO>;
   JOBS: Queue;
   IMAGES: ImagesBinding;
   EDGE_LIMITER: RateLimit;
