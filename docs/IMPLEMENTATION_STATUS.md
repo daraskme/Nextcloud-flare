@@ -25,15 +25,15 @@
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
-| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent assertion。rename は root と share/scope root を拒否し、edit/node:write を要求 | read/create/rename/automation 5 operation の内部基盤。rename mutation と全 operation の認可は未完了 |
+| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent assertion。rename は root と share/scope root を拒否し、edit/node:write を要求 | read/create/rename/automation 5 operation の内部基盤。残る operation の認可は未完了 |
 | R6 #7 CSRF | session 束縛 HMAC、TTL1h、再利用・再発行、purpose/aud/epoch/credential、current session/share、Origin 境界 | 内部サービスと D1 テスト実装済み。HTTP profile 接続待ち |
 | 1 quota/ref/pin | owner/share reservation、unique logical、R2 HEAD physical、ref≤1,000、pin-only除外、各再送の一度だけ計上 | migration/内部サービス実装済み。GC/repair/namespace mutation 接続待ち |
-| 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。create 用 LockDO へ接続済み |
-| 1 LockDO | create 認可/ancestor lock、intent 永続化、eviction/storage loss、新 epoch recovery、同 user 別 credential の token 検査 | ローカル実装。ControlDO admission 成功側は test fixture、実再開 gate 待ち |
-| 1 operation claim | bounded canonical intent、同一 credential/key、claim 競合/応答喪失/current auth、lookup の情報制限 | create 用内部サービス実装。namespace commit/outbox/HTTP は未接続 |
+| 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。create/rename 用 LockDO へ接続済み |
+| 1 LockDO | create/rename 認可と ancestor/対象/親 lock、intent 永続化、eviction/storage loss、新 epoch recovery、同 user 別 credential の token 検査 | ローカル実装。ControlDO admission 成功側は test fixture、実再開 gate 待ち |
+| 1 operation claim | bounded canonical intent、同一 credential/key、claim 競合/応答喪失/current auth、lookup の情報制限 | create/rename 用内部サービス実装。公開 HTTP は未接続 |
 | AVIF/AV1/Opus 追加要件 | bounded container sniff、実 codec の MIME、native 再生可否 probe、AVIF 原本 fallback | 単体20件。track parser/content/UI 接続は後続 phase、詳細 `MEDIA_FORMATS.md` |
 | 1 fsMutation/create | node/parent/tree/search base/FTS/activity/outbox/terminal を一括確定。全必須 step の0行 rollback、並行再送、commit 応答喪失 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
-| 1 rename mutation | 対象と親の lock/認可/permit、node/parent/tree revision、FTS の旧語削除と新語追加、activity/outbox/terminal を D1 batch で確定。衝突時 rollback と同一 claim 再送を検証 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
+| 1 rename mutation | 対象と親の lock/認可/permit、node/parent/tree revision、FTS の旧語削除と新語追加、activity/outbox/terminal を D1 batch で確定。実 LockDO 経由の実行、同一キー再送、異なる意図の衝突、失効後の拒否、衝突時 rollback を検証 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
 | 1 名前/検索索引 | NFC/portable/byte/scalar、固定 Unicode 17 full casefold、NFKC/かな統一/bigram、同名拒否 | folder create の保存・初期 FTS に接続。検索 API は未実装 |
 | 1 outbox producer | D1 lease→ID-only Queue send→sent、応答喪失/lease 回収/旧 sender/fast completed、bounded repair scan。Worker scheduled handler と毎分 Cron を設定し、ControlDO/D1 admission 後に最大50件を送る | ローカル接続済み。ControlDO が maintenance 中のため実送信は停止。実 Cron/Queue/DLQ 配信は未検証 |
 | 1 outbox consumer 基盤 | `node.created` と `node.renamed` の current credential/権限、30秒 claim、元 operation step による由来確認、terminal CAS を D1 で検証。ID-only Queue の terminal ack と claim 中の再送抑止を追加。Worker Queue handler は ControlDO status と D1 mirror の一致を admission gate にして consumer に接続 | ControlDO が maintenance 中のため実 delivery は retry。実 Queue/DLQ、残る kind、再開は未完了 |
@@ -41,7 +41,7 @@
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
 ControlDO は内部 RPC の epoch 発行・復旧を実装したが、maintenance / GC pause を解除しない。
-LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO/BudgetDO は拒否実装。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO/BudgetDO は拒否実装。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
 
 ## Toolchain の判断
 
@@ -72,6 +72,7 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 264 = **459 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。改名サービスの LockDO→D1→terminal 経路を workerd で検証。同一キー再送は副作用を重複させず、異なる意図とセッション失効を拒否する。
 - 2026-09-22、復旧監査の outbox provenance に `node.created` / `node.renamed` と operation kind、step 1 node ID の対応検査を追加。偽装した kind と payload の拒否を D1 で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 263 = **458 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。旧 epoch の `node.renamed` outbox を元の operation/node step の照合と claim drain 後に failed へ収束。改名操作に偽装した作成通知は残して最終 fence で拒否する。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 263 = **458 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。rename の LockDO permit、operation claim、D1 一括 mutation、FTS の語句入れ替えと `node.renamed` consumer を追加。公開 HTTP と実 admission は未接続。
