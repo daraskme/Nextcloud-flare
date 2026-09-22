@@ -57,6 +57,12 @@ function admittedDavEnv(): Env {
             invoke((lock) => lock.acquireCreate(request)),
           acquireNodeWrite: (request: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
             invoke((lock) => lock.acquireNodeWrite(request)),
+          createDavLock: (request: Parameters<LockDO["createDavLock"]>[0]) =>
+            invoke((lock) => lock.createDavLock(request)),
+          refreshDavLock: (request: Parameters<LockDO["refreshDavLock"]>[0]) =>
+            invoke((lock) => lock.refreshDavLock(request)),
+          unlockDavLock: (request: Parameters<LockDO["unlockDavLock"]>[0]) =>
+            invoke((lock) => lock.unlockDavLock(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -269,7 +275,9 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   const options = await handleDavHttp(optionsRequest, davEnv, 1, ring);
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
-  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL");
+  expect(options.headers.get("Allow")).toBe(
+    "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+  );
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
     404,
@@ -747,6 +755,102 @@ it("atomically writes DAV dead properties and rejects protected live properties"
     ring,
   );
   expect(stale.status).toBe(412);
+});
+
+it("creates, refreshes and removes an existing-resource DAV lock", async () => {
+  const { f, id, ring, request } = await fixture("E");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write')")
+    .bind(`ap:${id}`)
+    .run();
+  const davEnv = admittedDavEnv();
+  const body = `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
+    <D:locktype><D:write/></D:locktype><D:owner>Alice &amp; Bob</D:owner></D:lockinfo>`;
+  const created = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "LOCK",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        Depth: "0",
+        Timeout: "Second-90",
+      },
+      body,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(created.status).toBe(200);
+  const lockToken = created.headers.get("Lock-Token");
+  expect(lockToken).toMatch(/^<opaquelocktoken:[0-9a-f-]+>$/);
+  const token = lockToken!.slice(1, -1);
+  const createdXml = await created.text();
+  expect(createdXml).toContain("<D:depth>0</D:depth>");
+  expect(createdXml).toContain("<D:timeout>Second-90</D:timeout>");
+  expect(createdXml).toContain("Alice &amp; Bob");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM locks WHERE node_id=?")
+      .bind(f.ids.file)
+      .first<number>("count"),
+  ).toBe(1);
+
+  const conflicting = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "LOCK",
+      headers: { ...Object.fromEntries(request().headers), "Content-Type": "application/xml" },
+      body,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(conflicting.status).toBe(423);
+
+  const refreshed = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "LOCK",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        If: `(<${token}>)`,
+        Timeout: "Second-120",
+      },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(refreshed.status).toBe(200);
+  expect(await refreshed.text()).toContain("<D:timeout>Second-120</D:timeout>");
+
+  const unlocked = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "UNLOCK",
+      headers: { ...Object.fromEntries(request().headers), "Lock-Token": `<${token}>` },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(unlocked.status).toBe(204);
+  expect(unlocked.body).toBeNull();
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM locks WHERE node_id=?")
+      .bind(f.ids.file)
+      .first<number>("count"),
+  ).toBe(0);
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/File", {
+          method: "UNLOCK",
+          headers: { ...Object.fromEntries(request().headers), "Lock-Token": `<${token}>` },
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(409);
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

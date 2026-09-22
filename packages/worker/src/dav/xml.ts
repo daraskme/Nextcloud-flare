@@ -19,6 +19,9 @@ export interface ProppatchChange extends DavPropertyName {
   readonly action: "set" | "remove";
   readonly valueXml: string;
 }
+export type LockinfoRequest =
+  | { readonly kind: "refresh" }
+  | { readonly kind: "create"; readonly ownerXml: string };
 
 type OrderedNode = Record<string, unknown>;
 
@@ -355,6 +358,65 @@ export async function parseProppatchRequest(request: Request): Promise<readonly 
   }
   if (changes.length === 0) throw new Error("invalid_dav_xml");
   return changes;
+}
+
+export async function parseLockinfoRequest(request: Request): Promise<LockinfoRequest> {
+  const xml = await boundedBody(request);
+  if (xml === null) return { kind: "refresh" };
+  const type = request.headers.get("Content-Type")?.replace(/\s+/g, "") ?? "";
+  if (!/^(?:application|text)\/xml(?:;charset=utf-8)?$/i.test(type))
+    throw new Error("invalid_dav_xml");
+  if (
+    /<!DOCTYPE|<!ENTITY/i.test(xml) ||
+    xml.replace(/&(?:amp|lt|gt|apos|quot|#\d{1,7}|#x[0-9a-fA-F]{1,6});/g, "").includes("&")
+  )
+    throw new Error("invalid_dav_xml");
+  let ordered: unknown;
+  try {
+    ordered = parser.parse(xml);
+  } catch {
+    throw new Error("invalid_dav_xml");
+  }
+  countStructure(ordered);
+  const top = content(ordered).filter((node) => !Object.keys(node).some((key) => key === "?xml"));
+  if (top.length !== 1) throw new Error("invalid_dav_xml");
+  const root = element(top[0]!);
+  const rootScope = namespaces(root.attrs, new Map());
+  const rootName = qualified(root.tag, rootScope);
+  if (rootName.namespace !== DAV || rootName.name !== "lockinfo")
+    throw new Error("invalid_dav_xml");
+  let exclusive = false;
+  let write = false;
+  let ownerXml = "";
+  let ownerSeen = false;
+  for (const childNode of root.children) {
+    const child = mixedElement(childNode);
+    const childScope = namespaces(child.attrs, rootScope);
+    const childName = qualified(child.tag, childScope);
+    if (childName.namespace !== DAV) throw new Error("invalid_dav_xml");
+    if (childName.name === "owner") {
+      if (ownerSeen) throw new Error("invalid_dav_xml");
+      ownerSeen = true;
+      ownerXml = serializeContent(child.children, childScope);
+      continue;
+    }
+    const structural = content(child.children);
+    if (structural.length !== 1) throw new Error("invalid_dav_xml");
+    const value = element(structural[0]!);
+    const valueScope = namespaces(value.attrs, childScope);
+    const valueName = qualified(value.tag, valueScope);
+    if (value.children.length !== 0 || valueName.namespace !== DAV)
+      throw new Error("invalid_dav_xml");
+    if (childName.name === "lockscope" && valueName.name === "exclusive" && !exclusive) {
+      exclusive = true;
+    } else if (childName.name === "locktype" && valueName.name === "write" && !write) {
+      write = true;
+    } else {
+      throw new Error("invalid_dav_xml");
+    }
+  }
+  if (!exclusive || !write) throw new Error("invalid_dav_xml");
+  return { kind: "create", ownerXml };
 }
 
 /** Validate a stored, normalized mixed-content fragment before embedding it in DAV output. */

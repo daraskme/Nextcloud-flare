@@ -1,7 +1,9 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
 import { evaluateDavRequestIf } from "../dav/conditionState";
+import { parseDavLockTokenHeader } from "../dav/conditions";
 import { davEtag } from "../dav/etag";
+import { parseDavLockDepth, parseDavTimeout } from "../dav/lockProtocol";
 import {
   parseDavPath,
   resolveDavCreateParent,
@@ -10,7 +12,12 @@ import {
   resolveDavPropsNode,
 } from "../dav/path";
 import { propfindResponse } from "../dav/propfind";
-import { type ProppatchChange, parsePropfindRequest, parseProppatchRequest } from "../dav/xml";
+import {
+  type ProppatchChange,
+  parseLockinfoRequest,
+  parsePropfindRequest,
+  parseProppatchRequest,
+} from "../dav/xml";
 import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 import { createFolder } from "../services/createFolder";
@@ -54,6 +61,23 @@ function proppatchResponse(pathname: string, changes: readonly ProppatchChange[]
       },
     },
   );
+}
+
+function lockResponse(
+  href: string,
+  lock: { token: string; depth: "0" | "infinity"; ownerText: string; timeoutSeconds: number },
+) {
+  const owner = lock.ownerText === "" ? "" : `<D:owner>${lock.ownerText}</D:owner>`;
+  const body = `<?xml version="1.0" encoding="utf-8"?><D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock><D:locktype><D:write/></D:locktype><D:lockscope><D:exclusive/></D:lockscope><D:depth>${lock.depth === "infinity" ? "Infinity" : "0"}</D:depth>${owner}<D:timeout>Second-${lock.timeoutSeconds}</D:timeout><D:locktoken><D:href>${escapeXml(lock.token)}</D:href></D:locktoken><D:lockroot><D:href>${escapeXml(href)}</D:href></D:lockroot></D:activelock></D:lockdiscovery></D:prop>`;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Cache-Control": "private, no-store",
+      "Content-Type": "application/xml; charset=utf-8",
+      "Lock-Token": `<${lock.token}>`,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 const METHODS = new Set([
@@ -196,7 +220,7 @@ export async function handleDavHttp(
       return problem(503, "not_ready");
     }
   }
-  if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY", "MOVE", "UNLOCK"].includes(request.method)) {
+  if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY", "MOVE"].includes(request.method)) {
     try {
       resolved = await resolveDavNode(env.DB, principal, path);
     } catch {
@@ -212,7 +236,7 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL",
+        Allow: "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",
@@ -302,6 +326,96 @@ export async function handleDavHttp(
       if (error instanceof Error && error.message === "invalid_dav_if")
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+      return problem(503, "not_ready");
+    }
+  }
+  if (request.method === "LOCK") {
+    if (request.headers.has("Lock-Token")) return problem(400, "bad_request");
+    let target;
+    try {
+      target = await resolveDavPropsNode(env.DB, principal, path);
+    } catch {
+      // Lock-null creation requires the empty-file content mutation and remains closed.
+      return problem(503, "not_ready");
+    }
+    try {
+      const depth = parseDavLockDepth(request.headers.get("Depth"));
+      const timeoutSeconds = parseDavTimeout(request.headers.get("Timeout"));
+      const body = await parseLockinfoRequest(request);
+      const encodedPath = path.segments
+        .map((segment) => encodeURIComponent(segment.name))
+        .join("/");
+      const href = `/dav${encodedPath === "" ? "" : `/${encodedPath}`}${target.node.kind === "file" ? "" : "/"}`;
+      const lock = env.LOCKS.get(env.LOCKS.idFromName(target.node.space_id));
+      if (body.kind === "refresh") {
+        const tokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+        if (tokens.length !== 1) return problem(400, "bad_request");
+        return lockResponse(
+          href,
+          await lock.refreshDavLock({
+            spaceId: target.node.space_id,
+            nodeId: target.node.id,
+            principal,
+            token: tokens[0]!,
+            timeoutSeconds,
+          }),
+        );
+      }
+      await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      return lockResponse(
+        href,
+        await lock.createDavLock({
+          requestId: crypto.randomUUID(),
+          spaceId: target.node.space_id,
+          nodeId: target.node.id,
+          principal,
+          depth,
+          ownerText: body.ownerXml,
+          timeoutSeconds,
+        }),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "invalid_dav_xml",
+          "invalid_dav_lock_depth",
+          "invalid_dav_timeout",
+          "invalid_dav_if",
+        ].includes(error.message)
+      )
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+      if (error instanceof Error && error.message === "dav_lock_token_mismatch")
+        return problem(423, "locked");
+      return problem(503, "not_ready");
+    }
+  }
+  if (request.method === "UNLOCK") {
+    if (request.body || request.headers.has("If")) return problem(400, "bad_request");
+    let target;
+    try {
+      target = await resolveDavPropsNode(env.DB, principal, path);
+      const token = parseDavLockTokenHeader(request.headers.get("Lock-Token"));
+      if (!token) return problem(400, "bad_request");
+      const lock = env.LOCKS.get(env.LOCKS.idFromName(target.node.space_id));
+      await lock.unlockDavLock({
+        spaceId: target.node.space_id,
+        nodeId: target.node.id,
+        principal,
+        token,
+      });
+      return new Response(null, {
+        status: 204,
+        headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid_dav_lock_token")
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_lock_token_mismatch")
+        return problem(409, "conflict");
       return problem(503, "not_ready");
     }
   }

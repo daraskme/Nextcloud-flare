@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  parseLockinfoRequest,
   parsePropfindRequest,
   parseProppatchRequest,
   validateDavXmlFragment,
@@ -38,6 +39,31 @@ it("parses empty, allprop, propname and namespace-qualified propfind bodies", as
       { namespace: "urn:ncf:props", name: "color" },
     ],
   });
+});
+
+it("parses exclusive write LOCK bodies and empty refresh bodies", async () => {
+  await expect(parseLockinfoRequest(request())).resolves.toEqual({ kind: "refresh" });
+  const parsed = await parseLockinfoRequest(
+    request(`<D:lockinfo xmlns:D="DAV:" xmlns:X="urn:test">
+      <D:lockscope><D:exclusive/></D:lockscope>
+      <D:locktype><D:write/></D:locktype>
+      <D:owner>owner &amp; <X:name role="user">Alice</X:name></D:owner>
+    </D:lockinfo>`),
+  );
+  expect(parsed).toMatchObject({ kind: "create" });
+  if (parsed.kind !== "create") throw new Error("expected_create");
+  expect(parsed.ownerXml).toContain("owner &amp;");
+  expect(parsed.ownerXml).toContain("Alice");
+});
+
+it("rejects unsupported or unsafe LOCK bodies", async () => {
+  for (const body of [
+    '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:shared/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>',
+    '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope></D:lockinfo>',
+    '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>',
+    '<!DOCTYPE x><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>',
+  ])
+    await expect(parseLockinfoRequest(request(body))).rejects.toThrow("invalid_dav_xml");
 });
 
 it("rejects unsafe, malformed and over-budget propfind XML", async () => {
