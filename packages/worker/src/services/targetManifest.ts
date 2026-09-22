@@ -25,6 +25,67 @@ export interface TargetManifestRecord {
   readonly totalBytes: number;
 }
 
+export interface EncodedTargetManifest {
+  readonly json: string;
+  readonly hash: string;
+  readonly totalBytes: number;
+}
+
+/** Canonical bytes for a new target set; the caller still owns R2/D1 publication. */
+export async function encodeTargetManifest(
+  targets: readonly TargetEntry[],
+): Promise<EncodedTargetManifest> {
+  if (!Array.isArray(targets) || targets.length === 0 || targets.length > MAX_TARGETS)
+    throw new Error("invalid_target_manifest");
+  const entries: TargetEntry[] = [];
+  const seen = new Set<string>();
+  let totalBytes = 0;
+  for (const target of targets) {
+    if (!validTarget(target)) throw new Error("invalid_target_manifest");
+    const entry = {
+      spaceId: target.spaceId,
+      nodeId: target.nodeId,
+      blobId: target.blobId,
+      purpose: target.purpose,
+      size: target.size,
+    };
+    const key = `${entry.spaceId}/${entry.nodeId}/${entry.blobId}/${entry.purpose}`;
+    if (seen.has(key)) throw new Error("invalid_target_manifest");
+    seen.add(key);
+    totalBytes += entry.size;
+    if (!Number.isSafeInteger(totalBytes)) throw new Error("invalid_target_manifest");
+    entries.push(entry);
+  }
+  entries.sort((a, b) => {
+    const left = `${a.spaceId}/${a.nodeId}/${a.blobId}/${a.purpose}`;
+    const right = `${b.spaceId}/${b.nodeId}/${b.blobId}/${b.purpose}`;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  const json = JSON.stringify({ v: 1, targets: entries });
+  const bytes = new TextEncoder().encode(json);
+  if (bytes.byteLength > MAX_MANIFEST_BYTES) throw new Error("invalid_target_manifest");
+  parseTargetManifest(bytes.buffer as ArrayBuffer, totalBytes);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const hash = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Object.freeze({ json, hash, totalBytes });
+}
+
+/** Stage an immutable R2 manifest for a later D1 target-set/ticket transaction. */
+export async function stageTargetManifest(
+  bucket: R2Bucket,
+  targets: readonly TargetEntry[],
+): Promise<TargetManifestRecord> {
+  const encoded = await encodeTargetManifest(targets);
+  const id = crypto.randomUUID();
+  const ref = `target-sets/${id}`;
+  const size = new TextEncoder().encode(encoded.json).byteLength;
+  const object = await bucket.put(ref, encoded.json, { onlyIf: { etagDoesNotMatch: "*" } });
+  if (!object || object.size !== size) throw new Error("target_manifest_stage_failed");
+  const record = Object.freeze({ id, ref, hash: encoded.hash, totalBytes: encoded.totalBytes });
+  await loadTargetManifest(bucket, record);
+  return record;
+}
+
 function validTarget(value: unknown): value is TargetEntry {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const target = value as Record<string, unknown>;

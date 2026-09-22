@@ -112,6 +112,35 @@ export function authorizationAssertion(authorized: AuthorizedNode): SqlStatement
   return statement;
 }
 
+/** Pack current node proofs into ≤100 bindings per D1 statement. */
+export function authorizationBatchAssertions(
+  authorized: readonly AuthorizedNode[],
+): readonly SqlStatement[] {
+  if (authorized.length === 0 || authorized.length > 1_000)
+    throw new Error("invalid_authorization_proofs");
+  const statements: SqlStatement[] = [];
+  for (let start = 0; start < authorized.length; start += 10) {
+    const group = authorized.slice(start, start + 10);
+    const values: (string | number | null)[] = [];
+    const clauses = group.map((proof, index) => {
+      const assertion = authorizationAssertion(proof);
+      if (assertion.values?.length !== 10) throw new Error("invalid_authorization_proofs");
+      values.push(...(assertion.values as (string | number | null)[]));
+      const offset = index * 10;
+      const query = NODE_AUTHORITY.replace(
+        /\?(10|[1-9])\b/g,
+        (_, number: string) => `?${offset + Number(number)}`,
+      );
+      return `EXISTS (${query})`;
+    });
+    statements.push({
+      sql: `INSERT INTO _assert(v) SELECT 1 WHERE NOT (${clauses.join(" AND ")})`,
+      values,
+    });
+  }
+  return statements;
+}
+
 // All ancestry and authority reads below share one primary statement snapshot.
 // app_admin is deliberately absent: a role does not confer another owner's content rights.
 const NODE_AUTHORITY = `WITH RECURSIVE
@@ -155,6 +184,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     WHERE n.id=?1 AND n.space_id=?2 AND ctl.epoch=p.epoch
       AND (?7 IS NULL OR n.revision=?7) AND (?8 IS NULL OR sp.tree_generation=?8)
       AND (?9 IS NULL OR n.parent_id=?9)
+      AND (?10 IS NULL OR n.current_blob_id=?10)
       AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(deleted_at IS NULL)=1
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
       AND (?6 NOT IN ('node.create','node.rename') OR ctl.maintenance=0)
@@ -244,14 +274,20 @@ export async function authorizeNode(
   ] as const;
   const node = await prepare(primary(db), {
     sql: NODE_AUTHORITY,
-    values: [...values, null, null, null],
+    values: [...values, null, null, null, null],
   }).first<LiveNode>();
   if (!node) throw new Error("authorization_denied");
   Object.freeze(node);
   const assertion = Object.freeze(
     assertExists(
       NODE_AUTHORITY,
-      Object.freeze([...values, node.revision, node.tree_generation, node.parent_id]),
+      Object.freeze([
+        ...values,
+        node.revision,
+        node.tree_generation,
+        node.parent_id,
+        node.current_blob_id,
+      ]),
     ),
   );
   if (request.operation === "node.rename") {

@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import {
   authorizationAssertion,
+  authorizationBatchAssertions,
   authorizeNode,
   type NodeRequest,
   type Principal,
@@ -11,6 +12,17 @@ import {
 import { atomicBatch } from "../../src/db/primary";
 import { accessFixture } from "../fixtures/access";
 import { foundationFixture } from "../fixtures/foundation";
+
+it("packs eleven current read proofs and rejects a blob changed after the read", async () => {
+  const f = await fixture("user");
+  const proof = await authorizeNode(env.DB, f.principal, f.read);
+  const assertions = authorizationBatchAssertions(Array(11).fill(proof));
+  expect(assertions).toHaveLength(2);
+  expect(assertions.map((item) => item.values?.length)).toEqual([100, 10]);
+  await atomicBatch(env.DB, assertions);
+  await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(f.ids.file).run();
+  await expect(atomicBatch(env.DB, assertions)).rejects.toThrow();
+});
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);

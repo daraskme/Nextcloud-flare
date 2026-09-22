@@ -1,6 +1,6 @@
 # 実装進捗
 
-更新: 2026-09-22。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-09-23。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
 ## 今回の実装
@@ -18,7 +18,8 @@
 | 2 immutable blob read 基盤 | current `node.read` assertion と node/blob/物理観測行を同一 D1 batch で照合し、R2 key の owner/blob 束縛、object のサイズ/ETag、D1 content ETag、HEAD/206/304/416、If-Range、MIME/Disposition、no-store/nosniff を内部 helper で処理 | 実 D1/R2 binding と失効競合で検証。purpose、content session、BudgetDO、公開 route は未接続 |
 | 6 content blob read 基盤 | 署名 ticket の D1 現行検査→発行元 ticket 束縛 content session→署名 Cookie→node/blob/R2 manifest と current credential を同一 D1 batch で検証。内部共有は選択した share root と対象ノードの祖先関係を同じ batch で確認 | private/匿名 share の実 D1/R2、共有外への移動、失効・share version・hash 競合、復旧監査で検証。content/GET/HEAD 以外の経路は未接続 |
 | 6 BudgetDO 基盤 | `budget_id` の SQLite 永続 counter、target bytes×3、1024 requests/10分、8並列、10分 lease/alarm、unknown 全額消費。配信 GET/Range/HEAD/304 の reserve/settle を内部ストリームに接続。D1 trigger で owner あたり active budget 64件を制限 | eviction、上限、失効後の再初期化、実 R2 配信と64/65件境界を workerd で検証。budget 発行・全 route 接続は未完了 |
-| 6 budget 確保基盤 | `u:<user>`、`u:<user>:s:<share>`、`s:<share>:c:<unlock>` の ID を D1 で再利用。node/owner、選択 share root、現行 credential、expiry、maintenance を同一 batch で検査し、revoke は再有効化しない | private・app password・内部共有・匿名共有、別 tab 相当の再確保、共有外への移動、失効と停止、最大長 ID の ticket 署名を workerd で検証。target set/ticket 発行 API は未接続 |
+| 6 budget 確保基盤 | `u:<user>`、`u:<user>:s:<share>`、`s:<share>:c:<unlock>` の ID を D1 で再利用。node/owner、選択 share root、現行 credential、expiry、maintenance を同一 batch で検査し、revoke は再有効化しない | private・app password・内部共有・匿名共有、別 tab 相当の再確保、共有外への移動、失効と停止、最大長 ID の ticket 署名を workerd で検証。target set/ticket の内部発行サービスは実装済み。HTTP 発行 route は未接続 |
+| 6 target set/ticket 発行基盤 | 最大1,000件の target を決定的 JSON と SHA-256 で R2 に staging・読戻し検証し、全 node/blob/share の現行認可、budget、ticket と target set を D1 batch で確定。応答喪失後は D1 を再照合し、未確定 object を削除 | private・内部共有・匿名リンク、複数 target、credential 失効競合、D1 応答喪失を workerd で検証。HTTP 発行 route は未接続 |
 | 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
@@ -77,6 +78,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 成功。Node 199 + workerd 292 = **491 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。target manifest の決定的符号化・R2 読戻し、最大1,000 target の認可証明一括処理、private/内部共有/匿名リンクの ticket 発行、D1 応答喪失と失効競合後の照合・R2 cleanup を追加。HTTP 発行 route は未接続。
 - 2026-09-22、`pnpm check` 成功。Node 196 + workerd 285 = **481 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。private/内部共有/匿名 share の安定 ID で budget を D1 batch 確保し、同じ user の app password と Access が予算を共有すること、共有 root・maintenance・revoke・期限を検証。target set/ticket 発行は次の接続対象。
 - 2026-09-22、`pnpm check` 成功。Node 196 + workerd 282 = **478 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。BudgetDO の旧有効期間終了後の再初期化と、内部共有 content read の選択 share root 祖先照合を追加。別権限で読める node を共有 root 外へ移した時の拒否を実 D1/R2 で検証。
 - 2026-09-22、`pnpm check` 成功。Node 196 + workerd 281 = **477 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。migration `0010` で owner ごとの未期限切れ active budget を64件に制限。insert と再有効化の境界、revoke 後の再受付を SQLite と実 D1 binding で検証。budget 発行 API は未接続。

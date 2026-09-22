@@ -37,6 +37,14 @@ export async function prepareNodeBlobRead(
   return resolveBlobRead(db, authorized, []);
 }
 
+/** Resolve a blob using an existing request-local node proof. */
+export async function prepareAuthorizedNodeBlobRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+): Promise<BlobReadPlan> {
+  return resolveBlobRead(db, authorized, []);
+}
+
 export interface ContentBlobGrant {
   readonly sessionId: string;
   readonly ticketId: string;
