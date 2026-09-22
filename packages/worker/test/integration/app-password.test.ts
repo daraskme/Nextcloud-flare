@@ -2,12 +2,14 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { handleDavHttp } from "../../src/api/dav";
 import {
   appPasswordPepperRing,
   authenticateAppPassword,
   hashAppPassword,
 } from "../../src/auth/appPassword";
 import { atomicBatch } from "../../src/db/primary";
+import type { Env } from "../../src/env";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -174,4 +176,40 @@ it("accepts a committed rotation when the D1 acknowledgement is lost", async () 
       .bind(id)
       .first<{ kid: string }>(),
   ).toEqual({ kid: "v2" });
+});
+
+it("limits DAV requests before Basic verification and keeps unavailable operations closed", async () => {
+  const { ring, request } = await fixture("6");
+  let allowed = false;
+  const keys: string[] = [];
+  const davEnv = {
+    DB: env.DB,
+    APP_ORIGIN: "https://app.invalid",
+    EDGE_LIMITER: {
+      async limit({ key }: { key: string }) {
+        keys.push(key);
+        return { success: allowed };
+      },
+    },
+  } as unknown as Env;
+  const limited = await handleDavHttp(request(), davEnv, 1, ring);
+  expect(limited.status).toBe(429);
+  expect(limited.headers.get("Retry-After")).toBe("60");
+  expect(keys).toEqual(["dav:unknown"]);
+
+  allowed = true;
+  const wrong = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const denied = await handleDavHttp(request(wrong), davEnv, 1, ring);
+  expect(denied.status).toBe(401);
+  expect(denied.headers.get("WWW-Authenticate")).toContain("Basic");
+  expect((await handleDavHttp(request(), davEnv, 1, ring)).status).toBe(503);
+  expect(
+    (await handleDavHttp(request(undefined, { "CF-Connecting-IP": "192.0.2.10" }), davEnv, 1, ring))
+      .status,
+  ).toBe(503);
+  expect(keys.at(-1)).toBe("dav:192.0.2.10");
+  expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
+  expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
+    404,
+  );
 });

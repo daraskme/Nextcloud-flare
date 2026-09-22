@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { handleContentHttp } from "./api/content";
+import { davPath, handleDavHttp } from "./api/dav";
 import { handlePrivateAppHttp, privateAppRoute } from "./api/privateApp";
 import { privateAppDependencies } from "./api/privateAppConfig";
+import { appPasswordPepperRing } from "./auth/appPassword";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
@@ -69,6 +71,22 @@ export default {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
         return handlePrivateAppHttp(request, env, epoch, await privateAppDependencies(env));
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    if (new URL(request.url).origin === env.APP_ORIGIN && davPath(request)) {
+      try {
+        const epoch = await admittedEpoch(env);
+        if (epoch === null) return problem(503, "not_ready");
+        const pepper =
+          env.APP_PASSWORD_PEPPERS && env.APP_PASSWORD_ACTIVE_KID
+            ? await appPasswordPepperRing(
+                env.APP_PASSWORD_ACTIVE_KID,
+                JSON.parse(env.APP_PASSWORD_PEPPERS),
+              )
+            : undefined;
+        return handleDavHttp(request, env, epoch, pepper);
       } catch {
         return problem(503, "not_ready");
       }
