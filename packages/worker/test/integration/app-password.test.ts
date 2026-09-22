@@ -1,4 +1,4 @@
-import { applyD1Migrations } from "cloudflare:test";
+import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
@@ -10,11 +10,57 @@ import {
 } from "../../src/auth/appPassword";
 import { parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
+import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
+
+function admittedDavEnv(): Env {
+  const doEnv = {
+    ...env,
+    CONTROL: {
+      idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
+      get: () => ({ status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }) }),
+    } as unknown as Env["CONTROL"],
+  };
+  return {
+    ...env,
+    APP_ORIGIN: "https://app.invalid",
+    EDGE_LIMITER: {
+      async limit() {
+        return { success: true };
+      },
+    } as RateLimit,
+    LOCKS: {
+      idFromName: env.LOCKS.idFromName.bind(env.LOCKS),
+      get(id: DurableObjectId) {
+        const stub = env.LOCKS.get(id);
+        const invoke = async <T>(callback: (instance: LockDO) => Promise<T>): Promise<T> => {
+          const result = await runInDurableObject(stub, async (_, state) => {
+            try {
+              return { ok: true as const, value: await callback(new LockDO(state, doEnv)) };
+            } catch (error) {
+              return {
+                ok: false as const,
+                message: error instanceof Error ? error.message : "lock_error",
+              };
+            }
+          });
+          if (!result.ok) throw new Error(result.message);
+          return result.value;
+        };
+        return {
+          acquireCreate: (request: Parameters<LockDO["acquireCreate"]>[0]) =>
+            invoke((lock) => lock.acquireCreate(request)),
+          release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
+            invoke((lock) => lock.release(requestId, permit)),
+        };
+      },
+    } as unknown as Env["LOCKS"],
+  };
+}
 
 async function fixture(suffix: string) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -220,7 +266,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   const options = await handleDavHttp(optionsRequest, davEnv, 1, ring);
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
-  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD");
+  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD, PROPFIND, MKCOL");
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
     404,
@@ -399,6 +445,90 @@ it("rejects DAV Depth 1 before reading more than 1,000 children", async () => {
     ring,
   );
   expect(response.status).toBe(507);
+});
+
+it("creates a DAV collection through the fenced namespace mutation service", async () => {
+  const { f, id, ring, request } = await fixture("C");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:create')")
+    .bind(`ap:${id}`)
+    .run();
+  const davEnv = admittedDavEnv();
+  const key = crypto.randomUUID();
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav", {
+          method: "OPTIONS",
+          headers: request().headers,
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(200);
+  const send = (
+    url = "https://app.invalid/dav/New%20Folder",
+    idempotencyKey = key,
+    body?: string,
+  ) =>
+    handleDavHttp(
+      new Request(
+        url,
+        body === undefined
+          ? {
+              method: "MKCOL",
+              headers: {
+                ...Object.fromEntries(request().headers),
+                "Idempotency-Key": idempotencyKey,
+              },
+            }
+          : {
+              method: "MKCOL",
+              headers: {
+                ...Object.fromEntries(request().headers),
+                "Idempotency-Key": idempotencyKey,
+              },
+              body,
+            },
+      ),
+      davEnv,
+      1,
+      ring,
+    );
+  const created = await send();
+  expect(created.status).toBe(201);
+  expect(created.headers.get("Location")).toBe("/dav/New%20Folder/");
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM nodes WHERE parent_id=? AND name='New Folder'",
+    )
+      .bind(f.ids.folder)
+      .first<number>("count"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare(
+      "SELECT kind FROM operations WHERE credential_id=? ORDER BY updated_at DESC",
+    )
+      .bind(`ap:${id}`)
+      .first<string>("kind"),
+  ).toBe("dav.mkcol");
+  expect((await send()).status).toBe(201);
+  expect((await send("https://app.invalid/dav/Different")).status).toBe(409);
+  expect((await send("https://app.invalid/dav/New%20Folder", crypto.randomUUID())).status).toBe(
+    405,
+  );
+  expect((await send("https://app.invalid/dav/Body", crypto.randomUUID(), "x")).status).toBe(415);
+  const noKey = await handleDavHttp(
+    new Request("https://app.invalid/dav/NoKey", {
+      method: "MKCOL",
+      headers: request().headers,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(noKey.status).toBe(400);
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

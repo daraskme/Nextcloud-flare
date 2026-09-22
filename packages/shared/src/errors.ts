@@ -13,7 +13,9 @@ export type PlatformErrorCode =
   | "precondition_failed"
   | "range_not_satisfiable"
   | "rate_limited"
-  | "insufficient_storage";
+  | "insufficient_storage"
+  | "unsupported_media_type"
+  | "method_not_allowed";
 
 export function problem(status: number, code: PlatformErrorCode): Response {
   return new Response(JSON.stringify({ type: `urn:ncf:error:${code}`, status, title: code }), {

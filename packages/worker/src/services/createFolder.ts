@@ -24,6 +24,7 @@ export interface CreateFolderRequest {
   readonly parentId: string;
   readonly name: string;
   readonly lockTokens: readonly string[];
+  readonly operation?: "node.create" | "dav.mkcol";
 }
 
 /** Pure plan construction; no D1, R2, Queue or clock side effects. */
@@ -126,7 +127,7 @@ export async function createFolder(
     request.principal,
     request.idempotencyKey,
     request.spaceId,
-    "node.create",
+    request.operation ?? "node.create",
     { kind: "folder", parentId: request.parentId, name: name.name },
     { parentId: request.parentId },
   );

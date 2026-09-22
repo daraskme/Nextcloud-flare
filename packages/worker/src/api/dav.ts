@@ -1,10 +1,16 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
-import { parseDavPath, resolveDavNode } from "../dav/path";
+import {
+  parseDavPath,
+  resolveDavCreateParent,
+  resolveDavCredentialPath,
+  resolveDavNode,
+} from "../dav/path";
 import { propfindResponse } from "../dav/propfind";
 import { parsePropfindRequest } from "../dav/xml";
 import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
+import { createFolder } from "../services/createFolder";
 
 const METHODS = new Set([
   "OPTIONS",
@@ -77,18 +83,74 @@ export async function handleDavHttp(
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;
   }
+  if (request.method === "MKCOL") {
+    if (path.segments.length === 0) return problem(405, "method_not_allowed");
+    if (request.body || ![null, "0"].includes(request.headers.get("Content-Length")))
+      return problem(415, "unsupported_media_type");
+    if (request.headers.has("If") || request.headers.has("Lock-Token"))
+      return problem(503, "not_ready");
+    const key = request.headers.get("Idempotency-Key");
+    if (!key || key.includes(",") || !/^[\x21-\x7e]{1,200}$/.test(key))
+      return problem(400, "bad_request");
+    const name = path.segments.at(-1)!.name;
+    const parentPath = {
+      segments: path.segments.slice(0, -1),
+      trailingSlash: true,
+    } as const;
+    try {
+      const parent = await resolveDavCreateParent(env.DB, principal, parentPath);
+      const outcome = await createFolder(env, {
+        principal,
+        idempotencyKey: key,
+        spaceId: parent.spaceId,
+        parentId: parent.parent.id,
+        name,
+        lockTokens: [],
+        operation: "dav.mkcol",
+      });
+      if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
+        const response = problem(503, "commit_unknown");
+        response.headers.set(
+          "Operation-Id",
+          outcome.kind === "commit_unknown" ? outcome.operationId : outcome.operation.id,
+        );
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      if (outcome.operation.state === "failed")
+        return outcome.operation.errorCode === "name_conflict"
+          ? problem(405, "method_not_allowed")
+          : problem(409, "conflict");
+      const location = `/dav/${path.segments
+        .map((segment) => encodeURIComponent(segment.name))
+        .join("/")}/`;
+      return new Response(null, {
+        status: 201,
+        headers: {
+          "Cache-Control": "private, no-store",
+          Location: location,
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        ["invalid_idempotency_key", "invalid_name", "name_too_long", "reserved_name"].includes(
+          error.message,
+        )
+      )
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "idempotency_conflict")
+        return problem(409, "conflict");
+      if (error instanceof Error && error.message === "dav_node_unavailable")
+        return problem(404, "not_found");
+      return problem(503, "not_ready");
+    }
+  }
   if (
-    [
-      "OPTIONS",
-      "PROPFIND",
-      "PROPPATCH",
-      "GET",
-      "HEAD",
-      "DELETE",
-      "COPY",
-      "MOVE",
-      "UNLOCK",
-    ].includes(request.method)
+    ["PROPFIND", "PROPPATCH", "GET", "HEAD", "DELETE", "COPY", "MOVE", "UNLOCK"].includes(
+      request.method,
+    )
   ) {
     try {
       resolved = await resolveDavNode(env.DB, principal, path);
@@ -96,17 +158,23 @@ export async function handleDavHttp(
       return problem(404, "not_found");
     }
   }
-  if (request.method === "OPTIONS")
+  if (request.method === "OPTIONS") {
+    try {
+      await resolveDavCredentialPath(env.DB, principal, path);
+    } catch {
+      return problem(404, "not_found");
+    }
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD",
+        Allow: "OPTIONS, GET, HEAD, PROPFIND, MKCOL",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",
         "X-Content-Type-Options": "nosniff",
       },
     });
+  }
   if (request.method === "PROPFIND") {
     if (!resolved) return problem(404, "not_found");
     const depth = request.headers.get("Depth");

@@ -172,8 +172,9 @@ export function validateClaimAuthorization(
   steps: number,
 ): SqlStatement {
   const operands = JSON.parse(intent.operands) as { parentId?: unknown; nodeId?: unknown };
+  const create = intent.kind === "node.create" || intent.kind === "dav.mkcol";
   const targetMatches =
-    (intent.kind === "node.create" &&
+    (create &&
       authorized.operation === "node.create" &&
       authorized.parent.id === operands.parentId &&
       authorized.spaceId === intent.spaceId) ||
@@ -281,13 +282,14 @@ export async function lookupOperation(
     row.principal_kind !== principal.kind ||
     row.principal_id !== principalId(principal) ||
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
-    (row.kind !== "node.create" && row.kind !== "node.rename")
+    (row.kind !== "node.create" && row.kind !== "dav.mkcol" && row.kind !== "node.rename")
   )
     return null;
   try {
     const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
     if (typeof operands.parentId !== "string") return null;
-    if (row.kind === "node.create") {
+    const create = row.kind === "node.create" || row.kind === "dav.mkcol";
+    if (create) {
       await authorizeNode(db, principal, {
         operation: "node.create",
         parentId: operands.parentId,
@@ -307,7 +309,7 @@ export async function lookupOperation(
       row.state === "committed" && row.result_json
         ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
         : null;
-    if (result && result.status !== (row.kind === "node.create" ? 201 : 200)) return null;
+    if (result && result.status !== (create ? 201 : 200)) return null;
     if (result && row.kind === "node.rename" && result.nodeId !== operands.nodeId) return null;
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (result && typeof result.nodeId === "string") {

@@ -4,6 +4,7 @@ import { assertExists, atomicBatch, primary } from "../db/primary";
 
 const MAX_PATH_BYTES = 16_384;
 const MAX_SEGMENTS = 64;
+type UserPrincipal = Extract<Principal, { readonly user_id: string }>;
 
 export interface DavPath {
   readonly segments: readonly PortableName[];
@@ -73,6 +74,22 @@ const PATH_CTE = `WITH RECURSIVE path(depth,id,space_id,owner_id) AS (
 /** Resolve a personal DAV path and reassert its mapping alongside current node authority. */
 export async function resolveDavNode(db: D1Database, principal: Principal, path: DavPath) {
   if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  const row = await davPathRow(db, principal, path);
+  try {
+    const proof = await authorizeNode(db, principal, {
+      operation: "node.read",
+      nodeId: row.id,
+      spaceId: row.spaceId,
+    });
+    if (proof.operation !== "node.read") throw new Error("dav_node_unavailable");
+    await assertDavPath(db, principal, path, row, authorizationAssertion(proof));
+    return proof;
+  } catch {
+    throw new Error("dav_node_unavailable");
+  }
+}
+
+async function davPathRow(db: D1Database, principal: UserPrincipal, path: DavPath) {
   const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
   const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;
   const row = await primary(db)
@@ -82,20 +99,55 @@ export async function resolveDavNode(db: D1Database, principal: Principal, path:
     .bind(...values)
     .first<{ id: string; spaceId: string }>();
   if (!row) throw new Error("dav_node_unavailable");
+  return row;
+}
+
+async function assertDavPath(
+  db: D1Database,
+  principal: UserPrincipal,
+  path: DavPath,
+  row: { readonly id: string; readonly spaceId: string },
+  authority?: ReturnType<typeof authorizationAssertion>,
+) {
+  const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
+  const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;
+  await atomicBatch(db, [
+    ...(authority ? [authority] : []),
+    assertExists(
+      `${PATH_CTE} SELECT 1 FROM path WHERE depth=json_array_length(?4) AND id=?5 AND space_id=?6`,
+      [...values, row.id, row.spaceId],
+    ),
+  ]);
+}
+
+/** Resolve OPTIONS source with current credential/root checks but no content scope. */
+export async function resolveDavCredentialPath(
+  db: D1Database,
+  principal: Principal,
+  path: DavPath,
+) {
+  if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  try {
+    const row = await davPathRow(db, principal, path);
+    await assertDavPath(db, principal, path, row);
+    return row;
+  } catch {
+    throw new Error("dav_node_unavailable");
+  }
+}
+
+/** Resolve the target parent without requiring read scope on a write-only app password. */
+export async function resolveDavCreateParent(db: D1Database, principal: Principal, path: DavPath) {
+  if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  const row = await davPathRow(db, principal, path);
   try {
     const proof = await authorizeNode(db, principal, {
-      operation: "node.read",
-      nodeId: row.id,
+      operation: "node.create",
+      parentId: row.id,
       spaceId: row.spaceId,
     });
-    if (proof.operation !== "node.read") throw new Error("dav_node_unavailable");
-    await atomicBatch(db, [
-      authorizationAssertion(proof),
-      assertExists(
-        `${PATH_CTE} SELECT 1 FROM path WHERE depth=json_array_length(?4) AND id=?5 AND space_id=?6`,
-        [...values, row.id, row.spaceId],
-      ),
-    ]);
+    if (proof.operation !== "node.create") throw new Error("dav_node_unavailable");
+    await assertDavPath(db, principal, path, row, authorizationAssertion(proof));
     return proof;
   } catch {
     throw new Error("dav_node_unavailable");
