@@ -129,13 +129,21 @@ it.each(["user", "app_password", "link_share", "service"] as const)(
         spaceId: f.other.space,
       }),
     ).rejects.toThrow();
-    if (kind === "service")
+    if (kind === "service") {
       await expect(authorizeNode(env.DB, f.principal, f.create)).rejects.toThrow();
-    else
+      await expect(
+        authorizeNode(env.DB, f.principal, {
+          operation: "node.rename",
+          nodeId: f.ids.file,
+          spaceId: f.ids.space,
+        }),
+      ).rejects.toThrow();
+    } else {
       expect(await authorizeNode(env.DB, f.principal, f.create)).toMatchObject({
         operation: "node.create",
         parent: { id: f.ids.folder },
       });
+    }
     if (f.principal.kind !== "link_share")
       await expect(
         authorizeNode(env.DB, { ...f.principal, user_id: f.other.user }, f.read),
@@ -143,6 +151,63 @@ it.each(["user", "app_password", "link_share", "service"] as const)(
     await expect(
       authorizeNode(env.DB, { ...f.principal, credential_id: f.other.credential }, f.read),
     ).rejects.toThrow();
+  },
+);
+
+it.each(["user", "app_password", "link_share"] as const)(
+  "authorizes %s rename only for a live child with current edit authority",
+  async (kind) => {
+    const f = await fixture(kind);
+    const rename: NodeRequest = {
+      operation: "node.rename",
+      nodeId: f.ids.file,
+      spaceId: f.ids.space,
+    };
+    if (kind === "app_password") {
+      await env.DB.prepare("INSERT INTO credential_scopes VALUES(?,'node:write')")
+        .bind(f.principal.credential_id)
+        .run();
+    }
+    if (kind === "link_share") {
+      await env.DB.prepare("INSERT INTO share_actions VALUES(?,'edit')").bind(f.credential).run();
+    }
+    const proof = await authorizeNode(env.DB, f.principal, rename);
+    expect(proof).toMatchObject({
+      operation: "node.rename",
+      node: { id: f.ids.file },
+      parentId: f.ids.folder,
+    });
+    await expect(atomicBatch(env.DB, [authorizationAssertion(proof)])).resolves.toBeDefined();
+    await expect(
+      authorizeNode(env.DB, f.principal, { ...rename, nodeId: f.ids.root }),
+    ).rejects.toThrow(/authorization_denied/);
+    if (kind !== "user") {
+      await expect(
+        authorizeNode(env.DB, f.principal, { ...rename, nodeId: f.ids.folder }),
+      ).rejects.toThrow(/authorization_denied/);
+    } else {
+      await env.DB.prepare("UPDATE nodes SET parent_id=? WHERE id=?")
+        .bind(f.ids.root, f.ids.file)
+        .run();
+      await expect(atomicBatch(env.DB, [authorizationAssertion(proof)])).rejects.toThrow();
+      await env.DB.prepare("UPDATE nodes SET parent_id=? WHERE id=?")
+        .bind(f.ids.folder, f.ids.file)
+        .run();
+    }
+    if (kind === "app_password") {
+      await env.DB.prepare(
+        "DELETE FROM credential_scopes WHERE credential_id=? AND scope='node:write'",
+      )
+        .bind(f.principal.credential_id)
+        .run();
+    } else if (kind === "link_share") {
+      await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='edit'")
+        .bind(f.credential)
+        .run();
+    } else {
+      await env.DB.prepare("UPDATE control SET maintenance=1").run();
+    }
+    await expect(atomicBatch(env.DB, [authorizationAssertion(proof)])).rejects.toThrow();
   },
 );
 
@@ -292,6 +357,13 @@ it("requires a current internal grant for a different owner's node and rechecks 
     },
   ]);
   const proof = await authorizeNode(env.DB, f.principal, request);
+  const rename: NodeRequest = { ...request, operation: "node.rename" };
+  await expect(authorizeNode(env.DB, f.principal, rename)).rejects.toThrow();
+  await env.DB.prepare("INSERT INTO share_actions VALUES(?,'edit')").bind(f.credential).run();
+  const renameProof = await authorizeNode(env.DB, f.principal, rename);
+  await expect(
+    authorizeNode(env.DB, f.principal, { ...rename, nodeId: f.other.folder }),
+  ).rejects.toThrow();
   await expect(
     authorizeNode(env.DB, f.principal, {
       operation: "node.create",
@@ -306,6 +378,7 @@ it("requires a current internal grant for a different owner's node and rechecks 
     .bind(f.credential)
     .run();
   await expect(atomicBatch(env.DB, [authorizationAssertion(proof)])).rejects.toThrow();
+  await expect(atomicBatch(env.DB, [authorizationAssertion(renameProof)])).rejects.toThrow();
   await env.DB.prepare("UPDATE share_grants SET disabled_at=NULL,version=2 WHERE share_id=?")
     .bind(f.credential)
     .run();

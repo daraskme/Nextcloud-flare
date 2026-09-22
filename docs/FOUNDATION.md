@@ -97,7 +97,7 @@ Google IdP/MFA は Access policy の staging gate であり、このローカル
 
 ## Node 認可と commit assertion
 
-`auth/authorize.ts` は `node.read` / `node.create` / `automation.list` / `automation.metadata.read` だけを扱う。
+`auth/authorize.ts` は `node.read` / `node.create` / `node.rename` / `automation.list` / `automation.metadata.read` を扱う。
 単一 primary query の同じ snapshot で、root 到達・深さ64・cycle・全祖先の live/space/owner、user/credential の現在有効性を検査する。
 
 - user: 自分の space、または現在有効な internal share grant/action/version。app_admin に他 owner の file 読取り例外を与えない。
@@ -106,8 +106,8 @@ Google IdP/MFA は Access policy の staging gate であり、このローカル
 - service: 現在 identity mapping・mapped user・space・root・scope・JWT期限を検査し、automation 2 operation だけ許可する。
 - job/system はこの入口では拒否する。専用の claim/fence/explicit operand 認可は後続実装。
 
-戻り値は read=node / create=parent+space の discriminated tuple。request-local の変更不可 proof に認可 SQL を保持し、`authorizationAssertion()` で同一 mutation batch へ入れる。
-再検査では credential/grant/epoch に加えて対象 revision と tree generation を束縛する。
+戻り値は read=node / create=parent+space / rename=node+parentId の discriminated tuple。rename は root・share/credential scope root を拒否し、edit action と node:write scope を要求する。request-local の変更不可 proof に認可 SQL を保持し、`authorizationAssertion()` で同一 mutation batch へ入れる。
+再検査では credential/grant/epoch に加えて対象 revision、tree generation、parentId を束縛する。
 これは permit、operation、quota/ref/pin の assertion の代わりではなく、create は後述の fsMutation で各 assertion と結合する。
 
 残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、HTTP host/surface dispatch、app password/share secret 検証、実 listing/content handler、trash 時の share 失効、ControlDO admission/再開。

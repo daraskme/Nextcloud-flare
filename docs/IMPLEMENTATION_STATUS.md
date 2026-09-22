@@ -25,7 +25,7 @@
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
-| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch assertion | read/create/automation 4 operation の内部基盤。全 operation の認可は未完了 |
+| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent assertion。rename は root と share/scope root を拒否し、edit/node:write を要求 | read/create/rename/automation 5 operation の内部基盤。rename mutation と全 operation の認可は未完了 |
 | R6 #7 CSRF | session 束縛 HMAC、TTL1h、再利用・再発行、purpose/aud/epoch/credential、current session/share、Origin 境界 | 内部サービスと D1 テスト実装済み。HTTP profile 接続待ち |
 | 1 quota/ref/pin | owner/share reservation、unique logical、R2 HEAD physical、ref≤1,000、pin-only除外、各再送の一度だけ計上 | migration/内部サービス実装済み。GC/repair/namespace mutation 接続待ち |
 | 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。create 用 LockDO へ接続済み |
@@ -65,12 +65,13 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 - **M**: `0001`〜`0008` を追加し、隔離 D1 と SQLite へ適用して FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
-- **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の450 tests と前回の448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
+- **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の453 tests と前回の450/448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
 
+- 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 258 = **453 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最後に内部共有と service の rename ケースを追加し、対象32テストを再実行して成功。`node.rename` の current authority/親 operand assertion を追加。rename mutation/HTTP は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 255 = **450 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。旧 epoch `node.created` outbox を claim drain 後に bounded failed へ収束し、failed の再配信を ack する。実 Queue/DLQ と ControlDO 再開は未完了。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 253 = **448 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最後に ControlDO 閉鎖時の Cron ケースを追加し、対象23テストも再実行して成功。scheduled handler と毎分 Cron を追加。実配信と ControlDO 再開は未完了。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 252 = **447 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。Queue handler の ControlDO/D1 admission gate を内部 consumer に接続。実 Queue delivery/DLQ と ControlDO 再開は未完了。

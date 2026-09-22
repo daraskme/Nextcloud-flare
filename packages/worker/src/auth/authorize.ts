@@ -64,7 +64,11 @@ export async function servicePrincipal(
 
 export type NodeRequest =
   | {
-      readonly operation: "node.read" | "automation.list" | "automation.metadata.read";
+      readonly operation:
+        | "node.read"
+        | "node.rename"
+        | "automation.list"
+        | "automation.metadata.read";
       readonly nodeId: string;
       readonly spaceId: string;
     }
@@ -85,6 +89,12 @@ export type AuthorizedNode =
       readonly operation: "node.read" | "automation.list" | "automation.metadata.read";
       readonly principal: Principal;
       readonly node: LiveNode;
+    }
+  | {
+      readonly operation: "node.rename";
+      readonly principal: Principal;
+      readonly node: LiveNode;
+      readonly parentId: string;
     }
   | {
       readonly operation: "node.create";
@@ -128,12 +138,14 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE p.kind='app_password' AND u.id=p.user_id AND u.disabled_at IS NULL AND ap.revoked_at IS NULL
         AND ap.expires_at>strftime('%s','now')*1000
         AND (ap.root_node_id IS NULL OR EXISTS(SELECT 1 FROM a WHERE id=ap.root_node_id))
+        AND (?6<>'node.rename' OR ap.root_node_id IS NULL OR ap.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM credential_scopes WHERE credential_id=c.id AND scope=?4)
   ),
   live_shares AS (
     SELECT sh.* FROM shares sh JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
       JOIN a ON a.id=sh.root_node_id AND a.owner_id=sh.owner_id
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+        AND (?6<>'node.rename' OR sh.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
   )
   SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,sp.tree_generation
@@ -142,15 +154,18 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     JOIN control ctl ON ctl.singleton=1 JOIN p
     WHERE n.id=?1 AND n.space_id=?2 AND ctl.epoch=p.epoch
       AND (?7 IS NULL OR n.revision=?7) AND (?8 IS NULL OR sp.tree_generation=?8)
+      AND (?9 IS NULL OR n.parent_id=?9)
       AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(deleted_at IS NULL)=1
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
-      AND (?6<>'node.create' OR (ctl.maintenance=0 AND n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
+      AND (?6 NOT IN ('node.create','node.rename') OR ctl.maintenance=0)
+      AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
+      AND (?6<>'node.rename' OR n.parent_id IS NOT NULL)
       AND (
-        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','node.create') AND EXISTS(
+        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','node.create','node.rename') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE u.id=n.owner_id OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
-        OR (p.kind='link_share' AND ?6 IN ('node.read','node.create') AND EXISTS(
+        OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
             WHERE c.id=p.credential_id AND c.kind='share' AND sh.kind='link'
@@ -183,9 +198,13 @@ export async function authorizeNode(
 ): Promise<AuthorizedNode> {
   const nodeId = request.operation === "node.create" ? request.parentId : request.nodeId;
   if (
-    !["node.read", "node.create", "automation.list", "automation.metadata.read"].includes(
-      request.operation,
-    ) ||
+    ![
+      "node.read",
+      "node.create",
+      "node.rename",
+      "automation.list",
+      "automation.metadata.read",
+    ].includes(request.operation) ||
     !["user", "app_password", "link_share", "service"].includes(principal.kind) ||
     !validId(nodeId) ||
     !validId(request.spaceId) ||
@@ -211,16 +230,41 @@ export async function authorizeNode(
     nodeId,
     request.spaceId,
     JSON.stringify(identity),
-    request.operation === "node.create" ? "node:create" : "node:read",
-    request.operation === "node.create" ? "create" : "read",
+    request.operation === "node.create"
+      ? "node:create"
+      : request.operation === "node.rename"
+        ? "node:write"
+        : "node:read",
+    request.operation === "node.create"
+      ? "create"
+      : request.operation === "node.rename"
+        ? "edit"
+        : "read",
     request.operation,
   ] as const;
   const node = await prepare(primary(db), {
     sql: NODE_AUTHORITY,
-    values: [...values, null, null],
+    values: [...values, null, null, null],
   }).first<LiveNode>();
   if (!node) throw new Error("authorization_denied");
   Object.freeze(node);
+  const assertion = Object.freeze(
+    assertExists(
+      NODE_AUTHORITY,
+      Object.freeze([...values, node.revision, node.tree_generation, node.parent_id]),
+    ),
+  );
+  if (request.operation === "node.rename") {
+    if (node.parent_id === null) throw new Error("authorization_denied");
+    const authorized: AuthorizedNode = Object.freeze({
+      operation: request.operation,
+      principal: identity,
+      node,
+      parentId: node.parent_id,
+    });
+    assertions.set(authorized, assertion);
+    return authorized;
+  }
   const authorized: AuthorizedNode = Object.freeze(
     request.operation === "node.create"
       ? {
@@ -231,10 +275,6 @@ export async function authorizeNode(
         }
       : { operation: request.operation, principal: identity, node },
   );
-  const assertion = assertExists(
-    NODE_AUTHORITY,
-    Object.freeze([...values, node.revision, node.tree_generation]),
-  );
-  assertions.set(authorized, Object.freeze(assertion));
+  assertions.set(authorized, assertion);
   return authorized;
 }
