@@ -47,7 +47,7 @@ async function fixture(suffix: string) {
     new Request("https://app.invalid/dav/file", {
       headers: { Authorization: `Basic ${btoa(`${id}:${password}`)}`, ...headers },
     });
-  return { f, id, secret, ring, request };
+  return { f, id, secret, pepper, ring, request };
 }
 
 it("authenticates a live DAV Basic app password and rejects a wrong secret", async () => {
@@ -131,4 +131,47 @@ it("rechecks revocation after the password KDF completes", async () => {
   await expect(
     authenticateAppPassword(db, request(), "https://app.invalid", 1, ring),
   ).rejects.toThrow("app_password_denied");
+});
+
+it("rotates an old pepper kid after successful authentication", async () => {
+  const { id, pepper, request } = await fixture("4");
+  const next = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await appPasswordPepperRing("v2", { v1: pepper, v2: next });
+  const before = await env.DB.prepare("SELECT secret_digest,salt FROM app_passwords WHERE id=?")
+    .bind(id)
+    .first<{ secret_digest: string; salt: string }>();
+  await authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, ring);
+  const after = await env.DB.prepare("SELECT secret_digest,salt,kid FROM app_passwords WHERE id=?")
+    .bind(id)
+    .first<{ secret_digest: string; salt: string; kid: string }>();
+  expect(after?.kid).toBe("v2");
+  expect(after?.secret_digest).not.toBe(before?.secret_digest);
+  expect(after?.salt).not.toBe(before?.salt);
+  const currentOnly = await appPasswordPepperRing("v2", { v2: next });
+  await expect(
+    authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, currentOnly),
+  ).resolves.toMatchObject({ kind: "app_password" });
+});
+
+it("accepts a committed rotation when the D1 acknowledgement is lost", async () => {
+  const { id, pepper, request } = await fixture("5");
+  const ring = await appPasswordPepperRing("v2", {
+    v1: pepper,
+    v2: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  });
+  const db = {
+    prepare: env.DB.prepare.bind(env.DB),
+    async batch(statements: D1PreparedStatement[]) {
+      await env.DB.batch(statements);
+      throw new Error("d1_ack_lost");
+    },
+  } as unknown as D1Database;
+  await expect(
+    authenticateAppPassword(db, request(), "https://app.invalid", 1, ring),
+  ).resolves.toMatchObject({ kind: "app_password" });
+  expect(
+    await env.DB.prepare("SELECT kid FROM app_passwords WHERE id=?")
+      .bind(id)
+      .first<{ kid: string }>(),
+  ).toEqual({ kid: "v2" });
 });

@@ -1,5 +1,5 @@
 import { base64url } from "jose";
-import { primary } from "../db/primary";
+import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Principal } from "./authorize";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
@@ -142,6 +142,43 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
+async function livePasswordRow(
+  db: D1Database,
+  id: string,
+  epoch: number,
+): Promise<PasswordRow | null> {
+  return primary(db)
+    .prepare(`SELECT ap.user_id,c.id AS credential_id,ap.secret_digest,ap.salt,ap.kdf,ap.kdf_params,ap.kid
+      FROM app_passwords ap JOIN credentials c ON c.app_password_id=ap.id AND c.kind='app_password'
+      JOIN users u ON u.id=ap.user_id JOIN control ctl ON ctl.singleton=1
+      WHERE ap.id=? AND ap.revoked_at IS NULL AND ap.expires_at>strftime('%s','now')*1000
+        AND u.disabled_at IS NULL AND ctl.epoch=? AND ctl.maintenance=0`)
+    .bind(id, epoch)
+    .first<PasswordRow>();
+}
+
+async function matchesSecret(
+  row: PasswordRow,
+  secret: string,
+  ring: AppPasswordPepperRing,
+): Promise<boolean> {
+  if (row.kdf !== "PBKDF2-SHA256" || row.kdf_params !== '{"iterations":100000}') return false;
+  const pepper = ring.keys.get(row.kid);
+  if (!pepper || !/^[A-Za-z0-9_-]{22}$/.test(row.salt) || !SECRET.test(row.secret_digest))
+    return false;
+  try {
+    const salt = base64url.decode(row.salt);
+    const expected = base64url.decode(row.secret_digest);
+    return (
+      base64url.encode(salt) === row.salt &&
+      base64url.encode(expected) === row.secret_digest &&
+      equalBytes(await digest(secret, salt, pepper), expected)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Authenticate a DAV Basic credential; route admission and rate limiting precede this call. */
 export async function authenticateAppPassword(
   db: D1Database,
@@ -152,31 +189,50 @@ export async function authenticateAppPassword(
 ): Promise<Principal> {
   const { id, secret } = basicCredentials(request, appOrigin);
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("app_password_denied");
-  const row = await primary(db)
-    .prepare(`SELECT ap.user_id,c.id AS credential_id,ap.secret_digest,ap.salt,ap.kdf,ap.kdf_params,ap.kid
-      FROM app_passwords ap JOIN credentials c ON c.app_password_id=ap.id AND c.kind='app_password'
-      JOIN users u ON u.id=ap.user_id JOIN control ctl ON ctl.singleton=1
-      WHERE ap.id=? AND ap.revoked_at IS NULL AND ap.expires_at>strftime('%s','now')*1000
-        AND u.disabled_at IS NULL AND ctl.epoch=? AND ctl.maintenance=0`)
-    .bind(id, epoch)
-    .first<PasswordRow>();
-  if (!row || row.kdf !== "PBKDF2-SHA256" || row.kdf_params !== '{"iterations":100000}')
-    throw new Error("app_password_denied");
-  const pepper = ring.keys.get(row.kid);
-  if (!pepper || !/^[A-Za-z0-9_-]{22}$/.test(row.salt) || !SECRET.test(row.secret_digest))
-    throw new Error("app_password_denied");
-  let verified = false;
-  try {
-    const salt = base64url.decode(row.salt);
-    const expected = base64url.decode(row.secret_digest);
-    verified =
-      base64url.encode(salt) === row.salt &&
-      base64url.encode(expected) === row.secret_digest &&
-      equalBytes(await digest(secret, salt, pepper), expected);
-  } catch {
-    throw new Error("app_password_denied");
+  const row = await livePasswordRow(db, id, epoch);
+  if (!row || !(await matchesSecret(row, secret, ring))) throw new Error("app_password_denied");
+  let finalRow = row;
+  if (row.kid !== ring.activeKid) {
+    const rotated = await hashAppPassword(secret, ring);
+    try {
+      await atomicBatch(db, [
+        {
+          sql: `UPDATE app_passwords SET secret_digest=?,salt=?,kid=?
+            WHERE id=? AND secret_digest=? AND salt=? AND kid=?
+              AND revoked_at IS NULL AND expires_at>strftime('%s','now')*1000
+              AND EXISTS(SELECT 1 FROM credentials c JOIN users u ON u.id=app_passwords.user_id
+                WHERE c.app_password_id=app_passwords.id AND c.id=? AND c.kind='app_password'
+                  AND u.id=? AND u.disabled_at IS NULL)
+              AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)`,
+          values: [
+            rotated.secretDigest,
+            rotated.salt,
+            rotated.kid,
+            id,
+            row.secret_digest,
+            row.salt,
+            row.kid,
+            row.credential_id,
+            row.user_id,
+            epoch,
+          ],
+        },
+        assertOneChange,
+      ]);
+    } catch {
+      // A concurrent login or lost D1 acknowledgement can still have rotated this record.
+    }
+    const refreshed = await livePasswordRow(db, id, epoch);
+    if (
+      !refreshed ||
+      refreshed.credential_id !== row.credential_id ||
+      refreshed.user_id !== row.user_id ||
+      refreshed.kid !== ring.activeKid ||
+      !(await matchesSecret(refreshed, secret, ring))
+    )
+      throw new Error("app_password_denied");
+    finalRow = refreshed;
   }
-  if (!verified) throw new Error("app_password_denied");
   const current = await primary(db)
     .prepare(`SELECT 1 FROM app_passwords ap
       JOIN credentials c ON c.app_password_id=ap.id AND c.kind='app_password'
@@ -184,13 +240,21 @@ export async function authenticateAppPassword(
       WHERE ap.id=? AND c.id=? AND ap.user_id=? AND ap.secret_digest=? AND ap.salt=? AND ap.kid=?
         AND ap.revoked_at IS NULL AND ap.expires_at>strftime('%s','now')*1000
         AND u.disabled_at IS NULL AND ctl.epoch=? AND ctl.maintenance=0`)
-    .bind(id, row.credential_id, row.user_id, row.secret_digest, row.salt, row.kid, epoch)
+    .bind(
+      id,
+      finalRow.credential_id,
+      finalRow.user_id,
+      finalRow.secret_digest,
+      finalRow.salt,
+      finalRow.kid,
+      epoch,
+    )
     .first<number>();
   if (current === null) throw new Error("app_password_denied");
   return Object.freeze({
     kind: "app_password",
-    user_id: row.user_id,
-    credential_id: row.credential_id,
+    user_id: finalRow.user_id,
+    credential_id: finalRow.credential_id,
     epoch,
   });
 }
