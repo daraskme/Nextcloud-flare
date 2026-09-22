@@ -174,6 +174,7 @@ export function validateClaimAuthorization(
   const operands = JSON.parse(intent.operands) as {
     parentId?: unknown;
     overwriteTargetId?: unknown;
+    sourceNodeId?: unknown;
     sourceParentId?: unknown;
     nodeId?: unknown;
   };
@@ -181,6 +182,7 @@ export function validateClaimAuthorization(
   const contentWrite = intent.kind === "dav.put" && authorized.operation === "node.content.write";
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
   const move = intent.kind === "dav.move";
+  const copy = intent.kind === "dav.copy";
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
@@ -199,6 +201,10 @@ export function validateClaimAuthorization(
       authorized.operation === "node.rename" &&
       authorized.node.id === operands.nodeId &&
       authorized.parentId === operands.sourceParentId &&
+      authorized.node.space_id === intent.spaceId) ||
+    (copy &&
+      authorized.operation === "node.read" &&
+      authorized.node.id === operands.sourceNodeId &&
       authorized.node.space_id === intent.spaceId) ||
     (intent.kind === "node.rename" &&
       authorized.operation === "node.rename" &&
@@ -313,6 +319,7 @@ export async function lookupOperation(
       row.kind !== "dav.lock" &&
       row.kind !== "dav.put" &&
       row.kind !== "dav.delete" &&
+      row.kind !== "dav.copy" &&
       row.kind !== "dav.move" &&
       row.kind !== "node.trash" &&
       row.kind !== "node.rename" &&
@@ -323,11 +330,25 @@ export async function lookupOperation(
     const operands = JSON.parse(row.operands_json) as {
       parentId?: unknown;
       overwriteTargetId?: unknown;
+      sourceNodeId?: unknown;
       sourceParentId?: unknown;
       nodeId?: unknown;
     };
     const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
-    if (create) {
+    if (row.kind === "dav.copy") {
+      if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
+        return null;
+      await authorizeNode(db, principal, {
+        operation: "node.read",
+        nodeId: operands.sourceNodeId,
+        spaceId: row.space_id,
+      });
+      await authorizeNode(db, principal, {
+        operation: "node.create",
+        parentId: operands.parentId,
+        spaceId: row.space_id,
+      });
+    } else if (create) {
       if (typeof operands.parentId !== "string") return null;
       await authorizeNode(db, principal, {
         operation: "node.create",
@@ -398,11 +419,15 @@ export async function lookupOperation(
             ? typeof operands.overwriteTargetId === "string"
               ? 204
               : 201
-            : create
-              ? 201
-              : row.kind === "dav.proppatch"
-                ? 207
-                : 200;
+            : row.kind === "dav.copy"
+              ? typeof operands.overwriteTargetId === "string"
+                ? 204
+                : 201
+              : create
+                ? 201
+                : row.kind === "dav.proppatch"
+                  ? 207
+                  : 200;
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&

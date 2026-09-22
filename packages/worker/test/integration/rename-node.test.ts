@@ -13,6 +13,7 @@ import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { claimOperation, operationIntent } from "../../src/jobs/operations";
+import { copyNode } from "../../src/services/copyNode";
 import { commitMutationStatements } from "../../src/services/fsMutation";
 import { moveNode } from "../../src/services/moveNode";
 import {
@@ -112,6 +113,8 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
             invoke((lock) => lock.acquireRename(request)),
           acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
             invoke((lock) => lock.acquireMove(request)),
+          acquireCopy: (request: Parameters<LockDO["acquireCopy"]>[0]) =>
+            invoke((lock) => lock.acquireCopy(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -171,6 +174,135 @@ it("renames through the private HTTP bridge and replays its operation", async ()
   expect(lookup.status).toBe(200);
   expect(await lookup.json()).toMatchObject({ id: operation.id, state: "committed" });
   expect((await send(headers, body.replace("HTTP 経由の名前", "別名"))).status).toBe(409);
+});
+
+it("copies a fixed folder manifest with COW blobs and dead properties", async () => {
+  const { f, principal } = await seeded();
+  const fileSearch = searchName("File");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+        VALUES(?,?,?,?,?,1)`,
+      values: [f.ids.file, f.ids.space, fileSearch.textNorm, fileSearch.tokens, fileSearch.version],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [f.ids.file],
+    },
+    {
+      sql: "INSERT INTO node_props(node_id,namespace,name,value_xml) VALUES(?,'urn:test','color','blue')",
+      values: [f.ids.file],
+    },
+  ]);
+  const request = {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    sourceNodeId: f.ids.folder,
+    destinationParentId: f.ids.root,
+    name: "Folder copy",
+    depth: "infinity" as const,
+    lockTokens: [],
+  };
+  const copied = await copyNode(admitted(), request);
+  expect(copied).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed", result: { status: 201 } },
+  });
+  if (copied.kind !== "terminal" || !copied.operation.result?.nodeId)
+    throw new Error("missing_copy_result");
+  const copiedRoot = copied.operation.result.nodeId;
+  const copiedChild = await env.DB.prepare(
+    "SELECT id,current_blob_id FROM nodes WHERE parent_id=? AND name_ci='file' AND deleted_at IS NULL",
+  )
+    .bind(copiedRoot)
+    .first<{ id: string; current_blob_id: string }>();
+  expect(copiedChild?.current_blob_id).toBe(f.ids.blob);
+  expect(
+    await env.DB.prepare("SELECT ref_count FROM blobs WHERE id=?")
+      .bind(f.ids.blob)
+      .first("ref_count"),
+  ).toBe(2);
+  expect(
+    await env.DB.prepare(
+      "SELECT value_xml FROM node_props WHERE node_id=? AND namespace='urn:test' AND name='color'",
+    )
+      .bind(copiedChild!.id)
+      .first("value_xml"),
+  ).toBe("blue");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM copy_members WHERE copy_op_id=?")
+      .bind(copied.operation.id)
+      .first("COUNT(*)"),
+  ).toBe(2);
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
+    .bind(copied.operation.id)
+    .run();
+  expect(await consumeOutbox(env.DB, `${copied.operation.id}_event`)).toBe("completed");
+  expect(await copyNode(admitted(), request)).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed" },
+  });
+});
+
+it("atomically replaces a COPY target with a COW file", async () => {
+  const { f, principal } = await seeded();
+  const target = `${f.ids.file}-copy-target`;
+  const fileSearch = searchName("File");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at) VALUES(?,?,?,?,?,?,'folder',1,1)`,
+      values: [target, f.ids.space, f.ids.user, f.ids.root, "Existing", "existing"],
+    },
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)`,
+      values: [f.ids.file, f.ids.space, fileSearch.textNorm, fileSearch.tokens, fileSearch.version],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [f.ids.file],
+    },
+  ]);
+  const request = {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    sourceNodeId: f.ids.file,
+    destinationParentId: f.ids.root,
+    overwriteTargetId: target,
+    name: "Existing",
+    depth: "infinity",
+    lockTokens: [],
+  } as const;
+  const copied = await copyNode(admitted(), request);
+  expect(copied).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed", result: { status: 204 } },
+  });
+  if (copied.kind !== "terminal" || !copied.operation.result?.nodeId)
+    throw new Error("missing_copy_result");
+  expect(
+    await env.DB.prepare("SELECT kind,current_blob_id,parent_id,name FROM nodes WHERE id=?")
+      .bind(copied.operation.result.nodeId)
+      .first(),
+  ).toEqual({ kind: "file", current_blob_id: f.ids.blob, parent_id: f.ids.root, name: "Existing" });
+  expect(
+    await env.DB.prepare("SELECT deleted_at IS NOT NULL AS deleted FROM nodes WHERE id=?")
+      .bind(target)
+      .first("deleted"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare("SELECT state FROM trash_ops WHERE root_node_id=?")
+      .bind(target)
+      .first("state"),
+  ).toBe("trashed");
+  expect(await copyNode(admitted(), request)).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed", result: { status: 204 } },
+  });
+  await expect(copyNode(admitted(), { ...request, name: "Different" })).rejects.toThrow(
+    "idempotency_conflict",
+  );
 });
 
 it("moves a bounded subtree between folders and publishes one atomic operation", async () => {

@@ -233,7 +233,7 @@ export async function failStaleRecoveryOutbox(
   const clock = "strftime('%s','now')*1000";
   const rows = await primary(db)
     .prepare(`SELECT b.outbox_id FROM outbox b JOIN operations o ON o.op_id=b.op_id
-      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
+      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put','dav.copy')) OR
         (b.kind='node.updated' AND o.kind='dav.put') OR
         (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
         (b.kind='node.renamed' AND o.kind IN ('node.rename','dav.move')))
@@ -260,7 +260,7 @@ export async function failStaleRecoveryOutbox(
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
                 (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
-                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
+                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put','dav.copy')) OR
                   (outbox.kind='node.updated' AND o.kind='dav.put') OR
                   (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
                   (outbox.kind='node.renamed' AND o.kind IN ('node.rename','dav.move')))
@@ -488,7 +488,7 @@ export async function inspectRecoveryPage(
       if (
         !(
           (row.kind === "node.created" &&
-            ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(
+            ["node.create", "dav.mkcol", "dav.lock", "dav.put", "dav.copy"].includes(
               row.operation_kind ?? "",
             )) ||
           (row.kind === "node.updated" && row.operation_kind === "dav.put") ||
@@ -520,7 +520,9 @@ export async function inspectRecoveryPage(
           result.nodeId !== row.payload_ref ||
           result.status !==
             (row.kind === "node.created"
-              ? 201
+              ? row.operation_kind === "dav.copy" && typeof operands.overwriteTargetId === "string"
+                ? 204
+                : 201
               : row.kind === "node.updated" || row.kind === "node.trashed"
                 ? 204
                 : row.operation_kind === "dav.move"

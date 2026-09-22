@@ -27,6 +27,7 @@ import {
 } from "../dav/xml";
 import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
+import { copyNode } from "../services/copyNode";
 import { createFolder } from "../services/createFolder";
 import { createLockedEmptyFile } from "../services/createLockedFile";
 import { moveNode } from "../services/moveNode";
@@ -337,6 +338,74 @@ export async function handleDavHttp(
       return problem(404, "not_found");
     }
   }
+  if (request.method === "COPY") {
+    if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
+    if (request.body || request.headers.has("Lock-Token")) return problem(400, "bad_request");
+    try {
+      const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
+      const depth = parseDavTransferDepth("COPY", request.headers.get("Depth"));
+      const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
+      const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
+      if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
+      if (target.target && !overwrite) return problem(412, "precondition_failed");
+      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const outcome = await copyNode(env, {
+        principal,
+        requestId: crypto.randomUUID(),
+        spaceId: resolved.node.space_id,
+        sourceNodeId: resolved.node.id,
+        destinationParentId: target.parent.parent.id,
+        name: target.name.name,
+        depth,
+        ...(target.target ? { overwriteTargetId: target.target.node.id } : {}),
+        lockTokens,
+      });
+      if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
+        const response = problem(503, "commit_unknown");
+        response.headers.set(
+          "Operation-Id",
+          outcome.kind === "commit_unknown" ? outcome.operationId : outcome.operation.id,
+        );
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      if (outcome.operation.state === "failed") return problem(409, "conflict");
+      return new Response(null, {
+        status: target.target ? 204 : 201,
+        headers: {
+          "Cache-Control": "private, no-store",
+          ...(target.target ? {} : { Location: new URL(destination.href).pathname }),
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "invalid_dav_destination",
+          "invalid_dav_depth",
+          "invalid_dav_overwrite",
+          "invalid_dav_if",
+          "invalid_name",
+          "name_too_long",
+          "reserved_name",
+        ].includes(error.message)
+      )
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_transfer_too_large")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+      if (error instanceof Error && error.message === "dav_cross_space_copy")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "invalid_copy_authorization")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "authorization_denied")
+        return problem(404, "not_found");
+      return problem(503, "not_ready");
+    }
+  }
   if (request.method === "DELETE") {
     if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
     if (
@@ -461,7 +530,8 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD, PUT, DELETE, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+        Allow:
+          "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",

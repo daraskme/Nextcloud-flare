@@ -31,6 +31,10 @@ export interface MovePermitRequest extends RenamePermitRequest {
   destinationParentId: string;
   overwriteTargetId?: string;
 }
+export interface CopyPermitRequest extends CreatePermitRequest {
+  sourceNodeId: string;
+  overwriteTargetId?: string;
+}
 export interface NodeWritePermitRequest {
   requestId: string;
   spaceId: string;
@@ -398,6 +402,110 @@ export class LockDO extends DurableObject<Env> {
         ...(overwrite ? [authorizationAssertion(overwrite)] : []),
         assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
         assertCreateLocks(request.destinationParentId, request.spaceId, request.principal, hashes),
+        ...(request.overwriteTargetId
+          ? [
+              assertTrashLocks(
+                request.overwriteTargetId,
+                request.spaceId,
+                request.principal,
+                hashes,
+              ),
+            ]
+          : []),
+      ],
+    );
+  }
+
+  async acquireCopy(request: CopyPermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const source = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.read",
+      nodeId: request.sourceNodeId,
+      spaceId: request.spaceId,
+    });
+    const destination = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.create",
+      parentId: request.parentId,
+      spaceId: request.spaceId,
+    });
+    const overwrite = request.overwriteTargetId
+      ? await authorizeNode(this.env.DB, request.principal, {
+          operation: "node.trash",
+          nodeId: request.overwriteTargetId,
+          spaceId: request.spaceId,
+        })
+      : null;
+    if (
+      source.operation !== "node.read" ||
+      destination.operation !== "node.create" ||
+      (overwrite &&
+        (overwrite.operation !== "node.trash" || overwrite.parentId !== request.parentId))
+    )
+      throw new Error("invalid_copy_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      (await hasBlockingLocks(
+        this.env.DB,
+        request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )) ||
+      (request.overwriteTargetId !== undefined &&
+        (await hasBlockingTrashLocks(
+          this.env.DB,
+          request.overwriteTargetId,
+          request.spaceId,
+          request.principal,
+          hashes,
+        )))
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      "dav.copy",
+      request.sourceNodeId,
+      request.parentId,
+      request.overwriteTargetId ?? null,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return grantPermit(
+      this.env.DB,
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(source),
+        authorizationAssertion(destination),
+        ...(overwrite ? [authorizationAssertion(overwrite)] : []),
+        assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
         ...(request.overwriteTargetId
           ? [
               assertTrashLocks(

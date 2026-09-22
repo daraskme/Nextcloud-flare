@@ -63,6 +63,8 @@ function admittedDavEnv(): Env {
             invoke((lock) => lock.acquireTrash(request)),
           acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
             invoke((lock) => lock.acquireMove(request)),
+          acquireCopy: (request: Parameters<LockDO["acquireCopy"]>[0]) =>
+            invoke((lock) => lock.acquireCopy(request)),
           createDavLock: (request: Parameters<LockDO["createDavLock"]>[0]) =>
             invoke((lock) => lock.createDavLock(request)),
           refreshDavLock: (request: Parameters<LockDO["refreshDavLock"]>[0]) =>
@@ -282,7 +284,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
   expect(options.headers.get("Allow")).toBe(
-    "OPTIONS, GET, HEAD, PUT, DELETE, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+    "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
   );
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
@@ -1709,4 +1711,70 @@ it("moves a DAV resource to a strict same-origin destination", async () => {
       .bind(overwritten)
       .first("state"),
   ).toBe("trashed");
+});
+
+it("copies and atomically overwrites a DAV resource with COW storage", async () => {
+  const { f, id, ring, request } = await fixture("K");
+  const sourceSearch = searchName("File");
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read'),(?,'node:create'),(?,'node:delete')",
+      values: [`ap:${id}`, `ap:${id}`, `ap:${id}`],
+    },
+    {
+      sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)",
+      values: [
+        f.ids.file,
+        f.ids.space,
+        sourceSearch.textNorm,
+        sourceSearch.tokens,
+        sourceSearch.version,
+      ],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [f.ids.file],
+    },
+  ]);
+  const davEnv = admittedDavEnv();
+  const base = Object.fromEntries(request().headers);
+  const send = (overwrite: "T" | "F") =>
+    handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method: "COPY",
+        headers: {
+          ...base,
+          Destination: "https://app.invalid/dav/File-copy",
+          Depth: "0",
+          Overwrite: overwrite,
+        },
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+  const created = await send("F");
+  expect(created.status).toBe(201);
+  expect(created.headers.get("Location")).toBe("/dav/File-copy");
+  const first = await env.DB.prepare(
+    "SELECT id,current_blob_id FROM nodes WHERE parent_id=? AND name_ci='file-copy' AND deleted_at IS NULL",
+  )
+    .bind(f.ids.folder)
+    .first<{ id: string; current_blob_id: string }>();
+  expect(first?.current_blob_id).toBe(f.ids.blob);
+  expect((await send("F")).status).toBe(412);
+  const replaced = await send("T");
+  expect(replaced.status).toBe(204);
+  expect(
+    await env.DB.prepare("SELECT deleted_at IS NOT NULL AS deleted FROM nodes WHERE id=?")
+      .bind(first!.id)
+      .first("deleted"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) FROM nodes WHERE parent_id=? AND name_ci='file-copy' AND deleted_at IS NULL",
+    )
+      .bind(f.ids.folder)
+      .first("COUNT(*)"),
+  ).toBe(1);
 });

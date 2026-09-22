@@ -35,7 +35,7 @@ it("migrates all 53 normal tables with strict types, explicit PK nullability and
     .prepare("PRAGMA table_list")
     .all()
     .filter((row) => row.type === "table" && !String(row.name).startsWith("sqlite_"));
-  expect(tables).toHaveLength(53);
+  expect(tables).toHaveLength(54);
   for (const table of tables) {
     expect(table.strict).toBe(1);
     const columns = db.prepare(`PRAGMA table_info('${table.name}')`).all();
