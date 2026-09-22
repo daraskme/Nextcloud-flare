@@ -14,6 +14,15 @@ interface ChildRow {
   updatedAt: number;
 }
 
+interface PathRow {
+  id: string;
+  parentId: string | null;
+  name: string;
+  kind: "root" | "folder" | "file";
+  revision: number;
+  depth: number;
+}
+
 async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
   if (!ID.test(nodeId)) throw new Error("invalid_node_id");
   const spaceId = await primary(db)
@@ -49,6 +58,52 @@ export async function readNode(db: D1Database, principal: Principal, nodeId: str
     revision: proof.node.revision,
     currentBlobId: proof.node.current_blob_id,
     treeGeneration: proof.node.tree_generation,
+  });
+}
+
+/** Return a root-first breadcrumb from the same snapshot as current authorization. */
+export async function readNodePath(db: D1Database, principal: Principal, nodeId: string) {
+  const proof = await nodeProof(db, principal, nodeId);
+  const result = await atomicBatch(db, [
+    authorizationAssertion(proof),
+    assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
+      principal.epoch,
+    ]),
+    {
+      sql: `WITH RECURSIVE p(id,parent_id,name,kind,revision,depth,seen) AS (
+        SELECT id,parent_id,name,kind,revision,0,'/'||id||'/' FROM nodes
+          WHERE id=? AND space_id=? AND owner_id=? AND deleted_at IS NULL
+        UNION ALL
+        SELECT n.id,n.parent_id,n.name,n.kind,n.revision,p.depth+1,p.seen||n.id||'/'
+          FROM nodes n JOIN p ON n.id=p.parent_id
+          WHERE p.depth<64 AND n.space_id=? AND n.owner_id=? AND n.deleted_at IS NULL
+            AND instr(p.seen,'/'||n.id||'/')=0
+      ) SELECT id,parent_id AS parentId,name,kind,revision,depth FROM p ORDER BY depth DESC`,
+      values: [
+        proof.node.id,
+        proof.node.space_id,
+        proof.node.owner_id,
+        proof.node.space_id,
+        proof.node.owner_id,
+      ],
+    },
+  ]);
+  const rows = (result[2]?.results ?? []) as PathRow[];
+  const root = rows[0];
+  const leaf = rows.at(-1);
+  if (
+    rows.length < 1 ||
+    rows.length > 65 ||
+    root?.kind !== "root" ||
+    root.parentId !== null ||
+    leaf?.id !== proof.node.id ||
+    rows.some((row, index) => index > 0 && row.parentId !== rows[index - 1]?.id)
+  )
+    throw new Error("node_path_unavailable");
+  return Object.freeze({
+    nodeId: proof.node.id,
+    treeGeneration: proof.node.tree_generation,
+    path: rows.map(({ parentId: _parentId, depth: _depth, ...node }) => node),
   });
 }
 

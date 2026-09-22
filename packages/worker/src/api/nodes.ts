@@ -2,9 +2,9 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import type { Principal } from "../auth/authorize";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
-import { listNodeChildren, readNode } from "../services/nodeRead";
+import { listNodeChildren, readNode, readNodePath } from "../services/nodeRead";
 
-const NODE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})(\/children)?$/;
+const NODE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})(\/(?:children|path))?$/;
 
 export function nodeReadRoute(request: Request): boolean {
   return request.method === "GET" && NODE.test(new URL(request.url).pathname);
@@ -27,6 +27,16 @@ export async function handleNodeReadHttp(
   )
     return problem(404, "not_found");
   const nodeId = match[1] ?? "";
+  if (match[2] === "/path") {
+    if (url.search) return problem(400, "bad_request");
+    try {
+      return Response.json(await readNodePath(env.DB, principal, nodeId), {
+        headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    } catch {
+      return problem(404, "not_found");
+    }
+  }
   if (!match[2]) {
     if (url.search) return problem(400, "bad_request");
     try {
