@@ -172,7 +172,7 @@ export function validateClaimAuthorization(
   steps: number,
 ): SqlStatement {
   const operands = JSON.parse(intent.operands) as { parentId?: unknown; nodeId?: unknown };
-  const create = intent.kind === "node.create" || intent.kind === "dav.mkcol";
+  const create = ["node.create", "dav.mkcol", "dav.lock"].includes(intent.kind);
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
@@ -288,13 +288,14 @@ export async function lookupOperation(
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
     (row.kind !== "node.create" &&
       row.kind !== "dav.mkcol" &&
+      row.kind !== "dav.lock" &&
       row.kind !== "node.rename" &&
       row.kind !== "dav.proppatch")
   )
     return null;
   try {
     const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
-    const create = row.kind === "node.create" || row.kind === "dav.mkcol";
+    const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
     if (create) {
       if (typeof operands.parentId !== "string") return null;
       await authorizeNode(db, principal, {

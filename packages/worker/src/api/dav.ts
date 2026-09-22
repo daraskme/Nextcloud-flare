@@ -21,6 +21,7 @@ import {
 import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 import { createFolder } from "../services/createFolder";
+import { createLockedEmptyFile } from "../services/createLockedFile";
 import { proppatch } from "../services/proppatch";
 
 const PROTECTED_DAV_PROPERTIES = new Set([
@@ -66,11 +67,12 @@ function proppatchResponse(pathname: string, changes: readonly ProppatchChange[]
 function lockResponse(
   href: string,
   lock: { token: string; depth: "0" | "infinity"; ownerText: string; timeoutSeconds: number },
+  status = 200,
 ) {
   const owner = lock.ownerText === "" ? "" : `<D:owner>${lock.ownerText}</D:owner>`;
   const body = `<?xml version="1.0" encoding="utf-8"?><D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock><D:locktype><D:write/></D:locktype><D:lockscope><D:exclusive/></D:lockscope><D:depth>${lock.depth === "infinity" ? "Infinity" : "0"}</D:depth>${owner}<D:timeout>Second-${lock.timeoutSeconds}</D:timeout><D:locktoken><D:href>${escapeXml(lock.token)}</D:href></D:locktoken><D:lockroot><D:href>${escapeXml(href)}</D:href></D:lockroot></D:activelock></D:lockdiscovery></D:prop>`;
   return new Response(body, {
-    status: 200,
+    status,
     headers: {
       "Cache-Control": "private, no-store",
       "Content-Type": "application/xml; charset=utf-8",
@@ -331,13 +333,6 @@ export async function handleDavHttp(
   }
   if (request.method === "LOCK") {
     if (request.headers.has("Lock-Token")) return problem(400, "bad_request");
-    let target;
-    try {
-      target = await resolveDavPropsNode(env.DB, principal, path);
-    } catch {
-      // Lock-null creation requires the empty-file content mutation and remains closed.
-      return problem(503, "not_ready");
-    }
     try {
       const depth = parseDavLockDepth(request.headers.get("Depth"));
       const timeoutSeconds = parseDavTimeout(request.headers.get("Timeout"));
@@ -345,6 +340,46 @@ export async function handleDavHttp(
       const encodedPath = path.segments
         .map((segment) => encodeURIComponent(segment.name))
         .join("/");
+      let target: Awaited<ReturnType<typeof resolveDavPropsNode>> | undefined;
+      try {
+        target = await resolveDavPropsNode(env.DB, principal, path);
+      } catch {
+        target = undefined;
+      }
+      if (!target) {
+        if (body.kind === "refresh") return problem(404, "not_found");
+        if (path.segments.length === 0 || path.trailingSlash) return problem(409, "conflict");
+        const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+        const parent = await resolveDavCreateParent(env.DB, principal, {
+          segments: path.segments.slice(0, -1),
+          trailingSlash: true,
+        });
+        const href = `/dav/${encodedPath}`;
+        const created = await createLockedEmptyFile(env, {
+          principal,
+          requestId: crypto.randomUUID(),
+          spaceId: parent.spaceId,
+          parentId: parent.parent.id,
+          name: path.segments.at(-1)!.name,
+          displayHref: href,
+          depth,
+          ownerText: body.ownerXml,
+          timeoutSeconds,
+          lockTokens,
+        });
+        if (created.kind === "commit_unknown") {
+          const response = problem(503, "commit_unknown");
+          response.headers.set("Operation-Id", created.outcome.operationId);
+          response.headers.set("Retry-After", "1");
+          return response;
+        }
+        if (created.outcome.kind !== "terminal" || created.outcome.operation.state !== "committed")
+          return created.outcome.kind === "terminal" &&
+            created.outcome.operation.errorCode === "name_conflict"
+            ? problem(405, "method_not_allowed")
+            : problem(409, "conflict");
+        return lockResponse(href, created.lock, 201);
+      }
       const href = `/dav${encodedPath === "" ? "" : `/${encodedPath}`}${target.node.kind === "file" ? "" : "/"}`;
       const lock = env.LOCKS.get(env.LOCKS.idFromName(target.node.space_id));
       if (body.kind === "refresh") {

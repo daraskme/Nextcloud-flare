@@ -968,6 +968,93 @@ it("creates, refreshes and removes an existing-resource DAV lock", async () => {
   ).toBe(204);
 });
 
+it("creates a locked empty file for LOCK on an unmapped DAV path", async () => {
+  const { f, id, ring, request } = await fixture("F");
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:create'),(?,'node:read'),(?,'node:write')",
+  )
+    .bind(`ap:${id}`, `ap:${id}`, `ap:${id}`)
+    .run();
+  const davEnv = admittedDavEnv();
+  const created = await handleDavHttp(
+    new Request("https://app.invalid/dav/Empty.txt", {
+      method: "LOCK",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        Depth: "0",
+        Timeout: "Second-60",
+      },
+      body: `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
+        <D:locktype><D:write/></D:locktype><D:owner>empty</D:owner></D:lockinfo>`,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(created.status).toBe(201);
+  const lockToken = created.headers.get("Lock-Token");
+  expect(lockToken).toMatch(/^<opaquelocktoken:[0-9a-f-]+>$/);
+  const row = await env.DB.prepare(
+    `SELECT n.id,n.last_op_id AS opId,n.current_blob_id AS blobId,b.r2_key AS r2Key,b.size,b.ref_count AS refCount,
+      s.bytes,(SELECT COUNT(*) FROM locks l WHERE l.node_id=n.id) AS lockCount
+      FROM nodes n JOIN blobs b ON b.id=n.current_blob_id JOIN blob_storage s ON s.blob_id=b.id
+      WHERE n.parent_id=? AND n.name='Empty.txt' AND n.kind='file'`,
+  )
+    .bind(f.ids.folder)
+    .first<{
+      id: string;
+      opId: string;
+      blobId: string;
+      r2Key: string;
+      size: number;
+      refCount: number;
+      bytes: number;
+      lockCount: number;
+    }>();
+  expect(row).toMatchObject({ size: 0, refCount: 1, bytes: 0, lockCount: 1 });
+  expect(
+    await env.DB.prepare(
+      `SELECT o.kind,o.state,o.expected_steps AS expectedSteps,
+        (SELECT COUNT(*) FROM operation_steps s WHERE s.op_id=o.op_id) AS steps,
+        (SELECT COUNT(*) FROM outbox b WHERE b.op_id=o.op_id AND b.kind='node.created') AS events
+        FROM operations o WHERE o.op_id=?`,
+    )
+      .bind(row!.opId)
+      .first(),
+  ).toEqual({ kind: "dav.lock", state: "committed", expectedSteps: 10, steps: 10, events: 1 });
+  expect(await env.BLOBS.head(row!.r2Key)).toMatchObject({ size: 0 });
+  try {
+    const read = await handleDavHttp(
+      new Request("https://app.invalid/dav/Empty.txt", { headers: request().headers }),
+      davEnv,
+      1,
+      ring,
+    );
+    expect(read.status).toBe(200);
+    expect(read.headers.get("Content-Length")).toBe("0");
+    expect((await read.arrayBuffer()).byteLength).toBe(0);
+    expect(
+      (
+        await handleDavHttp(
+          new Request("https://app.invalid/dav/Empty.txt", {
+            method: "UNLOCK",
+            headers: {
+              ...Object.fromEntries(request().headers),
+              "Lock-Token": lockToken!,
+            },
+          }),
+          davEnv,
+          1,
+          ring,
+        )
+      ).status,
+    ).toBe(204);
+  } finally {
+    if (row) await env.BLOBS.delete(row.r2Key);
+  }
+});
+
 it("parses bounded DAV paths with a single percent decode", () => {
   expect(parseDavPath("/dav")).toMatchObject({ segments: [], trailingSlash: false });
   expect(parseDavPath("/dav/Folder/a%20b.txt").segments.map((part) => part.name)).toEqual([

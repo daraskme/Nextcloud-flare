@@ -62,7 +62,8 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   if (
     !row ||
     !(
-      (row.kind === "node.created" && ["node.create", "dav.mkcol"].includes(row.op_kind)) ||
+      (row.kind === "node.created" &&
+        ["node.create", "dav.mkcol", "dav.lock"].includes(row.op_kind)) ||
       (row.kind === "node.renamed" && row.op_kind === "node.rename")
     ) ||
     row.op_state !== "committed" ||
