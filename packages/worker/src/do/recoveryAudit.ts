@@ -3,7 +3,7 @@ import { auditOwnerLedger } from "../services/refs";
 import { epochNumber } from "./epochHistory";
 
 export interface RecoveryCursor {
-  readonly stage: "users" | "blobs" | "outbox";
+  readonly stage: "users" | "blobs" | "outbox" | "shares" | "credentials";
   readonly afterId: string;
 }
 
@@ -35,7 +35,7 @@ interface OutboxRow {
 
 function validCursor(cursor: RecoveryCursor, limit: number): void {
   if (
-    !["users", "blobs", "outbox"].includes(cursor.stage) ||
+    !["users", "blobs", "outbox", "shares", "credentials"].includes(cursor.stage) ||
     typeof cursor.afterId !== "string" ||
     cursor.afterId.length > 128 ||
     !Number.isInteger(limit) ||
@@ -160,6 +160,75 @@ export async function inspectRecoveryPage(
       next:
         rows.results.length > limit
           ? { stage: "outbox", afterId: page.at(-1)?.outbox_id ?? cursor.afterId }
+          : { stage: "shares", afterId: "" },
+    };
+  }
+  if (cursor.stage === "shares") {
+    const rows = await primary(db)
+      .prepare("SELECT id FROM shares WHERE id>? ORDER BY id LIMIT ?")
+      .bind(cursor.afterId, limit + 1)
+      .all<{ id: string }>();
+    const page = rows.results.slice(0, limit);
+    for (const { id } of page) {
+      const valid = await primary(db)
+        .prepare(`SELECT 1 FROM shares sh WHERE sh.id=?
+          AND sh.reserved_bytes=COALESCE((SELECT SUM(r.bytes) FROM reservations r
+            WHERE r.share_id=sh.id AND r.state='reserved'),0)
+          AND NOT EXISTS(SELECT 1 FROM share_grants g
+            WHERE g.share_id=sh.id AND g.version>sh.version)
+          AND NOT EXISTS(SELECT 1 FROM share_sessions ss
+            WHERE ss.share_id=sh.id AND ss.share_version>sh.version)
+          AND (sh.disabled_at IS NOT NULL OR
+            (sh.expires_at IS NOT NULL AND sh.expires_at<=strftime('%s','now')*1000) OR
+            EXISTS(SELECT 1 FROM nodes n JOIN spaces sp ON sp.id=n.space_id
+              WHERE n.id=sh.root_node_id AND n.owner_id=sh.owner_id
+                AND sp.owner_id=sh.owner_id AND n.deleted_at IS NULL))`)
+        .bind(id)
+        .first<number>();
+      if (valid === null) throw new Error("recovery_share_mismatch");
+    }
+    return {
+      examined: page.length,
+      next:
+        rows.results.length > limit
+          ? { stage: "shares", afterId: page.at(-1)?.id ?? cursor.afterId }
+          : { stage: "credentials", afterId: "" },
+    };
+  }
+  if (cursor.stage === "credentials") {
+    const rows = await primary(db)
+      .prepare("SELECT id FROM credentials WHERE id>? ORDER BY id LIMIT ?")
+      .bind(cursor.afterId, limit + 1)
+      .all<{ id: string }>();
+    const page = rows.results.slice(0, limit);
+    for (const { id } of page) {
+      const valid = await primary(db)
+        .prepare(`SELECT 1 FROM credentials c WHERE c.id=? AND (
+          (c.kind='access' AND EXISTS(SELECT 1 FROM sessions s
+            WHERE s.id=c.session_id AND s.kind='access')) OR
+          (c.kind='app_password' AND EXISTS(SELECT 1 FROM app_passwords ap
+            WHERE ap.id=c.app_password_id AND (ap.revoked_at IS NOT NULL OR
+              ap.root_node_id IS NULL OR EXISTS(SELECT 1 FROM nodes n
+                WHERE n.id=ap.root_node_id AND n.owner_id=ap.user_id AND n.deleted_at IS NULL)))) OR
+          (c.kind='share' AND EXISTS(SELECT 1 FROM share_sessions ss
+            JOIN shares sh ON sh.id=ss.share_id
+            WHERE ss.id=c.share_session_id AND ss.share_version<=sh.version)) OR
+          (c.kind='service' AND EXISTS(SELECT 1 FROM service_principals svc
+            JOIN spaces sp ON sp.id=svc.space_id AND sp.owner_id=svc.mapped_user_id
+            WHERE svc.id=c.service_principal_id AND (svc.disabled_at IS NOT NULL OR
+              EXISTS(SELECT 1 FROM nodes n WHERE n.id=svc.root_node_id
+                AND n.space_id=svc.space_id AND n.owner_id=svc.mapped_user_id
+                AND n.deleted_at IS NULL))))
+        )`)
+        .bind(id)
+        .first<number>();
+      if (valid === null) throw new Error("recovery_credential_mismatch");
+    }
+    return {
+      examined: page.length,
+      next:
+        rows.results.length > limit
+          ? { stage: "credentials", afterId: page.at(-1)?.id ?? cursor.afterId }
           : null,
     };
   }

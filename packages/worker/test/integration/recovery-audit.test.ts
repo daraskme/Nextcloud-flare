@@ -38,9 +38,60 @@ it("checks users, ledgers, roots and R2 blobs in bounded pages", async () => {
     expect(page.examined).toBeLessThanOrEqual(1);
     examined += page.examined;
     cursor = page.next;
-    if (++pages > 7) throw new Error("recovery_page_loop");
+    if (++pages > 10) throw new Error("recovery_page_loop");
   }
-  expect(examined).toBe(4);
+  expect(examined).toBe(6);
+});
+
+it("rejects share counter drift and a live root from another owner", async () => {
+  const owner = fixtures[0];
+  const other = fixtures[1];
+  if (!owner || !other) throw new Error("missing_fixture");
+  const shareId = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'link',1)",
+  )
+    .bind(shareId, owner.ids.user, owner.ids.root)
+    .run();
+  try {
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
+    ).resolves.toMatchObject({ examined: 1, next: { stage: "credentials" } });
+    await env.DB.prepare("UPDATE shares SET reserved_bytes=1 WHERE id=?").bind(shareId).run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
+    ).rejects.toThrow(/recovery_share_mismatch/);
+    await env.DB.prepare("UPDATE shares SET reserved_bytes=0,root_node_id=? WHERE id=?")
+      .bind(other.ids.root, shareId)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
+    ).rejects.toThrow(/recovery_share_mismatch/);
+  } finally {
+    await env.DB.prepare("DELETE FROM shares WHERE id=?").bind(shareId).run();
+  }
+});
+
+it("rejects a credential registry row with the wrong session kind", async () => {
+  const owner = fixtures[0];
+  if (!owner) throw new Error("missing_fixture");
+  const sessionId = crypto.randomUUID();
+  const credentialId = `as:${sessionId}`;
+  await env.DB.prepare(`INSERT INTO sessions(id,user_id,kind,fingerprint,epoch,issued_at,expires_at,last_seen_at)
+    VALUES(?,?,'share',?,1,1,2,1)`)
+    .bind(sessionId, owner.ids.user, sessionId)
+    .run();
+  await env.DB.prepare("INSERT INTO credentials(id,kind,session_id) VALUES(?,'access',?)")
+    .bind(credentialId, sessionId)
+    .run();
+  try {
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "credentials", afterId: "" }, 20),
+    ).rejects.toThrow(/recovery_credential_mismatch/);
+  } finally {
+    await env.DB.prepare("DELETE FROM credentials WHERE id=?").bind(credentialId).run();
+    await env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(sessionId).run();
+  }
 });
 
 it("checks outbox provenance and dispatch lease shape", async () => {
@@ -69,7 +120,7 @@ it("checks outbox provenance and dispatch lease shape", async () => {
   try {
     await expect(
       inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "outbox", afterId: "" }),
-    ).resolves.toMatchObject({ examined: 1, next: null });
+    ).resolves.toMatchObject({ examined: 1, next: { stage: "shares" } });
     await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
       credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
       claimed_expires_at,expected_steps,created_at,updated_at)
