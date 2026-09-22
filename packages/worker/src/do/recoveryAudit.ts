@@ -1,5 +1,6 @@
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import { auditOwnerLedger } from "../services/refs";
+import { loadTargetManifest, type TargetManifestRecord } from "../services/targetManifest";
 import { epochNumber } from "./epochHistory";
 
 export interface RecoveryCursor {
@@ -399,7 +400,23 @@ export async function inspectRecoveryPage(
         .prepare("SELECT 1 FROM archive_index WHERE r2_key=? AND json_bytes=?")
         .bind(object.key, object.size)
         .first<number>();
-      if (archive === null) throw new Error("recovery_untracked_r2_object");
+      if (archive !== null) continue;
+      if (object.key.startsWith("target-sets/")) {
+        const targetSet = await primary(db)
+          .prepare(`SELECT id,manifest_ref AS ref,manifest_hash AS hash,total_bytes AS totalBytes
+            FROM target_sets WHERE manifest_ref=?`)
+          .bind(object.key)
+          .first<TargetManifestRecord>();
+        if (targetSet) {
+          try {
+            await loadTargetManifest(bucket, targetSet);
+          } catch {
+            throw new Error("recovery_target_manifest_mismatch");
+          }
+          continue;
+        }
+      }
+      throw new Error("recovery_untracked_r2_object");
     }
     if (listed.truncated && (!listed.cursor || listed.cursor === cursor.afterId))
       throw new Error("recovery_r2_cursor_stalled");

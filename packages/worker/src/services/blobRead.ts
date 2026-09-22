@@ -1,6 +1,13 @@
-import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { atomicBatch } from "../db/primary";
+import {
+  type AuthorizedNode,
+  authorizationAssertion,
+  authorizeNode,
+  type Principal,
+} from "../auth/authorize";
+import { type ContentPurpose, contentSessionAssertion } from "../auth/contentSession";
+import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import { parseRange } from "../platform/range";
+import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
 
 /** A current D1 node/blob plan; callers must also check purpose, content session and budget. */
 export interface BlobReadPlan {
@@ -24,10 +31,95 @@ export async function prepareNodeBlobRead(
     spaceId,
     nodeId,
   });
+  return resolveBlobRead(db, authorized, []);
+}
+
+export interface ContentBlobGrant {
+  readonly sessionId: string;
+  readonly ticketId: string;
+  readonly purpose: ContentPurpose;
+  readonly share?: { readonly id: string; readonly version: number };
+}
+
+/** Verify the immutable target manifest, then recheck all D1 authority in the blob plan batch. */
+export async function prepareContentBlobRead(
+  db: D1Database,
+  bucket: R2Bucket,
+  principal: Principal,
+  spaceId: string,
+  nodeId: string,
+  grant: ContentBlobGrant,
+): Promise<{ readonly blob: BlobReadPlan; readonly budgetId: string }> {
+  const authorized = await authorizeNode(db, principal, {
+    operation: "node.read",
+    spaceId,
+    nodeId,
+  });
+  if (
+    authorized.operation !== "node.read" ||
+    authorized.node.kind !== "file" ||
+    !authorized.node.current_blob_id
+  )
+    throw new Error("content_not_available");
+  const record = await primary(db)
+    .prepare(`SELECT ts.id,ts.manifest_ref AS ref,ts.manifest_hash AS hash,
+      ts.total_bytes AS totalBytes,cs.budget_id AS budgetId
+      FROM content_sessions cs JOIN target_sets ts ON ts.id=cs.target_set_id
+      JOIN tickets t ON t.target_set_id=ts.id AND t.budget_id=cs.budget_id
+      WHERE cs.id=? AND t.id=? AND t.purpose=? AND cs.issued_by_credential_id=?`)
+    .bind(grant.sessionId, grant.ticketId, grant.purpose, principal.credential_id)
+    .first<TargetManifestRecord & { budgetId: string }>();
+  if (!record) throw new Error("content_not_available");
+  const manifest = await loadTargetManifest(bucket, record);
+  if (
+    !manifestContains(manifest, {
+      spaceId,
+      nodeId,
+      blobId: authorized.node.current_blob_id,
+      purpose: grant.purpose,
+    })
+  )
+    throw new Error("content_not_available");
+  const blob = await resolveBlobRead(db, authorized, [
+    contentSessionAssertion(principal, grant.sessionId, grant.ticketId, grant.purpose, grant.share),
+    assertExists(
+      `SELECT 1 FROM target_sets ts JOIN content_sessions cs ON cs.target_set_id=ts.id
+        WHERE cs.id=? AND ts.id=? AND ts.owner_id=? AND ts.manifest_ref=?
+          AND ts.manifest_hash=? AND ts.total_bytes=? AND cs.budget_id=?`,
+      [
+        grant.sessionId,
+        record.id,
+        authorized.node.owner_id,
+        record.ref,
+        record.hash,
+        record.totalBytes,
+        record.budgetId,
+      ],
+    ),
+  ]);
+  if (
+    !manifestContains(manifest, {
+      spaceId,
+      nodeId,
+      blobId: authorized.node.current_blob_id,
+      purpose: grant.purpose,
+      size: blob.size,
+    })
+  )
+    throw new Error("content_not_available");
+  return Object.freeze({ blob, budgetId: record.budgetId });
+}
+
+async function resolveBlobRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+  extra: readonly SqlStatement[],
+): Promise<BlobReadPlan> {
   if (authorized.operation !== "node.read" || authorized.node.kind !== "file")
     throw new Error("content_not_available");
   const batches = await atomicBatch(db, [
     authorizationAssertion(authorized),
+    ...extra,
     {
       sql: `SELECT b.r2_key AS key,b.size,s.r2_etag AS r2Etag,
         b.content_etag AS contentEtag,COALESCE(b.mime_sniffed,'application/octet-stream') AS mime,
@@ -38,10 +130,15 @@ export async function prepareNodeBlobRead(
           AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
           AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
           AND s.bytes=b.size AND s.r2_etag IS NOT NULL`,
-      values: [nodeId, spaceId, authorized.node.revision, authorized.node.current_blob_id],
+      values: [
+        authorized.node.id,
+        authorized.node.space_id,
+        authorized.node.revision,
+        authorized.node.current_blob_id,
+      ],
     },
   ]);
-  const row = batches[1]?.results[0] as BlobReadPlan | undefined;
+  const row = batches[extra.length + 1]?.results[0] as BlobReadPlan | undefined;
   if (!row) throw new Error("content_not_available");
   validatePlan(row);
   return Object.freeze(row);

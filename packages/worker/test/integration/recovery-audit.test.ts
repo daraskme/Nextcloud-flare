@@ -105,6 +105,47 @@ it("detects an R2 object without a durable D1 owner", async () => {
   }
 });
 
+it("reconciles a hash-pinned target manifest and rejects corrupted contents", async () => {
+  const owner = fixtures[0];
+  if (!owner) throw new Error("missing_fixture");
+  const id = crypto.randomUUID();
+  const ref = `target-sets/${id}`;
+  const manifest = JSON.stringify({
+    v: 1,
+    targets: [
+      {
+        spaceId: owner.ids.space,
+        nodeId: owner.ids.file,
+        blobId: owner.ids.blob,
+        purpose: "content",
+        size: 3,
+      },
+    ],
+  });
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(manifest)),
+  );
+  const hash = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  await env.BLOBS.put(ref, manifest);
+  await env.DB.prepare(`INSERT INTO target_sets
+    (id,owner_id,credential_id,manifest_hash,manifest_ref,total_bytes,expires_at,epoch)
+    VALUES(?,?,?,?,?,3,?,1)`)
+    .bind(id, owner.ids.user, owner.ids.credential, hash, ref, Date.now() + 600000)
+    .run();
+  try {
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "r2", afterId: "" }, 20),
+    ).resolves.toMatchObject({ next: { stage: "outbox" } });
+    await env.BLOBS.put(ref, "{}");
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "r2", afterId: "" }, 20),
+    ).rejects.toThrow(/recovery_target_manifest_mismatch/);
+  } finally {
+    await env.DB.prepare("DELETE FROM target_sets WHERE id=?").bind(id).run();
+    await env.BLOBS.delete(ref);
+  }
+});
+
 it("keeps the final fence closed until a reservation is released", async () => {
   const owner = fixtures[0];
   if (!owner) throw new Error("missing_fixture");

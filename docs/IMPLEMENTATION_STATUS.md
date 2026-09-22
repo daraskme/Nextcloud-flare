@@ -16,7 +16,7 @@
 | 0.3 streams | FixedLengthStream + DigestStream を直列供給。0B/3B/95,000,000B、長短 mismatch、R2 条件不成立、slow consumer/cancel | ローカル実装済み |
 | 0.3 Range | R2 部分取得、HTTP probe の206/416/HEAD/304、suffix/open-ended/多重 Range の正規化 | ローカル実装済み |
 | 2 immutable blob read 基盤 | current `node.read` assertion と node/blob/物理観測行を同一 D1 batch で照合し、R2 key の owner/blob 束縛、object のサイズ/ETag、D1 content ETag、HEAD/206/304/416、If-Range、MIME/Disposition、no-store/nosniff を内部 helper で処理 | 実 D1/R2 binding と失効競合で検証。purpose、content session、BudgetDO、公開 route は未接続 |
-| 6 content session assertion | session・ticket・target set・budget の credential/epoch/対象/expiry/revocation と share version/grant を同じ D1 batch で検証する内部 statement | private session の失効・目的不一致を workerd で検証。manifest 所属、Cookie/ticket 署名、BudgetDO、公開 route は未接続 |
+| 6 content blob read 基盤 | session・ticket・target set・budget の credential/epoch/対象/expiry/revocation と share version/grant を検証。R2 manifest の hash/所属/size、current node 認可、D1 hash/ref/owner と物理 blob を同一 batch で再確認 | 実 D1/R2 と失効・hash 競合、復旧監査で検証。Cookie/ticket 署名、BudgetDO、公開 route は未接続 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
@@ -74,6 +74,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 270 = **465 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。R2 target manifest の bounded hash 検証と node/blob/purpose/size 所属を `prepareContentBlobRead` に接続。D1 batch 直前の ticket/hash 変更を拒否。復旧監査の R2 list でも target manifest を検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 269 = **464 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content session・ticket・target set・budget の D1 assertion を追加し、credential/purpose 不一致、target expiry、ticket/session 失効、budget revoke を検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 268 = **463 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。blob read plan の R2 key と owner/blob ID の一致を D1 内で検証し、誤った key を持つ初期行を workerd で拒否。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 267 = **462 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。`prepareNodeBlobRead` で current `node.read` assertion と node/blob/物理観測行を同一 D1 batch で照合。batch 直前のセッション失効と実 R2 配信を workerd で検証。
