@@ -1,6 +1,62 @@
+import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
-import { type BlobReadPlan, streamImmutableBlob } from "../../src/services/blobRead";
+import { beforeAll, expect, it } from "vitest";
+import { atomicBatch } from "../../src/db/primary";
+import {
+  type BlobReadPlan,
+  prepareNodeBlobRead,
+  streamImmutableBlob,
+} from "../../src/services/blobRead";
+import { foundationFixture } from "../fixtures/foundation";
+
+beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
+
+it("builds a current blob plan only while the D1 credential and node remain authorized", async () => {
+  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  await atomicBatch(env.DB, f.statements);
+  const key = `u/${f.ids.user}/b/${f.ids.blob}`;
+  const stored = await env.BLOBS.put(key, "abc");
+  if (!stored) throw new Error("fixture_r2_put_failed");
+  await env.DB.prepare(
+    "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,1)",
+  )
+    .bind(f.ids.blob, stored.etag)
+    .run();
+  const principal = {
+    kind: "user" as const,
+    user_id: f.ids.user,
+    credential_id: f.ids.credential,
+    epoch: 1,
+  };
+  try {
+    const plan = await prepareNodeBlobRead(env.DB, principal, f.ids.space, f.ids.file);
+    expect(plan).toMatchObject({
+      key,
+      size: 3,
+      r2Etag: stored.etag,
+      mime: "application/octet-stream",
+      name: "File",
+    });
+    const response = await streamImmutableBlob(
+      env.BLOBS,
+      plan,
+      new Request("https://content.invalid/c"),
+    );
+    expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("abc");
+    const raced = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch(statements: D1PreparedStatement[]) {
+        await env.DB.prepare("UPDATE sessions SET revoked_at=1 WHERE id=?")
+          .bind(f.ids.session)
+          .run();
+        return env.DB.batch(statements);
+      },
+    } as unknown as D1Database;
+    await expect(prepareNodeBlobRead(raced, principal, f.ids.space, f.ids.file)).rejects.toThrow();
+  } finally {
+    await env.BLOBS.delete(key);
+  }
+});
 
 it("streams exact R2 bytes with D1 content validators and safe response headers", async () => {
   const key = `u/${crypto.randomUUID()}/b/${crypto.randomUUID()}`;

@@ -1,6 +1,8 @@
+import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import { atomicBatch } from "../db/primary";
 import { parseRange } from "../platform/range";
 
-/** The caller must check node, blob, purpose, session and budget before constructing this plan. */
+/** A current D1 node/blob plan; callers must also check purpose, content session and budget. */
 export interface BlobReadPlan {
   readonly key: string;
   readonly size: number;
@@ -10,9 +12,42 @@ export interface BlobReadPlan {
   readonly name: string;
 }
 
-function validate(plan: BlobReadPlan, request: Request): void {
+/** Resolve the current file and its physical object under one D1 authorization assertion. */
+export async function prepareNodeBlobRead(
+  db: D1Database,
+  principal: Principal,
+  spaceId: string,
+  nodeId: string,
+): Promise<BlobReadPlan> {
+  const authorized = await authorizeNode(db, principal, {
+    operation: "node.read",
+    spaceId,
+    nodeId,
+  });
+  if (authorized.operation !== "node.read" || authorized.node.kind !== "file")
+    throw new Error("content_not_available");
+  const batches = await atomicBatch(db, [
+    authorizationAssertion(authorized),
+    {
+      sql: `SELECT b.r2_key AS key,b.size,s.r2_etag AS r2Etag,
+        b.content_etag AS contentEtag,COALESCE(b.mime_sniffed,'application/octet-stream') AS mime,
+        n.name FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+        JOIN blob_storage s ON s.blob_id=b.id
+        WHERE n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?
+          AND n.deleted_at IS NULL AND n.kind='file'
+          AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
+          AND s.bytes=b.size AND s.r2_etag IS NOT NULL`,
+      values: [nodeId, spaceId, authorized.node.revision, authorized.node.current_blob_id],
+    },
+  ]);
+  const row = batches[1]?.results[0] as BlobReadPlan | undefined;
+  if (!row) throw new Error("content_not_available");
+  validatePlan(row);
+  return Object.freeze(row);
+}
+
+function validatePlan(plan: BlobReadPlan): void {
   if (
-    !["GET", "HEAD"].includes(request.method) ||
     !/^u\/[A-Za-z0-9_-]{1,128}\/b\/[A-Za-z0-9_-]{1,128}$/.test(plan.key) ||
     plan.key.length > 1024 ||
     !Number.isSafeInteger(plan.size) ||
@@ -67,7 +102,8 @@ export async function streamImmutableBlob(
   plan: BlobReadPlan,
   request: Request,
 ): Promise<Response> {
-  validate(plan, request);
+  validatePlan(plan);
+  if (request.method !== "GET" && request.method !== "HEAD") throw new Error("invalid_blob_read");
   const object = await bucket.head(plan.key);
   if (!object || object.size !== plan.size || object.etag !== plan.r2Etag)
     throw new Error("blob_storage_mismatch");

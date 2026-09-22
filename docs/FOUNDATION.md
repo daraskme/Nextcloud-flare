@@ -65,7 +65,7 @@ credential の復旧監査では、有効な app password と service の scope 
 
 ## Access session
 
-`services/blobRead.ts` は認可済みの D1 blob plan を受け取る内部 R2 配信基盤。R2 HEAD と GET のサイズ/ETag を plan と照合し、D1 content ETag による 304/If-Range、HEAD、単一 Range の 206/416、MIME/Disposition、no-store/nosniff を返す。node・blob・purpose・content session・予算の検証は呼出し側の必須条件であり、公開 route にはまだ接続していない。
+`services/blobRead.ts` は `node.read` の現在認可 assertion と node/blob/物理観測行を同じ D1 batch で照合し、R2 配信用 plan を作る。R2 HEAD と GET のサイズ/ETag を plan と照合し、D1 content ETag による 304/If-Range、HEAD、単一 Range の 206/416、MIME/Disposition、no-store/nosniff を返す。purpose・content session・予算の検証は呼出し側の必須条件であり、公開 route にはまだ接続していない。
 
 `auth/sessions.ts` は JWT 検証済み claims を受ける内部サービス。`auth/login.ts` が JWT 検証→bootstrap（未初期化時だけ）→session 登録を接続する。HTTP route は未有効化。
 既存 user の iss+sub を照合し、email だけでは identity を結合しない。
