@@ -192,6 +192,20 @@ it("counts every zero-byte request and stops at 1,024 within the budget window",
         bytes: 0,
       }),
     ).rejects.toThrow(/budget_exceeded/);
+    state.storage.sql.exec("UPDATE budget_leases SET expires_at=1");
+    state.storage.sql.exec("UPDATE budget_state SET window_start=?", Date.now() - 600_001);
+    const nextId = crypto.randomUUID();
+    await budget.reserve({
+      budgetId: f.ids.budget,
+      sessionId: f.ids.content,
+      requestId: nextId,
+      epoch: 1,
+      bytes: 0,
+    });
+    expect(budget.status()).toMatchObject({ requests: 1, active: 1 });
+    expect(
+      state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM budget_leases").one().n,
+    ).toBe(1);
   });
 });
 

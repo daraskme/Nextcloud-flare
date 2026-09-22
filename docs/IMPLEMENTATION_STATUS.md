@@ -75,7 +75,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
-- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 279 = **474 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。BudgetDO の SQLite 永続 lease と内部 blob 配信を接続。eviction、known/unknown 精算、8並列、0 byte を含む1024 request、同一ミリ秒の連続 request、alarm、失効 credential、GET/Range/HEAD/304 会計を workerd で検証。
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 279 = **474 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。BudgetDO の SQLite 永続 lease と内部 blob 配信を接続。eviction、known/unknown 精算、8並列、0 byte を含む1024 request、同一ミリ秒の連続 request、alarm、失効 credential、GET/Range/HEAD/304 会計を workerd で検証。後続の修正で期限切れ lease 行の回収と窓更新後の再受付も検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 273 = **468 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content ticket と Cookie の専用 HS256 kid ring、D1 ticket redemption、`content_sessions.ticket_id` migration、Cookie からの current blob plan を追加。private と匿名 share、cancel/version/rotation を workerd で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 270 = **465 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。R2 target manifest の bounded hash 検証と node/blob/purpose/size 所属を `prepareContentBlobRead` に接続。D1 batch 直前の ticket/hash 変更を拒否。復旧監査の R2 list でも target manifest を検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 269 = **464 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content session・ticket・target set・budget の D1 assertion を追加し、credential/purpose 不一致、target expiry、ticket/session 失効、budget revoke を検証。

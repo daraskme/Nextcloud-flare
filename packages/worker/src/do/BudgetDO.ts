@@ -154,6 +154,12 @@ export class BudgetDO extends DurableObject<Env> {
       "UPDATE budget_leases SET state='expired' WHERE state='active' AND expires_at<=?",
       now,
     );
+    // A terminal request only needs its idempotency record for its lease lifetime.
+    // Retaining it forever would make the bounded row limit permanent after 1,024 reads.
+    this.ctx.storage.sql.exec(
+      "DELETE FROM budget_leases WHERE state<>'active' AND expires_at<=?",
+      now,
+    );
   }
 
   async #alarmForActive() {
