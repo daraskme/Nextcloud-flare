@@ -126,7 +126,9 @@ Google IdP/MFA は Access policy の staging gate であり、このローカル
 再検査では credential/grant/epoch に加えて対象 revision、tree generation、parentId を束縛する。
 これは permit、operation、quota/ref/pin の assertion の代わりではなく、create は後述の fsMutation で各 assertion と結合する。
 
-残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、HTTP host/surface dispatch、app password/share secret 検証、実 listing/content handler、trash 時の share 失効、ControlDO admission/再開。
+`auth/appPassword.ts` は DAV Basic の `ap_<ULID>` ID と32B secret を HTTPS app origin のみで受け、Origin/JWT 混在を拒否する。kid 別の HMAC pepper と16B salt、PBKDF2-SHA256 100,000回/32B digest を照合し、D1 の current credential/user/epoch/maintenance を秘密計算の前後で確認する。発行用 hash helper もある。DAV route、rate limit、pepper secret 設定、旧 kid 成功時の再ハッシュは未接続。
+
+残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、HTTP host/surface dispatch、app password DAV 接続・share secret 検証、実 listing/content handler、trash 時の share 失効、ControlDO admission/再開。
 認可 query が返す node metadata は content ticket/purpose/blob/pin の検査を代替しない。
 
 ## CSRF
