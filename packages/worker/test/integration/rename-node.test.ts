@@ -22,6 +22,8 @@ import {
   renameMutationStatements,
   renameNode,
 } from "../../src/services/renameNode";
+import { restoreTrash } from "../../src/services/restoreTrash";
+import { trashNode } from "../../src/services/trashNode";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -117,6 +119,8 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
             invoke((lock) => lock.acquireCopy(request)),
           acquireTrash: (request: Parameters<LockDO["acquireTrash"]>[0]) =>
             invoke((lock) => lock.acquireTrash(request)),
+          acquireRestore: (request: Parameters<LockDO["acquireRestore"]>[0]) =>
+            invoke((lock) => lock.acquireRestore(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -299,6 +303,167 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
     .run();
   expect(await consumeOutbox(env.DB, `${trashOperation.id}_event`)).toBe("completed");
   expect((await send(trashPath, "DELETE", base, trashKey)).status).toBe(200);
+  await env.DB.prepare(
+    `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'folder',?,?)`,
+  )
+    .bind(
+      `${f.ids.root}-restore-conflict`,
+      f.ids.space,
+      f.ids.user,
+      f.ids.root,
+      "REST moved",
+      "rest moved",
+      Date.now(),
+      Date.now(),
+    )
+    .run();
+
+  const restoreKey = crypto.randomUUID();
+  const restorePath = `/api/v1/trash/${trashOperation.id}/restore`;
+  expect(
+    nodeMutationRoute(new Request(`https://app.invalid${restorePath}`, { method: "POST" })),
+  ).toBe(true);
+  const restored = await send(
+    restorePath,
+    "POST",
+    { ...base, destinationParentId: f.ids.root },
+    restoreKey,
+  );
+  expect(restored.status).toBe(200);
+  const restoreOperation = await restored.json<{ id: string; result: { nodeId: string } }>();
+  expect(restoreOperation.result.nodeId).toBe(copyOperation.result.nodeId);
+  expect(
+    await env.DB.prepare("SELECT parent_id,name,deleted_at FROM nodes WHERE id=?")
+      .bind(copyOperation.result.nodeId)
+      .first(),
+  ).toEqual({ parent_id: f.ids.root, name: "REST moved (restored 1)", deleted_at: null });
+  expect(
+    await env.DB.prepare("SELECT state FROM trash_ops WHERE op_id=?")
+      .bind(trashOperation.id)
+      .first("state"),
+  ).toBe("restored");
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
+    .bind(restoreOperation.id)
+    .run();
+  expect(await consumeOutbox(env.DB, `${restoreOperation.id}_event`)).toBe("completed");
+  expect(
+    await (
+      await send(restorePath, "POST", { ...base, destinationParentId: f.ids.root }, restoreKey)
+    ).json(),
+  ).toMatchObject({ id: restoreOperation.id, state: "committed" });
+  expect((await send(restorePath, "POST", { ...base }, restoreKey)).status).toBe(400);
+});
+
+it("restores only the fixed trash membership after GC deletion leases drain", async () => {
+  const { f, principal } = await seeded();
+  const foreignOp = `${f.ids.root}-foreign-trash`;
+  const foreignNode = `${f.ids.root}-foreign-node`;
+  const nestedParent = `${f.ids.root}-zz-nested-parent`;
+  const nestedChild = `${f.ids.root}-00-nested-child`;
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,created_at,epoch)
+        VALUES(?,?,?,?,'trashed',?,1)`,
+      values: [foreignOp, f.ids.user, f.ids.space, foreignNode, Date.now()],
+    },
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at,
+        deleted_at,deleted_op_id,orig_parent_id) VALUES(?,?,?,?,?,?,'folder',?,?,?,?,?)`,
+      values: [
+        foreignNode,
+        f.ids.space,
+        f.ids.user,
+        f.ids.folder,
+        "Foreign deleted",
+        "foreign deleted",
+        Date.now(),
+        Date.now(),
+        Date.now(),
+        foreignOp,
+        f.ids.folder,
+      ],
+    },
+    {
+      sql: "INSERT INTO trash_members(trash_op_id,node_id) VALUES(?,?)",
+      values: [foreignOp, foreignNode],
+    },
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,'folder',?,?)`,
+      values: [
+        nestedParent,
+        f.ids.space,
+        f.ids.user,
+        f.ids.folder,
+        "Nested parent",
+        "nested parent",
+        Date.now(),
+        Date.now(),
+      ],
+    },
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,'folder',?,?)`,
+      values: [
+        nestedChild,
+        f.ids.space,
+        f.ids.user,
+        nestedParent,
+        "Nested child",
+        "nested child",
+        Date.now(),
+        Date.now(),
+      ],
+    },
+  ]);
+  const trashKey = crypto.randomUUID();
+  const trashed = await trashNode(admitted(), {
+    principal,
+    requestId: trashKey,
+    spaceId: f.ids.space,
+    nodeId: f.ids.folder,
+    lockTokens: [],
+  });
+  if (trashed.kind !== "terminal") throw new Error("trash_commit_unknown");
+  const trashId = trashed.operation.id;
+  await env.DB.prepare("INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'deleting',0)")
+    .bind(f.ids.blob)
+    .run();
+  await expect(
+    restoreTrash(admitted(), {
+      principal,
+      requestId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      trashOpId: trashId,
+      destinationParentId: f.ids.root,
+      lockTokens: [],
+    }),
+  ).rejects.toThrow();
+  await env.DB.prepare("DELETE FROM gc_candidates WHERE blob_id=?").bind(f.ids.blob).run();
+  const restored = await restoreTrash(admitted(), {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    trashOpId: trashId,
+    destinationParentId: f.ids.root,
+    lockTokens: [],
+  });
+  if (restored.kind === "terminal" && restored.operation.state !== "committed")
+    throw new Error(JSON.stringify(restored.operation));
+  expect(restored.kind).toBe("terminal");
+  expect(
+    await env.DB.prepare("SELECT deleted_at FROM nodes WHERE id=?").bind(f.ids.folder).first(),
+  ).toEqual({ deleted_at: null });
+  expect(
+    await env.DB.prepare("SELECT deleted_at FROM nodes WHERE id=?").bind(f.ids.file).first(),
+  ).toEqual({ deleted_at: null });
+  expect(
+    await env.DB.prepare("SELECT deleted_at FROM nodes WHERE id=?").bind(nestedChild).first(),
+  ).toEqual({ deleted_at: null });
+  expect(
+    await env.DB.prepare("SELECT deleted_op_id FROM nodes WHERE id=?").bind(foreignNode).first(),
+  ).toEqual({ deleted_op_id: foreignOp });
 });
 
 it("copies a fixed folder manifest with COW blobs and dead properties", async () => {

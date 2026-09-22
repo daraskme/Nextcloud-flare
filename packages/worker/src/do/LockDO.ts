@@ -52,6 +52,10 @@ export interface TrashPermitRequest {
   principal: Principal;
   lockTokens: readonly string[];
 }
+export interface RestorePermitRequest extends CreatePermitRequest {
+  trashOpId: string;
+  rootNodeId: string;
+}
 export interface DavLockRequest {
   requestId: string;
   spaceId: string;
@@ -649,6 +653,96 @@ export class LockDO extends DurableObject<Env> {
       [
         authorizationAssertion(authorized),
         assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
+      ],
+    );
+  }
+
+  async acquireRestore(request: RestorePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (
+      !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.trashOpId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.rootNodeId) ||
+      request.principal.kind !== "user"
+    )
+      throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || !status.gcPaused || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const destination = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.create",
+      parentId: request.parentId,
+      spaceId: request.spaceId,
+    });
+    if (destination.operation !== "node.create") throw new Error("authorization_denied");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingLocks(
+        this.env.DB,
+        request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
+    const restoreGuard = assertExists(
+      `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
+        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+          AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) BETWEEN 1 AND 1000
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
+            WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN nodes m ON m.id=tm.node_id
+            JOIN blobs b ON b.id=m.current_blob_id WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN node_versions v ON v.node_id=tm.node_id
+            JOIN blobs b ON b.id=v.blob_id WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))
+          AND EXISTS(SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=? AND c.maintenance=0 AND c.gc_paused=1)
+          AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')`,
+      [
+        request.trashOpId,
+        request.spaceId,
+        request.rootNodeId,
+        request.principal.user_id,
+        status.epoch,
+      ],
+    );
+    const digest = JSON.stringify([
+      "node.restore",
+      request.trashOpId,
+      request.rootNodeId,
+      request.parentId,
+      request.principal.user_id,
+      request.principal.credential_id,
+      status.epoch,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return grantPermit(
+      this.env.DB,
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(destination),
+        assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+        restoreGuard,
       ],
     );
   }

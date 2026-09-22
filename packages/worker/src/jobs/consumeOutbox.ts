@@ -68,6 +68,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
         )) ||
       (row.kind === "node.updated" && row.op_kind === "dav.put") ||
       (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
+      (row.kind === "node.restored" && row.op_kind === "node.restore") ||
       (row.kind === "node.renamed" &&
         ["node.rename", "node.move", "dav.move"].includes(row.op_kind))
     ) ||
@@ -101,15 +102,22 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             : 201
           : row.kind === "node.updated" || row.kind === "node.trashed"
             ? 204
-            : ["node.move", "dav.move"].includes(row.op_kind)
-              ? typeof operands.overwriteTargetId === "string"
-                ? 204
-                : 201
-              : 200)
+            : row.kind === "node.restored"
+              ? 200
+              : ["node.move", "dav.move"].includes(row.op_kind)
+                ? typeof operands.overwriteTargetId === "string"
+                  ? 204
+                  : 201
+                : 200)
     )
       return "retry";
     parentId = operands.parentId;
-    if (row.kind === "node.renamed" || row.kind === "node.updated" || row.kind === "node.trashed") {
+    if (
+      row.kind === "node.renamed" ||
+      row.kind === "node.updated" ||
+      row.kind === "node.trashed" ||
+      row.kind === "node.restored"
+    ) {
       if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
         return "retry";
       if (row.kind !== "node.trashed") nodeId = operands.nodeId;

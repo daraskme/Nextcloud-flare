@@ -7,12 +7,14 @@ import { copyNode } from "../services/copyNode";
 import { createFolder } from "../services/createFolder";
 import { moveNode } from "../services/moveNode";
 import { renameNode } from "../services/renameNode";
+import { restoreTrash } from "../services/restoreTrash";
 import { trashNode } from "../services/trashNode";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OPERATION = /^\/api\/v1\/operations\/(op_[a-f0-9]{64})$/;
 const NODE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})$/;
 const NODE_TRANSFER = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})\/(move|copy)$/;
+const TRASH_RESTORE = /^\/api\/v1\/trash\/([A-Za-z0-9_-]{1,128})\/restore$/;
 const MAX_BODY = 8192;
 
 function unknownOperation(id: string): Response {
@@ -30,6 +32,7 @@ export function nodeMutationRoute(request: Request): boolean {
     (request.method === "PATCH" && NODE.test(path)) ||
     (request.method === "DELETE" && NODE.test(path)) ||
     (request.method === "POST" && NODE_TRANSFER.test(path)) ||
+    (request.method === "POST" && TRASH_RESTORE.test(path)) ||
     (request.method === "GET" && OPERATION.test(path))
   );
 }
@@ -121,6 +124,22 @@ function trashBody(body: Record<string, unknown>) {
   return { spaceId: body.spaceId, lockTokens };
 }
 
+function restoreBody(body: Record<string, unknown>) {
+  const lockTokens = body.lockTokens ?? [];
+  if (
+    Object.keys(body).some(
+      (key) => !["spaceId", "destinationParentId", "lockTokens"].includes(key),
+    ) ||
+    typeof body.spaceId !== "string" ||
+    !ID.test(body.spaceId) ||
+    typeof body.destinationParentId !== "string" ||
+    !ID.test(body.destinationParentId) ||
+    !validLockTokens(lockTokens)
+  )
+    throw new Error("invalid_restore_body");
+  return { spaceId: body.spaceId, destinationParentId: body.destinationParentId, lockTokens };
+}
+
 function transferBody(
   body: Record<string, unknown>,
   kind: "move",
@@ -203,7 +222,8 @@ export async function handleNodeMutationHttp(
   const rename = request.method === "PATCH" ? NODE.exec(url.pathname) : null;
   const trash = request.method === "DELETE" ? NODE.exec(url.pathname) : null;
   const transfer = request.method === "POST" ? NODE_TRANSFER.exec(url.pathname) : null;
-  if (!folder && !rename && !trash && !transfer) return problem(404, "not_found");
+  const restore = request.method === "POST" ? TRASH_RESTORE.exec(url.pathname) : null;
+  if (!folder && !rename && !trash && !transfer && !restore) return problem(404, "not_found");
   try {
     await csrf.verify(env.DB, request, {
       kind: "access",
@@ -223,38 +243,45 @@ export async function handleNodeMutationHttp(
     return problem(400, "bad_request");
   }
   try {
-    const outcome = folder
-      ? await createFolder(env, { principal, idempotencyKey: key, ...folderBody(body) })
-      : rename
-        ? await renameNode(env, {
-            principal,
-            idempotencyKey: key,
-            nodeId: rename[1] ?? "",
-            ...renameBody(body),
-          })
-        : trash
-          ? await trashNode(env, {
+    const outcome = restore
+      ? await restoreTrash(env, {
+          principal,
+          requestId: key,
+          trashOpId: restore[1] ?? "",
+          ...restoreBody(body),
+        })
+      : folder
+        ? await createFolder(env, { principal, idempotencyKey: key, ...folderBody(body) })
+        : rename
+          ? await renameNode(env, {
               principal,
-              requestId: key,
-              nodeId: trash[1] ?? "",
-              operation: "node.trash",
-              ...trashBody(body),
+              idempotencyKey: key,
+              nodeId: rename[1] ?? "",
+              ...renameBody(body),
             })
-          : transfer?.[2] === "move"
-            ? await moveNode(env, {
+          : trash
+            ? await trashNode(env, {
                 principal,
                 requestId: key,
-                nodeId: transfer[1] ?? "",
-                operation: "node.move",
-                ...transferBody(body, "move"),
+                nodeId: trash[1] ?? "",
+                operation: "node.trash",
+                ...trashBody(body),
               })
-            : await copyNode(env, {
-                principal,
-                requestId: key,
-                sourceNodeId: transfer?.[1] ?? "",
-                operation: "node.copy",
-                ...transferBody(body, "copy"),
-              });
+            : transfer?.[2] === "move"
+              ? await moveNode(env, {
+                  principal,
+                  requestId: key,
+                  nodeId: transfer[1] ?? "",
+                  operation: "node.move",
+                  ...transferBody(body, "move"),
+                })
+              : await copyNode(env, {
+                  principal,
+                  requestId: key,
+                  sourceNodeId: transfer?.[1] ?? "",
+                  operation: "node.copy",
+                  ...transferBody(body, "copy"),
+                });
     if (outcome.kind === "commit_unknown") return unknownOperation(outcome.operationId);
     const operation = outcome.operation;
     if (operation.state === "claimed") return unknownOperation(operation.id);
@@ -281,6 +308,7 @@ export async function handleNodeMutationHttp(
         "invalid_trash_body",
         "invalid_move_body",
         "invalid_copy_body",
+        "invalid_restore_body",
       ].includes(error.message)
     )
       return problem(400, "bad_request");

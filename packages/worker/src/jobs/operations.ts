@@ -183,6 +183,7 @@ export function validateClaimAuthorization(
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
   const move = ["node.move", "dav.move"].includes(intent.kind);
   const copy = ["node.copy", "dav.copy"].includes(intent.kind);
+  const restore = intent.kind === "node.restore";
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
@@ -206,6 +207,10 @@ export function validateClaimAuthorization(
       authorized.operation === "node.read" &&
       authorized.node.id === operands.sourceNodeId &&
       authorized.node.space_id === intent.spaceId) ||
+    (restore &&
+      authorized.operation === "node.create" &&
+      authorized.parent.id === operands.parentId &&
+      authorized.spaceId === intent.spaceId) ||
     (intent.kind === "node.rename" &&
       authorized.operation === "node.rename" &&
       authorized.node.id === operands.nodeId &&
@@ -324,6 +329,7 @@ export async function lookupOperation(
       row.kind !== "node.copy" &&
       row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
+      row.kind !== "node.restore" &&
       row.kind !== "node.rename" &&
       row.kind !== "dav.proppatch")
   )
@@ -350,14 +356,28 @@ export async function lookupOperation(
         parentId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else if (create) {
+    } else if (create || (row.kind === "node.restore" && row.state !== "committed")) {
       if (typeof operands.parentId !== "string") return null;
       await authorizeNode(db, principal, {
         operation: "node.create",
         parentId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else if (["node.rename", "node.move", "dav.move"].includes(row.kind)) {
+      if (row.kind === "node.restore") {
+        if (
+          principal.kind !== "user" ||
+          typeof (operands as { trashOpId?: unknown }).trashOpId !== "string"
+        )
+          return null;
+        const visible = await primary(db)
+          .prepare(
+            "SELECT 1 FROM trash_ops WHERE op_id=? AND space_id=? AND actor_id=? AND state='trashed'",
+          )
+          .bind((operands as { trashOpId: string }).trashOpId, row.space_id, principal.user_id)
+          .first<number>();
+        if (visible !== 1) return null;
+      }
+    } else if (["node.rename", "node.move", "dav.move", "node.restore"].includes(row.kind)) {
       if (typeof operands.parentId !== "string") return null;
       if (typeof operands.nodeId !== "string") return null;
       const authorized = await authorizeNode(db, principal, {
@@ -417,19 +437,21 @@ export async function lookupOperation(
           : 201
         : row.kind === "dav.delete" || row.kind === "node.trash"
           ? 204
-          : ["node.move", "dav.move"].includes(row.kind)
-            ? typeof operands.overwriteTargetId === "string"
-              ? 204
-              : 201
-            : ["node.copy", "dav.copy"].includes(row.kind)
+          : row.kind === "node.restore"
+            ? 200
+            : ["node.move", "dav.move"].includes(row.kind)
               ? typeof operands.overwriteTargetId === "string"
                 ? 204
                 : 201
-              : create
-                ? 201
-                : row.kind === "dav.proppatch"
-                  ? 207
-                  : 200;
+              : ["node.copy", "dav.copy"].includes(row.kind)
+                ? typeof operands.overwriteTargetId === "string"
+                  ? 204
+                  : 201
+                : create
+                  ? 201
+                  : row.kind === "dav.proppatch"
+                    ? 207
+                    : 200;
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&
