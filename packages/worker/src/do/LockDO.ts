@@ -27,6 +27,7 @@ export interface NodeWritePermitRequest {
   nodeId: string;
   principal: Principal;
   lockTokens: readonly string[];
+  operation?: "node.props.write" | "node.content.write";
 }
 export interface DavLockRequest {
   requestId: string;
@@ -288,13 +289,13 @@ export class LockDO extends DurableObject<Env> {
     if (status.maintenance || status.epoch !== request.principal.epoch)
       throw new Error("admission_closed");
     await this.#initialize(request.spaceId, status.epoch);
+    const operation = request.operation ?? "node.props.write";
     const authorized = await authorizeNode(this.env.DB, request.principal, {
-      operation: "node.props.write",
+      operation,
       nodeId: request.nodeId,
       spaceId: request.spaceId,
     });
-    if (authorized.operation !== "node.props.write")
-      throw new Error("invalid_node_write_authorization");
+    if (authorized.operation !== operation) throw new Error("invalid_node_write_authorization");
     const hashes = await lockTokenHashes(request.lockTokens);
     if (
       await hasBlockingLocks(
@@ -307,7 +308,7 @@ export class LockDO extends DurableObject<Env> {
     )
       throw new Error("dav_locked");
     const digest = JSON.stringify([
-      "node.props.write",
+      operation,
       request.nodeId,
       request.principal.kind,
       request.principal.credential_id,

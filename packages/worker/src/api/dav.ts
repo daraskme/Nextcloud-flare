@@ -23,6 +23,7 @@ import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/
 import { createFolder } from "../services/createFolder";
 import { createLockedEmptyFile } from "../services/createLockedFile";
 import { proppatch } from "../services/proppatch";
+import { DAV_PUT_MAX_BYTES, putFile } from "../services/putFile";
 
 const PROTECTED_DAV_PROPERTIES = new Set([
   "getetag",
@@ -222,6 +223,95 @@ export async function handleDavHttp(
       return problem(503, "not_ready");
     }
   }
+  if (request.method === "PUT") {
+    if (path.segments.length === 0 || path.trailingSlash || request.headers.has("Lock-Token"))
+      return problem(405, "method_not_allowed");
+    const lengthText = request.headers.get("Content-Length");
+    if (!lengthText || !/^(0|[1-9][0-9]*)$/.test(lengthText)) return problem(411, "bad_request");
+    const size = Number(lengthText);
+    if (!Number.isSafeInteger(size) || size > DAV_PUT_MAX_BYTES)
+      return problem(413, "payload_too_large");
+    let target: Awaited<ReturnType<typeof resolveDavPropsNode>> | undefined;
+    try {
+      target = await resolveDavPropsNode(env.DB, principal, path);
+    } catch {
+      target = undefined;
+    }
+    if (target && target.node.kind !== "file") return problem(405, "method_not_allowed");
+    if (target && !request.headers.has("If-Match") && !request.headers.has("If"))
+      return problem(428, "precondition_failed");
+    try {
+      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const parent = target
+        ? { spaceId: target.node.space_id, parent: { id: target.node.parent_id! } }
+        : await resolveDavCreateParent(env.DB, principal, {
+            segments: path.segments.slice(0, -1),
+            trailingSlash: true,
+          });
+      const body =
+        request.body ??
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        });
+      const contentType =
+        request.headers.get("Content-Type")?.split(";", 1)[0]?.trim() || "application/octet-stream";
+      const outcome = await putFile(env, {
+        principal,
+        requestId: crypto.randomUUID(),
+        spaceId: parent.spaceId,
+        parentId: parent.parent.id,
+        name: path.segments.at(-1)!.name,
+        ...(target ? { nodeId: target.node.id } : {}),
+        body,
+        size,
+        mime: contentType,
+        lockTokens,
+      });
+      if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
+        const response = problem(503, "commit_unknown");
+        response.headers.set(
+          "Operation-Id",
+          outcome.kind === "commit_unknown" ? outcome.operationId : outcome.operation.id,
+        );
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      if (outcome.operation.state === "failed")
+        return outcome.operation.errorCode === "name_conflict"
+          ? problem(412, "precondition_failed")
+          : problem(409, "conflict");
+      return new Response(null, {
+        status: target ? 204 : 201,
+        headers: {
+          "Cache-Control": "private, no-store",
+          ...(target ? {} : { Location: url.pathname }),
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "invalid_dav_if",
+          "invalid_dav_put",
+          "invalid_name",
+          "name_too_long",
+          "reserved_name",
+        ].includes(error.message)
+      )
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+      if (error instanceof Error && error.message === "authorization_denied")
+        return problem(404, "not_found");
+      if (error instanceof Error && error.message.includes("quota_exceeded"))
+        return problem(507, "insufficient_storage");
+      return problem(503, "not_ready");
+    }
+  }
   if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY", "MOVE"].includes(request.method)) {
     try {
       resolved = await resolveDavNode(env.DB, principal, path);
@@ -238,7 +328,7 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+        Allow: "OPTIONS, GET, HEAD, PUT, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",

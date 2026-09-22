@@ -63,7 +63,8 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
     !row ||
     !(
       (row.kind === "node.created" &&
-        ["node.create", "dav.mkcol", "dav.lock"].includes(row.op_kind)) ||
+        ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(row.op_kind)) ||
+      (row.kind === "node.updated" && row.op_kind === "dav.put") ||
       (row.kind === "node.renamed" && row.op_kind === "node.rename")
     ) ||
     row.op_state !== "committed" ||
@@ -84,11 +85,12 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
     if (
       !result ||
       result.nodeId !== row.payload_ref ||
-      result.status !== (row.kind === "node.created" ? 201 : 200)
+      result.status !==
+        (row.kind === "node.created" ? 201 : row.kind === "node.updated" ? 204 : 200)
     )
       return "retry";
     parentId = operands.parentId;
-    if (row.kind === "node.renamed") {
+    if (row.kind === "node.renamed" || row.kind === "node.updated") {
       if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
         return "retry";
       nodeId = operands.nodeId;
@@ -102,7 +104,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   try {
     authorized = nodeId
       ? await authorizeNode(db, principal, {
-          operation: "node.rename",
+          operation: row.kind === "node.updated" ? "node.content.write" : "node.rename",
           nodeId,
           spaceId: row.space_id,
         })
@@ -111,7 +113,11 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
           parentId,
           spaceId: row.space_id,
         });
-    if (authorized.operation === "node.rename" && authorized.parentId !== parentId) return "retry";
+    if (
+      (authorized.operation === "node.rename" || authorized.operation === "node.content.write") &&
+      authorized.parentId !== parentId
+    )
+      return "retry";
   } catch {
     return "retry";
   }
@@ -128,7 +134,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
                 AND o.kind=? AND o.operands_json=? AND o.result_json=?
-                AND s.step_no=1 AND s.kind='node'
+                AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
         values: [
           token,
@@ -153,7 +159,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
                 AND o.kind=? AND o.operands_json=? AND o.result_json=?
-                AND s.step_no=1 AND s.kind='node'
+                AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
         values: [
           outboxId,

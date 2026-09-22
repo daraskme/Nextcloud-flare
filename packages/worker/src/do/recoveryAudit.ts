@@ -233,12 +233,12 @@ export async function failStaleRecoveryOutbox(
   const clock = "strftime('%s','now')*1000";
   const rows = await primary(db)
     .prepare(`SELECT b.outbox_id FROM outbox b JOIN operations o ON o.op_id=b.op_id
-      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock')) OR
-        (b.kind='node.renamed' AND o.kind='node.rename'))
+      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
+        (b.kind='node.updated' AND o.kind='dav.put') OR (b.kind='node.renamed' AND o.kind='node.rename'))
         AND b.state IN ('pending','dispatching','sent')
         AND o.state='committed' AND o.epoch=b.epoch
         AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
-          AND s.step_no=1 AND s.kind='node' AND s.affected_id=b.payload_ref)
+          AND s.kind='node' AND s.affected_id=b.payload_ref)
         AND ((b.state='pending') OR (b.dispatch_token IS NOT NULL AND b.dispatch_expires_at IS NOT NULL))
         AND ((b.claim_token IS NULL AND b.claim_expires_at IS NULL) OR
           (b.claim_token IS NOT NULL AND b.claim_expires_at<=${clock}))
@@ -252,17 +252,18 @@ export async function failStaleRecoveryOutbox(
         {
           sql: `UPDATE outbox SET state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
             claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
-            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.renamed')
+            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.updated','node.renamed')
               AND state IN ('pending','dispatching','sent')
               AND ((state='pending') OR (dispatch_token IS NOT NULL AND dispatch_expires_at IS NOT NULL))
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
                 (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
-                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock')) OR
+                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
+                  (outbox.kind='node.updated' AND o.kind='dav.put') OR
                   (outbox.kind='node.renamed' AND o.kind='node.rename'))
                 AND o.state='committed' AND o.epoch=outbox.epoch
                 AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
-                  AND s.step_no=1 AND s.kind='node' AND s.affected_id=outbox.payload_ref))
+                  AND s.kind='node' AND s.affected_id=outbox.payload_ref))
               AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?
                 AND maintenance=1 AND gc_paused=1)`,
           values: [outbox_id, epoch, epoch],
@@ -467,7 +468,7 @@ export async function inspectRecoveryPage(
         b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch,
         o.kind AS operation_kind,o.operands_json,o.result_json,
         (SELECT s.affected_id FROM operation_steps s WHERE s.op_id=o.op_id
-          AND s.step_no=1 AND s.kind='node') AS node_step_id
+          AND s.kind='node' LIMIT 1) AS node_step_id
       FROM outbox b LEFT JOIN operations o ON o.op_id=b.op_id
       WHERE b.outbox_id>? ORDER BY b.outbox_id LIMIT ?`)
       .bind(cursor.afterId, limit + 1)
@@ -484,7 +485,10 @@ export async function inspectRecoveryPage(
       if (
         !(
           (row.kind === "node.created" &&
-            ["node.create", "dav.mkcol", "dav.lock"].includes(row.operation_kind ?? "")) ||
+            ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(
+              row.operation_kind ?? "",
+            )) ||
+          (row.kind === "node.updated" && row.operation_kind === "dav.put") ||
           (row.kind === "node.renamed" && row.operation_kind === "node.rename")
         ) ||
         row.node_step_id !== row.payload_ref
@@ -502,12 +506,13 @@ export async function inspectRecoveryPage(
         if (
           !operands ||
           typeof operands.parentId !== "string" ||
-          (row.kind === "node.renamed"
+          (row.kind === "node.renamed" || row.kind === "node.updated"
             ? operands.nodeId !== row.payload_ref
             : operands.nodeId !== undefined) ||
           !result ||
           result.nodeId !== row.payload_ref ||
-          result.status !== (row.kind === "node.created" ? 201 : 200)
+          result.status !==
+            (row.kind === "node.created" ? 201 : row.kind === "node.updated" ? 204 : 200)
         )
           throw new Error("recovery_outbox_provenance_mismatch");
       } catch {

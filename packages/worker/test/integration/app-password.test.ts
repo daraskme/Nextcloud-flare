@@ -13,6 +13,7 @@ import { parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
+import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -276,7 +277,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
   expect(options.headers.get("Allow")).toBe(
-    "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+    "OPTIONS, GET, HEAD, PUT, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
   );
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
@@ -1053,6 +1054,221 @@ it("creates a locked empty file for LOCK on an unmapped DAV path", async () => {
   } finally {
     if (row) await env.BLOBS.delete(row.r2Key);
   }
+});
+
+it("streams DAV PUT creates and conditional overwrites into immutable versioned blobs", async () => {
+  const { f, id, ring, request } = await fixture("G");
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:create'),(?,'node:read'),(?,'node:write')",
+  )
+    .bind(`ap:${id}`, `ap:${id}`, `ap:${id}`)
+    .run();
+  const davEnv = admittedDavEnv();
+  const headers = Object.fromEntries(request().headers);
+  const firstBody = "first DAV body";
+  const created = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", {
+      method: "PUT",
+      headers: {
+        ...headers,
+        "Content-Length": String(firstBody.length),
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+      body: firstBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(created.status).toBe(201);
+  expect(created.headers.get("Location")).toBe("/dav/Put.txt");
+  const first = await env.DB.prepare(
+    `SELECT n.id,n.revision,n.current_blob_id AS blobId,b.r2_key AS r2Key,b.size,b.sha256_verified AS sha256,
+      b.mime_sniffed AS mime,b.ref_count AS refCount,n.last_op_id AS opId
+      FROM nodes n JOIN blobs b ON b.id=n.current_blob_id
+      WHERE n.parent_id=? AND n.name='Put.txt' AND n.deleted_at IS NULL`,
+  )
+    .bind(f.ids.folder)
+    .first<{
+      id: string;
+      revision: number;
+      blobId: string;
+      r2Key: string;
+      size: number;
+      sha256: string;
+      mime: string;
+      refCount: number;
+      opId: string;
+    }>();
+  expect(first).toMatchObject({
+    revision: 1,
+    size: firstBody.length,
+    mime: "text/plain",
+    refCount: 1,
+  });
+  const expectedHash = Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(firstBody))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  expect(first?.sha256).toBe(expectedHash);
+  expect(await (await env.BLOBS.get(first!.r2Key))!.text()).toBe(firstBody);
+  expect(
+    await env.DB.prepare(
+      "SELECT kind,state,expected_steps AS expectedSteps FROM operations WHERE op_id=?",
+    )
+      .bind(first!.opId)
+      .first(),
+  ).toEqual({ kind: "dav.put", state: "committed", expectedSteps: 10 });
+  expect(
+    await env.DB.prepare("SELECT state,bytes FROM reservations WHERE op_id=?")
+      .bind(first!.opId)
+      .first(),
+  ).toEqual({ state: "consumed", bytes: firstBody.length });
+  await env.DB.prepare(
+    "UPDATE outbox SET state='dispatching',dispatch_token='put-create',dispatch_expires_at=?,updated_at=? WHERE op_id=?",
+  )
+    .bind(Date.now() + 30_000, Date.now(), first!.opId)
+    .run();
+  expect(await consumeOutbox(env.DB, `${first!.opId}_event`)).toBe("completed");
+
+  const unconditioned = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", {
+      method: "PUT",
+      headers: { ...headers, "Content-Length": "1" },
+      body: "x",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(unconditioned.status).toBe(428);
+
+  const read = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", { headers }),
+    davEnv,
+    1,
+    ring,
+  );
+  const etag = read.headers.get("ETag");
+  expect(etag).toBe(`"b-${first!.blobId}"`);
+  const secondBody = "replacement";
+  const overwritten = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", {
+      method: "PUT",
+      headers: {
+        ...headers,
+        "Content-Length": String(secondBody.length),
+        "Content-Type": "text/plain",
+        "If-Match": etag!,
+      },
+      body: secondBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(overwritten.status).toBe(204);
+  const current = await env.DB.prepare(
+    `SELECT n.revision,n.current_blob_id AS blobId,b.r2_key AS r2Key,b.ref_count AS refCount,
+      n.last_op_id AS opId,(SELECT COUNT(*) FROM node_versions v WHERE v.node_id=n.id AND v.blob_id=?) AS versions
+      FROM nodes n JOIN blobs b ON b.id=n.current_blob_id WHERE n.id=?`,
+  )
+    .bind(first!.blobId, first!.id)
+    .first<{
+      revision: number;
+      blobId: string;
+      r2Key: string;
+      refCount: number;
+      opId: string;
+      versions: number;
+    }>();
+  expect(current).toMatchObject({ revision: 2, refCount: 1, versions: 1 });
+  expect(current?.blobId).not.toBe(first?.blobId);
+  expect(await (await env.BLOBS.get(current!.r2Key))!.text()).toBe(secondBody);
+  expect(
+    await env.DB.prepare(
+      "SELECT kind,state,expected_steps AS expectedSteps FROM operations WHERE op_id=?",
+    )
+      .bind(current!.opId)
+      .first(),
+  ).toEqual({ kind: "dav.put", state: "committed", expectedSteps: 8 });
+  await env.DB.prepare(
+    "UPDATE outbox SET state='dispatching',dispatch_token='put-update',dispatch_expires_at=?,updated_at=? WHERE op_id=?",
+  )
+    .bind(Date.now() + 30_000, Date.now(), current!.opId)
+    .run();
+  expect(await consumeOutbox(env.DB, `${current!.opId}_event`)).toBe("completed");
+  await env.DB.prepare("UPDATE users SET quota_bytes=used_bytes WHERE id=?").bind(f.ids.user).run();
+  const beforeQuotaFailure = await env.BLOBS.list({ prefix: `u/${f.ids.user}/b/` });
+  const quotaFailure = await handleDavHttp(
+    new Request("https://app.invalid/dav/Quota.txt", {
+      method: "PUT",
+      headers: { ...headers, "Content-Length": "1" },
+      body: "x",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(quotaFailure.status).toBe(507);
+  expect(
+    (await env.BLOBS.list({ prefix: `u/${f.ids.user}/b/` })).objects.map(({ key }) => key).sort(),
+  ).toEqual(beforeQuotaFailure.objects.map(({ key }) => key).sort());
+  expect(
+    await env.DB.prepare(
+      "SELECT state,error_code AS errorCode FROM operations WHERE kind='dav.put' AND error_code='quota_exceeded'",
+    ).first(),
+  ).toEqual({ state: "failed", errorCode: "quota_exceeded" });
+  const locked = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", {
+      method: "LOCK",
+      headers: {
+        ...headers,
+        "Content-Type": "application/xml",
+        Depth: "0",
+        Timeout: "Second-60",
+      },
+      body: `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
+        <D:locktype><D:write/></D:locktype></D:lockinfo>`,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(locked.status).toBe(200);
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Put.txt", {
+          method: "PUT",
+          headers: {
+            ...headers,
+            "Content-Length": "1",
+            "If-Match": `"b-${current!.blobId}"`,
+          },
+          body: "x",
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(423);
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Put.txt", {
+          method: "UNLOCK",
+          headers: { ...headers, "Lock-Token": locked.headers.get("Lock-Token")! },
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(204);
+  await env.BLOBS.delete(first!.r2Key);
+  await env.BLOBS.delete(current!.r2Key);
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

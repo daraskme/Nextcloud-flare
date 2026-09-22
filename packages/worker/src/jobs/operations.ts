@@ -172,12 +172,17 @@ export function validateClaimAuthorization(
   steps: number,
 ): SqlStatement {
   const operands = JSON.parse(intent.operands) as { parentId?: unknown; nodeId?: unknown };
-  const create = ["node.create", "dav.mkcol", "dav.lock"].includes(intent.kind);
+  const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(intent.kind);
+  const contentWrite = intent.kind === "dav.put" && authorized.operation === "node.content.write";
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
       authorized.parent.id === operands.parentId &&
       authorized.spaceId === intent.spaceId) ||
+    (contentWrite &&
+      authorized.node.id === operands.nodeId &&
+      authorized.parentId === operands.parentId &&
+      authorized.node.space_id === intent.spaceId) ||
     (intent.kind === "node.rename" &&
       authorized.operation === "node.rename" &&
       authorized.node.id === operands.nodeId &&
@@ -289,6 +294,7 @@ export async function lookupOperation(
     (row.kind !== "node.create" &&
       row.kind !== "dav.mkcol" &&
       row.kind !== "dav.lock" &&
+      row.kind !== "dav.put" &&
       row.kind !== "node.rename" &&
       row.kind !== "dav.proppatch")
   )
@@ -313,6 +319,26 @@ export async function lookupOperation(
       });
       if (authorized.operation !== "node.rename" || authorized.parentId !== operands.parentId)
         return null;
+    } else if (row.kind === "dav.put") {
+      if (typeof operands.nodeId === "string") {
+        const authorized = await authorizeNode(db, principal, {
+          operation: "node.content.write",
+          nodeId: operands.nodeId,
+          spaceId: row.space_id,
+        });
+        if (
+          authorized.operation !== "node.content.write" ||
+          authorized.parentId !== operands.parentId
+        )
+          return null;
+      } else {
+        if (typeof operands.parentId !== "string") return null;
+        await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId: operands.parentId,
+          spaceId: row.space_id,
+        });
+      }
     } else {
       if (typeof operands.nodeId !== "string") return null;
       await authorizeNode(db, principal, {
@@ -325,8 +351,17 @@ export async function lookupOperation(
       row.state === "committed" && row.result_json
         ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
         : null;
-    if (result && result.status !== (create ? 201 : row.kind === "dav.proppatch" ? 207 : 200))
-      return null;
+    const expectedStatus =
+      row.kind === "dav.put"
+        ? typeof operands.nodeId === "string"
+          ? 204
+          : 201
+        : create
+          ? 201
+          : row.kind === "dav.proppatch"
+            ? 207
+            : 200;
+    if (result && result.status !== expectedStatus) return null;
     if (result && row.kind === "node.rename" && result.nodeId !== operands.nodeId) return null;
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (result && typeof result.nodeId === "string") {
@@ -351,6 +386,7 @@ export async function lookupOperation(
               "stale_epoch",
               "mutation_rejected",
               "name_conflict",
+              "quota_exceeded",
             ].includes(row.error_code)
           ? row.error_code
           : "operation_failed";
