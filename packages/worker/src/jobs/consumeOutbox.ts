@@ -63,10 +63,13 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
     !row ||
     !(
       (row.kind === "node.created" &&
-        ["node.create", "dav.mkcol", "dav.lock", "dav.put", "dav.copy"].includes(row.op_kind)) ||
+        ["node.create", "node.copy", "dav.mkcol", "dav.lock", "dav.put", "dav.copy"].includes(
+          row.op_kind,
+        )) ||
       (row.kind === "node.updated" && row.op_kind === "dav.put") ||
       (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
-      (row.kind === "node.renamed" && ["node.rename", "dav.move"].includes(row.op_kind))
+      (row.kind === "node.renamed" &&
+        ["node.rename", "node.move", "dav.move"].includes(row.op_kind))
     ) ||
     row.op_state !== "committed" ||
     !["dispatching", "sent"].includes(row.state)
@@ -92,12 +95,13 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
       result.nodeId !== row.payload_ref ||
       result.status !==
         (row.kind === "node.created"
-          ? row.op_kind === "dav.copy" && typeof operands.overwriteTargetId === "string"
+          ? ["node.copy", "dav.copy"].includes(row.op_kind) &&
+            typeof operands.overwriteTargetId === "string"
             ? 204
             : 201
           : row.kind === "node.updated" || row.kind === "node.trashed"
             ? 204
-            : row.op_kind === "dav.move"
+            : ["node.move", "dav.move"].includes(row.op_kind)
               ? typeof operands.overwriteTargetId === "string"
                 ? 204
                 : 201

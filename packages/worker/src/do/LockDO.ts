@@ -30,10 +30,12 @@ export interface RenamePermitRequest {
 export interface MovePermitRequest extends RenamePermitRequest {
   destinationParentId: string;
   overwriteTargetId?: string;
+  operation?: "node.move" | "dav.move";
 }
 export interface CopyPermitRequest extends CreatePermitRequest {
   sourceNodeId: string;
   overwriteTargetId?: string;
+  operation?: "node.copy" | "dav.copy";
 }
 export interface NodeWritePermitRequest {
   requestId: string;
@@ -361,7 +363,7 @@ export class LockDO extends DurableObject<Env> {
     )
       throw new Error("dav_locked");
     const digest = JSON.stringify([
-      "dav.move",
+      request.operation ?? "dav.move",
       request.nodeId,
       source.parentId,
       request.destinationParentId,
@@ -467,7 +469,7 @@ export class LockDO extends DurableObject<Env> {
     )
       throw new Error("dav_locked");
     const digest = JSON.stringify([
-      "dav.copy",
+      request.operation ?? "dav.copy",
       request.sourceNodeId,
       request.parentId,
       request.overwriteTargetId ?? null,

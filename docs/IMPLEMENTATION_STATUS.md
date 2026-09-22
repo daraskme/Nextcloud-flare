@@ -25,9 +25,10 @@
 | 1 private account HTTP | `/api/v1/me` は current credential/user/space/quota を照合、logout は CSRF 後に D1 session と派生 content session を失効して Access logout に 303 | RS256 JWT、CSRF 欠落拒否、logout 後の再入場拒否を workerd で検証。ブラウザーの state 削除と navigation は Files UI 未実装 |
 | 2 Files read HTTP | app の node 詳細と children 一覧を `node.read` 祖先証明＋maintenance の D1 batch に接続。keyset 最大200件、専用 HMAC cursor は parent/credential/epoch/tree generation/最終 sort key/期限を束縛 | 実 D1 で201件を2ページ、改変・期限切れ・tree 変更・他 user・maintenance を拒否。remote cursor ring と Files UI は未設定・未実装 |
 | 2 folder create HTTP | `POST /api/v1/nodes` の bounded JSON、CSRF、Idempotency-Key を LockDO/permit/D1 の folder mutation に接続。`GET /api/v1/operations/:id` は同 credential の current operand/result を照合 | 実 LockDO/D1 の作成・再送・照会、CSRF 欠落、異 payload の409を workerd で検証。test-only admission であり実 ControlDO 再開は未実装 |
+| 2 Files mutation HTTP | private REST の `DELETE /nodes/:id`、`POST /nodes/:id/move`、`POST /nodes/:id/copy` を CSRF、bounded JSON、Idempotency-Key、LockDO、固定 subtree manifest、atomic trash/MOVE/COW COPY へ接続。REST operation は `node.trash` / `node.move` / `node.copy` として DAV と区別し、consumer・復旧監査も両 provenance を検証 | copy→move→trash、各 namespace 結果、Outbox 消費、operation kind、削除後の同一 DELETE 再送を実 D1/DO で検証。実 ControlDO admission と Files UI は未実装 |
 | 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
-| 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
+| 1.1 契約・schema | 54通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |
 | 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。admission/復旧 verifier/再開と実 GC lease drain は未完了 |
@@ -56,7 +57,7 @@
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
 ControlDO は内部 RPC の epoch 発行・復旧を実装したが、maintenance / GC pause を解除しない。
-LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO は拒否実装。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO は拒否実装。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
 
 ## Toolchain の判断
 
@@ -87,6 +88,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、private Files REST の trash/MOVE/COPYを既存の原子的 mutationへ接続。strict JSON/CSRF/Idempotency-Key、`node.*` operation provenance、LockDO intent、operation lookup、Outbox consumer、旧epoch復旧監査をDAVと共通化し、削除後の同一DELETE再送もterminal operationから冪等に返す。Node 218 + workerd 335 = **553 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-runも成功。
 - 2026-09-23、DAV COPYをstrict `Destination`/`Overwrite`/method別`Depth`、migration `0012`の固定source→copied manifest、同一owner・最大1,000 node/10 GiBのsame-owner COWへ接続。file/folder、Depth 0/infinity、dead properties、blob ref/quota trigger、上書きtarget trash、201/204/412、Outbox/復旧provenance、terminal replayを実D1で検証。Node 218 + workerd 334 = **552 tests**、lint/typecheck/contracts/config/schema generator、Web build、Wrangler dry-runも成功。
 - 2026-09-23、DAV MOVEをstrict same-origin `Destination`/`Overwrite`/`Depth` parserと、同一owner・最大1,000 node/10 GiBの固定manifestを持つ19-step `dav.move` commitへ接続。循環防止、cross-space拒否、両親/tree revision、source/overwrite lock終了、上書きtargetのtrash/share/session失効、201/204、Outbox/復旧provenance、terminal replayを実D1で検証。Node 218 + workerd 331 = **549 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-runも成功。
 - 2026-09-23、DAV DELETEを`node:delete`、subtree/parent/ancestor lock fence、最大1,000 nodeのmembershipを持つ13-step `dav.delete` trash commitへ接続。node不可視化、share/session/ticket失効、Outboxと復旧provenance、子lock token提出、1,001 nodeの403を実D1で検証。Node 215 + workerd 327 = **542 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-runも成功。

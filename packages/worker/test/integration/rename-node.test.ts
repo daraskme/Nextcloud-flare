@@ -115,6 +115,8 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
             invoke((lock) => lock.acquireMove(request)),
           acquireCopy: (request: Parameters<LockDO["acquireCopy"]>[0]) =>
             invoke((lock) => lock.acquireCopy(request)),
+          acquireTrash: (request: Parameters<LockDO["acquireTrash"]>[0]) =>
+            invoke((lock) => lock.acquireTrash(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -174,6 +176,129 @@ it("renames through the private HTTP bridge and replays its operation", async ()
   expect(lookup.status).toBe(200);
   expect(await lookup.json()).toMatchObject({ id: operation.id, state: "committed" });
   expect((await send(headers, body.replace("HTTP 経由の名前", "別名"))).status).toBe(409);
+});
+
+it("copies, moves, and trashes through the private REST bridge", async () => {
+  const { f, principal } = await seeded();
+  const fileSearch = searchName("File");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+        VALUES(?,?,?,?,?,1)`,
+      values: [f.ids.file, f.ids.space, fileSearch.textNorm, fileSearch.tokens, fileSearch.version],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [f.ids.file],
+    },
+  ]);
+  const appEnv = { ...env, ...admitted(), APP_ORIGIN: "https://app.invalid" };
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: secret });
+  const csrf = new CsrfTokens(ring, ring, appEnv.APP_ORIGIN);
+  const issued = await csrf.issue(
+    env.DB,
+    new Request("https://app.invalid/api/v1/csrf", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+    { kind: "access", credentialId: principal.credential_id, epoch: 1 },
+  );
+  const send = (path: string, method: string, body: Record<string, unknown>, key: string) =>
+    handleNodeMutationHttp(
+      new Request(`https://app.invalid${path}`, {
+        method,
+        headers: {
+          Origin: appEnv.APP_ORIGIN,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": issued.token,
+          "Idempotency-Key": key,
+        },
+        body: JSON.stringify(body),
+      }),
+      appEnv,
+      principal,
+      csrf,
+    );
+  const base = { spaceId: f.ids.space, lockTokens: [] };
+  const copyKey = crypto.randomUUID();
+  const copyPath = `/api/v1/nodes/${f.ids.file}/copy`;
+  expect(nodeMutationRoute(new Request(`https://app.invalid${copyPath}`, { method: "POST" }))).toBe(
+    true,
+  );
+  const copyBody = {
+    ...base,
+    destinationParentId: f.ids.root,
+    name: "REST copy",
+    depth: "0",
+  };
+  const copied = await send(copyPath, "POST", copyBody, copyKey);
+  expect(copied.status).toBe(201);
+  const copyOperation = await copied.json<{
+    id: string;
+    result: { nodeId: string };
+  }>();
+  expect(
+    await env.DB.prepare("SELECT kind,name FROM nodes WHERE id=?")
+      .bind(copyOperation.result.nodeId)
+      .first(),
+  ).toEqual({ kind: "file", name: "REST copy" });
+  const copyRow = await env.DB.prepare("SELECT kind FROM operations WHERE op_id=?")
+    .bind(copyOperation.id)
+    .first("kind");
+  expect(copyRow).toBe("node.copy");
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
+    .bind(copyOperation.id)
+    .run();
+  expect(await consumeOutbox(env.DB, `${copyOperation.id}_event`)).toBe("completed");
+  expect(await (await send(copyPath, "POST", copyBody, copyKey)).json()).toMatchObject({
+    id: copyOperation.id,
+  });
+  expect((await send(copyPath, "POST", { ...base }, copyKey)).status).toBe(400);
+
+  const moveKey = crypto.randomUUID();
+  const movePath = `/api/v1/nodes/${copyOperation.result.nodeId}/move`;
+  const moveBody = { ...base, destinationParentId: f.ids.folder, name: "REST moved" };
+  const moved = await send(movePath, "POST", moveBody, moveKey);
+  expect(moved.status).toBe(200);
+  const moveOperation = await moved.json<{ id: string }>();
+  expect(
+    await env.DB.prepare("SELECT parent_id,name FROM nodes WHERE id=?")
+      .bind(copyOperation.result.nodeId)
+      .first(),
+  ).toEqual({ parent_id: f.ids.folder, name: "REST moved" });
+  expect(
+    await env.DB.prepare("SELECT kind FROM operations WHERE op_id=?")
+      .bind(moveOperation.id)
+      .first("kind"),
+  ).toBe("node.move");
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
+    .bind(moveOperation.id)
+    .run();
+  expect(await consumeOutbox(env.DB, `${moveOperation.id}_event`)).toBe("completed");
+  expect(await (await send(movePath, "POST", moveBody, moveKey)).json()).toMatchObject({
+    id: moveOperation.id,
+  });
+
+  const trashKey = crypto.randomUUID();
+  const trashPath = `/api/v1/nodes/${copyOperation.result.nodeId}`;
+  expect(
+    nodeMutationRoute(new Request(`https://app.invalid${trashPath}`, { method: "DELETE" })),
+  ).toBe(true);
+  const trashed = await send(trashPath, "DELETE", base, trashKey);
+  expect(trashed.status).toBe(200);
+  const trashOperation = await trashed.json<{ id: string }>();
+  expect(
+    await env.DB.prepare("SELECT deleted_at IS NOT NULL AS deleted FROM nodes WHERE id=?")
+      .bind(copyOperation.result.nodeId)
+      .first("deleted"),
+  ).toBe(1);
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
+    .bind(trashOperation.id)
+    .run();
+  expect(await consumeOutbox(env.DB, `${trashOperation.id}_event`)).toBe("completed");
+  expect((await send(trashPath, "DELETE", base, trashKey)).status).toBe(200);
 });
 
 it("copies a fixed folder manifest with COW blobs and dead properties", async () => {

@@ -181,8 +181,8 @@ export function validateClaimAuthorization(
   const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(intent.kind);
   const contentWrite = intent.kind === "dav.put" && authorized.operation === "node.content.write";
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
-  const move = intent.kind === "dav.move";
-  const copy = intent.kind === "dav.copy";
+  const move = ["node.move", "dav.move"].includes(intent.kind);
+  const copy = ["node.copy", "dav.copy"].includes(intent.kind);
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
@@ -321,6 +321,8 @@ export async function lookupOperation(
       row.kind !== "dav.delete" &&
       row.kind !== "dav.copy" &&
       row.kind !== "dav.move" &&
+      row.kind !== "node.copy" &&
+      row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
       row.kind !== "node.rename" &&
       row.kind !== "dav.proppatch")
@@ -335,7 +337,7 @@ export async function lookupOperation(
       nodeId?: unknown;
     };
     const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
-    if (row.kind === "dav.copy") {
+    if (row.kind === "dav.copy" || row.kind === "node.copy") {
       if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
         return null;
       await authorizeNode(db, principal, {
@@ -355,7 +357,7 @@ export async function lookupOperation(
         parentId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else if (row.kind === "node.rename" || row.kind === "dav.move") {
+    } else if (["node.rename", "node.move", "dav.move"].includes(row.kind)) {
       if (typeof operands.parentId !== "string") return null;
       if (typeof operands.nodeId !== "string") return null;
       const authorized = await authorizeNode(db, principal, {
@@ -364,7 +366,7 @@ export async function lookupOperation(
         spaceId: row.space_id,
       });
       const expectedParent =
-        row.kind === "dav.move" && row.state !== "committed"
+        ["node.move", "dav.move"].includes(row.kind) && row.state !== "committed"
           ? operands.sourceParentId
           : operands.parentId;
       if (authorized.operation !== "node.rename" || authorized.parentId !== expectedParent)
@@ -415,11 +417,11 @@ export async function lookupOperation(
           : 201
         : row.kind === "dav.delete" || row.kind === "node.trash"
           ? 204
-          : row.kind === "dav.move"
+          : ["node.move", "dav.move"].includes(row.kind)
             ? typeof operands.overwriteTargetId === "string"
               ? 204
               : 201
-            : row.kind === "dav.copy"
+            : ["node.copy", "dav.copy"].includes(row.kind)
               ? typeof operands.overwriteTargetId === "string"
                 ? 204
                 : 201
@@ -431,7 +433,7 @@ export async function lookupOperation(
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&
-      (row.kind === "node.rename" || row.kind === "dav.move") &&
+      ["node.rename", "node.move", "dav.move"].includes(row.kind) &&
       result.nodeId !== operands.nodeId
     )
       return null;

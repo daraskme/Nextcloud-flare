@@ -3,12 +3,16 @@ import type { Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
 import { lookupOperation } from "../jobs/operations";
+import { copyNode } from "../services/copyNode";
 import { createFolder } from "../services/createFolder";
+import { moveNode } from "../services/moveNode";
 import { renameNode } from "../services/renameNode";
+import { trashNode } from "../services/trashNode";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OPERATION = /^\/api\/v1\/operations\/(op_[a-f0-9]{64})$/;
 const NODE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})$/;
+const NODE_TRANSFER = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})\/(move|copy)$/;
 const MAX_BODY = 8192;
 
 function unknownOperation(id: string): Response {
@@ -24,6 +28,8 @@ export function nodeMutationRoute(request: Request): boolean {
   return (
     (request.method === "POST" && path === "/api/v1/nodes") ||
     (request.method === "PATCH" && NODE.test(path)) ||
+    (request.method === "DELETE" && NODE.test(path)) ||
+    (request.method === "POST" && NODE_TRANSFER.test(path)) ||
     (request.method === "GET" && OPERATION.test(path))
   );
 }
@@ -103,6 +109,74 @@ function renameBody(body: Record<string, unknown>) {
   return { spaceId: body.spaceId, name: body.name, lockTokens };
 }
 
+function trashBody(body: Record<string, unknown>) {
+  const lockTokens = body.lockTokens ?? [];
+  if (
+    Object.keys(body).some((key) => !["spaceId", "lockTokens"].includes(key)) ||
+    typeof body.spaceId !== "string" ||
+    !ID.test(body.spaceId) ||
+    !validLockTokens(lockTokens)
+  )
+    throw new Error("invalid_trash_body");
+  return { spaceId: body.spaceId, lockTokens };
+}
+
+function transferBody(
+  body: Record<string, unknown>,
+  kind: "move",
+): {
+  spaceId: string;
+  destinationParentId: string;
+  name: string;
+  overwriteTargetId?: string;
+  lockTokens: string[];
+};
+function transferBody(
+  body: Record<string, unknown>,
+  kind: "copy",
+): {
+  spaceId: string;
+  destinationParentId: string;
+  name: string;
+  overwriteTargetId?: string;
+  lockTokens: string[];
+  depth: "0" | "infinity";
+};
+function transferBody(body: Record<string, unknown>, kind: "move" | "copy") {
+  const lockTokens = body.lockTokens ?? [];
+  const allowed = [
+    "spaceId",
+    "destinationParentId",
+    "name",
+    "overwriteTargetId",
+    "lockTokens",
+    ...(kind === "copy" ? ["depth"] : []),
+  ];
+  if (
+    Object.keys(body).some((key) => !allowed.includes(key)) ||
+    typeof body.spaceId !== "string" ||
+    !ID.test(body.spaceId) ||
+    typeof body.destinationParentId !== "string" ||
+    !ID.test(body.destinationParentId) ||
+    typeof body.name !== "string" ||
+    (body.overwriteTargetId !== undefined &&
+      (typeof body.overwriteTargetId !== "string" || !ID.test(body.overwriteTargetId))) ||
+    !validLockTokens(lockTokens) ||
+    (kind === "copy" && body.depth !== "0" && body.depth !== "infinity")
+  )
+    throw new Error(`invalid_${kind}_body`);
+  return {
+    spaceId: body.spaceId,
+    destinationParentId: body.destinationParentId,
+    name: body.name,
+    ...(typeof body.overwriteTargetId === "string"
+      ? { overwriteTargetId: body.overwriteTargetId }
+      : {}),
+    lockTokens,
+    ...(kind === "copy" ? { depth: body.depth as "0" | "infinity" } : {}),
+  };
+}
+
 /** Private REST bridge for the preexisting operation/permit mutation protocol. */
 export async function handleNodeMutationHttp(
   request: Request,
@@ -127,7 +201,9 @@ export async function handleNodeMutationHttp(
   }
   const folder = request.method === "POST" && url.pathname === "/api/v1/nodes";
   const rename = request.method === "PATCH" ? NODE.exec(url.pathname) : null;
-  if (!folder && !rename) return problem(404, "not_found");
+  const trash = request.method === "DELETE" ? NODE.exec(url.pathname) : null;
+  const transfer = request.method === "POST" ? NODE_TRANSFER.exec(url.pathname) : null;
+  if (!folder && !rename && !trash && !transfer) return problem(404, "not_found");
   try {
     await csrf.verify(env.DB, request, {
       kind: "access",
@@ -149,18 +225,42 @@ export async function handleNodeMutationHttp(
   try {
     const outcome = folder
       ? await createFolder(env, { principal, idempotencyKey: key, ...folderBody(body) })
-      : await renameNode(env, {
-          principal,
-          idempotencyKey: key,
-          nodeId: rename?.[1] ?? "",
-          ...renameBody(body),
-        });
+      : rename
+        ? await renameNode(env, {
+            principal,
+            idempotencyKey: key,
+            nodeId: rename[1] ?? "",
+            ...renameBody(body),
+          })
+        : trash
+          ? await trashNode(env, {
+              principal,
+              requestId: key,
+              nodeId: trash[1] ?? "",
+              operation: "node.trash",
+              ...trashBody(body),
+            })
+          : transfer?.[2] === "move"
+            ? await moveNode(env, {
+                principal,
+                requestId: key,
+                nodeId: transfer[1] ?? "",
+                operation: "node.move",
+                ...transferBody(body, "move"),
+              })
+            : await copyNode(env, {
+                principal,
+                requestId: key,
+                sourceNodeId: transfer?.[1] ?? "",
+                operation: "node.copy",
+                ...transferBody(body, "copy"),
+              });
     if (outcome.kind === "commit_unknown") return unknownOperation(outcome.operationId);
     const operation = outcome.operation;
     if (operation.state === "claimed") return unknownOperation(operation.id);
     if (operation.state === "committed")
       return Response.json(operation, {
-        status: folder ? 201 : 200,
+        status: folder || transfer?.[2] === "copy" ? 201 : 200,
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
       });
     return Response.json(operation, {
@@ -178,11 +278,22 @@ export async function handleNodeMutationHttp(
         "reserved_name",
         "invalid_folder_body",
         "invalid_rename_body",
+        "invalid_trash_body",
+        "invalid_move_body",
+        "invalid_copy_body",
       ].includes(error.message)
     )
       return problem(400, "bad_request");
     if (error instanceof Error && error.message === "authorization_denied")
       return problem(404, "not_found");
+    if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+    if (error instanceof Error && error.message === "dav_transfer_too_large")
+      return problem(413, "payload_too_large");
+    if (
+      error instanceof Error &&
+      ["name_conflict", "dav_cross_space_move", "dav_cross_space_copy"].includes(error.message)
+    )
+      return problem(409, "conflict");
     return problem(503, "not_ready");
   }
 }

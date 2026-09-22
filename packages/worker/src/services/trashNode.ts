@@ -16,6 +16,7 @@ import {
   lookupOperation,
   type OperationClaim,
   operationIntent,
+  operationRow,
 } from "../jobs/operations";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
@@ -260,6 +261,36 @@ export async function trashNode(
 ): Promise<MutationOutcome> {
   if (request.principal.kind !== "user" && request.principal.kind !== "app_password")
     throw new Error("authorization_denied");
+  const operationKind = request.operation ?? "node.trash";
+  const slotIntent = await operationIntent(
+    request.principal,
+    request.requestId,
+    request.spaceId,
+    operationKind,
+    {},
+    {},
+  );
+  const terminalSlot = await operationRow(env.DB, slotIntent.id);
+  if (terminalSlot && terminalSlot.state !== "claimed") {
+    let operands: Record<string, unknown>;
+    try {
+      operands = JSON.parse(terminalSlot.operands_json) as Record<string, unknown>;
+    } catch {
+      throw new Error("idempotency_conflict");
+    }
+    if (
+      terminalSlot.principal_kind !== request.principal.kind ||
+      terminalSlot.credential_id !== request.principal.credential_id ||
+      terminalSlot.space_id !== request.spaceId ||
+      terminalSlot.kind !== operationKind ||
+      terminalSlot.expected_steps !== TRASH_NODE_STEPS ||
+      operands.nodeId !== request.nodeId
+    )
+      throw new Error("idempotency_conflict");
+    const operation = await lookupOperation(env.DB, request.principal, terminalSlot.op_id);
+    if (!operation) throw new Error("authorization_denied");
+    return { kind: "terminal", operation };
+  }
   const initial = await authorizeNode(env.DB, request.principal, {
     operation: "node.trash",
     nodeId: request.nodeId,
@@ -271,7 +302,7 @@ export async function trashNode(
     request.principal,
     request.requestId,
     request.spaceId,
-    request.operation ?? "node.trash",
+    operationKind,
     {
       nodeId: request.nodeId,
       memberCount: members.length,

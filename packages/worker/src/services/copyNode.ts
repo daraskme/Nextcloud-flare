@@ -41,6 +41,7 @@ export interface CopyNodeRequest {
   readonly depth: "0" | "infinity";
   readonly overwriteTargetId?: string;
   readonly lockTokens: readonly string[];
+  readonly operation?: "node.copy" | "dav.copy";
 }
 
 interface ManifestRow {
@@ -96,7 +97,7 @@ function copyStatements(
   propCount: number,
   hashes: readonly string[],
 ): readonly SqlStatement[] {
-  if (claim.intent.kind !== "dav.copy" || claim.steps !== COPY_NODE_STEPS)
+  if (!["node.copy", "dav.copy"].includes(claim.intent.kind) || claim.steps !== COPY_NODE_STEPS)
     throw new Error("invalid_mutation_plan");
   const name = portableName(inputName);
   const search = searchName(name.name);
@@ -110,12 +111,13 @@ function copyStatements(
       kind: "trash_op",
       affectedId: overwriteId ?? rootCopy,
       statement: {
-        sql: `INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,reason,created_at,purge_after,epoch) SELECT ?,?,?,?,'pending','dav.copy',${clock},${clock}+3024000000,? WHERE ? IS NOT NULL`,
+        sql: `INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,reason,created_at,purge_after,epoch) SELECT ?,?,?,?,'pending',?,${clock},${clock}+3024000000,? WHERE ? IS NOT NULL`,
         values: [
           op,
           source.principal.kind === "link_share" ? null : source.principal.user_id,
           source.node.space_id,
           overwriteId,
+          claim.intent.kind,
           claim.permit.epoch,
           overwriteId,
         ],
@@ -296,11 +298,12 @@ function copyStatements(
       kind: "activity",
       affectedId: rootCopy,
       statement: {
-        sql: `INSERT INTO activity(id,op_id,actor_id,kind,affected_id,created_at) VALUES(?,?,?,'dav.copy',?,${clock})`,
+        sql: `INSERT INTO activity(id,op_id,actor_id,kind,affected_id,created_at) VALUES(?,?,?,?,?,${clock})`,
         values: [
           `${op}_activity`,
           op,
           source.principal.kind === "link_share" ? null : source.principal.user_id,
+          claim.intent.kind,
           rootCopy,
         ],
       },
@@ -368,11 +371,12 @@ export async function copyNode(
   if (request.principal.kind !== "user" && request.principal.kind !== "app_password")
     throw new Error("authorization_denied");
   const name = portableName(request.name);
+  const operationKind = request.operation ?? "dav.copy";
   const slotIntent = await operationIntent(
     request.principal,
     request.requestId,
     request.spaceId,
-    "dav.copy",
+    operationKind,
     {},
     {},
   );
@@ -388,7 +392,7 @@ export async function copyNode(
       terminalSlot.principal_kind !== request.principal.kind ||
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||
-      terminalSlot.kind !== "dav.copy" ||
+      terminalSlot.kind !== operationKind ||
       terminalSlot.expected_steps !== COPY_NODE_STEPS ||
       operands.sourceNodeId !== request.sourceNodeId ||
       operands.parentId !== request.destinationParentId ||
@@ -444,7 +448,7 @@ export async function copyNode(
     request.principal,
     request.requestId,
     request.spaceId,
-    "dav.copy",
+    operationKind,
     {
       sourceNodeId: request.sourceNodeId,
       destinationParentId: request.destinationParentId,
@@ -480,6 +484,7 @@ export async function copyNode(
     ...(overwrite ? { overwriteTargetId: overwrite.node.id } : {}),
     principal: request.principal,
     lockTokens: request.lockTokens,
+    operation: operationKind,
   });
   let terminal = false;
   try {

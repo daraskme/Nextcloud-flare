@@ -37,6 +37,7 @@ export interface MoveNodeRequest {
   readonly overwriteTargetId?: string;
   readonly name: string;
   readonly lockTokens: readonly string[];
+  readonly operation?: "node.move" | "dav.move";
 }
 
 interface ManifestRow {
@@ -79,7 +80,7 @@ function moveStatements(
   inputName: string,
   hashes: readonly string[],
 ): readonly SqlStatement[] {
-  if (claim.intent.kind !== "dav.move" || claim.steps !== MOVE_NODE_STEPS)
+  if (!["node.move", "dav.move"].includes(claim.intent.kind) || claim.steps !== MOVE_NODE_STEPS)
     throw new Error("invalid_mutation_plan");
   const name = portableName(inputName);
   const search = searchName(name.name);
@@ -108,8 +109,16 @@ function moveStatements(
       affectedId: overwriteId ?? node.id,
       statement: {
         sql: `INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,reason,created_at,purge_after,epoch)
-          SELECT ?,?,?,?,'pending','dav.move',${clock},${clock}+3024000000,? WHERE ? IS NOT NULL`,
-        values: [op, actorId, node.space_id, overwriteId, claim.permit.epoch, overwriteId],
+          SELECT ?,?,?,?,'pending',?,${clock},${clock}+3024000000,? WHERE ? IS NOT NULL`,
+        values: [
+          op,
+          actorId,
+          node.space_id,
+          overwriteId,
+          claim.intent.kind,
+          claim.permit.epoch,
+          overwriteId,
+        ],
       },
       assertion: assertChanges(overwrite ? 1 : 0),
     },
@@ -314,8 +323,8 @@ function moveStatements(
       affectedId: node.id,
       statement: {
         sql: `INSERT INTO activity(id,op_id,actor_id,kind,affected_id,created_at)
-          VALUES(?,?,?,'dav.move',?,${clock})`,
-        values: [`${op}_activity`, op, actorId, node.id],
+          VALUES(?,?,?,?,?,${clock})`,
+        values: [`${op}_activity`, op, actorId, claim.intent.kind, node.id],
       },
       assertion: assertOneChange,
     },
@@ -394,11 +403,12 @@ export async function moveNode(
   if (request.principal.kind !== "user" && request.principal.kind !== "app_password")
     throw new Error("authorization_denied");
   const name = portableName(request.name);
+  const operationKind = request.operation ?? "dav.move";
   const slotIntent = await operationIntent(
     request.principal,
     request.requestId,
     request.spaceId,
-    "dav.move",
+    operationKind,
     {},
     {},
   );
@@ -414,7 +424,7 @@ export async function moveNode(
       terminalSlot.principal_kind !== request.principal.kind ||
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||
-      terminalSlot.kind !== "dav.move" ||
+      terminalSlot.kind !== operationKind ||
       terminalSlot.expected_steps !== MOVE_NODE_STEPS ||
       operands.nodeId !== request.nodeId ||
       operands.parentId !== request.destinationParentId ||
@@ -470,7 +480,7 @@ export async function moveNode(
     request.principal,
     request.requestId,
     request.spaceId,
-    "dav.move",
+    operationKind,
     {
       nodeId: request.nodeId,
       destinationParentId: request.destinationParentId,
@@ -505,6 +515,7 @@ export async function moveNode(
     ...(overwrite ? { overwriteTargetId: overwrite.node.id } : {}),
     principal: request.principal,
     lockTokens: request.lockTokens,
+    operation: operationKind,
   });
   let terminal = false;
   try {
