@@ -8,6 +8,7 @@ import { privateAppDependencies } from "../../src/api/privateAppConfig";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
+import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { atomicBatch } from "../../src/db/primary";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
@@ -26,6 +27,9 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
   const key = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const ring = await csrfKeyRing("test", { test: key });
   const csrf = new CsrfTokens(ring, ring, "https://app.invalid");
+  const cursorRing = await contentKeyRing("cursor", {
+    cursor: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  });
   const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
   const access = await accessFixture();
   const assertion = await access.sign({
@@ -39,6 +43,7 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
     verifier: access.verifier,
     csrf,
     tokens,
+    cursors: new NodeCursorTokens(cursorRing),
     bootstrap: { ownerEmails: [], ownerIdentities: [], quotaBytes: 10_000_000 },
   };
   let targetSetId: string | undefined;
@@ -68,6 +73,30 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
       spaceId: f.ids.space,
       rootNodeId: f.ids.root,
       epoch: 1,
+    });
+    const folder = await handlePrivateAppHttp(
+      new Request(`https://app.invalid/api/v1/nodes/${f.ids.folder}`, {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(folder.status).toBe(200);
+    expect(await folder.json()).toMatchObject({ id: f.ids.folder, kind: "folder" });
+    const listing = await handlePrivateAppHttp(
+      new Request(`https://app.invalid/api/v1/nodes/${f.ids.folder}/children`, {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(listing.status).toBe(200);
+    expect(await listing.json()).toMatchObject({
+      parentId: f.ids.folder,
+      children: [{ id: f.ids.file, kind: "file" }],
+      nextCursor: null,
     });
     const csrfResponse = await handlePrivateAppHttp(
       new Request("https://app.invalid/api/v1/csrf", {

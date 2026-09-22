@@ -3,6 +3,7 @@ import type { BootstrapPolicy } from "../auth/bootstrap";
 import { ContentTokens, contentKeyRing } from "../auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { AccessJwks } from "../auth/jwks";
+import { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
 import type { PrivateAppDependencies } from "./privateApp";
 
@@ -61,10 +62,15 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
     contentKeyRing(env.CONTENT_TICKET_ACTIVE_KID, JSON.parse(env.CONTENT_TICKET_KEYS)),
     contentKeyRing(env.CONTENT_COOKIE_ACTIVE_KID, JSON.parse(env.CONTENT_COOKIE_KEYS)),
   ]);
+  const cursorRing =
+    env.NODE_CURSOR_KEYS && env.NODE_CURSOR_ACTIVE_KID
+      ? await contentKeyRing(env.NODE_CURSOR_ACTIVE_KID, JSON.parse(env.NODE_CURSOR_KEYS))
+      : undefined;
   return {
     verifier: new AccessVerifier(jwks, env.ACCESS_USER_AUDIENCE, env.ACCESS_SERVICE_AUDIENCE),
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
     tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN),
+    ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     bootstrap: bootstrapPolicy(env),
   };
 }
