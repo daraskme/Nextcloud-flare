@@ -89,6 +89,24 @@ export async function resolveDavNode(db: D1Database, principal: Principal, path:
   }
 }
 
+/** Resolve PROPPATCH with write authority, including write-only app passwords. */
+export async function resolveDavPropsNode(db: D1Database, principal: Principal, path: DavPath) {
+  if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  const row = await davPathRow(db, principal, path);
+  try {
+    const proof = await authorizeNode(db, principal, {
+      operation: "node.props.write",
+      nodeId: row.id,
+      spaceId: row.spaceId,
+    });
+    if (proof.operation !== "node.props.write") throw new Error("dav_node_unavailable");
+    await assertDavPath(db, principal, path, row, authorizationAssertion(proof));
+    return proof;
+  } catch {
+    throw new Error("dav_node_unavailable");
+  }
+}
+
 async function davPathRow(db: D1Database, principal: UserPrincipal, path: DavPath) {
   const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
   const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;

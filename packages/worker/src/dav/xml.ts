@@ -15,6 +15,10 @@ export interface DavPropertyName {
 export type PropfindRequest =
   | { readonly mode: "allprop" | "propname"; readonly properties: readonly [] }
   | { readonly mode: "prop"; readonly properties: readonly DavPropertyName[] };
+export interface ProppatchChange extends DavPropertyName {
+  readonly action: "set" | "remove";
+  readonly valueXml: string;
+}
 
 type OrderedNode = Record<string, unknown>;
 
@@ -82,6 +86,32 @@ function element(node: OrderedNode): { tag: string; children: OrderedNode[]; att
   return { tag, children: content(node[tag]), attrs: (attrs as OrderedNode | undefined) ?? {} };
 }
 
+function mixedElement(node: OrderedNode): {
+  tag: string;
+  children: OrderedNode[];
+  attrs: OrderedNode;
+} {
+  const tags = Object.keys(node).filter((key) => key !== ":@" && key !== "#text");
+  if (tags.length !== 1 || Object.hasOwn(node, "#text")) throw new Error("invalid_dav_xml");
+  const tag = tags[0]!;
+  const children = node[tag];
+  const attrs = node[":@"];
+  if (
+    !Array.isArray(children) ||
+    (attrs !== undefined && (!attrs || typeof attrs !== "object" || Array.isArray(attrs)))
+  )
+    throw new Error("invalid_dav_xml");
+  for (const child of children) {
+    if (!child || typeof child !== "object" || Array.isArray(child))
+      throw new Error("invalid_dav_xml");
+  }
+  return {
+    tag,
+    children: children as OrderedNode[],
+    attrs: (attrs as OrderedNode | undefined) ?? {},
+  };
+}
+
 function decodeEntities(value: string): string {
   return value.replace(/&(?:amp|lt|gt|apos|quot|#\d{1,7}|#x[0-9a-fA-F]{1,6});/g, (entity) => {
     if (entity === "&amp;") return "&";
@@ -117,6 +147,13 @@ function namespaces(attrs: OrderedNode, parent: ReadonlyMap<string, string>) {
   return result;
 }
 
+function mixedNamespaces(attrs: OrderedNode, parent: ReadonlyMap<string, string>) {
+  const declarations = Object.fromEntries(
+    Object.entries(attrs).filter(([key]) => key.startsWith("@_xmlns")),
+  );
+  return namespaces(declarations, parent);
+}
+
 function qualified(tag: string, scope: ReadonlyMap<string, string>): DavPropertyName {
   const parts = tag.split(":");
   if (parts.length > 2 || parts.some((part) => !part)) throw new Error("invalid_dav_xml");
@@ -124,6 +161,70 @@ function qualified(tag: string, scope: ReadonlyMap<string, string>): DavProperty
   const namespace = scope.get(prefix);
   if (namespace === undefined) throw new Error("invalid_dav_xml");
   return { namespace, name: parts.at(-1)! };
+}
+
+const XML_LOCAL_NAME = /^[A-Za-z_][A-Za-z0-9._-]{0,255}$/;
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+/** Normalize mixed content so every generated qualified name carries its own namespace binding. */
+function serializeContent(
+  nodes: readonly OrderedNode[],
+  scope: ReadonlyMap<string, string>,
+): string {
+  let serial = 0;
+  const write = (items: readonly OrderedNode[], inherited: ReadonlyMap<string, string>): string =>
+    items
+      .map((node) => {
+        if (Object.hasOwn(node, "#text")) {
+          if (Object.keys(node).some((key) => key !== "#text")) throw new Error("invalid_dav_xml");
+          const value = node["#text"];
+          if (typeof value !== "string") throw new Error("invalid_dav_xml");
+          return escapeXml(decodeEntities(value));
+        }
+        const item = mixedElement(node);
+        const current = mixedNamespaces(item.attrs, inherited);
+        const name = qualified(item.tag, current);
+        if (!XML_LOCAL_NAME.test(name.name) || name.namespace.length > 2048)
+          throw new Error("invalid_dav_xml");
+        const prefix = `N${serial++}`;
+        const attributes: string[] = [`xmlns:${prefix}="${escapeXml(name.namespace)}"`];
+        for (const [raw, rawValue] of Object.entries(item.attrs)) {
+          if (raw.startsWith("@_xmlns")) continue;
+          if (!raw.startsWith("@_") || typeof rawValue !== "string")
+            throw new Error("invalid_dav_xml");
+          const attributeName = raw.slice(2);
+          const parts = attributeName.split(":");
+          if (parts.length > 2 || parts.some((part) => !XML_LOCAL_NAME.test(part)))
+            throw new Error("invalid_dav_xml");
+          if (parts.length === 1) {
+            attributes.push(`${parts[0]}="${escapeXml(decodeEntities(rawValue))}"`);
+          } else {
+            const namespace = current.get(parts[0]!);
+            if (namespace === undefined || namespace.length > 2048)
+              throw new Error("invalid_dav_xml");
+            const attributePrefix = `A${serial++}`;
+            attributes.push(`xmlns:${attributePrefix}="${escapeXml(namespace)}"`);
+            attributes.push(
+              `${attributePrefix}:${parts[1]}="${escapeXml(decodeEntities(rawValue))}"`,
+            );
+          }
+        }
+        const children = write(item.children, current);
+        const open = `<${prefix}:${name.name} ${attributes.join(" ")}`;
+        return children === "" ? `${open}/>` : `${open}>${children}</${prefix}:${name.name}>`;
+      })
+      .join("");
+  const value = write(nodes, scope);
+  if (new TextEncoder().encode(value).byteLength > 8192) throw new Error("invalid_dav_xml");
+  validateDavXmlFragment(value);
+  return value;
 }
 
 function countStructure(value: unknown): void {
@@ -189,6 +290,71 @@ export async function parsePropfindRequest(request: Request): Promise<PropfindRe
   });
   if (properties.length === 0) throw new Error("invalid_dav_xml");
   return { mode: "prop", properties };
+}
+
+export async function parseProppatchRequest(request: Request): Promise<readonly ProppatchChange[]> {
+  const xml = await boundedBody(request);
+  if (xml === null) throw new Error("invalid_dav_xml");
+  const type = request.headers.get("Content-Type")?.replace(/\s+/g, "") ?? "";
+  if (!/^(?:application|text)\/xml(?:;charset=utf-8)?$/i.test(type))
+    throw new Error("invalid_dav_xml");
+  if (
+    /<!DOCTYPE|<!ENTITY/i.test(xml) ||
+    xml.replace(/&(?:amp|lt|gt|apos|quot|#\d{1,7}|#x[0-9a-fA-F]{1,6});/g, "").includes("&")
+  )
+    throw new Error("invalid_dav_xml");
+  let ordered: unknown;
+  try {
+    ordered = parser.parse(xml);
+  } catch {
+    throw new Error("invalid_dav_xml");
+  }
+  countStructure(ordered);
+  const top = content(ordered).filter((node) => !Object.keys(node).some((key) => key === "?xml"));
+  if (top.length !== 1) throw new Error("invalid_dav_xml");
+  const root = element(top[0]!);
+  const rootScope = namespaces(root.attrs, new Map());
+  const rootName = qualified(root.tag, rootScope);
+  if (rootName.namespace !== DAV || rootName.name !== "propertyupdate")
+    throw new Error("invalid_dav_xml");
+  const changes: ProppatchChange[] = [];
+  const seen = new Set<string>();
+  for (const instructionNode of root.children) {
+    const instruction = element(instructionNode);
+    const instructionScope = namespaces(instruction.attrs, rootScope);
+    const instructionName = qualified(instruction.tag, instructionScope);
+    if (
+      instructionName.namespace !== DAV ||
+      !["set", "remove"].includes(instructionName.name) ||
+      instruction.children.length !== 1
+    )
+      throw new Error("invalid_dav_xml");
+    const prop = element(instruction.children[0]!);
+    const propScope = namespaces(prop.attrs, instructionScope);
+    const propName = qualified(prop.tag, propScope);
+    if (propName.namespace !== DAV || propName.name !== "prop" || prop.children.length === 0)
+      throw new Error("invalid_dav_xml");
+    for (const propertyNode of prop.children) {
+      if (changes.length >= MAX_PROPERTIES) throw new Error("invalid_dav_xml");
+      const property = mixedElement(propertyNode);
+      const propertyScope = namespaces(property.attrs, propScope);
+      const name = qualified(property.tag, propertyScope);
+      if (!XML_LOCAL_NAME.test(name.name) || name.namespace.length > 2048)
+        throw new Error("invalid_dav_xml");
+      const key = `${name.namespace}\0${name.name}`;
+      if (seen.has(key)) throw new Error("invalid_dav_xml");
+      seen.add(key);
+      const action = instructionName.name as "set" | "remove";
+      if (action === "remove" && property.children.length !== 0) throw new Error("invalid_dav_xml");
+      changes.push({
+        ...name,
+        action,
+        valueXml: action === "set" ? serializeContent(property.children, propertyScope) : "",
+      });
+    }
+  }
+  if (changes.length === 0) throw new Error("invalid_dav_xml");
+  return changes;
 }
 
 /** Validate a stored, normalized mixed-content fragment before embedding it in DAV output. */

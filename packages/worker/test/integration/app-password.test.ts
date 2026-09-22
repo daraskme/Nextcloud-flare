@@ -54,6 +54,8 @@ function admittedDavEnv(): Env {
         return {
           acquireCreate: (request: Parameters<LockDO["acquireCreate"]>[0]) =>
             invoke((lock) => lock.acquireCreate(request)),
+          acquireNodeWrite: (request: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
+            invoke((lock) => lock.acquireNodeWrite(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -266,7 +268,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   const options = await handleDavHttp(optionsRequest, davEnv, 1, ring);
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
-  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD, PROPFIND, MKCOL");
+  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL");
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
     404,
@@ -529,6 +531,71 @@ it("creates a DAV collection through the fenced namespace mutation service", asy
     ring,
   );
   expect(noKey.status).toBe(400);
+});
+
+it("atomically writes DAV dead properties and rejects protected live properties", async () => {
+  const { f, id, ring, request } = await fixture("D");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write')")
+    .bind(`ap:${id}`)
+    .run();
+  const davEnv = admittedDavEnv();
+  const key = crypto.randomUUID();
+  const body = `<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test">
+    <D:set><D:prop><X:color>blue &amp; green<X:shade level="2">dark</X:shade></X:color></D:prop></D:set>
+    <D:remove><D:prop><X:missing/></D:prop></D:remove>
+  </D:propertyupdate>`;
+  const send = (xml: string, idempotencyKey = key) =>
+    handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method: "PROPPATCH",
+        headers: {
+          ...Object.fromEntries(request().headers),
+          "Content-Type": "application/xml",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: xml,
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+  const changed = await send(body);
+  expect(changed.status).toBe(207);
+  expect(await changed.text()).toContain("HTTP/1.1 200 OK");
+  const property = await env.DB.prepare(
+    "SELECT value_xml AS value FROM node_props WHERE node_id=? AND namespace='urn:test' AND name='color'",
+  )
+    .bind(f.ids.file)
+    .first<string>("value");
+  expect(property).toContain("blue &amp; green");
+  expect(property).toContain("dark");
+  expect(
+    await env.DB.prepare("SELECT revision FROM nodes WHERE id=?")
+      .bind(f.ids.file)
+      .first<number>("revision"),
+  ).toBe(2);
+  expect((await send(body)).status).toBe(207);
+  expect(
+    await env.DB.prepare("SELECT revision FROM nodes WHERE id=?")
+      .bind(f.ids.file)
+      .first<number>("revision"),
+  ).toBe(2);
+
+  const protectedBody = `<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test"><D:set><D:prop>
+    <X:untouched>no</X:untouched><D:getetag>bad</D:getetag><X:later>no</X:later>
+  </D:prop></D:set></D:propertyupdate>`;
+  const rejected = await send(protectedBody, crypto.randomUUID());
+  expect(rejected.status).toBe(207);
+  const rejectedXml = await rejected.text();
+  expect(rejectedXml).toContain("HTTP/1.1 403 Forbidden");
+  expect(rejectedXml.match(/HTTP\/1.1 424 Failed Dependency/g)).toHaveLength(2);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM node_props WHERE node_id=? AND namespace='urn:test' AND name IN ('untouched','later')",
+    )
+      .bind(f.ids.file)
+      .first<number>("count"),
+  ).toBe(0);
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

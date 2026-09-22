@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { parsePropfindRequest, validateDavXmlFragment } from "../../src/dav/xml";
+import {
+  parsePropfindRequest,
+  parseProppatchRequest,
+  validateDavXmlFragment,
+} from "../../src/dav/xml";
 
 function request(body?: string, contentType = "application/xml") {
   return new Request(
@@ -67,4 +71,41 @@ it("validates stored mixed-content XML fragments before response embedding", () 
   ).not.toThrow();
   for (const value of ["</R><evil/>", "<!DOCTYPE x>", "&unknown;", "<?xml version='1.0'?>"])
     expect(() => validateDavXmlFragment(value)).toThrow("invalid_dav_xml");
+});
+
+it("parses ordered PROPPATCH set/remove instructions and normalizes mixed content", async () => {
+  const parsed = await parseProppatchRequest(
+    request(`<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test">
+      <D:set><D:prop><X:color>blue &amp; <X:shade X:level="2">dark</X:shade></X:color></D:prop></D:set>
+      <D:remove><D:prop><X:old/></D:prop></D:remove>
+    </D:propertyupdate>`),
+  );
+  expect(parsed).toHaveLength(2);
+  expect(parsed[0]).toMatchObject({ namespace: "urn:test", name: "color", action: "set" });
+  expect(parsed[0]?.valueXml).toContain("blue &amp;");
+  expect(parsed[0]?.valueXml).toContain("dark");
+  expect(parsed[0]?.valueXml).toContain('level="2"');
+  expect(parsed[1]).toEqual({
+    namespace: "urn:test",
+    name: "old",
+    action: "remove",
+    valueXml: "",
+  });
+});
+
+it("rejects malformed, duplicate and over-budget PROPPATCH XML", async () => {
+  for (const body of [
+    '<!DOCTYPE x><D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:x/></D:prop></D:set></D:propertyupdate>',
+    '<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test"><D:remove><D:prop><X:x>value</X:x></D:prop></D:remove></D:propertyupdate>',
+    '<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test"><D:set><D:prop><X:x/></D:prop></D:set><D:remove><D:prop><X:x/></D:prop></D:remove></D:propertyupdate>',
+  ])
+    await expect(parseProppatchRequest(request(body))).rejects.toThrow("invalid_dav_xml");
+  const properties = Array.from({ length: 101 }, (_, index) => `<X:p${index}/>`).join("");
+  await expect(
+    parseProppatchRequest(
+      request(
+        `<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test"><D:set><D:prop>${properties}</D:prop></D:set></D:propertyupdate>`,
+      ),
+    ),
+  ).rejects.toThrow("invalid_dav_xml");
 });

@@ -182,6 +182,10 @@ export function validateClaimAuthorization(
       authorized.operation === "node.rename" &&
       authorized.node.id === operands.nodeId &&
       authorized.parentId === operands.parentId &&
+      authorized.node.space_id === intent.spaceId) ||
+    (intent.kind === "dav.proppatch" &&
+      authorized.operation === "node.props.write" &&
+      authorized.node.id === operands.nodeId &&
       authorized.node.space_id === intent.spaceId);
   if (
     !targetMatches ||
@@ -282,20 +286,24 @@ export async function lookupOperation(
     row.principal_kind !== principal.kind ||
     row.principal_id !== principalId(principal) ||
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
-    (row.kind !== "node.create" && row.kind !== "dav.mkcol" && row.kind !== "node.rename")
+    (row.kind !== "node.create" &&
+      row.kind !== "dav.mkcol" &&
+      row.kind !== "node.rename" &&
+      row.kind !== "dav.proppatch")
   )
     return null;
   try {
     const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
-    if (typeof operands.parentId !== "string") return null;
     const create = row.kind === "node.create" || row.kind === "dav.mkcol";
     if (create) {
+      if (typeof operands.parentId !== "string") return null;
       await authorizeNode(db, principal, {
         operation: "node.create",
         parentId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else {
+    } else if (row.kind === "node.rename") {
+      if (typeof operands.parentId !== "string") return null;
       if (typeof operands.nodeId !== "string") return null;
       const authorized = await authorizeNode(db, principal, {
         operation: "node.rename",
@@ -304,12 +312,20 @@ export async function lookupOperation(
       });
       if (authorized.operation !== "node.rename" || authorized.parentId !== operands.parentId)
         return null;
+    } else {
+      if (typeof operands.nodeId !== "string") return null;
+      await authorizeNode(db, principal, {
+        operation: "node.props.write",
+        nodeId: operands.nodeId,
+        spaceId: row.space_id,
+      });
     }
     const result =
       row.state === "committed" && row.result_json
         ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
         : null;
-    if (result && result.status !== (create ? 201 : 200)) return null;
+    if (result && result.status !== (create ? 201 : row.kind === "dav.proppatch" ? 207 : 200))
+      return null;
     if (result && row.kind === "node.rename" && result.nodeId !== operands.nodeId) return null;
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (result && typeof result.nodeId === "string") {

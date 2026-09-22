@@ -5,12 +5,54 @@ import {
   resolveDavCreateParent,
   resolveDavCredentialPath,
   resolveDavNode,
+  resolveDavPropsNode,
 } from "../dav/path";
 import { propfindResponse } from "../dav/propfind";
-import { parsePropfindRequest } from "../dav/xml";
+import { type ProppatchChange, parsePropfindRequest, parseProppatchRequest } from "../dav/xml";
 import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 import { createFolder } from "../services/createFolder";
+import { proppatch } from "../services/proppatch";
+
+const PROTECTED_DAV_PROPERTIES = new Set([
+  "getetag",
+  "getcontentlength",
+  "getlastmodified",
+  "resourcetype",
+  "lockdiscovery",
+  "supportedlock",
+  "creationdate",
+]);
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function proppatchResponse(pathname: string, changes: readonly ProppatchChange[], failed = -1) {
+  const propstats = changes
+    .map((change, index) => {
+      const status =
+        failed < 0 ? "200 OK" : index === failed ? "403 Forbidden" : "424 Failed Dependency";
+      return `<D:propstat><D:prop><N:${change.name} xmlns:N="${escapeXml(change.namespace)}"/></D:prop><D:status>HTTP/1.1 ${status}</D:status></D:propstat>`;
+    })
+    .join("");
+  return new Response(
+    `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>${escapeXml(pathname)}</D:href>${propstats}</D:response></D:multistatus>`,
+    {
+      status: 207,
+      headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/xml; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
 
 const METHODS = new Set([
   "OPTIONS",
@@ -147,11 +189,7 @@ export async function handleDavHttp(
       return problem(503, "not_ready");
     }
   }
-  if (
-    ["PROPFIND", "PROPPATCH", "GET", "HEAD", "DELETE", "COPY", "MOVE", "UNLOCK"].includes(
-      request.method,
-    )
-  ) {
+  if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY", "MOVE", "UNLOCK"].includes(request.method)) {
     try {
       resolved = await resolveDavNode(env.DB, principal, path);
     } catch {
@@ -167,7 +205,7 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD, PROPFIND, MKCOL",
+        Allow: "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH, MKCOL",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",
@@ -202,6 +240,57 @@ export async function handleDavHttp(
       return error instanceof Error && error.message === "dav_children_limit"
         ? problem(507, "insufficient_storage")
         : problem(503, "not_ready");
+    }
+  }
+  if (request.method === "PROPPATCH") {
+    let target;
+    try {
+      target = await resolveDavPropsNode(env.DB, principal, path);
+    } catch {
+      return problem(404, "not_found");
+    }
+    if (request.headers.has("If") || request.headers.has("Lock-Token"))
+      return problem(503, "not_ready");
+    const key = request.headers.get("Idempotency-Key");
+    if (!key || key.includes(",") || !/^[\x21-\x7e]{1,200}$/.test(key))
+      return problem(400, "bad_request");
+    let changes;
+    try {
+      changes = await parseProppatchRequest(request);
+    } catch {
+      return problem(400, "bad_request");
+    }
+    const protectedIndex = changes.findIndex(
+      (change) => change.namespace === "DAV:" && PROTECTED_DAV_PROPERTIES.has(change.name),
+    );
+    const href = `/dav/${path.segments
+      .map((segment) => encodeURIComponent(segment.name))
+      .join("/")}${target.node.kind === "file" ? "" : "/"}`;
+    if (protectedIndex >= 0) return proppatchResponse(href, changes, protectedIndex);
+    try {
+      const outcome = await proppatch(env, {
+        principal,
+        idempotencyKey: key,
+        spaceId: target.node.space_id,
+        nodeId: target.node.id,
+        changes,
+        lockTokens: [],
+      });
+      if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
+        const response = problem(503, "commit_unknown");
+        response.headers.set(
+          "Operation-Id",
+          outcome.kind === "commit_unknown" ? outcome.operationId : outcome.operation.id,
+        );
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      if (outcome.operation.state === "failed") return problem(409, "conflict");
+      return proppatchResponse(href, changes);
+    } catch (error) {
+      if (error instanceof Error && error.message === "idempotency_conflict")
+        return problem(409, "conflict");
+      return problem(503, "not_ready");
     }
   }
   if (request.method === "GET" || request.method === "HEAD") {

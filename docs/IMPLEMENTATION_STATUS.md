@@ -35,15 +35,15 @@
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
-| 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS、file GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL まで接続。残る operation handler と remote pepper secret 設定は未接続 |
+| 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS、file GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、原子的 PROPPATCH まで接続。残る operation handler と remote pepper secret 設定は未接続 |
 | 1 app password private API | Access/CSRF 付き `GET/POST/DELETE /api/v1/app-passwords`、一度だけ返す32B secret、DAV 用 node scope、所有者 root、20件・90日既定/365日上限、同 batch の credential/scopes/派生 content session 失効 | 実 D1 で発行→一覧→Basic 認証→失効、別 user root・admin scope・20件上限を検証。remote pepper 設定、DAV operation handler は未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
-| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent/blob assertion。rename は root と share/scope root を拒否し、edit/node:write を要求。content write は file と edit/node:write を要求 | read/create/rename/content write/automation 6 operation の内部基盤。残る operation の認可は未完了 |
+| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent/blob assertion。rename は root と share/scope root を拒否し、edit/node:write を要求。content/property write は edit/node:write を要求し、content write は file に限定 | read/create/rename/content/property write/automation の内部基盤。残る operation の認可は未完了 |
 | R6 #7 CSRF | session 束縛 HMAC、TTL1h、再利用・再発行、purpose/aud/epoch/credential、current session/share、Origin 境界 | 内部サービスと D1 テスト実装済み。HTTP profile 接続待ち |
 | 1 quota/ref/pin | owner/share reservation、unique logical、R2 HEAD physical、ref≤1,000、pin-only除外、各再送の一度だけ計上 | migration/内部サービス実装済み。GC/repair/namespace mutation 接続待ち |
-| 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。create/rename 用 LockDO へ接続済み |
-| 1 LockDO | create/rename 認可と ancestor/対象/親 lock、intent 永続化、eviction/storage loss、新 epoch recovery、同 user 別 credential の token 検査 | ローカル実装。ControlDO admission 成功側は test fixture、実再開 gate 待ち |
-| 1 operation claim | bounded canonical intent、同一 credential/key、claim 競合/応答喪失/current auth、lookup の情報制限 | create/rename 用内部サービス実装。公開 HTTP は未接続 |
+| 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。create/rename/property write 用 LockDO へ接続済み |
+| 1 LockDO | create/rename/property write 認可と ancestor/対象/親 lock、intent 永続化、eviction/storage loss、新 epoch recovery、同 user 別 credential の token 検査 | ローカル実装。ControlDO admission 成功側は test fixture、実再開 gate 待ち |
+| 1 operation claim | bounded canonical intent、同一 credential/key、claim 競合/応答喪失/current auth、lookup の情報制限 | create/rename/PROPPATCH の内部サービス実装。DAV PROPPATCH と MKCOL は HTTP 接続済み |
 | AVIF/AV1/Opus 追加要件 | bounded container sniff、実 codec の MIME、native 再生可否 probe、AVIF 原本 fallback | 単体20件。track parser/content/UI 接続は後続 phase、詳細 `MEDIA_FORMATS.md` |
 | 1 fsMutation/create | node/parent/tree/search base/FTS/activity/outbox/terminal を一括確定。全必須 step の0行 rollback、並行再送、commit 応答喪失 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
 | 1 rename mutation | 対象と親の lock/認可/permit、node/parent/tree revision、FTS の旧語削除と新語追加、activity/outbox/terminal を D1 batch で確定。実 LockDO 経由の実行、同一キー再送、異なる意図の衝突、失効後の拒否、衝突時 rollback を検証 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
@@ -85,6 +85,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 相当の全 gate 成功。Node 204 + workerd 322 = **526 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV PROPPATCH を write-only app password の `node:write`、LockDO permit、`dav.proppatch` claim、dead property と node revision の同一 D1 batch に接続。mixed-content XML、冪等再送、保護 live property の403と他 property の424、全 rollbackを検証。
 - 2026-09-23、`pnpm check` 成功。Node 202 + workerd 321 = **523 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV MKCOL を write-only app password の `node:create` 親 path 解決から `dav.mkcol` operation、LockDO permit、既存 fsMutation へ接続し、成功・再送・key競合・同名・bodyを検証。
 - 2026-09-23、`pnpm check` 成功。Node 202 + workerd 320 = **522 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV PROPFIND の bounded XML adapter、allprop/propname/prop、Depth 0/1 の最大1,000 child集合取得、live/dead property 207、finite-depth 403、超過507を検証。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 318 = **517 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV file GET/HEAD/single Range を current path・credential・blob の D1 assertion と R2 size/ETag 照合へ接続し、200/206、末尾 slash 404、物理 object 欠落 503 を検証。
