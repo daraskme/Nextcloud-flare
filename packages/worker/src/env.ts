@@ -34,6 +34,8 @@ export interface Env {
   CSRF_PUBLIC_ACTIVE_KID?: string;
   NODE_CURSOR_KEYS?: string;
   NODE_CURSOR_ACTIVE_KID?: string;
+  APP_PASSWORD_PEPPERS?: string;
+  APP_PASSWORD_ACTIVE_KID?: string;
   PBKDF2_ITERATIONS: string;
   EPOCH_FLOOR?: string;
 }

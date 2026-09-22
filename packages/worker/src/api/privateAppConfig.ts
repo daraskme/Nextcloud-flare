@@ -1,4 +1,5 @@
 import { AccessVerifier } from "../auth/access";
+import { appPasswordPepperRing } from "../auth/appPassword";
 import type { BootstrapPolicy } from "../auth/bootstrap";
 import { ContentTokens, contentKeyRing } from "../auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
@@ -66,11 +67,19 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
     env.NODE_CURSOR_KEYS && env.NODE_CURSOR_ACTIVE_KID
       ? await contentKeyRing(env.NODE_CURSOR_ACTIVE_KID, JSON.parse(env.NODE_CURSOR_KEYS))
       : undefined;
+  const appPasswordPepper =
+    env.APP_PASSWORD_PEPPERS && env.APP_PASSWORD_ACTIVE_KID
+      ? await appPasswordPepperRing(
+          env.APP_PASSWORD_ACTIVE_KID,
+          JSON.parse(env.APP_PASSWORD_PEPPERS),
+        )
+      : undefined;
   return {
     verifier: new AccessVerifier(jwks, env.ACCESS_USER_AUDIENCE, env.ACCESS_SERVICE_AUDIENCE),
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
     tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN),
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
+    ...(appPasswordPepper ? { appPasswordPepper } : {}),
     bootstrap: bootstrapPolicy(env),
   };
 }

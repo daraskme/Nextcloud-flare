@@ -36,6 +36,7 @@
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。DAV route/rate limit/pepper secret 設定と旧 kid 再ハッシュは未接続 |
+| 1 app password private API | Access/CSRF 付き `GET/POST/DELETE /api/v1/app-passwords`、一度だけ返す32B secret、DAV 用 node scope、所有者 root、20件・90日既定/365日上限、同 batch の credential/scopes/派生 content session 失効 | 実 D1 で発行→一覧→Basic 認証→失効、別 user root・admin scope・20件上限を検証。remote pepper 設定、DAV route/rate limit、旧 kid 再ハッシュは未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
 | 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent/blob assertion。rename は root と share/scope root を拒否し、edit/node:write を要求。content write は file と edit/node:write を要求 | read/create/rename/content write/automation 6 operation の内部基盤。残る operation の認可は未完了 |
 | R6 #7 CSRF | session 束縛 HMAC、TTL1h、再利用・再発行、purpose/aud/epoch/credential、current session/share、Origin 境界 | 内部サービスと D1 テスト実装済み。HTTP profile 接続待ち |
@@ -84,6 +85,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 成功。Node 199 + workerd 311 = **510 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app password の private GET/POST/DELETE を Access JWT entry に接続し、発行した secret の Basic 認証、一覧からの secret 非表示、CSRF、失効と派生 content session 失効、範囲・20件上限を D1 で検証。ControlDO は maintenance 固定、remote pepper と DAV は未接続。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 309 = **508 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app password の Basic secret verifier と発行用 hash helper を追加し、current D1 と失効競合を検証。DAV route と rate limit は未接続。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 306 = **505 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。`node.content.write` の file 限定と current edit/node:write、blob/revision/maintenance の commit proof を追加し、user/app password/link share で検証。実 content write サービスは未実装。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 303 = **502 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。`node.created` / `node.renamed` の outbox consumer と復旧監査で、通知 payload と保存済み operand/result の一致を確認。誤った結果を持つ event は完了せず、監査も拒否する。ControlDO は maintenance 固定で公開停止。

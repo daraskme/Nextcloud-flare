@@ -1,5 +1,6 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { AccessAuthenticationError, type AccessVerifier } from "../auth/access";
+import type { AppPasswordPepperRing } from "../auth/appPassword";
 import type { BootstrapPolicy } from "../auth/bootstrap";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
@@ -7,6 +8,7 @@ import { loginAccessUser } from "../auth/login";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
 import { handleAccountHttp } from "./account";
+import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
@@ -17,6 +19,7 @@ export interface PrivateAppDependencies {
   readonly tokens: ContentTokens;
   readonly bootstrap: BootstrapPolicy;
   readonly cursors?: NodeCursorTokens;
+  readonly appPasswordPepper?: AppPasswordPepperRing;
 }
 
 export function privateAppRoute(request: Request): boolean {
@@ -25,6 +28,7 @@ export function privateAppRoute(request: Request): boolean {
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
     nodeMutationRoute(request) ||
+    appPasswordRoute(request) ||
     (request.method === "POST" &&
       (url.pathname === "/api/v1/csrf" ||
         url.pathname === "/api/v1/content-session" ||
@@ -48,6 +52,7 @@ export async function handlePrivateAppHttp(
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
   const nodeMutation = nodeMutationRoute(request);
+  const appPassword = appPasswordRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
     /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && request.method === "DELETE";
@@ -57,6 +62,7 @@ export async function handlePrivateAppHttp(
     !logout &&
     !nodeRead &&
     !nodeMutation &&
+    !appPassword &&
     !ticketIssue &&
     !ticketCancel
   )
@@ -91,6 +97,14 @@ export async function handlePrivateAppHttp(
     }
   }
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
+  if (appPassword)
+    return handleAppPasswordHttp(
+      request,
+      env,
+      session,
+      dependencies.csrf,
+      dependencies.appPasswordPepper,
+    );
   if (nodeRead)
     return handleNodeReadHttp(
       request,

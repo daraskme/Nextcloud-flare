@@ -5,6 +5,7 @@ import { beforeAll, expect, it } from "vitest";
 import { handlePrivateContentTicketHttp } from "../../src/api/contentTickets";
 import { handlePrivateAppHttp } from "../../src/api/privateApp";
 import { privateAppDependencies } from "../../src/api/privateAppConfig";
+import { appPasswordPepperRing } from "../../src/auth/appPassword";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
@@ -31,6 +32,9 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
     cursor: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
   });
   const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
+  const appPasswordPepper = await appPasswordPepperRing("test", {
+    test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  });
   const access = await accessFixture();
   const assertion = await access.sign({
     sub: f.ids.user,
@@ -44,6 +48,7 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
     csrf,
     tokens,
     cursors: new NodeCursorTokens(cursorRing),
+    appPasswordPepper,
     bootstrap: { ownerEmails: [], ownerIdentities: [], quotaBytes: 10_000_000 },
   };
   let targetSetId: string | undefined;
@@ -116,6 +121,41 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
       "X-CSRF-Token": token,
       "Cf-Access-Jwt-Assertion": jwt,
     };
+    const passwordResponse = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/app-passwords", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "DAV", scopes: ["node:read"] }),
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(passwordResponse.status).toBe(201);
+    const password = await passwordResponse.json<{ credentialId: string; secret: string }>();
+    expect(password.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const passwordList = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/app-passwords", {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(passwordList.status).toBe(200);
+    expect(await passwordList.json()).toMatchObject({
+      passwords: [{ credentialId: password.credentialId }],
+    });
+    const passwordRevoke = await handlePrivateAppHttp(
+      new Request(
+        `https://app.invalid/api/v1/app-passwords/${encodeURIComponent(password.credentialId)}`,
+        { method: "DELETE", headers },
+      ),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(passwordRevoke.status).toBe(204);
     const issuedResponse = await handlePrivateAppHttp(
       new Request("https://app.invalid/api/v1/content-session", {
         method: "POST",
