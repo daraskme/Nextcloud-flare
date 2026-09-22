@@ -24,10 +24,10 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0008`、147 route の契約がある。
+Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0009`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
-直近の追加: 改名の D1 一括 mutation、`node.renamed` の outbox 消費と旧 epoch 整理、共有と資格情報 scope root の祖先を検証する復旧監査。R2 の配信基盤を内部 helper として追加中。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。
+直近の追加: 改名の D1 一括 mutation、`node.renamed` の outbox 消費と旧 epoch 整理、共有と資格情報 scope root の祖先を検証する復旧監査。content ticket の署名、D1 redemption、Cookie 署名、R2 target manifest と current blob 認可を内部サービスとして接続した。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。
 
 主要な内部成果物（最新状態は進捗表を参照）:
 
@@ -37,16 +37,15 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/automation 認可、CSRF、
 | `packages/worker/src/services/fsMutation.ts` | SQL assertion、全 step と terminal の atomic commit、確実な rollback と commit_unknown の分離 |
 | `packages/worker/src/services/createFolder.ts` | LockDO/認可/claim/7 step/terminal/release を接続した最初の folder create |
 | `packages/worker/src/services/renameNode.ts` | 対象と親の lock、FTS 更新、operation/terminal/outbox を一括確定する改名 |
-| `packages/worker/src/services/blobRead.ts` | 認可・予算検証後に使用する R2 immutable blob の HEAD/Range 配信基盤 |
+| `packages/worker/src/services/blobRead.ts` | Cookie→current credential/session/ticket/target manifest/blob plan と R2 immutable blob HEAD/Range 配信基盤。BudgetDO は未接続 |
+| `packages/worker/src/auth/contentTokens.ts` / `contentAccept.ts` | kid ring の HS256 ticket/Cookie と D1 redemption。`content_sessions.ticket_id` は migration `0009` |
 | `packages/worker/src/jobs/outbox.ts` | token/lease 付き producer、ID-only send、期限切れ再送、bounded repair scan |
 | `packages/worker/src/jobs/consumeOutbox.ts` | create/rename event の current authority と元 operation step を照合する consumer |
 | `packages/worker/test/integration/fs-mutation.test.ts` | 全必須 step の rollback、並行再送、応答喪失、失効対 commit |
 | `packages/worker/test/integration/outbox.test.ts` | producer 競合、送信/D1 応答喪失、completed の巻戻し拒否 |
 | `packages/worker/test/unit/names.test.ts` | Unicode同名・portable禁止・長さ境界・検索正規化 |
 
-直前の `2fd68ac` は AVIF/AV1/Opus の仕様・bounded container sniff・MIME・再生可否 helper（350 tests 時点）。[CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu とも成功。
-前回の Windows checkpoint のローカル `pnpm check` は **415 tests**（Node 195、workerd 220）と lint/typecheck/contracts/config/build が成功。
-checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認する。資料内に self-reference の commit SHA を固定しない。
+直近の test 件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認する。資料内に self-reference の commit SHA を固定しない。
 
 ## 公開・接続していないもの
 
@@ -54,7 +53,7 @@ checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認す
 - **ControlDO.status は maintenance=true / gcPaused=true。** `recover`/`bumpEpoch` はあるが、admission/quiesce/検証後の再開は未実装。単純に false に変えない。
 - LockDO/create/rename の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
-- UploadDO/BudgetDO、Files UI、upload/trash/GC/restore、全 operation の認可 tuple、検索/共有/content/DAV、Gallery/Bookshelf/Audio、運用・release は未完了。
+- UploadDO/BudgetDO、Files UI、upload/trash/GC/restore、全 operation の認可 tuple、検索/共有/content/DAV の HTTP 接続、Gallery/Bookshelf/Audio、運用・release は未完了。content の内部証明と署名はあるが、ticket/target set の発行 API、予算 lease と全 route 会計は未接続。
 - AVIF/AV1/Opus は形式基盤まで。実 track parser・配信経路・player/lightbox・ブラウザー実ファイル試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 

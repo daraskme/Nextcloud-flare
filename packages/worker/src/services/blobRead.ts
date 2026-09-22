@@ -5,6 +5,7 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { type ContentPurpose, contentSessionAssertion } from "../auth/contentSession";
+import type { ContentTokens } from "../auth/contentTokens";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import { parseRange } from "../platform/range";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
@@ -39,6 +40,72 @@ export interface ContentBlobGrant {
   readonly ticketId: string;
   readonly purpose: ContentPurpose;
   readonly share?: { readonly id: string; readonly version: number };
+}
+
+/** Resolve the signed host-only cookie to a D1 principal, then apply all content read guards. */
+export async function prepareCookieBlobRead(
+  db: D1Database,
+  bucket: R2Bucket,
+  tokens: ContentTokens,
+  cookieHeader: string | null,
+  spaceId: string,
+  nodeId: string,
+  purpose: ContentPurpose,
+): Promise<{ readonly blob: BlobReadPlan; readonly budgetId: string }> {
+  const sessionId = await tokens.verifyCookie(cookieHeader);
+  const session = await primary(db)
+    .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
+      cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,
+      cs.ticket_id AS ticketId,cs.epoch,c.kind AS credentialKind
+      FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
+      JOIN tickets t ON t.id=cs.ticket_id
+      WHERE cs.id=? AND t.purpose=?`)
+    .bind(sessionId, purpose)
+    .first<{
+      userId: string | null;
+      shareId: string | null;
+      shareVersion: number | null;
+      credentialId: string;
+      ticketId: string;
+      epoch: number;
+      credentialKind: string;
+    }>();
+  if (!session) throw new Error("content_not_available");
+  let principal: Principal;
+  if (
+    (session.credentialKind === "access" || session.credentialKind === "app_password") &&
+    session.userId
+  ) {
+    principal = {
+      kind: session.credentialKind === "access" ? "user" : "app_password",
+      user_id: session.userId,
+      credential_id: session.credentialId,
+      epoch: session.epoch,
+    };
+  } else if (
+    session.credentialKind === "share" &&
+    session.userId === null &&
+    session.shareId &&
+    session.shareVersion
+  ) {
+    principal = {
+      kind: "link_share",
+      share_id: session.shareId,
+      share_version: session.shareVersion,
+      credential_id: session.credentialId,
+      epoch: session.epoch,
+    };
+  } else {
+    throw new Error("content_not_available");
+  }
+  return prepareContentBlobRead(db, bucket, principal, spaceId, nodeId, {
+    sessionId,
+    ticketId: session.ticketId,
+    purpose,
+    ...(session.shareId && session.userId && session.shareVersion
+      ? { share: { id: session.shareId, version: session.shareVersion } }
+      : {}),
+  });
 }
 
 /** Verify the immutable target manifest, then recheck all D1 authority in the blob plan batch. */

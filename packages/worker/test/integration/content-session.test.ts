@@ -53,22 +53,23 @@ it("asserts current private content session, ticket, target set and budget in D1
       values: [ids.target, f.ids.user, f.ids.credential, hash, ref, now + 300000],
     },
     {
-      sql: `INSERT INTO content_sessions(id,user_id,issued_by_credential_id,target_set_id,budget_id,epoch,issued_at,expires_at)
-        VALUES(?,?,?,?,?,1,?,?)`,
+      sql: `INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at)
+        VALUES(?,?,?,?,'content',1,?,?)`,
+      values: [ids.ticket, f.ids.credential, ids.target, ids.budget, now, now + 300000],
+    },
+    {
+      sql: `INSERT INTO content_sessions(id,user_id,issued_by_credential_id,target_set_id,budget_id,ticket_id,epoch,issued_at,expires_at)
+        VALUES(?,?,?,?,?,?,1,?,?)`,
       values: [
         ids.content,
         f.ids.user,
         f.ids.credential,
         ids.target,
         ids.budget,
+        ids.ticket,
         now,
         now + 300000,
       ],
-    },
-    {
-      sql: `INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at)
-        VALUES(?,?,?,?,'content',1,?,?)`,
-      values: [ids.ticket, f.ids.credential, ids.target, ids.budget, now, now + 300000],
     },
   ]);
   const principal = {
@@ -80,6 +81,15 @@ it("asserts current private content session, ticket, target set and budget in D1
   const check = () =>
     atomicBatch(env.DB, [contentSessionAssertion(principal, ids.content, ids.ticket, "content")]);
   await check();
+  const otherTicket = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO tickets
+    (id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at)
+    VALUES(?,?,?,?,'content',1,?,?)`)
+    .bind(otherTicket, f.ids.credential, ids.target, ids.budget, now, now + 300000)
+    .run();
+  await expect(
+    atomicBatch(env.DB, [contentSessionAssertion(principal, ids.content, otherTicket, "content")]),
+  ).rejects.toThrow();
   const grant = { sessionId: ids.content, ticketId: ids.ticket, purpose: "content" as const };
   const planned = await prepareContentBlobRead(
     env.DB,

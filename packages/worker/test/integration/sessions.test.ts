@@ -67,22 +67,36 @@ it("revokes content sessions derived by the user across access sessions", async 
       sql: "INSERT INTO budgets(id,owner_id,user_id,epoch,expires_at,state) VALUES(?,?,?,1,?,'active')",
       values: [budget, ids.user, ids.user, now + 600000],
     },
-    {
-      sql: "INSERT INTO target_sets VALUES(?,?,?,'hash','manifest',3,?,1)",
-      values: [ids.user, ids.user, one.credential_id, now + 600000],
-    },
-    ...[one, two].map((session, index) => ({
-      sql: "INSERT INTO content_sessions(id,user_id,issued_by_credential_id,target_set_id,budget_id,epoch,issued_at,expires_at) VALUES(?,?,?,?,?,1,?,?)",
-      values: [
-        `${ids.user}-cs-${index}`,
-        ids.user,
-        session.credential_id,
-        ids.user,
-        budget,
-        now,
-        now + 600000,
-      ],
-    })),
+    ...[one, two].flatMap((session, index) => {
+      const target = `${ids.user}-target-${index}`;
+      const ticket = `${ids.user}-ticket-${index}`;
+      return [
+        {
+          sql: "INSERT INTO target_sets VALUES(?,?,?,'hash','manifest',3,?,1)",
+          values: [target, ids.user, session.credential_id, now + 600000],
+        },
+        {
+          sql: `INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at)
+            VALUES(?,?,?,?,'content',1,?,?)`,
+          values: [ticket, session.credential_id, target, budget, now, now + 600000],
+        },
+        {
+          sql: `INSERT INTO content_sessions
+            (id,user_id,issued_by_credential_id,target_set_id,budget_id,ticket_id,epoch,issued_at,expires_at)
+            VALUES(?,?,?,?,?,?,1,?,?)`,
+          values: [
+            `${ids.user}-cs-${index}`,
+            ids.user,
+            session.credential_id,
+            target,
+            budget,
+            ticket,
+            now,
+            now + 600000,
+          ],
+        },
+      ];
+    }),
   ]);
   await revokeAccessSession(env.DB, one.credential_id, 1);
   expect(

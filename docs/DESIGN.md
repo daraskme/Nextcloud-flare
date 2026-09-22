@@ -813,7 +813,7 @@ upload-only は create/upload receipt/status だけを許可し、list/read/over
    `target_sets.manifest_ref` は `target-sets/<target_set_id>` の R2 object を指し、SHA-256 hex を `manifest_hash` に保存する。manifest v1 は `{ "v":1, "targets":[{ "spaceId", "nodeId", "blobId", "purpose", "size" }] }`。UTF-8 JSON≤1MiB、1–1,000件、重複禁止、`total_bytes` は全 `size` の和と一致させる。配信時は object の hash と node/blob/purpose/size を確認し、D1 batch で hash/ref と現行認可を再確認する。復旧監査も object の内容を照合する。
 2. app は audience=`CONTENT_ORIGIN`、expiry≤600秒かつ share expiry 以下の署名 ticket を返す。ticket は個別 cancel 可能で、`content_sessions.revoked_at` と ticket cancel row を毎 request 検査する。
 3. browser は `POST <CONTENT_ORIGIN>/session` を `credentials:'include'` で呼ぶ。§5.1 の OPTIONS/POST 固定 allowlist CORS を使う。
-4. content origin は opaque session ID の `__Host-ncf_cs` を `Secure; HttpOnly; SameSite=None; Path=/; Max-Age≤600` で設定する。`content_sessions` は user/share/credential/target set/budget ID/expiry/revoked_at を持つ。
+4. content origin は署名した opaque session ID の `__Host-ncf_cs` を `Secure; HttpOnly; SameSite=None; Path=/; Max-Age≤600` で設定する。`content_sessions` は user/share/credential/target set/budget/ticket ID/expiry/revoked_at を持ち、各配信 request で発行元 ticket の現行状態を再確認する。
 5. 同じ user+share（private は user+credential）の session 更新・別 tab 発行は、期限内の既存 `budget_id` を再利用する。新 session で budget を増やさない。budget 上限は対象合計 bytes×3、1,024 requests/10分、parallel≤8。
 6. `/c` content、thumb、page、entry、track、ZIP、対応 public route の全 byte/request/HEAD/Range を同じ BudgetDO へ接続する。BudgetDO storage は≤1MiB、lease TTL 10分、disconnect/cancel は明示精算し、漏れは alarm が回収する。
 

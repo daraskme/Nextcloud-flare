@@ -34,7 +34,8 @@ export function contentSessionAssertion(
     principal.kind === "link_share" ? principal.share_version : (share?.version ?? null);
   return assertExists(
     `SELECT 1 FROM content_sessions cs
-      JOIN tickets t ON t.target_set_id=cs.target_set_id AND t.budget_id=cs.budget_id
+      JOIN tickets t ON t.id=cs.ticket_id AND t.target_set_id=cs.target_set_id
+        AND t.budget_id=cs.budget_id
         AND t.credential_id=cs.issued_by_credential_id AND t.epoch=cs.epoch
       JOIN target_sets ts ON ts.id=cs.target_set_id AND ts.credential_id=cs.issued_by_credential_id
         AND ts.epoch=cs.epoch
