@@ -49,7 +49,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 | `packages/worker/src/api/nodeMutations.ts` | CSRF と bounded JSON / Idempotency-Key の検査から folder 作成・node rename、確定・競合・結果不明の HTTP 応答、同 credential の operation 照会 |
 | `packages/worker/src/auth/nodeCursor.ts` | credential/parent/owner/epoch/tree generation と最終 sort key を10分の専用 HMAC kid ring に束縛 |
 | `packages/worker/src/auth/appPassword.ts` / `api/dav.ts` | DAV Basic 用の厳密な入力境界、kid 別 pepper + PBKDF2 digest、認証前後の current D1 照合。DAV HTTP 入口では Edge rate limit 後に Basic を検証し、app password root から path を解決して Class 1 OPTIONS、file GET/HEAD/Range、bounded PROPFIND Depth 0/1、fenced MKCOL、atomic PROPPATCH に応答。未実装 operation は 503 |
-| `packages/worker/src/dav/conditions.ts` | bounded `If` / `Lock-Token` 文法、tagged/untagged条件評価、評価とは独立したtoken submission収集。D1 lock/ETag state と mutationへの接続前はheader付きmutationを503に閉じる |
+| `packages/worker/src/dav/conditions.ts` / `conditionState.ts` / `etag.ts` | bounded `If` / `Lock-Token` 文法、tagged/untagged条件評価、独立token submission、same-origin D1 path/ancestor lock/ETag state。GET/HEAD・PROPFIND・条件評価のDAV validatorを共有し、MKCOL/PROPPATCHへtokenを接続 |
 | `packages/worker/src/services/appPasswords.ts` / `api/appPasswords.ts` | Access/CSRF 付き app password 発行・一覧・失効、scope/root/件数/期限、秘密の一度きりの応答。DAV 接続は未完了 |
 | `packages/worker/src/api/content.ts` | content host の ticket 交換/CORS と Cookie 配信 HTTP handler。ControlDO と署名鍵 gate は Worker entry |
 | `packages/worker/src/auth/contentTokens.ts` / `contentAccept.ts` | kid ring の HS256 ticket/Cookie と D1 redemption。`content_sessions.ticket_id` は migration `0009` |

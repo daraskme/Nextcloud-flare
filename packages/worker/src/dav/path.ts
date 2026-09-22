@@ -107,7 +107,7 @@ export async function resolveDavPropsNode(db: D1Database, principal: Principal, 
   }
 }
 
-async function davPathRow(db: D1Database, principal: UserPrincipal, path: DavPath) {
+async function findDavPathRow(db: D1Database, principal: UserPrincipal, path: DavPath) {
   const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
   const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;
   const row = await primary(db)
@@ -116,6 +116,11 @@ async function davPathRow(db: D1Database, principal: UserPrincipal, path: DavPat
     )
     .bind(...values)
     .first<{ id: string; spaceId: string }>();
+  return row;
+}
+
+async function davPathRow(db: D1Database, principal: UserPrincipal, path: DavPath) {
+  const row = await findDavPathRow(db, principal, path);
   if (!row) throw new Error("dav_node_unavailable");
   return row;
 }
@@ -127,15 +132,23 @@ async function assertDavPath(
   row: { readonly id: string; readonly spaceId: string },
   authority?: ReturnType<typeof authorizationAssertion>,
 ) {
-  const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
-  const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;
   await atomicBatch(db, [
     ...(authority ? [authority] : []),
-    assertExists(
-      `${PATH_CTE} SELECT 1 FROM path WHERE depth=json_array_length(?4) AND id=?5 AND space_id=?6`,
-      [...values, row.id, row.spaceId],
-    ),
+    davPathAssertion(principal, path, row),
   ]);
+}
+
+function davPathAssertion(
+  principal: UserPrincipal,
+  path: DavPath,
+  row: { readonly id: string; readonly spaceId: string },
+) {
+  const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
+  const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;
+  return assertExists(
+    `${PATH_CTE} SELECT 1 FROM path WHERE depth=json_array_length(?4) AND id=?5 AND space_id=?6`,
+    [...values, row.id, row.spaceId],
+  );
 }
 
 /** Resolve OPTIONS source with current credential/root checks but no content scope. */
@@ -152,6 +165,14 @@ export async function resolveDavCredentialPath(
   } catch {
     throw new Error("dav_node_unavailable");
   }
+}
+
+/** Resolve condition resource state; an unmapped URL is null while storage failures propagate. */
+export async function resolveDavConditionPath(db: D1Database, principal: Principal, path: DavPath) {
+  if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  const row = await findDavPathRow(db, principal, path);
+  if (!row) return null;
+  return Object.freeze({ ...row, assertion: davPathAssertion(principal, path, row) });
 }
 
 /** Resolve the target parent without requiring read scope on a write-only app password. */

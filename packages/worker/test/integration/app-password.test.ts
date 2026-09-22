@@ -8,6 +8,7 @@ import {
   authenticateAppPassword,
   hashAppPassword,
 } from "../../src/auth/appPassword";
+import { lockTokenHashes } from "../../src/auth/locks";
 import { parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
@@ -371,7 +372,7 @@ it("returns bounded DAV PROPFIND Depth 0 and 1 multistatus responses", async () 
   expect(depthZero.status).toBe(207);
   const zeroXml = await depthZero.text();
   expect(zeroXml).toContain("<D:href>/dav/File</D:href>");
-  expect(zeroXml).toContain(`<D:getetag>&quot;${f.ids.file}-1&quot;</D:getetag>`);
+  expect(zeroXml).toContain(`<D:getetag>&quot;b-${f.ids.blob}&quot;</D:getetag>`);
   expect(zeroXml).toContain('<N:color xmlns:N="urn:ncf:props">blue</N:color>');
 
   const body =
@@ -531,6 +532,49 @@ it("creates a DAV collection through the fenced namespace mutation service", asy
     ring,
   );
   expect(noKey.status).toBe(400);
+
+  const token = `opaquelocktoken:${crypto.randomUUID()}`;
+  const [tokenHash] = await lockTokenHashes([token]);
+  await env.DB.prepare(
+    "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'0','owner',1,?)",
+  )
+    .bind(
+      `lock-${crypto.randomUUID()}`,
+      f.ids.folder,
+      f.ids.space,
+      `ap:${id}`,
+      tokenHash,
+      Date.now() + 60_000,
+    )
+    .run();
+  const locked = await handleDavHttp(
+    new Request("https://app.invalid/dav/Locked", {
+      method: "MKCOL",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Idempotency-Key": crypto.randomUUID(),
+        If: `<https://app.invalid/dav/> (<${token}>)`,
+      },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(locked.status).toBe(201);
+  const failedCondition = await handleDavHttp(
+    new Request("https://app.invalid/dav/Locked2", {
+      method: "MKCOL",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Idempotency-Key": crypto.randomUUID(),
+        If: "<https://app.invalid/dav/> (<opaquelocktoken:wrong>)",
+      },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(failedCondition.status).toBe(412);
 });
 
 it("atomically writes DAV dead properties and rejects protected live properties", async () => {
@@ -596,6 +640,113 @@ it("atomically writes DAV dead properties and rejects protected live properties"
       .bind(f.ids.file)
       .first<number>("count"),
   ).toBe(0);
+
+  const etagBody =
+    '<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test"><D:set><D:prop><X:etag-match>yes</X:etag-match></D:prop></D:set></D:propertyupdate>';
+  const etagMatched = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPPATCH",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        "Idempotency-Key": crypto.randomUUID(),
+        If: `(["b-${f.ids.blob}"])`,
+      },
+      body: etagBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(etagMatched.status).toBe(207);
+  const etagStale = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPPATCH",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        "Idempotency-Key": crypto.randomUUID(),
+        If: '(["b-stale"])',
+      },
+      body: etagBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(etagStale.status).toBe(412);
+
+  const token = `opaquelocktoken:${crypto.randomUUID()}`;
+  const [tokenHash] = await lockTokenHashes([token]);
+  await env.DB.prepare(
+    "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'0','owner',1,?)",
+  )
+    .bind(
+      `lock-${crypto.randomUUID()}`,
+      f.ids.file,
+      f.ids.space,
+      `ap:${id}`,
+      tokenHash,
+      Date.now() + 60_000,
+    )
+    .run();
+  const lockedBody =
+    '<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:test"><D:set><D:prop><X:locked>yes</X:locked></D:prop></D:set></D:propertyupdate>';
+  const missingSubmission = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPPATCH",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        "Idempotency-Key": crypto.randomUUID(),
+        If: "(Not <DAV:no-lock>)",
+      },
+      body: lockedBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(missingSubmission.status).toBe(423);
+  const locked = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPPATCH",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        "Idempotency-Key": crypto.randomUUID(),
+        If: `(<${token}>)`,
+      },
+      body: lockedBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(locked.status).toBe(207);
+  expect(
+    await env.DB.prepare(
+      "SELECT value_xml AS value FROM node_props WHERE node_id=? AND namespace='urn:test' AND name='locked'",
+    )
+      .bind(f.ids.file)
+      .first<string>("value"),
+  ).toBe("yes");
+  const stale = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPPATCH",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        "Idempotency-Key": crypto.randomUUID(),
+        If: "(<opaquelocktoken:wrong>)",
+      },
+      body: lockedBody,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(stale.status).toBe(412);
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

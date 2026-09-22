@@ -132,6 +132,14 @@ it("streams exact R2 bytes with D1 content validators and safe response headers"
     );
     expect(unchanged.status).toBe(304);
     expect(unchanged.body).toBeNull();
+    const davUnchanged = await streamImmutableBlob(
+      env.BLOBS,
+      plan,
+      request({ "If-None-Match": '"b-blob"' }),
+      { etag: '"b-blob"' },
+    );
+    expect(davUnchanged.status).toBe(304);
+    expect(davUnchanged.headers.get("ETag")).toBe('"b-blob"');
     const outside = await streamImmutableBlob(env.BLOBS, plan, request({ Range: "bytes=10-" }));
     expect(outside.status).toBe(416);
     expect(outside.headers.get("Content-Range")).toBe("bytes */10");

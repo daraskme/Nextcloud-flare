@@ -1,5 +1,7 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
+import { evaluateDavRequestIf } from "../dav/conditionState";
+import { davEtag } from "../dav/etag";
 import {
   parseDavPath,
   resolveDavCreateParent,
@@ -129,8 +131,7 @@ export async function handleDavHttp(
     if (path.segments.length === 0) return problem(405, "method_not_allowed");
     if (request.body || ![null, "0"].includes(request.headers.get("Content-Length")))
       return problem(415, "unsupported_media_type");
-    if (request.headers.has("If") || request.headers.has("Lock-Token"))
-      return problem(503, "not_ready");
+    if (request.headers.has("Lock-Token")) return problem(400, "bad_request");
     const key = request.headers.get("Idempotency-Key");
     if (!key || key.includes(",") || !/^[\x21-\x7e]{1,200}$/.test(key))
       return problem(400, "bad_request");
@@ -140,6 +141,7 @@ export async function handleDavHttp(
       trailingSlash: true,
     } as const;
     try {
+      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const parent = await resolveDavCreateParent(env.DB, principal, parentPath);
       const outcome = await createFolder(env, {
         principal,
@@ -147,7 +149,7 @@ export async function handleDavHttp(
         spaceId: parent.spaceId,
         parentId: parent.parent.id,
         name,
-        lockTokens: [],
+        lockTokens,
         operation: "dav.mkcol",
       });
       if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
@@ -184,6 +186,11 @@ export async function handleDavHttp(
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "idempotency_conflict")
         return problem(409, "conflict");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "invalid_dav_if")
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
       if (error instanceof Error && error.message === "dav_node_unavailable")
         return problem(404, "not_found");
       return problem(503, "not_ready");
@@ -249,8 +256,7 @@ export async function handleDavHttp(
     } catch {
       return problem(404, "not_found");
     }
-    if (request.headers.has("If") || request.headers.has("Lock-Token"))
-      return problem(503, "not_ready");
+    if (request.headers.has("Lock-Token")) return problem(400, "bad_request");
     const key = request.headers.get("Idempotency-Key");
     if (!key || key.includes(",") || !/^[\x21-\x7e]{1,200}$/.test(key))
       return problem(400, "bad_request");
@@ -268,13 +274,14 @@ export async function handleDavHttp(
       .join("/")}${target.node.kind === "file" ? "" : "/"}`;
     if (protectedIndex >= 0) return proppatchResponse(href, changes, protectedIndex);
     try {
+      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const outcome = await proppatch(env, {
         principal,
         idempotencyKey: key,
         spaceId: target.node.space_id,
         nodeId: target.node.id,
         changes,
-        lockTokens: [],
+        lockTokens,
       });
       if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
         const response = problem(503, "commit_unknown");
@@ -290,6 +297,11 @@ export async function handleDavHttp(
     } catch (error) {
       if (error instanceof Error && error.message === "idempotency_conflict")
         return problem(409, "conflict");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "invalid_dav_if")
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
       return problem(503, "not_ready");
     }
   }
@@ -303,7 +315,7 @@ export async function handleDavHttp(
       return problem(404, "not_found");
     try {
       const plan = await prepareAuthorizedNodeBlobRead(env.DB, resolved);
-      return await streamImmutableBlob(env.BLOBS, plan, request);
+      return await streamImmutableBlob(env.BLOBS, plan, request, { etag: davEtag(resolved.node) });
     } catch {
       return problem(503, "not_ready");
     }

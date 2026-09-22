@@ -374,7 +374,7 @@ function safeInline(mime: string): boolean {
   );
 }
 
-function responseHeaders(plan: BlobReadPlan): Headers {
+function responseHeaders(plan: BlobReadPlan, etag = plan.contentEtag): Headers {
   const disposition = safeInline(plan.mime) ? "inline" : "attachment";
   const encodedName = encodeURIComponent(plan.name).replace(
     /['()*]/g,
@@ -385,7 +385,7 @@ function responseHeaders(plan: BlobReadPlan): Headers {
     "Cache-Control": "private, no-store",
     "Content-Disposition": `${disposition}; filename*=UTF-8''${encodedName}`,
     "Content-Type": plan.mime,
-    ETag: plan.contentEtag,
+    ETag: etag,
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
   });
@@ -396,14 +396,17 @@ export async function streamImmutableBlob(
   bucket: R2Bucket,
   plan: BlobReadPlan,
   request: Request,
+  options: { readonly etag?: string } = {},
 ): Promise<Response> {
   validatePlan(plan);
   if (request.method !== "GET" && request.method !== "HEAD") throw new Error("invalid_blob_read");
+  const etag = options.etag ?? plan.contentEtag;
+  if (!/^"[\x21\x23-\x7e]{1,512}"$/.test(etag)) throw new Error("invalid_blob_read");
   const object = await bucket.head(plan.key);
   if (!object || object.size !== plan.size || object.etag !== plan.r2Etag)
     throw new Error("blob_storage_mismatch");
-  const headers = responseHeaders(plan);
-  if (ifNoneMatch(request.headers.get("If-None-Match"), plan.contentEtag))
+  const headers = responseHeaders(plan, etag);
+  if (ifNoneMatch(request.headers.get("If-None-Match"), etag))
     return new Response(null, { status: 304, headers });
   if (request.method === "HEAD") {
     headers.set("Content-Length", String(plan.size));
@@ -411,7 +414,7 @@ export async function streamImmutableBlob(
   }
   const ifRange = request.headers.get("If-Range");
   const range = parseRange(
-    ifRange === null || ifRange === plan.contentEtag ? request.headers.get("Range") : null,
+    ifRange === null || ifRange === etag ? request.headers.get("Range") : null,
     plan.size,
   );
   if (range.kind === "unsatisfiable") {

@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { assertCreateLocks, lockTokenHashes } from "../auth/locks";
+import { assertCreateLocks, hasBlockingLocks, lockTokenHashes } from "../auth/locks";
 import { grantPermit, type Permit, releasePermit, revokeSpacePermits } from "../db/permits";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
@@ -93,6 +93,16 @@ export class LockDO extends DurableObject<Env> {
       spaceId: request.spaceId,
     });
     const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingLocks(
+        this.env.DB,
+        request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
     const digest = JSON.stringify([
       request.parentId,
       request.principal.kind,
@@ -153,6 +163,23 @@ export class LockDO extends DurableObject<Env> {
     });
     if (authorized.operation !== "node.rename") throw new Error("invalid_rename_authorization");
     const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      (await hasBlockingLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )) ||
+      (await hasBlockingLocks(
+        this.env.DB,
+        authorized.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      ))
+    )
+      throw new Error("dav_locked");
     const digest = JSON.stringify([
       "node.rename",
       request.nodeId,
@@ -215,6 +242,16 @@ export class LockDO extends DurableObject<Env> {
     if (authorized.operation !== "node.props.write")
       throw new Error("invalid_node_write_authorization");
     const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
     const digest = JSON.stringify([
       "node.props.write",
       request.nodeId,

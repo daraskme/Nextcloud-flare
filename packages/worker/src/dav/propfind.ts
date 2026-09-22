@@ -1,5 +1,6 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { assertExists, atomicBatch, primary } from "../db/primary";
+import { davEtag } from "./etag";
 import type { DavPath } from "./path";
 import { type DavPropertyName, type PropfindRequest, validateDavXmlFragment } from "./xml";
 
@@ -57,7 +58,15 @@ function liveValue(node: NodeRow, name: string, namesOnly: boolean): string | nu
   if (name === "getcontentlength" && node.kind !== "file") return null;
   if (namesOnly) return "";
   if (name === "displayname") return escapeXml(node.name);
-  if (name === "getetag") return escapeXml(`"${node.id}-${node.revision}"`);
+  if (name === "getetag")
+    return escapeXml(
+      davEtag({
+        id: node.id,
+        kind: node.kind,
+        revision: node.revision,
+        current_blob_id: node.currentBlobId,
+      }),
+    );
   if (name === "getcontentlength") {
     if (!Number.isSafeInteger(node.size) || (node.size ?? -1) < 0)
       throw new Error("dav_data_invalid");
