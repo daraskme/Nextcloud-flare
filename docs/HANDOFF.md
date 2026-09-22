@@ -25,18 +25,21 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 ## 現在動いている範囲
 
 Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0008`、147 route の契約がある。
-JWT/JWKS、bootstrap、sessions、read/create/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create 用 LockDO、operation claim/lookup を実装済み。
+JWT/JWKS、bootstrap、sessions、read/create/rename/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
-今回の追加: 予約・未完了 upload・旧 epoch outbox・job lease を確認する最終 D1 fence と、進行中 upload に紐づかない旧 epoch 予約の bounded release を追加。修復後は監査を最初からやり直す。既存 DO の旧監査テーブルの CHECK 制約を避けるため進捗を `recovery_audit_v7` に保存する。NixOS の Node 24.20.0 / pnpm 12.3.4 で `pnpm check` **446 tests**（Node 195、workerd 251）と lint/typecheck/contracts/config/build に成功。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。前回の `862cf0c` の [CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35700007530) も成功。
+直近の追加: 改名の D1 一括 mutation、`node.renamed` の outbox 消費と旧 epoch 整理、共有と資格情報 scope root の祖先を検証する復旧監査。R2 の配信基盤を内部 helper として追加中。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。
 
-今回の checkpoint で追加したコード:
+主要な内部成果物（最新状態は進捗表を参照）:
 
 | ファイル | 実装内容 |
 |---|---|
 | `packages/shared/src/names.ts` | NFC/portable name、Unicode 17 full casefold、folder-name search text/bigram |
 | `packages/worker/src/services/fsMutation.ts` | SQL assertion、全 step と terminal の atomic commit、確実な rollback と commit_unknown の分離 |
 | `packages/worker/src/services/createFolder.ts` | LockDO/認可/claim/7 step/terminal/release を接続した最初の folder create |
+| `packages/worker/src/services/renameNode.ts` | 対象と親の lock、FTS 更新、operation/terminal/outbox を一括確定する改名 |
+| `packages/worker/src/services/blobRead.ts` | 認可・予算検証後に使用する R2 immutable blob の HEAD/Range 配信基盤 |
 | `packages/worker/src/jobs/outbox.ts` | token/lease 付き producer、ID-only send、期限切れ再送、bounded repair scan |
+| `packages/worker/src/jobs/consumeOutbox.ts` | create/rename event の current authority と元 operation step を照合する consumer |
 | `packages/worker/test/integration/fs-mutation.test.ts` | 全必須 step の rollback、並行再送、応答喪失、失効対 commit |
 | `packages/worker/test/integration/outbox.test.ts` | producer 競合、送信/D1 応答喪失、completed の巻戻し拒否 |
 | `packages/worker/test/unit/names.test.ts` | Unicode同名・portable禁止・長さ境界・検索正規化 |
@@ -49,15 +52,15 @@ checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認す
 
 - HTTP は全経路未有効化。binding 不備は503、その他は404。SPA は準備用 HTML のみ。147 route の存在は handler の完成を意味しない。
 - **ControlDO.status は maintenance=true / gcPaused=true。** `recover`/`bumpEpoch` はあるが、admission/quiesce/検証後の再開は未実装。単純に false に変えない。
-- LockDO/create の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
-- Queue handler は `retryAll`、Cron は no-op。outbox producer と `node.created` consumer helper は呼べるが、実 Queue ack/DLQ と他 kind の result CAS は未接続。
+- LockDO/create/rename の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
+- Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
 - UploadDO/BudgetDO、Files UI、upload/trash/GC/restore、全 operation の認可 tuple、検索/共有/content/DAV、Gallery/Bookshelf/Audio、運用・release は未完了。
 - AVIF/AV1/Opus は形式基盤まで。実 track parser・配信経路・player/lightbox・ブラウザー実ファイル試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 
 ## 次に進める順序
 
-1. **outbox Queue 接続 / repair**: 現在の `node.created` と ack 判定 helper を基に実 Queue/DLQ/requeue を検証し、他 kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
+1. **outbox Queue 実サービス / repair**: `node.created` と `node.renamed` のローカル handler を基に実 Queue/DLQ/requeue を検証し、残る kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
 2. **ControlDO admission / resume**: durable な監査進捗へ credential/share/outbox の全意味検証、未知 R2 object の repair と incomplete multipart の扱い、GC/Upload/Queue drain と最終 D1 fence 後の admission 再開を追加する。正本は DO、D1 は mirror。空 DB 専用の解除処理を完成形にしない。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
@@ -67,7 +70,7 @@ checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認す
 
 ## 再開コマンド
 
-作業場所: `C:\Users\micro\Documents\Nextcloud-flare`。remote: `https://github.com/daraskme/Nextcloud-flare.git`、branch: `main`。
+作業場所は実環境で確認する。現在の NixOS workspace は `/tmp/Nextcloud-flare`、Windows workspace は `C:\Users\micro\Documents\Nextcloud-flare`。remote: `https://github.com/daraskme/Nextcloud-flare.git`、branch: `main`。
 
 ```powershell
 git status --short

@@ -6,7 +6,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 **別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 現在の実装範囲、次の作業、検証コマンドと資料の読み分けをまとめています。
 
 現在は **Phase 0 のローカル検証基盤と Phase 1 の一部**を実装済み。
-53テーブルの migration、147経路の契約、ControlDO の epoch 復旧、Access JWT/CSRF・初回管理者登録・session 保存/失効、認可・会計・LockDO、atomic なフォルダー作成と outbox 送信・`node.created` 消費の内部サービスを追加しています。AVIF・AV1・Opus の対応契約と形式判定基盤も含みます。
+53テーブルの migration、147経路の契約、ControlDO の epoch 復旧、Access JWT/CSRF・初回管理者登録・session 保存/失効、認可・会計・LockDO、atomic なフォルダー作成と改名、outbox 送信と `node.created` / `node.renamed` 消費の内部サービスを追加しています。認可後に利用する R2 の HEAD・Range 配信基盤と、AVIF・AV1・Opus の形式判定基盤も含みます。
 ファイル管理、公開 API、Web UI はまだ利用できません。HTTP 経路は未有効化です。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 

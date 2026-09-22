@@ -15,6 +15,7 @@
 | R6 #2 の probe | expired-open/revoked/released/wrong-space permit、old epoch、失効/期限切れ session、disabled actor | 最小 fixture で実証。全 principal 認可は Phase 1 |
 | 0.3 streams | FixedLengthStream + DigestStream を直列供給。0B/3B/95,000,000B、長短 mismatch、R2 条件不成立、slow consumer/cancel | ローカル実装済み |
 | 0.3 Range | R2 部分取得、HTTP probe の206/416/HEAD/304、suffix/open-ended/多重 Range の正規化 | ローカル実装済み |
+| 2 immutable blob read 基盤 | R2 object のサイズ/ETag を D1 plan と照合し、D1 content ETag、HEAD/206/304/416、If-Range、MIME/Disposition、no-store/nosniff を内部ストリーム helper で処理 | 実 R2 binding で検証。認可、content session、BudgetDO、公開 route は未接続 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
@@ -72,6 +73,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 266 = **461 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。内部 R2 配信 helper のサイズ/ETag 照合、D1 content ETag、HEAD/Range/If-Range、no-store と MIME/Disposition を実 binding で検証。認可/content session/BudgetDO と公開 route は未接続。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 265 = **460 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。有効な app password と service credential の scope root を space root まで再帰検証し、scope root 自体が残っていても祖先が trash の場合は復旧監査を拒否する。両種を個別に workerd で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 264 = **459 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。復旧監査の共有 root を space root まで再帰検証し、共有 root 自体が残っていても祖先が trash の場合は拒否する。実 `trash_ops` と復元後の監査を workerd で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 264 = **459 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。改名サービスの LockDO→D1→terminal 経路を workerd で検証。同一キー再送は副作用を重複させず、異なる意図とセッション失効を拒否する。
