@@ -183,6 +183,10 @@ it("checks outbox provenance and dispatch lease shape", async () => {
   if (!fixture) throw new Error("missing_fixture");
   const opId = crypto.randomUUID();
   const outboxId = crypto.randomUUID();
+  const renameOpId = crypto.randomUUID();
+  const renameOutboxId = crypto.randomUUID();
+  const wrongKindId = crypto.randomUUID();
+  const wrongTargetId = crypto.randomUUID();
   const failedOpId = crypto.randomUUID();
   const failedOutboxId = crypto.randomUUID();
   const permitId = crypto.randomUUID();
@@ -197,14 +201,50 @@ it("checks outbox provenance and dispatch lease shape", async () => {
     VALUES(?,'user',?,?,1,?,'node.create','committed','digest',1,?,1,1,0,1,1)`)
     .bind(opId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
     .run();
+  await env.DB.prepare(
+    "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+  )
+    .bind(opId, fixture.ids.folder)
+    .run();
   await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
     VALUES(?,?,'node.created',?,'pending',1,1,1)`)
     .bind(outboxId, opId, fixture.ids.folder)
     .run();
+  await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
+    credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
+    claimed_expires_at,expected_steps,created_at,updated_at)
+    VALUES(?,'user',?,?,1,?,'node.rename','committed','digest',1,?,1,1,0,1,1)`)
+    .bind(renameOpId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+  )
+    .bind(renameOpId, fixture.ids.folder)
+    .run();
+  await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+    VALUES(?,?,'node.renamed',?,'pending',1,1,1)`)
+    .bind(renameOutboxId, renameOpId, fixture.ids.folder)
+    .run();
   try {
     await expect(
       inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "outbox", afterId: "" }),
-    ).resolves.toMatchObject({ examined: 1, next: { stage: "shares" } });
+    ).resolves.toMatchObject({ examined: 2, next: { stage: "shares" } });
+    await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+      VALUES(?,?,'node.renamed',?,'pending',1,1,1)`)
+      .bind(wrongKindId, opId, fixture.ids.folder)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "outbox", afterId: "" }),
+    ).rejects.toThrow(/recovery_outbox_provenance_mismatch/);
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(wrongKindId).run();
+    await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+      VALUES(?,?,'node.created',?,'pending',1,1,1)`)
+      .bind(wrongTargetId, opId, fixture.ids.root)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "outbox", afterId: "" }),
+    ).rejects.toThrow(/recovery_outbox_provenance_mismatch/);
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(wrongTargetId).run();
     await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
       credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
       claimed_expires_at,expected_steps,created_at,updated_at)
@@ -227,8 +267,16 @@ it("checks outbox provenance and dispatch lease shape", async () => {
   } finally {
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(failedOutboxId).run();
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(outboxId).run();
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(renameOutboxId).run();
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id IN (?,?)")
+      .bind(wrongKindId, wrongTargetId)
+      .run();
+    await env.DB.prepare("DELETE FROM operation_steps WHERE op_id IN (?,?)")
+      .bind(opId, renameOpId)
+      .run();
     await env.DB.prepare("DELETE FROM operations WHERE op_id=?").bind(failedOpId).run();
     await env.DB.prepare("DELETE FROM operations WHERE op_id=?").bind(opId).run();
+    await env.DB.prepare("DELETE FROM operations WHERE op_id=?").bind(renameOpId).run();
     await env.DB.prepare("DELETE FROM permits WHERE permit_id=?").bind(permitId).run();
   }
 });

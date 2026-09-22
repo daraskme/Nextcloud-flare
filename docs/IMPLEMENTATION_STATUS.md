@@ -72,6 +72,7 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 ## 実行記録
 
+- 2026-09-22、復旧監査の outbox provenance に `node.created` / `node.renamed` と operation kind、step 1 node ID の対応検査を追加。偽装した kind と payload の拒否を D1 で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 263 = **458 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。旧 epoch の `node.renamed` outbox を元の operation/node step の照合と claim drain 後に failed へ収束。改名操作に偽装した作成通知は残して最終 fence で拒否する。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 263 = **458 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。rename の LockDO permit、operation claim、D1 一括 mutation、FTS の語句入れ替えと `node.renamed` consumer を追加。公開 HTTP と実 admission は未接続。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 258 = **453 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最後に内部共有と service の rename ケースを追加し、対象32テストを再実行して成功。`node.rename` の current authority/親 operand assertion を追加。rename mutation/HTTP は未実装。

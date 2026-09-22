@@ -32,6 +32,8 @@ interface BlobRow {
 
 interface OutboxRow {
   outbox_id: string;
+  kind: string;
+  payload_ref: string;
   state: string;
   epoch: number;
   dispatch_token: string | null;
@@ -40,6 +42,8 @@ interface OutboxRow {
   claim_expires_at: number | null;
   operation_state: string | null;
   operation_epoch: number | null;
+  operation_kind: string | null;
+  node_step_id: string | null;
 }
 
 function validCursor(cursor: RecoveryCursor, limit: number): void {
@@ -415,8 +419,11 @@ export async function inspectRecoveryPage(
   }
   if (cursor.stage === "outbox") {
     const rows = await primary(db)
-      .prepare(`SELECT b.outbox_id,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
-        b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch
+      .prepare(`SELECT b.outbox_id,b.kind,b.payload_ref,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
+        b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch,
+        o.kind AS operation_kind,
+        (SELECT s.affected_id FROM operation_steps s WHERE s.op_id=o.op_id
+          AND s.step_no=1 AND s.kind='node') AS node_step_id
       FROM outbox b LEFT JOIN operations o ON o.op_id=b.op_id
       WHERE b.outbox_id>? ORDER BY b.outbox_id LIMIT ?`)
       .bind(cursor.afterId, limit + 1)
@@ -428,6 +435,14 @@ export async function inspectRecoveryPage(
       if (
         ["pending", "dispatching", "sent", "completed"].includes(row.state) &&
         row.operation_state !== "committed"
+      )
+        throw new Error("recovery_outbox_provenance_mismatch");
+      if (
+        !(
+          (row.kind === "node.created" && row.operation_kind === "node.create") ||
+          (row.kind === "node.renamed" && row.operation_kind === "node.rename")
+        ) ||
+        row.node_step_id !== row.payload_ref
       )
         throw new Error("recovery_outbox_provenance_mismatch");
       if (

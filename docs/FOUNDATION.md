@@ -60,6 +60,7 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 `do/recoveryAudit.ts` は停止中の D1 と R2 を段階的に走査する診断 helper。1回最大20 user/blob/R2 object/outbox/share/credential/credential source を確認し、bootstrap identity、有効 admin、root/owner、used/reserved/physical/ref 会計、記録された R2 object の HEAD サイズと etag、R2 list の全件を blob/ready derivative/archive の D1 行と照合し、未知オブジェクトを検出する。outbox の元操作と送信・claim lease、share の予約量・root 所有者・version、credential の参照先種別・有効 scope root と、4種の参照元に対する registry 行の存在も検査する。FTS5 `integrity-check` は `rank=1` で `search_index` の全件と照合するため、ページ上限の対象外。open permit、claimed operation、active job/outbox claim、削除中 GC、不完全 upload があれば開始しない。ControlDO の `beginRecoveryAudit` / `nextRecoveryAuditPage` は SQLite の `recovery_audit_v7` に epoch・token・stage・R2 の opaque cursor を永続化し、eviction と失敗ページの再試行に対応する。完了済み監査の再照会でも最終 D1 fence を再確認し、失敗時は監査を先頭へ戻す。`rebuildRecoveryFts` は停止中に external-content index を `search_index` から再構築・検証し、監査カーソルを初期化する。旧 epoch の監査を再利用しない。最終 D1 fence は予約・未完了 upload・旧 outbox・job lease を拒否する。`releaseStaleReservations` は旧 epoch で進行中 upload に紐づかない予約を最大20件ずつ解放し、監査を初期化する。監査完了はまだ再開の証明ではない。credential/share/outbox の全意味検証、未知 R2 object の repair、incomplete multipart、実 Queue/GC drain と admission 再開は未実装。
 
 `failStaleOutbox` は停止中に旧 epoch の `node.created` と `node.renamed` を最大20件ずつ `failed` に収束させ、監査を先頭へ戻す。active claim が残る間は処理しない。旧 epoch の他の event kind は専用 cleanup が必要なため残す。
+outbox の復旧監査は両 kind の元 operation 種別と step 1 の node ID が通知 payload に一致することも確認する。不整合な通知は監査を失敗させる。
 
 ## Access session
 
