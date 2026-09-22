@@ -8,6 +8,7 @@ import {
   authenticateAppPassword,
   hashAppPassword,
 } from "../../src/auth/appPassword";
+import { parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
 import { foundationFixture } from "../fixtures/foundation";
@@ -179,7 +180,10 @@ it("accepts a committed rotation when the D1 acknowledgement is lost", async () 
 });
 
 it("limits DAV requests before Basic verification and keeps unavailable operations closed", async () => {
-  const { ring, request } = await fixture("6");
+  const { id, ring, request } = await fixture("6");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read')")
+    .bind(`ap:${id}`)
+    .run();
   let allowed = false;
   const keys: string[] = [];
   const davEnv = {
@@ -208,8 +212,93 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
       .status,
   ).toBe(503);
   expect(keys.at(-1)).toBe("dav:192.0.2.10");
+  const optionsRequest = new Request(request().url, {
+    method: "OPTIONS",
+    headers: request().headers,
+  });
+  const options = await handleDavHttp(optionsRequest, davEnv, 1, ring);
+  expect(options.status).toBe(200);
+  expect(options.headers.get("DAV")).toBe("1");
+  expect(options.headers.get("Allow")).toBe("OPTIONS");
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
     404,
+  );
+});
+
+it("parses bounded DAV paths with a single percent decode", () => {
+  expect(parseDavPath("/dav")).toMatchObject({ segments: [], trailingSlash: false });
+  expect(parseDavPath("/dav/Folder/a%20b.txt").segments.map((part) => part.name)).toEqual([
+    "Folder",
+    "a b.txt",
+  ]);
+  for (const path of [
+    "/dav//File",
+    "/dav/%2F",
+    "/dav/%5C",
+    "/dav/%252F",
+    "/dav/%00",
+    "/dav/%FF",
+    "/dav/%",
+    "/dav/./File",
+    `/dav/${"a/".repeat(65)}File`,
+  ]) {
+    expect(() => parseDavPath(path)).toThrow("invalid_dav_path");
+  }
+  expect(() => parseDavPath("/dav/Shared/mount")).toThrow("dav_shared_not_ready");
+});
+
+it("resolves an app password DAV path relative to its authorized root", async () => {
+  const { f, id, ring, request } = await fixture("7");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read')")
+    .bind(`ap:${id}`)
+    .run();
+  const principal = await authenticateAppPassword(
+    env.DB,
+    request(),
+    "https://app.invalid",
+    1,
+    ring,
+  );
+  expect((await resolveDavNode(env.DB, principal, parseDavPath("/dav"))).node.id).toBe(
+    f.ids.folder,
+  );
+  expect((await resolveDavNode(env.DB, principal, parseDavPath("/dav/file"))).node.id).toBe(
+    f.ids.file,
+  );
+  await expect(resolveDavNode(env.DB, principal, parseDavPath("/dav/Folder"))).rejects.toThrow(
+    "dav_node_unavailable",
+  );
+  await env.DB.prepare("UPDATE app_passwords SET revoked_at=? WHERE id=?")
+    .bind(Date.now(), id)
+    .run();
+  await expect(resolveDavNode(env.DB, principal, parseDavPath("/dav/File"))).rejects.toThrow(
+    "dav_node_unavailable",
+  );
+});
+
+it("rejects a DAV path whose node moves after its initial lookup", async () => {
+  const { f, id, ring, request } = await fixture("8");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read')")
+    .bind(`ap:${id}`)
+    .run();
+  const principal = await authenticateAppPassword(
+    env.DB,
+    request(),
+    "https://app.invalid",
+    1,
+    ring,
+  );
+  const db = {
+    prepare: env.DB.prepare.bind(env.DB),
+    async batch(statements: D1PreparedStatement[]) {
+      await env.DB.prepare("UPDATE nodes SET name='Moved',name_ci='moved' WHERE id=?")
+        .bind(f.ids.file)
+        .run();
+      return env.DB.batch(statements);
+    },
+  } as unknown as D1Database;
+  await expect(resolveDavNode(db, principal, parseDavPath("/dav/File"))).rejects.toThrow(
+    "dav_node_unavailable",
   );
 });

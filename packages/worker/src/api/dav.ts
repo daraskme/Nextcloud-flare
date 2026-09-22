@@ -1,5 +1,6 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
+import { parseDavPath, resolveDavNode } from "../dav/path";
 import type { Env } from "../env";
 
 const METHODS = new Set([
@@ -39,6 +40,14 @@ export async function handleDavHttp(
     url.hash
   )
     return problem(404, "not_found");
+  let path;
+  try {
+    path = parseDavPath(url.pathname);
+  } catch (error) {
+    return error instanceof Error && error.message === "dav_shared_not_ready"
+      ? problem(503, "not_ready")
+      : problem(400, "bad_request");
+  }
   if (!pepper) return problem(503, "not_ready");
   let allowed: boolean;
   try {
@@ -56,13 +65,44 @@ export async function handleDavHttp(
     response.headers.set("Retry-After", "60");
     return response;
   }
+  let principal;
   try {
-    await authenticateAppPassword(env.DB, request, env.APP_ORIGIN, epoch, pepper);
+    principal = await authenticateAppPassword(env.DB, request, env.APP_ORIGIN, epoch, pepper);
   } catch {
     const response = problem(401, "unauthorized");
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;
   }
+  if (
+    [
+      "OPTIONS",
+      "PROPFIND",
+      "PROPPATCH",
+      "GET",
+      "HEAD",
+      "DELETE",
+      "COPY",
+      "MOVE",
+      "UNLOCK",
+    ].includes(request.method)
+  ) {
+    try {
+      await resolveDavNode(env.DB, principal, path);
+    } catch {
+      return problem(404, "not_found");
+    }
+  }
+  if (request.method === "OPTIONS")
+    return new Response(null, {
+      status: 200,
+      headers: {
+        Allow: "OPTIONS",
+        "Cache-Control": "private, no-store",
+        DAV: "1",
+        "MS-Author-Via": "DAV",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
   // DAV operation handlers are added only with their node/lock/content proofs.
   return problem(503, "not_ready");
 }
