@@ -346,7 +346,9 @@ it.each(["session", "parent", "tree", "epoch", "maintenance", "permit", "lock"])
         .run();
     if (condition === "lock") {
       const [hash] = await lockTokenHashes(["new-lock"]);
-      await env.DB.prepare("INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)")
+      await env.DB.prepare(
+        "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/Folder/','0','owner',1,?)",
+      )
         .bind(
           crypto.randomUUID(),
           f.ids.folder,

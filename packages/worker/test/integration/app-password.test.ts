@@ -547,7 +547,7 @@ it("creates a DAV collection through the fenced namespace mutation service", asy
   const token = `opaquelocktoken:${crypto.randomUUID()}`;
   const [tokenHash] = await lockTokenHashes([token]);
   await env.DB.prepare(
-    "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'0','owner',1,?)",
+    "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/','0','owner',1,?)",
   )
     .bind(
       `lock-${crypto.randomUUID()}`,
@@ -690,7 +690,7 @@ it("atomically writes DAV dead properties and rejects protected live properties"
   const token = `opaquelocktoken:${crypto.randomUUID()}`;
   const [tokenHash] = await lockTokenHashes([token]);
   await env.DB.prepare(
-    "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'0','owner',1,?)",
+    "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/File','0','owner',1,?)",
   )
     .bind(
       `lock-${crypto.randomUUID()}`,
@@ -762,8 +762,10 @@ it("atomically writes DAV dead properties and rejects protected live properties"
 
 it("creates, refreshes and removes an existing-resource DAV lock", async () => {
   const { f, id, ring, request } = await fixture("E");
-  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write')")
-    .bind(`ap:${id}`)
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write'),(?,'node:read')",
+  )
+    .bind(`ap:${id}`, `ap:${id}`)
     .run();
   const davEnv = admittedDavEnv();
   const body = `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
@@ -830,6 +832,29 @@ it("creates, refreshes and removes an existing-resource DAV lock", async () => {
       .bind(f.ids.file)
       .first<number>("count"),
   ).toBe(1);
+  const discovered = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPFIND",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        Depth: "0",
+      },
+      body: '<D:propfind xmlns:D="DAV:"><D:prop><D:lockdiscovery/></D:prop></D:propfind>',
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(discovered.status).toBe(207);
+  const discoveredXml = await discovered.text();
+  expect(discoveredXml).toContain("<D:activelock>");
+  expect(discoveredXml).toContain("<D:owner>Alice &amp; Bob</D:owner>");
+  expect(discoveredXml).toContain("<D:lockroot><D:href>/dav/File</D:href></D:lockroot>");
+  const discoveredTimeout = /<D:timeout>Second-(\d+)<\/D:timeout>/.exec(discoveredXml);
+  expect(Number(discoveredTimeout?.[1])).toBeGreaterThan(0);
+  expect(Number(discoveredTimeout?.[1])).toBeLessThanOrEqual(90);
+  expect(discoveredXml).not.toContain(token);
 
   const conflicting = await handleDavHttp(
     new Request("https://app.invalid/dav/File", {
@@ -888,6 +913,59 @@ it("creates, refreshes and removes an existing-resource DAV lock", async () => {
       )
     ).status,
   ).toBe(409);
+
+  const collectionLock = await handleDavHttp(
+    new Request("https://app.invalid/dav/", {
+      method: "LOCK",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        Depth: "infinity",
+      },
+      body,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(collectionLock.status).toBe(200);
+  const collectionToken = collectionLock.headers.get("Lock-Token");
+  expect(collectionToken).toMatch(/^<opaquelocktoken:[0-9a-f-]+>$/);
+  const inherited = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPFIND",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        Depth: "0",
+      },
+      body: '<D:propfind xmlns:D="DAV:"><D:prop><D:lockdiscovery/></D:prop></D:propfind>',
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(inherited.status).toBe(207);
+  const inheritedXml = await inherited.text();
+  expect(inheritedXml).toContain("<D:depth>Infinity</D:depth>");
+  expect(inheritedXml).toContain("<D:lockroot><D:href>/dav/</D:href></D:lockroot>");
+  expect(inheritedXml).not.toContain(collectionToken!.slice(1, -1));
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/", {
+          method: "UNLOCK",
+          headers: {
+            ...Object.fromEntries(request().headers),
+            "Lock-Token": collectionToken!,
+          },
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(204);
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

@@ -33,6 +33,7 @@ export interface DavLockRequest {
   spaceId: string;
   nodeId: string;
   principal: Principal;
+  displayHref: string;
   depth: "0" | "infinity";
   ownerText: string;
   timeoutSeconds: number;
@@ -350,6 +351,8 @@ export class LockDO extends DurableObject<Env> {
     this.#canonical(request.spaceId);
     if (
       !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !request.displayHref.startsWith("/dav/") ||
+      new TextEncoder().encode(request.displayHref).byteLength > 16_384 ||
       !["0", "infinity"].includes(request.depth) ||
       new TextEncoder().encode(request.ownerText).byteLength > 8192 ||
       !Number.isSafeInteger(request.timeoutSeconds) ||
@@ -416,14 +419,15 @@ export class LockDO extends DurableObject<Env> {
         ),
         conflict,
         {
-          sql: `INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,depth,owner_text,epoch,expires_at)
-            VALUES(?,?,?,?,?,?,?,?,strftime('%s','now')*1000+?*1000)`,
+          sql: `INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at)
+            VALUES(?,?,?,?,?,?,?,?,?,strftime('%s','now')*1000+?*1000)`,
           values: [
             id,
             request.nodeId,
             request.spaceId,
             request.principal.credential_id,
             hash!,
+            request.displayHref,
             request.depth,
             request.ownerText,
             request.principal.epoch,

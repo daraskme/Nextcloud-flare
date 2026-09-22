@@ -104,7 +104,7 @@ it("requires both target and parent lock tokens for rename", async () => {
   const [parentHash] = await lockTokenHashes([parentToken]);
   await atomicBatch(env.DB, [
     {
-      sql: "INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)",
+      sql: "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/File','0','owner',1,?)",
       values: [
         crypto.randomUUID(),
         f.ids.file,
@@ -115,7 +115,7 @@ it("requires both target and parent lock tokens for rename", async () => {
       ],
     },
     {
-      sql: "INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)",
+      sql: "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/Folder/','0','owner',1,?)",
       values: [
         crypto.randomUUID(),
         f.ids.folder,
@@ -229,7 +229,9 @@ it.each(["parent-zero", "ancestor-infinity", "ancestor-zero"])(
     await initialize(f);
     const token = crypto.randomUUID();
     const [hash] = await lockTokenHashes([token]);
-    await env.DB.prepare("INSERT INTO locks VALUES(?,?,?,?,?,?,?,?,?)")
+    await env.DB.prepare(
+      "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/locked',?,?,?,?)",
+    )
       .bind(
         crypto.randomUUID(),
         kind === "parent-zero" ? f.ids.folder : f.ids.root,
@@ -274,7 +276,7 @@ it("does not let another granted user use the lock creator's token", async () =>
   const [hash] = await lockTokenHashes([token]);
   await atomicBatch(env.DB, [
     {
-      sql: "INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)",
+      sql: "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/Folder/','0','owner',1,?)",
       values: [
         f.ids.user,
         f.ids.folder,
@@ -326,7 +328,7 @@ it("allows the same user's scoped app password to submit a session-created lock 
   const id = crypto.randomUUID();
   await atomicBatch(env.DB, [
     {
-      sql: "INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)",
+      sql: "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/Folder/','0','owner',1,?)",
       values: [id, f.ids.folder, f.ids.space, f.ids.credential, hash ?? "", Date.now() + 60000],
     },
     {

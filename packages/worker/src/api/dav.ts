@@ -369,6 +369,7 @@ export async function handleDavHttp(
           spaceId: target.node.space_id,
           nodeId: target.node.id,
           principal,
+          displayHref: href,
           depth,
           ownerText: body.ownerXml,
           timeoutSeconds,

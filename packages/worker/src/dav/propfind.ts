@@ -25,6 +25,14 @@ interface PropRow {
   name: string;
   valueXml: string;
 }
+interface LockRow {
+  nodeId: string;
+  id: string;
+  depth: "0" | "infinity";
+  ownerText: string;
+  displayHref: string;
+  timeoutSeconds: number;
+}
 
 const LIVE = [
   "displayname",
@@ -54,7 +62,30 @@ function href(path: DavPath, node: NodeRow, child: boolean): string {
   return node.kind === "file" ? value : `${value.replace(/\/$/, "")}/`;
 }
 
-function liveValue(node: NodeRow, name: string, namesOnly: boolean): string | null {
+function activeLockValue(lock: LockRow): string {
+  if (
+    !/^[A-Za-z0-9_-]{1,128}$/.test(lock.id) ||
+    !["0", "infinity"].includes(lock.depth) ||
+    typeof lock.displayHref !== "string" ||
+    !lock.displayHref.startsWith("/dav/") ||
+    new TextEncoder().encode(lock.displayHref).byteLength > 16_384 ||
+    !Number.isSafeInteger(lock.timeoutSeconds) ||
+    lock.timeoutSeconds < 1 ||
+    lock.timeoutSeconds > 3_600 ||
+    new TextEncoder().encode(lock.ownerText).byteLength > 8_192
+  )
+    throw new Error("dav_data_invalid");
+  validateDavXmlFragment(lock.ownerText);
+  const owner = lock.ownerText === "" ? "" : `<D:owner>${lock.ownerText}</D:owner>`;
+  return `<D:activelock><D:locktype><D:write/></D:locktype><D:lockscope><D:exclusive/></D:lockscope><D:depth>${lock.depth === "infinity" ? "Infinity" : "0"}</D:depth>${owner}<D:timeout>Second-${lock.timeoutSeconds}</D:timeout><D:lockroot><D:href>${escapeXml(lock.displayHref)}</D:href></D:lockroot></D:activelock>`;
+}
+
+function liveValue(
+  node: NodeRow,
+  name: string,
+  namesOnly: boolean,
+  locks: readonly LockRow[],
+): string | null {
   if (name === "getcontentlength" && node.kind !== "file") return null;
   if (namesOnly) return "";
   if (name === "displayname") return escapeXml(node.name);
@@ -75,7 +106,7 @@ function liveValue(node: NodeRow, name: string, namesOnly: boolean): string | nu
   if (name === "getlastmodified") return escapeXml(new Date(node.updatedAt).toUTCString());
   if (name === "creationdate") return escapeXml(new Date(node.createdAt).toISOString());
   if (name === "resourcetype") return node.kind === "file" ? "" : "<D:collection/>";
-  if (name === "lockdiscovery") return "";
+  if (name === "lockdiscovery") return locks.map(activeLockValue).join("");
   if (name === "supportedlock")
     return "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>";
   return null;
@@ -104,6 +135,7 @@ function requestedProperties(
   request: PropfindRequest,
   node: NodeRow,
   props: readonly PropRow[],
+  locks: readonly LockRow[],
 ): { found: string[]; missing: string[] } {
   const found: string[] = [];
   const missing: string[] = [];
@@ -121,7 +153,7 @@ function requestedProperties(
     if (seen.has(key)) continue;
     seen.add(key);
     if (property.namespace === DAV && (LIVE as readonly string[]).includes(property.name)) {
-      const value = liveValue(node, property.name, namesOnly);
+      const value = liveValue(node, property.name, namesOnly, locks);
       if (value === null) missing.push(davProperty(property.name, ""));
       else found.push(davProperty(property.name, value));
       continue;
@@ -145,8 +177,9 @@ function responseXml(
   child: boolean,
   request: PropfindRequest,
   props: readonly PropRow[],
+  locks: readonly LockRow[],
 ): string {
-  const selected = requestedProperties(request, node, props);
+  const selected = requestedProperties(request, node, props, locks);
   const propstat = (properties: readonly string[], status: number, text: string) =>
     properties.length === 0
       ? ""
@@ -188,6 +221,11 @@ export async function propfindResponse(
     authorized.node.space_id,
     authorized.node.owner_id,
   ] as const;
+  const lockTargets = `${targets.replace("WITH targets AS", "WITH RECURSIVE targets AS")}, ancestors(target_id,id,parent_id,depth) AS (
+    SELECT id,id,parent_id,0 FROM targets
+    UNION ALL SELECT a.target_id,n.id,n.parent_id,a.depth+1 FROM ancestors a JOIN nodes n ON n.id=a.parent_id
+      WHERE a.depth<64 AND n.space_id=?8 AND n.owner_id=?9 AND n.deleted_at IS NULL
+  )`;
   const batches = await atomicBatch(db, [
     authorizationAssertion(authorized),
     assertExists(
@@ -207,9 +245,24 @@ export async function propfindResponse(
         FROM targets t JOIN node_props p ON p.node_id=t.id ORDER BY p.node_id,p.namespace,p.name`,
       values,
     },
+    {
+      sql: `${lockTargets} SELECT a.target_id AS nodeId,l.id,l.depth,l.owner_text AS ownerText,
+        l.display_href AS displayHref,
+        CAST((l.expires_at-strftime('%s','now')*1000+999)/1000 AS INTEGER) AS timeoutSeconds
+        FROM ancestors a JOIN locks l ON l.node_id=a.id AND (a.depth=0 OR l.depth='infinity')
+        WHERE l.space_id=?8 AND l.epoch=?10 AND l.expires_at>strftime('%s','now')*1000
+        ORDER BY a.target_id,l.id`,
+      values: [
+        ...values,
+        authorized.node.space_id,
+        authorized.node.owner_id,
+        authorized.principal.epoch,
+      ],
+    },
   ]);
   const nodes = (batches[2]?.results ?? []) as NodeRow[];
   const props = (batches[3]?.results ?? []) as PropRow[];
+  const locks = (batches[4]?.results ?? []) as LockRow[];
   if (nodes.length < 1 || nodes.length > MAX_CHILDREN + 1 || nodes[0]?.id !== nodeId)
     throw new Error("dav_data_invalid");
   for (const node of nodes) {
@@ -235,6 +288,12 @@ export async function propfindResponse(
     if (count > 100) throw new Error("dav_data_invalid");
     counts.set(prop.nodeId, count);
   }
+  const lockCounts = new Map<string, number>();
+  for (const lock of locks) {
+    const count = (lockCounts.get(lock.nodeId) ?? 0) + 1;
+    if (count > 1) throw new Error("dav_data_invalid");
+    lockCounts.set(lock.nodeId, count);
+  }
   const body = `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">${nodes
     .map((node, index) =>
       responseXml(
@@ -243,6 +302,7 @@ export async function propfindResponse(
         index !== 0,
         request,
         props.filter((property) => property.nodeId === node.id),
+        locks.filter((lock) => lock.nodeId === node.id),
       ),
     )
     .join("")}</D:multistatus>`;
