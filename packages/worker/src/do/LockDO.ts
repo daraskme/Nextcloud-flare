@@ -119,11 +119,13 @@ export class LockDO extends DurableObject<Env> {
             SELECT id,0 FROM nodes WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL
             UNION ALL SELECT n.id,d.depth+1 FROM nodes n JOIN descendants d ON n.parent_id=d.id
               WHERE d.depth<64 AND n.space_id=?2 AND n.deleted_at IS NULL
-          ) SELECT EXISTS(
-            SELECT 1 FROM locks l WHERE l.space_id=?2 AND l.epoch=?3
+          ) SELECT (EXISTS(
+            SELECT 1 FROM permits p WHERE p.space_id=?2 AND p.epoch=?3 AND p.state='open'
+              AND p.expires_at>strftime('%s','now')*1000)
+            OR EXISTS(SELECT 1 FROM locks l WHERE l.space_id=?2 AND l.epoch=?3
               AND l.expires_at>strftime('%s','now')*1000 AND (
                 EXISTS(SELECT 1 FROM ancestors a WHERE a.id=l.node_id AND (a.depth=0 OR l.depth='infinity'))
-                OR (?4='infinity' AND EXISTS(SELECT 1 FROM descendants d WHERE d.id=l.node_id)))) AS blocked`,
+                OR (?4='infinity' AND EXISTS(SELECT 1 FROM descendants d WHERE d.id=l.node_id))))) AS blocked`,
       )
       .bind(nodeId, spaceId, epoch, depth)
       .first<number>("blocked");
@@ -396,7 +398,22 @@ export class LockDO extends DurableObject<Env> {
     );
     try {
       await atomicBatch(this.env.DB, [
+        {
+          sql: "UPDATE permits SET state='revoked' WHERE space_id=? AND state='open' AND expires_at<=strftime('%s','now')*1000",
+          values: [request.spaceId],
+        },
+        {
+          sql: `UPDATE operations SET state='failed',error_code='permit_expired',updated_at=MAX(updated_at,strftime('%s','now')*1000)
+            WHERE space_id=? AND state='claimed' AND EXISTS(
+              SELECT 1 FROM permits p WHERE p.permit_id=operations.permit_id AND p.state<>'open')`,
+          values: [request.spaceId],
+        },
         authorizationAssertion(authorized),
+        assertExists(
+          `SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM permits
+            WHERE space_id=? AND epoch=? AND state='open' AND expires_at>strftime('%s','now')*1000)`,
+          [request.spaceId, request.principal.epoch],
+        ),
         conflict,
         {
           sql: `INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,depth,owner_text,epoch,expires_at)
@@ -422,7 +439,18 @@ export class LockDO extends DurableObject<Env> {
         )
         .bind(id, request.nodeId, request.spaceId, hash!, request.principal.epoch)
         .first();
-      if (!committed) throw error;
+      if (!committed) {
+        if (
+          await this.#davLockConflict(
+            request.nodeId,
+            request.spaceId,
+            request.principal.epoch,
+            request.depth,
+          )
+        )
+          throw new Error("dav_locked");
+        throw error;
+      }
     }
     return Object.freeze({
       token,

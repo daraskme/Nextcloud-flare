@@ -381,6 +381,9 @@ it("returns bounded DAV PROPFIND Depth 0 and 1 multistatus responses", async () 
   const zeroXml = await depthZero.text();
   expect(zeroXml).toContain("<D:href>/dav/File</D:href>");
   expect(zeroXml).toContain(`<D:getetag>&quot;b-${f.ids.blob}&quot;</D:getetag>`);
+  expect(zeroXml).toContain(
+    "<D:supportedlock><D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry></D:supportedlock>",
+  );
   expect(zeroXml).toContain('<N:color xmlns:N="urn:ncf:props">blue</N:color>');
 
   const body =
@@ -765,22 +768,56 @@ it("creates, refreshes and removes an existing-resource DAV lock", async () => {
   const davEnv = admittedDavEnv();
   const body = `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
     <D:locktype><D:write/></D:locktype><D:owner>Alice &amp; Bob</D:owner></D:lockinfo>`;
-  const created = await handleDavHttp(
-    new Request("https://app.invalid/dav/File", {
-      method: "LOCK",
-      headers: {
-        ...Object.fromEntries(request().headers),
-        "Content-Type": "application/xml",
-        Depth: "0",
-        Timeout: "Second-90",
-      },
-      body,
-    }),
-    davEnv,
-    1,
-    ring,
-  );
+  const createLock = () =>
+    handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method: "LOCK",
+        headers: {
+          ...Object.fromEntries(request().headers),
+          "Content-Type": "application/xml",
+          Depth: "0",
+          Timeout: "Second-90",
+        },
+        body,
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+  const lockStub = davEnv.LOCKS.get(davEnv.LOCKS.idFromName(f.ids.space));
+  const initializeRequest = {
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.file,
+    principal: {
+      kind: "app_password" as const,
+      user_id: f.ids.user,
+      credential_id: `ap:${id}`,
+      epoch: 1,
+    },
+    lockTokens: [],
+  };
+  const initializePermit = await lockStub.acquireNodeWrite(initializeRequest);
+  await lockStub.release(initializeRequest.requestId, initializePermit);
+  const permitId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO permits VALUES(?,?,1,?,'open')")
+    .bind(permitId, f.ids.space, Date.now() + 60_000)
+    .run();
+  expect((await createLock()).status).toBe(423);
+  await env.DB.prepare("UPDATE permits SET state='released' WHERE permit_id=?")
+    .bind(permitId)
+    .run();
+  const expiredPermitId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO permits VALUES(?,?,1,?,'open')")
+    .bind(expiredPermitId, f.ids.space, Date.now() - 2_000)
+    .run();
+  const created = await createLock();
   expect(created.status).toBe(200);
+  expect(
+    await env.DB.prepare("SELECT state FROM permits WHERE permit_id=?")
+      .bind(expiredPermitId)
+      .first("state"),
+  ).toBe("revoked");
   const lockToken = created.headers.get("Lock-Token");
   expect(lockToken).toMatch(/^<opaquelocktoken:[0-9a-f-]+>$/);
   const token = lockToken!.slice(1, -1);

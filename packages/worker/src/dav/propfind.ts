@@ -75,7 +75,9 @@ function liveValue(node: NodeRow, name: string, namesOnly: boolean): string | nu
   if (name === "getlastmodified") return escapeXml(new Date(node.updatedAt).toUTCString());
   if (name === "creationdate") return escapeXml(new Date(node.createdAt).toISOString());
   if (name === "resourcetype") return node.kind === "file" ? "" : "<D:collection/>";
-  if (name === "lockdiscovery" || name === "supportedlock") return "";
+  if (name === "lockdiscovery") return "";
+  if (name === "supportedlock")
+    return "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>";
   return null;
 }
 
