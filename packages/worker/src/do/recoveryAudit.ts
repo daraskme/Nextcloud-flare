@@ -3,7 +3,15 @@ import { auditOwnerLedger } from "../services/refs";
 import { epochNumber } from "./epochHistory";
 
 export interface RecoveryCursor {
-  readonly stage: "users" | "blobs" | "r2" | "outbox" | "shares" | "credentials" | "fts";
+  readonly stage:
+    | "users"
+    | "blobs"
+    | "r2"
+    | "outbox"
+    | "shares"
+    | "credentials"
+    | "credential_sources"
+    | "fts";
   readonly afterId: string;
 }
 
@@ -35,15 +43,60 @@ interface OutboxRow {
 
 function validCursor(cursor: RecoveryCursor, limit: number): void {
   if (
-    !["users", "blobs", "r2", "outbox", "shares", "credentials", "fts"].includes(cursor.stage) ||
+    ![
+      "users",
+      "blobs",
+      "r2",
+      "outbox",
+      "shares",
+      "credentials",
+      "credential_sources",
+      "fts",
+    ].includes(cursor.stage) ||
     typeof cursor.afterId !== "string" ||
-    cursor.afterId.length > (cursor.stage === "r2" ? 8192 : 128) ||
+    cursor.afterId.length >
+      (cursor.stage === "r2" ? 8192 : cursor.stage === "credential_sources" ? 2048 : 128) ||
     !Number.isInteger(limit) ||
     limit < 1 ||
     limit > 20
   )
     throw new Error("invalid_recovery_cursor");
 }
+
+const credentialSources = [
+  {
+    tag: "a",
+    table: "sessions",
+    condition: "kind='access'",
+    column: "session_id",
+    kind: "access",
+    idPrefix: "as:",
+  },
+  {
+    tag: "p",
+    table: "app_passwords",
+    condition: "1=1",
+    column: "app_password_id",
+    kind: "app_password",
+    idPrefix: "ap:",
+  },
+  {
+    tag: "s",
+    table: "share_sessions",
+    condition: "1=1",
+    column: "share_session_id",
+    kind: "share",
+    idPrefix: "ss:",
+  },
+  {
+    tag: "v",
+    table: "service_principals",
+    condition: "1=1",
+    column: "service_principal_id",
+    kind: "service",
+    idPrefix: "sv:",
+  },
+] as const;
 
 async function assertQuiesced(db: D1Database, epoch: number): Promise<void> {
   const gate = await primary(db)
@@ -197,6 +250,38 @@ export async function inspectRecoveryPage(
         : { stage: "outbox", afterId: "" },
     };
   }
+  if (cursor.stage === "credential_sources") {
+    const tag = cursor.afterId ? cursor.afterId.slice(0, 2) : "a:";
+    const sourceIndex = credentialSources.findIndex((source) => `${source.tag}:` === tag);
+    if (sourceIndex < 0) throw new Error("invalid_recovery_cursor");
+    const source = credentialSources[sourceIndex];
+    if (!source) throw new Error("invalid_recovery_cursor");
+    const afterId = cursor.afterId ? cursor.afterId.slice(2) : "";
+    const rows = await primary(db)
+      .prepare(
+        `SELECT id FROM ${source.table} WHERE ${source.condition} AND id>? ORDER BY id LIMIT ?`,
+      )
+      .bind(afterId, limit + 1)
+      .all<{ id: string }>();
+    const page = rows.results.slice(0, limit);
+    for (const { id } of page) {
+      const valid = await primary(db)
+        .prepare(`SELECT 1 FROM credentials WHERE id=? AND kind=? AND ${source.column}=?`)
+        .bind(`${source.idPrefix}${id}`, source.kind, id)
+        .first<number>();
+      if (valid === null) throw new Error("recovery_credential_registry_missing");
+    }
+    const nextSource = credentialSources[sourceIndex + 1];
+    return {
+      examined: page.length,
+      next:
+        rows.results.length > limit
+          ? { stage: "credential_sources", afterId: `${source.tag}:${page.at(-1)?.id ?? afterId}` }
+          : nextSource
+            ? { stage: "credential_sources", afterId: `${nextSource.tag}:` }
+            : { stage: "fts", afterId: "" },
+    };
+  }
   if (cursor.stage === "outbox") {
     const rows = await primary(db)
       .prepare(`SELECT b.outbox_id,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
@@ -296,7 +381,7 @@ export async function inspectRecoveryPage(
       next:
         rows.results.length > limit
           ? { stage: "credentials", afterId: page.at(-1)?.id ?? cursor.afterId }
-          : { stage: "fts", afterId: "" },
+          : { stage: "credential_sources", afterId: "" },
     };
   }
   const rows = await primary(db)

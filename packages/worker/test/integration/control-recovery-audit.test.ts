@@ -67,16 +67,28 @@ it("persists page progress across DO eviction and treats completion as diagnosti
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "fts",
+    stage: "credential_sources",
     pages: 6,
+    completed: false,
+  });
+  for (let pages = 7; pages <= 9; pages++) {
+    expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+      stage: "credential_sources",
+      pages,
+      completed: false,
+    });
+  }
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "fts",
+    pages: 10,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
     stage: "complete",
-    pages: 7,
+    pages: 11,
     completed: true,
   });
-  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 7, completed: true });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 11, completed: true });
   expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
 });
 
@@ -112,13 +124,25 @@ it("keeps a failed page pending so repair can resume at the same cursor", async 
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "fts",
+    stage: "credential_sources",
     pages: 6,
+    completed: false,
+  });
+  for (let pages = 7; pages <= 9; pages++) {
+    expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+      stage: "credential_sources",
+      pages,
+      completed: false,
+    });
+  }
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "fts",
+    pages: 10,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
     stage: "complete",
-    pages: 7,
+    pages: 11,
     completed: true,
   });
 });
@@ -156,7 +180,7 @@ it("rebuilds restored FTS under the recovery fence and restarts the audit", asyn
     .run();
   await expect(inspectRecoverySearchFts(env.DB, 2)).rejects.toThrow();
   expect(await control().beginRecoveryAudit(2)).toMatchObject({ stage: "users", pages: 0 });
-  for (let i = 0; i < 6; i++) await control().nextRecoveryAuditPage(2, 1);
+  for (let i = 0; i < 10; i++) await control().nextRecoveryAuditPage(2, 1);
   await runInDurableObject(control(), async (instance) => {
     await expect(instance.nextRecoveryAuditPage(2, 1)).rejects.toThrow();
   });

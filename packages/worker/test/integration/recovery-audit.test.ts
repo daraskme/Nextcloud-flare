@@ -38,9 +38,59 @@ it("checks users, ledgers, roots and R2 blobs in bounded pages", async () => {
     expect(page.examined).toBeLessThanOrEqual(1);
     examined += page.examined;
     cursor = page.next;
-    if (++pages > 15) throw new Error("recovery_page_loop");
+    if (++pages > 25) throw new Error("recovery_page_loop");
   }
-  expect(examined).toBe(8);
+  expect(examined).toBe(10);
+});
+
+it("detects source rows missing their credential registry entries", async () => {
+  const owner = fixtures[0];
+  if (!owner) throw new Error("missing_fixture");
+  const accessId = crypto.randomUUID();
+  const passwordId = crypto.randomUUID();
+  const shareId = crypto.randomUUID();
+  const shareSessionId = crypto.randomUUID();
+  const serviceId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO sessions(id,user_id,kind,fingerprint,epoch,issued_at,expires_at,last_seen_at)
+    VALUES(?,?,'access',?,1,1,2,1)`)
+    .bind(accessId, owner.ids.user, accessId)
+    .run();
+  await env.DB.prepare(`INSERT INTO app_passwords(id,user_id,root_node_id,name,secret_digest,salt,kdf,kdf_params,kid,created_at,expires_at)
+    VALUES(?,?,?,'recovery','digest','salt','PBKDF2-SHA256','{"iterations":100000}','kid',1,2)`)
+    .bind(passwordId, owner.ids.user, owner.ids.root)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'link',1)",
+  )
+    .bind(shareId, owner.ids.user, owner.ids.root)
+    .run();
+  await env.DB.prepare(`INSERT INTO share_sessions(id,share_id,share_version,secret_digest,epoch,issued_at,expires_at)
+    VALUES(?,?,1,?,1,1,2)`)
+    .bind(shareSessionId, shareId, shareSessionId)
+    .run();
+  await env.DB.prepare(`INSERT INTO service_principals(id,access_iss,common_name,mapped_user_id,space_id,root_node_id)
+    VALUES(?,'https://access.invalid',?,?,?,?)`)
+    .bind(serviceId, serviceId, owner.ids.user, owner.ids.space, owner.ids.root)
+    .run();
+  try {
+    for (const tag of ["a", "p", "s", "v"]) {
+      await expect(
+        inspectRecoveryPage(
+          env.DB,
+          env.BLOBS,
+          1,
+          { stage: "credential_sources", afterId: `${tag}:` },
+          20,
+        ),
+      ).rejects.toThrow(/recovery_credential_registry_missing/);
+    }
+  } finally {
+    await env.DB.prepare("DELETE FROM service_principals WHERE id=?").bind(serviceId).run();
+    await env.DB.prepare("DELETE FROM share_sessions WHERE id=?").bind(shareSessionId).run();
+    await env.DB.prepare("DELETE FROM shares WHERE id=?").bind(shareId).run();
+    await env.DB.prepare("DELETE FROM app_passwords WHERE id=?").bind(passwordId).run();
+    await env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(accessId).run();
+  }
 });
 
 it("detects an R2 object without a durable D1 owner", async () => {
