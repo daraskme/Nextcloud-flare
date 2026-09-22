@@ -110,6 +110,14 @@
       "engines": {},
       "peers": {}
     },
+    "fast-xml-parser": {
+      "version": "5.11.1",
+      "publishedAt": "2026-08-27T05:17:26.677Z",
+      "selectedAt": "2026-09-23",
+      "engines": {},
+      "peers": {},
+      "review": "MIT ESM parser selected after the seven-day release cutoff. DAV uses preserveOrder with entity processing disabled, rejects DTD/entity declarations and XInclude, and enforces independent byte, depth, element, attribute, namespace and property budgets."
+    },
     "vite": {
       "version": "7.3.6",
       "publishedAt": "2026-06-25T01:51:49.605Z",

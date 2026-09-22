@@ -291,6 +291,116 @@ it("streams authorized DAV GET, HEAD and Range reads from an immutable blob", as
   }
 });
 
+it("returns bounded DAV PROPFIND Depth 0 and 1 multistatus responses", async () => {
+  const { f, id, ring, request } = await fixture("A");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read')")
+    .bind(`ap:${id}`)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO node_props(node_id,namespace,name,value_xml) VALUES(?,'urn:ncf:props','color','blue')",
+  )
+    .bind(f.ids.file)
+    .run();
+  const davEnv = {
+    DB: env.DB,
+    BLOBS: env.BLOBS,
+    APP_ORIGIN: "https://app.invalid",
+    EDGE_LIMITER: {
+      async limit() {
+        return { success: true };
+      },
+    },
+  } as unknown as Env;
+  const depthZero = await handleDavHttp(
+    new Request(request().url, {
+      method: "PROPFIND",
+      headers: { ...Object.fromEntries(request().headers), Depth: "0" },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(depthZero.status).toBe(207);
+  const zeroXml = await depthZero.text();
+  expect(zeroXml).toContain("<D:href>/dav/File</D:href>");
+  expect(zeroXml).toContain(`<D:getetag>&quot;${f.ids.file}-1&quot;</D:getetag>`);
+  expect(zeroXml).toContain('<N:color xmlns:N="urn:ncf:props">blue</N:color>');
+
+  const body =
+    '<D:propfind xmlns:D="DAV:" xmlns:X="urn:ncf:props"><D:prop><D:displayname/><X:color/><X:missing/></D:prop></D:propfind>';
+  const depthOne = await handleDavHttp(
+    new Request("https://app.invalid/dav", {
+      method: "PROPFIND",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        "Content-Type": "application/xml",
+        Depth: "1",
+      },
+      body,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(depthOne.status).toBe(207);
+  const oneXml = await depthOne.text();
+  expect(oneXml.match(/<D:response>/g)).toHaveLength(2);
+  expect(oneXml).toContain("<D:href>/dav/</D:href>");
+  expect(oneXml).toContain("<D:href>/dav/File</D:href>");
+  expect(oneXml).toContain("HTTP/1.1 404 Not Found");
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav", {
+          method: "PROPFIND",
+          headers: request().headers,
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(403);
+});
+
+it("rejects DAV Depth 1 before reading more than 1,000 children", async () => {
+  const { f, id, ring, request } = await fixture("B");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read')")
+    .bind(`ap:${id}`)
+    .run();
+  await env.DB.prepare(`WITH RECURSIVE seq(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM seq WHERE x<1000)
+    INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+    SELECT ?||x,?,?,?,'n'||x,'n'||printf('%04d',x),'folder',?,? FROM seq`)
+    .bind(
+      `child-${crypto.randomUUID()}-`,
+      f.ids.space,
+      f.ids.user,
+      f.ids.folder,
+      Date.now(),
+      Date.now(),
+    )
+    .run();
+  const response = await handleDavHttp(
+    new Request("https://app.invalid/dav", {
+      method: "PROPFIND",
+      headers: { ...Object.fromEntries(request().headers), Depth: "1" },
+    }),
+    {
+      DB: env.DB,
+      BLOBS: env.BLOBS,
+      APP_ORIGIN: "https://app.invalid",
+      EDGE_LIMITER: {
+        async limit() {
+          return { success: true };
+        },
+      },
+    } as unknown as Env,
+    1,
+    ring,
+  );
+  expect(response.status).toBe(507);
+});
+
 it("parses bounded DAV paths with a single percent decode", () => {
   expect(parseDavPath("/dav")).toMatchObject({ segments: [], trailingSlash: false });
   expect(parseDavPath("/dav/Folder/a%20b.txt").segments.map((part) => part.name)).toEqual([

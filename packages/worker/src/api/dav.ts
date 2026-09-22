@@ -1,6 +1,8 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
 import { parseDavPath, resolveDavNode } from "../dav/path";
+import { propfindResponse } from "../dav/propfind";
+import { parsePropfindRequest } from "../dav/xml";
 import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 
@@ -105,6 +107,35 @@ export async function handleDavHttp(
         "X-Content-Type-Options": "nosniff",
       },
     });
+  if (request.method === "PROPFIND") {
+    if (!resolved) return problem(404, "not_found");
+    const depth = request.headers.get("Depth");
+    if (depth !== "0" && depth !== "1")
+      return new Response(
+        '<?xml version="1.0" encoding="utf-8"?><D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>',
+        {
+          status: 403,
+          headers: {
+            "Cache-Control": "private, no-store",
+            "Content-Type": "application/xml; charset=utf-8",
+            "X-Content-Type-Options": "nosniff",
+          },
+        },
+      );
+    let propfind;
+    try {
+      propfind = await parsePropfindRequest(request);
+    } catch {
+      return problem(400, "bad_request");
+    }
+    try {
+      return await propfindResponse(env.DB, resolved, path, Number(depth) as 0 | 1, propfind);
+    } catch (error) {
+      return error instanceof Error && error.message === "dav_children_limit"
+        ? problem(507, "insufficient_storage")
+        : problem(503, "not_ready");
+    }
+  }
   if (request.method === "GET" || request.method === "HEAD") {
     if (
       !resolved ||

@@ -12,7 +12,8 @@ export type PlatformErrorCode =
   | "payload_too_large"
   | "precondition_failed"
   | "range_not_satisfiable"
-  | "rate_limited";
+  | "rate_limited"
+  | "insufficient_storage";
 
 export function problem(status: number, code: PlatformErrorCode): Response {
   return new Response(JSON.stringify({ type: `urn:ncf:error:${code}`, status, title: code }), {
