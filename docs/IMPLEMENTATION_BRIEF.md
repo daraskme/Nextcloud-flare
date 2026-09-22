@@ -4,7 +4,7 @@
 
 状態: **v0.6 で R5 ゲート項目を是正済み。Astra R6 再ゲート = 条件付き Go（`docs/reviews/round6-astra.md`）。Phase 0 → 1 の順に着手可。R6 の 10 条件は §8 の確定事項で閉じ、Phase 1 完了前に fixture で証明する。**
 
-実装進捗: Phase 0 と Phase 1 の一部を実装。内部の atomic フォルダー作成・outbox producer まで接続済み。全 operation の認可、consumer claim/ack、ControlDO 再開、repair/HTTP 接続と実環境 gate は未完了。再開は [`HANDOFF.md`](HANDOFF.md)、検証結果の正本は [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)、実装契約は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+実装進捗: Phase 0 と Phase 1 の一部を実装。内部の atomic フォルダー作成・outbox producer・`node.created` consumer/Queue ack 判定 helper まで実装。全 operation の認可、実 Queue/DLQ 接続、ControlDO 再開、repair/HTTP 接続と実環境 gate は未完了。再開は [`HANDOFF.md`](HANDOFF.md)、検証結果の正本は [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)、実装契約は [`FOUNDATION.md`](FOUNDATION.md) を参照。
 
 - Phase 0 gate 1 で D1 `_assert`、`changes()`、EXISTS fallback と G01 三反例を最初に実証する。
 - 設計の安全性に関わる空欄を実装者の推測で埋めず、`docs/DESIGN.md` v0.6 と `docs/reviews/round5-resolution.md` を正本とする。

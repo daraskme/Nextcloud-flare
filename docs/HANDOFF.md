@@ -27,7 +27,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0008`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create 用 LockDO、operation claim/lookup を実装済み。
 
-今回の追加: `0008_outbox_identity.sql` で outbox identity と consumer claim 列を追加し、`jobs/consumeOutbox.ts` に `node.created` の現在認可→30秒 claim→完了 CAS を実装。重複、失効/epoch、応答喪失、lease 奪取、作成専用共有をローカル D1 で検証した。Queue handler はまだ `retryAll` で、ControlDO 再開・実 Queue ack/DLQ・他の event kind は未完了。NixOS の Node 24.20.0 / pnpm 12.3.4 で `pnpm check` が **422 tests**（Node 195、workerd 227）と lint/typecheck/contracts/config/build を通過。固定版との差は CI で確認する。
+今回の追加: `jobs/queue.ts` に ID-only Queue 配信の ack/retry 判定を追加。ack 喪失後の再配信、claim 中の producer 再送抑止、後続 mutation で `last_op_id` が変わっても元 operation step で event を確認できることをローカル D1 で検証した。NixOS の Node 24.20.0 / pnpm 12.3.4 で `pnpm check` **426 tests**（Node 195、workerd 231）と lint/typecheck/contracts/config/build に成功。Queue handler はまだ `retryAll` で、ControlDO 再開・実 Queue/DLQ・他の event kind は未完了。前回の `8d4042b` の [CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35681307189) は成功。
 
 今回の checkpoint で追加したコード:
 
@@ -57,7 +57,7 @@ checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認す
 
 ## 次に進める順序
 
-1. **outbox Queue 接続 / repair**: 現在の `node.created` helper を基に実 Queue ack/ack loss・DLQ/requeue を検証し、他 kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
+1. **outbox Queue 接続 / repair**: 現在の `node.created` と ack 判定 helper を基に実 Queue/DLQ/requeue を検証し、他 kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
 2. **ControlDO admission / quiesce / resume**: permit/claimed/GC lease 等の停止と、DB/R2/会計/参照/root/credential/outbox の復旧検証を bounded に実装する。正本は DO、D1 は mirror。空 DB 専用の解除処理を完成形にしない。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。

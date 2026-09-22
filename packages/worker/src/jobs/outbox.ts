@@ -43,6 +43,7 @@ export async function dispatchOutbox(
       {
         sql: `UPDATE outbox SET state='dispatching',dispatch_token=?,dispatch_expires_at=strftime('%s','now')*1000+?,updated_at=MAX(updated_at,strftime('%s','now')*1000)
         WHERE outbox_id=? AND epoch=? AND (state='pending' OR (state IN ('dispatching','sent') AND dispatch_expires_at<=strftime('%s','now')*1000))
+        AND (claim_expires_at IS NULL OR claim_expires_at<=strftime('%s','now')*1000)
         AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
         AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch)`,
         values: [token, OUTBOX_DISPATCH_LEASE_MS, outboxId, epoch, epoch],
@@ -95,6 +96,7 @@ export async function dispatchPendingOutbox(
     .prepare(`SELECT b.outbox_id FROM outbox b JOIN control c ON c.singleton=1 JOIN operations o ON o.op_id=b.op_id
     WHERE b.epoch=? AND c.epoch=b.epoch AND c.maintenance=0 AND o.state='committed' AND o.epoch=b.epoch
       AND (b.state='pending' OR (b.state IN ('dispatching','sent') AND b.dispatch_expires_at<=strftime('%s','now')*1000))
+      AND (b.claim_expires_at IS NULL OR b.claim_expires_at<=strftime('%s','now')*1000)
     ORDER BY b.updated_at,b.outbox_id LIMIT ?`)
     .bind(epoch, limit)
     .all<{ outbox_id: string }>();

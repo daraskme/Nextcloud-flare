@@ -186,9 +186,9 @@ folder は blob を持たず容量 counter を変えない。FTS と outbox が�
 
 `jobs/outbox.ts` は D1 の current epoch/maintenance解除/committed operation を条件に30秒 dispatch lease を取得し、Queue へ `{outboxId}` だけ送る。
 送信後の sent 更新は同じ token/lease で CAS し、先に completed となった行や新しい sender の token を上書きしない。
-送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査する。
-`jobs/consumeOutbox.ts` は `node.created` のみを処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の node.create 認可で再検査し、30秒の claim token/lease を取得する。node の `last_op_id`、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
-実 Queue 配信/ack 喪失/DLQ、他の event kind、ControlDO admission、復旧時の検証は未完了。`index.ts` の queue は retryAll、scheduled は no-op のまま。ControlDO が maintenance を解除し、Queue 復旧を実装するまで producer/consumer/repair helper を公開 runtime に接続しない。
+送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査し、有効な consumer claim がある行を再送しない。
+`jobs/consumeOutbox.ts` は `node.created` のみを処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の node.create 認可で再検査し、30秒の claim token/lease を取得する。元 operation の node step、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。後続の node mutation で `last_op_id` が変わっても元 event の検証は維持される。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
+`jobs/queue.ts` は ID-only メッセージを逐次処理し、completed 行だけを ack、それ以外を retry する内部 helper。ack 喪失後の再配信は同じ terminal を確認して収束する。ローカル Queue 設定は最大10回の再試行後 DLQ へ送るが、実 Queue 配信/DLQ の end-to-end 試験、他の event kind、ControlDO admission、復旧時の検証は未完了。`index.ts` の queue は retryAll、scheduled は no-op のまま。ControlDO が maintenance を解除し、Queue 復旧を実装するまで producer/consumer/repair helper を公開 runtime に接続しない。
 
 ### 実サービス gate
 

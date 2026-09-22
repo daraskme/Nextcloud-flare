@@ -10,6 +10,7 @@ import {
   type OutboxMessage,
   type OutboxSender,
 } from "../../src/jobs/outbox";
+import { handleOutboxBatch, type OutboxDelivery } from "../../src/jobs/queue";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => {
@@ -42,6 +43,10 @@ async function fixture() {
     {
       sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,'node.created',?,'pending',1,1,1)",
       values: [id, id, f.ids.folder],
+    },
+    {
+      sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+      values: [id, f.ids.folder],
     },
   ]);
   return { ...f, id };
@@ -181,7 +186,6 @@ it("keeps the durable event identity immutable", async () => {
 
 async function dispatchedEvent() {
   const f = await fixture();
-  await env.DB.prepare("UPDATE nodes SET last_op_id=? WHERE id=?").bind(f.id, f.ids.folder).run();
   expect(await dispatchOutbox(env.DB, sender().queue, f.id, 1)).toBe("sent");
   return f;
 }
@@ -193,6 +197,65 @@ it("claims and completes a current event, then accepts duplicate delivery", asyn
   expect(
     await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
   ).toBe("completed");
+});
+
+it("keeps the original event valid after a later node mutation", async () => {
+  const f = await dispatchedEvent();
+  await env.DB.prepare("UPDATE nodes SET last_op_id=? WHERE id=?")
+    .bind(`${f.id}-later`, f.ids.folder)
+    .run();
+  expect(await consumeOutbox(env.DB, f.id)).toBe("completed");
+});
+
+function delivery(body: unknown, loseAck = false) {
+  let acked = 0;
+  let retried = 0;
+  const message: OutboxDelivery = {
+    body,
+    ack() {
+      if (loseAck) throw new Error("queue_ack_lost");
+      acked++;
+    },
+    retry() {
+      retried++;
+    },
+  };
+  return { message, counts: () => ({ acked, retried }) };
+}
+
+it("acks only completed IDs and retries invalid or unavailable deliveries", async () => {
+  const f = await dispatchedEvent();
+  const valid = delivery({ outboxId: f.id });
+  const invalid = delivery({ outboxId: f.id, payload: "unexpected" });
+  const absent = delivery({ outboxId: crypto.randomUUID() });
+  expect(
+    await handleOutboxBatch(env.DB, { messages: [valid.message, invalid.message, absent.message] }),
+  ).toEqual({ acked: 1, retried: 2 });
+  expect(valid.counts()).toEqual({ acked: 1, retried: 0 });
+  expect(invalid.counts()).toEqual({ acked: 0, retried: 1 });
+  expect(absent.counts()).toEqual({ acked: 0, retried: 1 });
+});
+
+it("converges after a lost Queue ack without repeating the D1 result", async () => {
+  const f = await dispatchedEvent();
+  const lost = delivery({ outboxId: f.id }, true);
+  expect(await handleOutboxBatch(env.DB, { messages: [lost.message] })).toEqual({
+    acked: 0,
+    retried: 1,
+  });
+  const token = await env.DB.prepare("SELECT claim_token FROM outbox WHERE outbox_id=?")
+    .bind(f.id)
+    .first("claim_token");
+  const duplicate = delivery({ outboxId: f.id });
+  expect(await handleOutboxBatch(env.DB, { messages: [duplicate.message] })).toEqual({
+    acked: 1,
+    retried: 0,
+  });
+  expect(
+    await env.DB.prepare("SELECT claim_token FROM outbox WHERE outbox_id=?")
+      .bind(f.id)
+      .first("claim_token"),
+  ).toBe(token);
 });
 
 it("uses the saved create scope for a share that has no read action", async () => {
@@ -238,6 +301,10 @@ it("uses the saved create scope for a share that has no read action", async () =
     {
       sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,'node.created',?,'pending',1,1,1)",
       values: [eventId, eventId, f.ids.folder],
+    },
+    {
+      sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+      values: [eventId, f.ids.folder],
     },
     { sql: "UPDATE nodes SET last_op_id=? WHERE id=?", values: [eventId, f.ids.folder] },
   ]);
@@ -317,6 +384,20 @@ it("fences a worker whose claim lease was taken over", async () => {
   expect(
     await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
   ).toBe("completed");
+});
+
+it("does not redispatch while a consumer claim is live", async () => {
+  const f = await dispatchedEvent();
+  await env.DB.prepare(
+    "UPDATE outbox SET dispatch_expires_at=0,claim_token=?,claim_expires_at=? WHERE outbox_id=?",
+  )
+    .bind(crypto.randomUUID(), Date.now() + 60_000, f.id)
+    .run();
+  const s = sender();
+  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("busy");
+  expect(s.messages).toEqual([]);
+  await env.DB.prepare("UPDATE outbox SET claim_expires_at=0 WHERE outbox_id=?").bind(f.id).run();
+  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("sent");
 });
 
 it("bounds repair dispatch and reclaims sent work whose consumer result is still absent", async () => {

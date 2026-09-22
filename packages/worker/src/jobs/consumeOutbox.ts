@@ -95,9 +95,10 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
           WHERE outbox_id=? AND epoch=? AND state IN ('dispatching','sent')
             AND (claim_token IS NULL OR claim_expires_at<=${clock})
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
-            AND EXISTS(SELECT 1 FROM operations o JOIN nodes n ON n.id=outbox.payload_ref
+            AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
-                AND o.kind='node.create' AND n.last_op_id=o.op_id AND n.space_id=o.space_id)`,
+                AND o.kind='node.create' AND s.step_no=1 AND s.kind='node'
+                AND s.affected_id=outbox.payload_ref)`,
         values: [token, OUTBOX_CLAIM_LEASE_MS, outboxId, row.epoch, row.epoch],
       },
       assertOneChange,
@@ -109,9 +110,10 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}
             AND epoch=? AND state IN ('dispatching','sent')
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
-            AND EXISTS(SELECT 1 FROM operations o JOIN nodes n ON n.id=outbox.payload_ref
+            AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
-                AND o.kind='node.create' AND n.last_op_id=o.op_id AND n.space_id=o.space_id)`,
+                AND o.kind='node.create' AND s.step_no=1 AND s.kind='node'
+                AND s.affected_id=outbox.payload_ref)`,
         values: [outboxId, token, row.epoch, row.epoch],
       },
       assertOneChange,
