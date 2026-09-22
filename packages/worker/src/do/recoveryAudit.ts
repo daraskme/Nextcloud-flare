@@ -3,7 +3,7 @@ import { auditOwnerLedger } from "../services/refs";
 import { epochNumber } from "./epochHistory";
 
 export interface RecoveryCursor {
-  readonly stage: "users" | "blobs" | "outbox" | "shares" | "credentials" | "fts";
+  readonly stage: "users" | "blobs" | "r2" | "outbox" | "shares" | "credentials" | "fts";
   readonly afterId: string;
 }
 
@@ -35,9 +35,9 @@ interface OutboxRow {
 
 function validCursor(cursor: RecoveryCursor, limit: number): void {
   if (
-    !["users", "blobs", "outbox", "shares", "credentials", "fts"].includes(cursor.stage) ||
+    !["users", "blobs", "r2", "outbox", "shares", "credentials", "fts"].includes(cursor.stage) ||
     typeof cursor.afterId !== "string" ||
-    cursor.afterId.length > 128 ||
+    cursor.afterId.length > (cursor.stage === "r2" ? 8192 : 128) ||
     !Number.isInteger(limit) ||
     limit < 1 ||
     limit > 20
@@ -162,6 +162,41 @@ export async function inspectRecoveryPage(
           : { stage: "blobs", afterId: "" },
     };
   }
+  if (cursor.stage === "r2") {
+    const listed = await bucket.list({
+      limit,
+      ...(cursor.afterId ? { cursor: cursor.afterId } : {}),
+    });
+    if (listed.objects.length > limit) throw new Error("recovery_r2_page_overflow");
+    for (const object of listed.objects) {
+      const blob = await primary(db)
+        .prepare(`SELECT 1 FROM blobs b JOIN blob_storage s ON s.blob_id=b.id
+          WHERE b.r2_key=? AND b.state NOT IN ('deleting','deleted')
+            AND b.size=? AND s.bytes=? AND s.r2_etag=? AND s.removed_at IS NULL`)
+        .bind(object.key, object.size, object.size, object.etag)
+        .first<number>();
+      if (blob !== null) continue;
+      const derivative = await primary(db)
+        .prepare(`SELECT 1 FROM derivative_results
+          WHERE r2_key=? AND state='ready' AND size=?`)
+        .bind(object.key, object.size)
+        .first<number>();
+      if (derivative !== null) continue;
+      const archive = await primary(db)
+        .prepare("SELECT 1 FROM archive_index WHERE r2_key=? AND json_bytes=?")
+        .bind(object.key, object.size)
+        .first<number>();
+      if (archive === null) throw new Error("recovery_untracked_r2_object");
+    }
+    if (listed.truncated && (!listed.cursor || listed.cursor === cursor.afterId))
+      throw new Error("recovery_r2_cursor_stalled");
+    return {
+      examined: listed.objects.length,
+      next: listed.truncated
+        ? { stage: "r2", afterId: listed.cursor ?? "" }
+        : { stage: "outbox", afterId: "" },
+    };
+  }
   if (cursor.stage === "outbox") {
     const rows = await primary(db)
       .prepare(`SELECT b.outbox_id,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
@@ -283,6 +318,6 @@ export async function inspectRecoveryPage(
     next:
       rows.results.length > limit
         ? { stage: "blobs", afterId: page.at(-1)?.id ?? cursor.afterId }
-        : { stage: "outbox", afterId: "" },
+        : { stage: "r2", afterId: "" },
   };
 }

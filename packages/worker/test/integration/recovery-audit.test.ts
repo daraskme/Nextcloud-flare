@@ -38,9 +38,21 @@ it("checks users, ledgers, roots and R2 blobs in bounded pages", async () => {
     expect(page.examined).toBeLessThanOrEqual(1);
     examined += page.examined;
     cursor = page.next;
-    if (++pages > 10) throw new Error("recovery_page_loop");
+    if (++pages > 15) throw new Error("recovery_page_loop");
   }
-  expect(examined).toBe(6);
+  expect(examined).toBe(8);
+});
+
+it("detects an R2 object without a durable D1 owner", async () => {
+  const key = `orphan/${crypto.randomUUID()}`;
+  await env.BLOBS.put(key, "unexpected");
+  try {
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "r2", afterId: "" }, 20),
+    ).rejects.toThrow(/recovery_untracked_r2_object/);
+  } finally {
+    await env.BLOBS.delete(key);
+  }
 });
 
 it("rejects share counter drift and a live root from another owner", async () => {

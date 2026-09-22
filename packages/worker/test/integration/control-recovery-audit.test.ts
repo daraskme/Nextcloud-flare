@@ -47,31 +47,36 @@ it("persists page progress across DO eviction and treats completion as diagnosti
   });
   await evictDurableObject(control());
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "outbox",
+    stage: "r2",
     pages: 2,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "shares",
+    stage: "outbox",
     pages: 3,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "credentials",
+    stage: "shares",
     pages: 4,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "fts",
+    stage: "credentials",
     pages: 5,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "fts",
     pages: 6,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 7,
     completed: true,
   });
-  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 6, completed: true });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 7, completed: true });
   expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
 });
 
@@ -87,30 +92,61 @@ it("keeps a failed page pending so repair can resume at the same cursor", async 
     await env.BLOBS.put(key, "abc");
   }
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "outbox",
+    stage: "r2",
     pages: 2,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "shares",
+    stage: "outbox",
     pages: 3,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "credentials",
+    stage: "shares",
     pages: 4,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "fts",
+    stage: "credentials",
     pages: 5,
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "fts",
     pages: 6,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 7,
     completed: true,
   });
+});
+
+it("persists an R2 list cursor and retries an untracked object after eviction", async () => {
+  const unknown = `zzzz-untracked-${crypto.randomUUID()}`;
+  await env.BLOBS.put(unknown, "extra");
+  try {
+    await control().beginRecoveryAudit(2);
+    expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ stage: "blobs" });
+    expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ stage: "r2" });
+    const listed = await control().nextRecoveryAuditPage(2, 1);
+    expect(listed).toMatchObject({ stage: "r2", pages: 3 });
+    expect(listed.afterId).not.toBe("");
+    await evictDurableObject(control());
+    await runInDurableObject(control(), async (instance) => {
+      await expect(instance.nextRecoveryAuditPage(2, 1)).rejects.toThrow(
+        /recovery_untracked_r2_object/,
+      );
+    });
+    await env.BLOBS.delete(unknown);
+    expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+      stage: "outbox",
+      pages: 4,
+    });
+  } finally {
+    await env.BLOBS.delete(unknown);
+  }
 });
 
 it("rebuilds restored FTS under the recovery fence and restarts the audit", async () => {
@@ -120,7 +156,7 @@ it("rebuilds restored FTS under the recovery fence and restarts the audit", asyn
     .run();
   await expect(inspectRecoverySearchFts(env.DB, 2)).rejects.toThrow();
   expect(await control().beginRecoveryAudit(2)).toMatchObject({ stage: "users", pages: 0 });
-  for (let i = 0; i < 5; i++) await control().nextRecoveryAuditPage(2, 1);
+  for (let i = 0; i < 6; i++) await control().nextRecoveryAuditPage(2, 1);
   await runInDurableObject(control(), async (instance) => {
     await expect(instance.nextRecoveryAuditPage(2, 1)).rejects.toThrow();
   });

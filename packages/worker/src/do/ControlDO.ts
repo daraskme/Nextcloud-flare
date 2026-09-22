@@ -38,7 +38,7 @@ export interface QuiesceStatus extends ControlStatus {
 interface AuditRow extends Record<string, SqlStorageValue> {
   epoch: number;
   token: string;
-  stage: "users" | "blobs" | "outbox" | "shares" | "credentials" | "fts" | "complete";
+  stage: "users" | "blobs" | "r2" | "outbox" | "shares" | "credentials" | "fts" | "complete";
   after_id: string;
   pages: number;
 }
@@ -65,9 +65,9 @@ export class ControlDO extends DurableObject<Env> {
       "INSERT OR IGNORE INTO control_state(singleton,phase,epoch) VALUES(1,'uninitialized',0)",
     );
     // A new diagnostic table avoids an in-place SQLite CHECK change on existing DOs.
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS recovery_audit_v4(
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS recovery_audit_v5(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,
-      token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','outbox','shares','credentials','fts','complete')),
+      token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','r2','outbox','shares','credentials','fts','complete')),
       after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
     )`);
   }
@@ -183,7 +183,7 @@ export class ControlDO extends DurableObject<Env> {
   #auditRow(expectedEpoch: number): AuditRow {
     const row = this.ctx.storage.sql
       .exec<AuditRow>(
-        "SELECT epoch,token,stage,after_id,pages FROM recovery_audit_v4 WHERE singleton=1",
+        "SELECT epoch,token,stage,after_id,pages FROM recovery_audit_v5 WHERE singleton=1",
       )
       .toArray()[0];
     if (!row || row.epoch !== expectedEpoch) throw new Error("recovery_audit_not_started");
@@ -198,7 +198,7 @@ export class ControlDO extends DurableObject<Env> {
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("recovery_audit_epoch_conflict");
     this.ctx.storage.sql.exec(
-      `INSERT INTO recovery_audit_v4(singleton,epoch,token,stage,after_id,pages)
+      `INSERT INTO recovery_audit_v5(singleton,epoch,token,stage,after_id,pages)
       VALUES(1,?,?,'users','',0) ON CONFLICT(singleton) DO UPDATE SET
       epoch=excluded.epoch,token=excluded.token,stage='users',after_id='',pages=0`,
       expectedEpoch,
@@ -235,7 +235,7 @@ export class ControlDO extends DurableObject<Env> {
       throw new Error("recovery_audit_epoch_conflict");
     const next = page.next;
     const updated = this.ctx.storage.sql.exec(
-      `UPDATE recovery_audit_v4
+      `UPDATE recovery_audit_v5
       SET stage=?,after_id=?,pages=pages+1
       WHERE singleton=1 AND epoch=? AND token=? AND stage=? AND after_id=? AND pages=?`,
       next?.stage ?? "complete",
