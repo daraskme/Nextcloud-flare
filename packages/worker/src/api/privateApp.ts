@@ -8,6 +8,7 @@ import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
 import { handleAccountHttp } from "./account";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
+import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 
 export interface PrivateAppDependencies {
@@ -23,6 +24,7 @@ export function privateAppRoute(request: Request): boolean {
   return (
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
+    nodeMutationRoute(request) ||
     (request.method === "POST" &&
       (url.pathname === "/api/v1/csrf" ||
         url.pathname === "/api/v1/content-session" ||
@@ -45,10 +47,19 @@ export async function handlePrivateAppHttp(
   const accountRead = url.pathname === "/api/v1/me" && request.method === "GET";
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
+  const nodeMutation = nodeMutationRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
     /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && request.method === "DELETE";
-  if (!csrfIssue && !accountRead && !logout && !nodeRead && !ticketIssue && !ticketCancel)
+  if (
+    !csrfIssue &&
+    !accountRead &&
+    !logout &&
+    !nodeRead &&
+    !nodeMutation &&
+    !ticketIssue &&
+    !ticketCancel
+  )
     return problem(404, "not_found");
   let session;
   try {
@@ -91,6 +102,18 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.cursors,
+    );
+  if (nodeMutation)
+    return handleNodeMutationHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
     );
   return handlePrivateContentTicketHttp(
     request,

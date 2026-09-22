@@ -1,7 +1,10 @@
 import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { handleNodeMutationHttp } from "../../src/api/nodeMutations";
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
+import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { lockTokenHashes } from "../../src/auth/locks";
 import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
@@ -22,6 +25,69 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
+});
+
+it("creates a folder through the private HTTP bridge and replays its operation", async () => {
+  const f = await fixture();
+  const appEnv = { ...env, ...admitted(), APP_ORIGIN: "https://app.invalid" };
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: secret });
+  const csrf = new CsrfTokens(ring, ring, appEnv.APP_ORIGIN);
+  const csrfIssued = await csrf.issue(
+    env.DB,
+    new Request("https://app.invalid/api/v1/csrf", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+    { kind: "access", credentialId: f.principal.credential_id, epoch: 1 },
+  );
+  const headers = {
+    Origin: appEnv.APP_ORIGIN,
+    "Sec-Fetch-Site": "same-origin",
+    "Content-Type": "application/json",
+    "X-CSRF-Token": csrfIssued.token,
+    "Idempotency-Key": f.request.idempotencyKey,
+  };
+  const body = JSON.stringify({
+    kind: "folder",
+    spaceId: f.ids.space,
+    parentId: f.ids.folder,
+    name: f.request.name,
+  });
+  const send = (requestHeaders = headers, requestBody = body) =>
+    handleNodeMutationHttp(
+      new Request("https://app.invalid/api/v1/nodes", {
+        method: "POST",
+        headers: requestHeaders,
+        body: requestBody,
+      }),
+      appEnv,
+      f.principal,
+      csrf,
+    );
+  const noCsrf = await send({ ...headers, "X-CSRF-Token": "" });
+  expect(noCsrf.status).toBe(403);
+  const created = await send();
+  expect(created.status).toBe(201);
+  const operation = await created.json<{ id: string; result: { nodeId: string } }>();
+  expect(operation.result.nodeId).toBeTruthy();
+  expect(
+    await env.DB.prepare("SELECT name FROM nodes WHERE id=?")
+      .bind(operation.result.nodeId)
+      .first("name"),
+  ).toBe(f.request.name);
+  const replay = await send();
+  expect(replay.status).toBe(201);
+  expect(await replay.json()).toMatchObject({ id: operation.id, result: operation.result });
+  const lookup = await handleNodeMutationHttp(
+    new Request(`https://app.invalid/api/v1/operations/${operation.id}`),
+    appEnv,
+    f.principal,
+    csrf,
+  );
+  expect(lookup.status).toBe(200);
+  expect(await lookup.json()).toMatchObject({ id: operation.id, state: "committed" });
+  expect((await send(headers, body.replace(f.request.name, "別名"))).status).toBe(409);
 });
 
 async function fixture() {

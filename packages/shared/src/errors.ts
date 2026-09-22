@@ -2,6 +2,7 @@ export type PlatformErrorCode =
   | "bad_request"
   | "forbidden"
   | "unauthorized"
+  | "conflict"
   | "budget_exceeded"
   | "not_found"
   | "not_ready"
