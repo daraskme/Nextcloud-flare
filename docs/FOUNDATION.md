@@ -67,6 +67,8 @@ credential の復旧監査では、有効な app password と service の scope 
 
 `services/blobRead.ts` は `node.read` の現在認可 assertion と node/blob/物理観測行を同じ D1 batch で照合し、R2 配信用 plan を作る。R2 HEAD と GET のサイズ/ETag を plan と照合し、D1 content ETag による 304/If-Range、HEAD、単一 Range の 206/416、MIME/Disposition、no-store/nosniff を返す。purpose・content session・予算の検証は呼出し側の必須条件であり、公開 route にはまだ接続していない。
 
+`auth/contentSession.ts` は content session・ticket・target set・budget の同一 credential/epoch/対象と、有効期限・失効・share version/grant を D1 assertion で検査する内部部品。使用時は node 認可 assertion と同じ batch に入れる。target set manifest の node/blob 所属確認、Cookie/ticket の暗号学的検証、BudgetDO lease は未接続。
+
 `auth/sessions.ts` は JWT 検証済み claims を受ける内部サービス。`auth/login.ts` が JWT 検証→bootstrap（未初期化時だけ）→session 登録を接続する。HTTP route は未有効化。
 既存 user の iss+sub を照合し、email だけでは identity を結合しない。
 fingerprint は R6 の SHA-256(iss|sub|iat|exp)。区切り文字衝突を避けるため iss/sub 内の `|` を拒否する。
