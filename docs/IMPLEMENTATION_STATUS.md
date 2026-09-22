@@ -18,6 +18,7 @@
 | 2 immutable blob read 基盤 | current `node.read` assertion と node/blob/物理観測行を同一 D1 batch で照合し、R2 key の owner/blob 束縛、object のサイズ/ETag、D1 content ETag、HEAD/206/304/416、If-Range、MIME/Disposition、no-store/nosniff を内部 helper で処理 | 実 D1/R2 binding と失効競合で検証。purpose、content session、BudgetDO、公開 route は未接続 |
 | 6 content blob read 基盤 | 署名 ticket の D1 現行検査→発行元 ticket 束縛 content session→署名 Cookie→node/blob/R2 manifest と current credential を同一 D1 batch で検証。鍵 rotation と個別 cancel を反映 | private/匿名 share の実 D1/R2、失効・share version・hash 競合、復旧監査で検証。HTTP/CORS 公開 route は未接続 |
 | 6 BudgetDO 基盤 | `budget_id` の SQLite 永続 counter、target bytes×3、1024 requests/10分、8並列、10分 lease/alarm、unknown 全額消費。配信 GET/Range/HEAD/304 の reserve/settle を内部ストリームに接続 | eviction、上限、失効、実 R2 配信を workerd で検証。budget 発行・owner 64件制限、全 route 接続は未完了 |
+| 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
@@ -44,7 +45,7 @@
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
 ControlDO は内部 RPC の epoch 発行・復旧を実装したが、maintenance / GC pause を解除しない。
-LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO は拒否実装。BudgetDO の内部 RPC は動作するが、公開 HTTP route は閉じている。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO は拒否実装。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
 
 ## Toolchain の判断
 
@@ -75,6 +76,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 280 = **475 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content host の POST/OPTIONS ticket 交換と GET/HEAD blob 配信 handler を追加。Cookie→実 R2、CORS、blob ID 不一致、maintenance 中の発行拒否、Worker entry の鍵未設定 gate を検証。実 ControlDO admission とリモート署名鍵は未設定で公開停止。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 279 = **474 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。BudgetDO の SQLite 永続 lease と内部 blob 配信を接続。eviction、known/unknown 精算、8並列、0 byte を含む1024 request、同一ミリ秒の連続 request、alarm、失効 credential、GET/Range/HEAD/304 会計を workerd で検証。後続の修正で期限切れ lease 行の回収と窓更新後の再受付も検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 273 = **468 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content ticket と Cookie の専用 HS256 kid ring、D1 ticket redemption、`content_sessions.ticket_id` migration、Cookie からの current blob plan を追加。private と匿名 share、cancel/version/rotation を workerd で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 270 = **465 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。R2 target manifest の bounded hash 検証と node/blob/purpose/size 所属を `prepareContentBlobRead` に接続。D1 batch 直前の ticket/hash 変更を拒否。復旧監査の R2 list でも target manifest を検証。

@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
+import { handleContentHttp } from "./api/content";
+import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
@@ -30,9 +32,37 @@ export { LockDO } from "./do/LockDO";
 export class UploadDO extends UnavailableDO {}
 
 export default {
-  fetch(_request: Request, env: Env): Response {
+  async fetch(request: Request, env: Env): Promise<Response> {
     if (!hasBindings(env)) return problem(503, "binding_unavailable");
-    // Phase 1 installs the authenticated manifest. Do not expose assets or probe routes.
+    if (new URL(request.url).origin === env.CONTENT_ORIGIN) {
+      if (
+        !env.CONTENT_TICKET_KEYS ||
+        !env.CONTENT_COOKIE_KEYS ||
+        !env.CONTENT_TICKET_ACTIVE_KID ||
+        !env.CONTENT_COOKIE_ACTIVE_KID
+      )
+        return problem(503, "not_ready");
+      try {
+        const epoch = await admittedEpoch(env);
+        if (epoch === null) return problem(503, "not_ready");
+        const ticketRing = await contentKeyRing(
+          env.CONTENT_TICKET_ACTIVE_KID,
+          JSON.parse(env.CONTENT_TICKET_KEYS),
+        );
+        const cookieRing = await contentKeyRing(
+          env.CONTENT_COOKIE_ACTIVE_KID,
+          JSON.parse(env.CONTENT_COOKIE_KEYS),
+        );
+        return handleContentHttp(
+          request,
+          env,
+          new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN),
+        );
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    // Other hosts still require the authenticated route manifest.
     return problem(404, "not_found");
   },
   async queue(batch: MessageBatch, env: Env): Promise<void> {

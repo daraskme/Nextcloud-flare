@@ -28,7 +28,7 @@ export async function acceptContentTicket(
       `SELECT 1 FROM tickets t JOIN target_sets ts ON ts.id=t.target_set_id
         JOIN budgets b ON b.id=t.budget_id AND b.owner_id=ts.owner_id
         JOIN credentials c ON c.id=t.credential_id
-        JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=t.epoch
+        JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=t.epoch AND ctl.maintenance=0
         WHERE t.id=? AND t.credential_id=? AND t.target_set_id=? AND t.budget_id=?
           AND t.purpose=? AND t.epoch=? AND t.issued_at>=? AND t.issued_at<?
           AND t.expires_at>=? AND t.cancelled_at IS NULL

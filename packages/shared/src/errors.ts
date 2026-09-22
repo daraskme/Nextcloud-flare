@@ -1,4 +1,7 @@
 export type PlatformErrorCode =
+  | "bad_request"
+  | "forbidden"
+  | "budget_exceeded"
   | "not_found"
   | "not_ready"
   | "binding_unavailable"

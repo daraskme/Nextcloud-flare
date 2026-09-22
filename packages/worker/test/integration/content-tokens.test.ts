@@ -2,10 +2,12 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
+import { handleContentHttp } from "../../src/api/content";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { contentSessionAssertion } from "../../src/auth/contentSession";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { atomicBatch } from "../../src/db/primary";
+import type { Env } from "../../src/env";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { foundationFixture } from "../fixtures/foundation";
 
@@ -146,6 +148,87 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
     active: 0,
     byteLimit: 9,
   });
+  const contentEnv: Env = {
+    ...env,
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
+  const preflight = await handleContentHttp(
+    new Request("https://content.invalid/session", {
+      method: "OPTIONS",
+      headers: {
+        Origin: contentEnv.APP_ORIGIN,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+      },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(preflight.status).toBe(204);
+  expect(preflight.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+  const sessionResponse = await handleContentHttp(
+    new Request("https://content.invalid/session", {
+      method: "POST",
+      headers: { Origin: contentEnv.APP_ORIGIN, "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket }),
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(sessionResponse.status).toBe(201);
+  const httpCookie = sessionResponse.headers.get("Set-Cookie")?.split(";", 1)[0] ?? "";
+  expect(await tokens.verifyCookie(httpCookie)).toBeTruthy();
+  const httpRead = await handleContentHttp(
+    new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
+      headers: { Cookie: httpCookie, Origin: contentEnv.APP_ORIGIN },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(httpRead.status).toBe(200);
+  expect(httpRead.headers.get("Access-Control-Allow-Origin")).toBe(contentEnv.APP_ORIGIN);
+  expect(new TextDecoder().decode(await httpRead.arrayBuffer())).toBe("abc");
+  const httpHead = await handleContentHttp(
+    new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
+      method: "HEAD",
+      headers: { Cookie: httpCookie },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(httpHead.status).toBe(200);
+  expect(httpHead.headers.get("Content-Length")).toBe("3");
+  expect(httpHead.body).toBeNull();
+  expect(await env.BUDGETS.get(env.BUDGETS.idFromName(ids.budget)).status()).toMatchObject({
+    requests: 6,
+    bytesCharged: 8,
+    active: 0,
+  });
+  expect(
+    (
+      await handleContentHttp(
+        new Request("https://content.invalid/session", {
+          method: "POST",
+          headers: { Origin: "https://evil.invalid", "Content-Type": "application/json" },
+          body: JSON.stringify({ ticket }),
+        }),
+        contentEnv,
+        tokens,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await handleContentHttp(
+        new Request(`https://content.invalid/c/${f.ids.file}/${crypto.randomUUID()}`, {
+          headers: { Cookie: httpCookie },
+        }),
+        contentEnv,
+        tokens,
+      )
+    ).status,
+  ).toBe(404);
   await atomicBatch(env.DB, [
     contentSessionAssertion(
       { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch: 1 },
@@ -154,6 +237,9 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
       "content",
     ),
   ]);
+  await env.DB.prepare("UPDATE control SET maintenance=1 WHERE singleton=1").run();
+  await expect(acceptContentTicket(env.DB, tokens, ticket)).rejects.toThrow();
+  await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
   await expect(tokens.verifyCookie(`${cookie}; ${cookie}`)).rejects.toThrow(
     /content_cookie_rejected/,
   );

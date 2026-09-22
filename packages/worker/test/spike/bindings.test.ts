@@ -14,11 +14,16 @@ it("provides every required local binding", () => {
 it.each(["/", "/s/x", "/api/v1/automation/unknown", "/public-assets/x.js", "/dav", "/c/x"])(
   "does not expose unimplemented surface %s or fall through to assets",
   async (path) => {
-    const response = worker.fetch(new Request(`https://example.invalid${path}`), env);
+    const response = await worker.fetch(new Request(`https://example.invalid${path}`), env);
     expect(response.status).toBe(404);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
   },
 );
+
+it("keeps the content host closed without configured signing keys", async () => {
+  const response = await worker.fetch(new Request(`${env.CONTENT_ORIGIN}/session`), env);
+  expect(response.status).toBe(503);
+});
 
 it("persists SQLite DO storage through eviction without issuing permits", async () => {
   const stub = env.CONTROL.get(env.CONTROL.idFromName("phase-0-binding-probe"));

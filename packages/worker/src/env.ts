@@ -18,6 +18,10 @@ export interface Env {
   ENVIRONMENT: "development" | "staging" | "production";
   APP_ORIGIN: string;
   CONTENT_ORIGIN: string;
+  CONTENT_TICKET_KEYS?: string;
+  CONTENT_COOKIE_KEYS?: string;
+  CONTENT_TICKET_ACTIVE_KID?: string;
+  CONTENT_COOKIE_ACTIVE_KID?: string;
   PBKDF2_ITERATIONS: string;
   EPOCH_FLOOR?: string;
 }
