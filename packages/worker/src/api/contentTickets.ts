@@ -100,6 +100,7 @@ export async function handlePrivateContentTicketHttp(
   principal: Principal,
   csrf: Pick<CsrfTokens, "verify">,
   tokens: ContentTokens,
+  credentialExpiresAt = Number.MAX_SAFE_INTEGER,
 ): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin !== env.APP_ORIGIN || url.search || url.hash || principal.kind !== "user")
@@ -141,7 +142,7 @@ export async function handlePrivateContentTicketHttp(
       principal,
       body.targets,
       body.purpose,
-      Date.now() + body.ttlSeconds * 1000,
+      Math.min(Date.now() + body.ttlSeconds * 1000, credentialExpiresAt),
       body.share,
     );
     return Response.json(issued, {

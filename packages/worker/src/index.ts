@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { handleContentHttp } from "./api/content";
+import { handlePrivateAppHttp, privateAppRoute } from "./api/privateApp";
+import { privateAppDependencies } from "./api/privateAppConfig";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
@@ -62,7 +64,16 @@ export default {
         return problem(503, "not_ready");
       }
     }
-    // Other hosts still require the authenticated route manifest.
+    if (new URL(request.url).origin === env.APP_ORIGIN && privateAppRoute(request)) {
+      try {
+        const epoch = await admittedEpoch(env);
+        if (epoch === null) return problem(503, "not_ready");
+        return handlePrivateAppHttp(request, env, epoch, await privateAppDependencies(env));
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    // Other hosts and unimplemented routes remain closed.
     return problem(404, "not_found");
   },
   async queue(batch: MessageBatch, env: Env): Promise<void> {

@@ -22,6 +22,16 @@ export interface Env {
   CONTENT_COOKIE_KEYS?: string;
   CONTENT_TICKET_ACTIVE_KID?: string;
   CONTENT_COOKIE_ACTIVE_KID?: string;
+  ACCESS_ISSUER?: string;
+  ACCESS_USER_AUDIENCE?: string;
+  ACCESS_SERVICE_AUDIENCE?: string;
+  BOOTSTRAP_OWNER_EMAILS?: string;
+  BOOTSTRAP_OWNER_IDENTITIES?: string;
+  BOOTSTRAP_QUOTA_BYTES?: string;
+  CSRF_PRIVATE_KEYS?: string;
+  CSRF_PUBLIC_KEYS?: string;
+  CSRF_PRIVATE_ACTIVE_KID?: string;
+  CSRF_PUBLIC_ACTIVE_KID?: string;
   PBKDF2_ITERATIONS: string;
   EPOCH_FLOOR?: string;
 }

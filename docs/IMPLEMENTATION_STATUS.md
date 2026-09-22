@@ -21,7 +21,7 @@
 | 6 budget 確保基盤 | `u:<user>`、`u:<user>:s:<share>`、`s:<share>:c:<unlock>` の ID を D1 で再利用。node/owner、選択 share root、現行 credential、expiry、maintenance を同一 batch で検査し、revoke は再有効化しない | private・app password・内部共有・匿名共有、別 tab 相当の再確保、共有外への移動、失効と停止、最大長 ID の ticket 署名を workerd で検証。target set/ticket の内部発行サービスは実装済み。HTTP 発行 route は未接続 |
 | 6 target set/ticket 発行基盤 | 最大1,000件の target を決定的 JSON と SHA-256 で R2 に staging・読戻し検証し、全 node/blob/share の現行認可、budget、ticket と target set を D1 batch で確定。応答喪失後は D1 を再照合し、未確定 object を削除 | private・内部共有・匿名リンク、複数 target、credential 失効競合、D1 応答喪失を workerd で検証。HTTP 発行 route は未接続 |
 | 6 ticket 取り消し基盤 | current credential を確認し、ticket と派生 content session を同じ D1 batch で失効。budget は他 ticket と共有するため維持 | 再実行、Cookie と redemption の失効、別 credential・失効 session の拒否、D1 応答喪失後の照合を workerd で検証。HTTP 取り消し route は未接続 |
-| 6 private ticket HTTP handler | Access 認証済み request の同一 origin・CSRF・bounded JSON を検査し、ticket 発行/取消を内部サービスへ接続 | 実 D1/R2 と CSRF、拒否された origin/不正 JSON、取消後の redemption 拒否を workerd で検証。Worker entry の Access 接続は未実装 |
+| 6 private ticket HTTP handler | app host の Access JWT→D1 session→CSRF 発行→同一 origin・bounded JSON の ticket 発行/取消を Worker entry に接続。ticket 期限は Access session 期限以内 | RS256 JWT、実 D1/R2、CSRF、session 登録から取消、JWT 欠落と設定欠落の拒否を workerd で検証。ControlDO は maintenance 固定で公開停止、remote issuer/AUD/署名鍵/bootstrap 設定は未完了 |
 | 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
@@ -80,6 +80,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 成功。Node 199 + workerd 298 = **497 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app Worker entry に Access/CSRF/ticket 発行・取消を接続し、RS256 JWT と session 登録からの実 D1/R2、認証・設定欠落の拒否を検証。ControlDO maintenance 固定と remote 設定未完了のため実公開は停止。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 296 = **495 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。認証済み private content ticket HTTP handler を追加し、CSRF・同一 origin・bounded JSON、発行から取消まで実 D1/R2 で検証。Worker entry の Access 接続は未実装。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 295 = **494 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。ticket 取り消しと派生 content session の一括失効、budget 維持、別 credential・失効 session の拒否、D1 応答喪失後の照合を追加。HTTP 取り消し route は未接続。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 292 = **491 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。target manifest の決定的符号化・R2 読戻し、最大1,000 target の認可証明一括処理、private/内部共有/匿名リンクの ticket 発行、D1 応答喪失と失効競合後の照合・R2 cleanup を追加。HTTP 発行 route は未接続。

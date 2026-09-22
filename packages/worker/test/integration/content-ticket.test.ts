@@ -3,6 +3,8 @@ import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
 import { handlePrivateContentTicketHttp } from "../../src/api/contentTickets";
+import { handlePrivateAppHttp } from "../../src/api/privateApp";
+import { privateAppDependencies } from "../../src/api/privateAppConfig";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
@@ -11,7 +13,104 @@ import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/serv
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { loadTargetManifest } from "../../src/services/targetManifest";
+import { accessFixture } from "../fixtures/access";
 import { foundationFixture } from "../fixtures/foundation";
+
+it("keeps private app routes closed without remote identity and signing configuration", async () => {
+  await expect(privateAppDependencies(env)).rejects.toThrow("private_app_config_unavailable");
+});
+
+it("registers Access, issues CSRF, then issues and cancels a private ticket", async () => {
+  const { f, now, tokens, firstKey } = await fixture();
+  await env.DB.prepare("UPDATE control SET bootstrap_done_at=? WHERE singleton=1").bind(now).run();
+  const key = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: key });
+  const csrf = new CsrfTokens(ring, ring, "https://app.invalid");
+  const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
+  const access = await accessFixture();
+  const assertion = await access.sign({
+    sub: f.ids.user,
+    email: "fixture@example.invalid",
+    exp: Math.floor((now + 120_000) / 1000),
+  });
+  const jwt = assertion.headers.get("Cf-Access-Jwt-Assertion");
+  if (!jwt) throw new Error("missing_access_fixture_jwt");
+  const dependencies = {
+    verifier: access.verifier,
+    csrf,
+    tokens,
+    bootstrap: { ownerEmails: [], ownerIdentities: [], quotaBytes: 10_000_000 },
+  };
+  let targetSetId: string | undefined;
+  try {
+    const rejected = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/csrf", {
+        method: "POST",
+        headers: { "Sec-Fetch-Site": "same-origin" },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(rejected.status).toBe(401);
+    const csrfResponse = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/csrf", {
+        method: "POST",
+        headers: { "Sec-Fetch-Site": "same-origin", "Cf-Access-Jwt-Assertion": jwt },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(csrfResponse.status).toBe(201);
+    const { token } = await csrfResponse.json<{ token: string }>();
+    const headers = {
+      Origin: "https://app.invalid",
+      "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/json",
+      "X-CSRF-Token": token,
+      "Cf-Access-Jwt-Assertion": jwt,
+    };
+    const issuedResponse = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/content-session", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          targets: [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+          purpose: "content",
+          ttlSeconds: 300,
+        }),
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(issuedResponse.status).toBe(201);
+    const issued = await issuedResponse.json<{
+      ticket: string;
+      ticketId: string;
+      targetSetId: string;
+    }>();
+    targetSetId = issued.targetSetId;
+    const claims = await tokens.verifyTicket(issued.ticket);
+    expect(claims.ticket_id).toBe(issued.ticketId);
+    expect(claims.exp * 1000).toBeLessThanOrEqual(Math.floor((now + 120_000) / 1000) * 1000);
+    const cancelled = await handlePrivateAppHttp(
+      new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
+        method: "DELETE",
+        headers,
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(cancelled.status).toBe(204);
+    await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (targetSetId) await env.BLOBS.delete(`target-sets/${targetSetId}`);
+  }
+});
 
 it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
   const { f, tokens, principal, firstKey } = await fixture();
