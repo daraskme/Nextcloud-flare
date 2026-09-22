@@ -36,6 +36,7 @@
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS、file GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、原子的 PROPPATCH まで接続。残る operation handler と remote pepper secret 設定は未接続 |
+| 7 DAV conditions | RFC 4918 `If` の tagged/untagged、condition AND、全 list production OR、`Not`、state token、strong/weak ETag と独立 token submission、単一 `Lock-Token` を bounded parser/evaluator に実装 | 8 KiB、resource tag/list 各16、全64・各list16 condition、token/ETag/URI長を unit fixture で検証。current D1 lock/ETag state と mutation assertion への接続は未実装のため、header付き mutation は503を維持 |
 | 1 app password private API | Access/CSRF 付き `GET/POST/DELETE /api/v1/app-passwords`、一度だけ返す32B secret、DAV 用 node scope、所有者 root、20件・90日既定/365日上限、同 batch の credential/scopes/派生 content session 失効 | 実 D1 で発行→一覧→Basic 認証→失効、別 user root・admin scope・20件上限を検証。remote pepper 設定、DAV operation handler は未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
 | 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent/blob assertion。rename は root と share/scope root を拒否し、edit/node:write を要求。content/property write は edit/node:write を要求し、content write は file に限定 | read/create/rename/content/property write/automation の内部基盤。残る operation の認可は未完了 |
@@ -85,6 +86,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 相当の全 gate 成功。Node 209 + workerd 322 = **531 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV `If` / `Lock-Token` の bounded parser と純粋 evaluatorを追加し、tagged/untagged論理と、条件評価から独立した全branchのtoken submissionを検証。D1 state/mutation接続前なのでHTTPはfail closedを維持。
 - 2026-09-23、`pnpm check` 相当の全 gate 成功。Node 204 + workerd 322 = **526 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV PROPPATCH を write-only app password の `node:write`、LockDO permit、`dav.proppatch` claim、dead property と node revision の同一 D1 batch に接続。mixed-content XML、冪等再送、保護 live property の403と他 property の424、全 rollbackを検証。
 - 2026-09-23、`pnpm check` 成功。Node 202 + workerd 321 = **523 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV MKCOL を write-only app password の `node:create` 親 path 解決から `dav.mkcol` operation、LockDO permit、既存 fsMutation へ接続し、成功・再送・key競合・同名・bodyを検証。
 - 2026-09-23、`pnpm check` 成功。Node 202 + workerd 320 = **522 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV PROPFIND の bounded XML adapter、allprop/propname/prop、Depth 0/1 の最大1,000 child集合取得、live/dead property 207、finite-depth 403、超過507を検証。
