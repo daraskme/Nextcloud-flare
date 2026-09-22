@@ -7,7 +7,7 @@ const LEASE_MS = 600_000;
 const REQUEST_LIMIT = 1_024;
 const PARALLEL_LIMIT = 8;
 const MAX_ROWS = 1_024;
-const ID = /^[A-Za-z0-9_:-]{1,256}$/;
+const ID = /^[A-Za-z0-9_:-]{1,512}$/;
 const LEASE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 interface Authority {

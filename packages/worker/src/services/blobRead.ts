@@ -6,6 +6,7 @@ import {
 } from "../auth/authorize";
 import { type ContentPurpose, contentSessionAssertion } from "../auth/contentSession";
 import type { ContentTokens } from "../auth/contentTokens";
+import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
 import { parseRange } from "../platform/range";
@@ -159,32 +160,12 @@ export async function prepareContentBlobRead(
     contentSessionAssertion(principal, grant.sessionId, grant.ticketId, grant.purpose, grant.share),
     ...(grant.share || principal.kind === "link_share"
       ? [
-          assertExists(
-            `WITH RECURSIVE a(id,parent_id,depth,path) AS (
-              SELECT id,parent_id,0,'/'||id||'/' FROM nodes
-                WHERE id=? AND space_id=? AND owner_id=?
-              UNION ALL
-              SELECT n.id,n.parent_id,a.depth+1,a.path||n.id||'/'
-                FROM nodes n JOIN a ON n.id=a.parent_id
-                WHERE a.depth<64 AND n.space_id=? AND n.owner_id=?
-                  AND instr(a.path,'/'||n.id||'/')=0
-            ) SELECT 1 FROM shares sh JOIN a ON a.id=sh.root_node_id
-              WHERE sh.id=? AND sh.version=? AND sh.owner_id=?
-                AND sh.disabled_at IS NULL
-                AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
-                AND EXISTS(SELECT 1 FROM share_actions sa
-                  WHERE sa.share_id=sh.id AND sa.action='read')`,
-            [
-              authorized.node.id,
-              authorized.node.space_id,
-              authorized.node.owner_id,
-              authorized.node.space_id,
-              authorized.node.owner_id,
-              grant.share?.id ?? (principal.kind === "link_share" ? principal.share_id : ""),
-              grant.share?.version ??
-                (principal.kind === "link_share" ? principal.share_version : 0),
-              authorized.node.owner_id,
-            ],
+          shareCoverageAssertion(
+            authorized.node,
+            grant.share ?? {
+              id: principal.kind === "link_share" ? principal.share_id : "",
+              version: principal.kind === "link_share" ? principal.share_version : 0,
+            },
           ),
         ]
       : []),

@@ -52,6 +52,7 @@ export interface ContentTicketClaims {
 const TOKEN_FIELDS =
   "aud,budget_id,credential_id,epoch,exp,iat,kid,purpose,share_id,share_version,target_set_hash,target_set_id,ticket_id,typ,user_id";
 const ID = /^[A-Za-z0-9_:-]{1,256}$/;
+const BUDGET_ID = /^[A-Za-z0-9_:-]{1,512}$/;
 
 function canonical(value: Record<string, unknown>): string {
   return JSON.stringify(
@@ -70,9 +71,11 @@ function validOrigin(origin: string): boolean {
 
 function validClaims(claims: ContentTicketClaims, now: number): boolean {
   return (
-    [claims.ticket_id, claims.credential_id, claims.target_set_id, claims.budget_id].every(
+    [claims.ticket_id, claims.credential_id, claims.target_set_id].every(
       (value) => typeof value === "string" && ID.test(value),
     ) &&
+    typeof claims.budget_id === "string" &&
+    BUDGET_ID.test(claims.budget_id) &&
     /^[a-f0-9]{64}$/.test(claims.target_set_hash) &&
     ["content", "thumb", "page", "zip", "track"].includes(claims.purpose) &&
     Number.isSafeInteger(claims.epoch) &&

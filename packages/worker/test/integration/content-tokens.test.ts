@@ -397,6 +397,12 @@ it("bounds token lifetime and accepts old keys only while retained", async () =>
     iat,
     exp: iat + 600,
   });
+  const longBudget = `u:${"a".repeat(128)}:s:${"b".repeat(128)}`;
+  const longTicket = await original.issueTicket({
+    ...(await original.verifyTicket(ticket)),
+    budget_id: longBudget,
+  });
+  expect((await original.verifyTicket(longTicket)).budget_id).toBe(longBudget);
   const cookie = await original.issueCookie(
     base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
     600,
