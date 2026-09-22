@@ -35,7 +35,7 @@
 | 1 fsMutation/create | node/parent/tree/search base/FTS/activity/outbox/terminal を一括確定。全必須 step の0行 rollback、並行再送、commit 応答喪失 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
 | 1 名前/検索索引 | NFC/portable/byte/scalar、固定 Unicode 17 full casefold、NFKC/かな統一/bigram、同名拒否 | folder create の保存・初期 FTS に接続。検索 API は未実装 |
 | 1 outbox producer | D1 lease→ID-only Queue send→sent、応答喪失/lease 回収/旧 sender/fast completed、bounded repair scan | 内部送信 helper を実装。Cron 接続は未実装 |
-| 1 outbox consumer 基盤 | `node.created` の current credential/親フォルダー作成認可、30秒 claim、元 operation step による由来確認、terminal CAS、重複・応答喪失・lease 奪取・失効対確定・作成専用共有を D1 で検証。ID-only Queue ack 判定と ack 喪失、claim 中の再送抑止を追加 | 内部 helper のみ。実 Queue/DLQ・他の kind・ControlDO admission は未接続 |
+| 1 outbox consumer 基盤 | `node.created` の current credential/親フォルダー作成認可、30秒 claim、元 operation step による由来確認、terminal CAS、重複・応答喪失・lease 奪取・失効対確定・作成専用共有を D1 で検証。ID-only Queue ack 判定と ack 喪失、claim 中の再送抑止を追加。Worker Queue handler は ControlDO status と D1 mirror の一致を admission gate にして consumer に接続 | ControlDO が maintenance 中のため実 delivery は retry。実 Queue/DLQ、他の kind、再開は未完了 |
 
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
@@ -65,12 +65,13 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 - **M**: `0001`〜`0008` を追加し、隔離 D1 と SQLite へ適用して FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
-- **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の446 tests と前回の443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
+- **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の447 tests と前回の446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
 
+- 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 252 = **447 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。Queue handler の ControlDO/D1 admission gate を内部 consumer に接続。実 Queue delivery/DLQ と ControlDO 再開は未完了。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 251 = **446 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最終 D1 fence と bounded stale reservation release を追加。ControlDO admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 251 = **446 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。完了済み監査の最終 D1 fence を再照会時に検証し、失敗した監査を初期化。ControlDO admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 248 = **443 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。credential registry の逆向き参照を4種の source に追加。ControlDO admission 再開は未実装。

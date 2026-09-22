@@ -3,6 +3,8 @@ import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
+import type { Env } from "../../src/env";
+import worker from "../../src/index";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import {
   dispatchOutbox,
@@ -234,6 +236,36 @@ it("acks only completed IDs and retries invalid or unavailable deliveries", asyn
   expect(valid.counts()).toEqual({ acked: 1, retried: 0 });
   expect(invalid.counts()).toEqual({ acked: 0, retried: 1 });
   expect(absent.counts()).toEqual({ acked: 0, retried: 1 });
+});
+
+it("routes Queue deliveries only when ControlDO and D1 agree on admission", async () => {
+  const f = await dispatchedEvent();
+  const admittedEnv = {
+    ...env,
+    CONTROL: {
+      idFromName: () => "singleton",
+      get: () => ({
+        status: async () => ({ epoch: 1, maintenance: false, gcPaused: false }),
+      }),
+    },
+  } as unknown as Env;
+  const first = delivery({ outboxId: f.id });
+  let wholeBatchRetries = 0;
+  const batch = (message: OutboxDelivery) =>
+    ({
+      messages: [message],
+      retryAll() {
+        wholeBatchRetries++;
+      },
+    }) as unknown as MessageBatch;
+  await worker.queue(batch(first.message), admittedEnv);
+  expect(first.counts()).toEqual({ acked: 1, retried: 0 });
+  expect(wholeBatchRetries).toBe(0);
+  await env.DB.prepare("UPDATE control SET maintenance=1").run();
+  const second = delivery({ outboxId: f.id });
+  await worker.queue(batch(second.message), admittedEnv);
+  expect(second.counts()).toEqual({ acked: 0, retried: 0 });
+  expect(wholeBatchRetries).toBe(1);
 });
 
 it("converges after a lost Queue ack without repeating the D1 result", async () => {

@@ -1,7 +1,7 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
-import { hasBindings, REQUIRED_BINDINGS } from "../../src/env";
+import { type Env, hasBindings, REQUIRED_BINDINGS } from "../../src/env";
 import worker from "../../src/index";
 
 it("provides every required local binding", () => {
@@ -33,19 +33,31 @@ it("persists SQLite DO storage through eviction without issuing permits", async 
   expect((await stub.fetch("https://do.invalid/")).status).toBe(503);
 });
 
-it("does not ack unfinished queue work", () => {
+it("does not ack queue work while ControlDO admission is closed", async () => {
   let retried = false;
-  worker.queue({
-    queue: "probe",
-    messages: [],
-    metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
-    retryAll() {
-      retried = true;
+  const closedEnv = {
+    ...env,
+    CONTROL: {
+      idFromName: () => "singleton",
+      get: () => ({
+        status: async () => ({ epoch: 1, maintenance: true, gcPaused: true }),
+      }),
     },
-    ackAll() {
-      throw new Error("must not ack");
+  } as unknown as Env;
+  await worker.queue(
+    {
+      queue: "probe",
+      messages: [],
+      metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+      retryAll() {
+        retried = true;
+      },
+      ackAll() {
+        throw new Error("must not ack");
+      },
     },
-  });
+    closedEnv,
+  );
   expect(retried).toBe(true);
 });
 
