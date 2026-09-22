@@ -20,7 +20,7 @@
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |
 | 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。admission/復旧 verifier/再開と実 GC lease drain は未完了 |
-| 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag と list 全件の D1 blob/derivative/archive 照合、outbox provenance/lease、share 予約量・root・version、credential 参照先・有効 scope root と4種の参照元 registry 行を各最大20件ずつ検証。FTS5 `integrity-check` (`rank=1`) と予約・未完了 upload・旧 outbox 等の最終 D1 fence を追加。停止中の FTS `rebuild`、旧 epoch の upload に紐づかない予約の bounded release は監査を初期化。ControlDO SQLite の epoch/token/R2 cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 診断専用。credential/share/outbox の全意味検証、未知 R2 object の repair、incomplete multipart、Upload/GC/Queue drain と再開 gate は未完了 |
+| 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag と list 全件の D1 blob/derivative/archive 照合、outbox provenance/lease、share 予約量・root・version、credential の参照先種別・有効 scope root と4種の参照元 registry 行を各最大20件ずつ検証。FTS5 `integrity-check` (`rank=1`) と予約・未完了 upload・旧 outbox 等の最終 D1 fence を追加。完了後の再照会でも最終 fence を再確認し、失敗時は監査を先頭に戻す。停止中の FTS `rebuild`、旧 epoch の upload に紐づかない予約の bounded release は監査を初期化。ControlDO SQLite の epoch/token/R2 cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 診断専用。credential/share/outbox の全意味検証、未知 R2 object の repair、incomplete multipart、Upload/GC/Queue drain と再開 gate は未完了 |
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
@@ -72,6 +72,7 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 ## 実行記録
 
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 251 = **446 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最終 D1 fence と bounded stale reservation release を追加。ControlDO admission 再開は未実装。
+- 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 251 = **446 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。完了済み監査の最終 D1 fence を再照会時に検証し、失敗した監査を初期化。ControlDO admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 248 = **443 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。credential registry の逆向き参照を4種の source に追加。ControlDO admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 247 = **442 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。R2 完成済み object の全件照合と永続 cursor を追加。ControlDO admission 再開は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 245 = **440 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。FTS5 再構築・元テーブルとの整合性検証を追加。ControlDO admission 再開は未実装。

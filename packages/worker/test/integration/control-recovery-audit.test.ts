@@ -95,6 +95,37 @@ it("persists page progress across DO eviction and treats completion as diagnosti
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 12, completed: true });
   expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
+  const reservationId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch)
+    VALUES(?,?,1,'reserved',?,1)`)
+    .bind(reservationId, fixture.ids.user, Date.now() + 60_000)
+    .run();
+  try {
+    await runInDurableObject(control(), async (instance) => {
+      await expect(instance.nextRecoveryAuditPage(2, 1)).rejects.toThrow(
+        /recovery_final_fence_pending/,
+      );
+    });
+    await runInDurableObject(control(), async (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ stage: string; pages: number }>(
+            "SELECT stage,pages FROM recovery_audit_v7 WHERE singleton=1",
+          )
+          .one(),
+      ).toMatchObject({ stage: "users", pages: 0 });
+    });
+  } finally {
+    await env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?")
+      .bind(reservationId)
+      .run();
+    await env.DB.prepare("DELETE FROM reservations WHERE id=?").bind(reservationId).run();
+  }
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "blobs",
+    pages: 1,
+    completed: false,
+  });
 });
 
 it("keeps a failed page pending so repair can resume at the same cursor", async () => {

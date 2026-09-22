@@ -10,6 +10,7 @@ import {
   recoverEpochFloor,
 } from "./epochHistory";
 import {
+  inspectRecoveryFinalFence,
   inspectRecoveryPage,
   type RecoveryCursor,
   rebuildRecoverySearchFts,
@@ -243,7 +244,24 @@ export class ControlDO extends DurableObject<Env> {
     const status = await this.status();
     if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
     const row = this.#auditRow(expectedEpoch);
-    if (row.stage === "complete") return this.#auditStatus(row);
+    if (row.stage === "complete") {
+      try {
+        await inspectRecoveryFinalFence(this.env.DB, expectedEpoch);
+      } catch (error) {
+        // A completed diagnostic is not durable proof that D1 stayed quiescent.
+        // Restart all pages after a failed fence so earlier observations are refreshed.
+        const reset = this.ctx.storage.sql.exec(
+          `UPDATE recovery_audit_v7 SET token=?,stage='users',after_id='',pages=0
+          WHERE singleton=1 AND epoch=? AND token=? AND stage='complete'`,
+          crypto.randomUUID(),
+          expectedEpoch,
+          row.token,
+        );
+        if (reset.rowsWritten !== 1) throw new Error("recovery_audit_conflict");
+        throw error;
+      }
+      return this.#auditStatus(this.#auditRow(expectedEpoch));
+    }
     const cursor: RecoveryCursor = { stage: row.stage, afterId: row.after_id };
     const page = await inspectRecoveryPage(
       this.env.DB,
