@@ -1,5 +1,6 @@
 import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { searchName } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { handleDavHttp } from "../../src/api/dav";
@@ -60,6 +61,8 @@ function admittedDavEnv(): Env {
             invoke((lock) => lock.acquireNodeWrite(request)),
           acquireTrash: (request: Parameters<LockDO["acquireTrash"]>[0]) =>
             invoke((lock) => lock.acquireTrash(request)),
+          acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
+            invoke((lock) => lock.acquireMove(request)),
           createDavLock: (request: Parameters<LockDO["createDavLock"]>[0]) =>
             invoke((lock) => lock.createDavLock(request)),
           refreshDavLock: (request: Parameters<LockDO["refreshDavLock"]>[0]) =>
@@ -279,7 +282,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
   expect(options.headers.get("Allow")).toBe(
-    "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+    "OPTIONS, GET, HEAD, PUT, DELETE, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
   );
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
@@ -1557,4 +1560,153 @@ it("rejects a DAV path whose node moves after its initial lookup", async () => {
   await expect(resolveDavNode(db, principal, parseDavPath("/dav/File"))).rejects.toThrow(
     "dav_node_unavailable",
   );
+});
+
+it("moves a DAV resource to a strict same-origin destination", async () => {
+  const { f, id, ring, request } = await fixture("M");
+  const destination = `${f.ids.folder}-move-target`;
+  const sourceSearch = searchName("File");
+  const destinationSearch = searchName("Target");
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read'),(?,'node:write'),(?,'node:create'),(?,'node:delete')",
+      values: [`ap:${id}`, `ap:${id}`, `ap:${id}`, `ap:${id}`],
+    },
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,'folder',1,1)`,
+      values: [destination, f.ids.space, f.ids.user, f.ids.folder, "Target", "target"],
+    },
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+        VALUES(?,?,?,?,?,1),(?,?,?,?,?,1)`,
+      values: [
+        f.ids.file,
+        f.ids.space,
+        sourceSearch.textNorm,
+        sourceSearch.tokens,
+        sourceSearch.version,
+        destination,
+        f.ids.space,
+        destinationSearch.textNorm,
+        destinationSearch.tokens,
+        destinationSearch.version,
+      ],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id IN (?,?)",
+      values: [f.ids.file, destination],
+    },
+  ]);
+  const headers = {
+    ...Object.fromEntries(request().headers),
+    Destination: "https://app.invalid/dav/Target/Moved.txt",
+    Overwrite: "F",
+    Depth: "infinity",
+  };
+  const moved = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", { method: "MOVE", headers }),
+    admittedDavEnv(),
+    1,
+    ring,
+  );
+  expect(moved.status).toBe(201);
+  expect(moved.headers.get("Location")).toBe("/dav/Target/Moved.txt");
+  expect(
+    await env.DB.prepare("SELECT parent_id,name FROM nodes WHERE id=?").bind(f.ids.file).first(),
+  ).toEqual({ parent_id: destination, name: "Moved.txt" });
+  expect(
+    await handleDavHttp(
+      new Request("https://app.invalid/dav/Target/Moved.txt", {
+        method: "MOVE",
+        headers: {
+          ...headers,
+          Destination: "https://app.invalid/dav/Target/Moved.txt",
+          Overwrite: "T",
+        },
+      }),
+      admittedDavEnv(),
+      1,
+      ring,
+    ),
+  ).toMatchObject({ status: 403 });
+  expect(
+    await handleDavHttp(
+      new Request("https://app.invalid/dav/Target/Moved.txt", {
+        method: "MOVE",
+        headers: { ...headers, Destination: "https://other.invalid/dav/stolen" },
+      }),
+      admittedDavEnv(),
+      1,
+      ring,
+    ),
+  ).toMatchObject({ status: 400 });
+
+  const secondSource = `${f.ids.folder}-move-source-2`;
+  const overwritten = `${f.ids.folder}-overwrite-target`;
+  const secondSearch = searchName("Second source");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,'folder',1,1),(?,?,?,?,?,?,'folder',1,1)`,
+      values: [
+        secondSource,
+        f.ids.space,
+        f.ids.user,
+        f.ids.folder,
+        "Second source",
+        "second source",
+        overwritten,
+        f.ids.space,
+        f.ids.user,
+        destination,
+        "Existing",
+        "existing",
+      ],
+    },
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+        VALUES(?,?,?,?,?,1)`,
+      values: [
+        secondSource,
+        f.ids.space,
+        secondSearch.textNorm,
+        secondSearch.tokens,
+        secondSearch.version,
+      ],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [secondSource],
+    },
+  ]);
+  const replaced = await handleDavHttp(
+    new Request("https://app.invalid/dav/Second%20source", {
+      method: "MOVE",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        Destination: "https://app.invalid/dav/Target/Existing",
+        Overwrite: "T",
+      },
+    }),
+    admittedDavEnv(),
+    1,
+    ring,
+  );
+  expect(replaced.status).toBe(204);
+  expect(
+    await env.DB.prepare("SELECT parent_id,name,deleted_at FROM nodes WHERE id=?")
+      .bind(secondSource)
+      .first(),
+  ).toEqual({ parent_id: destination, name: "Existing", deleted_at: null });
+  expect(
+    await env.DB.prepare("SELECT deleted_at IS NOT NULL AS deleted FROM nodes WHERE id=?")
+      .bind(overwritten)
+      .first("deleted"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare("SELECT state FROM trash_ops WHERE root_node_id=?")
+      .bind(overwritten)
+      .first("state"),
+  ).toBe("trashed");
 });

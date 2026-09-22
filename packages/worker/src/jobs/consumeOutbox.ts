@@ -66,7 +66,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
         ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(row.op_kind)) ||
       (row.kind === "node.updated" && row.op_kind === "dav.put") ||
       (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
-      (row.kind === "node.renamed" && row.op_kind === "node.rename")
+      (row.kind === "node.renamed" && ["node.rename", "dav.move"].includes(row.op_kind))
     ) ||
     row.op_state !== "committed" ||
     !["dispatching", "sent"].includes(row.state)
@@ -77,7 +77,11 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   let parentId: string;
   let nodeId: string | undefined;
   try {
-    const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
+    const operands = JSON.parse(row.operands_json) as {
+      parentId?: unknown;
+      overwriteTargetId?: unknown;
+      nodeId?: unknown;
+    };
     const result = JSON.parse(row.result_json ?? "null") as {
       status?: unknown;
       nodeId?: unknown;
@@ -91,7 +95,11 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
           ? 201
           : row.kind === "node.updated" || row.kind === "node.trashed"
             ? 204
-            : 200)
+            : row.op_kind === "dav.move"
+              ? typeof operands.overwriteTargetId === "string"
+                ? 204
+                : 201
+              : 200)
     )
       return "retry";
     parentId = operands.parentId;

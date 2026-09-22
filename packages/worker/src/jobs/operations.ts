@@ -171,10 +171,16 @@ export function validateClaimAuthorization(
   authorized: AuthorizedNode,
   steps: number,
 ): SqlStatement {
-  const operands = JSON.parse(intent.operands) as { parentId?: unknown; nodeId?: unknown };
+  const operands = JSON.parse(intent.operands) as {
+    parentId?: unknown;
+    overwriteTargetId?: unknown;
+    sourceParentId?: unknown;
+    nodeId?: unknown;
+  };
   const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(intent.kind);
   const contentWrite = intent.kind === "dav.put" && authorized.operation === "node.content.write";
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
+  const move = intent.kind === "dav.move";
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
@@ -188,6 +194,11 @@ export function validateClaimAuthorization(
       authorized.operation === "node.trash" &&
       authorized.node.id === operands.nodeId &&
       authorized.parentId === operands.parentId &&
+      authorized.node.space_id === intent.spaceId) ||
+    (move &&
+      authorized.operation === "node.rename" &&
+      authorized.node.id === operands.nodeId &&
+      authorized.parentId === operands.sourceParentId &&
       authorized.node.space_id === intent.spaceId) ||
     (intent.kind === "node.rename" &&
       authorized.operation === "node.rename" &&
@@ -302,13 +313,19 @@ export async function lookupOperation(
       row.kind !== "dav.lock" &&
       row.kind !== "dav.put" &&
       row.kind !== "dav.delete" &&
+      row.kind !== "dav.move" &&
       row.kind !== "node.trash" &&
       row.kind !== "node.rename" &&
       row.kind !== "dav.proppatch")
   )
     return null;
   try {
-    const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
+    const operands = JSON.parse(row.operands_json) as {
+      parentId?: unknown;
+      overwriteTargetId?: unknown;
+      sourceParentId?: unknown;
+      nodeId?: unknown;
+    };
     const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
     if (create) {
       if (typeof operands.parentId !== "string") return null;
@@ -317,7 +334,7 @@ export async function lookupOperation(
         parentId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else if (row.kind === "node.rename") {
+    } else if (row.kind === "node.rename" || row.kind === "dav.move") {
       if (typeof operands.parentId !== "string") return null;
       if (typeof operands.nodeId !== "string") return null;
       const authorized = await authorizeNode(db, principal, {
@@ -325,7 +342,11 @@ export async function lookupOperation(
         nodeId: operands.nodeId,
         spaceId: row.space_id,
       });
-      if (authorized.operation !== "node.rename" || authorized.parentId !== operands.parentId)
+      const expectedParent =
+        row.kind === "dav.move" && row.state !== "committed"
+          ? operands.sourceParentId
+          : operands.parentId;
+      if (authorized.operation !== "node.rename" || authorized.parentId !== expectedParent)
         return null;
     } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
       if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
@@ -373,13 +394,22 @@ export async function lookupOperation(
           : 201
         : row.kind === "dav.delete" || row.kind === "node.trash"
           ? 204
-          : create
-            ? 201
-            : row.kind === "dav.proppatch"
-              ? 207
-              : 200;
+          : row.kind === "dav.move"
+            ? typeof operands.overwriteTargetId === "string"
+              ? 204
+              : 201
+            : create
+              ? 201
+              : row.kind === "dav.proppatch"
+                ? 207
+                : 200;
     if (result && result.status !== expectedStatus) return null;
-    if (result && row.kind === "node.rename" && result.nodeId !== operands.nodeId) return null;
+    if (
+      result &&
+      (row.kind === "node.rename" || row.kind === "dav.move") &&
+      result.nodeId !== operands.nodeId
+    )
+      return null;
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (result && typeof result.nodeId === "string") {
       try {

@@ -6,6 +6,7 @@ import { beforeAll, beforeEach, expect, it } from "vitest";
 import { handleNodeMutationHttp, nodeMutationRoute } from "../../src/api/nodeMutations";
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
+import { lockTokenHashes } from "../../src/auth/locks";
 import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
@@ -13,6 +14,7 @@ import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { claimOperation, operationIntent } from "../../src/jobs/operations";
 import { commitMutationStatements } from "../../src/services/fsMutation";
+import { moveNode } from "../../src/services/moveNode";
 import {
   RENAME_NODE_STEPS,
   renameMutationPlan,
@@ -108,6 +110,8 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
         return {
           acquireRename: (request: Parameters<LockDO["acquireRename"]>[0]) =>
             invoke((lock) => lock.acquireRename(request)),
+          acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
+            invoke((lock) => lock.acquireMove(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -169,6 +173,172 @@ it("renames through the private HTTP bridge and replays its operation", async ()
   expect((await send(headers, body.replace("HTTP 経由の名前", "別名"))).status).toBe(409);
 });
 
+it("moves a bounded subtree between folders and publishes one atomic operation", async () => {
+  const { f, principal } = await seeded();
+  const destination = `${f.ids.folder}-destination`;
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,'folder',1,1)`,
+      values: [destination, f.ids.space, f.ids.user, f.ids.root, "Destination", "destination"],
+    },
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+        VALUES(?,?,?,?,?,1)`,
+      values: [destination, f.ids.space, "destination", "destination", "unicode-nfkc-casefold-v1"],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [destination],
+    },
+  ]);
+  const request = {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.folder,
+    destinationParentId: destination,
+    name: "Moved folder",
+    lockTokens: [],
+  };
+  const result = await moveNode(admitted(), request);
+  expect(result).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed", result: { status: 201, nodeId: f.ids.folder } },
+  });
+  expect(
+    await env.DB.prepare("SELECT parent_id,name,revision FROM nodes WHERE id=?")
+      .bind(f.ids.folder)
+      .first(),
+  ).toEqual({ parent_id: destination, name: "Moved folder", revision: 2 });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM nodes WHERE id IN (?,?) AND revision=2")
+      .bind(f.ids.root, destination)
+      .first("COUNT(*)"),
+  ).toBe(2);
+  expect(
+    await env.DB.prepare("SELECT tree_generation FROM spaces WHERE id=?")
+      .bind(f.ids.space)
+      .first("tree_generation"),
+  ).toBe(2);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM operation_steps WHERE op_id=?")
+      .bind(result.kind === "terminal" ? result.operation.id : "")
+      .first("COUNT(*)"),
+  ).toBe(19);
+  const outboxId = `${result.kind === "terminal" ? result.operation.id : ""}_event`;
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE outbox_id=?")
+    .bind(outboxId)
+    .run();
+  expect(await consumeOutbox(env.DB, outboxId)).toBe("completed");
+  expect(await moveNode(admitted(), request)).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed" },
+  });
+});
+
+it("atomically replaces a locked MOVE target and replays after the target is trashed", async () => {
+  const { f, principal } = await seeded();
+  const overwritten = `${f.ids.folder}-overwritten`;
+  await env.DB.prepare(`INSERT INTO nodes(
+      id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,'folder',1,1)`)
+    .bind(overwritten, f.ids.space, f.ids.user, f.ids.root, "Existing", "existing")
+    .run();
+  const runtime = admitted();
+  const lock = runtime.LOCKS.get(runtime.LOCKS.idFromName(f.ids.space));
+  const initializeId = crypto.randomUUID();
+  const initializePermit = await lock.acquireRename({
+    requestId: initializeId,
+    spaceId: f.ids.space,
+    nodeId: f.ids.folder,
+    principal,
+    lockTokens: [],
+  });
+  await lock.release(initializeId, initializePermit);
+  const token = `opaquelocktoken:${crypto.randomUUID()}`;
+  const [hash] = await lockTokenHashes([token]);
+  await env.DB.prepare(`INSERT INTO locks(
+      id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at
+    ) VALUES(?,?,?,?,?,'/dav/Existing','infinity','owner',1,?)`)
+    .bind(
+      `lock-${crypto.randomUUID()}`,
+      overwritten,
+      f.ids.space,
+      f.ids.credential,
+      hash,
+      Date.now() + 60_000,
+    )
+    .run();
+  const request = {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.folder,
+    destinationParentId: f.ids.root,
+    overwriteTargetId: overwritten,
+    name: "Existing",
+    lockTokens: [] as string[],
+  };
+  await expect(moveNode(runtime, request)).rejects.toThrow("dav_locked");
+  const moved = await moveNode(runtime, { ...request, lockTokens: [token] });
+  expect(moved).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed", result: { status: 204, nodeId: f.ids.folder } },
+  });
+  expect(
+    await env.DB.prepare("SELECT parent_id,name FROM nodes WHERE id=?").bind(f.ids.folder).first(),
+  ).toEqual({ parent_id: f.ids.root, name: "Existing" });
+  expect(
+    await env.DB.prepare("SELECT deleted_at IS NOT NULL AS deleted FROM nodes WHERE id=?")
+      .bind(overwritten)
+      .first("deleted"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM locks WHERE node_id=?")
+      .bind(overwritten)
+      .first("COUNT(*)"),
+  ).toBe(0);
+  expect(await moveNode(runtime, { ...request, lockTokens: [token] })).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed", result: { status: 204 } },
+  });
+  await expect(
+    moveNode(runtime, { ...request, name: "Different", lockTokens: [token] }),
+  ).rejects.toThrow("idempotency_conflict");
+});
+
+it("rejects moving a collection into its own descendant without changing the tree", async () => {
+  const { f, principal } = await seeded();
+  const descendant = `${f.ids.folder}-descendant`;
+  await env.DB.prepare(`INSERT INTO nodes(
+      id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,'folder',1,1)`)
+    .bind(descendant, f.ids.space, f.ids.user, f.ids.folder, "Descendant", "descendant")
+    .run();
+  const before = await env.DB.prepare("SELECT tree_generation FROM spaces WHERE id=?")
+    .bind(f.ids.space)
+    .first("tree_generation");
+  const result = await moveNode(admitted(), {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.folder,
+    destinationParentId: descendant,
+    name: "cycle",
+    lockTokens: [],
+  });
+  expect(result).toMatchObject({ kind: "terminal", operation: { state: "failed" } });
+  expect(
+    await env.DB.prepare("SELECT parent_id,name FROM nodes WHERE id=?").bind(f.ids.folder).first(),
+  ).toEqual({ parent_id: f.ids.root, name: "元の名前" });
+  expect(
+    await env.DB.prepare("SELECT tree_generation FROM spaces WHERE id=?")
+      .bind(f.ids.space)
+      .first("tree_generation"),
+  ).toBe(before);
+});
+
 it("renames through LockDO and replays the same idempotency key", async () => {
   const { f, principal } = await seeded();
   const request = {
@@ -224,13 +394,15 @@ it("atomically renames a node and replaces its search terms, with one terminal r
       .first("tree_generation"),
   ).toBe(2);
   expect(
-    await env.DB.prepare("SELECT COUNT(*) FROM search_fts WHERE search_fts MATCH ?")
-      .bind('tokens:"元の"')
+    await env.DB.prepare(`SELECT COUNT(*) FROM search_fts WHERE rowid=(
+      SELECT rowid FROM search_index WHERE node_id=?) AND search_fts MATCH ?`)
+      .bind(f.ids.folder, 'tokens:"元の"')
       .first("COUNT(*)"),
   ).toBe(0);
   expect(
-    await env.DB.prepare("SELECT COUNT(*) FROM search_fts WHERE search_fts MATCH ?")
-      .bind('tokens:"新し"')
+    await env.DB.prepare(`SELECT COUNT(*) FROM search_fts WHERE rowid=(
+      SELECT rowid FROM search_index WHERE node_id=?) AND search_fts MATCH ?`)
+      .bind(f.ids.folder, 'tokens:"新し"')
       .first("COUNT(*)"),
   ).toBe(1);
   expect(

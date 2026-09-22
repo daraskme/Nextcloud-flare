@@ -236,7 +236,7 @@ export async function failStaleRecoveryOutbox(
       WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
         (b.kind='node.updated' AND o.kind='dav.put') OR
         (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-        (b.kind='node.renamed' AND o.kind='node.rename'))
+        (b.kind='node.renamed' AND o.kind IN ('node.rename','dav.move')))
         AND b.state IN ('pending','dispatching','sent')
         AND o.state='committed' AND o.epoch=b.epoch
         AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
@@ -263,7 +263,7 @@ export async function failStaleRecoveryOutbox(
                 AND ((outbox.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
                   (outbox.kind='node.updated' AND o.kind='dav.put') OR
                   (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-                  (outbox.kind='node.renamed' AND o.kind='node.rename'))
+                  (outbox.kind='node.renamed' AND o.kind IN ('node.rename','dav.move')))
                 AND o.state='committed' AND o.epoch=outbox.epoch
                 AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
                   AND s.kind='node' AND s.affected_id=outbox.payload_ref))
@@ -494,7 +494,8 @@ export async function inspectRecoveryPage(
           (row.kind === "node.updated" && row.operation_kind === "dav.put") ||
           (row.kind === "node.trashed" &&
             ["node.trash", "dav.delete"].includes(row.operation_kind ?? "")) ||
-          (row.kind === "node.renamed" && row.operation_kind === "node.rename")
+          (row.kind === "node.renamed" &&
+            ["node.rename", "dav.move"].includes(row.operation_kind ?? ""))
         ) ||
         row.node_step_id !== row.payload_ref
       )
@@ -502,6 +503,7 @@ export async function inspectRecoveryPage(
       try {
         const operands = JSON.parse(row.operands_json ?? "null") as {
           parentId?: unknown;
+          overwriteTargetId?: unknown;
           nodeId?: unknown;
         } | null;
         const result = JSON.parse(row.result_json ?? "null") as {
@@ -521,7 +523,11 @@ export async function inspectRecoveryPage(
               ? 201
               : row.kind === "node.updated" || row.kind === "node.trashed"
                 ? 204
-                : 200)
+                : row.operation_kind === "dav.move"
+                  ? typeof operands.overwriteTargetId === "string"
+                    ? 204
+                    : 201
+                  : 200)
         )
           throw new Error("recovery_outbox_provenance_mismatch");
       } catch {

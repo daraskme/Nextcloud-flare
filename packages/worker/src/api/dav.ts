@@ -8,10 +8,17 @@ import {
   parseDavPath,
   resolveDavCreateParent,
   resolveDavCredentialPath,
+  resolveDavMoveNode,
   resolveDavNode,
   resolveDavPropsNode,
+  resolveDavTransferDestination,
 } from "../dav/path";
 import { propfindResponse } from "../dav/propfind";
+import {
+  parseDavDestination,
+  parseDavOverwrite,
+  parseDavTransferDepth,
+} from "../dav/transferProtocol";
 import {
   type ProppatchChange,
   parseLockinfoRequest,
@@ -22,6 +29,7 @@ import type { Env } from "../env";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 import { createFolder } from "../services/createFolder";
 import { createLockedEmptyFile } from "../services/createLockedFile";
+import { moveNode } from "../services/moveNode";
 import { proppatch } from "../services/proppatch";
 import { DAV_PUT_MAX_BYTES, putFile } from "../services/putFile";
 import { trashNode } from "../services/trashNode";
@@ -112,7 +120,10 @@ export async function handleDavHttp(
   pepper: AppPasswordPepperRing | undefined,
 ): Promise<Response> {
   const url = new URL(request.url);
-  let resolved: Awaited<ReturnType<typeof resolveDavNode>> | undefined;
+  let resolved:
+    | Awaited<ReturnType<typeof resolveDavNode>>
+    | Awaited<ReturnType<typeof resolveDavMoveNode>>
+    | undefined;
   if (
     !davPath(request) ||
     !METHODS.has(request.method) ||
@@ -313,7 +324,13 @@ export async function handleDavHttp(
       return problem(503, "not_ready");
     }
   }
-  if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY", "MOVE"].includes(request.method)) {
+  if (request.method === "MOVE") {
+    try {
+      resolved = await resolveDavMoveNode(env.DB, principal, path);
+    } catch {
+      return problem(404, "not_found");
+    }
+  } else if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY"].includes(request.method)) {
     try {
       resolved = await resolveDavNode(env.DB, principal, path);
     } catch {
@@ -365,6 +382,76 @@ export async function handleDavHttp(
       return problem(503, "not_ready");
     }
   }
+  if (request.method === "MOVE") {
+    if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
+    if (request.body || request.headers.has("Lock-Token")) return problem(400, "bad_request");
+    try {
+      const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
+      parseDavTransferDepth("MOVE", request.headers.get("Depth"));
+      const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
+      const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
+      if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
+      if (target.target && !overwrite) return problem(412, "precondition_failed");
+      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const outcome = await moveNode(env, {
+        principal,
+        requestId: crypto.randomUUID(),
+        spaceId: resolved.node.space_id,
+        nodeId: resolved.node.id,
+        destinationParentId: target.parent.parent.id,
+        ...(target.target ? { overwriteTargetId: target.target.node.id } : {}),
+        name: target.name.name,
+        lockTokens,
+      });
+      if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
+        const response = problem(503, "commit_unknown");
+        response.headers.set(
+          "Operation-Id",
+          outcome.kind === "commit_unknown" ? outcome.operationId : outcome.operation.id,
+        );
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      if (outcome.operation.state === "failed")
+        return outcome.operation.errorCode === "name_conflict"
+          ? problem(412, "precondition_failed")
+          : problem(409, "conflict");
+      return new Response(null, {
+        status: target.target ? 204 : 201,
+        headers: {
+          "Cache-Control": "private, no-store",
+          ...(target.target ? {} : { Location: new URL(destination.href).pathname }),
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "invalid_dav_destination",
+          "invalid_dav_depth",
+          "invalid_dav_overwrite",
+          "invalid_dav_if",
+          "invalid_name",
+          "name_too_long",
+          "reserved_name",
+        ].includes(error.message)
+      )
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_transfer_too_large")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+      if (error instanceof Error && error.message === "dav_cross_space_move")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "invalid_move_authorization")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "authorization_denied")
+        return problem(404, "not_found");
+      return problem(503, "not_ready");
+    }
+  }
   if (request.method === "OPTIONS") {
     try {
       await resolveDavCredentialPath(env.DB, principal, path);
@@ -374,7 +461,7 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+        Allow: "OPTIONS, GET, HEAD, PUT, DELETE, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",

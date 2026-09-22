@@ -107,6 +107,24 @@ export async function resolveDavPropsNode(db: D1Database, principal: Principal, 
   }
 }
 
+/** Resolve a MOVE source with write authority, including write-only app passwords. */
+export async function resolveDavMoveNode(db: D1Database, principal: Principal, path: DavPath) {
+  if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  const row = await davPathRow(db, principal, path);
+  try {
+    const proof = await authorizeNode(db, principal, {
+      operation: "node.rename",
+      nodeId: row.id,
+      spaceId: row.spaceId,
+    });
+    if (proof.operation !== "node.rename") throw new Error("dav_node_unavailable");
+    await assertDavPath(db, principal, path, row, authorizationAssertion(proof));
+    return proof;
+  } catch {
+    throw new Error("dav_node_unavailable");
+  }
+}
+
 async function findDavPathRow(db: D1Database, principal: UserPrincipal, path: DavPath) {
   const names = JSON.stringify(path.segments.map((segment) => segment.nameCi));
   const values = [principal.credential_id, principal.user_id, principal.epoch, names] as const;
@@ -188,6 +206,36 @@ export async function resolveDavCreateParent(db: D1Database, principal: Principa
     if (proof.operation !== "node.create") throw new Error("dav_node_unavailable");
     await assertDavPath(db, principal, path, row, authorizationAssertion(proof));
     return proof;
+  } catch {
+    throw new Error("dav_node_unavailable");
+  }
+}
+
+/** Resolve a COPY/MOVE destination parent and an optional live overwrite target. */
+export async function resolveDavTransferDestination(
+  db: D1Database,
+  principal: Principal,
+  path: DavPath,
+) {
+  if (principal.kind !== "app_password" || path.segments.length === 0)
+    throw new Error("dav_node_unavailable");
+  const parentPath: DavPath = {
+    segments: path.segments.slice(0, -1),
+    trailingSlash: true,
+  };
+  const parent = await resolveDavCreateParent(db, principal, parentPath);
+  const row = await findDavPathRow(db, principal, path);
+  if (!row) return Object.freeze({ parent, target: null, name: path.segments.at(-1)! });
+  try {
+    const target = await authorizeNode(db, principal, {
+      operation: "node.trash",
+      nodeId: row.id,
+      spaceId: row.spaceId,
+    });
+    if (target.operation !== "node.trash" || target.parentId !== parent.parent.id)
+      throw new Error("dav_node_unavailable");
+    await assertDavPath(db, principal, path, row, authorizationAssertion(target));
+    return Object.freeze({ parent, target, name: path.segments.at(-1)! });
   } catch {
     throw new Error("dav_node_unavailable");
   }
