@@ -2,7 +2,7 @@ import { authorizationAssertion, authorizeNode, type Principal } from "../auth/a
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
-export type ConsumeResult = "completed" | "retry";
+export type ConsumeResult = "completed" | "failed" | "retry";
 
 interface EventRow {
   state: string;
@@ -57,6 +57,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   if (!outboxId || outboxId.length > 128) return "retry";
   const row = await eventRow(db, outboxId);
   if (row?.state === "completed") return "completed";
+  if (row?.state === "failed") return "failed";
   if (
     !row ||
     row.kind !== "node.created" ||

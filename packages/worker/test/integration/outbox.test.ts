@@ -251,6 +251,18 @@ it("acks only completed IDs and retries invalid or unavailable deliveries", asyn
   expect(absent.counts()).toEqual({ acked: 0, retried: 1 });
 });
 
+it("acks a durable failed event after recovery without replaying it", async () => {
+  const f = await fixture();
+  await env.DB.prepare("UPDATE outbox SET state='failed' WHERE outbox_id=?").bind(f.id).run();
+  expect(await consumeOutbox(env.DB, f.id)).toBe("failed");
+  const stale = delivery({ outboxId: f.id });
+  expect(await handleOutboxBatch(env.DB, { messages: [stale.message] })).toEqual({
+    acked: 1,
+    retried: 0,
+  });
+  expect(stale.counts()).toEqual({ acked: 1, retried: 0 });
+});
+
 it("routes Queue deliveries only when ControlDO and D1 agree on admission", async () => {
   const f = await dispatchedEvent();
   const first = delivery({ outboxId: f.id });

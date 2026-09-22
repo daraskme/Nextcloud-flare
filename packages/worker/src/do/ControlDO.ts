@@ -10,6 +10,7 @@ import {
   recoverEpochFloor,
 } from "./epochHistory";
 import {
+  failStaleRecoveryOutbox,
   inspectRecoveryFinalFence,
   inspectRecoveryPage,
   type RecoveryCursor,
@@ -236,6 +237,17 @@ export class ControlDO extends DurableObject<Env> {
     if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
     const released = await releaseStaleRecoveryReservations(this.env.DB, expectedEpoch, limit);
     return { released, audit: await this.beginRecoveryAudit(expectedEpoch) };
+  }
+
+  /** Bounded old-epoch notification repair; other event kinds require their own cleanup. */
+  async failStaleOutbox(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ failed: number; audit: RecoveryAuditStatus }> {
+    const stopped = await this.quiesce(expectedEpoch);
+    if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
+    const failed = await failStaleRecoveryOutbox(this.env.DB, expectedEpoch, limit);
+    return { failed, audit: await this.beginRecoveryAudit(expectedEpoch) };
   }
 
   /** Checks one page; a failed page leaves the durable cursor unchanged. */

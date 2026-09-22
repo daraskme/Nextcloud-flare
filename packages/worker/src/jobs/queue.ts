@@ -28,7 +28,8 @@ export async function handleOutboxBatch(
   for (const message of batch.messages) {
     try {
       const id = outboxId(message.body);
-      if (id && (await consumeOutbox(db, id)) === "completed") {
+      const result = id ? await consumeOutbox(db, id) : "retry";
+      if (result === "completed" || result === "failed") {
         message.ack();
         acked++;
         continue;

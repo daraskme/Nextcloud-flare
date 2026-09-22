@@ -188,6 +188,64 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
   if (ready === null) throw new Error("recovery_final_fence_pending");
 }
 
+/** Old-epoch node.created notifications cannot be safely replayed after recovery. */
+export async function failStaleRecoveryOutbox(
+  db: D1Database,
+  epoch: number,
+  limit = 20,
+): Promise<number> {
+  epochNumber(epoch);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+    throw new Error("invalid_recovery_limit");
+  await assertQuiesced(db, epoch);
+  const clock = "strftime('%s','now')*1000";
+  const rows = await primary(db)
+    .prepare(`SELECT b.outbox_id FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      WHERE b.epoch<? AND b.kind='node.created' AND b.state IN ('pending','dispatching','sent')
+        AND o.kind='node.create' AND o.state='committed' AND o.epoch=b.epoch
+        AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
+          AND s.step_no=1 AND s.kind='node' AND s.affected_id=b.payload_ref)
+        AND ((b.state='pending') OR (b.dispatch_token IS NOT NULL AND b.dispatch_expires_at IS NOT NULL))
+        AND ((b.claim_token IS NULL AND b.claim_expires_at IS NULL) OR
+          (b.claim_token IS NOT NULL AND b.claim_expires_at<=${clock}))
+      ORDER BY b.outbox_id LIMIT ?`)
+    .bind(epoch, limit)
+    .all<{ outbox_id: string }>();
+  let failed = 0;
+  for (const { outbox_id } of rows.results) {
+    try {
+      await atomicBatch(db, [
+        {
+          sql: `UPDATE outbox SET state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
+            claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
+            WHERE outbox_id=? AND epoch<? AND kind='node.created'
+              AND state IN ('pending','dispatching','sent')
+              AND ((state='pending') OR (dispatch_token IS NOT NULL AND dispatch_expires_at IS NOT NULL))
+              AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
+                (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
+              AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
+                AND o.kind='node.create' AND o.state='committed' AND o.epoch=outbox.epoch
+                AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
+                  AND s.step_no=1 AND s.kind='node' AND s.affected_id=outbox.payload_ref))
+              AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?
+                AND maintenance=1 AND gc_paused=1)`,
+          values: [outbox_id, epoch, epoch],
+        },
+        assertOneChange,
+      ]);
+    } catch (error) {
+      const terminal = await primary(db)
+        .prepare("SELECT 1 FROM outbox WHERE outbox_id=? AND epoch<? AND state='failed'")
+        .bind(outbox_id, epoch)
+        .first<number>();
+      if (terminal === null) throw error;
+    }
+    failed++;
+  }
+  await assertQuiesced(db, epoch);
+  return failed;
+}
+
 /** Release only old-epoch reservations with no upload still needing data cleanup. */
 export async function releaseStaleRecoveryReservations(
   db: D1Database,
