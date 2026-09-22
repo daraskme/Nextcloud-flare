@@ -18,13 +18,14 @@ interface EventRow {
   credential_version: number | null;
   space_id: string;
   operands_json: string;
+  result_json: string | null;
 }
 
 async function eventRow(db: D1Database, id: string): Promise<EventRow | null> {
   return primary(db)
     .prepare(`SELECT b.state,b.kind,b.payload_ref,b.epoch,o.op_id,o.kind AS op_kind,
       o.state AS op_state,o.principal_kind,o.principal_id,o.credential_id,
-      o.credential_version,o.space_id,o.operands_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      o.credential_version,o.space_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
       WHERE b.outbox_id=?`)
     .bind(id)
     .first<EventRow>();
@@ -74,12 +75,24 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   let nodeId: string | undefined;
   try {
     const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
+    const result = JSON.parse(row.result_json ?? "null") as {
+      status?: unknown;
+      nodeId?: unknown;
+    } | null;
     if (typeof operands.parentId !== "string") return "retry";
+    if (
+      !result ||
+      result.nodeId !== row.payload_ref ||
+      result.status !== (row.kind === "node.created" ? 201 : 200)
+    )
+      return "retry";
     parentId = operands.parentId;
     if (row.kind === "node.renamed") {
       if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
         return "retry";
       nodeId = operands.nodeId;
+    } else if (operands.nodeId !== undefined) {
+      return "retry";
     }
   } catch {
     return "retry";
@@ -113,9 +126,19 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
-                AND o.kind=? AND s.step_no=1 AND s.kind='node'
+                AND o.kind=? AND o.operands_json=? AND o.result_json=?
+                AND s.step_no=1 AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
-        values: [token, OUTBOX_CLAIM_LEASE_MS, outboxId, row.epoch, row.epoch, row.op_kind],
+        values: [
+          token,
+          OUTBOX_CLAIM_LEASE_MS,
+          outboxId,
+          row.epoch,
+          row.epoch,
+          row.op_kind,
+          row.operands_json,
+          row.result_json,
+        ],
       },
       assertOneChange,
     ]);
@@ -128,9 +151,18 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
-                AND o.kind=? AND s.step_no=1 AND s.kind='node'
+                AND o.kind=? AND o.operands_json=? AND o.result_json=?
+                AND s.step_no=1 AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
-        values: [outboxId, token, row.epoch, row.epoch, row.op_kind],
+        values: [
+          outboxId,
+          token,
+          row.epoch,
+          row.epoch,
+          row.op_kind,
+          row.operands_json,
+          row.result_json,
+        ],
       },
       assertOneChange,
     ]);

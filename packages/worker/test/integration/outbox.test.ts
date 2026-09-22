@@ -22,15 +22,15 @@ beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
 
-async function fixture() {
+async function fixture(result?: { status: number; nodeId?: string }) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   await atomicBatch(env.DB, f.statements);
   const permit = await grantPermit(env.DB, crypto.randomUUID(), f.ids.space, 1);
   const id = crypto.randomUUID();
   await atomicBatch(env.DB, [
     {
-      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,operands_json)
-      VALUES(?,'user',?,?,?,'node.create','committed','digest',1,?,?,?,0,1,1,?)`,
+      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+      VALUES(?,'user',?,?,?,'node.create','committed','digest',1,?,?,?,0,1,1,?,?)`,
       values: [
         id,
         f.ids.user,
@@ -40,6 +40,7 @@ async function fixture() {
         permit.expires_at,
         permit.expires_at,
         JSON.stringify({ parentId: f.ids.root }),
+        JSON.stringify({ status: result?.status ?? 201, nodeId: result?.nodeId ?? f.ids.folder }),
       ],
     },
     {
@@ -214,6 +215,18 @@ it("claims and completes a current event, then accepts duplicate delivery", asyn
   ).toBe("completed");
 });
 
+it.each([{ status: 200 }, { status: 201, nodeId: "wrong" }])(
+  "does not complete an event with a mismatched saved result %j",
+  async (result) => {
+    const f = await fixture(result);
+    expect(await dispatchOutbox(env.DB, sender().queue, f.id, 1)).toBe("sent");
+    expect(await consumeOutbox(env.DB, f.id)).toBe("retry");
+    expect(
+      await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
+    ).toBe("sent");
+  },
+);
+
 it("keeps the original event valid after a later node mutation", async () => {
   const f = await dispatchedEvent();
   await env.DB.prepare("UPDATE nodes SET last_op_id=? WHERE id=?")
@@ -355,8 +368,8 @@ it("uses the saved create scope for a share that has no read action", async () =
       values: [credentialId, sessionId],
     },
     {
-      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,operands_json)
-        VALUES(?,'link_share',?,?,1,?,'node.create','committed','share',1,?,?,?,0,1,1,?)`,
+      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+        VALUES(?,'link_share',?,?,1,?,'node.create','committed','share',1,?,?,?,0,1,1,?,?)`,
       values: [
         eventId,
         shareId,
@@ -366,6 +379,7 @@ it("uses the saved create scope for a share that has no read action", async () =
         permit.permit_expires_at,
         permit.permit_expires_at,
         JSON.stringify({ parentId: f.ids.root }),
+        JSON.stringify({ status: 201, nodeId: f.ids.folder }),
       ],
     },
     {

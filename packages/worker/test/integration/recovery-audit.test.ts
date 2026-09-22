@@ -321,6 +321,8 @@ it("checks outbox provenance and dispatch lease shape", async () => {
   const renameOutboxId = crypto.randomUUID();
   const wrongKindId = crypto.randomUUID();
   const wrongTargetId = crypto.randomUUID();
+  const wrongResultOpId = crypto.randomUUID();
+  const wrongResultOutboxId = crypto.randomUUID();
   const failedOpId = crypto.randomUUID();
   const failedOutboxId = crypto.randomUUID();
   const permitId = crypto.randomUUID();
@@ -331,9 +333,17 @@ it("checks outbox provenance and dispatch lease shape", async () => {
     .run();
   await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
     credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
-    claimed_expires_at,expected_steps,created_at,updated_at)
-    VALUES(?,'user',?,?,1,?,'node.create','committed','digest',1,?,1,1,0,1,1)`)
-    .bind(opId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
+    claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+    VALUES(?,'user',?,?,1,?,'node.create','committed','digest',1,?,1,1,0,1,1,?,?)`)
+    .bind(
+      opId,
+      fixture.ids.user,
+      fixture.ids.credential,
+      fixture.ids.space,
+      permitId,
+      JSON.stringify({ parentId: fixture.ids.root }),
+      JSON.stringify({ status: 201, nodeId: fixture.ids.folder }),
+    )
     .run();
   await env.DB.prepare(
     "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
@@ -346,9 +356,17 @@ it("checks outbox provenance and dispatch lease shape", async () => {
     .run();
   await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
     credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
-    claimed_expires_at,expected_steps,created_at,updated_at)
-    VALUES(?,'user',?,?,1,?,'node.rename','committed','digest',1,?,1,1,0,1,1)`)
-    .bind(renameOpId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
+    claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+    VALUES(?,'user',?,?,1,?,'node.rename','committed','digest',1,?,1,1,0,1,1,?,?)`)
+    .bind(
+      renameOpId,
+      fixture.ids.user,
+      fixture.ids.credential,
+      fixture.ids.space,
+      permitId,
+      JSON.stringify({ parentId: fixture.ids.root, nodeId: fixture.ids.folder }),
+      JSON.stringify({ status: 200, nodeId: fixture.ids.folder }),
+    )
     .run();
   await env.DB.prepare(
     "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
@@ -381,6 +399,35 @@ it("checks outbox provenance and dispatch lease shape", async () => {
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(wrongTargetId).run();
     await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
       credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
+      claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+      VALUES(?,'user',?,?,1,?,'node.create','committed','digest',1,?,1,1,0,1,1,?,?)`)
+      .bind(
+        wrongResultOpId,
+        fixture.ids.user,
+        fixture.ids.credential,
+        fixture.ids.space,
+        permitId,
+        JSON.stringify({ parentId: fixture.ids.root }),
+        JSON.stringify({ status: 201, nodeId: fixture.ids.root }),
+      )
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+    )
+      .bind(wrongResultOpId, fixture.ids.folder)
+      .run();
+    await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+      VALUES(?,?,'node.created',?,'pending',1,1,1)`)
+      .bind(wrongResultOutboxId, wrongResultOpId, fixture.ids.folder)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "outbox", afterId: "" }),
+    ).rejects.toThrow(/recovery_outbox_provenance_mismatch/);
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(wrongResultOutboxId).run();
+    await env.DB.prepare("DELETE FROM operation_steps WHERE op_id=?").bind(wrongResultOpId).run();
+    await env.DB.prepare("DELETE FROM operations WHERE op_id=?").bind(wrongResultOpId).run();
+    await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
+      credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
       claimed_expires_at,expected_steps,created_at,updated_at)
       VALUES(?,'user',?,?,1,?,'node.create','failed','digest',1,?,1,1,0,1,1)`)
       .bind(failedOpId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
@@ -399,6 +446,9 @@ it("checks outbox provenance and dispatch lease shape", async () => {
       inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "outbox", afterId: "" }),
     ).rejects.toThrow(/recovery_outbox_dispatch_mismatch/);
   } finally {
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(wrongResultOutboxId).run();
+    await env.DB.prepare("DELETE FROM operation_steps WHERE op_id=?").bind(wrongResultOpId).run();
+    await env.DB.prepare("DELETE FROM operations WHERE op_id=?").bind(wrongResultOpId).run();
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(failedOutboxId).run();
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(outboxId).run();
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(renameOutboxId).run();

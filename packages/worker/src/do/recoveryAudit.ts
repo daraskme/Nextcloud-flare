@@ -45,6 +45,8 @@ interface OutboxRow {
   operation_epoch: number | null;
   operation_kind: string | null;
   node_step_id: string | null;
+  operands_json: string | null;
+  result_json: string | null;
 }
 
 interface ScopeRoot {
@@ -463,7 +465,7 @@ export async function inspectRecoveryPage(
     const rows = await primary(db)
       .prepare(`SELECT b.outbox_id,b.kind,b.payload_ref,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
         b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch,
-        o.kind AS operation_kind,
+        o.kind AS operation_kind,o.operands_json,o.result_json,
         (SELECT s.affected_id FROM operation_steps s WHERE s.op_id=o.op_id
           AND s.step_no=1 AND s.kind='node') AS node_step_id
       FROM outbox b LEFT JOIN operations o ON o.op_id=b.op_id
@@ -487,6 +489,29 @@ export async function inspectRecoveryPage(
         row.node_step_id !== row.payload_ref
       )
         throw new Error("recovery_outbox_provenance_mismatch");
+      try {
+        const operands = JSON.parse(row.operands_json ?? "null") as {
+          parentId?: unknown;
+          nodeId?: unknown;
+        } | null;
+        const result = JSON.parse(row.result_json ?? "null") as {
+          status?: unknown;
+          nodeId?: unknown;
+        } | null;
+        if (
+          !operands ||
+          typeof operands.parentId !== "string" ||
+          (row.kind === "node.renamed"
+            ? operands.nodeId !== row.payload_ref
+            : operands.nodeId !== undefined) ||
+          !result ||
+          result.nodeId !== row.payload_ref ||
+          result.status !== (row.kind === "node.created" ? 201 : 200)
+        )
+          throw new Error("recovery_outbox_provenance_mismatch");
+      } catch {
+        throw new Error("recovery_outbox_provenance_mismatch");
+      }
       if (
         (row.state === "dispatching" || row.state === "sent") &&
         (!row.dispatch_token || row.dispatch_expires_at === null)

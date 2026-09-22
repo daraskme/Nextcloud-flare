@@ -83,6 +83,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 成功。Node 199 + workerd 303 = **502 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。`node.created` / `node.renamed` の outbox consumer と復旧監査で、通知 payload と保存済み operand/result の一致を確認。誤った結果を持つ event は完了せず、監査も拒否する。ControlDO は maintenance 固定で公開停止。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 301 = **500 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app HTTP の node rename を既存サービスへ接続し、実 LockDO/D1 で CSRF、確定、再送、operation 照会、競合を検証。ControlDO は maintenance 固定で公開停止。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 300 = **499 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。folder 作成と operation 照会の app HTTP route を追加し、実 LockDO/D1 の作成・再送・競合を検証。ControlDO は maintenance 固定で公開停止。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 299 = **498 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app の node 詳細・children 一覧を追加し、201件 keyset、署名 cursor と競合拒否を実 D1 で検証。ControlDO maintenance 固定と remote cursor ring 未設定で実公開は停止。
