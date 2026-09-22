@@ -24,7 +24,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0009`、147 route の契約がある。
+Phase 0 のローカル基盤と Phase 1 の一部。53通常テーブル、migration `0001`〜`0010`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: 改名の D1 一括 mutation、`node.renamed` の outbox 消費と旧 epoch 整理、共有と資格情報 scope root の祖先を検証する復旧監査。content ticket の署名、D1 redemption、Cookie 署名、R2 target manifest と current blob 認可を内部サービスとして接続した。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。監査完了は再開の証明ではなく、ControlDO admission は閉じたまま。

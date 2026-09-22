@@ -57,6 +57,33 @@ it("migrates all 53 normal tables with strict types, explicit PK nullability and
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
+it("limits each owner to 64 unexpired active budgets across insert and reactivation", () => {
+  const future = Date.now() + 600_000;
+  const past = Date.now() - 2_000;
+  const insert = db.prepare(
+    "INSERT INTO budgets(id,owner_id,user_id,epoch,expires_at,state) VALUES(?,'f-u','f-u',1,?,?)",
+  );
+  for (let i = 0; i < 64; i++) insert.run(`budget-${i}`, future, "active");
+  expect(() => insert.run("budget-64", future, "active")).toThrow(/owner_budget_limit/);
+  insert.run("expired-budget", past, "active");
+  insert.run("revoked-budget", future, "revoked");
+  expect(() =>
+    db.exec("UPDATE budgets SET expires_at=9999999999999 WHERE id='expired-budget'"),
+  ).toThrow(/owner_budget_limit/);
+  expect(() => db.exec("UPDATE budgets SET state='active' WHERE id='revoked-budget'")).toThrow(
+    /owner_budget_limit/,
+  );
+  db.exec("UPDATE budgets SET state='revoked' WHERE id='budget-0'");
+  db.exec("UPDATE budgets SET state='active' WHERE id='revoked-budget'");
+  expect(
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM budgets WHERE owner_id='f-u' AND state='active' AND expires_at>?",
+      )
+      .get(Date.now()),
+  ).toMatchObject({ n: 64 });
+});
+
 it("derives the purge order from every FK and excludes FTS virtual/shadow tables from export", () => {
   const tables = exportTables.map((name) => ({
     name,

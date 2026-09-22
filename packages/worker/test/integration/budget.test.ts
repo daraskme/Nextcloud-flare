@@ -7,6 +7,21 @@ import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 
+it("enforces the owner-wide active budget cap in D1", async () => {
+  const f = await fixture(0);
+  const insert = env.DB.prepare(
+    "INSERT INTO budgets(id,owner_id,user_id,epoch,expires_at,state) VALUES(?,?,?,1,?,'active')",
+  );
+  const future = Date.now() + 600_000;
+  for (let i = 1; i < 64; i++)
+    await insert.bind(crypto.randomUUID(), f.f.ids.user, f.f.ids.user, future).run();
+  await expect(
+    insert.bind(crypto.randomUUID(), f.f.ids.user, f.f.ids.user, future).run(),
+  ).rejects.toThrow(/owner_budget_limit/);
+  await env.DB.prepare("UPDATE budgets SET state='revoked' WHERE id=?").bind(f.ids.budget).run();
+  await insert.bind(crypto.randomUUID(), f.f.ids.user, f.f.ids.user, future).run();
+});
+
 async function fixture(totalBytes = 3) {
   const now = Date.now();
   const f = foundationFixture(crypto.randomUUID(), now - 1000);

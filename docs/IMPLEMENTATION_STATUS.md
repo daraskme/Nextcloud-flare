@@ -16,8 +16,8 @@
 | 0.3 streams | FixedLengthStream + DigestStream を直列供給。0B/3B/95,000,000B、長短 mismatch、R2 条件不成立、slow consumer/cancel | ローカル実装済み |
 | 0.3 Range | R2 部分取得、HTTP probe の206/416/HEAD/304、suffix/open-ended/多重 Range の正規化 | ローカル実装済み |
 | 2 immutable blob read 基盤 | current `node.read` assertion と node/blob/物理観測行を同一 D1 batch で照合し、R2 key の owner/blob 束縛、object のサイズ/ETag、D1 content ETag、HEAD/206/304/416、If-Range、MIME/Disposition、no-store/nosniff を内部 helper で処理 | 実 D1/R2 binding と失効競合で検証。purpose、content session、BudgetDO、公開 route は未接続 |
-| 6 content blob read 基盤 | 署名 ticket の D1 現行検査→発行元 ticket 束縛 content session→署名 Cookie→node/blob/R2 manifest と current credential を同一 D1 batch で検証。鍵 rotation と個別 cancel を反映 | private/匿名 share の実 D1/R2、失効・share version・hash 競合、復旧監査で検証。HTTP/CORS 公開 route は未接続 |
-| 6 BudgetDO 基盤 | `budget_id` の SQLite 永続 counter、target bytes×3、1024 requests/10分、8並列、10分 lease/alarm、unknown 全額消費。配信 GET/Range/HEAD/304 の reserve/settle を内部ストリームに接続 | eviction、上限、失効、実 R2 配信を workerd で検証。budget 発行・owner 64件制限、全 route 接続は未完了 |
+| 6 content blob read 基盤 | 署名 ticket の D1 現行検査→発行元 ticket 束縛 content session→署名 Cookie→node/blob/R2 manifest と current credential を同一 D1 batch で検証。鍵 rotation と個別 cancel を反映 | private/匿名 share の実 D1/R2、失効・share version・hash 競合、復旧監査で検証。content/GET/HEAD 以外の経路は未接続 |
+| 6 BudgetDO 基盤 | `budget_id` の SQLite 永続 counter、target bytes×3、1024 requests/10分、8並列、10分 lease/alarm、unknown 全額消費。配信 GET/Range/HEAD/304 の reserve/settle を内部ストリームに接続。D1 trigger で owner あたり active budget 64件を制限 | eviction、上限、失効、実 R2 配信と64/65件境界を workerd で検証。budget 発行・全 route 接続は未完了 |
 | 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 53通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
@@ -76,6 +76,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 196 + workerd 281 = **477 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。migration `0010` で owner ごとの未期限切れ active budget を64件に制限。insert と再有効化の境界、revoke 後の再受付を SQLite と実 D1 binding で検証。budget 発行 API は未接続。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 280 = **475 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content host の POST/OPTIONS ticket 交換と GET/HEAD blob 配信 handler を追加。Cookie→実 R2、CORS、blob ID 不一致、maintenance 中の発行拒否、Worker entry の鍵未設定 gate を検証。実 ControlDO admission とリモート署名鍵は未設定で公開停止。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 279 = **474 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。BudgetDO の SQLite 永続 lease と内部 blob 配信を接続。eviction、known/unknown 精算、8並列、0 byte を含む1024 request、同一ミリ秒の連続 request、alarm、失効 credential、GET/Range/HEAD/304 会計を workerd で検証。後続の修正で期限切れ lease 行の回収と窓更新後の再受付も検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 273 = **468 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。content ticket と Cookie の専用 HS256 kid ring、D1 ticket redemption、`content_sessions.ticket_id` migration、Cookie からの current blob plan を追加。private と匿名 share、cancel/version/rotation を workerd で検証。
