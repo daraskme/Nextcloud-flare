@@ -72,6 +72,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 265 = **460 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。有効な app password と service credential の scope root を space root まで再帰検証し、scope root 自体が残っていても祖先が trash の場合は復旧監査を拒否する。両種を個別に workerd で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 264 = **459 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。復旧監査の共有 root を space root まで再帰検証し、共有 root 自体が残っていても祖先が trash の場合は拒否する。実 `trash_ops` と復元後の監査を workerd で検証。
 - 2026-09-22、`pnpm check` 成功。Node 195 + workerd 264 = **459 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。改名サービスの LockDO→D1→terminal 経路を workerd で検証。同一キー再送は副作用を重複させず、異なる意図とセッション失効を拒否する。
 - 2026-09-22、復旧監査の outbox provenance に `node.created` / `node.renamed` と operation kind、step 1 node ID の対応検査を追加。偽装した kind と payload の拒否を D1 で検証。

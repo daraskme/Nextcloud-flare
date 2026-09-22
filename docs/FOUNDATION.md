@@ -61,6 +61,7 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 
 `failStaleOutbox` は停止中に旧 epoch の `node.created` と `node.renamed` を最大20件ずつ `failed` に収束させ、監査を先頭へ戻す。active claim が残る間は処理しない。旧 epoch の他の event kind は専用 cleanup が必要なため残す。
 outbox の復旧監査は両 kind の元 operation 種別と step 1 の node ID が通知 payload に一致することも確認する。不整合な通知は監査を失敗させる。
+credential の復旧監査では、有効な app password と service の scope root も同じ space root までの生存・所有者・深さを確認する。祖先が trash の場合は資格情報が残っていても監査を失敗させる。
 
 ## Access session
 

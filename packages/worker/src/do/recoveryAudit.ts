@@ -46,6 +46,31 @@ interface OutboxRow {
   node_step_id: string | null;
 }
 
+interface ScopeRoot {
+  root_node_id: string;
+  owner_id: string;
+  space_id: string | null;
+}
+
+async function effectiveLiveScopeRoot(db: D1Database, scope: ScopeRoot): Promise<boolean> {
+  const valid = await primary(db)
+    .prepare(`WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
+      SELECT n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,0,'/'||n.id||'/'
+      FROM nodes n WHERE n.id=? AND n.owner_id=?
+      UNION ALL
+      SELECT p.id,p.parent_id,p.space_id,p.owner_id,p.kind,p.deleted_at,a.depth+1,a.path||p.id||'/'
+      FROM nodes p JOIN a ON p.id=a.parent_id
+      WHERE a.depth<64 AND p.space_id=a.space_id AND p.owner_id=a.owner_id
+        AND instr(a.path,'/'||p.id||'/')=0
+    ) SELECT 1 FROM a JOIN spaces sp ON sp.id=a.space_id AND sp.owner_id=?
+      WHERE (? IS NULL OR sp.id=?) GROUP BY sp.id
+      HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(a.deleted_at IS NULL)=1
+        AND SUM(a.kind='root' AND a.parent_id IS NULL AND a.id=sp.root_node_id)=1`)
+    .bind(scope.root_node_id, scope.owner_id, scope.owner_id, scope.space_id, scope.space_id)
+    .first<number>();
+  return valid !== null;
+}
+
 function validCursor(cursor: RecoveryCursor, limit: number): void {
   if (
     ![
@@ -529,6 +554,20 @@ export async function inspectRecoveryPage(
         .bind(id)
         .first<number>();
       if (valid === null) throw new Error("recovery_credential_mismatch");
+      const scope = await primary(db)
+        .prepare(`SELECT ap.root_node_id,ap.user_id AS owner_id,NULL AS space_id
+          FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+          WHERE c.id=? AND c.kind='app_password' AND ap.revoked_at IS NULL
+            AND ap.root_node_id IS NOT NULL
+          UNION ALL
+          SELECT svc.root_node_id,svc.mapped_user_id AS owner_id,svc.space_id
+          FROM credentials c JOIN service_principals svc ON svc.id=c.service_principal_id
+          WHERE c.id=? AND c.kind='service' AND svc.disabled_at IS NULL
+            AND svc.root_node_id IS NOT NULL`)
+        .bind(id, id)
+        .first<ScopeRoot>();
+      if (scope && !(await effectiveLiveScopeRoot(db, scope)))
+        throw new Error("recovery_credential_mismatch");
     }
     return {
       examined: page.length,

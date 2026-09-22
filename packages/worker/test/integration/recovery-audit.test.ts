@@ -202,6 +202,75 @@ it("rejects a credential registry row with the wrong session kind", async () => 
   }
 });
 
+it("rejects app-password and service scope roots below a trashed ancestor", async () => {
+  const owner = fixtures[0];
+  if (!owner) throw new Error("missing_fixture");
+  const rootId = crypto.randomUUID();
+  const passwordId = crypto.randomUUID();
+  const serviceId = crypto.randomUUID();
+  const trashOpId = crypto.randomUUID();
+  const issuedAt = Date.now();
+  await env.DB.prepare(`INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+    VALUES(?,?,?,?,'Scoped','scoped','folder',1,1)`)
+    .bind(rootId, owner.ids.space, owner.ids.user, owner.ids.folder)
+    .run();
+  await env.DB.prepare(`INSERT INTO app_passwords(id,user_id,root_node_id,name,secret_digest,salt,kdf,kdf_params,kid,created_at,expires_at)
+    VALUES(?,?,?,'recovery','digest','salt','PBKDF2-SHA256','{"iterations":100000}','kid',?,?)`)
+    .bind(passwordId, owner.ids.user, rootId, issuedAt, issuedAt + 60_000)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO credentials(id,kind,app_password_id) VALUES(?,'app_password',?)",
+  )
+    .bind(`ap:${passwordId}`, passwordId)
+    .run();
+  await env.DB.prepare(`INSERT INTO service_principals(id,access_iss,common_name,mapped_user_id,space_id,root_node_id)
+    VALUES(?,'https://access.invalid',?,?,?,?)`)
+    .bind(serviceId, serviceId, owner.ids.user, owner.ids.space, rootId)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO credentials(id,kind,service_principal_id) VALUES(?,'service',?)",
+  )
+    .bind(`sv:${serviceId}`, serviceId)
+    .run();
+  try {
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "credentials", afterId: "" }, 20),
+    ).resolves.toMatchObject({ next: { stage: "credential_sources" } });
+    await env.DB.prepare(`INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,created_at,epoch)
+      VALUES(?,?,?,?,'trashed',1,1)`)
+      .bind(trashOpId, owner.ids.user, owner.ids.space, owner.ids.folder)
+      .run();
+    await env.DB.prepare("UPDATE nodes SET deleted_at=1,deleted_op_id=? WHERE id=?")
+      .bind(trashOpId, owner.ids.folder)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "credentials", afterId: "" }, 20),
+    ).rejects.toThrow(/recovery_credential_mismatch/);
+    await env.DB.prepare("DELETE FROM credentials WHERE id=?").bind(`ap:${passwordId}`).run();
+    await env.DB.prepare("DELETE FROM app_passwords WHERE id=?").bind(passwordId).run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "credentials", afterId: "" }, 20),
+    ).rejects.toThrow(/recovery_credential_mismatch/);
+    await env.DB.prepare("UPDATE nodes SET deleted_at=NULL,deleted_op_id=NULL WHERE id=?")
+      .bind(owner.ids.folder)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "credentials", afterId: "" }, 20),
+    ).resolves.toMatchObject({ next: { stage: "credential_sources" } });
+  } finally {
+    await env.DB.prepare("UPDATE nodes SET deleted_at=NULL,deleted_op_id=NULL WHERE id=?")
+      .bind(owner.ids.folder)
+      .run();
+    await env.DB.prepare("DELETE FROM credentials WHERE id IN (?,?)")
+      .bind(`ap:${passwordId}`, `sv:${serviceId}`)
+      .run();
+    await env.DB.prepare("DELETE FROM app_passwords WHERE id=?").bind(passwordId).run();
+    await env.DB.prepare("DELETE FROM service_principals WHERE id=?").bind(serviceId).run();
+    await env.DB.prepare("DELETE FROM nodes WHERE id=?").bind(rootId).run();
+    await env.DB.prepare("DELETE FROM trash_ops WHERE op_id=?").bind(trashOpId).run();
+  }
+});
+
 it("checks outbox provenance and dispatch lease shape", async () => {
   const fixture = fixtures[0];
   if (!fixture) throw new Error("missing_fixture");
