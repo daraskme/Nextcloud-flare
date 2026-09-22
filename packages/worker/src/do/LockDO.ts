@@ -1,7 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { assertCreateLocks, hasBlockingLocks, lockTokenHashes } from "../auth/locks";
+import {
+  assertCreateLocks,
+  assertTrashLocks,
+  hasBlockingLocks,
+  hasBlockingTrashLocks,
+  lockTokenHashes,
+} from "../auth/locks";
 import { grantPermit, type Permit, releasePermit, revokeSpacePermits } from "../db/permits";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
@@ -28,6 +34,13 @@ export interface NodeWritePermitRequest {
   principal: Principal;
   lockTokens: readonly string[];
   operation?: "node.props.write" | "node.content.write";
+}
+export interface TrashPermitRequest {
+  requestId: string;
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  lockTokens: readonly string[];
 }
 export interface DavLockRequest {
   requestId: string;
@@ -346,6 +359,71 @@ export class LockDO extends DurableObject<Env> {
       ],
     );
     return permit;
+  }
+
+  async acquireTrash(request: TrashPermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.trash",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== "node.trash") throw new Error("invalid_trash_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingTrashLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      "node.trash",
+      request.nodeId,
+      authorized.parentId,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return grantPermit(
+      this.env.DB,
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(authorized),
+        assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
+      ],
+    );
   }
 
   async createDavLock(request: DavLockRequest): Promise<DavLockResult> {

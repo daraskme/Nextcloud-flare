@@ -24,6 +24,7 @@ import { createFolder } from "../services/createFolder";
 import { createLockedEmptyFile } from "../services/createLockedFile";
 import { proppatch } from "../services/proppatch";
 import { DAV_PUT_MAX_BYTES, putFile } from "../services/putFile";
+import { trashNode } from "../services/trashNode";
 
 const PROTECTED_DAV_PROPERTIES = new Set([
   "getetag",
@@ -319,6 +320,51 @@ export async function handleDavHttp(
       return problem(404, "not_found");
     }
   }
+  if (request.method === "DELETE") {
+    if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
+    if (
+      request.body ||
+      request.headers.has("Lock-Token") ||
+      (request.headers.has("Depth") && request.headers.get("Depth")?.toLowerCase() !== "infinity")
+    )
+      return problem(400, "bad_request");
+    try {
+      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const outcome = await trashNode(env, {
+        principal,
+        requestId: crypto.randomUUID(),
+        spaceId: resolved.node.space_id,
+        nodeId: resolved.node.id,
+        lockTokens,
+        operation: "dav.delete",
+      });
+      if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
+        const response = problem(503, "commit_unknown");
+        response.headers.set(
+          "Operation-Id",
+          outcome.kind === "commit_unknown" ? outcome.operationId : outcome.operation.id,
+        );
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      if (outcome.operation.state === "failed") return problem(409, "conflict");
+      return new Response(null, {
+        status: 204,
+        headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "dav_delete_too_large")
+        return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (error instanceof Error && error.message === "invalid_dav_if")
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
+      if (error instanceof Error && error.message === "authorization_denied")
+        return problem(404, "not_found");
+      return problem(503, "not_ready");
+    }
+  }
   if (request.method === "OPTIONS") {
     try {
       await resolveDavCredentialPath(env.DB, principal, path);
@@ -328,7 +374,7 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS, GET, HEAD, PUT, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+        Allow: "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",

@@ -234,7 +234,9 @@ export async function failStaleRecoveryOutbox(
   const rows = await primary(db)
     .prepare(`SELECT b.outbox_id FROM outbox b JOIN operations o ON o.op_id=b.op_id
       WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
-        (b.kind='node.updated' AND o.kind='dav.put') OR (b.kind='node.renamed' AND o.kind='node.rename'))
+        (b.kind='node.updated' AND o.kind='dav.put') OR
+        (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
+        (b.kind='node.renamed' AND o.kind='node.rename'))
         AND b.state IN ('pending','dispatching','sent')
         AND o.state='committed' AND o.epoch=b.epoch
         AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
@@ -252,7 +254,7 @@ export async function failStaleRecoveryOutbox(
         {
           sql: `UPDATE outbox SET state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
             claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
-            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.updated','node.renamed')
+            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.updated','node.trashed','node.renamed')
               AND state IN ('pending','dispatching','sent')
               AND ((state='pending') OR (dispatch_token IS NOT NULL AND dispatch_expires_at IS NOT NULL))
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
@@ -260,6 +262,7 @@ export async function failStaleRecoveryOutbox(
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
                 AND ((outbox.kind='node.created' AND o.kind IN ('node.create','dav.mkcol','dav.lock','dav.put')) OR
                   (outbox.kind='node.updated' AND o.kind='dav.put') OR
+                  (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
                   (outbox.kind='node.renamed' AND o.kind='node.rename'))
                 AND o.state='committed' AND o.epoch=outbox.epoch
                 AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
@@ -489,6 +492,8 @@ export async function inspectRecoveryPage(
               row.operation_kind ?? "",
             )) ||
           (row.kind === "node.updated" && row.operation_kind === "dav.put") ||
+          (row.kind === "node.trashed" &&
+            ["node.trash", "dav.delete"].includes(row.operation_kind ?? "")) ||
           (row.kind === "node.renamed" && row.operation_kind === "node.rename")
         ) ||
         row.node_step_id !== row.payload_ref
@@ -506,13 +511,17 @@ export async function inspectRecoveryPage(
         if (
           !operands ||
           typeof operands.parentId !== "string" ||
-          (row.kind === "node.renamed" || row.kind === "node.updated"
+          (row.kind === "node.renamed" || row.kind === "node.updated" || row.kind === "node.trashed"
             ? operands.nodeId !== row.payload_ref
             : operands.nodeId !== undefined) ||
           !result ||
           result.nodeId !== row.payload_ref ||
           result.status !==
-            (row.kind === "node.created" ? 201 : row.kind === "node.updated" ? 204 : 200)
+            (row.kind === "node.created"
+              ? 201
+              : row.kind === "node.updated" || row.kind === "node.trashed"
+                ? 204
+                : 200)
         )
           throw new Error("recovery_outbox_provenance_mismatch");
       } catch {

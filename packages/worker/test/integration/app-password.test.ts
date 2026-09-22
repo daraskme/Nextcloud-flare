@@ -58,6 +58,8 @@ function admittedDavEnv(): Env {
             invoke((lock) => lock.acquireCreate(request)),
           acquireNodeWrite: (request: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
             invoke((lock) => lock.acquireNodeWrite(request)),
+          acquireTrash: (request: Parameters<LockDO["acquireTrash"]>[0]) =>
+            invoke((lock) => lock.acquireTrash(request)),
           createDavLock: (request: Parameters<LockDO["createDavLock"]>[0]) =>
             invoke((lock) => lock.createDavLock(request)),
           refreshDavLock: (request: Parameters<LockDO["refreshDavLock"]>[0]) =>
@@ -277,7 +279,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
   expect(options.headers.get("Allow")).toBe(
-    "OPTIONS, GET, HEAD, PUT, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+    "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
   );
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
@@ -1269,6 +1271,215 @@ it("streams DAV PUT creates and conditional overwrites into immutable versioned 
   ).toBe(204);
   await env.BLOBS.delete(first!.r2Key);
   await env.BLOBS.delete(current!.r2Key);
+});
+
+it("atomically trashes a bounded DAV subtree and revokes its locks and shares", async () => {
+  const { f, id, ring, request } = await fixture("H");
+  const credential = `ap:${id}`;
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read'),(?,'node:delete'),(?,'node:write')",
+  )
+    .bind(credential, credential, credential)
+    .run();
+  const folder = `${f.ids.folder}-delete`;
+  const child = `${f.ids.file}-delete`;
+  const now = Date.now();
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+        VALUES(?,?,?,?,'Delete me','delete me','folder',?,?)`,
+      values: [folder, f.ids.space, f.ids.user, f.ids.folder, now, now],
+    },
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at)
+        VALUES(?,?,?,?,'Child.txt','child.txt','file',?,?,?)`,
+      values: [child, f.ids.space, f.ids.user, folder, f.ids.blob, now, now],
+    },
+    {
+      sql: `INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'link',?)`,
+      values: [`${child}-share`, f.ids.user, child, now],
+    },
+    {
+      sql: `INSERT INTO share_sessions(id,share_id,share_version,secret_digest,epoch,issued_at,expires_at)
+        VALUES(?,?,1,?,1,?,?)`,
+      values: [`${child}-share-session`, `${child}-share`, `${child}-digest`, now, now + 600_000],
+    },
+    {
+      sql: "INSERT INTO budgets(id,owner_id,share_id,epoch,expires_at,state) VALUES(?,?,?,1,?,'active')",
+      values: [`${child}-budget`, f.ids.user, `${child}-share`, now + 600_000],
+    },
+    {
+      sql: `INSERT INTO target_sets(id,owner_id,credential_id,manifest_hash,manifest_ref,total_bytes,expires_at,epoch)
+        VALUES(?,?,?,'hash','manifest',3,?,1)`,
+      values: [`${child}-targets`, f.ids.user, credential, now + 600_000],
+    },
+    {
+      sql: `INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at)
+        VALUES(?,?,?,?, 'content',1,?,?)`,
+      values: [
+        `${child}-ticket`,
+        credential,
+        `${child}-targets`,
+        `${child}-budget`,
+        now,
+        now + 600_000,
+      ],
+    },
+    {
+      sql: `INSERT INTO content_sessions(id,share_id,share_version,issued_by_credential_id,target_set_id,budget_id,
+        epoch,issued_at,expires_at,ticket_id) VALUES(?, ?,1,?,?,?,1,?,?,?)`,
+      values: [
+        `${child}-content`,
+        `${child}-share`,
+        credential,
+        `${child}-targets`,
+        `${child}-budget`,
+        now,
+        now + 600_000,
+        `${child}-ticket`,
+      ],
+    },
+  ]);
+  const davEnv = admittedDavEnv();
+  const headers = Object.fromEntries(request().headers);
+  const locked = await handleDavHttp(
+    new Request("https://app.invalid/dav/Delete%20me/Child.txt", {
+      method: "LOCK",
+      headers: {
+        ...headers,
+        "Content-Type": "application/xml",
+        Depth: "0",
+        Timeout: "Second-60",
+      },
+      body: `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
+        <D:locktype><D:write/></D:locktype></D:lockinfo>`,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(locked.status).toBe(200);
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Delete%20me", { method: "DELETE", headers }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(423);
+  const deleted = await handleDavHttp(
+    new Request("https://app.invalid/dav/Delete%20me", {
+      method: "DELETE",
+      headers: {
+        ...headers,
+        If: `<https://app.invalid/dav/Delete%20me/Child.txt> (${locked.headers.get("Lock-Token")})`,
+      },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(deleted.status).toBe(204);
+  const operation = await env.DB.prepare(
+    `SELECT o.op_id AS opId,o.state,o.expected_steps AS expectedSteps,
+      (SELECT COUNT(*) FROM operation_steps s WHERE s.op_id=o.op_id) AS steps
+      FROM operations o WHERE o.kind='dav.delete' AND o.state='committed'`,
+  ).first<{ opId: string; state: string; expectedSteps: number; steps: number }>();
+  expect(operation).toMatchObject({ state: "committed", expectedSteps: 13, steps: 13 });
+  expect(
+    await env.DB.prepare(
+      `SELECT t.state,(SELECT COUNT(*) FROM trash_members m WHERE m.trash_op_id=t.op_id) AS members,
+        (SELECT COUNT(*) FROM nodes n WHERE n.deleted_op_id=t.op_id) AS deletedNodes,
+        (SELECT COUNT(*) FROM locks l WHERE l.node_id IN (?,?)) AS locks
+        FROM trash_ops t WHERE t.op_id=?`,
+    )
+      .bind(folder, child, operation!.opId)
+      .first(),
+  ).toEqual({ state: "trashed", members: 2, deletedNodes: 2, locks: 0 });
+  expect(
+    await env.DB.prepare(
+      `SELECT sh.version,sh.disabled_at IS NOT NULL AS disabled,
+        ss.revoked_at IS NOT NULL AS shareRevoked,cs.revoked_at IS NOT NULL AS contentRevoked,
+        tk.cancelled_at IS NOT NULL AS ticketCancelled
+        FROM shares sh JOIN share_sessions ss ON ss.share_id=sh.id
+        JOIN content_sessions cs ON cs.share_id=sh.id JOIN tickets tk ON tk.id=cs.ticket_id
+        WHERE sh.id=?`,
+    )
+      .bind(`${child}-share`)
+      .first(),
+  ).toEqual({
+    version: 2,
+    disabled: 1,
+    shareRevoked: 1,
+    contentRevoked: 1,
+    ticketCancelled: 1,
+  });
+  expect(await consumeOutbox(env.DB, `${operation!.opId}_event`)).toBe("retry");
+  await env.DB.prepare(
+    "UPDATE outbox SET state='dispatching',dispatch_token='trash',dispatch_expires_at=?,updated_at=? WHERE op_id=?",
+  )
+    .bind(Date.now() + 30_000, Date.now(), operation!.opId)
+    .run();
+  expect(await consumeOutbox(env.DB, `${operation!.opId}_event`)).toBe("completed");
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Delete%20me", { headers }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(404);
+});
+
+it("rejects a DAV DELETE subtree larger than the synchronous 1,000-node bound", async () => {
+  const { f, id, ring, request } = await fixture("J");
+  const credential = `ap:${id}`;
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read'),(?,'node:delete')",
+  )
+    .bind(credential, credential)
+    .run();
+  const folder = `${f.ids.folder}-large-delete`;
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+      VALUES(?,?,?,?,'Large delete','large delete','folder',?,?)`,
+  )
+    .bind(folder, f.ids.space, f.ids.user, f.ids.folder, now, now)
+    .run();
+  await env.DB.prepare(
+    `WITH RECURSIVE seq(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM seq WHERE x<1000)
+      INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+      SELECT ?||'-'||x,?,?,?,'n'||printf('%04d',x),'n'||printf('%04d',x),'folder',?,? FROM seq`,
+  )
+    .bind(folder, f.ids.space, f.ids.user, folder, now, now)
+    .run();
+  const response = await handleDavHttp(
+    new Request("https://app.invalid/dav/Large%20delete", {
+      method: "DELETE",
+      headers: request().headers,
+    }),
+    admittedDavEnv(),
+    1,
+    ring,
+  );
+  expect(response.status).toBe(403);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM nodes WHERE id=? AND deleted_at IS NULL")
+      .bind(folder)
+      .first(),
+  ).toEqual({ count: 1 });
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM operations WHERE kind='dav.delete' AND instr(operands_json,?)>0",
+    )
+      .bind(folder)
+      .first(),
+  ).toEqual({ count: 0 });
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {

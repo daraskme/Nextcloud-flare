@@ -65,6 +65,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
       (row.kind === "node.created" &&
         ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(row.op_kind)) ||
       (row.kind === "node.updated" && row.op_kind === "dav.put") ||
+      (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
       (row.kind === "node.renamed" && row.op_kind === "node.rename")
     ) ||
     row.op_state !== "committed" ||
@@ -86,14 +87,18 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
       !result ||
       result.nodeId !== row.payload_ref ||
       result.status !==
-        (row.kind === "node.created" ? 201 : row.kind === "node.updated" ? 204 : 200)
+        (row.kind === "node.created"
+          ? 201
+          : row.kind === "node.updated" || row.kind === "node.trashed"
+            ? 204
+            : 200)
     )
       return "retry";
     parentId = operands.parentId;
-    if (row.kind === "node.renamed" || row.kind === "node.updated") {
+    if (row.kind === "node.renamed" || row.kind === "node.updated" || row.kind === "node.trashed") {
       if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
         return "retry";
-      nodeId = operands.nodeId;
+      if (row.kind !== "node.trashed") nodeId = operands.nodeId;
     } else if (operands.nodeId !== undefined) {
       return "retry";
     }
@@ -102,17 +107,24 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   }
   let authorized: Awaited<ReturnType<typeof authorizeNode>>;
   try {
-    authorized = nodeId
-      ? await authorizeNode(db, principal, {
-          operation: row.kind === "node.updated" ? "node.content.write" : "node.rename",
-          nodeId,
-          spaceId: row.space_id,
-        })
-      : await authorizeNode(db, principal, {
-          operation: "node.create",
-          parentId,
-          spaceId: row.space_id,
-        });
+    authorized =
+      row.kind === "node.trashed"
+        ? await authorizeNode(db, principal, {
+            operation: "node.read",
+            nodeId: parentId,
+            spaceId: row.space_id,
+          })
+        : nodeId
+          ? await authorizeNode(db, principal, {
+              operation: row.kind === "node.updated" ? "node.content.write" : "node.rename",
+              nodeId,
+              spaceId: row.space_id,
+            })
+          : await authorizeNode(db, principal, {
+              operation: "node.create",
+              parentId,
+              spaceId: row.space_id,
+            });
     if (
       (authorized.operation === "node.rename" || authorized.operation === "node.content.write") &&
       authorized.parentId !== parentId

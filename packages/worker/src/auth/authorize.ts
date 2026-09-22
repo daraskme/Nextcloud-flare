@@ -67,6 +67,7 @@ export type NodeRequest =
       readonly operation:
         | "node.read"
         | "node.rename"
+        | "node.trash"
         | "node.props.write"
         | "node.content.write"
         | "automation.list"
@@ -94,6 +95,12 @@ export type AuthorizedNode =
     }
   | {
       readonly operation: "node.rename";
+      readonly principal: Principal;
+      readonly node: LiveNode;
+      readonly parentId: string;
+    }
+  | {
+      readonly operation: "node.trash";
       readonly principal: Principal;
       readonly node: LiveNode;
       readonly parentId: string;
@@ -180,7 +187,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE p.kind='app_password' AND u.id=p.user_id AND u.disabled_at IS NULL AND ap.revoked_at IS NULL
         AND ap.expires_at>strftime('%s','now')*1000
         AND (ap.root_node_id IS NULL OR EXISTS(SELECT 1 FROM a WHERE id=ap.root_node_id))
-        AND (?6<>'node.rename' OR ap.root_node_id IS NULL OR ap.root_node_id<>?1)
+        AND (?6 NOT IN ('node.rename','node.trash') OR ap.root_node_id IS NULL OR ap.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM credential_scopes WHERE credential_id=c.id AND scope=?4)
   ),
   live_shares AS (
@@ -200,15 +207,15 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?10 IS NULL OR n.current_blob_id=?10)
       AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(deleted_at IS NULL)=1
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
-      AND (?6 NOT IN ('node.create','node.rename','node.props.write','node.content.write') OR ctl.maintenance=0)
+      AND (?6 NOT IN ('node.create','node.rename','node.trash','node.props.write','node.content.write') OR ctl.maintenance=0)
       AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
-      AND (?6<>'node.rename' OR n.parent_id IS NOT NULL)
+      AND (?6 NOT IN ('node.rename','node.trash') OR n.parent_id IS NOT NULL)
       AND (?6<>'node.content.write' OR n.kind='file')
       AND (
-        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
+        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE u.id=n.owner_id OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
-              WHERE sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
+              WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
         OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
@@ -246,6 +253,7 @@ export async function authorizeNode(
       "node.read",
       "node.create",
       "node.rename",
+      "node.trash",
       "node.props.write",
       "node.content.write",
       "automation.list",
@@ -278,18 +286,22 @@ export async function authorizeNode(
     JSON.stringify(identity),
     request.operation === "node.create"
       ? "node:create"
-      : request.operation === "node.rename" ||
-          request.operation === "node.props.write" ||
-          request.operation === "node.content.write"
-        ? "node:write"
-        : "node:read",
+      : request.operation === "node.trash"
+        ? "node:delete"
+        : request.operation === "node.rename" ||
+            request.operation === "node.props.write" ||
+            request.operation === "node.content.write"
+          ? "node:write"
+          : "node:read",
     request.operation === "node.create"
       ? "create"
-      : request.operation === "node.rename" ||
-          request.operation === "node.props.write" ||
-          request.operation === "node.content.write"
+      : request.operation === "node.trash"
         ? "edit"
-        : "read",
+        : request.operation === "node.rename" ||
+            request.operation === "node.props.write" ||
+            request.operation === "node.content.write"
+          ? "edit"
+          : "read",
     request.operation,
   ] as const;
   const node = await prepare(primary(db), {
@@ -310,7 +322,7 @@ export async function authorizeNode(
       ]),
     ),
   );
-  if (request.operation === "node.rename") {
+  if (request.operation === "node.rename" || request.operation === "node.trash") {
     if (node.parent_id === null) throw new Error("authorization_denied");
     const authorized: AuthorizedNode = Object.freeze({
       operation: request.operation,
