@@ -132,6 +132,7 @@ it("rejects share counter drift and a live root from another owner", async () =>
   const other = fixtures[1];
   if (!owner || !other) throw new Error("missing_fixture");
   const shareId = crypto.randomUUID();
+  const trashOpId = crypto.randomUUID();
   await env.DB.prepare(
     "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'link',1)",
   )
@@ -146,13 +147,36 @@ it("rejects share counter drift and a live root from another owner", async () =>
       inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
     ).rejects.toThrow(/recovery_share_mismatch/);
     await env.DB.prepare("UPDATE shares SET reserved_bytes=0,root_node_id=? WHERE id=?")
+      .bind(owner.ids.file, shareId)
+      .run();
+    await env.DB.prepare(`INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,created_at,epoch)
+      VALUES(?,?,?,?,'trashed',1,1)`)
+      .bind(trashOpId, owner.ids.user, owner.ids.space, owner.ids.folder)
+      .run();
+    await env.DB.prepare("UPDATE nodes SET deleted_at=1,deleted_op_id=? WHERE id=?")
+      .bind(trashOpId, owner.ids.folder)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
+    ).rejects.toThrow(/recovery_share_mismatch/);
+    await env.DB.prepare("UPDATE nodes SET deleted_at=NULL,deleted_op_id=NULL WHERE id=?")
+      .bind(owner.ids.folder)
+      .run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
+    ).resolves.toMatchObject({ examined: 1 });
+    await env.DB.prepare("UPDATE shares SET reserved_bytes=0,root_node_id=? WHERE id=?")
       .bind(other.ids.root, shareId)
       .run();
     await expect(
       inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "shares", afterId: "" }),
     ).rejects.toThrow(/recovery_share_mismatch/);
   } finally {
+    await env.DB.prepare("UPDATE nodes SET deleted_at=NULL,deleted_op_id=NULL WHERE id=?")
+      .bind(owner.ids.folder)
+      .run();
     await env.DB.prepare("DELETE FROM shares WHERE id=?").bind(shareId).run();
+    await env.DB.prepare("DELETE FROM trash_ops WHERE op_id=?").bind(trashOpId).run();
   }
 });
 

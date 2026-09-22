@@ -478,9 +478,17 @@ export async function inspectRecoveryPage(
             WHERE ss.share_id=sh.id AND ss.share_version>sh.version)
           AND (sh.disabled_at IS NOT NULL OR
             (sh.expires_at IS NOT NULL AND sh.expires_at<=strftime('%s','now')*1000) OR
-            EXISTS(SELECT 1 FROM nodes n JOIN spaces sp ON sp.id=n.space_id
-              WHERE n.id=sh.root_node_id AND n.owner_id=sh.owner_id
-                AND sp.owner_id=sh.owner_id AND n.deleted_at IS NULL))`)
+            EXISTS(WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
+              SELECT n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,0,'/'||n.id||'/'
+              FROM nodes n WHERE n.id=sh.root_node_id AND n.owner_id=sh.owner_id
+              UNION ALL
+              SELECT p.id,p.parent_id,p.space_id,p.owner_id,p.kind,p.deleted_at,a.depth+1,a.path||p.id||'/'
+              FROM nodes p JOIN a ON p.id=a.parent_id
+              WHERE a.depth<64 AND p.space_id=a.space_id AND p.owner_id=a.owner_id
+                AND instr(a.path,'/'||p.id||'/')=0
+            ) SELECT 1 FROM a JOIN spaces sp ON sp.id=a.space_id AND sp.owner_id=sh.owner_id
+              GROUP BY sp.id HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(a.deleted_at IS NULL)=1
+                AND SUM(a.kind='root' AND a.parent_id IS NULL AND a.id=sp.root_node_id)=1))`)
         .bind(id)
         .first<number>();
       if (valid === null) throw new Error("recovery_share_mismatch");
