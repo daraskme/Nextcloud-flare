@@ -35,6 +35,7 @@ assert.equal(config.queues.producers[0].binding, "JOBS");
 assert.equal(config.queues.consumers[0].max_retries, 10);
 assert.equal(config.queues.consumers[0].max_concurrency, 8);
 assert.equal(config.queues.consumers[0].dead_letter_queue, "ncf-local-jobs-dlq");
+assert.deepEqual(config.triggers.crons, ["* * * * *"]);
 assert.equal(config.ratelimits[0].name, "EDGE_LIMITER");
 assert.equal(config.ratelimits[0].simple.period, 60);
 assert.ok(!Object.hasOwn(config.vars, "DEV_BYPASS_ACCESS"));

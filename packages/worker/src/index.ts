@@ -3,7 +3,19 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
+import { dispatchPendingOutbox } from "./jobs/outbox";
 import { handleOutboxBatch } from "./jobs/queue";
+
+async function admittedEpoch(env: Env): Promise<number | null> {
+  if (!hasBindings(env)) return null;
+  const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
+  if (status.maintenance) return null;
+  const mirror = await primary(env.DB)
+    .prepare("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0")
+    .bind(status.epoch)
+    .first<number>();
+  return mirror === null ? null : status.epoch;
+}
 
 // Phase 0 exports establish binding compatibility only. No authority is issued yet.
 class UnavailableDO extends DurableObject<Env> {
@@ -24,23 +36,23 @@ export default {
     return problem(404, "not_found");
   },
   async queue(batch: MessageBatch, env: Env): Promise<void> {
+    let epoch: number | null;
     try {
-      if (!hasBindings(env)) throw new Error("binding_unavailable");
-      const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
-      if (status.maintenance) throw new Error("admission_closed");
-      const mirror = await primary(env.DB)
-        .prepare("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0")
-        .bind(status.epoch)
-        .first<number>();
-      if (mirror === null) throw new Error("admission_mirror_closed");
+      epoch = await admittedEpoch(env);
     } catch {
       // Unknown control/D1 outcomes and unavailable bindings retain every delivery.
       batch.retryAll();
       return;
     }
+    if (epoch === null) {
+      batch.retryAll();
+      return;
+    }
     await handleOutboxBatch(env.DB, batch);
   },
-  scheduled(): void {
-    // No maintenance actions before the Phase 1 fences exist.
+  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+    const epoch = await admittedEpoch(env);
+    if (epoch === null) return;
+    await dispatchPendingOutbox(env.DB, env.JOBS, epoch);
   },
 } satisfies ExportedHandler<Env>;

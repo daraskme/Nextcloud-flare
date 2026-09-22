@@ -67,6 +67,19 @@ function sender(callback?: () => Promise<void>) {
   return { messages, queue };
 }
 
+function admittedEnv(queue: OutboxSender = env.JOBS, maintenance = false): Env {
+  return {
+    ...env,
+    CONTROL: {
+      idFromName: () => "singleton",
+      get: () => ({
+        status: async () => ({ epoch: 1, maintenance, gcPaused: maintenance }),
+      }),
+    },
+    JOBS: queue,
+  } as unknown as Env;
+}
+
 it("sends only the outbox ID and keeps an active sent lease from duplicate dispatch", async () => {
   const f = await fixture();
   const s = sender();
@@ -240,15 +253,6 @@ it("acks only completed IDs and retries invalid or unavailable deliveries", asyn
 
 it("routes Queue deliveries only when ControlDO and D1 agree on admission", async () => {
   const f = await dispatchedEvent();
-  const admittedEnv = {
-    ...env,
-    CONTROL: {
-      idFromName: () => "singleton",
-      get: () => ({
-        status: async () => ({ epoch: 1, maintenance: false, gcPaused: false }),
-      }),
-    },
-  } as unknown as Env;
   const first = delivery({ outboxId: f.id });
   let wholeBatchRetries = 0;
   const batch = (message: OutboxDelivery) =>
@@ -258,14 +262,36 @@ it("routes Queue deliveries only when ControlDO and D1 agree on admission", asyn
         wholeBatchRetries++;
       },
     }) as unknown as MessageBatch;
-  await worker.queue(batch(first.message), admittedEnv);
+  await worker.queue(batch(first.message), admittedEnv());
   expect(first.counts()).toEqual({ acked: 1, retried: 0 });
   expect(wholeBatchRetries).toBe(0);
   await env.DB.prepare("UPDATE control SET maintenance=1").run();
   const second = delivery({ outboxId: f.id });
-  await worker.queue(batch(second.message), admittedEnv);
+  await worker.queue(batch(second.message), admittedEnv());
   expect(second.counts()).toEqual({ acked: 0, retried: 0 });
   expect(wholeBatchRetries).toBe(1);
+});
+
+it("runs bounded Cron outbox repair only after admission and resends expired leases", async () => {
+  const f = await fixture();
+  const s = sender();
+  const deliveries = () => s.messages.filter((message) => message.outboxId === f.id);
+  const runtime = admittedEnv(s.queue);
+  await worker.scheduled({} as ScheduledController, admittedEnv(s.queue, true));
+  expect(s.messages).toEqual([]);
+  await env.DB.prepare("UPDATE control SET maintenance=1").run();
+  await worker.scheduled({} as ScheduledController, runtime);
+  expect(s.messages).toEqual([]);
+  await env.DB.prepare("UPDATE control SET maintenance=0").run();
+  await worker.scheduled({} as ScheduledController, runtime);
+  expect(deliveries()).toEqual([{ outboxId: f.id }]);
+  await worker.scheduled({} as ScheduledController, runtime);
+  expect(deliveries()).toHaveLength(1);
+  await env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
+    .bind(f.id)
+    .run();
+  await worker.scheduled({} as ScheduledController, runtime);
+  expect(deliveries()).toEqual([{ outboxId: f.id }, { outboxId: f.id }]);
 });
 
 it("converges after a lost Queue ack without repeating the D1 result", async () => {
