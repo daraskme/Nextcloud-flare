@@ -2,14 +2,107 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
+import { handlePrivateContentTicketHttp } from "../../src/api/contentTickets";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
+import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { atomicBatch } from "../../src/db/primary";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { loadTargetManifest } from "../../src/services/targetManifest";
 import { foundationFixture } from "../fixtures/foundation";
+
+it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
+  const { f, tokens, principal, firstKey } = await fixture();
+  const key = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: key });
+  const csrf = new CsrfTokens(ring, ring, "https://app.invalid");
+  const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
+  const session = { kind: "access" as const, credentialId: principal.credential_id, epoch: 1 };
+  const issuedCsrf = await csrf.issue(
+    env.DB,
+    new Request("https://app.invalid/api/v1/csrf", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+    session,
+  );
+  const headers = {
+    Origin: "https://app.invalid",
+    "Sec-Fetch-Site": "same-origin",
+    "Content-Type": "application/json",
+    "X-CSRF-Token": issuedCsrf.token,
+  };
+  let targetSetId: string | undefined;
+  try {
+    const malformed = await handlePrivateContentTicketHttp(
+      new Request("https://app.invalid/api/v1/content-session", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          targets: [{ spaceId: f.ids.space, nodeId: f.ids.file, extra: true }],
+          purpose: "content",
+          ttlSeconds: 300,
+        }),
+      }),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+    expect(malformed.status).toBe(400);
+    const response = await handlePrivateContentTicketHttp(
+      new Request("https://app.invalid/api/v1/content-session", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          targets: [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+          purpose: "content",
+          ttlSeconds: 300,
+        }),
+      }),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+    expect(response.status).toBe(201);
+    const issued = await response.json<{
+      ticket: string;
+      ticketId: string;
+      targetSetId: string;
+    }>();
+    targetSetId = issued.targetSetId;
+    expect((await tokens.verifyTicket(issued.ticket)).ticket_id).toBe(issued.ticketId);
+    const wrongOrigin = await handlePrivateContentTicketHttp(
+      new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
+        method: "DELETE",
+        headers: { ...headers, Origin: "https://other.invalid" },
+      }),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+    expect(wrongOrigin.status).toBe(403);
+    const cancelled = await handlePrivateContentTicketHttp(
+      new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
+        method: "DELETE",
+        headers,
+      }),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+    expect(cancelled.status).toBe(204);
+    await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (targetSetId) await env.BLOBS.delete(`target-sets/${targetSetId}`);
+  }
+});
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 
