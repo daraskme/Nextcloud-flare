@@ -57,7 +57,7 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 `bumpEpoch(expectedEpoch,reason)` の期待値は再送・並行 bump の重複発行を防ぐ。
 
 現在の `status()` は maintenance / GC pause を常に true と返す。`quiesce(expectedEpoch)` は停止側の DO status を確認してから D1 mirror の両 flag を立て、open permit を revoke、claimed operation を failed へ同一 batch で収束させる。応答喪失時は全 postcondition を primary で照合する。active job lease の有無を返し、残存していれば drain 完了と扱わない。SQL failure の rollback を確認済み。admission と復旧検証後の再開は未実装で、`quiesce()` の成功を再開許可に使わない。
-`do/recoveryAudit.ts` は停止中の D1 を読み取り専用でページ走査する診断 helper。1回最大20 user/blob を確認し、bootstrap identity、有効 admin、root/owner、used/reserved/physical/ref 会計、記録された R2 object の HEAD サイズと etag を検査する。open permit、claimed operation、active job/outbox claim、削除中 GC、不完全 upload があれば開始しない。カーソルは今後の ControlDO 側の durable 進捗へ接続するまでは再開の証明ではない。FTS、全 credential/share/outbox、R2 inventory、実 Queue/GC drain と最終 D1 fence は未検証。
+`do/recoveryAudit.ts` は停止中の D1 を読み取り専用でページ走査する診断 helper。1回最大20 user/blob を確認し、bootstrap identity、有効 admin、root/owner、used/reserved/physical/ref 会計、記録された R2 object の HEAD サイズと etag を検査する。open permit、claimed operation、active job/outbox claim、削除中 GC、不完全 upload があれば開始しない。ControlDO の `beginRecoveryAudit` / `nextRecoveryAuditPage` は SQLite に epoch・token・stage・cursor を永続化し、eviction と失敗ページの再試行に対応する。旧 epoch の監査を再利用しない。監査完了はまだ再開の証明ではない。FTS、全 credential/share/outbox、R2 inventory、実 Queue/GC drain と最終 D1 fence は未検証。
 
 ## Access session
 

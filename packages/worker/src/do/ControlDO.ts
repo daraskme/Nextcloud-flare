@@ -9,6 +9,7 @@ import {
   persistEpoch,
   recoverEpochFloor,
 } from "./epochHistory";
+import { inspectRecoveryPage, type RecoveryCursor } from "./recoveryAudit";
 
 export const CONTROL_NAME = "singleton";
 interface ControlRow extends Record<string, SqlStorageValue> {
@@ -30,6 +31,22 @@ export interface QuiesceStatus extends ControlStatus {
   activeJobLease: boolean;
 }
 
+interface AuditRow extends Record<string, SqlStorageValue> {
+  epoch: number;
+  token: string;
+  stage: "users" | "blobs" | "complete";
+  after_id: string;
+  pages: number;
+}
+
+export interface RecoveryAuditStatus {
+  epoch: number;
+  stage: AuditRow["stage"];
+  afterId: string;
+  pages: number;
+  completed: boolean;
+}
+
 export class ControlDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -43,6 +60,11 @@ export class ControlDO extends DurableObject<Env> {
     ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO control_state(singleton,phase,epoch) VALUES(1,'uninitialized',0)",
     );
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS recovery_audit(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,
+      token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','complete')),
+      after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
+    )`);
   }
 
   fetch(): Response {
@@ -141,6 +163,78 @@ export class ControlDO extends DurableObject<Env> {
     const current = await this.status();
     if (current.epoch !== expectedEpoch) throw new Error("quiesce_epoch_conflict");
     return { ...current, activeJobLease: active !== null };
+  }
+
+  #auditStatus(row: AuditRow): RecoveryAuditStatus {
+    return {
+      epoch: row.epoch,
+      stage: row.stage,
+      afterId: row.after_id,
+      pages: row.pages,
+      completed: row.stage === "complete",
+    };
+  }
+
+  #auditRow(expectedEpoch: number): AuditRow {
+    const row = this.ctx.storage.sql
+      .exec<AuditRow>(
+        "SELECT epoch,token,stage,after_id,pages FROM recovery_audit WHERE singleton=1",
+      )
+      .toArray()[0];
+    if (!row || row.epoch !== expectedEpoch) throw new Error("recovery_audit_not_started");
+    return row;
+  }
+
+  /** Explicit restart invalidates any in-flight page through the durable audit token. */
+  async beginRecoveryAudit(expectedEpoch: number): Promise<RecoveryAuditStatus> {
+    const stopped = await this.quiesce(expectedEpoch);
+    if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("recovery_audit_epoch_conflict");
+    this.ctx.storage.sql.exec(
+      `INSERT INTO recovery_audit(singleton,epoch,token,stage,after_id,pages)
+      VALUES(1,?,?,'users','',0) ON CONFLICT(singleton) DO UPDATE SET
+      epoch=excluded.epoch,token=excluded.token,stage='users',after_id='',pages=0`,
+      expectedEpoch,
+      crypto.randomUUID(),
+    );
+    return this.#auditStatus(this.#auditRow(expectedEpoch));
+  }
+
+  /** Checks one page; a failed page leaves the durable cursor unchanged. */
+  async nextRecoveryAuditPage(expectedEpoch: number, limit = 10): Promise<RecoveryAuditStatus> {
+    epochNumber(expectedEpoch);
+    const status = await this.status();
+    if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
+    const row = this.#auditRow(expectedEpoch);
+    if (row.stage === "complete") return this.#auditStatus(row);
+    const cursor: RecoveryCursor = { stage: row.stage, afterId: row.after_id };
+    const page = await inspectRecoveryPage(
+      this.env.DB,
+      this.env.BLOBS,
+      expectedEpoch,
+      cursor,
+      limit,
+    );
+    const current = this.#row();
+    if (current.phase !== "ready" || current.epoch !== expectedEpoch)
+      throw new Error("recovery_audit_epoch_conflict");
+    const next = page.next;
+    const updated = this.ctx.storage.sql.exec(
+      `UPDATE recovery_audit
+      SET stage=?,after_id=?,pages=pages+1
+      WHERE singleton=1 AND epoch=? AND token=? AND stage=? AND after_id=? AND pages=?`,
+      next?.stage ?? "complete",
+      next?.afterId ?? "",
+      expectedEpoch,
+      row.token,
+      row.stage,
+      row.after_id,
+      row.pages,
+    );
+    if (updated.rowsWritten !== 1) throw new Error("recovery_audit_conflict");
+    return this.#auditStatus(this.#auditRow(expectedEpoch));
   }
 
   #reserve(epoch: number, reason: EpochReason, phase: ControlRow["phase"], expected: number): void {
