@@ -4,6 +4,7 @@ import { beforeAll, expect, it } from "vitest";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { inspectRecoverySearchFts } from "../../src/do/recoveryAudit";
 import { foundationFixture } from "../fixtures/foundation";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
@@ -61,11 +62,16 @@ it("persists page progress across DO eviction and treats completion as diagnosti
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "fts",
     pages: 5,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 6,
     completed: true,
   });
-  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 5, completed: true });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 6, completed: true });
   expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
 });
 
@@ -96,10 +102,42 @@ it("keeps a failed page pending so repair can resume at the same cursor", async 
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "fts",
     pages: 5,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 6,
     completed: true,
   });
+});
+
+it("rebuilds restored FTS under the recovery fence and restarts the audit", async () => {
+  await env.DB.prepare(`INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+    VALUES(?,?,'recoveryneedle','re co','v1',1)`)
+    .bind(fixture.ids.folder, fixture.ids.space)
+    .run();
+  await expect(inspectRecoverySearchFts(env.DB, 2)).rejects.toThrow();
+  expect(await control().beginRecoveryAudit(2)).toMatchObject({ stage: "users", pages: 0 });
+  for (let i = 0; i < 5; i++) await control().nextRecoveryAuditPage(2, 1);
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.nextRecoveryAuditPage(2, 1)).rejects.toThrow();
+  });
+  expect(await control().rebuildRecoveryFts(2)).toMatchObject({
+    epoch: 2,
+    stage: "users",
+    pages: 0,
+    completed: false,
+  });
+  await expect(inspectRecoverySearchFts(env.DB, 2)).resolves.toBeUndefined();
+  expect(
+    (
+      await env.DB.prepare(
+        "SELECT rowid FROM search_fts WHERE search_fts MATCH 'recoveryneedle'",
+      ).all()
+    ).results,
+  ).toHaveLength(1);
 });
 
 it("does not reuse an audit from an old epoch", async () => {

@@ -3,7 +3,7 @@ import { auditOwnerLedger } from "../services/refs";
 import { epochNumber } from "./epochHistory";
 
 export interface RecoveryCursor {
-  readonly stage: "users" | "blobs" | "outbox" | "shares" | "credentials";
+  readonly stage: "users" | "blobs" | "outbox" | "shares" | "credentials" | "fts";
   readonly afterId: string;
 }
 
@@ -35,7 +35,7 @@ interface OutboxRow {
 
 function validCursor(cursor: RecoveryCursor, limit: number): void {
   if (
-    !["users", "blobs", "outbox", "shares", "credentials"].includes(cursor.stage) ||
+    !["users", "blobs", "outbox", "shares", "credentials", "fts"].includes(cursor.stage) ||
     typeof cursor.afterId !== "string" ||
     cursor.afterId.length > 128 ||
     !Number.isInteger(limit) ||
@@ -87,7 +87,34 @@ async function assertQuiesced(db: D1Database, epoch: number): Promise<void> {
   }
 }
 
-/** One bounded diagnostic page. A caller must not treat a page or cursor as resume authority. */
+/** FTS5 compares its external-content index with search_index only when rank=1. */
+export async function inspectRecoverySearchFts(db: D1Database, epoch: number): Promise<void> {
+  epochNumber(epoch);
+  await assertQuiesced(db, epoch);
+  await primary(db)
+    .prepare("INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1)")
+    .run();
+  await assertQuiesced(db, epoch);
+}
+
+/** Operator repair after restore; an ambiguous rebuild response is checked before retrying. */
+export async function rebuildRecoverySearchFts(db: D1Database, epoch: number): Promise<void> {
+  epochNumber(epoch);
+  await assertQuiesced(db, epoch);
+  try {
+    await primary(db).prepare("INSERT INTO search_fts(search_fts) VALUES('rebuild')").run();
+  } catch (error) {
+    try {
+      await inspectRecoverySearchFts(db, epoch);
+      return;
+    } catch {
+      throw error;
+    }
+  }
+  await inspectRecoverySearchFts(db, epoch);
+}
+
+/** One diagnostic stage; row pages are bounded, while FTS integrity checks its whole index. */
 export async function inspectRecoveryPage(
   db: D1Database,
   bucket: R2Bucket,
@@ -98,6 +125,11 @@ export async function inspectRecoveryPage(
   epochNumber(epoch);
   validCursor(cursor, limit);
   await assertQuiesced(db, epoch);
+  if (cursor.stage === "fts") {
+    if (cursor.afterId !== "") throw new Error("invalid_recovery_cursor");
+    await inspectRecoverySearchFts(db, epoch);
+    return { examined: 0, next: null };
+  }
   if (cursor.stage === "users") {
     const rows = await primary(db)
       .prepare(`SELECT id FROM users WHERE id>? ORDER BY id LIMIT ?`)
@@ -229,7 +261,7 @@ export async function inspectRecoveryPage(
       next:
         rows.results.length > limit
           ? { stage: "credentials", afterId: page.at(-1)?.id ?? cursor.afterId }
-          : null,
+          : { stage: "fts", afterId: "" },
     };
   }
   const rows = await primary(db)
