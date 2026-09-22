@@ -69,6 +69,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
       (row.kind === "node.updated" && row.op_kind === "dav.put") ||
       (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
       (row.kind === "node.restored" && row.op_kind === "node.restore") ||
+      (row.kind === "node.purged" && row.op_kind === "node.purge") ||
       (row.kind === "node.renamed" &&
         ["node.rename", "node.move", "dav.move"].includes(row.op_kind))
     ) ||
@@ -102,7 +103,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             : 201
           : row.kind === "node.updated" || row.kind === "node.trashed"
             ? 204
-            : row.kind === "node.restored"
+            : row.kind === "node.restored" || row.kind === "node.purged"
               ? 200
               : ["node.move", "dav.move"].includes(row.op_kind)
                 ? typeof operands.overwriteTargetId === "string"
@@ -116,11 +117,12 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
       row.kind === "node.renamed" ||
       row.kind === "node.updated" ||
       row.kind === "node.trashed" ||
-      row.kind === "node.restored"
+      row.kind === "node.restored" ||
+      row.kind === "node.purged"
     ) {
       if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
         return "retry";
-      if (row.kind !== "node.trashed") nodeId = operands.nodeId;
+      if (row.kind !== "node.trashed" && row.kind !== "node.purged") nodeId = operands.nodeId;
     } else if (operands.nodeId !== undefined) {
       return "retry";
     }
@@ -130,7 +132,7 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   let authorized: Awaited<ReturnType<typeof authorizeNode>>;
   try {
     authorized =
-      row.kind === "node.trashed"
+      row.kind === "node.trashed" || row.kind === "node.purged"
         ? await authorizeNode(db, principal, {
             operation: "node.read",
             nodeId: parentId,

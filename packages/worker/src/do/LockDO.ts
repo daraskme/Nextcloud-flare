@@ -56,6 +56,13 @@ export interface RestorePermitRequest extends CreatePermitRequest {
   trashOpId: string;
   rootNodeId: string;
 }
+export interface PurgePermitRequest {
+  requestId: string;
+  spaceId: string;
+  trashOpId: string;
+  rootNodeId: string;
+  principal: Principal;
+}
 export interface DavLockRequest {
   requestId: string;
   spaceId: string;
@@ -744,6 +751,73 @@ export class LockDO extends DurableObject<Env> {
         assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
         restoreGuard,
       ],
+    );
+  }
+
+  async acquirePurge(request: PurgePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (
+      !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.trashOpId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.rootNodeId) ||
+      request.principal.kind !== "user"
+    )
+      throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const spaceRoot = await primary(this.env.DB)
+      .prepare("SELECT root_node_id FROM spaces WHERE id=? AND owner_id=?")
+      .bind(request.spaceId, request.principal.user_id)
+      .first<string>("root_node_id");
+    if (!spaceRoot) throw new Error("authorization_denied");
+    const authority = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.read",
+      nodeId: spaceRoot,
+      spaceId: request.spaceId,
+    });
+    if (authority.operation !== "node.read") throw new Error("authorization_denied");
+    const purgeGuard = assertExists(
+      `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
+        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+          AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) BETWEEN 1 AND 1000
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
+            WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))`,
+      [request.trashOpId, request.spaceId, request.rootNodeId, request.principal.user_id],
+    );
+    const digest = JSON.stringify([
+      "node.purge",
+      request.trashOpId,
+      request.rootNodeId,
+      spaceRoot,
+      request.principal.user_id,
+      request.principal.credential_id,
+      status.epoch,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return grantPermit(
+      this.env.DB,
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [authorizationAssertion(authority), purgeGuard],
     );
   }
 

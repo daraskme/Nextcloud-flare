@@ -184,6 +184,7 @@ export function validateClaimAuthorization(
   const move = ["node.move", "dav.move"].includes(intent.kind);
   const copy = ["node.copy", "dav.copy"].includes(intent.kind);
   const restore = intent.kind === "node.restore";
+  const purge = intent.kind === "node.purge";
   const targetMatches =
     (create &&
       authorized.operation === "node.create" &&
@@ -211,6 +212,10 @@ export function validateClaimAuthorization(
       authorized.operation === "node.create" &&
       authorized.parent.id === operands.parentId &&
       authorized.spaceId === intent.spaceId) ||
+    (purge &&
+      authorized.operation === "node.read" &&
+      authorized.node.id === operands.parentId &&
+      authorized.node.space_id === intent.spaceId) ||
     (intent.kind === "node.rename" &&
       authorized.operation === "node.rename" &&
       authorized.node.id === operands.nodeId &&
@@ -330,6 +335,7 @@ export async function lookupOperation(
       row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
       row.kind !== "node.restore" &&
+      row.kind !== "node.purge" &&
       row.kind !== "node.rename" &&
       row.kind !== "dav.proppatch")
   )
@@ -356,14 +362,25 @@ export async function lookupOperation(
         parentId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else if (create || (row.kind === "node.restore" && row.state !== "committed")) {
+    } else if (
+      create ||
+      (row.kind === "node.restore" && row.state !== "committed") ||
+      row.kind === "node.purge"
+    ) {
       if (typeof operands.parentId !== "string") return null;
-      await authorizeNode(db, principal, {
-        operation: "node.create",
-        parentId: operands.parentId,
-        spaceId: row.space_id,
-      });
-      if (row.kind === "node.restore") {
+      if (row.kind === "node.purge")
+        await authorizeNode(db, principal, {
+          operation: "node.read",
+          nodeId: operands.parentId,
+          spaceId: row.space_id,
+        });
+      else
+        await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId: operands.parentId,
+          spaceId: row.space_id,
+        });
+      if (row.kind === "node.restore" || row.kind === "node.purge") {
         if (
           principal.kind !== "user" ||
           typeof (operands as { trashOpId?: unknown }).trashOpId !== "string"
@@ -371,10 +388,11 @@ export async function lookupOperation(
           return null;
         const visible = await primary(db)
           .prepare(
-            "SELECT 1 FROM trash_ops WHERE op_id=? AND space_id=? AND actor_id=? AND state='trashed'",
+            `SELECT 1 AS ok FROM trash_ops WHERE op_id=? AND space_id=? AND actor_id=?
+              AND state IN ('trashed','purged')`,
           )
           .bind((operands as { trashOpId: string }).trashOpId, row.space_id, principal.user_id)
-          .first<number>();
+          .first<number>("ok");
         if (visible !== 1) return null;
       }
     } else if (["node.rename", "node.move", "dav.move", "node.restore"].includes(row.kind)) {
@@ -439,19 +457,21 @@ export async function lookupOperation(
           ? 204
           : row.kind === "node.restore"
             ? 200
-            : ["node.move", "dav.move"].includes(row.kind)
-              ? typeof operands.overwriteTargetId === "string"
-                ? 204
-                : 201
-              : ["node.copy", "dav.copy"].includes(row.kind)
+            : row.kind === "node.purge"
+              ? 200
+              : ["node.move", "dav.move"].includes(row.kind)
                 ? typeof operands.overwriteTargetId === "string"
                   ? 204
                   : 201
-                : create
-                  ? 201
-                  : row.kind === "dav.proppatch"
-                    ? 207
-                    : 200;
+                : ["node.copy", "dav.copy"].includes(row.kind)
+                  ? typeof operands.overwriteTargetId === "string"
+                    ? 204
+                    : 201
+                  : create
+                    ? 201
+                    : row.kind === "dav.proppatch"
+                      ? 207
+                      : 200;
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&

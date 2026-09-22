@@ -16,6 +16,7 @@ import { claimOperation, operationIntent } from "../../src/jobs/operations";
 import { copyNode } from "../../src/services/copyNode";
 import { commitMutationStatements } from "../../src/services/fsMutation";
 import { moveNode } from "../../src/services/moveNode";
+import { purgeTrash } from "../../src/services/purgeTrash";
 import {
   RENAME_NODE_STEPS,
   renameMutationPlan,
@@ -121,6 +122,8 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
             invoke((lock) => lock.acquireTrash(request)),
           acquireRestore: (request: Parameters<LockDO["acquireRestore"]>[0]) =>
             invoke((lock) => lock.acquireRestore(request)),
+          acquirePurge: (request: Parameters<LockDO["acquirePurge"]>[0]) =>
+            invoke((lock) => lock.acquirePurge(request)),
           release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
             invoke((lock) => lock.release(requestId, permit)),
         };
@@ -353,6 +356,33 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
     ).json(),
   ).toMatchObject({ id: restoreOperation.id, state: "committed" });
   expect((await send(restorePath, "POST", { ...base }, restoreKey)).status).toBe(400);
+
+  const secondTrash = await send(trashPath, "DELETE", base, crypto.randomUUID());
+  expect(secondTrash.status).toBe(200);
+  const secondTrashOperation = await secondTrash.json<{ id: string }>();
+  const purgePath = `/api/v1/trash/${secondTrashOperation.id}/purge`;
+  const purgeKey = crypto.randomUUID();
+  expect(
+    nodeMutationRoute(new Request(`https://app.invalid${purgePath}`, { method: "POST" })),
+  ).toBe(true);
+  const purgeBody = { spaceId: f.ids.space };
+  const purged = await send(purgePath, "POST", purgeBody, purgeKey);
+  expect(purged.status).toBe(200);
+  const purgeOperation = await purged.json<{ id: string; state: string }>();
+  expect(purgeOperation.state).toBe("committed");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM nodes WHERE id=?")
+      .bind(copyOperation.result.nodeId)
+      .first("n"),
+  ).toBe(0);
+  await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
+    .bind(purgeOperation.id)
+    .run();
+  expect(await consumeOutbox(env.DB, `${purgeOperation.id}_event`)).toBe("completed");
+  expect(await (await send(purgePath, "POST", purgeBody, purgeKey)).json()).toMatchObject({
+    id: purgeOperation.id,
+    state: "committed",
+  });
 });
 
 it("restores only the fixed trash membership after GC deletion leases drain", async () => {
@@ -464,6 +494,49 @@ it("restores only the fixed trash membership after GC deletion leases drain", as
   expect(
     await env.DB.prepare("SELECT deleted_op_id FROM nodes WHERE id=?").bind(foreignNode).first(),
   ).toEqual({ deleted_op_id: foreignOp });
+
+  const secondTrash = await trashNode(admitted(), {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.folder,
+    lockTokens: [],
+  });
+  if (secondTrash.kind !== "terminal" || secondTrash.operation.state !== "committed")
+    throw new Error("second_trash_not_committed");
+  const generationBeforePurge = await env.DB.prepare(
+    "SELECT tree_generation FROM spaces WHERE id=?",
+  )
+    .bind(f.ids.space)
+    .first<number>("tree_generation");
+  const purged = await purgeTrash(admitted(), {
+    principal,
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    trashOpId: secondTrash.operation.id,
+  });
+  if (purged.kind !== "terminal") throw new Error("purge_commit_unknown");
+  expect(purged.operation.state).toBe("committed");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM nodes WHERE id IN (?,?,?,?)")
+      .bind(f.ids.folder, f.ids.file, nestedParent, nestedChild)
+      .first("n"),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT parent_id,deleted_op_id FROM nodes WHERE id=?")
+      .bind(foreignNode)
+      .first(),
+  ).toEqual({ parent_id: null, deleted_op_id: foreignOp });
+  expect(
+    await env.DB.prepare("SELECT state,trash_op_id FROM gc_candidates WHERE blob_id=?")
+      .bind(f.ids.blob)
+      .first(),
+  ).toEqual({ state: "candidate", trash_op_id: secondTrash.operation.id });
+  expect(
+    await env.DB.prepare("SELECT tree_generation FROM spaces WHERE id=?")
+      .bind(f.ids.space)
+      .first("tree_generation"),
+  ).toBe((generationBeforePurge ?? 0) + 1);
 });
 
 it("copies a fixed folder manifest with COW blobs and dead properties", async () => {

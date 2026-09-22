@@ -237,6 +237,7 @@ export async function failStaleRecoveryOutbox(
         (b.kind='node.updated' AND o.kind='dav.put') OR
         (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
         (b.kind='node.restored' AND o.kind='node.restore') OR
+        (b.kind='node.purged' AND o.kind='node.purge') OR
         (b.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
         AND b.state IN ('pending','dispatching','sent')
         AND o.state='committed' AND o.epoch=b.epoch
@@ -255,7 +256,7 @@ export async function failStaleRecoveryOutbox(
         {
           sql: `UPDATE outbox SET state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
             claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
-            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.updated','node.trashed','node.restored','node.renamed')
+            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.updated','node.trashed','node.restored','node.purged','node.renamed')
               AND state IN ('pending','dispatching','sent')
               AND ((state='pending') OR (dispatch_token IS NOT NULL AND dispatch_expires_at IS NOT NULL))
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
@@ -265,6 +266,7 @@ export async function failStaleRecoveryOutbox(
                   (outbox.kind='node.updated' AND o.kind='dav.put') OR
                   (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
                   (outbox.kind='node.restored' AND o.kind='node.restore') OR
+                  (outbox.kind='node.purged' AND o.kind='node.purge') OR
                   (outbox.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
                 AND o.state='committed' AND o.epoch=outbox.epoch
                 AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
@@ -497,6 +499,7 @@ export async function inspectRecoveryPage(
           (row.kind === "node.trashed" &&
             ["node.trash", "dav.delete"].includes(row.operation_kind ?? "")) ||
           (row.kind === "node.restored" && row.operation_kind === "node.restore") ||
+          (row.kind === "node.purged" && row.operation_kind === "node.purge") ||
           (row.kind === "node.renamed" &&
             ["node.rename", "node.move", "dav.move"].includes(row.operation_kind ?? ""))
         ) ||
@@ -519,7 +522,8 @@ export async function inspectRecoveryPage(
           (row.kind === "node.renamed" ||
           row.kind === "node.updated" ||
           row.kind === "node.trashed" ||
-          row.kind === "node.restored"
+          row.kind === "node.restored" ||
+          row.kind === "node.purged"
             ? operands.nodeId !== row.payload_ref
             : operands.nodeId !== undefined) ||
           !result ||
@@ -532,7 +536,7 @@ export async function inspectRecoveryPage(
                 : 201
               : row.kind === "node.updated" || row.kind === "node.trashed"
                 ? 204
-                : row.kind === "node.restored"
+                : row.kind === "node.restored" || row.kind === "node.purged"
                   ? 200
                   : ["node.move", "dav.move"].includes(row.operation_kind ?? "")
                     ? typeof operands.overwriteTargetId === "string"
