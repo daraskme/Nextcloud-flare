@@ -53,6 +53,22 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
       dependencies,
     );
     expect(rejected.status).toBe(401);
+    const me = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/me", {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(me.status).toBe(200);
+    expect(await me.json()).toMatchObject({
+      id: f.ids.user,
+      role: "app_admin",
+      spaceId: f.ids.space,
+      rootNodeId: f.ids.root,
+      epoch: 1,
+    });
     const csrfResponse = await handlePrivateAppHttp(
       new Request("https://app.invalid/api/v1/csrf", {
         method: "POST",
@@ -106,6 +122,38 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
     );
     expect(cancelled.status).toBe(204);
     await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+    const noCsrfLogout = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/auth/logout", {
+        method: "POST",
+        headers: {
+          Origin: "https://app.invalid",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Cf-Access-Jwt-Assertion": jwt,
+        },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(noCsrfLogout.status).toBe(403);
+    const logout = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/auth/logout", { method: "POST", headers }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(logout.status).toBe(303);
+    expect(logout.headers.get("Location")).toBe("https://app.invalid/cdn-cgi/access/logout");
+    const afterLogout = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/me", {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(afterLogout.status).toBe(403);
   } finally {
     await env.BLOBS.delete(firstKey);
     if (targetSetId) await env.BLOBS.delete(`target-sets/${targetSetId}`);

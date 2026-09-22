@@ -5,6 +5,7 @@ import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
 import { loginAccessUser } from "../auth/login";
 import type { Env } from "../env";
+import { handleAccountHttp } from "./account";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 
 export interface PrivateAppDependencies {
@@ -17,8 +18,11 @@ export interface PrivateAppDependencies {
 export function privateAppRoute(request: Request): boolean {
   const url = new URL(request.url);
   return (
+    (request.method === "GET" && url.pathname === "/api/v1/me") ||
     (request.method === "POST" &&
-      (url.pathname === "/api/v1/csrf" || url.pathname === "/api/v1/content-session")) ||
+      (url.pathname === "/api/v1/csrf" ||
+        url.pathname === "/api/v1/content-session" ||
+        url.pathname === "/api/v1/auth/logout")) ||
     (request.method === "DELETE" && /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname))
   );
 }
@@ -33,10 +37,13 @@ export async function handlePrivateAppHttp(
   const url = new URL(request.url);
   if (url.origin !== env.APP_ORIGIN || url.search || url.hash) return problem(404, "not_found");
   const csrfIssue = url.pathname === "/api/v1/csrf" && request.method === "POST";
+  const accountRead = url.pathname === "/api/v1/me" && request.method === "GET";
+  const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
     /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && request.method === "DELETE";
-  if (!csrfIssue && !ticketIssue && !ticketCancel) return problem(404, "not_found");
+  if (!csrfIssue && !accountRead && !logout && !ticketIssue && !ticketCancel)
+    return problem(404, "not_found");
   let session;
   try {
     session = await loginAccessUser(
@@ -66,6 +73,7 @@ export async function handlePrivateAppHttp(
       return problem(403, "forbidden");
     }
   }
+  if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
   return handlePrivateContentTicketHttp(
     request,
     env,
