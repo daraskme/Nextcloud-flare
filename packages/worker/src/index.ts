@@ -21,7 +21,7 @@ export default {
     return problem(404, "not_found");
   },
   queue(batch: MessageBatch): void {
-    // A delivery is not a completed job. Preserve messages until claims/outbox exist.
+    // Admission remains closed until ControlDO resume and Queue recovery are implemented.
     batch.retryAll();
   },
   scheduled(): void {

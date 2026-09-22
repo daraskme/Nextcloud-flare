@@ -182,13 +182,13 @@ folder は blob を持たず容量 counter を変えない。FTS と outbox が�
 未確定は operation ID 付きの commit_unknown として返す。terminal replay は現在見える ID/revision/status と安定 error code だけ。
 テストは各 step/terminal の0行、同じ claim の並行実行、応答喪失、失効・revision/tree/epoch/maintenance/lock/permit 変更を注入する。
 
-### outbox producer
+### outbox producer / consumer
 
 `jobs/outbox.ts` は D1 の current epoch/maintenance解除/committed operation を条件に30秒 dispatch lease を取得し、Queue へ `{outboxId}` だけ送る。
 送信後の sent 更新は同じ token/lease で CAS し、先に completed となった行や新しい sender の token を上書きしない。
 送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査する。
-Queue send と D1 応答喪失は注入試験。実 Queue 配信/consumer claim/result CAS/ack 喪失/DLQ は未完了。
-`index.ts` の queue は retryAll、scheduled は no-op のまま。consumer と復旧時の処理を実装するまで producer/repair helper を公開 runtime に接続しない。
+`jobs/consumeOutbox.ts` は `node.created` のみを処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の node.create 認可で再検査し、30秒の claim token/lease を取得する。node の `last_op_id`、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
+実 Queue 配信/ack 喪失/DLQ、他の event kind、ControlDO admission、復旧時の検証は未完了。`index.ts` の queue は retryAll、scheduled は no-op のまま。ControlDO が maintenance を解除し、Queue 復旧を実装するまで producer/consumer/repair helper を公開 runtime に接続しない。
 
 ### 実サービス gate
 
@@ -196,5 +196,5 @@ native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd
 固定 pool 0.22 の RPC 拒否例外は後続 invocation の cleanup を停止させるため、意図的な拒否試験は `runInDurableObject` 内で捕捉し、成功時は実 stub RPC を使用する。
 実 Cloudflare の RPC/ネットワーク断/復旧運用の staging gate は未完了。
 
-次は consumer claim/ack と repair、ControlDO 再開、残る operation tuple の認可と HTTP profile 接続。
+次は Queue ack/DLQ と repair、ControlDO 再開、残る operation tuple の認可と HTTP profile 接続。
 後半が終わるまで Files core を公開しない。
