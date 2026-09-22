@@ -223,6 +223,41 @@ it.each(["user", "app_password", "link_share"] as const)(
   },
 );
 
+it.each(["user", "app_password", "link_share"] as const)(
+  "authorizes %s content writes only for a file with current edit authority",
+  async (kind) => {
+    const f = await fixture(kind);
+    const request: NodeRequest = {
+      operation: "node.content.write",
+      nodeId: f.ids.file,
+      spaceId: f.ids.space,
+    };
+    if (kind !== "user")
+      await expect(authorizeNode(env.DB, f.principal, request)).rejects.toThrow();
+    if (kind === "app_password")
+      await env.DB.prepare("INSERT INTO credential_scopes VALUES(?,'node:write')")
+        .bind(f.principal.credential_id)
+        .run();
+    if (kind === "link_share")
+      await env.DB.prepare("INSERT INTO share_actions VALUES(?,'edit')").bind(f.credential).run();
+    const proof = await authorizeNode(env.DB, f.principal, request);
+    expect(proof).toMatchObject({
+      operation: "node.content.write",
+      node: { id: f.ids.file, kind: "file" },
+      parentId: f.ids.folder,
+    });
+    await expect(
+      authorizeNode(env.DB, f.principal, { ...request, nodeId: f.ids.folder }),
+    ).rejects.toThrow();
+    await expect(atomicBatch(env.DB, [authorizationAssertion(proof)])).resolves.toBeDefined();
+    await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(f.ids.file).run();
+    await expect(atomicBatch(env.DB, [authorizationAssertion(proof)])).rejects.toThrow();
+    const current = await authorizeNode(env.DB, f.principal, request);
+    await env.DB.prepare("UPDATE control SET maintenance=1").run();
+    await expect(atomicBatch(env.DB, [authorizationAssertion(current)])).rejects.toThrow();
+  },
+);
+
 it.each(["user", "app_password", "link_share", "service"] as const)(
   "blocks a stale %s authorization in the actual mutation batch after credential revocation",
   async (kind) => {

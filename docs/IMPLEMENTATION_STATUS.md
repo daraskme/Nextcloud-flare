@@ -36,7 +36,7 @@
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
-| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent assertion。rename は root と share/scope root を拒否し、edit/node:write を要求 | read/create/rename/automation 5 operation の内部基盤。残る operation の認可は未完了 |
+| 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent/blob assertion。rename は root と share/scope root を拒否し、edit/node:write を要求。content write は file と edit/node:write を要求 | read/create/rename/content write/automation 6 operation の内部基盤。残る operation の認可は未完了 |
 | R6 #7 CSRF | session 束縛 HMAC、TTL1h、再利用・再発行、purpose/aud/epoch/credential、current session/share、Origin 境界 | 内部サービスと D1 テスト実装済み。HTTP profile 接続待ち |
 | 1 quota/ref/pin | owner/share reservation、unique logical、R2 HEAD physical、ref≤1,000、pin-only除外、各再送の一度だけ計上 | migration/内部サービス実装済み。GC/repair/namespace mutation 接続待ち |
 | 1 D1 permit | space ごとの open 一意、identity固定、期限 revoke+claim failed+次 grant の atomic batch、応答喪失、old commit 拒否 | D1 primitive 実証。create/rename 用 LockDO へ接続済み |
@@ -83,6 +83,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 成功。Node 199 + workerd 306 = **505 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。`node.content.write` の file 限定と current edit/node:write、blob/revision/maintenance の commit proof を追加し、user/app password/link share で検証。実 content write サービスは未実装。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 303 = **502 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。`node.created` / `node.renamed` の outbox consumer と復旧監査で、通知 payload と保存済み operand/result の一致を確認。誤った結果を持つ event は完了せず、監査も拒否する。ControlDO は maintenance 固定で公開停止。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 301 = **500 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app HTTP の node rename を既存サービスへ接続し、実 LockDO/D1 で CSRF、確定、再送、operation 照会、競合を検証。ControlDO は maintenance 固定で公開停止。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 300 = **499 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。folder 作成と operation 照会の app HTTP route を追加し、実 LockDO/D1 の作成・再送・競合を検証。ControlDO は maintenance 固定で公開停止。
