@@ -123,6 +123,9 @@ export class ContentTokens {
     try {
       if (token.length > 2048 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))
         throw new Error("invalid_token");
+      const signature = token.split(".")[2] ?? "";
+      if (base64url.encode(base64url.decode(signature)) !== signature)
+        throw new Error("invalid_token");
       const { payload, protectedHeader } = await jwtVerify(
         token,
         (header) => {
@@ -212,6 +215,11 @@ export class ContentTokens {
       )
         throw new Error("invalid_cookie");
       const [kid, sessionId, signature] = parts as [string, string, string];
+      if (
+        base64url.encode(base64url.decode(sessionId)) !== sessionId ||
+        base64url.encode(base64url.decode(signature)) !== signature
+      )
+        throw new Error("invalid_cookie");
       const key = this.cookieRing.keys.get(kid);
       if (!key) throw new Error("unknown_key");
       const message = new TextEncoder().encode(

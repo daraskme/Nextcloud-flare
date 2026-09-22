@@ -21,6 +21,14 @@ async function codec(now: () => number) {
   return new ContentTokens(ticket, cookie, "https://content.invalid", now);
 }
 
+function nonCanonicalSignature(value: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const last = value.at(-1) ?? "";
+  const index = alphabet.indexOf(last);
+  if (index < 0 || index % 4 !== 0) throw new Error("unexpected_signature_encoding");
+  return `${value.slice(0, -1)}${alphabet[index + 1]}`;
+}
+
 it("redeems a signed ticket into an opaque cookie and current D1 content session", async () => {
   const now = Date.now();
   const f = foundationFixture(crypto.randomUUID(), now - 1000);
@@ -121,13 +129,26 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   await expect(tokens.verifyCookie(`${cookie}; ${cookie}`)).rejects.toThrow(
     /content_cookie_rejected/,
   );
-  await expect(tokens.verifyCookie(`${cookie.slice(0, -1)}x`)).rejects.toThrow(
+  const cookieParts = cookie.split(".");
+  const cookieSignature = cookieParts[2] ?? "";
+  cookieParts[2] = `${cookieSignature.startsWith("A") ? "B" : "A"}${cookieSignature.slice(1)}`;
+  await expect(tokens.verifyCookie(cookieParts.join("."))).rejects.toThrow(
     /content_cookie_rejected/,
   );
+  await expect(
+    tokens.verifyCookie(
+      `${cookieParts[0]}.${cookieParts[1]}.${nonCanonicalSignature(cookieSignature)}`,
+    ),
+  ).rejects.toThrow(/content_cookie_rejected/);
   const pieces = ticket.split(".");
   pieces[2] = `A${pieces[2]?.slice(1)}`;
   if (ticket.split(".")[2]?.startsWith("A")) pieces[2] = `B${pieces[2]?.slice(1)}`;
   await expect(tokens.verifyTicket(pieces.join("."))).rejects.toThrow(/content_ticket_rejected/);
+  await expect(
+    tokens.verifyTicket(
+      `${pieces[0]}.${pieces[1]}.${nonCanonicalSignature(ticket.split(".")[2] ?? "")}`,
+    ),
+  ).rejects.toThrow(/content_ticket_rejected/);
   await env.DB.prepare("UPDATE tickets SET cancelled_at=? WHERE id=?").bind(now, ids.ticket).run();
   await expect(acceptContentTicket(env.DB, tokens, ticket)).rejects.toThrow();
   await expect(
