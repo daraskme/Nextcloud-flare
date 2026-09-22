@@ -1,4 +1,4 @@
-import { primary } from "../db/primary";
+import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import { auditOwnerLedger } from "../services/refs";
 import { epochNumber } from "./epochHistory";
 
@@ -11,7 +11,8 @@ export interface RecoveryCursor {
     | "shares"
     | "credentials"
     | "credential_sources"
-    | "fts";
+    | "fts"
+    | "fence";
   readonly afterId: string;
 }
 
@@ -52,6 +53,7 @@ function validCursor(cursor: RecoveryCursor, limit: number): void {
       "credentials",
       "credential_sources",
       "fts",
+      "fence",
     ].includes(cursor.stage) ||
     typeof cursor.afterId !== "string" ||
     cursor.afterId.length >
@@ -167,6 +169,68 @@ export async function rebuildRecoverySearchFts(db: D1Database, epoch: number): P
   await inspectRecoverySearchFts(db, epoch);
 }
 
+/** Last D1 observation before an audit is marked complete; admission stays closed. */
+export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): Promise<void> {
+  epochNumber(epoch);
+  await assertQuiesced(db, epoch);
+  const ready = await primary(db)
+    .prepare(`SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=?
+      AND c.maintenance=1 AND c.gc_paused=1
+      AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
+      AND NOT EXISTS(SELECT 1 FROM uploads
+        WHERE state IN ('created','receiving','uploading','completing','aborting'))
+      AND NOT EXISTS(SELECT 1 FROM outbox
+        WHERE state IN ('pending','dispatching','sent') AND epoch<>c.epoch)
+      AND NOT EXISTS(SELECT 1 FROM job_leases)
+      AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')`)
+    .bind(epoch)
+    .first<number>();
+  if (ready === null) throw new Error("recovery_final_fence_pending");
+}
+
+/** Release only old-epoch reservations with no upload still needing data cleanup. */
+export async function releaseStaleRecoveryReservations(
+  db: D1Database,
+  epoch: number,
+  limit = 20,
+): Promise<number> {
+  epochNumber(epoch);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+    throw new Error("invalid_recovery_limit");
+  await assertQuiesced(db, epoch);
+  const rows = await primary(db)
+    .prepare(`SELECT r.id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
+      AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id
+        AND u.state IN ('created','receiving','uploading','completing','aborting'))
+      ORDER BY r.id LIMIT ?`)
+    .bind(epoch, limit)
+    .all<{ id: string }>();
+  let released = 0;
+  for (const { id } of rows.results) {
+    try {
+      await atomicBatch(db, [
+        {
+          sql: `UPDATE reservations SET state='released' WHERE id=? AND state='reserved' AND epoch<?
+            AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1)
+            AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id
+              AND u.state IN ('created','receiving','uploading','completing','aborting'))`,
+          values: [id, epoch, epoch],
+        },
+        assertOneChange,
+      ]);
+    } catch (error) {
+      const terminal = await primary(db)
+        .prepare("SELECT 1 FROM reservations WHERE id=? AND state='released' AND epoch<?")
+        .bind(id, epoch)
+        .first<number>();
+      if (terminal === null) throw error;
+    }
+    released++;
+  }
+  await assertQuiesced(db, epoch);
+  return released;
+}
+
 /** One diagnostic stage; row pages are bounded, while FTS integrity checks its whole index. */
 export async function inspectRecoveryPage(
   db: D1Database,
@@ -178,10 +242,15 @@ export async function inspectRecoveryPage(
   epochNumber(epoch);
   validCursor(cursor, limit);
   await assertQuiesced(db, epoch);
+  if (cursor.stage === "fence") {
+    if (cursor.afterId !== "") throw new Error("invalid_recovery_cursor");
+    await inspectRecoveryFinalFence(db, epoch);
+    return { examined: 0, next: null };
+  }
   if (cursor.stage === "fts") {
     if (cursor.afterId !== "") throw new Error("invalid_recovery_cursor");
     await inspectRecoverySearchFts(db, epoch);
-    return { examined: 0, next: null };
+    return { examined: 0, next: { stage: "fence", afterId: "" } };
   }
   if (cursor.stage === "users") {
     const rows = await primary(db)

@@ -4,7 +4,7 @@ import { beforeAll, expect, it } from "vitest";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
-import { inspectRecoverySearchFts } from "../../src/do/recoveryAudit";
+import { inspectRecoveryFinalFence, inspectRecoverySearchFts } from "../../src/do/recoveryAudit";
 import { foundationFixture } from "../fixtures/foundation";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
@@ -84,11 +84,16 @@ it("persists page progress across DO eviction and treats completion as diagnosti
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "fence",
     pages: 11,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 12,
     completed: true,
   });
-  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 11, completed: true });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({ pages: 12, completed: true });
   expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
 });
 
@@ -141,8 +146,13 @@ it("keeps a failed page pending so repair can resume at the same cursor", async 
     completed: false,
   });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
-    stage: "complete",
+    stage: "fence",
     pages: 11,
+    completed: false,
+  });
+  expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
+    stage: "complete",
+    pages: 12,
     completed: true,
   });
 });
@@ -170,6 +180,73 @@ it("persists an R2 list cursor and retries an untracked object after eviction", 
     });
   } finally {
     await env.BLOBS.delete(unknown);
+  }
+});
+
+it("releases a stale reservation under maintenance and restarts the audit", async () => {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch)
+    VALUES(?,?,7,'reserved',?,1)`)
+    .bind(id, fixture.ids.user, Date.now() + 60000)
+    .run();
+  try {
+    await expect(inspectRecoveryFinalFence(env.DB, 2)).rejects.toThrow(
+      /recovery_final_fence_pending/,
+    );
+    expect(await control().releaseStaleReservations(2, 1)).toMatchObject({
+      released: 1,
+      audit: { stage: "users", pages: 0 },
+    });
+    expect(
+      await env.DB.prepare("SELECT state FROM reservations WHERE id=?").bind(id).first("state"),
+    ).toBe("released");
+    await expect(inspectRecoveryFinalFence(env.DB, 2)).resolves.toBeUndefined();
+  } finally {
+    await env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?").bind(id).run();
+    await env.DB.prepare("DELETE FROM reservations WHERE id=?").bind(id).run();
+  }
+});
+
+it("holds an old reservation until its linked upload becomes terminal", async () => {
+  const reservationId = crypto.randomUUID();
+  const blobId = crypto.randomUUID();
+  const uploadId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at)
+    VALUES(?,?,?,1,'etag','staging',1)`)
+    .bind(blobId, fixture.ids.user, `u/${fixture.ids.user}/b/${blobId}`)
+    .run();
+  await env.DB.prepare(`INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch)
+    VALUES(?,?,1,'reserved',?,1)`)
+    .bind(reservationId, fixture.ids.user, Date.now() + 60000)
+    .run();
+  await env.DB.prepare(`INSERT INTO uploads(id,owner_id,space_id,parent_id,blob_id,credential_id,
+    reservation_id,mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at)
+    VALUES(?,?,?,?,?,?,?,'single','created',1,'cap',1,1,2,1)`)
+    .bind(
+      uploadId,
+      fixture.ids.user,
+      fixture.ids.space,
+      fixture.ids.root,
+      blobId,
+      fixture.ids.credential,
+      reservationId,
+    )
+    .run();
+  try {
+    expect(await control().releaseStaleReservations(2, 1)).toMatchObject({ released: 0 });
+    await expect(inspectRecoveryFinalFence(env.DB, 2)).rejects.toThrow(
+      /recovery_final_fence_pending/,
+    );
+    await env.DB.prepare("UPDATE uploads SET state='expired' WHERE id=?").bind(uploadId).run();
+    expect(await control().releaseStaleReservations(2, 1)).toMatchObject({ released: 1 });
+    await expect(inspectRecoveryFinalFence(env.DB, 2)).resolves.toBeUndefined();
+  } finally {
+    await env.DB.prepare("DELETE FROM uploads WHERE id=?").bind(uploadId).run();
+    await env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?")
+      .bind(reservationId)
+      .run();
+    await env.DB.prepare("DELETE FROM reservations WHERE id=?").bind(reservationId).run();
+    await env.DB.prepare("DELETE FROM blobs WHERE id=?").bind(blobId).run();
   }
 });
 

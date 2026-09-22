@@ -105,6 +105,28 @@ it("detects an R2 object without a durable D1 owner", async () => {
   }
 });
 
+it("keeps the final fence closed until a reservation is released", async () => {
+  const owner = fixtures[0];
+  if (!owner) throw new Error("missing_fixture");
+  const id = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch)
+    VALUES(?,?,1,'reserved',?,1)`)
+    .bind(id, owner.ids.user, Date.now() + 60000)
+    .run();
+  try {
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "fence", afterId: "" }),
+    ).rejects.toThrow(/recovery_final_fence_pending/);
+    await env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?").bind(id).run();
+    await expect(
+      inspectRecoveryPage(env.DB, env.BLOBS, 1, { stage: "fence", afterId: "" }),
+    ).resolves.toEqual({ examined: 0, next: null });
+  } finally {
+    await env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?").bind(id).run();
+    await env.DB.prepare("DELETE FROM reservations WHERE id=?").bind(id).run();
+  }
+});
+
 it("rejects share counter drift and a live root from another owner", async () => {
   const owner = fixtures[0];
   const other = fixtures[1];
