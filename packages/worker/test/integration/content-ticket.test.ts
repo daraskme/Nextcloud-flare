@@ -7,10 +7,119 @@ import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { atomicBatch } from "../../src/db/primary";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
+import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { loadTargetManifest } from "../../src/services/targetManifest";
 import { foundationFixture } from "../fixtures/foundation";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
+
+it("cancels the ticket and its redeemed sessions while preserving the shared budget", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    issued = await issueContentTicket(
+      env.DB,
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "content",
+      now + 300_000,
+    );
+    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
+    await cancelContentTicket(env.DB, principal, issued.ticketId);
+    await cancelContentTicket(env.DB, principal, issued.ticketId);
+    const ticket = await env.DB.prepare("SELECT cancelled_at FROM tickets WHERE id=?")
+      .bind(issued.ticketId)
+      .first<{ cancelled_at: number | null }>();
+    const session = await env.DB.prepare("SELECT revoked_at FROM content_sessions WHERE id=?")
+      .bind(accepted.sessionId)
+      .first<{ revoked_at: number | null }>();
+    const budget = await env.DB.prepare("SELECT state FROM budgets WHERE id=?")
+      .bind(issued.budgetId)
+      .first<{ state: string }>();
+    expect(ticket?.cancelled_at).not.toBeNull();
+    expect(session?.revoked_at).not.toBeNull();
+    expect(budget?.state).toBe("active");
+    await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+    await expect(
+      prepareCookieBlobRead(
+        env.DB,
+        env.BLOBS,
+        tokens,
+        accepted.setCookie.split(";", 1)[0] ?? "",
+        f.ids.space,
+        f.ids.file,
+        "content",
+      ),
+    ).rejects.toThrow();
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
+  }
+});
+
+it("rejects cancellation by a different credential or a revoked session", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    issued = await issueContentTicket(
+      env.DB,
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "content",
+      now + 300_000,
+    );
+    await expect(
+      cancelContentTicket(env.DB, { ...principal, credential_id: "as:other" }, issued.ticketId),
+    ).rejects.toThrow();
+    await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+      .bind(now, f.ids.session)
+      .run();
+    await expect(cancelContentTicket(env.DB, principal, issued.ticketId)).rejects.toThrow();
+    const row = await env.DB.prepare("SELECT cancelled_at FROM tickets WHERE id=?")
+      .bind(issued.ticketId)
+      .first<{ cancelled_at: number | null }>();
+    expect(row?.cancelled_at).toBeNull();
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
+  }
+});
+
+it("reconciles cancellation when D1 commits but loses its response", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    issued = await issueContentTicket(
+      env.DB,
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "content",
+      now + 300_000,
+    );
+    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
+    const db = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch(statements: D1PreparedStatement[]) {
+        await env.DB.batch(statements);
+        throw new Error("response_lost");
+      },
+    } as unknown as D1Database;
+    await cancelContentTicket(db, principal, issued.ticketId);
+    const row = await env.DB.prepare("SELECT revoked_at FROM content_sessions WHERE id=?")
+      .bind(accepted.sessionId)
+      .first<{ revoked_at: number | null }>();
+    expect(row?.revoked_at).not.toBeNull();
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
+  }
+});
 
 async function fixture() {
   const now = Date.now();
