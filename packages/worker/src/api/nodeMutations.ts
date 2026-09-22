@@ -4,9 +4,11 @@ import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
 import { lookupOperation } from "../jobs/operations";
 import { createFolder } from "../services/createFolder";
+import { renameNode } from "../services/renameNode";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OPERATION = /^\/api\/v1\/operations\/(op_[a-f0-9]{64})$/;
+const NODE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})$/;
 const MAX_BODY = 8192;
 
 function unknownOperation(id: string): Response {
@@ -21,13 +23,14 @@ export function nodeMutationRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
   return (
     (request.method === "POST" && path === "/api/v1/nodes") ||
+    (request.method === "PATCH" && NODE.test(path)) ||
     (request.method === "GET" && OPERATION.test(path))
   );
 }
 
-async function folderBody(request: Request) {
+async function readBody(request: Request): Promise<Record<string, unknown>> {
   if (request.headers.get("Content-Type") !== "application/json" || !request.body)
-    throw new Error("invalid_folder_body");
+    throw new Error("invalid_body");
   const reader = request.body.getReader();
   const parts: Uint8Array[] = [];
   let size = 0;
@@ -36,7 +39,7 @@ async function folderBody(request: Request) {
       const next = await reader.read();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > MAX_BODY) throw new Error("invalid_folder_body");
+      if (size > MAX_BODY) throw new Error("invalid_body");
       parts.push(next.value);
     }
   } finally {
@@ -52,8 +55,19 @@ async function folderBody(request: Request) {
     new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
   );
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded))
-    throw new Error("invalid_folder_body");
-  const body = decoded as Record<string, unknown>;
+    throw new Error("invalid_body");
+  return decoded as Record<string, unknown>;
+}
+
+function validLockTokens(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 16 &&
+    value.every((token) => typeof token === "string" && token.length >= 1 && token.length <= 256)
+  );
+}
+
+function folderBody(body: Record<string, unknown>) {
   const lockTokens = body.lockTokens ?? [];
   if (
     Object.keys(body).some(
@@ -65,17 +79,28 @@ async function folderBody(request: Request) {
     typeof body.parentId !== "string" ||
     !ID.test(body.parentId) ||
     typeof body.name !== "string" ||
-    !Array.isArray(lockTokens) ||
-    lockTokens.length > 16 ||
-    lockTokens.some((token) => typeof token !== "string" || token.length < 1 || token.length > 256)
+    !validLockTokens(lockTokens)
   )
     throw new Error("invalid_folder_body");
   return {
     spaceId: body.spaceId,
     parentId: body.parentId,
     name: body.name,
-    lockTokens: lockTokens as string[],
+    lockTokens,
   };
+}
+
+function renameBody(body: Record<string, unknown>) {
+  const lockTokens = body.lockTokens ?? [];
+  if (
+    Object.keys(body).some((key) => !["spaceId", "name", "lockTokens"].includes(key)) ||
+    typeof body.spaceId !== "string" ||
+    !ID.test(body.spaceId) ||
+    typeof body.name !== "string" ||
+    !validLockTokens(lockTokens)
+  )
+    throw new Error("invalid_rename_body");
+  return { spaceId: body.spaceId, name: body.name, lockTokens };
 }
 
 /** Private REST bridge for the preexisting operation/permit mutation protocol. */
@@ -100,8 +125,9 @@ export async function handleNodeMutationHttp(
       return problem(503, "not_ready");
     }
   }
-  if (request.method !== "POST" || url.pathname !== "/api/v1/nodes")
-    return problem(404, "not_found");
+  const folder = request.method === "POST" && url.pathname === "/api/v1/nodes";
+  const rename = request.method === "PATCH" ? NODE.exec(url.pathname) : null;
+  if (!folder && !rename) return problem(404, "not_found");
   try {
     await csrf.verify(env.DB, request, {
       kind: "access",
@@ -114,20 +140,27 @@ export async function handleNodeMutationHttp(
   const key = request.headers.get("Idempotency-Key");
   if (!key || key.includes(",") || !/^[\x21-\x7e]{1,200}$/.test(key))
     return problem(400, "bad_request");
-  let body: Awaited<ReturnType<typeof folderBody>>;
+  let body: Record<string, unknown>;
   try {
-    body = await folderBody(request);
+    body = await readBody(request);
   } catch {
     return problem(400, "bad_request");
   }
   try {
-    const outcome = await createFolder(env, { principal, idempotencyKey: key, ...body });
+    const outcome = folder
+      ? await createFolder(env, { principal, idempotencyKey: key, ...folderBody(body) })
+      : await renameNode(env, {
+          principal,
+          idempotencyKey: key,
+          nodeId: rename?.[1] ?? "",
+          ...renameBody(body),
+        });
     if (outcome.kind === "commit_unknown") return unknownOperation(outcome.operationId);
     const operation = outcome.operation;
     if (operation.state === "claimed") return unknownOperation(operation.id);
     if (operation.state === "committed")
       return Response.json(operation, {
-        status: 201,
+        status: folder ? 201 : 200,
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
       });
     return Response.json(operation, {
@@ -139,7 +172,13 @@ export async function handleNodeMutationHttp(
       return problem(409, "conflict");
     if (
       error instanceof Error &&
-      ["invalid_name", "name_too_long", "reserved_name"].includes(error.message)
+      [
+        "invalid_name",
+        "name_too_long",
+        "reserved_name",
+        "invalid_folder_body",
+        "invalid_rename_body",
+      ].includes(error.message)
     )
       return problem(400, "bad_request");
     if (error instanceof Error && error.message === "authorization_denied")

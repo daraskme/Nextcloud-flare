@@ -1,8 +1,11 @@
 import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { searchName } from "@next-cloud-flare/shared/names";
+import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { handleNodeMutationHttp, nodeMutationRoute } from "../../src/api/nodeMutations";
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
+import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
@@ -112,6 +115,59 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
     } as unknown as Env["LOCKS"],
   };
 }
+
+it("renames through the private HTTP bridge and replays its operation", async () => {
+  const { f, principal } = await seeded();
+  const appEnv = { ...env, ...admitted(), APP_ORIGIN: "https://app.invalid" };
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: secret });
+  const csrf = new CsrfTokens(ring, ring, appEnv.APP_ORIGIN);
+  const issued = await csrf.issue(
+    env.DB,
+    new Request("https://app.invalid/api/v1/csrf", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+    { kind: "access", credentialId: principal.credential_id, epoch: 1 },
+  );
+  const url = `https://app.invalid/api/v1/nodes/${f.ids.folder}`;
+  const headers = {
+    Origin: appEnv.APP_ORIGIN,
+    "Sec-Fetch-Site": "same-origin",
+    "Content-Type": "application/json",
+    "X-CSRF-Token": issued.token,
+    "Idempotency-Key": crypto.randomUUID(),
+  };
+  const body = JSON.stringify({ spaceId: f.ids.space, name: "HTTP 経由の名前" });
+  const send = (requestHeaders = headers, requestBody = body) =>
+    handleNodeMutationHttp(
+      new Request(url, { method: "PATCH", headers: requestHeaders, body: requestBody }),
+      appEnv,
+      principal,
+      csrf,
+    );
+  expect(nodeMutationRoute(new Request(url, { method: "PATCH" }))).toBe(true);
+  expect((await send({ ...headers, "X-CSRF-Token": "" })).status).toBe(403);
+  const renamed = await send();
+  expect(renamed.status).toBe(200);
+  const operation = await renamed.json<{ id: string; result: { nodeId: string } }>();
+  expect(operation.result.nodeId).toBe(f.ids.folder);
+  expect(
+    await env.DB.prepare("SELECT name FROM nodes WHERE id=?").bind(f.ids.folder).first("name"),
+  ).toBe("HTTP 経由の名前");
+  const replay = await send();
+  expect(replay.status).toBe(200);
+  expect(await replay.json()).toMatchObject({ id: operation.id, result: operation.result });
+  const lookup = await handleNodeMutationHttp(
+    new Request(`https://app.invalid/api/v1/operations/${operation.id}`),
+    appEnv,
+    principal,
+    csrf,
+  );
+  expect(lookup.status).toBe(200);
+  expect(await lookup.json()).toMatchObject({ id: operation.id, state: "committed" });
+  expect((await send(headers, body.replace("HTTP 経由の名前", "別名"))).status).toBe(409);
+});
 
 it("renames through LockDO and replays the same idempotency key", async () => {
   const { f, principal } = await seeded();
