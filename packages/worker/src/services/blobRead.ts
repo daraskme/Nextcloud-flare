@@ -36,6 +36,7 @@ export async function prepareNodeBlobRead(
         WHERE n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?
           AND n.deleted_at IS NULL AND n.kind='file'
           AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
+          AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
           AND s.bytes=b.size AND s.r2_etag IS NOT NULL`,
       values: [nodeId, spaceId, authorized.node.revision, authorized.node.current_blob_id],
     },

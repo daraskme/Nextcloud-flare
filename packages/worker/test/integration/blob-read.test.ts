@@ -58,6 +58,38 @@ it("builds a current blob plan only while the D1 credential and node remain auth
   }
 });
 
+it("refuses an initially misbound physical blob key", async () => {
+  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  const statements = f.statements.map((statement) =>
+    statement.sql.startsWith("INSERT INTO blobs(")
+      ? {
+          ...statement,
+          values: [
+            f.ids.blob,
+            f.ids.user,
+            `u/${crypto.randomUUID()}/b/${f.ids.blob}`,
+            `"b-${f.ids.blob}"`,
+            Date.now() - 1000,
+          ],
+        }
+      : statement,
+  );
+  await atomicBatch(env.DB, statements);
+  await env.DB.prepare(
+    "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'etag',1)",
+  )
+    .bind(f.ids.blob)
+    .run();
+  await expect(
+    prepareNodeBlobRead(
+      env.DB,
+      { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch: 1 },
+      f.ids.space,
+      f.ids.file,
+    ),
+  ).rejects.toThrow(/content_not_available/);
+});
+
 it("streams exact R2 bytes with D1 content validators and safe response headers", async () => {
   const key = `u/${crypto.randomUUID()}/b/${crypto.randomUUID()}`;
   const stored = await env.BLOBS.put(key, "0123456789");
