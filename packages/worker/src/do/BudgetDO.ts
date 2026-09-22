@@ -191,7 +191,7 @@ export class BudgetDO extends DurableObject<Env> {
     let state = this.#state();
     if (state && (state.budget_id !== request.budgetId || state.epoch > request.epoch))
       throw new Error("budget_epoch_conflict");
-    if (!state || state.epoch < request.epoch) {
+    if (!state || state.epoch < request.epoch || state.expires_at <= now) {
       this.ctx.storage.sql.exec("DELETE FROM budget_leases");
       this.ctx.storage.sql.exec(
         `INSERT INTO budget_state VALUES(1,?,?,?,?,0,?,0)

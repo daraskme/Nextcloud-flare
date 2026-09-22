@@ -101,6 +101,49 @@ it("asserts current private content session, ticket, target set and budget in D1
   );
   expect(planned.budgetId).toBe(ids.budget);
   expect(planned.blob).toMatchObject({ key: blobKey, size: 3 });
+  const internalShare = crypto.randomUUID();
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'internal',?)",
+      values: [internalShare, f.ids.user, f.ids.folder, now],
+    },
+    { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [internalShare] },
+    {
+      sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
+      values: [internalShare, f.ids.user],
+    },
+    { sql: "UPDATE budgets SET share_id=? WHERE id=?", values: [internalShare, ids.budget] },
+    {
+      sql: "UPDATE content_sessions SET share_id=?,share_version=1 WHERE id=?",
+      values: [internalShare, ids.content],
+    },
+  ]);
+  const internalGrant = { ...grant, share: { id: internalShare, version: 1 } };
+  await prepareContentBlobRead(
+    env.DB,
+    env.BLOBS,
+    principal,
+    f.ids.space,
+    f.ids.file,
+    internalGrant,
+  );
+  await env.DB.prepare("UPDATE nodes SET parent_id=?,revision=revision+1 WHERE id=?")
+    .bind(f.ids.root, f.ids.file)
+    .run();
+  await expect(
+    prepareContentBlobRead(env.DB, env.BLOBS, principal, f.ids.space, f.ids.file, internalGrant),
+  ).rejects.toThrow();
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE nodes SET parent_id=?,revision=revision+1 WHERE id=?",
+      values: [f.ids.folder, f.ids.file],
+    },
+    {
+      sql: "UPDATE content_sessions SET share_id=NULL,share_version=NULL WHERE id=?",
+      values: [ids.content],
+    },
+    { sql: "UPDATE budgets SET share_id=NULL WHERE id=?", values: [ids.budget] },
+  ]);
   await env.BLOBS.put(ref, "{}");
   await expect(
     prepareContentBlobRead(env.DB, env.BLOBS, principal, f.ids.space, f.ids.file, grant),

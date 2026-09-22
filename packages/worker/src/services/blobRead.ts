@@ -157,6 +157,37 @@ export async function prepareContentBlobRead(
     throw new Error("content_not_available");
   const blob = await resolveBlobRead(db, authorized, [
     contentSessionAssertion(principal, grant.sessionId, grant.ticketId, grant.purpose, grant.share),
+    ...(grant.share || principal.kind === "link_share"
+      ? [
+          assertExists(
+            `WITH RECURSIVE a(id,parent_id,depth,path) AS (
+              SELECT id,parent_id,0,'/'||id||'/' FROM nodes
+                WHERE id=? AND space_id=? AND owner_id=?
+              UNION ALL
+              SELECT n.id,n.parent_id,a.depth+1,a.path||n.id||'/'
+                FROM nodes n JOIN a ON n.id=a.parent_id
+                WHERE a.depth<64 AND n.space_id=? AND n.owner_id=?
+                  AND instr(a.path,'/'||n.id||'/')=0
+            ) SELECT 1 FROM shares sh JOIN a ON a.id=sh.root_node_id
+              WHERE sh.id=? AND sh.version=? AND sh.owner_id=?
+                AND sh.disabled_at IS NULL
+                AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+                AND EXISTS(SELECT 1 FROM share_actions sa
+                  WHERE sa.share_id=sh.id AND sa.action='read')`,
+            [
+              authorized.node.id,
+              authorized.node.space_id,
+              authorized.node.owner_id,
+              authorized.node.space_id,
+              authorized.node.owner_id,
+              grant.share?.id ?? (principal.kind === "link_share" ? principal.share_id : ""),
+              grant.share?.version ??
+                (principal.kind === "link_share" ? principal.share_version : 0),
+              authorized.node.owner_id,
+            ],
+          ),
+        ]
+      : []),
     assertExists(
       `SELECT 1 FROM target_sets ts JOIN content_sessions cs ON cs.target_set_id=ts.id
         WHERE cs.id=? AND ts.id=? AND ts.owner_id=? AND ts.manifest_ref=?

@@ -118,6 +118,32 @@ it("persists charged bytes through eviction, refunds known unused bytes and neve
   });
 });
 
+it("restarts a budget only after its previous D1-backed lifetime expires", async () => {
+  const f = await fixture();
+  await runInDurableObject(f.stub, async (_, state) => {
+    const budget = new BudgetDO(state, env);
+    const request = {
+      budgetId: f.ids.budget,
+      sessionId: f.ids.content,
+      requestId: crypto.randomUUID(),
+      epoch: 1,
+      bytes: 9,
+    };
+    await budget.reserve(request);
+    await budget.settle({
+      budgetId: request.budgetId,
+      requestId: request.requestId,
+      deliveredBytes: null,
+    });
+    await expect(budget.reserve({ ...request, requestId: crypto.randomUUID() })).rejects.toThrow(
+      /budget_exceeded/,
+    );
+    state.storage.sql.exec("UPDATE budget_state SET expires_at=1");
+    await budget.reserve({ ...request, requestId: crypto.randomUUID() });
+    expect(budget.status()).toMatchObject({ bytesCharged: 9, requests: 1, active: 1 });
+  });
+});
+
 it("enforces eight parallel leases and releases expired concurrency through the alarm", async () => {
   const f = await fixture(100);
   await runInDurableObject(f.stub, async (_, state) => {
