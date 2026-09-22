@@ -1,6 +1,7 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX, persistEpoch, recoverEpochFloor } from "../../src/do/epochHistory";
@@ -149,6 +150,147 @@ it("revokes open permits and fails only old claimed operations, preserving termi
       .bind(ids.user)
       .first("state"),
   ).toBe("revoked");
+});
+
+it("quiesces D1 admission, revokes open permits, and preserves terminal operations", async () => {
+  await history(1);
+  await control().recover();
+  await env.DB.prepare("UPDATE control SET maintenance=0,gc_paused=0").run();
+  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  await atomicBatch(env.DB, f.statements);
+  const permit = await grantPermit(env.DB, crypto.randomUUID(), f.ids.space, 2);
+  await atomicBatch(env.DB, [
+    ...["claimed", "committed"].map((state) => ({
+      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,
+        request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at)
+        VALUES(?,'user',?,?,?,'node.create',?,'digest',2,?,?,?,0,1,1)`,
+      values: [
+        `${f.ids.user}-${state}`,
+        f.ids.user,
+        f.ids.credential,
+        f.ids.space,
+        state,
+        permit.permit_id,
+        permit.expires_at,
+        permit.expires_at,
+      ],
+    })),
+  ]);
+  expect(await control().quiesce(2)).toEqual({
+    epoch: 2,
+    maintenance: true,
+    gcPaused: true,
+    activeJobLease: false,
+  });
+  expect(await control().quiesce(2)).toMatchObject({ activeJobLease: false });
+  expect(await env.DB.prepare("SELECT maintenance,gc_paused FROM control").first()).toMatchObject({
+    maintenance: 1,
+    gc_paused: 1,
+  });
+  expect(
+    await env.DB.prepare("SELECT state FROM permits WHERE permit_id=?")
+      .bind(permit.permit_id)
+      .first("state"),
+  ).toBe("revoked");
+  expect(
+    (
+      await env.DB.prepare(
+        "SELECT state,error_code FROM operations WHERE principal_id=? ORDER BY op_id",
+      )
+        .bind(f.ids.user)
+        .all()
+    ).results,
+  ).toEqual([
+    { state: "failed", error_code: "maintenance" },
+    { state: "committed", error_code: null },
+  ]);
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.quiesce(1)).rejects.toThrow(/quiesce_epoch_conflict/);
+  });
+});
+
+it("reports an active job lease after closing admission", async () => {
+  await history(1);
+  await control().recover();
+  await env.DB.prepare("UPDATE control SET maintenance=0").run();
+  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  await atomicBatch(env.DB, f.statements);
+  const permit = await grantPermit(env.DB, crypto.randomUUID(), f.ids.space, 2);
+  const opId = crypto.randomUUID();
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,
+        request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at)
+        VALUES(?,'user',?,?,?,'node.create','committed','digest',2,?,?,?,0,1,1)`,
+      values: [
+        opId,
+        f.ids.user,
+        f.ids.credential,
+        f.ids.space,
+        permit.permit_id,
+        permit.expires_at,
+        permit.expires_at,
+      ],
+    },
+    {
+      sql: `INSERT INTO bulk_jobs(id,owner_id,credential_id,op_id,kind,state,epoch,grant_snapshot,created_at,updated_at)
+        VALUES(?,?,?,?,'node.create','running',2,'{}',1,1)`,
+      values: [opId, f.ids.user, f.ids.credential, opId],
+    },
+    {
+      sql: "INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt) VALUES(?,?,2,?,1)",
+      values: [opId, crypto.randomUUID(), Date.now() + 60000],
+    },
+  ]);
+  expect((await control().quiesce(2)).activeJobLease).toBe(true);
+  await env.DB.prepare("UPDATE job_leases SET expires_at=0 WHERE job_id=?").bind(opId).run();
+  expect((await control().quiesce(2)).activeJobLease).toBe(false);
+});
+
+it("leaves D1 unchanged and DO admission closed if quiesce fails mid-batch", async () => {
+  await history(1);
+  await control().recover();
+  await env.DB.prepare("UPDATE control SET maintenance=0,gc_paused=0").run();
+  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  await atomicBatch(env.DB, f.statements);
+  const permit = await grantPermit(env.DB, crypto.randomUUID(), f.ids.space, 2);
+  const opId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
+    space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,
+    expected_steps,created_at,updated_at)
+    VALUES(?,'user',?,?,?,'node.create','claimed','digest',2,?,?,?,0,1,1)`)
+    .bind(
+      opId,
+      f.ids.user,
+      f.ids.credential,
+      f.ids.space,
+      permit.permit_id,
+      permit.expires_at,
+      permit.expires_at,
+    )
+    .run();
+  await env.DB.prepare(`CREATE TRIGGER reject_quiesce BEFORE UPDATE OF state ON operations
+    WHEN OLD.state='claimed' BEGIN SELECT RAISE(ABORT,'injected_quiesce'); END`).run();
+  try {
+    await runInDurableObject(control(), async (instance) => {
+      await expect(instance.quiesce(2)).rejects.toThrow(/injected_quiesce/);
+    });
+  } finally {
+    await env.DB.prepare("DROP TRIGGER reject_quiesce").run();
+  }
+  expect(await control().status()).toEqual({ epoch: 2, maintenance: true, gcPaused: true });
+  expect(await env.DB.prepare("SELECT maintenance,gc_paused FROM control").first()).toMatchObject({
+    maintenance: 0,
+    gc_paused: 0,
+  });
+  expect(
+    await env.DB.prepare("SELECT state FROM permits WHERE permit_id=?")
+      .bind(permit.permit_id)
+      .first("state"),
+  ).toBe("open");
+  expect(
+    await env.DB.prepare("SELECT state FROM operations WHERE op_id=?").bind(opId).first("state"),
+  ).toBe("claimed");
 });
 
 it("rejects any non-singleton ControlDO", async () => {

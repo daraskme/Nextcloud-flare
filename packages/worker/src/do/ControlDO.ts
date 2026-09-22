@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
-import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
 import {
   type EpochReason,
@@ -24,6 +24,10 @@ export interface ControlStatus {
   epoch: number;
   maintenance: true;
   gcPaused: true;
+}
+
+export interface QuiesceStatus extends ControlStatus {
+  activeJobLease: boolean;
 }
 
 export class ControlDO extends DurableObject<Env> {
@@ -89,6 +93,54 @@ export class ControlDO extends DurableObject<Env> {
     const next = epochNumber(expectedEpoch + 1);
     this.#reserve(next, reason, "ready", expectedEpoch);
     return this.#completePending(this.#row());
+  }
+
+  /** Close D1 admission before inspecting in-flight work. Safe to repeat after an unknown response. */
+  async quiesce(expectedEpoch: number): Promise<QuiesceStatus> {
+    epochNumber(expectedEpoch);
+    const status = await this.status();
+    if (status.epoch !== expectedEpoch || !status.maintenance || !status.gcPaused)
+      throw new Error("quiesce_epoch_conflict");
+    const clock = "strftime('%s','now')*1000";
+    const statements = [
+      {
+        sql: `UPDATE control SET maintenance=1,gc_paused=1,updated_at=MAX(updated_at,${clock})
+          WHERE singleton=1 AND epoch=?`,
+        values: [expectedEpoch],
+      },
+      assertOneChange,
+      { sql: "UPDATE permits SET state='revoked' WHERE state='open'" },
+      {
+        sql: `UPDATE operations SET state='failed',error_code='maintenance',
+          updated_at=MAX(updated_at,${clock}) WHERE state='claimed'`,
+      },
+      assertExists(
+        `SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1
+        AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+        AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')`,
+        [expectedEpoch],
+      ),
+    ] as const;
+    try {
+      await atomicBatch(this.env.DB, statements);
+    } catch (error) {
+      // A lost batch acknowledgement is success only if every D1 postcondition is visible.
+      const converged = await primary(this.env.DB)
+        .prepare(`SELECT 1 FROM control
+        WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1
+          AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+          AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')`)
+        .bind(expectedEpoch)
+        .first<number>();
+      if (converged === null) throw error;
+    }
+    const active = await primary(this.env.DB)
+      .prepare(`SELECT 1 FROM job_leases
+      WHERE expires_at>${clock} LIMIT 1`)
+      .first<number>();
+    const current = await this.status();
+    if (current.epoch !== expectedEpoch) throw new Error("quiesce_epoch_conflict");
+    return { ...current, activeJobLease: active !== null };
   }
 
   #reserve(epoch: number, reason: EpochReason, phase: ControlRow["phase"], expected: number): void {

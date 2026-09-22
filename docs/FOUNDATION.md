@@ -56,7 +56,7 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 履歴走査は100ページまでで、上限を越えた場合も明示的 floor なしでは拒否する。
 `bumpEpoch(expectedEpoch,reason)` の期待値は再送・並行 bump の重複発行を防ぐ。
 
-現在の `status()` は maintenance / GC pause を常に true と返す。admission、quiesce、復旧検証後の再開は後半実装まで有効にしない。
+現在の `status()` は maintenance / GC pause を常に true と返す。`quiesce(expectedEpoch)` は停止側の DO status を確認してから D1 mirror の両 flag を立て、open permit を revoke、claimed operation を failed へ同一 batch で収束させる。応答喪失時は全 postcondition を primary で照合する。active job lease の有無を返し、残存していれば drain 完了と扱わない。SQL failure の rollback を確認済み。admission と復旧検証後の再開は未実装で、`quiesce()` の成功を再開許可に使わない。
 
 ## Access session
 
