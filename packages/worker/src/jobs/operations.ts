@@ -171,11 +171,19 @@ export function validateClaimAuthorization(
   authorized: AuthorizedNode,
   steps: number,
 ): SqlStatement {
-  const operands = JSON.parse(intent.operands) as { parentId?: unknown };
+  const operands = JSON.parse(intent.operands) as { parentId?: unknown; nodeId?: unknown };
+  const targetMatches =
+    (intent.kind === "node.create" &&
+      authorized.operation === "node.create" &&
+      authorized.parent.id === operands.parentId &&
+      authorized.spaceId === intent.spaceId) ||
+    (intent.kind === "node.rename" &&
+      authorized.operation === "node.rename" &&
+      authorized.node.id === operands.nodeId &&
+      authorized.parentId === operands.parentId &&
+      authorized.node.space_id === intent.spaceId);
   if (
-    authorized.operation !== "node.create" ||
-    authorized.operation !== intent.kind ||
-    authorized.parent.id !== operands.parentId ||
+    !targetMatches ||
     authorized.principal.kind !== intent.principal.kind ||
     principalId(authorized.principal) !== intent.principalId ||
     principalId(intent.principal) !== intent.principalId ||
@@ -184,7 +192,6 @@ export function validateClaimAuthorization(
     (authorized.principal.kind === "link_share" &&
       intent.principal.kind === "link_share" &&
       authorized.principal.share_version !== intent.principal.share_version) ||
-    authorized.spaceId !== intent.spaceId ||
     permit.space_id !== intent.spaceId ||
     permit.epoch !== intent.principal.epoch ||
     !Number.isInteger(steps) ||
@@ -274,22 +281,34 @@ export async function lookupOperation(
     row.principal_kind !== principal.kind ||
     row.principal_id !== principalId(principal) ||
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
-    row.kind !== "node.create"
+    (row.kind !== "node.create" && row.kind !== "node.rename")
   )
     return null;
   try {
-    const operands = JSON.parse(row.operands_json) as { parentId?: unknown };
+    const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
     if (typeof operands.parentId !== "string") return null;
-    await authorizeNode(db, principal, {
-      operation: "node.create",
-      parentId: operands.parentId,
-      spaceId: row.space_id,
-    });
+    if (row.kind === "node.create") {
+      await authorizeNode(db, principal, {
+        operation: "node.create",
+        parentId: operands.parentId,
+        spaceId: row.space_id,
+      });
+    } else {
+      if (typeof operands.nodeId !== "string") return null;
+      const authorized = await authorizeNode(db, principal, {
+        operation: "node.rename",
+        nodeId: operands.nodeId,
+        spaceId: row.space_id,
+      });
+      if (authorized.operation !== "node.rename" || authorized.parentId !== operands.parentId)
+        return null;
+    }
     const result =
       row.state === "committed" && row.result_json
         ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
         : null;
-    if (result && result.status !== 201) return null;
+    if (result && result.status !== (row.kind === "node.create" ? 201 : 200)) return null;
+    if (result && row.kind === "node.rename" && result.nodeId !== operands.nodeId) return null;
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (result && typeof result.nodeId === "string") {
       try {

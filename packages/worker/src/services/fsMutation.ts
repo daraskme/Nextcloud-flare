@@ -97,6 +97,15 @@ export async function reconcileMutation(
 export async function fsMutation(db: D1Database, plan: MutationPlan): Promise<MutationOutcome> {
   // Compile before dispatch. Invalid server plans cannot leave a partially executed batch.
   const statements = mutationStatements(plan);
+  return commitMutationStatements(db, plan.claim, statements);
+}
+
+/** Shared terminal reconciliation for namespace mutation plans. */
+export async function commitMutationStatements(
+  db: D1Database,
+  claim: OperationClaim,
+  statements: readonly SqlStatement[],
+): Promise<MutationOutcome> {
   try {
     await atomicBatch(db, statements);
   } catch (error) {
@@ -108,11 +117,11 @@ export async function fsMutation(db: D1Database, plan: MutationPlan): Promise<Mu
           : "mutation_rejected";
       try {
         await atomicBatch(db, [
-          assertOpenPermit(plan.claim.permit),
-          assertOperationClaim(plan.claim),
+          assertOpenPermit(claim.permit),
+          assertOperationClaim(claim),
           {
             sql: "UPDATE operations SET state='failed',error_code=?,updated_at=MAX(updated_at,strftime('%s','now')*1000) WHERE op_id=? AND state='claimed'",
-            values: [code, plan.claim.intent.id],
+            values: [code, claim.intent.id],
           },
           assertOneChange,
         ]);
@@ -122,5 +131,5 @@ export async function fsMutation(db: D1Database, plan: MutationPlan): Promise<Mu
     }
     // Transport failure is never sufficient evidence for a failed-state write.
   }
-  return reconcileMutation(db, plan.claim);
+  return reconcileMutation(db, claim);
 }

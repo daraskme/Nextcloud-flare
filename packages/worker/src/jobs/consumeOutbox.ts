@@ -52,7 +52,7 @@ function savedPrincipal(row: EventRow): Principal | null {
   return null;
 }
 
-/** Complete the current node.created event only after a fenced D1 claim and current authorization. */
+/** Complete a node event only after a fenced D1 claim and current authorization. */
 export async function consumeOutbox(db: D1Database, outboxId: string): Promise<ConsumeResult> {
   if (!outboxId || outboxId.length > 128) return "retry";
   const row = await eventRow(db, outboxId);
@@ -60,8 +60,10 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   if (row?.state === "failed") return "failed";
   if (
     !row ||
-    row.kind !== "node.created" ||
-    row.op_kind !== "node.create" ||
+    !(
+      (row.kind === "node.created" && row.op_kind === "node.create") ||
+      (row.kind === "node.renamed" && row.op_kind === "node.rename")
+    ) ||
     row.op_state !== "committed" ||
     !["dispatching", "sent"].includes(row.state)
   )
@@ -69,20 +71,33 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   const principal = savedPrincipal(row);
   if (!principal) return "retry";
   let parentId: string;
+  let nodeId: string | undefined;
   try {
-    const operands = JSON.parse(row.operands_json) as { parentId?: unknown };
+    const operands = JSON.parse(row.operands_json) as { parentId?: unknown; nodeId?: unknown };
     if (typeof operands.parentId !== "string") return "retry";
     parentId = operands.parentId;
+    if (row.kind === "node.renamed") {
+      if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
+        return "retry";
+      nodeId = operands.nodeId;
+    }
   } catch {
     return "retry";
   }
   let authorized: Awaited<ReturnType<typeof authorizeNode>>;
   try {
-    authorized = await authorizeNode(db, principal, {
-      operation: "node.create",
-      parentId,
-      spaceId: row.space_id,
-    });
+    authorized = nodeId
+      ? await authorizeNode(db, principal, {
+          operation: "node.rename",
+          nodeId,
+          spaceId: row.space_id,
+        })
+      : await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId,
+          spaceId: row.space_id,
+        });
+    if (authorized.operation === "node.rename" && authorized.parentId !== parentId) return "retry";
   } catch {
     return "retry";
   }
@@ -98,9 +113,9 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
-                AND o.kind='node.create' AND s.step_no=1 AND s.kind='node'
+                AND o.kind=? AND s.step_no=1 AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
-        values: [token, OUTBOX_CLAIM_LEASE_MS, outboxId, row.epoch, row.epoch],
+        values: [token, OUTBOX_CLAIM_LEASE_MS, outboxId, row.epoch, row.epoch, row.op_kind],
       },
       assertOneChange,
     ]);
@@ -113,9 +128,9 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
-                AND o.kind='node.create' AND s.step_no=1 AND s.kind='node'
+                AND o.kind=? AND s.step_no=1 AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
-        values: [outboxId, token, row.epoch, row.epoch],
+        values: [outboxId, token, row.epoch, row.epoch, row.op_kind],
       },
       assertOneChange,
     ]);

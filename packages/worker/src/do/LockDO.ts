@@ -14,6 +14,13 @@ export interface CreatePermitRequest {
   principal: Principal;
   lockTokens: readonly string[];
 }
+export interface RenamePermitRequest {
+  requestId: string;
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  lockTokens: readonly string[];
+}
 interface LockState extends Record<string, SqlStorageValue> {
   space_id: string;
   epoch: number;
@@ -118,6 +125,67 @@ export class LockDO extends DurableObject<Env> {
       ],
     );
     // Cache cleanup never removes D1 terminal permits; deterministic IDs prevent a replay grant.
+    this.ctx.storage.sql.exec(
+      "DELETE FROM permit_intents WHERE request_id IN (SELECT request_id FROM permit_intents WHERE created_at<? LIMIT 1000)",
+      Date.now() - 120_000,
+    );
+    return permit;
+  }
+
+  async acquireRename(request: RenamePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.rename",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== "node.rename") throw new Error("invalid_rename_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    const digest = JSON.stringify([
+      "node.rename",
+      request.nodeId,
+      authorized.parentId,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    const permit = await grantPermit(
+      this.env.DB,
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(authorized),
+        assertCreateLocks(request.nodeId, request.spaceId, request.principal, hashes),
+        assertCreateLocks(authorized.parentId, request.spaceId, request.principal, hashes),
+      ],
+    );
     this.ctx.storage.sql.exec(
       "DELETE FROM permit_intents WHERE request_id IN (SELECT request_id FROM permit_intents WHERE created_at<? LIMIT 1000)",
       Date.now() - 120_000,

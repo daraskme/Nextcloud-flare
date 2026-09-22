@@ -175,6 +175,7 @@ URL decode は呼出し adapter の責務であり、JSON の `%2F` 等を再 de
 folder name の検索索引は NFKC + full casefold + かな統一と scalar bigram を分離保存し、normalization_version を付ける。media metadata 合成と検索 API は後続。
 
 `services/createFolder.ts` は canonical intent → terminal replay または LockDO permit → current create 認可 → claim → fsMutation → terminal 照合 → release を接続する。
+`services/renameNode.ts` は rename 認可、対象と親の lock、permit、operation claim を確認する。node/parent revision、tree generation、旧 FTS term の削除、search_index 更新、新 FTS term の追加、activity、`node.renamed` outbox、terminal を一つの D1 batch に入れる。同名衝突や必須 step 失敗は全体 rollback する。公開 HTTP と実 ControlDO admission は未接続。
 `services/fsMutation.ts` は先頭で permit/operation/current auth/current lock を SQL assertion にし、以下7 step と terminal を一つの D1 batch に入れる。
 
 1. folder node（operation 由来の固定 ID）、2. parent revision、3. space tree_generation、4. search_index、5. search_fts、6. activity、7. outbox。
@@ -190,7 +191,7 @@ folder は blob を持たず容量 counter を変えない。FTS と outbox が�
 `jobs/outbox.ts` は D1 の current epoch/maintenance解除/committed operation を条件に30秒 dispatch lease を取得し、Queue へ `{outboxId}` だけ送る。
 送信後の sent 更新は同じ token/lease で CAS し、先に completed となった行や新しい sender の token を上書きしない。
 送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査し、有効な consumer claim がある行を再送しない。
-`jobs/consumeOutbox.ts` は `node.created` のみを処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の node.create 認可で再検査し、30秒の claim token/lease を取得する。元 operation の node step、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。後続の node mutation で `last_op_id` が変わっても元 event の検証は維持される。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
+`jobs/consumeOutbox.ts` は `node.created` と `node.renamed` を処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の認可で再検査し、30秒の claim token/lease を取得する。rename では対象 node と元の parent の一致も確認する。元 operation の node step、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。後続の node mutation で `last_op_id` が変わっても元 event の検証は維持される。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
 `jobs/queue.ts` は ID-only メッセージを逐次処理し、completed/failed の終端行だけを ack、それ以外を retry する。ack 喪失後の再配信は同じ terminal を確認して収束する。`index.ts` の Queue handler は ControlDO status と D1 epoch/maintenance mirror が揃う場合だけ consumer を呼び、閉鎖中や状態不明では batch 全件を retry する。scheduled handler も同じ admission 条件で `dispatchPendingOutbox` を最大50件呼び、ローカル設定は毎分 Cron を指定する。現在 ControlDO は常に maintenance を返すため、実 Queue delivery と Cron 送信は停止中。ローカル Queue 設定は最大10回の再試行後 DLQ へ送るが、実 Queue/Cron/DLQ の end-to-end 試験、他の event kind、ControlDO admission、復旧時の検証は未完了。
 
 ### 実サービス gate

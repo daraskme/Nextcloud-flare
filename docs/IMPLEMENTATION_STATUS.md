@@ -33,9 +33,10 @@
 | 1 operation claim | bounded canonical intent、同一 credential/key、claim 競合/応答喪失/current auth、lookup の情報制限 | create 用内部サービス実装。namespace commit/outbox/HTTP は未接続 |
 | AVIF/AV1/Opus 追加要件 | bounded container sniff、実 codec の MIME、native 再生可否 probe、AVIF 原本 fallback | 単体20件。track parser/content/UI 接続は後続 phase、詳細 `MEDIA_FORMATS.md` |
 | 1 fsMutation/create | node/parent/tree/search base/FTS/activity/outbox/terminal を一括確定。全必須 step の0行 rollback、並行再送、commit 応答喪失 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
+| 1 rename mutation | 対象と親の lock/認可/permit、node/parent/tree revision、FTS の旧語削除と新語追加、activity/outbox/terminal を D1 batch で確定。衝突時 rollback と同一 claim 再送を検証 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
 | 1 名前/検索索引 | NFC/portable/byte/scalar、固定 Unicode 17 full casefold、NFKC/かな統一/bigram、同名拒否 | folder create の保存・初期 FTS に接続。検索 API は未実装 |
 | 1 outbox producer | D1 lease→ID-only Queue send→sent、応答喪失/lease 回収/旧 sender/fast completed、bounded repair scan。Worker scheduled handler と毎分 Cron を設定し、ControlDO/D1 admission 後に最大50件を送る | ローカル接続済み。ControlDO が maintenance 中のため実送信は停止。実 Cron/Queue/DLQ 配信は未検証 |
-| 1 outbox consumer 基盤 | `node.created` の current credential/親フォルダー作成認可、30秒 claim、元 operation step による由来確認、terminal CAS、重複・応答喪失・lease 奪取・失効対確定・作成専用共有を D1 で検証。ID-only Queue の completed/failed terminal ack と ack 喪失、claim 中の再送抑止を追加。Worker Queue handler は ControlDO status と D1 mirror の一致を admission gate にして consumer に接続 | ControlDO が maintenance 中のため実 delivery は retry。実 Queue/DLQ、他の kind、再開は未完了 |
+| 1 outbox consumer 基盤 | `node.created` と `node.renamed` の current credential/権限、30秒 claim、元 operation step による由来確認、terminal CAS を D1 で検証。ID-only Queue の terminal ack と claim 中の再送抑止を追加。Worker Queue handler は ControlDO status と D1 mirror の一致を admission gate にして consumer に接続 | ControlDO が maintenance 中のため実 delivery は retry。実 Queue/DLQ、残る kind、再開は未完了 |
 
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
@@ -71,6 +72,7 @@ LockDO は create 用の内部 RPC を実装したが、実 ControlDO の admiss
 
 ## 実行記録
 
+- 2026-09-22、`pnpm check` 成功。Node 195 + workerd 263 = **458 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。rename の LockDO permit、operation claim、D1 一括 mutation、FTS の語句入れ替えと `node.renamed` consumer を追加。公開 HTTP と実 admission は未接続。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 258 = **453 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最後に内部共有と service の rename ケースを追加し、対象32テストを再実行して成功。`node.rename` の current authority/親 operand assertion を追加。rename mutation/HTTP は未実装。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 255 = **450 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。旧 epoch `node.created` outbox を claim drain 後に bounded failed へ収束し、failed の再配信を ack する。実 Queue/DLQ と ControlDO 再開は未完了。
 - 2026-09-22、NixOS / Node 24.20.0 / pnpm 12.3.4 で `pnpm check` 成功。Node 195 + workerd 253 = **448 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。最後に ControlDO 閉鎖時の Cron ケースを追加し、対象23テストも再実行して成功。scheduled handler と毎分 Cron を追加。実配信と ControlDO 再開は未完了。

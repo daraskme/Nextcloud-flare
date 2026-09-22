@@ -5,7 +5,7 @@ import { authorizeNode, type Principal } from "../../src/auth/authorize";
 import { lockTokenHashes } from "../../src/auth/locks";
 import { registerAccessSession } from "../../src/auth/sessions";
 import { atomicBatch } from "../../src/db/primary";
-import { type CreatePermitRequest, LockDO } from "../../src/do/LockDO";
+import { type CreatePermitRequest, LockDO, type RenamePermitRequest } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { foundationFixture } from "../fixtures/foundation";
 
@@ -69,6 +69,87 @@ it("persists create intent through eviction and refuses changed or terminal inte
     );
     await instance.release(f.request.requestId, permit);
     await expect(instance.acquireCreate(f.request)).rejects.toThrow();
+  });
+});
+
+it("persists a rename permit and rejects a changed target on replay", async () => {
+  const f = await fixture();
+  const request: RenamePermitRequest = {
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.file,
+    principal: f.request.principal,
+    lockTokens: [],
+  };
+  const permit = await runInDurableObject(f.stub, async (_, state) =>
+    new LockDO(state, admitted()).acquireRename(request),
+  );
+  await evictDurableObject(f.stub);
+  await runInDurableObject(f.stub, async (_, state) => {
+    const instance = new LockDO(state, admitted());
+    expect(await instance.acquireRename(request)).toEqual(permit);
+    await expect(instance.acquireRename({ ...request, nodeId: f.ids.folder })).rejects.toThrow(
+      "lock_intent_conflict",
+    );
+    await instance.release(request.requestId, permit);
+  });
+});
+
+it("requires both target and parent lock tokens for rename", async () => {
+  const f = await fixture();
+  await initialize(f);
+  const targetToken = crypto.randomUUID();
+  const parentToken = crypto.randomUUID();
+  const [targetHash] = await lockTokenHashes([targetToken]);
+  const [parentHash] = await lockTokenHashes([parentToken]);
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)",
+      values: [
+        crypto.randomUUID(),
+        f.ids.file,
+        f.ids.space,
+        f.ids.credential,
+        targetHash ?? "",
+        Date.now() + 60_000,
+      ],
+    },
+    {
+      sql: "INSERT INTO locks VALUES(?,?,?,?,?,'0','owner',1,?)",
+      values: [
+        crypto.randomUUID(),
+        f.ids.folder,
+        f.ids.space,
+        f.ids.credential,
+        parentHash ?? "",
+        Date.now() + 60_000,
+      ],
+    },
+  ]);
+  await runInDurableObject(f.stub, async (_, state) => {
+    const instance = new LockDO(state, admitted());
+    const request: RenamePermitRequest = {
+      requestId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      nodeId: f.ids.file,
+      principal: f.request.principal,
+      lockTokens: [targetToken],
+    };
+    await expect(instance.acquireRename(request)).rejects.toThrow();
+    await expect(
+      instance.acquireRename({
+        ...request,
+        requestId: crypto.randomUUID(),
+        lockTokens: [parentToken],
+      }),
+    ).rejects.toThrow();
+    const both = {
+      ...request,
+      requestId: crypto.randomUUID(),
+      lockTokens: [targetToken, parentToken],
+    };
+    const permit = await instance.acquireRename(both);
+    await instance.release(both.requestId, permit);
   });
 });
 

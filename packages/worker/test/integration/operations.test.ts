@@ -145,6 +145,43 @@ it("binds a key to its exact credential and full intent while allowing canonical
   ).rejects.toThrow("invalid_idempotency_key");
 });
 
+it("claims rename only for its exact node and parent, then exposes a current terminal result", async () => {
+  const f = await fixture();
+  const proof = await authorizeNode(env.DB, f.principal, {
+    operation: "node.rename",
+    nodeId: f.ids.file,
+    spaceId: f.ids.space,
+  });
+  const body = { name: "Renamed" };
+  const wrong = await operationIntent(f.principal, f.key, f.ids.space, "node.rename", body, {
+    nodeId: f.ids.file,
+    parentId: f.ids.root,
+  });
+  await expect(claimOperation(env.DB, wrong, f.permit, proof, 1)).rejects.toThrow(
+    "invalid_operation_claim",
+  );
+  const intent = await operationIntent(f.principal, f.key, f.ids.space, "node.rename", body, {
+    nodeId: f.ids.file,
+    parentId: f.ids.folder,
+  });
+  expect((await claimOperation(env.DB, intent, f.permit, proof, 1)).kind).toBe("claimed");
+  expect(await lookupOperation(env.DB, f.principal, intent.id)).toMatchObject({
+    state: "claimed",
+    result: null,
+  });
+  await env.DB.prepare("UPDATE operations SET state='committed',result_json=? WHERE op_id=?")
+    .bind(JSON.stringify({ status: 200, nodeId: f.ids.file }), intent.id)
+    .run();
+  expect(await lookupOperation(env.DB, f.principal, intent.id)).toMatchObject({
+    state: "committed",
+    result: { status: 200, nodeId: f.ids.file },
+  });
+  await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+    .bind(Date.now(), f.ids.session)
+    .run();
+  expect(await lookupOperation(env.DB, f.principal, intent.id)).toBeNull();
+});
+
 it("allows one winner for concurrent conflicting payloads without overwriting the durable intent", async () => {
   const f = await fixture();
   const changed = await operationIntent(
