@@ -2,6 +2,7 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
 import { parseDavPath, resolveDavNode } from "../dav/path";
 import type { Env } from "../env";
+import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 
 const METHODS = new Set([
   "OPTIONS",
@@ -31,6 +32,7 @@ export async function handleDavHttp(
   pepper: AppPasswordPepperRing | undefined,
 ): Promise<Response> {
   const url = new URL(request.url);
+  let resolved: Awaited<ReturnType<typeof resolveDavNode>> | undefined;
   if (
     !davPath(request) ||
     !METHODS.has(request.method) ||
@@ -87,7 +89,7 @@ export async function handleDavHttp(
     ].includes(request.method)
   ) {
     try {
-      await resolveDavNode(env.DB, principal, path);
+      resolved = await resolveDavNode(env.DB, principal, path);
     } catch {
       return problem(404, "not_found");
     }
@@ -96,13 +98,28 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow: "OPTIONS",
+        Allow: "OPTIONS, GET, HEAD",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",
         "X-Content-Type-Options": "nosniff",
       },
     });
+  if (request.method === "GET" || request.method === "HEAD") {
+    if (
+      !resolved ||
+      resolved.node.kind !== "file" ||
+      !resolved.node.current_blob_id ||
+      path.trailingSlash
+    )
+      return problem(404, "not_found");
+    try {
+      const plan = await prepareAuthorizedNodeBlobRead(env.DB, resolved);
+      return await streamImmutableBlob(env.BLOBS, plan, request);
+    } catch {
+      return problem(503, "not_ready");
+    }
+  }
   // DAV operation handlers are added only with their node/lock/content proofs.
   return problem(503, "not_ready");
 }

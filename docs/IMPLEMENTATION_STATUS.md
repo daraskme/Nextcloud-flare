@@ -35,7 +35,7 @@
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB 制約を実証。purge/upload の実サービスは未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
-| 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS まで接続。残る operation handler と remote pepper secret 設定は未接続 |
+| 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS、file GET/HEAD/Range まで接続。残る operation handler と remote pepper secret 設定は未接続 |
 | 1 app password private API | Access/CSRF 付き `GET/POST/DELETE /api/v1/app-passwords`、一度だけ返す32B secret、DAV 用 node scope、所有者 root、20件・90日既定/365日上限、同 batch の credential/scopes/派生 content session 失効 | 実 D1 で発行→一覧→Basic 認証→失効、別 user root・admin scope・20件上限を検証。remote pepper 設定、DAV operation handler は未完了 |
 | 1 bootstrap | allowlist、初回 admin/space/root の atomic CAS、競合/rollback/応答喪失、暗黙 signup 禁止 | ローカル D1 で実証 |
 | 1 node authorize | EffectiveLive、4 principal の scope/root/grant/current credential、commit 時 revision/tree/epoch/parent/blob assertion。rename は root と share/scope root を拒否し、edit/node:write を要求。content write は file と edit/node:write を要求 | read/create/rename/content write/automation 6 operation の内部基盤。残る operation の認可は未完了 |
@@ -85,6 +85,7 @@ LockDO は create/rename 用の内部 RPC を実装したが、実 ControlDO の
 
 ## 実行記録
 
+- 2026-09-23、`pnpm check` 成功。Node 199 + workerd 318 = **517 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV file GET/HEAD/single Range を current path・credential・blob の D1 assertion と R2 size/ETag 照合へ接続し、200/206、末尾 slash 404、物理 object 欠落 503 を検証。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 317 = **516 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV path の一度だけの decode・深さ/長さ/portable name 制約、app password root からの casefold 解決、scope/失効/移動競合の D1 再照合と Class 1 OPTIONS を検証。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 314 = **513 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。DAV HTTP 入口を Worker に接続し、Edge rate limit を Basic KDF より前に適用。誤 secret は 401、制限超過は 429、認証後の未実装 operation は 503 として検証。
 - 2026-09-23、`pnpm check` 成功。Node 199 + workerd 313 = **512 tests**、lint/typecheck/contracts/config と Wrangler dry-run build も成功。app password の旧 pepper kid を成功時に D1 の条件付き batch で再ハッシュし、D1 の応答喪失時も現行 secret を再照合することを検証。

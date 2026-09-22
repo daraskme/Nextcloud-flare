@@ -188,6 +188,7 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   const keys: string[] = [];
   const davEnv = {
     DB: env.DB,
+    BLOBS: env.BLOBS,
     APP_ORIGIN: "https://app.invalid",
     EDGE_LIMITER: {
       async limit({ key }: { key: string }) {
@@ -219,11 +220,75 @@ it("limits DAV requests before Basic verification and keeps unavailable operatio
   const options = await handleDavHttp(optionsRequest, davEnv, 1, ring);
   expect(options.status).toBe(200);
   expect(options.headers.get("DAV")).toBe("1");
-  expect(options.headers.get("Allow")).toBe("OPTIONS");
+  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD");
   expect((await handleDavHttp(request(), davEnv, 1, undefined)).status).toBe(503);
   expect((await handleDavHttp(new Request("http://app.invalid/dav"), davEnv, 1, ring)).status).toBe(
     404,
   );
+});
+
+it("streams authorized DAV GET, HEAD and Range reads from an immutable blob", async () => {
+  const { f, id, ring, request } = await fixture("9");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read')")
+    .bind(`ap:${id}`)
+    .run();
+  const stored = await env.BLOBS.put(`u/${f.ids.user}/b/${f.ids.blob}`, "abc");
+  if (!stored) throw new Error("fixture_r2_put_failed");
+  await env.DB.prepare(
+    "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,?)",
+  )
+    .bind(f.ids.blob, stored.etag, Date.now())
+    .run();
+  const davEnv = {
+    DB: env.DB,
+    BLOBS: env.BLOBS,
+    APP_ORIGIN: "https://app.invalid",
+    EDGE_LIMITER: {
+      async limit() {
+        return { success: true };
+      },
+    },
+  } as unknown as Env;
+  try {
+    const full = await handleDavHttp(request(), davEnv, 1, ring);
+    expect(full.status).toBe(200);
+    expect(new TextDecoder().decode(await full.arrayBuffer())).toBe("abc");
+    expect(full.headers.get("ETag")).toBe(`"b-${f.ids.blob}"`);
+
+    const ranged = await handleDavHttp(
+      new Request(request().url, {
+        headers: { ...Object.fromEntries(request().headers), Range: "bytes=1-2" },
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+    expect(ranged.status).toBe(206);
+    expect(new TextDecoder().decode(await ranged.arrayBuffer())).toBe("bc");
+    const head = await handleDavHttp(
+      new Request(request().url, { method: "HEAD", headers: request().headers }),
+      davEnv,
+      1,
+      ring,
+    );
+    expect(head.status).toBe(200);
+    expect(head.body).toBeNull();
+    expect(head.headers.get("Content-Length")).toBe("3");
+    expect(
+      (
+        await handleDavHttp(
+          new Request(`${request().url}/`, { headers: request().headers }),
+          davEnv,
+          1,
+          ring,
+        )
+      ).status,
+    ).toBe(404);
+    await env.BLOBS.delete(`u/${f.ids.user}/b/${f.ids.blob}`);
+    expect((await handleDavHttp(request(), davEnv, 1, ring)).status).toBe(503);
+  } finally {
+    await env.BLOBS.delete(`u/${f.ids.user}/b/${f.ids.blob}`);
+  }
 });
 
 it("parses bounded DAV paths with a single percent decode", () => {
