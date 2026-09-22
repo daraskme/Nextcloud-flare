@@ -4,6 +4,7 @@ import type { BootstrapPolicy } from "../auth/bootstrap";
 import { ContentTokens, contentKeyRing } from "../auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { AccessJwks } from "../auth/jwks";
+import { ListCursorTokens } from "../auth/listCursor";
 import { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
 import type { PrivateAppDependencies } from "./privateApp";
@@ -79,6 +80,7 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
     tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN),
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
+    ...(cursorRing ? { listCursors: new ListCursorTokens(cursorRing) } : {}),
     ...(appPasswordPepper ? { appPasswordPepper } : {}),
     bootstrap: bootstrapPolicy(env),
   };

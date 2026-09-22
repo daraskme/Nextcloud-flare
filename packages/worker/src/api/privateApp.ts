@@ -4,6 +4,7 @@ import type { AppPasswordPepperRing } from "../auth/appPassword";
 import type { BootstrapPolicy } from "../auth/bootstrap";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
+import type { ListCursorTokens } from "../auth/listCursor";
 import { loginAccessUser } from "../auth/login";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
@@ -12,6 +13,7 @@ import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
+import { handleTrashHttp, trashRoute } from "./trash";
 
 export interface PrivateAppDependencies {
   readonly verifier: AccessVerifier;
@@ -19,6 +21,7 @@ export interface PrivateAppDependencies {
   readonly tokens: ContentTokens;
   readonly bootstrap: BootstrapPolicy;
   readonly cursors?: NodeCursorTokens;
+  readonly listCursors?: ListCursorTokens;
   readonly appPasswordPepper?: AppPasswordPepperRing;
 }
 
@@ -27,6 +30,7 @@ export function privateAppRoute(request: Request): boolean {
   return (
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
+    trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
     (request.method === "POST" &&
@@ -45,12 +49,17 @@ export async function handlePrivateAppHttp(
   dependencies: PrivateAppDependencies,
 ): Promise<Response> {
   const url = new URL(request.url);
-  if (url.origin !== env.APP_ORIGIN || (url.search && !nodeReadRoute(request)) || url.hash)
+  if (
+    url.origin !== env.APP_ORIGIN ||
+    (url.search && !nodeReadRoute(request) && !trashRoute(request)) ||
+    url.hash
+  )
     return problem(404, "not_found");
   const csrfIssue = url.pathname === "/api/v1/csrf" && request.method === "POST";
   const accountRead = url.pathname === "/api/v1/me" && request.method === "GET";
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
+  const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
@@ -61,6 +70,7 @@ export async function handlePrivateAppHttp(
     !accountRead &&
     !logout &&
     !nodeRead &&
+    !trashRead &&
     !nodeMutation &&
     !appPassword &&
     !ticketIssue &&
@@ -116,6 +126,18 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.cursors,
+    );
+  if (trashRead)
+    return handleTrashHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.listCursors,
     );
   if (nodeMutation)
     return handleNodeMutationHttp(
