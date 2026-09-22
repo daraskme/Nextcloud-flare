@@ -238,9 +238,12 @@ it("releases a stale reservation under maintenance and restarts the audit", asyn
   }
 });
 
-it("fails old-epoch node notifications only after their claims drain", async () => {
+it("fails old-epoch create and rename notifications only after their claims drain", async () => {
   const permitId = crypto.randomUUID();
   const opId = crypto.randomUUID();
+  const renameOpId = crypto.randomUUID();
+  const renameId = crypto.randomUUID();
+  const wrongKindId = crypto.randomUUID();
   const pendingId = crypto.randomUUID();
   const sentId = crypto.randomUUID();
   const mismatchedId = crypto.randomUUID();
@@ -259,6 +262,25 @@ it("fails old-epoch node notifications only after their claims drain", async () 
     "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
   )
     .bind(opId, fixture.ids.folder)
+    .run();
+  await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
+    space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
+    claimed_expires_at,expected_steps,created_at,updated_at)
+    VALUES(?,'user',?,?,?,'node.rename','committed','digest',1,?,1,1,0,1,1)`)
+    .bind(renameOpId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+  )
+    .bind(renameOpId, fixture.ids.folder)
+    .run();
+  await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+    VALUES(?,?,'node.renamed',?,'pending',1,1,1)`)
+    .bind(renameId, renameOpId, fixture.ids.folder)
+    .run();
+  await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+    VALUES(?,?,'node.created',?,'pending',1,1,1)`)
+    .bind(wrongKindId, renameOpId, fixture.ids.folder)
     .run();
   await env.DB.prepare(`INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
     VALUES(?,?,'node.created',?,'pending',1,1,1)`)
@@ -282,10 +304,10 @@ it("fails old-epoch node notifications only after their claims drain", async () 
       .bind(sentId)
       .run();
     expect(await control().failStaleOutbox(2)).toMatchObject({
-      failed: 2,
+      failed: 3,
       audit: { stage: "users", pages: 0 },
     });
-    for (const id of [pendingId, sentId]) {
+    for (const id of [pendingId, sentId, renameId]) {
       expect(
         await env.DB.prepare(
           "SELECT state,dispatch_token,claim_token FROM outbox WHERE outbox_id=?",
@@ -299,17 +321,27 @@ it("fails old-epoch node notifications only after their claims drain", async () 
         .bind(mismatchedId)
         .first("state"),
     ).toBe("pending");
+    expect(
+      await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?")
+        .bind(wrongKindId)
+        .first("state"),
+    ).toBe("pending");
     await expect(inspectRecoveryFinalFence(env.DB, 2)).rejects.toThrow(
       /recovery_final_fence_pending/,
     );
     await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(mismatchedId).run();
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id=?").bind(wrongKindId).run();
     await expect(inspectRecoveryFinalFence(env.DB, 2)).resolves.toBeUndefined();
   } finally {
-    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id IN (?,?,?)")
-      .bind(pendingId, sentId, mismatchedId)
+    await env.DB.prepare("DELETE FROM outbox WHERE outbox_id IN (?,?,?,?,?)")
+      .bind(pendingId, sentId, mismatchedId, renameId, wrongKindId)
       .run();
-    await env.DB.prepare("DELETE FROM operation_steps WHERE op_id=?").bind(opId).run();
-    await env.DB.prepare("DELETE FROM operations WHERE op_id=?").bind(opId).run();
+    await env.DB.prepare("DELETE FROM operation_steps WHERE op_id IN (?,?)")
+      .bind(opId, renameOpId)
+      .run();
+    await env.DB.prepare("DELETE FROM operations WHERE op_id IN (?,?)")
+      .bind(opId, renameOpId)
+      .run();
     await env.DB.prepare("DELETE FROM permits WHERE permit_id=?").bind(permitId).run();
   }
 });

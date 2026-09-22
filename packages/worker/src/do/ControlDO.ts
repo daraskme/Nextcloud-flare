@@ -239,7 +239,7 @@ export class ControlDO extends DurableObject<Env> {
     return { released, audit: await this.beginRecoveryAudit(expectedEpoch) };
   }
 
-  /** Bounded old-epoch notification repair; other event kinds require their own cleanup. */
+  /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */
   async failStaleOutbox(
     expectedEpoch: number,
     limit = 20,

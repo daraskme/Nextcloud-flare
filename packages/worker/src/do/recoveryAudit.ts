@@ -188,7 +188,7 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
   if (ready === null) throw new Error("recovery_final_fence_pending");
 }
 
-/** Old-epoch node.created notifications cannot be safely replayed after recovery. */
+/** Old-epoch node notifications cannot be safely replayed after recovery. */
 export async function failStaleRecoveryOutbox(
   db: D1Database,
   epoch: number,
@@ -201,8 +201,10 @@ export async function failStaleRecoveryOutbox(
   const clock = "strftime('%s','now')*1000";
   const rows = await primary(db)
     .prepare(`SELECT b.outbox_id FROM outbox b JOIN operations o ON o.op_id=b.op_id
-      WHERE b.epoch<? AND b.kind='node.created' AND b.state IN ('pending','dispatching','sent')
-        AND o.kind='node.create' AND o.state='committed' AND o.epoch=b.epoch
+      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind='node.create') OR
+        (b.kind='node.renamed' AND o.kind='node.rename'))
+        AND b.state IN ('pending','dispatching','sent')
+        AND o.state='committed' AND o.epoch=b.epoch
         AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
           AND s.step_no=1 AND s.kind='node' AND s.affected_id=b.payload_ref)
         AND ((b.state='pending') OR (b.dispatch_token IS NOT NULL AND b.dispatch_expires_at IS NOT NULL))
@@ -218,13 +220,15 @@ export async function failStaleRecoveryOutbox(
         {
           sql: `UPDATE outbox SET state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
             claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
-            WHERE outbox_id=? AND epoch<? AND kind='node.created'
+            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.renamed')
               AND state IN ('pending','dispatching','sent')
               AND ((state='pending') OR (dispatch_token IS NOT NULL AND dispatch_expires_at IS NOT NULL))
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
                 (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
-                AND o.kind='node.create' AND o.state='committed' AND o.epoch=outbox.epoch
+                AND ((outbox.kind='node.created' AND o.kind='node.create') OR
+                  (outbox.kind='node.renamed' AND o.kind='node.rename'))
+                AND o.state='committed' AND o.epoch=outbox.epoch
                 AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
                   AND s.step_no=1 AND s.kind='node' AND s.affected_id=outbox.payload_ref))
               AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?
