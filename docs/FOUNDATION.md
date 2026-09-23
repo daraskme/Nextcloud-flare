@@ -77,7 +77,7 @@ completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/phys
 
 HEAD presentなら実サイズをphysicalへ一度だけ計上し、予約解放とGC candidate挿入を同じbatchで行う。正しいupload/attempt/epoch/blob metadataが必須で、サイズ不一致の自分のobjectも実byteを計上してからGCへ渡す。metadata不一致は容量を計上して隔離し、予約を保持する。HEAD absentなら同じbatchでblobをdeleted、既存physical観測をremoved、予約をreleasedへ確定する。期限前のabsent、HEAD失敗、期限切れ/交代したcleanup leaseからの書込みでは精算しない。GCがdelete/HEAD不在を確認するまでcleanup_pendingは保持する。GC pause中もHEADと会計・candidate化は可能だがR2削除はしない。
 
-CronはControlDO/D1 admission後に回収し、その後pause解除時のみ既存GCを呼ぶ。復旧時は `ControlDO.repairExpiredUploads` がquiesceし、停止中の同じ回収処理を実行して前後のauditを無効化する。旧epoch・失効credentialでも未公開データは回収できるが、24時間の期限は短縮しない。汎用 `releaseStaleReservations` はterminalを含む全upload予約を除外する。最終復旧fenceは未解決cleanup claimと、physical計上済みGC candidateへ引き渡していないcleanupを拒否する。未知object全般のrepair、unknown multipart IDと実Cron運用の検証は残る。
+CronはControlDO/D1 admission後に回収し、その後pause解除時のみ既存GCを呼ぶ。復旧時は `ControlDO.repairExpiredUploads` がquiesceし、停止中の同じ回収処理を実行して前後のauditを無効化する。旧epoch・失効credentialでも未公開データは回収できるが、24時間の期限は短縮しない。汎用 `releaseStaleReservations` はterminalを含む全upload予約を除外する。最終復旧fenceは未解決cleanup claimと、physical計上済みGC candidateへ引き渡していないcleanupを拒否する。未知の完成済み`u/` objectは別のinventory/35日回収へ接続済み。unknown multipart IDと実Cron運用の検証は残る。
 
 HTTP契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。multipart PUTはUpload-Attempt-Idと既知長を必須にし、current Access/capability/Origin/If-Matchを検査する。同attemptのin_flight再送は202でbodyを破棄し、新しいR2 callを許さない。readUploadはupload/partをcurrent authorization付きD1 batchで最大200件返し、期限切れ後も同credential/epochのreceiptを照会できる。D1反映が未確認のpartは以前の状態を返すため、clientは同attemptで再照合する。GETでDO初期化やbudget resetは行わない。multipart DELETEはD1のcreated/uploadingだけをabortingへCASし、completeとの競合ではR2 dispatch/publication側のfenceが停止を検知する。初期化応答喪失は202 receipt+capabilityで追跡でき、R2 upload IDを再作成しない。
 
@@ -108,6 +108,12 @@ R2 abortの成功を `multipart_cleanup_closed='aborted'`として保存して�
 Cronと `ControlDO.repairStoppedMultipartUploads`に接続する。停止中repairは既知multipart handleをabortするが、完成objectをdeleteせず監査を前後で初期化する。最終復旧fenceは、終端flagやGC candidateがあってもmultipart閉鎖証明がなければ拒否する。unknown creation ID、不正metadataはphysical計上と予約を保持して隔離する。外部inventoryと7日incomplete lifecycleの実bucket確認・repairは未実装であり、ローカル試験で代替しない。
 
 metadata直列化の30秒timeoutと例外時resetは[Durable Object State](https://developers.cloudflare.com/durable-objects/api/state/)に従う。SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
+
+## 未知の完成済みR2 object
+
+migration `0021`の`orphan_objects`と`r2_inventory_scan`は、全catalogueから独立した`u/` objectをHEADで観測し、発見から35日保留する。`jobs/orphanInventory.ts`がページcursor/60秒leaseを保存し、再検出でfirst_seenを変えず、version/etag/size/uploadedが変われば猶予を更新する。既存ownerへのphysical計上と削除後の減算はD1 triggerで原子的に行い、owner不在から復元された場合も一度だけ計上する。namespaceには公開せず、全catalogueへの同key登録を相互guardで拒否し、削除後もtombstoneを残す。
+
+回収は35日後、current epoch/GC pause/claim/identityをR2 call直前に検査し、HEAD一致→delete→HEAD不在→D1精算で収束する。停止中のControlDO RPCは走査だけを実行して監査を初期化する。復旧R2 listは隔離台帳の全metadata tupleを照合し、最終fenceは未完了claim/deleting/不正keyを拒否する。incomplete multipartの閉鎖証明、他prefix、既知key不正置換、maintenance中GC drainは別の残作業。詳細は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)。
 
 ## Access session
 
@@ -198,7 +204,7 @@ GET/HEAD、DAV、content-origin や upload binary の扱いは各 HTTP profile �
 - `blob_storage` は R2 HEAD で実測した size/etag の会計行。staging/orphan を含めて一度だけ physical を計上する。宣言 size と違う物も実測 bytes を記録してから公開を拒否し、cleanup 完了まで課金を残す。既に存在する bytes は quota が下げられていても記録し、次の reservation を拒否する。
 - removed_at は blob deleted 後の一方向 tombstone。GC claim lease、quiesce、実R2 delete/head、不在確認後の最終batchへ接続し、応答喪失と再claimを含めて物理減算を実証する。
 - caller は reservation/pin SQL を認可・permit/operation guard と同じ batch に入れる。consume は新 logical reference 公開より先。trigger が counter を更新するため、handler から counter を重ねて加減算しない。
-- `auditOwnerLedger` は D1 集合から used/reserved/physical observation/ref count の差を診断する。R2 の完成済み object は監査ページで全件照合する。単一uploadに紐づく旧epoch予約は期限後のHEAD照合で回収する。未知object/unknown multipart IDの外部inventory repairは後続実装。既知IDの回収はmultipartCleanupへ接続済み。
+- `auditOwnerLedger` は D1 集合から used/reserved/physical observation/ref count の差を診断する。R2 の完成済み object は監査ページで全件照合する。単一uploadに紐づく旧epoch予約は期限後のHEAD照合で回収する。未知完成物のinventoryはorphanInventoryへ接続し、ownerのphysical監査にも合算する。unknown multipart IDの外部inventory repairは後続実装。既知IDの回収はmultipartCleanupへ接続済み。
 
 migration 0005 は既存 node/version/pin と予約行から logical/ref/reserved を再計算する。以前の実装は physical 会計を公開していないため、既存 physical_bytes が非0なら migration を拒否し、先に個別 inventory 移行を要求する。物理実在を推定して埋めない。
 

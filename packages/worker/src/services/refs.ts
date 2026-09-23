@@ -67,7 +67,8 @@ export async function auditOwnerLedger(
     COALESCE((SELECT SUM(b.size) FROM blobs b WHERE b.owner_id=u.id AND
       (EXISTS(SELECT 1 FROM nodes WHERE current_blob_id=b.id) OR EXISTS(SELECT 1 FROM node_versions WHERE blob_id=b.id))),0) AS actual_used_bytes,
     COALESCE((SELECT SUM(bytes) FROM reservations WHERE owner_id=u.id AND state='reserved'),0) AS actual_reserved_bytes,
-    COALESCE((SELECT SUM(s.bytes) FROM blobs b JOIN blob_storage s ON s.blob_id=b.id WHERE b.owner_id=u.id AND s.removed_at IS NULL),0) AS observed_physical_bytes,
+    COALESCE((SELECT SUM(s.bytes) FROM blobs b JOIN blob_storage s ON s.blob_id=b.id WHERE b.owner_id=u.id AND s.removed_at IS NULL),0)
+      +COALESCE((SELECT SUM(o.bytes) FROM orphan_objects o WHERE o.owner_id=u.id AND o.state<>'deleted'),0) AS observed_physical_bytes,
     (SELECT COUNT(*) FROM blobs b WHERE b.owner_id=u.id AND b.ref_count<>
       (SELECT COUNT(*) FROM nodes WHERE current_blob_id=b.id)+(SELECT COUNT(*) FROM node_versions WHERE blob_id=b.id)+(SELECT COUNT(*) FROM blob_pins WHERE blob_id=b.id)) AS incorrect_refs
     FROM users u WHERE u.id=?`)

@@ -3,6 +3,7 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
+import { type OrphanScanResult, scanOrphanObjects } from "../jobs/orphanInventory";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import {
   type EpochReason,
@@ -276,6 +277,24 @@ export class ControlDO extends DurableObject<Env> {
       await this.beginRecoveryAudit(expectedEpoch);
     }
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Record one R2 inventory page under maintenance; no deletion or admission reopening. */
+  async inventoryOrphanObjects(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ inventory: OrphanScanResult; audit: RecoveryAuditStatus }> {
+    await this.beginRecoveryAudit(expectedEpoch);
+    let inventory: OrphanScanResult;
+    try {
+      inventory = await scanOrphanObjects(this.env.DB, this.env.BLOBS, expectedEpoch, {
+        limit,
+        maintenance: true,
+      });
+    } finally {
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { inventory, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */

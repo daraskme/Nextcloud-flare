@@ -219,7 +219,11 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
       AND NOT EXISTS(SELECT 1 FROM outbox
         WHERE state IN ('pending','dispatching','sent') AND epoch<>c.epoch)
       AND NOT EXISTS(SELECT 1 FROM job_leases)
-      AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')`)
+      AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')
+      AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE state='deleting' OR claim_token IS NOT NULL
+        OR (state<>'deleted' AND (owner_key IS NULL OR epoch>c.epoch
+          OR (owner_id IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=owner_key)))))
+      AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)`)
     .bind(epoch)
     .first<number>();
   if (ready === null) throw new Error("recovery_final_fence_pending");
@@ -403,6 +407,20 @@ export async function inspectRecoveryPage(
         .bind(object.key, object.size, object.size, object.etag)
         .first<number>();
       if (blob !== null) continue;
+      const orphan = await primary(db)
+        .prepare(`SELECT 1 FROM orphan_objects WHERE r2_key=? AND state='quarantined'
+          AND bytes=? AND r2_etag=? AND r2_version=? AND uploaded_at=?
+          AND owner_key IS NOT NULL AND claim_token IS NULL AND epoch<=?`)
+        .bind(
+          object.key,
+          object.size,
+          object.etag,
+          object.version,
+          object.uploaded.getTime(),
+          epoch,
+        )
+        .first<number>();
+      if (orphan !== null) continue;
       const derivative = await primary(db)
         .prepare(`SELECT 1 FROM derivative_results
           WHERE r2_key=? AND state='ready' AND size=?`)

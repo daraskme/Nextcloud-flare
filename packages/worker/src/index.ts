@@ -10,6 +10,7 @@ import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
 import { runGarbageCollection } from "./jobs/gc";
 import { repairMultipartUploads } from "./jobs/multipartCleanup";
+import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
 import { dispatchPendingOutbox } from "./jobs/outbox";
 import { handleOutboxBatch } from "./jobs/queue";
 import { repairSingleUploads } from "./jobs/uploadCleanup";
@@ -110,6 +111,7 @@ export default {
     await dispatchPendingOutbox(env.DB, env.JOBS, epoch);
     await repairSingleUploads(env.DB, env.BLOBS, epoch);
     await repairMultipartUploads(env.DB, env.BLOBS, epoch);
+    await scanOrphanObjects(env.DB, env.BLOBS, epoch);
     const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
     if (status.epoch !== epoch || status.maintenance || status.gcPaused) return;
     const enabled = await primary(env.DB)
@@ -118,6 +120,9 @@ export default {
       )
       .bind(epoch)
       .first<number>("ok");
-    if (enabled === 1) await runGarbageCollection(env.DB, env.BLOBS, epoch);
+    if (enabled === 1) {
+      await runGarbageCollection(env.DB, env.BLOBS, epoch);
+      await collectOrphanObjects(env.DB, env.BLOBS, epoch);
+    }
   },
 } satisfies ExportedHandler<Env>;
