@@ -1041,6 +1041,110 @@ test("search pages real API results and hides stale rows after a tree change or 
   await expect(page.getByRole("button", { name: "Match 000の操作", exact: true })).toHaveCount(0);
 });
 
+test("folder stats count nested copies on demand and hide totals after a denied refresh", async ({
+  page,
+}, testInfo) => {
+  let requests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/stats") requests++;
+  });
+  await page.goto("/files");
+  const file = await writeTestFile(page, `stats-${crypto.randomUUID()}.txt`, "abc");
+  const seeded = await page.evaluate(async (file) => {
+    const json = async (path: string, init?: RequestInit) => {
+      const response = await fetch(path, init);
+      if (!response.ok) throw new Error(`seed_${response.status}_${path}`);
+      return response.json();
+    };
+    const me = await json("/api/v1/me");
+    const csrf = await json("/api/v1/csrf", { method: "POST" });
+    const mutate = (path: string, body: unknown) =>
+      json(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf.token,
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify(body),
+      });
+    const outer = await mutate("/api/v1/nodes", {
+      spaceId: me.spaceId,
+      parentId: me.rootNodeId,
+      kind: "folder",
+      name: `集計-${crypto.randomUUID()}`,
+    });
+    const inner = await mutate("/api/v1/nodes", {
+      spaceId: me.spaceId,
+      parentId: outer.result.nodeId,
+      kind: "folder",
+      name: "サブフォルダー",
+    });
+    await mutate(`/api/v1/nodes/${file.id}/move`, {
+      spaceId: me.spaceId,
+      destinationParentId: inner.result.nodeId,
+      name: file.name,
+    });
+    const copy = await mutate(`/api/v1/nodes/${file.id}/copy`, {
+      spaceId: me.spaceId,
+      destinationParentId: outer.result.nodeId,
+      name: "コピー.txt",
+      depth: "0",
+    });
+    return {
+      scopeId: outer.result.nodeId as string,
+      copyId: copy.result.nodeId as string,
+      spaceId: me.spaceId as string,
+    };
+  }, file);
+  await page.goto(`/files/${seeded.scopeId}`);
+  await expect(page.getByRole("button", { name: "コピー.txtの操作" })).toBeVisible();
+  expect(requests).toBe(0);
+  await page.getByRole("button", { name: "フォルダーの情報", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "フォルダーの情報" });
+  const results = dialog.getByLabel("フォルダーの集計結果");
+  await expect(results).toHaveText(/ファイル2 件サブフォルダー1 件合計サイズ6 B/);
+  await page.screenshot({ path: testInfo.outputPath("stats-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({ path: testInfo.outputPath("stats-mobile.png"), fullPage: true });
+  await page.evaluate(async ({ copyId, spaceId }) => {
+    const csrf = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    const response = await fetch(`/api/v1/nodes/${copyId}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf.token,
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ spaceId }),
+    });
+    if (!response.ok) throw new Error(`trash_${response.status}`);
+  }, seeded);
+  await dialog.getByRole("button", { name: "再集計" }).click();
+  await expect(results).toHaveText(/ファイル1 件サブフォルダー1 件合計サイズ3 B/);
+  await page.route("**/api/v1/stats?*", (route) =>
+    route.fulfill({ status: 403, json: { title: "forbidden" } }),
+  );
+  await dialog.getByRole("button", { name: "再集計" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(results).toHaveCount(0);
+  await page.unroute("**/api/v1/stats?*");
+  // Inject only the partial-result flag into a real authorized response to exercise the warning.
+  await page.route("**/api/v1/stats?*", async (route) => {
+    const response = await localFetch(route);
+    expect(response.status()).toBe(200);
+    await route.fulfill({ response, json: { ...(await response.json()), truncated: true } });
+  });
+  await dialog.getByRole("button", { name: "再集計" }).click();
+  await expect(dialog.getByText(/集計結果は一部です/)).toBeVisible();
+  await expect(results).toContainText("確認できた合計サイズ");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
 test("logout clears saved uploads and pending operations in all open tabs", async ({
   page,
   context,

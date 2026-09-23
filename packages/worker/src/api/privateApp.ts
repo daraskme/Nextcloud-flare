@@ -16,6 +16,7 @@ import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
+import { handleStatsHttp, statsRoute } from "./stats";
 import { handleTrashHttp, trashRoute } from "./trash";
 import { handleUploadHttp, uploadReadRoute, uploadRoute } from "./uploads";
 
@@ -37,6 +38,7 @@ export function privateAppRoute(request: Request): boolean {
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
     searchRoute(request) ||
+    statsRoute(request) ||
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
@@ -63,7 +65,8 @@ export async function handlePrivateAppHttp(
       !nodeReadRoute(request) &&
       !trashRoute(request) &&
       !uploadReadRoute(request) &&
-      !searchRoute(request)) ||
+      !searchRoute(request) &&
+      !statsRoute(request)) ||
     url.hash
   )
     return problem(404, "not_found");
@@ -72,6 +75,7 @@ export async function handlePrivateAppHttp(
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
   const search = searchRoute(request);
+  const stats = statsRoute(request);
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
@@ -85,6 +89,7 @@ export async function handlePrivateAppHttp(
     !logout &&
     !nodeRead &&
     !search &&
+    !stats &&
     !trashRead &&
     !nodeMutation &&
     !appPassword &&
@@ -123,6 +128,13 @@ export async function handlePrivateAppHttp(
     }
   }
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
+  if (stats)
+    return handleStatsHttp(request, env, {
+      kind: "user",
+      user_id: session.user_id,
+      credential_id: session.credential_id,
+      epoch: session.epoch,
+    });
   if (upload)
     return handleUploadHttp(
       request,

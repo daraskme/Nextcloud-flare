@@ -2,6 +2,7 @@ import { authorizationAssertion, authorizeNode, type Principal } from "../auth/a
 import type { SearchCursorTokens } from "../auth/searchCursor";
 import { assertExists, atomicBatch, primary } from "../db/primary";
 import { searchQuery } from "../search/query";
+import { BOUNDED_SUBTREE_CTE } from "./subtree";
 
 interface SearchRow {
   id: string;
@@ -18,34 +19,7 @@ interface SearchRow {
 
 /** Scope drives rowid-constrained FTS lookups, never an unbounded global hit scan. */
 export function searchStatement(indexed: boolean): string {
-  return `WITH RECURSIVE ancestors(id,parent_id,depth) AS (
-    SELECT id,parent_id,0 FROM nodes WHERE id=?1
-    UNION ALL
-    SELECT n.id,n.parent_id,a.depth+1 FROM ancestors a JOIN nodes n ON n.id=a.parent_id
-      WHERE a.depth<64 AND n.space_id=?2 AND n.owner_id=?3 AND n.deleted_at IS NULL
-      LIMIT 65
-  ), walk(id,parent_id,name_ci,kind,depth,entering,visited) AS MATERIALIZED (
-    SELECT id,parent_id,name_ci,kind,(SELECT MAX(depth) FROM ancestors),1,1 FROM nodes
-      WHERE id=?1 AND space_id=?2 AND owner_id=?3 AND deleted_at IS NULL
-    UNION ALL
-    SELECT n.id,n.parent_id,n.name_ci,n.kind,
-      w.depth+CASE WHEN n.parent_id=w.id THEN 1 WHEN n.id=w.parent_id THEN -1 ELSE 0 END,
-      n.id IS NOT w.parent_id,w.visited+(n.id IS NOT w.parent_id)
-    FROM walk w JOIN nodes n ON n.id=COALESCE(
-      CASE WHEN w.entering=1 AND w.kind IN ('root','folder') AND w.depth<64 THEN
-        (SELECT c.id FROM nodes c INDEXED BY nodes_children_keyset WHERE c.parent_id=w.id
-          AND c.deleted_at IS NULL AND c.space_id=?2 AND c.owner_id=?3
-          ORDER BY c.name_ci,c.id LIMIT 1) END,
-      CASE WHEN w.id<>?1 THEN
-        (SELECT c.id FROM nodes c INDEXED BY nodes_children_keyset WHERE c.parent_id=w.parent_id
-          AND c.deleted_at IS NULL AND c.space_id=?2 AND c.owner_id=?3
-          AND (c.name_ci,c.id)>(w.name_ci,w.id) ORDER BY c.name_ci,c.id LIMIT 1) END,
-      CASE WHEN w.id<>?1 THEN w.parent_id END)
-      WHERE w.visited<10000 AND n.space_id=?2 AND n.owner_id=?3 AND n.deleted_at IS NULL
-      LIMIT 20000
-  ), scope AS MATERIALIZED (
-    SELECT id FROM walk WHERE entering=1 LIMIT 10000
-  ), eligible AS MATERIALIZED (
+  return `${BOUNDED_SUBTREE_CTE}, eligible AS MATERIALIZED (
     SELECT n.id,n.parent_id,n.name,n.name_ci,n.kind,n.revision,n.current_blob_id,n.updated_at,
       si.rowid AS index_id,si.text_norm,si.normalization_version,si.revision AS index_revision
     FROM scope s CROSS JOIN nodes n ON n.id=s.id

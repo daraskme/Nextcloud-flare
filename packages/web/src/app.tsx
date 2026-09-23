@@ -16,6 +16,7 @@ import {
   Folder,
   FolderPlus,
   HardDrive,
+  Info,
   LayoutGrid,
   List,
   LoaderCircle,
@@ -31,6 +32,7 @@ import {
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
+import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import {
@@ -591,6 +593,8 @@ export function App() {
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
   const searching = !trash && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
+  const [statsScope, setStatsScope] = useState<string | null>(null);
+  useEffect(() => setStatsScope(null), [pathname]);
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [sidebar, setSidebar] = useState(false);
@@ -630,7 +634,7 @@ export function App() {
     retry: false,
   });
   const refresh = () => {
-    for (const key of ["children", "trash", "path", "picker", "search"])
+    for (const key of ["children", "trash", "path", "picker", "search", "stats"])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
   };
@@ -984,6 +988,14 @@ export function App() {
             </div>
           ) : (
             <>
+              {!trash && statsScope === parentId && (
+                <FolderStatsDialog
+                  key={`${me.id}:${me.epoch}:${parentId}`}
+                  account={me}
+                  scopeId={parentId}
+                  close={() => setStatsScope(null)}
+                />
+              )}
               <div className="list-toolbar">
                 <div className="list-summary">
                   <strong>{trash ? filteredTrash.length : filtered.length}</strong> 件
@@ -992,6 +1004,16 @@ export function App() {
                   {trash ? "削除した項目" : "名前順"}
                 </div>
                 <div className="toolbar-controls">
+                  {!trash && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="フォルダーの情報"
+                      onClick={() => setStatsScope(parentId)}
+                    >
+                      <Info size={17} />
+                    </Button>
+                  )}
                   <form
                     className="search-form"
                     role="search"

@@ -138,7 +138,7 @@ export const ROUTES = [
     template: "/api/v1/stats",
     auth: ["access"],
     operation: "account.read",
-    operands: ["currentUser", "space"],
+    operands: ["currentUser", "space", "scopeRoot"],
     adminOnly: false,
     csrf: "same-origin-json",
   },

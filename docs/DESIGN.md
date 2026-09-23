@@ -383,7 +383,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/api/v1/recent` | access | `recent.read` | `scopeRoot,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/starred` | access | `starred.read` | `scopeRoot,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/shared-with-me` | access | `shared.read` | `currentUser,mounts,cursor` | false | same-origin-json |
-| app | GET | `/api/v1/stats` | access | `account.read` | `currentUser,space` | false | same-origin-json |
+| app | GET | `/api/v1/stats` | access | `account.read` | `currentUser,space,scopeRoot` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId` | access | `node.read` | `node,ancestors` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/path` | access | `node.read` | `node,ancestors` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/children` | access | `node.read` | `node,children,cursor` | false | same-origin-json |

@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 5 要求時のフォルダー集計 | Access account stats、所有folderの再帰件数/現在のlogical bytes、同一batch認可と1万件上限、Files情報dialog | D1追加12件、既存検索9件の回帰。最終全check/browser結果は実行記録。[FOLDER_STATS](FOLDER_STATS.md) |
 | 5 フォルダー配下検索 | Access API、正規化/部分一致、scope10,000/page200、現行認可と検索専用cursor、Files検索/元保存先保持。子一覧更新後のrename/move索引修正 | query/cursor、実D1境界、browser検索/201件pagination/更新競合。最終結果は実行記録。[SEARCH](SEARCH.md) |
 | 2/3 配信leaseの期限 | DOのbyte期間内のlease、旧有効leaseの保持、R2 HEAD/GETと応答bodyへの期限伝播、取消し・1回限りの精算 | Node追加20件、workerd追加6件と既存境界。最終結果は実行記録。[CONTENT_LEASES](CONTENT_LEASES.md) |
 | 2/3 作成receiptの回収 | 応答喪失後に対象revisionが進んでも同じkey/ID/capabilityを再取得し、中止できる。旧本文/確定は拒否し、二重予約/R2再初期化をしない | workerd HTTP追加5件、browser追加2件。最終結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) |
@@ -110,6 +111,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、所有folderの要求時集計をAccess API/Files情報dialogへ接続。現在のfile/folder件数とlogical bytes、同一batchの認可/停止/epoch/世代assert、scope込み10,000ノードと絶対depth64、部分結果/content不足、再集計中/拒否後の旧数値非表示を実装。検索の索引付き走査を共通化。追加workerd12件と既存検索9件の21件成功（11.38秒）、新規browser1件成功（16.8秒）。最終`pnpm check`はNode389 + workerd800 = **1,189 tests**（23+54 files）、workerd375.59秒。lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。別途`pnpm test:browser`は**19 tests**成功（3.4分）、合計**1,208件**。PC/mobileの集計画面を実際に確認し、はみ出しなし。直前のWindows CIでmigration hook10秒とControlDO試験30秒のtimeoutを確認したため、Windowsのrunner限度のみhook60秒/test90秒へ変更。アプリ内部期限とassertionは維持し、変更後のconfigのlint/typecheckも成功。D1 migration・依存追加なし。実D1予算/共有/media/全体admission/復旧/公開のgateは未完了。[FOLDER_STATS](FOLDER_STATS.md)参照。
 
 - 2026-09-24、フォルダー配下の検索APIとFiles検索を接続。名前と共通の正規化、literal query、1文字/記号/絵文字のbounded fallback、検索専用cursor、現行credential/祖先/owner/internal grantと同一batchの最終assertを実装。索引付きsuccessor walkでscope10,000/step20,000/絶対depth64を制限し、rowidに限定したFTS候補とsubstringの後に名前順page200を返す。旧/欠落索引と上限到達を不完全な結果として通知。子追加後の親rename/moveが失敗する問題を2件の実service試験で再現し、原子的な旧FTS削除/新索引更新を保持して修正。Node追加13件、workerd追加11件。関連57件成功（15.72秒）、追加境界を含む検索9件成功（5.59秒）。最終`pnpm check`はNode389 + workerd788 = **1,177 tests**（23+53 files）、workerd447.57秒。lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。その後のUI変更は上限通知の文言のみでlint成功、最終Web buildを含む別途browser **18 tests**成功（4.2分）、合計**1,195件**。新規2件で未表示子孫の検索、元parentへの上書き、実content確認、保存場所/改名/検索解除、実201件pagination、同一語の再検索、世代競合409と認証拒否後の非表示を確認。最終PC/mobile画面と横はみ出しなしを確認。schema/migration・依存追加なし。media metadata parser/索引同期・索引version再構築運用・実D1予算・共有/media/全体admission/復旧/公開のgateは残る。詳細は[SEARCH](SEARCH.md)。
 

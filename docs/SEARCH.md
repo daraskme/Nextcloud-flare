@@ -40,4 +40,4 @@ scope を確定してから、各索引 rowid に限定した FTS lookup を行�
 
 Node は正規化、literal query、fallback、byte 上限、cursor 用途/期限/改変を検証する。workerd は実 D1 の階層・200件 keyset・scope10,000上限・他 owner・削除祖先・internal grant・待機中失効・旧索引と rename/move の同期を検証する。ブラウザーは実 API の検索・保存先保持・上書き・再検索・201件 pagination・世代競合と認証拒否を確認する。件数と最終結果は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を参照。
 
-現在の索引入力は名前。media metadata の parser/同期、検索索引 version の再構築運用、共有管理画面、要求時の bounded stats、実 D1 の rows_read≤20,000/duration≤250ms と負荷試験は残る。ローカルの fixture 件数や所要時間を実 D1 の予算合格とは扱わない。D1 migration・依存追加はない。
+現在の索引入力は名前。media metadata の parser/同期、検索索引 version の再構築運用、共有管理画面、実 D1 の rows_read≤20,000/duration≤250ms と負荷試験は残る。所有folderの要求時集計は[FOLDER_STATS](FOLDER_STATS.md)へ接続し、索引付き走査を共通化した。ローカルの fixture 件数や所要時間を実 D1 の予算合格とは扱わない。D1 migration・依存追加はない。

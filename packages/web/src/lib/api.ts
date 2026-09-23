@@ -35,6 +35,17 @@ export interface SearchPage {
   nextCursor: string | null;
   truncated: boolean;
 }
+export interface FolderStats {
+  scopeId: string;
+  treeGeneration: number;
+  fileCount: number;
+  folderCount: number;
+  totalBytes: number;
+  scannedNodes: number;
+  nodeLimit: number;
+  unavailableFiles: number;
+  truncated: boolean;
+}
 export interface Breadcrumb {
   id: string;
   name: string;
@@ -223,6 +234,12 @@ export class ApiClient {
     const params = new URLSearchParams({ scopeId, q });
     if (cursor) params.set("cursor", cursor);
     return this.request<SearchPage>(`/api/v1/search?${params}`, signal ? { signal } : {});
+  }
+  stats(scopeId: string, signal?: AbortSignal) {
+    return this.request<FolderStats>(
+      `/api/v1/stats?scopeId=${encodeURIComponent(scopeId)}`,
+      signal ? { signal } : {},
+    );
   }
   path(id: string, signal?: AbortSignal) {
     return this.request<{ path: Breadcrumb[] }>(

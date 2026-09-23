@@ -21,7 +21,10 @@ export default defineConfig({
       "packages/worker/test/spike/**/*.test.ts",
       "packages/worker/test/integration/**/*.test.ts",
     ],
-    testTimeout: 30_000,
+    // Windows CI has exceeded 30s for recovery RPC tests and 10s for cold migrations.
+    // Keep application deadlines/assertions unchanged; allow runner startup/I/O overhead.
+    testTimeout: process.platform === "win32" ? 90_000 : 30_000,
+    hookTimeout: process.platform === "win32" ? 60_000 : 10_000,
     fileParallelism: false,
   },
 });

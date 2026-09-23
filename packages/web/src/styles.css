@@ -775,6 +775,25 @@ h1 {
   gap: 8px;
   justify-content: flex-end;
 }
+.folder-stats {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 24px;
+}
+.folder-stats > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.folder-stats dd {
+  margin: 0;
+  font-weight: 650;
+}
+.folder-stats-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .overwrite-summary {
   display: grid;
   gap: 6px;

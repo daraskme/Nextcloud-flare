@@ -91,6 +91,10 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
+直前のCI run35919687576はWindowsのmigration hook10秒、run35919870356はWindowsのcontrol-admission3件30秒でtimeout。Windowsのworkerdテストに限りtest90秒/hook60秒へ調整し、他OSとアプリ内部期限は維持する。新しいHEADのCIで結果を確認する。
+
+所有folderの要求時集計APIとFiles情報dialogを追加。現在のファイル数・サブフォルダー数・logical bytesを、Access認可/epoch/maintenance/世代と同一batchで取得する。検索と共通の索引付きsuccessor walkでscope込み1万ノード・深さ64、部分結果とcontent不足を明示。再集計中/拒否後は古い数値を隠す。migration・依存変更なし。詳細は[FOLDER_STATS](FOLDER_STATS.md)。共有/media別集計、実D1予算、以下の製品要件は未完了。
+
 Accessのフォルダー配下検索APIとFiles検索画面を接続。共通正規化、literal query、scope10,000/page200、現在のcredential/祖先/共有read grant、検索専用cursor、同一batchの世代assertを使う。走査は索引付きsuccessor walkで全siblingの先行展開を避ける。検索結果のparentIdを上書きに渡し、保存場所への移動、世代競合/拒否時の古い結果の非表示を実browserで検証。子一覧だけが更新されたfolderのrename/move失敗も再現・修正。詳しくは[SEARCH](SEARCH.md)。media metadata/索引再構築運用/実D1予算、共有・media・全体admission・復旧/公開の全体要件は残る。
 
 配信leaseの期限をDOのbyte期間内へ制限し、旧実装の有効なleaseは精算まで保持する処理を追加。`/c`も返された期限をR2 HEAD/GETとbody終了まで引き継ぎ、停止した読み込み・未読応答・取消しを扱う。精算は1回、結果不明は全額保持。実D1の期限更新で有効なleaseが消える問題と、修正前の配信関数が期限後の3 byteを返す問題を再現した。詳細は[CONTENT_LEASES](CONTENT_LEASES.md)。実HTTP切断伝播、長時間downloadのRange/ticket更新UI、全media/public配信経路と実環境gateは残る。
