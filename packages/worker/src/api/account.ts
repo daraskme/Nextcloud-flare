@@ -3,6 +3,7 @@ import type { CsrfTokens } from "../auth/csrf";
 import { type AccessSession, revokeAccessSession } from "../auth/sessions";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
+import { hasEmptyBody } from "./emptyBody";
 
 interface MeRow {
   id: string;
@@ -53,21 +54,7 @@ export async function handleAccountHttp(
     } catch {
       return problem(403, "forbidden");
     }
-    // HTTP adapters can represent a zero-byte POST as a non-null closed stream.
-    // Accept only EOF; never trust Content-Length or buffer a logout payload.
-    if (request.body) {
-      const reader = request.body.getReader();
-      try {
-        if (!(await reader.read()).done) {
-          await reader.cancel();
-          return problem(400, "bad_request");
-        }
-      } catch {
-        return problem(400, "bad_request");
-      } finally {
-        reader.releaseLock();
-      }
-    }
+    if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
     await revokeAccessSession(env.DB, session.credential_id, session.epoch);
     return new Response(null, {
       status: 303,

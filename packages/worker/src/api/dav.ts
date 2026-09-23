@@ -35,6 +35,7 @@ import { moveNode } from "../services/moveNode";
 import { proppatch } from "../services/proppatch";
 import { DAV_PUT_MAX_BYTES, putFile } from "../services/putFile";
 import { trashNode } from "../services/trashNode";
+import { hasEmptyBody } from "./emptyBody";
 
 const PROTECTED_DAV_PROPERTIES = new Set([
   "getetag",
@@ -175,7 +176,10 @@ export async function handleDavHttp(
   }
   if (request.method === "MKCOL") {
     if (path.segments.length === 0) return problem(405, "method_not_allowed");
-    if (request.body || ![null, "0"].includes(request.headers.get("Content-Length")))
+    if (
+      ![null, "0"].includes(request.headers.get("Content-Length")) ||
+      !(await hasEmptyBody(request))
+    )
       return problem(415, "unsupported_media_type");
     if (request.headers.has("Lock-Token")) return problem(400, "bad_request");
     const key = request.headers.get("Idempotency-Key");
@@ -346,7 +350,8 @@ export async function handleDavHttp(
   }
   if (request.method === "COPY") {
     if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
-    if (request.body || request.headers.has("Lock-Token")) return problem(400, "bad_request");
+    if (request.headers.has("Lock-Token") || !(await hasEmptyBody(request)))
+      return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
       const depth = parseDavTransferDepth("COPY", request.headers.get("Depth"));
@@ -415,9 +420,10 @@ export async function handleDavHttp(
   if (request.method === "DELETE") {
     if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
     if (
-      request.body ||
       request.headers.has("Lock-Token") ||
-      (request.headers.has("Depth") && request.headers.get("Depth")?.toLowerCase() !== "infinity")
+      (request.headers.has("Depth") &&
+        request.headers.get("Depth")?.toLowerCase() !== "infinity") ||
+      !(await hasEmptyBody(request))
     )
       return problem(400, "bad_request");
     try {
@@ -459,7 +465,8 @@ export async function handleDavHttp(
   }
   if (request.method === "MOVE") {
     if (!resolved || path.segments.length === 0) return problem(405, "method_not_allowed");
-    if (request.body || request.headers.has("Lock-Token")) return problem(400, "bad_request");
+    if (request.headers.has("Lock-Token") || !(await hasEmptyBody(request)))
+      return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
       parseDavTransferDepth("MOVE", request.headers.get("Depth"));
@@ -729,7 +736,8 @@ export async function handleDavHttp(
     }
   }
   if (request.method === "UNLOCK") {
-    if (request.body || request.headers.has("If")) return problem(400, "bad_request");
+    if (request.headers.has("If") || !(await hasEmptyBody(request)))
+      return problem(400, "bad_request");
     let target;
     try {
       target = await resolveDavPropsNode(env.DB, principal, path);

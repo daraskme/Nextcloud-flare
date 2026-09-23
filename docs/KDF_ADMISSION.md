@@ -17,7 +17,7 @@ DAV の認証と private app-password 作成 API は、容量不足を `503 not_
 
 作成サービスは、現行の Access session と root 権限を計算前に確認する。待機中に失効・停止・権限変更が起きても、最終 D1 batch の既存の assertion を通らない限り書き込めない。検証側も計算後に現行 credential / digest / epoch / maintenance を再照合する。pepper 更新前後の再検証も同じ executor を使う。
 
-実 HTTP 試験で判明した app-password 取消しの空本文判定も修正した。本文なしの DELETE が空の closed stream として届く場合は EOF を読み取って受け入れる。本文付き・読取り失敗は拒否し、Content-Length が `0` でも実データを無視しない。取消し後は同じ secret で DAV 認証できない。
+実 HTTP 試験で判明した app-password 取消しの空本文判定も修正した。本文なしの DELETE が空の closed stream として届く場合は EOF を読み取って受け入れる。本文付き・読取り失敗は拒否し、Content-Length が `0` でも実データを無視しない。取消し後は同じ secret で DAV 認証できない。現在は5秒・16read上限の[共通空本文検査](EMPTY_HTTP_BODY.md)を使う。
 
 ## 検証
 

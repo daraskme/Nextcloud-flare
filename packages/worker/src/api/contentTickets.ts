@@ -5,6 +5,7 @@ import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
 import { type ContentTicketTarget, issueContentTicket } from "../services/contentTicket";
 import { cancelContentTicket } from "../services/contentTicketCancel";
+import { hasEmptyBody } from "./emptyBody";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PURPOSES = new Set(["content", "thumb", "page", "zip", "track"]);
@@ -118,7 +119,7 @@ export async function handlePrivateContentTicketHttp(
     return problem(403, "forbidden");
   }
   if (cancel) {
-    if (request.body) return problem(400, "bad_request");
+    if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
     try {
       await cancelContentTicket(env.DB, principal, cancel[1] ?? "");
       return new Response(null, { status: 204, headers: { "Cache-Control": "private, no-store" } });

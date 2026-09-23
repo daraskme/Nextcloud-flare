@@ -20,6 +20,9 @@ import { foundationFixture } from "../fixtures/foundation";
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
 
+const emptyBody = () =>
+  new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+
 function admittedDavEnv(): Env {
   const doEnv = {
     ...env,
@@ -492,7 +495,7 @@ it("creates a DAV collection through the fenced namespace mutation service", asy
   const send = (
     url = "https://app.invalid/dav/New%20Folder",
     idempotencyKey = key,
-    body?: string,
+    body?: string | ReadableStream<Uint8Array>,
   ) =>
     handleDavHttp(
       new Request(
@@ -518,7 +521,7 @@ it("creates a DAV collection through the fenced namespace mutation service", asy
       1,
       ring,
     );
-  const created = await send();
+  const created = await send(undefined, undefined, emptyBody());
   expect(created.status).toBe(201);
   expect(created.headers.get("Location")).toBe("/dav/New%20Folder/");
   expect(
@@ -595,6 +598,60 @@ it("creates a DAV collection through the fenced namespace mutation service", asy
   );
   expect(failedCondition.status).toBe(412);
 });
+
+it.each(["revoked", "maintenance"])(
+  "rechecks authority after waiting for the empty request body (%s)",
+  async (reason) => {
+    const { f, id, ring, request } = await fixture(reason === "revoked" ? "Z" : "Y");
+    await env.DB.prepare(
+      "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:create')",
+    )
+      .bind(`ap:${id}`)
+      .run();
+    let pulled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          pulled = true;
+          if (reason === "revoked")
+            await env.DB.prepare("UPDATE app_passwords SET revoked_at=? WHERE id=?")
+              .bind(Date.now(), id)
+              .run();
+          else await env.DB.prepare("UPDATE control SET maintenance=1").run();
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 }, // Revocation happens when the authenticated handler reads the body.
+    );
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/After-wait", {
+        method: "MKCOL",
+        headers: {
+          ...Object.fromEntries(request().headers),
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body,
+      }),
+      admittedDavEnv(),
+      1,
+      ring,
+    );
+    expect(pulled).toBe(true);
+    expect(response.status).toBe(404);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM nodes WHERE parent_id=? AND name='After-wait'",
+      )
+        .bind(f.ids.folder)
+        .first("n"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM operations WHERE credential_id=?")
+        .bind(`ap:${id}`)
+        .first("n"),
+    ).toBe(0);
+  },
+);
 
 it("atomically writes DAV dead properties and rejects protected live properties", async () => {
   const { f, id, ring, request } = await fixture("D");
@@ -896,6 +953,7 @@ it("creates, refreshes and removes an existing-resource DAV lock", async () => {
     new Request("https://app.invalid/dav/File", {
       method: "UNLOCK",
       headers: { ...Object.fromEntries(request().headers), "Lock-Token": `<${token}>` },
+      body: emptyBody(),
     }),
     davEnv,
     1,
@@ -1381,6 +1439,7 @@ it("atomically trashes a bounded DAV subtree and revokes its locks and shares", 
         ...headers,
         If: `<https://app.invalid/dav/Delete%20me/Child.txt> (${locked.headers.get("Lock-Token")})`,
       },
+      body: emptyBody(),
     }),
     davEnv,
     1,
@@ -1607,7 +1666,7 @@ it("moves a DAV resource to a strict same-origin destination", async () => {
     Depth: "infinity",
   };
   const moved = await handleDavHttp(
-    new Request("https://app.invalid/dav/File", { method: "MOVE", headers }),
+    new Request("https://app.invalid/dav/File", { method: "MOVE", headers, body: emptyBody() }),
     admittedDavEnv(),
     1,
     ring,
@@ -1748,6 +1807,7 @@ it("copies and atomically overwrites a DAV resource with COW storage", async () 
           Depth: "0",
           Overwrite: overwrite,
         },
+        body: emptyBody(),
       }),
       davEnv,
       1,

@@ -10,6 +10,7 @@ import {
   listAppPasswords,
   revokeAppPassword,
 } from "../services/appPasswords";
+import { hasEmptyBody } from "./emptyBody";
 
 const BASE = "/api/v1/app-passwords";
 const DETAIL = /^\/api\/v1\/app-passwords\/([^/]+)$/;
@@ -109,21 +110,7 @@ export async function handleAppPasswordHttp(
     return problem(403, "forbidden");
   }
   if (detail) {
-    // HTTP adapters can provide a closed stream for a zero-byte DELETE, as for logout.
-    // Check EOF rather than stream presence or an untrusted Content-Length header.
-    if (request.body) {
-      const reader = request.body.getReader();
-      try {
-        if (!(await reader.read()).done) {
-          await reader.cancel();
-          return problem(400, "bad_request");
-        }
-      } catch {
-        return problem(400, "bad_request");
-      } finally {
-        reader.releaseLock();
-      }
-    }
+    if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
     let credentialId: string;
     try {
       credentialId = decodeURIComponent(detail[1] ?? "");

@@ -409,6 +409,136 @@ test("an uncertain single upload is not resent and can be cancelled; purge needs
   await expect(page.getByText("完全削除の確認", { exact: true })).toHaveCount(0);
 });
 
+test("body-less DAV mutations and content ticket cancellation work over real HTTP", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/files");
+  const issued = await page.evaluate(async () => {
+    const csrf = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    const response = await fetch("/api/v1/app-passwords", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.token },
+      body: JSON.stringify({
+        name: "DAV transport",
+        scopes: ["node:read", "node:create", "node:write", "node:delete"],
+      }),
+    });
+    return { status: response.status, credential: await response.json() };
+  });
+  expect(issued.status).toBe(201);
+  const send = (
+    method: string,
+    path: string,
+    headers: Record<string, string> = {},
+    data?: string,
+  ) =>
+    request.fetch(`https://127.0.0.1:8879${path}`, {
+      method,
+      headers: {
+        host: "app.ncf.test:8879",
+        "X-Test-Without-Auth": "1",
+        Authorization: `Basic ${Buffer.from(`${issued.credential.id}:${issued.credential.secret}`).toString("base64")}`,
+        ...headers,
+      },
+      ...(data === undefined ? {} : { data }),
+    });
+  const folder = "/dav/dav-transport";
+  const file = `${folder}/source.txt`;
+  const copy = `${folder}/copy.txt`;
+  const moved = `${folder}/moved.txt`;
+  const key = { "Idempotency-Key": "browser-empty-mkcol" };
+  expect((await send("MKCOL", folder, key, " ")).status()).toBe(415);
+  expect((await send("MKCOL", folder, key)).status()).toBe(201);
+  const payload = "DAV transport fixture\n";
+  expect((await send("PUT", file, { "Content-Type": "text/plain" }, payload)).status()).toBe(201);
+  const locked = await send(
+    "LOCK",
+    file,
+    { "Content-Type": "application/xml", Depth: "0", Timeout: "Second-60" },
+    '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>',
+  );
+  expect(locked.status()).toBe(200);
+  const token = locked.headers()["lock-token"]!;
+  expect(token).toMatch(/^<opaquelocktoken:/);
+  expect((await send("UNLOCK", file, { "Lock-Token": token }, "{}")).status()).toBe(400);
+  expect((await send("UNLOCK", file, { "Lock-Token": token })).status()).toBe(204);
+  const copyHeaders = {
+    Destination: `https://app.ncf.test:8879${copy}`,
+    Overwrite: "F",
+    Depth: "0",
+  };
+  expect((await send("COPY", file, copyHeaders, "{}")).status()).toBe(400);
+  expect((await send("COPY", file, copyHeaders)).status()).toBe(201);
+  const moveHeaders = {
+    Destination: `https://app.ncf.test:8879${moved}`,
+    Overwrite: "F",
+    Depth: "infinity",
+  };
+  expect((await send("MOVE", copy, moveHeaders, "{}")).status()).toBe(400);
+  expect((await send("MOVE", copy, moveHeaders)).status()).toBe(201);
+  expect(await (await send("GET", moved)).text()).toBe(payload);
+
+  const ticket = await page.evaluate(async () => {
+    const me = await fetch("/api/v1/me").then((r) => r.json());
+    const children = async (id: string) => {
+      const response = await fetch(`/api/v1/nodes/${encodeURIComponent(id)}/children`);
+      if (!response.ok) throw new Error(`children_http_${response.status}`);
+      return (await response.json()).children as { id: string; name: string }[];
+    };
+    const root = await children(me.rootNodeId);
+    const folder = root.find((node) => node.name === "dav-transport")!;
+    const source = (await children(folder.id)).find((node) => node.name === "source.txt")!;
+    const csrf = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    const headers = { "Content-Type": "application/json", "X-CSRF-Token": csrf.token };
+    const created = await fetch("/api/v1/content-session", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        targets: [{ spaceId: me.spaceId, nodeId: source.id }],
+        purpose: "content",
+        ttlSeconds: 300,
+      }),
+    });
+    const issued = await created.json();
+    const exchange = async () =>
+      (
+        await fetch(`${me.contentOrigin}/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ ticket: issued.ticket }),
+        })
+      ).status;
+    const before = await exchange();
+    const url = `/api/v1/tickets/${issued.ticketId}`;
+    const rejected = await fetch(url, { method: "DELETE", headers, body: "{}" });
+    const afterRejected = await exchange();
+    const cancelled = await fetch(url, { method: "DELETE", headers });
+    return {
+      issued: created.status,
+      before,
+      rejected: rejected.status,
+      afterRejected,
+      cancelled: cancelled.status,
+      afterCancelled: await exchange(),
+    };
+  });
+  expect(ticket).toEqual({
+    issued: 201,
+    before: 201,
+    rejected: 400,
+    afterRejected: 201,
+    cancelled: 204,
+    afterCancelled: 400,
+  });
+  expect((await send("DELETE", moved, {}, "{}")).status()).toBe(400);
+  expect(await (await send("GET", moved)).text()).toBe(payload);
+  expect((await send("DELETE", moved)).status()).toBe(204);
+  expect((await send("GET", moved)).status()).toBe(404);
+  expect((await send("DELETE", folder)).status()).toBe(204);
+});
+
 test("concurrent DAV requests share KDF capacity and a revoked app password stops working", async ({
   page,
   request,

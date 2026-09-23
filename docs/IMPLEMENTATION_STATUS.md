@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1/2 本文なしHTTP操作 | DAV MKCOLの415誤判定を修正。COPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutに5秒・16read上限の共通EOF検査 | Node境界13件、workerdの待機中失効/停止2件を追加。独立HTTPのDAV操作・ticket発行/交換/取消しを検証。全結果は実行記録。[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) |
 | 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、待機256件・5秒、取消し・例外時解放、503再試行、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件が成功。全check/browserの結果は実行記録。ControlDO全体制限は未実装。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 通常稼働中のtrash復元 | migration `0026`、永続GC pause、管理者設定保持、既存deleting drain、原子的なoperation/token/epoch/期限assertと解放alarm | 実ControlDO/LockDO/D1/R2の29件とschema制約1件を追加。連続alarm失敗6回で閉じる。実browserの復元・応答喪失再照会。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreもGC稼働中のfixtureで検証。詳細・残作業は[FILES_UI](FILES_UI.md) |
@@ -105,6 +106,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、本文なしHTTP操作の空stream誤判定を修正。`pnpm check`成功、Node356 + workerd760 = **1,116 tests**（21+51 files）、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。workerd313.69秒。別途`pnpm test:browser`の**11 tests**成功（1.1分）、合計**1,127件**。追加Node13件でEOF/実データ/既読/locked/取消し/5秒期限/空chunk上限を検証。workerd追加2件で本文待機中のapp password失効・maintenance移行後にnode/operationを作らないことを確認。既存DAV/private ticket試験をclosed stream・偽Content-Length・読取り失敗で拡張。新しい独立HTTP試験でMKCOL/PUT/LOCK/UNLOCK/COPY/MOVE/GET/DELETEとticket発行/交換/取消しを確認し、不正本文の拒否後もfile/lock/ticketが残ることを検証。詳細は[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md)。migration追加はなく0026/61通常table。実OS DAV client、実Cloudflareの切断伝播、全体admission、共有・検索・media・実環境は未完了。
 
 - 2026-09-24、app-password KDFのisolate内制限を追加。`pnpm check`成功、Node343 + workerd758 = **1,101 tests**（20+51 files）、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。workerd314.73秒。追加はNode8/workerd9、既存API試験に空DELETE stream・偽Content-Length・読取り失敗・取消し再送の境界を加えた。明示的な`enable_request_signal`設定後にもlint/typecheck/configとbrowser **10 tests**が成功（1.1分）、合計**1,111件**。独立HTTPの8並列DAV認証・誤secret・取消し後の拒否を確認。ローカルWrangler経由のHTTP切断診断はabort通知を観測できず、実Cloudflareの切断伝播を未検証gateとして[KDF_ADMISSION](KDF_ADMISSION.md)に記録。診断用endpointは残していない。最終設定を含む全checkは最新SHAのCI結果と照合する。migration追加はなく0026/61通常table。全体KDF rate/同時数、mutation admission、共有・検索・media・実環境は未完了。
 

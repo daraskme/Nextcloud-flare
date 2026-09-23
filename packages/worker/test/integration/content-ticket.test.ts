@@ -321,10 +321,31 @@ it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
       tokens,
     );
     expect(wrongOrigin.status).toBe(403);
+    for (const body of [
+      "{}",
+      new ReadableStream<Uint8Array>({
+        start: (controller) => controller.error(new Error("lost")),
+      }),
+    ]) {
+      const rejected = await handlePrivateContentTicketHttp(
+        new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
+          method: "DELETE",
+          headers: { ...headers, "Content-Length": "0" },
+          body,
+        }),
+        appEnv,
+        principal,
+        csrf,
+        tokens,
+      );
+      expect(rejected.status).toBe(400);
+    }
+    await acceptContentTicket(env.DB, tokens, issued.ticket);
     const cancelled = await handlePrivateContentTicketHttp(
       new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
         method: "DELETE",
         headers,
+        body: new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }),
       }),
       appEnv,
       principal,

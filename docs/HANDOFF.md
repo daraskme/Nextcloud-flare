@@ -91,9 +91,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-最新の追加は[KDF isolate内制限](KDF_ADMISSION.md)。app passwordの作成・検証・pepper更新を同時1件、待機256件・5秒へ制限した。取消し中の実計算が終わるまで枠を保持し、混雑は503 + Retry-Afterで返す。作成前のAccess/root検査と計算後の現行D1 assertionを維持する。Node/workerd/独立HTTPの試験を追加。ControlDOによる全体600回/分・20並列とmutation32並列・待ちqueueは未実装なので、local executorで完了扱いにしない。
+前回の追加は[KDF isolate内制限](KDF_ADMISSION.md)。app passwordの作成・検証・pepper更新を同時1件、待機256件・5秒へ制限した。取消し中の実計算が終わるまで枠を保持し、混雑は503 + Retry-Afterで返す。作成前のAccess/root検査と計算後の現行D1 assertionを維持する。Node/workerd/独立HTTPの試験を追加。ControlDOによる全体600回/分・20並列とmutation32並列・待ちqueueは未実装なので、local executorで完了扱いにしない。
 
-独立HTTP試験でapp-password取消しの本文なしDELETEが空のclosed streamとして届き、400になる問題を修正した。EOFを確認し、本文付き・読取り失敗は拒否する。他の本文なしDAV/content-ticket経路にもstream有無だけで拒否する箇所があるため、実HTTP経由で境界を監査する。`pnpm check`とbrowser試験は同一checkoutでは順番に実行する。並行buildによる開発サーバーreloadは進行中のfixtureを壊す。
+最新の追加は[本文なしHTTP操作](EMPTY_HTTP_BODY.md)。実HTTPで本文なしMKCOLが415になる不具合を修正し、DAVのCOPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutも共通検査へ接続した。実データ・既読/locked・失敗・取消しを拒否し、5秒・16回のreadで待機を制限する。Node境界13件、workerdの待機中失効/停止2件を追加し、既存D1/LockDO試験をclosed streamで拡張。独立HTTPでDAV作成から移動/コピー/削除/lock解除とticket取消しを検証した。`pnpm check`とbrowser試験は同一checkoutでは順番に実行する。並行buildによる開発サーバーreloadは進行中のfixtureを壊す。
 
 直近は[通常稼働中の復元](RESTORE_GC.md)を実装。migration `0026`、61通常table。管理者GC設定と復元用の単一・5分期限holdを分け、既存deletingだけをdrainする。LockDO grantと原子的restoreの両方でoperation/token/epoch/期限を検査し、finally/alarmで解放する。alarmの失敗回数はepoch/revision/tokenごとに永続化し、連続6回でclosing intentを作って自動再試行を停止する。DB全面障害時もDOの受付は閉じ、復旧後にquiesce再送・repair・全監査が必要。古い失敗は新hold/管理者設定を閉じず、cleanup alarmも失わない。遅延処理、応答喪失、停止・epoch変更、eviction/全喪失を検証する。Files browser fixtureもGCを再開し、復元前後と応答喪失の再照会を試験する。次はaccount/KDF admissionと残るQueue、上書き・共有・検索・media UIを進める。Nodeとブラウザー型は分離。`pnpm test:browser`はlocal専用entryと`.wrangler/browser-tests`を使い、通常開発DBやremoteを変更しない。全checkにbrowser試験は含まれず、CIは別job。
 

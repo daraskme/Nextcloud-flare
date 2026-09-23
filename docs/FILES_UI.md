@@ -49,7 +49,7 @@ pnpm test:browser
 
 設定/状態は `.wrangler/browser-config.json` と `.wrangler/browser-tests/` のみ。起動時に後者だけを作り直し、開発DB・remote DBは変更しない。HTTPSのapp/content test hostをChromeのhost-resolverでloopbackへ向け、hosts/OS設定は変えない。port8879を専用に使い、他processが使用中なら失敗させる。
 
-10件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・app password発行と独立DAV request 8件の並行認証/取消し・複数タブlogout。filename/認証失効の応答fixtureと通信障害をPlaywrightで注入する。それ以外は実APIへ接続する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
+11件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・app password発行と独立DAV request 8件の並行認証/取消し・実HTTPの本文なしDAV mutationとticket取消し・複数タブlogout。filename/認証失効の応答fixtureと通信障害をPlaywrightで注入する。それ以外は実APIへ接続する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
 
 ## 残る制約
 

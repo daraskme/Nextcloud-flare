@@ -20,6 +20,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |
 | [CONTROL_ADMISSION](docs/CONTROL_ADMISSION.md) | 停止・全監査・受付とGCの段階再開 |
+| [EMPTY_HTTP_BODY](docs/EMPTY_HTTP_BODY.md) | 本文なしHTTP操作の判定・期限・実通信試験 |
 | [KDF_ADMISSION](docs/KDF_ADMISSION.md) | app password計算のisolate内実行制限と残る全体制御 |
 | [RESTORE_GC](docs/RESTORE_GC.md) | GC稼働中のごみ箱復元・期限付き停止と解放 |
 | [GC_RECOVERY](docs/GC_RECOVERY.md) | 停止中の既存GC回収と復旧監査 |
