@@ -120,7 +120,7 @@ async function observeCompletedObject(
   ]);
 }
 
-/** Internal service until multipart abort/expiry repair makes the HTTP lifecycle complete. */
+/** Complete once, reconcile unknown R2 outcomes, then publish through the atomic namespace path. */
 export async function completeMultipartUpload(
   env: Env,
   principal: Principal,
@@ -133,7 +133,15 @@ export async function completeMultipartUpload(
   const control = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
   if (control.maintenance || control.epoch !== principal.epoch) throw new Error("admission_closed");
   if (!/^[\x21-\x7e]{1,200}$/.test(requestId)) throw new Error("invalid_upload_complete");
-  let { row } = await accessUpload(env.DB, principal, id, capability, capabilities, false);
+  let { row } = await accessUpload(
+    env.DB,
+    principal,
+    id,
+    capability,
+    capabilities,
+    false,
+    "receipt",
+  );
   if (row.mode !== "multipart") throw new Error("invalid_upload_complete");
   const request = { uploadId: id, principal, capability };
   const stub = env.UPLOADS.get(env.UPLOADS.idFromName(id));
@@ -161,6 +169,8 @@ export async function completeMultipartUpload(
     return publish();
   if (!["created", "uploading", "completing"].includes(row.state))
     throw new Error("upload_not_completable");
+  if (row.expires_at <= Date.now() || row.last_progress_at <= Date.now() - 86400000)
+    throw new Error("upload_expired");
   try {
     await stub.beginComplete(request);
     let authorized;

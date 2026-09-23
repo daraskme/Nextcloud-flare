@@ -65,7 +65,7 @@ credential の復旧監査では、有効な app password と service の scope 
 
 ## Private単一upload
 
-`services/uploads/` と `api/uploads.ts` は Access user の `POST /api/v1/uploads`、`PUT /:id/content`、`POST /:id/complete`、`GET/DELETE /:id` を接続する。作成はcredentialとIdempotency-Keyから安定IDを作り、current node authority、quota予約、staging blob、immutable upload identityを同じD1 batchで保存する。migration `0016` は名前・上書きrevision・request digest・capability kid・単一write attempt/lease・completion operationを追加する。公開共有とmultipartのHTTPは未接続。
+`services/uploads/` と `api/uploads.ts` は Access user の `POST /api/v1/uploads`、`PUT /:id/content`、`POST /:id/complete`、`GET/DELETE /:id` を接続する。作成はcredentialとIdempotency-Keyから安定IDを作り、current node authority、quota予約、staging blob、immutable upload identityを同じD1 batchで保存する。migration `0016` は名前・上書きrevision・request digest・capability kid・単一write attempt/lease・completion operationを追加する。private multipartのHTTPも接続済み。公開共有は未接続。
 
 専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` のHMAC ringを使い、upload ID、credential、epoch、期限を署名する。DBにはcapabilityのhashだけを保存し、作成応答喪失時は保存済みkidで同じtokenを再発行する。旧kidは有効uploadがなくなるまで保持する（現在のsingleは24時間）。JSON mutationはCSRF、binaryはcurrent Access・capability・exact Origin、上書きはstrong If-Matchを要求する。
 
@@ -78,6 +78,8 @@ completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/phys
 HEAD presentなら実サイズをphysicalへ一度だけ計上し、予約解放とGC candidate挿入を同じbatchで行う。正しいupload/attempt/epoch/blob metadataが必須で、サイズ不一致の自分のobjectも実byteを計上してからGCへ渡す。metadata不一致は容量を計上して隔離し、予約を保持する。HEAD absentなら同じbatchでblobをdeleted、既存physical観測をremoved、予約をreleasedへ確定する。期限前のabsent、HEAD失敗、期限切れ/交代したcleanup leaseからの書込みでは精算しない。GCがdelete/HEAD不在を確認するまでcleanup_pendingは保持する。GC pause中もHEADと会計・candidate化は可能だがR2削除はしない。
 
 CronはControlDO/D1 admission後に回収し、その後pause解除時のみ既存GCを呼ぶ。復旧時は `ControlDO.repairExpiredUploads` がquiesceし、停止中の同じ回収処理を実行して前後のauditを無効化する。旧epoch・失効credentialでも未公開データは回収できるが、24時間の期限は短縮しない。汎用 `releaseStaleReservations` はterminalを含む全upload予約を除外する。最終復旧fenceは未解決cleanup claimと、physical計上済みGC candidateへ引き渡していないcleanupを拒否する。未知object全般のrepair、unknown multipart IDと実Cron運用の検証は残る。
+
+HTTP契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。multipart PUTはUpload-Attempt-Idと既知長を必須にし、current Access/capability/Origin/If-Matchを検査する。同attemptのin_flight再送は202でbodyを破棄し、新しいR2 callを許さない。readUploadはupload/partをcurrent authorization付きD1 batchで最大200件返し、期限切れ後も同credential/epochのreceiptを照会できる。D1反映が未確認のpartは以前の状態を返すため、clientは同attemptで再照合する。GETでDO初期化やbudget resetは行わない。multipart DELETEはD1のcreated/uploadingだけをabortingへCASし、completeとの競合ではR2 dispatch/publication側のfenceが停止を検知する。初期化応答喪失は202 receipt+capabilityで追跡でき、R2 upload IDを再作成しない。
 
 ## UploadDO multipart台帳
 
@@ -99,7 +101,7 @@ migration `0018`はimmutable part geometry、R2 initialization identity、`multi
 
 UploadDOはD1のcompleted flagだけではterminalと認めない。committed operationのcredential/principal/digest/operand/result/stepを照合し、SQLiteをcompletedへ進める。最終ackの喪失、eviction、旧epoch alarmでも公開済みblobをcleanupへ戻さない。D1で完了を証明できる場合、全SQLite喪失後のstatusは台帳を再初期化せず返し、新規partは拒否する。
 
-**HTTP/UIは未接続。** `jobs/multipartCleanup.ts`とmigration `0020`は既知R2 IDの中止・期限/idle/part lease切れ・旧epoch回収を行う。既定20件/最大100件、60秒cleanup leaseと独立counterを使う。稼働中のinit/part/complete leaseを待ち、未公開/ref/pin/operation tupleを再検査して、未確定operationの失敗と永久停止marker `multipart_cleanup_started_at`を同じD1 batchで記録する。以後はDO mirror・part再送・台帳再初期化・completeを拒否する。停止markerを見たDO alarmは削除される。
+**private HTTPは接続済み、UIは未接続。** `jobs/multipartCleanup.ts`とmigration `0020`は既知R2 IDの中止・期限/idle/part lease切れ・旧epoch回収を行う。既定20件/最大100件、60秒cleanup leaseと独立counterを使う。稼働中のinit/part/complete leaseを待ち、未公開/ref/pin/operation tupleを再検査して、未確定operationの失敗と永久停止marker `multipart_cleanup_started_at`を同じD1 batchで記録する。以後はDO mirror・part再送・台帳再初期化・completeを拒否する。停止markerを見たDO alarmは削除される。
 
 R2 abortの成功を `multipart_cleanup_closed='aborted'`として保存してからHEADを確認する。abortが不明でも既知complete attemptに対応するmetadata付き完成物をHEADで確認できればclosed='completed'とする。NoSuchUploadやHEAD不在単独、7日経過では閉鎖証明としない。actual bytesのphysical観測を先に保存し、予約解放・GC handoff/absent tombstoneを原子的に精算する。完成物のphysical減算とcleanup_pending解除はGCのdelete/HEAD不在後のみ。保存済み閉鎖証明を使って再試行し、遅延応答はcleanup token/current epochで拒否する。
 

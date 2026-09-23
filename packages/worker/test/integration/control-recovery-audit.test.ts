@@ -447,7 +447,7 @@ it("repairs an expired upload through ControlDO and invalidates the recovery aud
     await atomicBatch(env.DB, [
       { sql: "UPDATE blobs SET state='deleted' WHERE id=?", values: [blobId] },
       {
-        sql: "UPDATE blob_storage SET removed_at=MAX(observed_at,strftime('%s','now')*1000) WHERE blob_id=?",
+        sql: "UPDATE blob_storage SET removed_at=MAX(observed_at,strftime('%s','now')*1000) WHERE blob_id=? AND removed_at IS NULL",
         values: [blobId],
       },
       { sql: "DELETE FROM uploads WHERE id=?", values: [uploadId] },
@@ -547,7 +547,7 @@ it.each([false, true])(
       await atomicBatch(env.DB, [
         { sql: "UPDATE blobs SET state='deleted' WHERE id=?", values: [blobId] },
         {
-          sql: "UPDATE blob_storage SET removed_at=MAX(observed_at,strftime('%s','now')*1000) WHERE blob_id=?",
+          sql: "UPDATE blob_storage SET removed_at=MAX(observed_at,strftime('%s','now')*1000) WHERE blob_id=? AND removed_at IS NULL",
           values: [blobId],
         },
         { sql: "DELETE FROM uploads WHERE id=?", values: [uploadId] },

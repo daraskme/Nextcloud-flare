@@ -122,6 +122,7 @@ export async function accessUpload(
   token: string,
   capabilities: UploadCapabilities,
   checkTargetRevision = true,
+  profile: "transfer" | "receipt" = "transfer",
 ) {
   const row = await uploadRow(db, id);
   if (!row) throw new Error("upload_not_found");
@@ -129,8 +130,25 @@ export async function accessUpload(
   if ((await digestJson(token)) !== row.capability_hash)
     throw new Error("invalid_upload_capability");
   const authorized = await uploadAuthority(db, principal, row, checkTargetRevision);
-  await atomicBatch(db, [authorizationAssertion(authorized), uploadFence(row, [row.state], false)]);
+  if (
+    profile === "transfer" &&
+    (row.expires_at <= Date.now() || row.last_progress_at <= Date.now() - 86400000)
+  )
+    throw new Error("upload_expired");
+  await atomicBatch(db, [
+    authorizationAssertion(authorized),
+    profile === "receipt" ? uploadReceiptFence(row) : uploadFence(row, [row.state], false),
+  ]);
   return { row, authorized };
+}
+
+/** Current credential/capability and node authority are still required after transfer expiry. */
+export function uploadReceiptFence(row: UploadRow): SqlStatement {
+  return assertExists(
+    `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
+      WHERE u.id=? AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0`,
+    [row.id, row.credential_id, row.epoch],
+  );
 }
 
 export function uploadStatus(row: UploadRow) {

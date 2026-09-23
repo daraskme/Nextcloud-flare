@@ -260,6 +260,7 @@ async function completeUpload(
     capability,
     capabilities,
     false,
+    "receipt",
   );
   if (principal.kind !== "user" || row.mode !== mode) throw new Error("invalid_upload_complete");
   if (row.completion_op_id) {
@@ -270,6 +271,9 @@ async function completeUpload(
     }
   }
   if (row.state !== "completing" || row.in_flight !== 0) throw new Error("upload_content_pending");
+  if (row.expires_at <= Date.now() || row.last_progress_at <= Date.now() - 86400000)
+    throw new Error("upload_expired");
+  await atomicBatch(env.DB, [authorizationAssertion(authorized), uploadFence(row, ["completing"])]);
   if (mode === "multipart") {
     await atomicBatch(env.DB, [
       authorizationAssertion(authorized),

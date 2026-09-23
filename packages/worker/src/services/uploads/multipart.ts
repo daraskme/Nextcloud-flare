@@ -7,8 +7,52 @@ import type { Env } from "../../env";
 import { consumeKnownLength } from "../../platform/stream";
 import { accessUpload, uploadFence, uploadRow } from "./access";
 import { type CreateSingleUpload, reserveMultipartUpload } from "./create";
+import { readUpload } from "./read";
 
-/** Internal service; HTTP stays closed until completion and multipart cleanup are implemented. */
+/** Return the durable receipt even when one-time initialization cannot be confirmed. */
+export async function createMultipartUploadReceipt(
+  env: Env,
+  input: CreateSingleUpload,
+  capabilities: UploadCapabilities,
+) {
+  const control = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
+  if (control.maintenance || control.epoch !== input.principal.epoch)
+    throw new Error("admission_closed");
+  const reserved = await reserveMultipartUpload(env.DB, input, capabilities);
+  let pending = false;
+  try {
+    await createMultipartUpload(env, input, capabilities);
+  } catch (error) {
+    const { row } = await accessUpload(
+      env.DB,
+      input.principal,
+      reserved.id,
+      reserved.capability,
+      capabilities,
+      false,
+      "receipt",
+    );
+    pending =
+      ["failed", "aborting", "aborted", "expired"].includes(row.state) ||
+      (row.write_attempt_id !== null && row.r2_upload_id === null);
+    if (!pending) throw error;
+  }
+  return {
+    pending,
+    receipt: {
+      ...(await readUpload(
+        env.DB,
+        input.principal,
+        reserved.id,
+        reserved.capability,
+        capabilities,
+      )),
+      capability: reserved.capability,
+    },
+  };
+}
+
+/** Only a confirmed, one-time initialization claim may dispatch R2 creation. */
 export async function createMultipartUpload(
   env: Env,
   input: CreateSingleUpload,

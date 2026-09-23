@@ -28,7 +28,7 @@ export async function createSingleUpload(
   return reserveUpload(db, input, capabilities, "single");
 }
 
-/** Internal metadata reservation. No HTTP admission until multipart completion/cleanup are connected. */
+/** Metadata reservation shared by multipart initialization and its recoverable HTTP receipt. */
 export async function reserveMultipartUpload(
   db: D1Database,
   input: CreateSingleUpload,

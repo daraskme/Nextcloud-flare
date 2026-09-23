@@ -15,7 +15,7 @@ import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleTrashHttp, trashRoute } from "./trash";
-import { handleUploadHttp, uploadRoute } from "./uploads";
+import { handleUploadHttp, uploadReadRoute, uploadRoute } from "./uploads";
 
 export interface PrivateAppDependencies {
   readonly verifier: AccessVerifier;
@@ -55,7 +55,7 @@ export async function handlePrivateAppHttp(
   const url = new URL(request.url);
   if (
     url.origin !== env.APP_ORIGIN ||
-    (url.search && !nodeReadRoute(request) && !trashRoute(request)) ||
+    (url.search && !nodeReadRoute(request) && !trashRoute(request) && !uploadReadRoute(request)) ||
     url.hash
   )
     return problem(404, "not_found");
