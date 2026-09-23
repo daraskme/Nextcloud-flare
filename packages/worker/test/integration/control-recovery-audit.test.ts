@@ -346,7 +346,7 @@ it("fails old-epoch create and rename notifications only after their claims drai
   }
 });
 
-it("holds an old reservation until its linked upload becomes terminal", async () => {
+it("keeps upload reservations out of generic repair even after the upload becomes terminal", async () => {
   const reservationId = crypto.randomUUID();
   const blobId = crypto.randomUUID();
   const uploadId = crypto.randomUUID();
@@ -377,6 +377,9 @@ it("holds an old reservation until its linked upload becomes terminal", async ()
       /recovery_final_fence_pending/,
     );
     await env.DB.prepare("UPDATE uploads SET state='expired' WHERE id=?").bind(uploadId).run();
+    expect(await control().releaseStaleReservations(2, 1)).toMatchObject({ released: 0 });
+    // Terminal metadata alone does not prove that an old PUT left no R2 object.
+    await env.DB.prepare("DELETE FROM uploads WHERE id=?").bind(uploadId).run();
     expect(await control().releaseStaleReservations(2, 1)).toMatchObject({ released: 1 });
     await expect(inspectRecoveryFinalFence(env.DB, 2)).resolves.toBeUndefined();
   } finally {
@@ -386,6 +389,74 @@ it("holds an old reservation until its linked upload becomes terminal", async ()
       .run();
     await env.DB.prepare("DELETE FROM reservations WHERE id=?").bind(reservationId).run();
     await env.DB.prepare("DELETE FROM blobs WHERE id=?").bind(blobId).run();
+  }
+});
+
+it("repairs an expired upload through ControlDO and invalidates the recovery audit", async () => {
+  const reservationId = crypto.randomUUID();
+  const blobId = crypto.randomUUID();
+  const uploadId = crypto.randomUUID();
+  const attempt = crypto.randomUUID();
+  const objectKey = `u/${fixture.ids.user}/b/${blobId}`;
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) VALUES(?,?,?,3,'etag','staging',1)",
+      values: [blobId, fixture.ids.user, objectKey],
+    },
+    {
+      sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES(?,?,3,'reserved',86400001,1)",
+      values: [reservationId, fixture.ids.user],
+    },
+    {
+      sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,blob_id,credential_id,reservation_id,mode,state,
+        declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,upload_name,write_attempt_id,write_lease_expires_at)
+      VALUES(?,?,?,?,?,?,?,'single','receiving',3,'fixture',1,1,86400001,1,'expired.txt',?,900001)`,
+      values: [
+        uploadId,
+        fixture.ids.user,
+        fixture.ids.space,
+        fixture.ids.root,
+        blobId,
+        fixture.ids.credential,
+        reservationId,
+        attempt,
+      ],
+    },
+  ]);
+  await env.BLOBS.put(objectKey, "abc", {
+    customMetadata: { upload_id: uploadId, blob_id: blobId, attempt_id: attempt, epoch: "1" },
+  });
+  try {
+    expect(await control().repairExpiredUploads(2, 1)).toMatchObject({
+      cleanup: { claimed: 1, queued: 1, r2Calls: 1 },
+      audit: { stage: "users", pages: 0, completed: false },
+    });
+    expect(await control().status()).toMatchObject({ epoch: 2, maintenance: true, gcPaused: true });
+    expect(
+      await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
+        .bind(fixture.ids.user)
+        .first("physical_bytes"),
+    ).toBe(6);
+    await expect(inspectRecoveryFinalFence(env.DB, 2)).resolves.toBeUndefined();
+    await env.DB.prepare("DELETE FROM gc_candidates WHERE blob_id=?").bind(blobId).run();
+    await expect(inspectRecoveryFinalFence(env.DB, 2)).rejects.toThrow(
+      /recovery_final_fence_pending/,
+    );
+  } finally {
+    await env.BLOBS.delete(objectKey);
+    await atomicBatch(env.DB, [
+      { sql: "UPDATE blobs SET state='deleted' WHERE id=?", values: [blobId] },
+      {
+        sql: "UPDATE blob_storage SET removed_at=MAX(observed_at,strftime('%s','now')*1000) WHERE blob_id=?",
+        values: [blobId],
+      },
+      { sql: "DELETE FROM uploads WHERE id=?", values: [uploadId] },
+      { sql: "DELETE FROM gc_candidates WHERE blob_id=?", values: [blobId] },
+      { sql: "DELETE FROM blob_storage WHERE blob_id=?", values: [blobId] },
+      { sql: "UPDATE reservations SET state='released' WHERE id=?", values: [reservationId] },
+      { sql: "DELETE FROM reservations WHERE id=?", values: [reservationId] },
+      { sql: "DELETE FROM blobs WHERE id=?", values: [blobId] },
+    ]);
   }
 });
 

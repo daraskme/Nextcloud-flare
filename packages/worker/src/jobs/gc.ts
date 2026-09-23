@@ -124,6 +124,11 @@ async function finalizeCandidate(
         "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM blob_storage WHERE blob_id=? AND removed_at IS NULL)",
         [blobId],
       ),
+      {
+        sql: `UPDATE uploads SET cleanup_pending=0,cleanup_token=NULL,cleanup_lease_expires_at=NULL,cleanup_error=NULL
+          WHERE blob_id=? AND mode='single' AND state IN ('expired','aborted','failed')`,
+        values: [blobId],
+      },
     ]);
   } catch {
     // Re-read the terminal pair to resolve a lost D1 acknowledgement.

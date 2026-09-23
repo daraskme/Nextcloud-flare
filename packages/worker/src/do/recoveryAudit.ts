@@ -211,6 +211,10 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
       AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))
+      AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.cleanup_token IS NOT NULL
+        OR (u.cleanup_pending=1 AND NOT EXISTS(SELECT 1 FROM gc_candidates g
+          JOIN blob_storage s ON s.blob_id=g.blob_id
+          WHERE g.blob_id=u.blob_id AND g.state='candidate' AND s.removed_at IS NULL)))
       AND NOT EXISTS(SELECT 1 FROM outbox
         WHERE state IN ('pending','dispatching','sent') AND epoch<>c.epoch)
       AND NOT EXISTS(SELECT 1 FROM job_leases)
@@ -290,7 +294,7 @@ export async function failStaleRecoveryOutbox(
   return failed;
 }
 
-/** Release only old-epoch reservations with no upload still needing data cleanup. */
+/** Upload reservations require R2-aware cleanup, including terminal uploads with unknown writes. */
 export async function releaseStaleRecoveryReservations(
   db: D1Database,
   epoch: number,
@@ -302,8 +306,7 @@ export async function releaseStaleRecoveryReservations(
   await assertQuiesced(db, epoch);
   const rows = await primary(db)
     .prepare(`SELECT r.id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
-      AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id
-        AND u.state IN ('created','receiving','uploading','completing','aborting'))
+      AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id)
       ORDER BY r.id LIMIT ?`)
     .bind(epoch, limit)
     .all<{ id: string }>();
@@ -314,8 +317,7 @@ export async function releaseStaleRecoveryReservations(
         {
           sql: `UPDATE reservations SET state='released' WHERE id=? AND state='reserved' AND epoch<?
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1)
-            AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id
-              AND u.state IN ('created','receiving','uploading','completing','aborting'))`,
+            AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id)`,
           values: [id, epoch, epoch],
         },
         assertOneChange,

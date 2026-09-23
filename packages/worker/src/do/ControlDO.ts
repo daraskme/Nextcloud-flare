@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
+import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import {
   type EpochReason,
   epochNumber,
@@ -237,6 +238,25 @@ export class ControlDO extends DurableObject<Env> {
     if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
     const released = await releaseStaleRecoveryReservations(this.env.DB, expectedEpoch, limit);
     return { released, audit: await this.beginRecoveryAudit(expectedEpoch) };
+  }
+
+  /** Stop mutation claims and reconcile expired single uploads without reopening admission. */
+  async repairExpiredUploads(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ cleanup: UploadCleanupResult; audit: RecoveryAuditStatus }> {
+    await this.beginRecoveryAudit(expectedEpoch);
+    let cleanup: UploadCleanupResult;
+    try {
+      cleanup = await repairSingleUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
+        maxUploads: limit,
+        maintenance: true,
+      });
+    } finally {
+      // Even a partially completed repair invalidates pages read during its R2 calls.
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */
