@@ -73,7 +73,9 @@ async function reserveUpload(
     if (!row) return null;
     if (row.request_digest !== digest || row.epoch !== input.principal.epoch)
       throw new Error("idempotency_conflict");
-    const authorized = await uploadAuthority(db, input.principal, row, row.state !== "completed");
+    // Recover the same receipt so the caller can inspect/cancel a stale replacement.
+    // This grants no new dispatch: creation, transfers and commit still check its revision.
+    const authorized = await uploadAuthority(db, input.principal, row, false);
     await atomicBatch(db, [
       authorizationAssertion(authorized),
       uploadFence(row, [row.state], false),

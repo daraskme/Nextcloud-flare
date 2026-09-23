@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 2/3 作成receiptの回収 | 応答喪失後に対象revisionが進んでも同じkey/ID/capabilityを再取得し、中止できる。旧本文/確定は拒否し、二重予約/R2再初期化をしない | workerd HTTP追加5件、browser追加2件。最終結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) |
 | 2/3 上書きupload UI・配信対象budget | 確認付き上書き、target snapshot/元file名保持、single/全part If-Match、競合拒否、完了応答喪失/分割再開。BudgetDOの重複しない対象台帳と使用量保持、CORS error | browser追加3件、workerd追加6件と既存境界を検証。全check結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) / [BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md) |
 | 1/2 本文なしHTTP操作 | DAV MKCOLの415誤判定を修正。COPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutに5秒・16read上限の共通EOF検査 | Node境界13件、workerdの待機中失効/停止2件を追加。独立HTTPのDAV操作・ticket発行/交換/取消しを検証。全結果は実行記録。[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) |
 | 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、待機256件・5秒、取消し・例外時解放、503再試行、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件が成功。全check/browserの結果は実行記録。ControlDO全体制限は未実装。[KDF_ADMISSION](KDF_ADMISSION.md) |
@@ -107,6 +108,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、上書き作成応答の喪失後に対象revisionが進むと元のreceiptを回収できない問題を修正。実APIの単一・分割2件で修正前の409を確認し、同じkey/bodyへの再送では現行権限を原子的に再検証して元のID/capabilityを返す。予約を加算せず、旧revisionの新規予約・R2初期化・本文・確定は引き続き拒否する。multipart初期化が対象変更で止まれば202 receiptから中止できる。workerd HTTP追加5件で実上書き・quota不変・R2再初期化なし・中止後の新内容保持、最終batch直前のcredential失効、予約直後の対象変更を検証。関連79件成功（37.05秒）。最終`pnpm check`はNode356 + workerd771 = **1,127 tests**（21+51 files）、workerd331.06秒。lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。別途browser **16 tests**成功（2.2分）、合計**1,143件**。追加2件で実作成応答の破棄→別更新→reload→元file再選択→同じreceipt回収→本文/completeなしで中止→新内容保持を確認。D1 schema/migration、依存、UI実装の追加変更はない。対象の移動・削除・失効・期限切れ、全体admission・共有/検索/media・復旧/実環境のgateは残る。詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)。
 
 - 2026-09-24、Filesの確認付き上書きと配信budgetの対象台帳を接続。最終`pnpm check`成功、Node356 + workerd766 = **1,122 tests**（21+51 files）、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。workerd313.97秒。別途`pnpm test:browser`の**14 tests**成功（1.8分）、合計**1,136件**。browser追加3件で確認前取消し・異なる元file名・空file・確定応答喪失/reload・確認前/PUT直前の更新競合・96 MiB分割上書きの同じtarget/attempt/If-Matchを実APIで検証。配信枠が最初のtarget setで固定される不具合を再現し、検証済みpurpose/blobの重複排除台帳と原子的な追加/使用量検査へ変更。workerd追加6件で重複集合/COW/eviction、size矛盾/manifest破損、失効競合、旧保存領域、1,024対象/leaseと1 MiB上限、短いticket期限での10分request制限保持を検証。最後の期限問題は修正前の失敗を確認し、修正後の専用14件と全checkが成功。HTTP429のCORSと使用量不変も既存試験で確認。PC/mobile実画面を確認。詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)と[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)。D1 migration追加はなく0026/61通常table。全体admission、残るQueue・共有・検索・media・復旧/実環境は未完了。
 

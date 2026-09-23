@@ -33,6 +33,8 @@ export async function createMultipartUploadReceipt(
       "receipt",
     );
     pending =
+      // A changed revision must stop initialization, but need not hide an authorized receipt.
+      (error instanceof Error && error.message === "upload_target_changed") ||
       ["failed", "aborting", "aborted", "expired"].includes(row.state) ||
       (row.write_attempt_id !== null && row.r2_upload_id === null);
     if (!pending) throw error;

@@ -201,6 +201,189 @@ it("requires the current If-Match before multipart overwrite parts and retains t
   ).toBe(`${first.id}_blob`);
 });
 
+it.each(["single", "multipart"] as const)(
+  "recovers the same %s create receipt after a competing overwrite without permitting a stale write",
+  async (mode) => {
+    const f = await fixture();
+    let initialized = 0;
+    replaceBucket(f.app, {
+      async createMultipartUpload(key, options) {
+        initialized++;
+        return env.BLOBS.createMultipartUpload(key, options);
+      },
+    });
+    const seed = await created(f, { mode: "single", name: "receipt-target.bin" });
+    expect(
+      (
+        await f.send(`${path(seed)}/content`, "PUT", "abc", {
+          ...cap(seed),
+          "Content-Length": "3",
+        })
+      ).status,
+    ).toBe(200);
+    const seeded = await f.send(`${path(seed)}/complete`, "POST", "{}", {
+      ...cap(seed),
+      "Idempotency-Key": "seed-complete",
+    });
+    expect(seeded.status).toBe(200);
+    const {
+      result: { nodeId },
+    } = await seeded.json<{ result: { nodeId: string } }>();
+    const body = { mode, name: "receipt-target.bin", targetId: nodeId, targetRevision: 1 };
+    const first = await f.create(body, "lost-receipt");
+    expect(first.status).toBe(201);
+    const original = await first.json<Receipt>();
+
+    // This actor commits newer content while the original caller has no receipt.
+    const competing = await created(f, { ...body, mode: "single" });
+    expect(
+      (
+        await f.send(`${path(competing)}/content`, "PUT", "new", {
+          ...cap(competing),
+          "Content-Length": "3",
+          "If-Match": `"b-${seed.id}_blob"`,
+        })
+      ).status,
+    ).toBe(200);
+    expect((await f.send(`${path(competing)}/complete`, "POST", "{}", cap(competing))).status).toBe(
+      200,
+    );
+    const counters = () =>
+      env.DB.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users WHERE id=?")
+        .bind(f.ids.user)
+        .first();
+    const before = await counters();
+    const node = () =>
+      env.DB.prepare("SELECT revision,current_blob_id FROM nodes WHERE id=?").bind(nodeId).first();
+    const newer = await node();
+    expect(newer).toMatchObject({ revision: 2, current_blob_id: `${competing.id}_blob` });
+
+    const replay = await f.create(body, "lost-receipt");
+    expect(replay.status).toBe(mode === "single" ? 201 : 202);
+    expect(await replay.json()).toEqual(original);
+    expect(initialized).toBe(mode === "multipart" ? 1 : 0);
+    expect(await counters()).toEqual(before);
+    expect(await uploadRow(env.DB, original.id)).toMatchObject({
+      target_id: nodeId,
+      target_revision: 1,
+      state: "created",
+      data_calls: 0,
+    });
+    expect((await f.create({ ...body, declared_size: 4 }, "lost-receipt")).status).toBe(409);
+    expect((await f.create(body, "new-stale-request")).status).toBe(409);
+    const stale = await f.send(
+      `${path(original)}/${mode === "single" ? "content" : "parts/1"}`,
+      "PUT",
+      "old",
+      {
+        ...cap(original),
+        "Content-Length": "3",
+        "Upload-Attempt-Id": "old",
+        "If-Match": `"b-${seed.id}_blob"`,
+      },
+    );
+    expect(stale.status).toBe(409);
+    expect(
+      (
+        await f.send(`${path(original)}/complete`, "POST", "{}", {
+          ...cap(original),
+          "Idempotency-Key": "stale-complete",
+        })
+      ).status,
+    ).toBe(409);
+    expect(await counters()).toEqual(before);
+    expect(await node()).toEqual(newer);
+    expect((await f.send(path(original), "DELETE", "{}", cap(original))).status).toBe(
+      mode === "single" ? 200 : 202,
+    );
+    expect(await uploadRow(env.DB, original.id)).toMatchObject({
+      state: mode === "single" ? "aborted" : "aborting",
+      data_calls: 0,
+      cleanup_pending: 1,
+    });
+    expect(await node()).toEqual(newer);
+    expect(await (await env.BLOBS.get(`u/${f.ids.user}/b/${competing.id}_blob`))?.text()).toBe(
+      "new",
+    );
+    expect(await counters()).toMatchObject({ reserved_bytes: mode === "single" ? 0 : 3 });
+    expect(initialized).toBe(mode === "multipart" ? 1 : 0);
+  },
+);
+
+it.each(["single", "multipart"] as const)(
+  "rechecks current authority before returning a changed-target %s create receipt",
+  async (mode) => {
+    const f = await fixture();
+    const body = { mode, name: "File", targetId: f.ids.file, targetRevision: 1 };
+    const original = await (await f.create(body, "revoke-replay")).json<Receipt>();
+    const before = await uploadRow(env.DB, original.id);
+    await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?").bind(f.ids.file).run();
+    let revoked = false;
+    f.app.DB = injectBatch(
+      (sql) => sql.includes("SELECT 1 FROM uploads u JOIN control c"),
+      async () => {
+        revoked = true;
+        await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+          .bind(Date.now(), f.ids.session)
+          .run();
+      },
+      false,
+    );
+    const response = await f.create(body, "revoke-replay");
+    expect(revoked).toBe(true);
+    expect(response.ok).toBe(false);
+    const text = await response.text();
+    expect(text).not.toContain(original.capability);
+    expect(text).not.toContain(original.id);
+    expect(await uploadRow(env.DB, original.id)).toEqual(before);
+    expect(
+      await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
+        .bind(f.ids.user)
+        .first("reserved_bytes"),
+    ).toBe(3);
+  },
+);
+
+it("returns a cancellable receipt without initializing R2 when the target changes after reservation", async () => {
+  const f = await fixture();
+  let initialized = 0;
+  replaceBucket(f.app, {
+    async createMultipartUpload() {
+      initialized++;
+      throw new Error("must_not_initialize");
+    },
+  });
+  f.app.DB = injectBatch(
+    (sql) => sql.includes("INSERT INTO uploads"),
+    async () => {
+      await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?")
+        .bind(f.ids.file)
+        .run();
+    },
+    true,
+  );
+  const body = { name: "File", targetId: f.ids.file, targetRevision: 1 };
+  const response = await f.create(body, "changed-before-init");
+  expect(response.status).toBe(202);
+  const receipt = await response.json<Receipt>();
+  expect(await uploadRow(env.DB, receipt.id)).toMatchObject({
+    state: "created",
+    target_revision: 1,
+    r2_upload_id: null,
+    write_attempt_id: null,
+    control_calls: 0,
+  });
+  const replay = await f.create(body, "changed-before-init");
+  expect(replay.status).toBe(202);
+  expect(await replay.json()).toEqual(receipt);
+  expect((await f.send(path(receipt), "DELETE", "{}", cap(receipt))).status).toBe(202);
+  expect(await uploadRow(env.DB, receipt.id)).toMatchObject({
+    state: "aborting",
+    cleanup_pending: 1,
+  });
+  expect(initialized).toBe(0);
+});
+
 it("returns a pending attempt without consuming or dispatching its replay body", async () => {
   const f = await fixture();
   const r = await created(f);

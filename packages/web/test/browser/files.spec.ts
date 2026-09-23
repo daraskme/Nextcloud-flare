@@ -546,6 +546,89 @@ test("overwrite rejects a changed destination before enqueue and during transfer
   expect(await fileContent(page, newer)).toBe("newer concurrent content");
 });
 
+for (const mode of ["single", "multipart"] as const) {
+  test(`${mode} overwrite recovers a lost creation receipt after a newer update and can be cancelled`, async ({
+    page,
+  }, info) => {
+    await page.goto("/files");
+    const name = `受付応答の再確認-${mode}.bin`;
+    const before = await writeTestFile(page, name, "original");
+    await page.reload();
+    const filePath = info.outputPath(`local-${mode}.bin`);
+    const file = await open(filePath, "w");
+    await file.write("stale local content");
+    if (mode === "multipart") await file.truncate(96 * 1024 * 1024 + 37);
+    await file.close();
+    let key: string | undefined;
+    let original: { id: string; capability: string } | undefined;
+    let recovered = false;
+    let creates = 0;
+    let writes = 0;
+    page.on("request", (request) => {
+      if (
+        original &&
+        new URL(request.url()).pathname.startsWith(`/api/v1/uploads/${original.id}/`) &&
+        ["PUT", "POST"].includes(request.method())
+      )
+        writes++;
+    });
+    await page.route("**/api/v1/uploads", async (route) => {
+      const request = route.request();
+      const requestKey = request.headers()["idempotency-key"]!;
+      if (key && requestKey !== key) return route.continue();
+      key ??= requestKey;
+      creates++;
+      expect(request.postDataJSON()).toMatchObject({
+        mode,
+        name,
+        targetId: before.id,
+        targetRevision: before.revision,
+      });
+      const response = await localFetch(route);
+      if (!original) {
+        expect(response.status()).toBe(201);
+        original = await response.json();
+        await route.abort("connectionfailed");
+      } else {
+        expect(response.status()).toBe(mode === "single" ? 201 : 202);
+        expect(await response.json()).toMatchObject(original);
+        recovered = true;
+        await route.fulfill({ response });
+      }
+    });
+    await openOverwrite(page, name);
+    await page.getByLabel("上書きするファイル", { exact: true }).setInputFiles(filePath);
+    await page.getByRole("button", { name: "上書きを開始" }).click();
+    await expect(page.getByRole("button", { name: "元のファイルを選択・再確認" })).toBeVisible();
+    expect(original).toBeDefined();
+    const newer = await writeTestFile(page, name, "newer content must survive", before);
+    await page.reload();
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "元のファイルを選択・再確認" }).click();
+    await (await chooser).setFiles(filePath);
+    await expect(
+      page.getByText(
+        "上書き先が変更されています。この送信を中止し、一覧を更新して選び直してください。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect(recovered).toBe(true);
+    expect(creates).toBe(2);
+    expect(writes).toBe(0);
+    await page.getByRole("button", { name: `${name}を中止`, exact: true }).click();
+    await expect(
+      page.getByText("中止を受け付けました。使用容量は回収後に反映されます"),
+    ).toBeVisible();
+    expect(await rootFile(page, name)).toMatchObject({
+      revision: newer.revision,
+      currentBlobId: newer.currentBlobId,
+    });
+    expect(await fileContent(page, newer)).toBe("newer content must survive");
+    await page.reload();
+    await expect(page.getByRole("region", { name: "アップロード状況" })).toHaveCount(0);
+  });
+}
+
 test("multipart overwrite preserves its confirmed target and attempt across reload", async ({
   page,
 }, info) => {

@@ -23,6 +23,8 @@ JSON mutationはexact Origin、`Sec-Fetch-Site: same-origin`、`Content-Type: ap
 
 ## 再送・状態照会
 
+createの同じkey/bodyへの再送は、上書き対象のrevisionが変わった場合も元のreceipt/capabilityを返す。現在の認証・node権限とowner/parent/epochを最終D1 batchで確認し、予約を追加しない。multipartの初期化がrevision変更で停止した場合は202となる。これは状態確認・中止のための回収であり、新規予約、R2初期化、本文送信、確定での旧revision検査を緩めない。対象の移動・失効・期限切れの制限は継続する。
+
 `Upload-Attempt-Id`は`[A-Za-z0-9_-]{1,128}`。同じpart・attemptの再送で新しいR2 callを発行しない。part応答の`disposition`を確認する。
 
 - `completed`: 保存結果を確認済み。同じattemptの再送もこの結果になる。
