@@ -127,8 +127,31 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
   ]);
   const revokeUrl = `${url}/${encodeURIComponent(credential.credentialId)}`;
   expect(privateAppRoute(new Request(revokeUrl, { method: "DELETE" }))).toBe(true);
+  for (const body of [
+    "{}",
+    new ReadableStream<Uint8Array>({ start: (controller) => controller.error(new Error("lost")) }),
+  ]) {
+    const rejected = await handleAppPasswordHttp(
+      new Request(revokeUrl, {
+        method: "DELETE",
+        headers: { ...headers, "Content-Length": "0" },
+        body,
+      }),
+      appEnv,
+      session,
+      csrf,
+    );
+    expect(rejected.status).toBe(400);
+    expect(await authenticateAppPassword(env.DB, dav, appEnv.APP_ORIGIN, 1, pepper)).toMatchObject({
+      credential_id: credential.credentialId,
+    });
+  }
   const revoked = await handleAppPasswordHttp(
-    new Request(revokeUrl, { method: "DELETE", headers }),
+    new Request(revokeUrl, {
+      method: "DELETE",
+      headers,
+      body: new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }),
+    }),
     appEnv,
     session,
     csrf,
@@ -142,6 +165,16 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
   await expect(authenticateAppPassword(env.DB, dav, appEnv.APP_ORIGIN, 1, pepper)).rejects.toThrow(
     "app_password_denied",
   );
+  expect(
+    (
+      await handleAppPasswordHttp(
+        new Request(revokeUrl, { method: "DELETE", headers }),
+        appEnv,
+        session,
+        csrf,
+      )
+    ).status,
+  ).toBe(204);
   const after = await handleAppPasswordHttp(new Request(url), appEnv, session, csrf);
   expect(await after.json()).toEqual({ passwords: [] });
 });

@@ -1,5 +1,6 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
+import { KdfUnavailableError } from "../auth/kdf";
 import { evaluateDavRequestIf } from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
 import { davEtag } from "../dav/etag";
@@ -162,7 +163,12 @@ export async function handleDavHttp(
   let principal;
   try {
     principal = await authenticateAppPassword(env.DB, request, env.APP_ORIGIN, epoch, pepper);
-  } catch {
+  } catch (error) {
+    if (error instanceof KdfUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     const response = problem(401, "unauthorized");
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;

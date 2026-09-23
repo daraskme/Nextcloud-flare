@@ -113,8 +113,10 @@ export async function createAppPassword(
   session: AccessSession,
   input: CreateAppPasswordInput,
   ring: AppPasswordPepperRing,
+  signal?: AbortSignal,
 ) {
   const validated = validatedInput(input);
+  await atomicBatch(db, currentAccess(session));
   const active = await primary(db)
     .prepare(
       "SELECT COUNT(*) AS count FROM app_passwords WHERE user_id=? AND revoked_at IS NULL AND expires_at>strftime('%s','now')*1000",
@@ -122,10 +124,6 @@ export async function createAppPassword(
     .bind(session.user_id)
     .first<number>("count");
   if (active !== null && active >= 20) throw new Error("app_password_limit");
-  const id = ulid();
-  const credentialId = `ap:${id}`;
-  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
-  const hashed = await hashAppPassword(secret, ring);
   let root: Awaited<ReturnType<typeof authorizeNode>> | null = null;
   if (validated.rootNodeId) {
     try {
@@ -145,6 +143,10 @@ export async function createAppPassword(
   }
   if (root && (root.operation !== "node.read" || root.node.owner_id !== session.user_id))
     throw new Error("invalid_app_password_root");
+  const id = ulid();
+  const credentialId = `ap:${id}`;
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const hashed = await hashAppPassword(secret, ring, signal);
   const clock = "strftime('%s','now')*1000";
   await atomicBatch(db, [
     ...currentAccess(session),

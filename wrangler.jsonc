@@ -4,7 +4,7 @@
   "name": "next-cloud-flare-local",
   "main": "packages/worker/src/index.ts",
   "compatibility_date": "2026-08-15",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
   "workers_dev": false,
   "preview_urls": false,
   "send_metrics": false,

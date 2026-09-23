@@ -12,6 +12,7 @@ assert.equal(config.vars.ENVIRONMENT, "development");
 assert.equal(config.vars.PBKDF2_ITERATIONS, "100000");
 assert.equal(config.compatibility_date, "2026-08-15");
 assert.ok(config.compatibility_flags.includes("nodejs_compat"));
+assert.ok(config.compatibility_flags.includes("enable_request_signal"));
 assert.equal(config.routes, undefined, "local configuration must not claim a remote route");
 assert.equal(config.env, undefined, "remote environments require their own reviewed inventory");
 assert.equal(config.d1_databases[0].database_id, "00000000-0000-0000-0000-000000000000");

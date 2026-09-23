@@ -1,6 +1,7 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { AppPasswordPepperRing } from "../auth/appPassword";
 import type { CsrfTokens } from "../auth/csrf";
+import { KdfUnavailableError } from "../auth/kdf";
 import type { AccessSession } from "../auth/sessions";
 import type { Env } from "../env";
 import {
@@ -108,7 +109,21 @@ export async function handleAppPasswordHttp(
     return problem(403, "forbidden");
   }
   if (detail) {
-    if (request.body) return problem(400, "bad_request");
+    // HTTP adapters can provide a closed stream for a zero-byte DELETE, as for logout.
+    // Check EOF rather than stream presence or an untrusted Content-Length header.
+    if (request.body) {
+      const reader = request.body.getReader();
+      try {
+        if (!(await reader.read()).done) {
+          await reader.cancel();
+          return problem(400, "bad_request");
+        }
+      } catch {
+        return problem(400, "bad_request");
+      } finally {
+        reader.releaseLock();
+      }
+    }
     let credentialId: string;
     try {
       credentialId = decodeURIComponent(detail[1] ?? "");
@@ -132,11 +147,16 @@ export async function handleAppPasswordHttp(
     return problem(400, "bad_request");
   }
   try {
-    return Response.json(await createAppPassword(env.DB, session, body, pepper), {
+    return Response.json(await createAppPassword(env.DB, session, body, pepper, request.signal), {
       status: 201,
       headers: PRIVATE_HEADERS,
     });
   } catch (error) {
+    if (error instanceof KdfUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     if (error instanceof Error && error.message === "invalid_app_password_request")
       return problem(400, "bad_request");
     if (error instanceof Error && error.message === "invalid_app_password_root")

@@ -409,6 +409,55 @@ test("an uncertain single upload is not resent and can be cancelled; purge needs
   await expect(page.getByText("完全削除の確認", { exact: true })).toHaveCount(0);
 });
 
+test("concurrent DAV requests share KDF capacity and a revoked app password stops working", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/files");
+  const issued = await page.evaluate(async () => {
+    const csrf = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    const response = await fetch("/api/v1/app-passwords", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.token },
+      body: JSON.stringify({ name: "Browser DAV", scopes: ["node:read"] }),
+    });
+    return { status: response.status, credential: await response.json() };
+  });
+  expect(issued.status).toBe(201);
+  const dav = (secret: string) =>
+    request.fetch("https://127.0.0.1:8879/dav", {
+      method: "OPTIONS",
+      headers: {
+        host: "app.ncf.test:8879",
+        "X-Test-Without-Auth": "1",
+        Authorization: `Basic ${Buffer.from(`${issued.credential.id}:${secret}`).toString("base64")}`,
+      },
+    });
+  // These are separate real Worker fetch events, not concurrent calls in a single test context.
+  const responses = await Promise.all(
+    Array.from({ length: 8 }, () => dav(issued.credential.secret)),
+  );
+  for (const response of responses) {
+    expect(response.status()).toBe(200);
+    expect(response.headers().dav).toBe("1");
+    expect(response.headers()["cache-control"]).toBe("private, no-store");
+  }
+  const wrong = await dav(Buffer.alloc(32).toString("base64url"));
+  expect(wrong.status()).toBe(401);
+  expect(wrong.headers()["www-authenticate"]).toContain("Basic");
+  const revoked = await page.evaluate(async (credentialId) => {
+    const csrf = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    return (
+      await fetch(`/api/v1/app-passwords/${encodeURIComponent(credentialId)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.token },
+      })
+    ).status;
+  }, issued.credential.credentialId);
+  expect(revoked).toBe(204);
+  expect((await dav(issued.credential.secret)).status()).toBe(401);
+});
+
 test("logout clears saved uploads and pending operations in all open tabs", async ({
   page,
   context,

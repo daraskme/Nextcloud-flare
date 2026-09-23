@@ -1,6 +1,7 @@
 import { base64url } from "jose";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Principal } from "./authorize";
+import { KdfUnavailableError, runKdf } from "./kdf";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const ID = /^ap_[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -47,23 +48,35 @@ function secretBytes(secret: string): Uint8Array {
   return bytes;
 }
 
-async function digest(secret: string, salt: Uint8Array, pepper: CryptoKey): Promise<Uint8Array> {
+async function digest(
+  secret: string,
+  salt: Uint8Array,
+  pepper: CryptoKey,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   secretBytes(secret);
   if (salt.length !== 16) throw new Error("invalid_app_password_salt");
-  const peppered = await crypto.subtle.sign("HMAC", pepper, new TextEncoder().encode(secret));
-  const key = await crypto.subtle.importKey("raw", peppered, "PBKDF2", false, ["deriveBits"]);
-  return new Uint8Array(
-    await crypto.subtle.deriveBits(
-      { name: "PBKDF2", salt, iterations: ITERATIONS, hash: "SHA-256" },
-      key,
-      256,
-    ),
-  );
+  return runKdf(async () => {
+    const peppered = await crypto.subtle.sign("HMAC", pepper, new TextEncoder().encode(secret));
+    try {
+      const key = await crypto.subtle.importKey("raw", peppered, "PBKDF2", false, ["deriveBits"]);
+      return new Uint8Array(
+        await crypto.subtle.deriveBits(
+          { name: "PBKDF2", salt, iterations: ITERATIONS, hash: "SHA-256" },
+          key,
+          256,
+        ),
+      );
+    } finally {
+      new Uint8Array(peppered).fill(0);
+    }
+  }, signal);
 }
 
 export async function hashAppPassword(
   secret: string,
   ring: AppPasswordPepperRing,
+  signal?: AbortSignal,
 ): Promise<{
   secretDigest: string;
   salt: string;
@@ -75,7 +88,7 @@ export async function hashAppPassword(
   if (!pepper) throw new Error("invalid_app_password_peppers");
   const salt = crypto.getRandomValues(new Uint8Array(16));
   return {
-    secretDigest: base64url.encode(await digest(secret, salt, pepper)),
+    secretDigest: base64url.encode(await digest(secret, salt, pepper, signal)),
     salt: base64url.encode(salt),
     kdf: "PBKDF2-SHA256",
     kdfParams: '{"iterations":100000}',
@@ -161,6 +174,7 @@ async function matchesSecret(
   row: PasswordRow,
   secret: string,
   ring: AppPasswordPepperRing,
+  signal: AbortSignal,
 ): Promise<boolean> {
   if (row.kdf !== "PBKDF2-SHA256" || row.kdf_params !== '{"iterations":100000}') return false;
   const pepper = ring.keys.get(row.kid);
@@ -172,9 +186,10 @@ async function matchesSecret(
     return (
       base64url.encode(salt) === row.salt &&
       base64url.encode(expected) === row.secret_digest &&
-      equalBytes(await digest(secret, salt, pepper), expected)
+      equalBytes(await digest(secret, salt, pepper, signal), expected)
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof KdfUnavailableError) throw error;
     return false;
   }
 }
@@ -190,10 +205,11 @@ export async function authenticateAppPassword(
   const { id, secret } = basicCredentials(request, appOrigin);
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("app_password_denied");
   const row = await livePasswordRow(db, id, epoch);
-  if (!row || !(await matchesSecret(row, secret, ring))) throw new Error("app_password_denied");
+  if (!row || !(await matchesSecret(row, secret, ring, request.signal)))
+    throw new Error("app_password_denied");
   let finalRow = row;
   if (row.kid !== ring.activeKid) {
-    const rotated = await hashAppPassword(secret, ring);
+    const rotated = await hashAppPassword(secret, ring, request.signal);
     try {
       await atomicBatch(db, [
         {
@@ -228,7 +244,7 @@ export async function authenticateAppPassword(
       refreshed.credential_id !== row.credential_id ||
       refreshed.user_id !== row.user_id ||
       refreshed.kid !== ring.activeKid ||
-      !(await matchesSecret(refreshed, secret, ring))
+      !(await matchesSecret(refreshed, secret, ring, request.signal))
     )
       throw new Error("app_password_denied");
     finalRow = refreshed;

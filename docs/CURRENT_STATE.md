@@ -22,9 +22,10 @@
 |---|---|---|---|
 | schema・契約 | migration `0001`〜`0026`、61通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
+| KDF実行制限 | app password作成・検証・pepper更新をisolate内1件、待機256件・5秒へ制限、取消しと503再試行 | Node/workerdで境界・実PBKDF2・失効競合。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | ControlDOの全体rate/同時数、共有password、実環境 |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
-| Files UI | React/TanStackの一覧・操作・trash・再開upload・logout、認証付きprivate assets | ローカル実APIの9 browser scenario、NodeのCSRF競合4件 | 上書き・共有・検索・media・実環境。詳細は[FILES_UI](FILES_UI.md) |
+| Files UI | React/TanStackの一覧・操作・trash・再開upload・logout、認証付きprivate assets | ローカル実APIの10 browser scenario、NodeのCSRF競合4件 | 上書き・共有・検索・media・実環境。詳細は[FILES_UI](FILES_UI.md) |
 | Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | 全route profile・実環境 |
 | Trash | 一覧、restore、purge、別trash子退避、名前衝突解決、GC稼働中の永続pauseと既存削除drain | 最大64層・1,000 node、冪等再送、期限/識別子/停止競合、応答喪失・再起動、実browser復元 | 単一hold、実環境、大規模非同期trash/purge。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
@@ -42,7 +43,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account/KDF admission |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 335件 + workerd 749件 = 1,084件、別途browser 9件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0026`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 343件 + workerd 758件 = 1,101件。別途browser10件成功。全checkは、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0026`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -77,7 +78,7 @@
 
 ### 制御・運用
 
-- account単位のmutation同時数・待ちqueue、KDF admission、backup専用barrier。
+- account単位のmutation同時数・待ちqueue、ControlDOのKDF全体rate/同時実行制限、共有password制限、backup専用barrier。isolate内のKDF制限は実装済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。
@@ -128,7 +129,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 1. unknown multipart IDのS3/BLOBS対応証明・全体不在証明・予約精算を実装。S3診断と完成済み`u/` objectの隔離・35日回収は接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
-4. account/KDF admission、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。
+4. account mutation / KDF全体admission、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。
 5. Files UIの残り（GC稼働中restore、上書き、共有・検索・media）。
 6. share、search、ZIP/reader/media配信。
 7. backup/export/restore drill。

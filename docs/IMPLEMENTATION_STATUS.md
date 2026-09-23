@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、待機256件・5秒、取消し・例外時解放、503再試行、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件が成功。全check/browserの結果は実行記録。ControlDO全体制限は未実装。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 通常稼働中のtrash復元 | migration `0026`、永続GC pause、管理者設定保持、既存deleting drain、原子的なoperation/token/epoch/期限assertと解放alarm | 実ControlDO/LockDO/D1/R2の29件とschema制約1件を追加。連続alarm失敗6回で閉じる。実browserの復元・応答喪失再照会。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreもGC稼働中のfixtureで検証。詳細・残作業は[FILES_UI](FILES_UI.md) |
 | 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account/KDF admissionは未完了 |
@@ -92,7 +93,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 1. 承認された staging inventory で全 binding/環境 marker/Access を照合し、実 D1 で同じ SQL barrier を再実行する。今回の「応答喪失」は commit 後の fault injection であり実ネットワーク断ではない。
 2. Images 実サービスの20MB境界・codec・dimension、KDF CPU/cost、R2転送/キャンセルを計測する。ローカル Images は Miniflare 実装なので料金やサービス限界の証拠にしない。
-3. Phase 1 残り: outbox の実 Queue ack/DLQ、他 kind の result CAS と repair、残る operation tuple の authorize/LockDO。account/KDF admission、backup barrier、残るHTTP surface/CSRFの接続も必要。全監査後の内部RPC受付再開はローカル実装済み。
+3. Phase 1 残り: outbox の実 Queue ack/DLQ、他 kind の result CAS と repair、残る operation tuple の authorize/LockDO。account mutation / KDF全体admission、backup barrier、残るHTTP surface/CSRFの接続も必要。isolate内KDF実行制限は接続済み。全監査後の内部RPC受付再開はローカル実装済み。
 4. R6 §8 の残りの fixture と仕様 v0.7 反映を Phase 1 内で閉じる。Files core/upload/trash/GC の本実装は Phase 1 gate 後。
 
 ## M/U/I/R と復旧
@@ -104,6 +105,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、app-password KDFのisolate内制限を追加。`pnpm check`成功、Node343 + workerd758 = **1,101 tests**（20+51 files）、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。workerd314.73秒。追加はNode8/workerd9、既存API試験に空DELETE stream・偽Content-Length・読取り失敗・取消し再送の境界を加えた。明示的な`enable_request_signal`設定後にもlint/typecheck/configとbrowser **10 tests**が成功（1.1分）、合計**1,111件**。独立HTTPの8並列DAV認証・誤secret・取消し後の拒否を確認。ローカルWrangler経由のHTTP切断診断はabort通知を観測できず、実Cloudflareの切断伝播を未検証gateとして[KDF_ADMISSION](KDF_ADMISSION.md)に記録。診断用endpointは残していない。最終設定を含む全checkは最新SHAのCI結果と照合する。migration追加はなく0026/61通常table。全体KDF rate/同時数、mutation admission、共有・検索・media・実環境は未完了。
 
 - 2026-09-24、復元用alarmの再試行上限追加後の`pnpm check`成功。Node335 + workerd749 = **1,084 tests**（19+50 files）、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。workerd314.48秒。追加5件で6回の連続失敗・eviction・DB全面障害時の永続閉鎖、成功時の回数リセット、古い6回目の失敗対新hold/管理者設定変更を確認。対象検証は8成功/21選択除外も実施。browser suiteは9件でCI別job。直前の復元機能commit `a975424` はCI run `35895999363`でUbuntu/Windows/browserすべて成功。最新HEADのCIは別途SHAを照合する。D1 schema変更はなく、DO SQLiteに失敗台帳を追加。
 
