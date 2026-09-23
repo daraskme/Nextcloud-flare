@@ -460,6 +460,107 @@ it("repairs an expired upload through ControlDO and invalidates the recovery aud
   }
 });
 
+it.each([false, true])(
+  "repairs old-epoch multipart parts without accepting an unproven GC handoff (legacy=%s)",
+  async (legacy) => {
+    const reservationId = crypto.randomUUID();
+    const blobId = crypto.randomUUID();
+    const uploadId = crypto.randomUUID();
+    const attempt = crypto.randomUUID();
+    const objectKey = `u/${fixture.ids.user}/b/${blobId}`;
+    const multipart = await env.BLOBS.createMultipartUpload(objectKey, {
+      customMetadata: { upload_id: uploadId, blob_id: blobId, attempt_id: attempt, epoch: "1" },
+    });
+    await multipart.uploadPart(1, new TextEncoder().encode("abc"));
+    await atomicBatch(env.DB, [
+      {
+        sql: "INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) VALUES(?,?,?,3,'etag','staging',1)",
+        values: [blobId, fixture.ids.user, objectKey],
+      },
+      {
+        sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES(?,?,3,'reserved',86400001,1)",
+        values: [reservationId, fixture.ids.user],
+      },
+      {
+        sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,blob_id,credential_id,reservation_id,mode,state,
+        declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,upload_name,write_attempt_id,write_lease_expires_at,r2_upload_id,part_bytes,part_count)
+      VALUES(?,?,?,?,?,?,?,'multipart','uploading',3,'fixture',1,1,518400001,1,'expired.bin',?,900001,?,67108864,1)`,
+        values: [
+          uploadId,
+          fixture.ids.user,
+          fixture.ids.space,
+          fixture.ids.root,
+          blobId,
+          fixture.ids.credential,
+          reservationId,
+          attempt,
+          multipart.uploadId,
+        ],
+      },
+    ]);
+    try {
+      if (legacy) {
+        await atomicBatch(env.DB, [
+          {
+            sql: "UPDATE uploads SET state='failed',accept_parts=0,cleanup_pending=1 WHERE id=?",
+            values: [uploadId],
+          },
+          { sql: "UPDATE reservations SET state='released' WHERE id=?", values: [reservationId] },
+          {
+            sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'legacy',1)",
+            values: [blobId],
+          },
+          {
+            sql: "INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'candidate',1)",
+            values: [blobId],
+          },
+        ]);
+        await expect(inspectRecoveryFinalFence(env.DB, 2)).rejects.toThrow(
+          /recovery_final_fence_pending/,
+        );
+        await env.DB.prepare("DELETE FROM gc_candidates WHERE blob_id=?").bind(blobId).run();
+      }
+      expect(await control().repairStoppedMultipartUploads(2, 1)).toMatchObject({
+        cleanup: { claimed: 1, absent: 1, r2Calls: 2 },
+        audit: { stage: "users", pages: 0, completed: false },
+      });
+      expect(await control().status()).toMatchObject({
+        epoch: 2,
+        maintenance: true,
+        gcPaused: true,
+      });
+      expect(
+        await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
+          .bind(fixture.ids.user)
+          .first("physical_bytes"),
+      ).toBe(3);
+      await expect(inspectRecoveryFinalFence(env.DB, 2)).resolves.toBeUndefined();
+      expect(
+        await env.DB.prepare(
+          "SELECT state,cleanup_pending,multipart_cleanup_closed FROM uploads WHERE id=?",
+        )
+          .bind(uploadId)
+          .first(),
+      ).toMatchObject({ state: "failed", cleanup_pending: 0, multipart_cleanup_closed: "aborted" });
+    } finally {
+      await env.BLOBS.delete(objectKey);
+      await atomicBatch(env.DB, [
+        { sql: "UPDATE blobs SET state='deleted' WHERE id=?", values: [blobId] },
+        {
+          sql: "UPDATE blob_storage SET removed_at=MAX(observed_at,strftime('%s','now')*1000) WHERE blob_id=?",
+          values: [blobId],
+        },
+        { sql: "DELETE FROM uploads WHERE id=?", values: [uploadId] },
+        { sql: "DELETE FROM gc_candidates WHERE blob_id=?", values: [blobId] },
+        { sql: "DELETE FROM blob_storage WHERE blob_id=?", values: [blobId] },
+        { sql: "UPDATE reservations SET state='released' WHERE id=?", values: [reservationId] },
+        { sql: "DELETE FROM reservations WHERE id=?", values: [reservationId] },
+        { sql: "DELETE FROM blobs WHERE id=?", values: [blobId] },
+      ]);
+    }
+  },
+);
+
 it("rebuilds restored FTS under the recovery fence and restarts the audit", async () => {
   await env.DB.prepare(`INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
     VALUES(?,?,'recoveryneedle','re co','v1',1)`)

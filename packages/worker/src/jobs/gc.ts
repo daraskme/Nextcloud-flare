@@ -126,7 +126,9 @@ async function finalizeCandidate(
       ),
       {
         sql: `UPDATE uploads SET cleanup_pending=0,cleanup_token=NULL,cleanup_lease_expires_at=NULL,cleanup_error=NULL
-          WHERE blob_id=? AND mode='single' AND state IN ('expired','aborted','failed')`,
+          WHERE blob_id=? AND state IN ('expired','aborted','failed')
+            AND (mode='single' OR (mode='multipart' AND multipart_cleanup_started_at IS NOT NULL
+              AND multipart_cleanup_closed IS NOT NULL))`,
         values: [blobId],
       },
     ]);

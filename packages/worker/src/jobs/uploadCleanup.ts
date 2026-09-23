@@ -9,7 +9,7 @@ import {
 const CLOCK = "strftime('%s','now')*1000";
 const LEASE_MS = 60_000;
 const TERMINAL = "'expired','aborted','failed'";
-interface Candidate {
+export interface UploadCleanupCandidate {
   id: string;
   owner_id: string;
   blob_id: string;
@@ -18,6 +18,7 @@ interface Candidate {
   r2_key: string;
   write_attempt_id: string | null;
 }
+type Candidate = UploadCleanupCandidate;
 export interface UploadCleanupResult {
   claimed: number;
   absent: number;
@@ -25,7 +26,7 @@ export interface UploadCleanupResult {
   retried: number;
   r2Calls: number;
 }
-function controlFence(epoch: number, maintenance: boolean): SqlStatement {
+export function controlFence(epoch: number, maintenance: boolean): SqlStatement {
   return assertExists(
     `SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=?
     AND (?=0 OR gc_paused=1)`,
@@ -34,13 +35,13 @@ function controlFence(epoch: number, maintenance: boolean): SqlStatement {
 }
 
 // Include the gap between operation claim and recording completion_op_id.
-const COMPLETION = `o.kind='upload.complete' AND o.credential_id=u.credential_id
+export const COMPLETION = `o.kind='upload.complete' AND o.credential_id=u.credential_id
   AND o.epoch=u.epoch AND o.space_id=u.space_id
   AND json_extract(o.operands_json,'$.uploadId')=u.id
   AND json_extract(o.operands_json,'$.parentId')=u.parent_id
   AND json_extract(o.operands_json,'$.nodeId') IS u.target_id`;
 
-const UNPUBLISHED = `b.owner_id=u.owner_id AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id
+export const UNPUBLISHED = `b.owner_id=u.owner_id AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id
   AND (u.completion_op_id IS NULL OR EXISTS(SELECT 1 FROM operations o
     WHERE o.op_id=u.completion_op_id AND ${COMPLETION}))
   AND NOT EXISTS(SELECT 1 FROM operations o WHERE ${COMPLETION}
@@ -111,7 +112,7 @@ function cleanupFence(row: Candidate, token: string): SqlStatement {
     [row.id, row.blob_id, token],
   );
 }
-function observedObject(row: Candidate, object: R2Object): SqlStatement[] {
+export function observedObject(row: Candidate, object: R2Object): SqlStatement[] {
   if (
     !Number.isSafeInteger(object.size) ||
     object.size < 0 ||
@@ -131,7 +132,7 @@ function observedObject(row: Candidate, object: R2Object): SqlStatement[] {
     ),
   ];
 }
-function matches(row: Candidate, object: R2Object): boolean {
+export function matches(row: Candidate, object: R2Object): boolean {
   return (
     row.write_attempt_id !== null &&
     object.customMetadata?.upload_id === row.id &&
@@ -141,24 +142,26 @@ function matches(row: Candidate, object: R2Object): boolean {
   );
 }
 
-async function settle(
+export async function settleUploadCleanup(
   db: D1Database,
   row: Candidate,
   epoch: number,
   maintenance: boolean,
   token: string,
   object: R2Object | null,
+  fence = cleanupFence(row, token),
+  terminalProof = "1",
 ): Promise<"absent" | "queued"> {
   if (object && !matches(row, object)) {
     // Unexpected objects consume storage too. Quarantine without deleting or refunding.
     await atomicBatch(db, [
       controlFence(epoch, maintenance),
-      cleanupFence(row, token),
+      fence,
       ...observedObject(row, object),
     ]);
     throw new Error("upload_object_mismatch");
   }
-  const statements: SqlStatement[] = [controlFence(epoch, maintenance), cleanupFence(row, token)];
+  const statements: SqlStatement[] = [controlFence(epoch, maintenance), fence];
   if (object) statements.push(...observedObject(row, object));
   else
     statements.push(
@@ -198,6 +201,7 @@ async function settle(
       .prepare(`SELECT 1 FROM uploads u JOIN reservations r ON r.id=u.reservation_id
       JOIN blobs b ON b.id=u.blob_id JOIN gc_candidates g ON g.blob_id=b.id
       WHERE u.id=? AND u.state IN (${TERMINAL}) AND u.cleanup_token IS NULL AND r.state='released'
+        AND (${terminalProof})
         AND ((b.state='deleted' AND g.state='deleted' AND u.cleanup_pending=0
           AND NOT EXISTS(SELECT 1 FROM blob_storage s WHERE s.blob_id=b.id AND s.removed_at IS NULL))
         OR (b.state IN ('orphan','deleting') AND g.state IN ('candidate','deleting') AND u.cleanup_pending=1
@@ -264,7 +268,7 @@ export async function repairSingleUploads(
       ]);
       result.r2Calls++;
       const object = await bucket.head(row.r2_key);
-      result[await settle(db, row, epoch, maintenance, token, object)]++;
+      result[await settleUploadCleanup(db, row, epoch, maintenance, token, object)]++;
     } catch (error) {
       result.retried++;
       await primary(db)

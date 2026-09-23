@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
+import { repairMultipartUploads } from "../jobs/multipartCleanup";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import {
   type EpochReason,
@@ -254,6 +255,24 @@ export class ControlDO extends DurableObject<Env> {
       });
     } finally {
       // Even a partially completed repair invalidates pages read during its R2 calls.
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Close known multipart handles under maintenance, then restart the diagnostic audit. */
+  async repairStoppedMultipartUploads(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ cleanup: UploadCleanupResult; audit: RecoveryAuditStatus }> {
+    await this.beginRecoveryAudit(expectedEpoch);
+    let cleanup: UploadCleanupResult;
+    try {
+      cleanup = await repairMultipartUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
+        maxUploads: limit,
+        maintenance: true,
+      });
+    } finally {
       await this.beginRecoveryAudit(expectedEpoch);
     }
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };

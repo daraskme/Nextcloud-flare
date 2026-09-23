@@ -212,6 +212,7 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.cleanup_token IS NOT NULL
+        OR (u.mode='multipart' AND u.state<>'completed' AND u.multipart_cleanup_closed IS NULL)
         OR (u.cleanup_pending=1 AND NOT EXISTS(SELECT 1 FROM gc_candidates g
           JOIN blob_storage s ON s.blob_id=g.blob_id
           WHERE g.blob_id=u.blob_id AND g.state='candidate' AND s.removed_at IS NULL)))

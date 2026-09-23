@@ -155,6 +155,7 @@ export class UploadDO extends DurableObject<Env> {
         : []),
       assertExists(
         `SELECT 1 FROM uploads WHERE id=? AND epoch=? AND mode='multipart'
+          AND multipart_cleanup_started_at IS NULL
           AND r2_upload_id=? AND multipart_ledger_id=? AND multipart_revision<=?
           AND state IN (SELECT value FROM json_each(?))`,
         [
@@ -297,6 +298,10 @@ export class UploadDO extends DurableObject<Env> {
         if (!terminal) throw new Error("upload_already_completed");
         return terminal(row);
       }
+      if (row.multipart_cleanup_started_at !== null) {
+        await this.ctx.storage.deleteAlarm();
+        throw new Error("upload_cleanup_started");
+      }
       this.#identity(row);
       await this.#initialize(row, authorized);
       const assertions = [
@@ -392,6 +397,11 @@ export class UploadDO extends DurableObject<Env> {
         const row = await uploadRow(this.env.DB, before.uploadId);
         if (row?.state === "completed") {
           await this.#completed(row);
+          return;
+        }
+        if (row?.multipart_cleanup_started_at != null) {
+          // D1 permanently fenced this journal before R2 cleanup. Never mirror it back.
+          await this.ctx.storage.deleteAlarm();
           return;
         }
       }
