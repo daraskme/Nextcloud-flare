@@ -36,6 +36,10 @@ export interface UploadRow {
   write_attempt_id: string | null;
   write_lease_expires_at: number | null;
   completion_op_id: string | null;
+  part_bytes: number | null;
+  part_count: number | null;
+  multipart_ledger_id: string | null;
+  multipart_revision: number;
 }
 
 export async function uploadRow(db: D1Database, id: string): Promise<UploadRow | null> {
@@ -135,5 +139,6 @@ export function uploadStatus(row: UploadRow) {
     cleanupPending: row.cleanup_pending === 1,
     operationId: row.completion_op_id,
     errorCode: row.error_code,
+    ...(row.mode === "multipart" ? { partBytes: row.part_bytes, partCount: row.part_count } : {}),
   };
 }

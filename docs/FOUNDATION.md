@@ -87,9 +87,15 @@ CronはControlDO/D1 admission後に回収し、その後pause解除時のみ既�
 
 15分lease切れとunknown応答はupload全体を`aborting`にし、全in-flightをunknownへ固定する。遅れた成功を採用せず、同upload/R2 IDでは再送しない。無進捗24時間/作成から最大6日の期限と旧epoch失敗も永続化する。全part成功後のみ`completing`へ進み、abortと追加partを拒否する。complete応答喪失はR2 head/D1照合が必要なので期限切れからabortへ変えない。cleanup counterはdata/controlと独立で、data budget枯渇後も記録できる。完了partは数値keysetで最大200行ずつ取得する。
 
-`do/UploadDO.ts`は台帳schemaを初期化し、alarmで期限切れを記録する。**受付RPC/HTTP、初回alarm scheduling、D1認可/予約/mirror、R2送信/head/abort、terminalとphysical会計、Cron cleanupは未接続。** 内部台帳の試験をupload全体の成功と扱わない。将来の呼出し側はD1で証明したidentityと現在のcredential/epochを渡し、停止・結果不明をD1へ収束させてからnamespace公開する。DO全storage喪失時は同uploadを新規初期化せず復旧gateを通す。
+`do/UploadDO.ts`は内部RPCのたびにcanonical DO ID、ControlDO epoch/admission、capabilityのD1 digest、current credential/node authorityを検査する。D1の予約・epoch・maintenanceを同じmirror batchで再検査し、確認済み応答だけが新規dispatchを返す。外部D1 I/Oを挟むmetadata操作を`blockConcurrencyWhile`で直列化するが、streamとR2 I/OはWorkerに置く。通常の拒否はcallback内で捕捉し、30秒timeoutによるDO resetでは永続leaseから閉鎖側へ復旧する。
 
-SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
+migration `0018`はimmutable part geometry、R2 initialization identity、`multipart_ledger_id`、単調増加revisionを追加する。D1 markerをSQLite初期化より先に確定し、markerの応答喪失と全storage喪失を`upload_ledger_recovery_required`として停止する。evictionは正常に再開できる。SQLiteのtriggerがrevisionとdirty partを記録し、最大200行の差分をD1 `uploads`/`upload_parts`へ同時反映する。D1応答喪失時はdirtyを残し、再照合してもdispatchを再発行しない。初回・part lease・idle alarmを設定し、停止mirrorが失敗した場合は60秒後の再試行を残す。alarmは失効credential/停止中/旧epochでも停止状態を反映するが、予約を解放しない。
+
+`services/uploads/multipart.ts`は内部private userサービス。予約とstaging blobを作り、一度限りのD1 initialization claimを確認してからR2 multipart IDを取得する。create応答喪失では同uploadを再作成しない。既知R2 IDのD1保存は失効後も可能だが送信権限を与えない。partは現在のD1認可/予約を再確認し、固定長streamとSHA-256を同時に処理して結果をDOへ精算する。R2呼出し後の結果不明はupload全体を停止し、呼出し前の確実な失敗だけをnot_startedとする。個別part hashをwhole-objectの`sha256_verified`へ転用しない。
+
+**R2 complete/HEAD照合・原子的namespace公開・R2 abort/期限切れcleanup・HTTP/UIは未接続。** R2へのpart送信成功は製品のupload完了を意味しない。unknown creation IDと台帳消失では予約を保持する。7日incomplete lifecycleの実bucket検証とrepairが必要で、ローカル試験で代替しない。
+
+metadata直列化の30秒timeoutと例外時resetは[Durable Object State](https://developers.cloudflare.com/durable-objects/api/state/)に従う。SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
 
 ## Access session
 

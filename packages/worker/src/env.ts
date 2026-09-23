@@ -1,6 +1,7 @@
 import type { BudgetDO } from "./do/BudgetDO";
 import type { ControlDO } from "./do/ControlDO";
 import type { LockDO } from "./do/LockDO";
+import type { UploadDO } from "./do/UploadDO";
 
 export interface Env {
   DB: D1Database;
@@ -9,7 +10,7 @@ export interface Env {
   CACHE: KVNamespace;
   CONTROL: DurableObjectNamespace<ControlDO>;
   LOCKS: DurableObjectNamespace<LockDO>;
-  UPLOADS: DurableObjectNamespace;
+  UPLOADS: DurableObjectNamespace<UploadDO>;
   BUDGETS: DurableObjectNamespace<BudgetDO>;
   JOBS: Queue;
   IMAGES: ImagesBinding;

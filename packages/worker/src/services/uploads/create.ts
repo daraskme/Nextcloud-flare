@@ -2,6 +2,7 @@ import { portableName } from "@next-cloud-flare/shared/names";
 import { authorizationAssertion, authorizeNode, type Principal } from "../../auth/authorize";
 import type { UploadCapabilities } from "../../auth/uploadCapability";
 import { assertExists, atomicBatch } from "../../db/primary";
+import { multipartPlan, UPLOAD_LIMITS } from "../../do/uploadPlan";
 import { digestJson } from "../../jobs/operations";
 import { validateLength } from "../../platform/stream";
 import { reservationStatements } from "../quota";
@@ -24,6 +25,24 @@ export async function createSingleUpload(
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
 ) {
+  return reserveUpload(db, input, capabilities, "single");
+}
+
+/** Internal metadata reservation. No HTTP admission until multipart completion/cleanup are connected. */
+export async function reserveMultipartUpload(
+  db: D1Database,
+  input: CreateSingleUpload,
+  capabilities: UploadCapabilities,
+) {
+  return reserveUpload(db, input, capabilities, "multipart");
+}
+
+async function reserveUpload(
+  db: D1Database,
+  input: CreateSingleUpload,
+  capabilities: UploadCapabilities,
+  mode: "single" | "multipart",
+) {
   if (
     input.principal.kind !== "user" ||
     !/^[\x21-\x7e]{1,200}$/.test(input.requestId) ||
@@ -36,14 +55,15 @@ export async function createSingleUpload(
     (input.targetId === undefined && input.targetRevision !== undefined)
   )
     throw new Error("invalid_upload_create");
-  validateLength(input.declaredSize);
+  const plan = mode === "multipart" ? multipartPlan(input.declaredSize) : null;
+  if (!plan) validateLength(input.declaredSize);
   const name = portableName(input.name);
   const id = `up_${await digestJson(["upload.create", input.principal.credential_id, input.requestId])}`;
   const digest = await digestJson({
     spaceId: input.spaceId,
     parentId: input.parentId,
     name: name.name,
-    mode: "single",
+    mode,
     size: input.declaredSize,
     targetId: input.targetId ?? null,
     targetRevision: input.targetRevision ?? null,
@@ -92,7 +112,7 @@ export async function createSingleUpload(
     id,
     credential_id: input.principal.credential_id,
     epoch: input.principal.epoch,
-    expires_at: now + 86400000,
+    expires_at: now + (plan ? UPLOAD_LIMITS.lifetimeMs : 86400000),
     capability_kid: capabilities.ring.activeKid,
   };
   const capability = await capabilities.issue(identity);
@@ -116,8 +136,8 @@ export async function createSingleUpload(
       {
         sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,target_id,blob_id,credential_id,reservation_id,
         mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,
-        upload_name,target_revision,request_digest,capability_kid)
-        VALUES(?,?,?,?,?,?,?,?,'single','created',?,?,?,?,?,?,?,?,?,?)`,
+        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count)
+        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?)`,
         values: [
           id,
           owner,
@@ -127,6 +147,7 @@ export async function createSingleUpload(
           blob,
           input.principal.credential_id,
           reservation,
+          mode,
           input.declaredSize,
           await digestJson(capability),
           input.principal.epoch,
@@ -137,6 +158,8 @@ export async function createSingleUpload(
           input.targetRevision ?? null,
           digest,
           identity.capability_kid,
+          plan?.partBytes ?? null,
+          plan?.partCount ?? null,
         ],
       },
       assertExists("SELECT 1 FROM uploads WHERE id=? AND request_digest=?", [id, digest]),

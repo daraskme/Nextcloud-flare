@@ -65,9 +65,8 @@ function timestamp(now: number) {
 
 /**
  * Internal SQLite journal, not an authorization service or an R2 executor.
- * The future upload service must supply a D1-authorized immutable identity, validate
- * current credential/epoch before dispatch, and mirror/fence D1 before publication.
- * No external RPC exposes this journal until that orchestration is implemented.
+ * UploadDO supplies a D1-authorized identity and mirrors dirty rows before returning
+ * dispatch. This class itself never grants authorization or executes R2 calls.
  */
 export class MultipartLedger {
   constructor(private readonly storage: DurableObjectStorage) {
@@ -86,7 +85,20 @@ export class MultipartLedger {
       CREATE INDEX IF NOT EXISTS multipart_attempt_part ON multipart_attempts(part_number);
       CREATE INDEX IF NOT EXISTS multipart_attempt_state ON multipart_attempts(state,lease_expires_at);
       CREATE UNIQUE INDEX IF NOT EXISTS multipart_active_part ON multipart_attempts(part_number)
-        WHERE state IN ('in_flight','completed','unknown');`);
+        WHERE state IN ('in_flight','completed','unknown');
+      CREATE TABLE IF NOT EXISTS multipart_mirror(singleton INTEGER PRIMARY KEY CHECK(singleton=1),revision INTEGER NOT NULL);
+      INSERT OR IGNORE INTO multipart_mirror VALUES(1,1);
+      CREATE TABLE IF NOT EXISTS multipart_dirty(part_number INTEGER PRIMARY KEY);
+      CREATE TRIGGER IF NOT EXISTS multipart_state_insert AFTER INSERT ON multipart_state
+        BEGIN UPDATE multipart_mirror SET revision=revision+1; END;
+      CREATE TRIGGER IF NOT EXISTS multipart_state_update AFTER UPDATE ON multipart_state
+        BEGIN UPDATE multipart_mirror SET revision=revision+1; END;
+      CREATE TRIGGER IF NOT EXISTS multipart_attempt_insert AFTER INSERT ON multipart_attempts
+        BEGIN UPDATE multipart_mirror SET revision=revision+1;
+        INSERT OR IGNORE INTO multipart_dirty VALUES(NEW.part_number); END;
+      CREATE TRIGGER IF NOT EXISTS multipart_attempt_update AFTER UPDATE ON multipart_attempts
+        BEGIN UPDATE multipart_mirror SET revision=revision+1;
+        INSERT OR IGNORE INTO multipart_dirty VALUES(NEW.part_number); END;`);
   }
 
   #row(): UploadRow | undefined {
@@ -413,6 +425,34 @@ export class MultipartLedger {
         etag: row.etag,
         sha256: row.sha256,
       }));
+  }
+
+  /** A failed D1 acknowledgement leaves these rows dirty for an idempotent retry. */
+  mirrorSnapshot(now: number) {
+    const status = this.status(now);
+    if (!status) return null;
+    const row = this.#required(status.epoch);
+    const revision = this.storage.sql
+      .exec<{ revision: number }>("SELECT revision FROM multipart_mirror")
+      .one().revision;
+    const parts = this.storage.sql
+      .exec<AttemptRow & { attempts: number }>(
+        `SELECT a.*, (SELECT COUNT(*) FROM multipart_attempts b WHERE b.part_number=a.part_number) AS attempts
+        FROM multipart_attempts a JOIN multipart_dirty d ON d.part_number=a.part_number
+        WHERE a.rowid=(SELECT MAX(b.rowid) FROM multipart_attempts b WHERE b.part_number=a.part_number)
+        ORDER BY a.part_number LIMIT 201`,
+      )
+      .toArray();
+    if (parts.length > 200) throw new Error("upload_mirror_recovery_required");
+    return { ...status, revision, lastProgressAt: row.last_progress_at, parts };
+  }
+
+  markMirrored(revision: number): void {
+    const current = this.storage.sql
+      .exec<{ revision: number }>("SELECT revision FROM multipart_mirror")
+      .one().revision;
+    if (revision !== current) throw new Error("upload_mirror_conflict");
+    this.storage.sql.exec("DELETE FROM multipart_dirty");
   }
 
   nextAlarmAt(): number | null {

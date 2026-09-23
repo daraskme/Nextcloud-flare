@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。56通常テーブル、migration `0001`〜`0017`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。56通常テーブル、migration `0001`〜`0018`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admission は閉じたまま。
@@ -36,7 +36,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 |---|---|
 | `services/uploads/` / `api/uploads.ts` / `auth/uploadCapability.ts` | private単一uploadの予約、HMAC capability、1回限りR2 PUT、応答喪失照合、LockDO/D1原子的complete、abort intent |
 | `jobs/uploadCleanup.ts` / `ControlDO.repairExpiredUploads` | 24時間後のHEAD照合、lease付き回収、予約/physical会計、GC handoff、停止中の旧epoch修復。汎用予約回収は全uploadを除外 |
-| `packages/worker/src/do/UploadDO.ts` / `uploadLedger.ts` / `uploadPlan.ts` | 固定multipart分割、SQLite attempt台帳、4並列/3試行/15分lease、unknown・期限切れ・旧epochの停止、complete/abort排他。D1/R2/受付RPCは未接続 |
+| `packages/worker/src/do/UploadDO.ts` / `uploadLedger.ts` / `uploadPlan.ts` | 固定multipart分割、SQLite attempt台帳、4並列/3試行/15分lease、認可RPC、D1 marker/mirror、停止alarm、complete/abort排他。`services/uploads/multipart.ts`でR2 create/part接続済み。complete/cleanup/HTTPは未接続 |
 | `packages/shared/src/names.ts` | NFC/portable name、Unicode 17 full casefold、folder-name search text/bigram |
 | `packages/worker/src/services/fsMutation.ts` | SQL assertion、全 step と terminal の atomic commit、確実な rollback と commit_unknown の分離 |
 | `packages/worker/src/services/createFolder.ts` | LockDO/認可/claim/7 step/terminal/release を接続した最初の folder create |
@@ -75,7 +75,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - **ControlDO.status は maintenance=true / gcPaused=true。** `recover`/`bumpEpoch` はあるが、admission/quiesce/検証後の再開は未実装。単純に false に変えない。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
-- private単一uploadのHTTP・D1予約・R2送信・原子的complete・abort・期限切れ回収・GC handoffは接続済み。UploadDO内部のmultipart台帳は追加済みだが、multipartのD1認可/予約/状態mirror、R2送信/cleanup、受付RPC/HTTPとFiles UIは未接続。未知object/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実 ControlDO admission とリモート Access/署名鍵設定、全 route 会計も未接続。
+- private単一uploadのHTTP・D1予約・R2送信・原子的complete・abort・期限切れ回収・GC handoffは接続済み。multipartのD1予約/認可RPC/状態mirrorとR2 create/part送信は内部接続済み。multipartのR2 complete/HEAD/abort・期限切れ回収・原子的公開・HTTPとFiles UIは未接続。未知object/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実 ControlDO admission とリモート Access/署名鍵設定、全 route 会計も未接続。
 - AVIF/AV1/Opus は形式基盤まで。実 track parser・配信経路・player/lightbox・ブラウザー実ファイル試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。
@@ -85,7 +85,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-直近は単一uploadの期限切れ・abort後回収をCronとControlDO停止中repairへ接続した。次はD1で認可・予約したimmutable identityをUploadDO台帳へ接続し、multipartのR2 part/complete/head/abortとD1 mirrorを実装する。台帳だけではmultipart APIを開けない。`claim`の`dispatch`だけが新しいR2 callを許し、同attempt再送の`in_flight`では送信しない。`not_started`はR2未呼出しが確定している場合だけ使用する。DO storage全喪失を空の新規uploadとして再開せず、D1とepochの復旧gateを通す。
+直近はmultipartのD1予約、R2 create/part送信、UploadDO認可RPC、D1状態/part mirror、初回alarmと停止状態の再送alarmを接続した。次はR2 complete/HEAD照合とLockDO/D1原子的公開、R2 abort・期限切れ回収を実装し、その後HTTPとFiles UIへ接続する。内部part送信だけではmultipart APIを開けない。`claim`の`dispatch`だけが新しいR2 callを許し、同attempt再送の`in_flight`では送信しない。`not_started`はR2未呼出しが確定している場合だけ使用する。D1のimmutable `multipart_ledger_id`をSQLite初期化より先に確定する。markerの応答喪失やDO storage全喪失では`upload_ledger_recovery_required`として停止し、空の新規台帳でbudgetをリセットしない。dirty part mirrorはSQLiteのrevisionで保持し、D1応答喪失時も同attemptへdispatchを再発行しない。D1 mirror失敗後の停止intentには再試行alarmを残す。R2 createの結果不明IDは再作成せず予約を保持するため、次のcleanupはknown IDとunknown IDを分けて7日lifecycle gateへ接続する。
 
 単一uploadの回収は24時間まで待ち、60秒claimのcurrent tokenでのみHEAD結果を精算する。HEAD失敗・metadata不一致では予約を保持する。physical観測、予約解放、GC handoffは原子的に確定し、R2不在確認前にphysicalを戻さない。単一uploadの未知object隔離は汎用inventory/repairの代替ではない。GC pause中のControlDO repairはR2を削除せず、admissionを再開しない。
 
