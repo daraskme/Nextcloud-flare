@@ -640,3 +640,123 @@ it("a new epoch and total DO storage loss both invalidate the old restore proof"
     await env.DB.prepare("SELECT gc_hold_token,gc_operator_paused FROM control").first(),
   ).toEqual({ gc_hold_token: null, gc_operator_paused: 1 });
 });
+
+function failingControlDatabase(all: boolean): Env {
+  return {
+    ...env,
+    DB: {
+      prepare(sql: string) {
+        if (all || sql.includes("FROM operations WHERE op_id=? AND epoch=?"))
+          throw new Error("persistent_d1_failure");
+        return env.DB.prepare(sql);
+      },
+      batch: env.DB.batch.bind(env.DB),
+    } as D1Database,
+  };
+}
+
+it.each([false, true])(
+  "stops after six durable alarm failures even across eviction (D1 entirely unavailable=%s)",
+  async (all) => {
+    await control().acquireRestorePause(epoch, op());
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      if (attempt === 4) await evictDurableObject(control());
+      await runInDurableObject(control(), async (_, state) => {
+        const failed = new ControlDO(state, failingControlDatabase(all));
+        await failed.alarm();
+        expect(
+          state.storage.sql
+            .exec<{ failures: number }>("SELECT failures FROM control_alarm_failures")
+            .one().failures,
+        ).toBe(attempt);
+      });
+      expect(await control().status()).toMatchObject({
+        maintenance: attempt === 6,
+        gcPaused: true,
+      });
+    }
+    expect(await env.DB.prepare("SELECT maintenance FROM control").first("maintenance")).toBe(
+      all ? 0 : 1,
+    );
+    // A pending close blocks new admission locally even if D1 could not be reached.
+    // Repeated alarm delivery does not repeat external failures indefinitely.
+    await runInDurableObject(control(), async (_, state) => {
+      const db = failingControlDatabase(true);
+      const prepare = vi.spyOn(db.DB, "prepare");
+      await new ControlDO(state, db).alarm();
+      expect(prepare).not.toHaveBeenCalled();
+    });
+    await evictDurableObject(control());
+    await control().quiesce(epoch);
+    expect(await env.DB.prepare("SELECT maintenance,gc_hold_token FROM control").first()).toEqual({
+      maintenance: 1,
+      gc_hold_token: null,
+    });
+  },
+);
+
+it("a successful alarm resets only that transition's consecutive failures", async () => {
+  await control().acquireRestorePause(epoch, op());
+  await runInDurableObject(control(), async (instance, state) => {
+    const failed = new ControlDO(state, failingControlDatabase(false));
+    for (let i = 0; i < 5; i++) await failed.alarm();
+    await instance.alarm();
+    expect(state.storage.sql.exec("SELECT 1 FROM control_alarm_failures").toArray()).toEqual([]);
+    for (let i = 0; i < 5; i++) await failed.alarm();
+    expect(await instance.status()).toMatchObject({ maintenance: false });
+    await failed.alarm();
+    expect(await instance.status()).toMatchObject({ maintenance: true });
+  });
+});
+
+it.each(["new_hold", "operator_pause"])(
+  "a delayed sixth failure preserves cleanup after %s",
+  async (mode) => {
+    const held = await control().acquireRestorePause(epoch, op());
+    await runInDurableObject(control(), async (instance, state) => {
+      const failed = new ControlDO(state, failingControlDatabase(false));
+      for (let i = 0; i < 5; i++) await failed.alarm();
+      await state.storage.deleteAlarm(); // Model consumption of the alarm now being delivered.
+      const entered = deferred(),
+        release = deferred();
+      const app = withBatch(env.DB.batch.bind(env.DB));
+      app.DB = {
+        ...app.DB,
+        prepare(sql: string) {
+          const statement = env.DB.prepare(sql);
+          if (!sql.includes("FROM operations WHERE op_id=? AND epoch=?")) return statement;
+          return {
+            bind: () => ({
+              first: async () => {
+                entered.resolve();
+                await release.promise;
+                throw new Error("delayed_readback_failure");
+              },
+            }),
+          } as unknown as D1PreparedStatement;
+        },
+      } as D1Database;
+      const pending = new ControlDO(state, app).alarm();
+      await entered.promise;
+      try {
+        let nextToken = held.token;
+        if (mode === "new_hold") {
+          await instance.quiesce(epoch);
+          await reopen(instance);
+          nextToken = (await instance.acquireRestorePause(epoch, op())).token;
+        } else await instance.pauseGarbageCollection(epoch);
+        release.resolve();
+        await pending;
+        expect(await instance.status()).toMatchObject({ maintenance: false, gcPaused: true });
+        expect(await state.storage.getAlarm()).not.toBeNull();
+        expect(
+          await env.DB.prepare("SELECT gc_hold_token FROM control").first("gc_hold_token"),
+        ).toBe(nextToken);
+        await instance.releaseRestorePause(epoch, nextToken);
+      } finally {
+        release.resolve();
+        await pending;
+      }
+    });
+  },
+);

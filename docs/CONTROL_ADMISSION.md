@@ -21,6 +21,8 @@ DO SQLiteの`control_admission`にepoch/revision/token、遷移中phase、直前
 
 再開は直前のrevision/tokenと停止flagsに対するCASである。全予約、upload cleanup、GC、job lease、旧epoch outbox、inventory/probe、bootstrap、permit/claimの最終条件を同じD1 batch内でassertしてから開く。事前のSELECTだけでは開かない。停止は新しいrevisionを発行し、それ以前の遅延open/GC変更を拒否する。遅延した古いstopも、新しく再開した状態とpermitを上書きできない。
 
+復元用alarmの連続失敗は同じepoch/revision/tokenごとに6回まで。上限で永続closing intentを作り、それ以降はoperatorの`quiesce`再送とrepairを待つ。D1全面障害時も新規受付を停止する。回数はevictionで消えず、古い失敗で新しい稼働状態を閉じない。
+
 batchの応答が失われた場合、同じtransitionのD1結果を読み直す。readbackも失敗すると遷移intentを残して受付停止を維持する。eviction後も同じRPC/expected epochで再送できる。新しい停止・epochが先に進んだ場合は競合として拒否する。D1へflagsを直接書いて復旧しない。
 
 epoch publicationもrevision=0の初期状態に限定し、遅れて届いた同一epochの回復処理がactive状態を再び閉じたり、permitをrevokeしたりしない。新epochとDOの停止状態は同じローカルtransactionで公開する。

@@ -209,14 +209,20 @@ export class ControlDO extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (this.#row().phase !== "ready") return;
+    const transition = this.#admission.alarmTransition();
     try {
       const pause = await this.#admission.reconcileRestorePause();
-      if (!pause) return;
+      if (!pause) {
+        this.#admission.restoreAlarmSucceeded(transition);
+        return;
+      }
       await this.ctx.storage.setAlarm(Date.now() + 5_000);
       await drainRestoreBlobGarbageCollection(this.env.DB, this.env.BLOBS, pause);
+      this.#admission.restoreAlarmSucceeded(transition);
     } catch {
       // Unknown D1/R2 outcomes retain the durable intent; never infer a released window.
-      await this.ctx.storage.setAlarm(Date.now() + 5_000);
+      if (await this.#admission.restoreAlarmFailed(transition))
+        await this.ctx.storage.setAlarm(Date.now() + 5_000);
     }
   }
 

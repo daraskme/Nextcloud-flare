@@ -26,11 +26,13 @@ migration `0026`はD1 `control`に`gc_operator_paused`と`gc_hold_token/operatio
 
 alarmは未完了のGC変更を再照合し、必要なら既存削除をboundedに進める。operationがterminal、または期限切れならholdを解放する。期限切れの識別子はSQL時刻でも無効になり、GC再開前に確実に削除される。期限切れ処理が別の新しいholdへ紛れ込むことはない。DO evictionでtokenを作り直さず、全保存領域喪失では新epochと閉じた受付から復旧する。
 
+同じadmission transitionのalarmが連続6回失敗すると、それ以上の自動再試行を止め、永続的なclosing intentで受付を停止する。失敗回数はDO SQLiteに保存し、evictionでリセットしない。D1が全面的に使えない間はD1 mirrorの閉鎖完了を保証できないが、DOの新規受付は閉じたままにする。復旧後にoperatorが`quiesce(epoch)`を再送してD1を収束し、必要なrepair・全監査・段階再開を行う。alarm成功でそのtransitionの失敗回数だけを消す。遅れた古い失敗は新しいtransitionを停止せず、管理者設定変更後も必要なcleanup alarmを維持する。
+
 R2へ既に出たdeleteは取り消せないため、対象keyは不可逆な削除状態のまま扱う。旧deleteの応答が新しい回収後に届いても、claim token/epoch/modeの再検査でHEAD・最終精算を拒否する。physical bytesは現在の回収処理がR2不在を確認した後、D1で一度だけ減算する。
 
 ## 検証範囲と残る制約
 
-`restore-gc-pause.test.ts`は実ControlDO/LockDO/D1/R2で、稼働中復元、同じkeyの再送、管理者設定、競合operation、期限切れ、commit/readback応答喪失、eviction/全喪失、遅延pause/release対停止・新hold、permit/commit直前の識別子変更、旧R2 delete、HTTP待機と再試行を検証する。schema testは一部だけのhold・範囲外期限を拒否する。Filesのbrowser fixtureもGCを再開し、復元前後の状態と復元応答喪失後の再照会を検証する。
+`restore-gc-pause.test.ts`は実ControlDO/LockDO/D1/R2で、稼働中復元、同じkeyの再送、管理者設定、競合operation、期限切れ、commit/readback応答喪失、eviction/全喪失、連続失敗上限とD1全面障害時の閉鎖、古い失敗対新設定、遅延pause/release対停止・新hold、permit/commit直前の識別子変更、旧R2 delete、HTTP待機と再試行を検証する。schema testは一部だけのhold・範囲外期限を拒否する。Filesのbrowser fixtureもGCを再開し、復元前後の状態と復元応答喪失後の再照会を検証する。
 
 - holdは単一であり、別ユーザーの復元も一時的に待つ。大量の既存削除や外部サービス障害では5分を超え、再試行で新しいholdが必要になる。
 - 現在の復元は最大1,000ノードの同期処理。account単位のadmission、管理者画面、大量データと実R2での負荷・障害試験は残る。

@@ -19,6 +19,12 @@ interface AdmissionRow extends Record<string, SqlStorageValue> {
   prior_gc_paused: number;
 }
 
+export interface AdmissionTransition {
+  epoch: number;
+  revision: number;
+  token: string | null;
+}
+
 const clock = "strftime('%s','now')*1000";
 const closedWork = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
   AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')`;
@@ -46,6 +52,10 @@ export class ControlAdmission {
     )`);
     storage.sql.exec(`INSERT OR IGNORE INTO control_gc_policy
       SELECT singleton,epoch,gc_paused,NULL,NULL,NULL,gc_paused FROM control_admission`);
+    storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_alarm_failures(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,
+      revision INTEGER NOT NULL,token TEXT,failures INTEGER NOT NULL CHECK(failures BETWEEN 1 AND 6)
+    )`);
     // An interrupted repair cannot be treated as complete just because its isolate was evicted.
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_maintenance_tasks(
       token TEXT PRIMARY KEY,epoch INTEGER NOT NULL
@@ -86,6 +96,7 @@ export class ControlAdmission {
       epoch,
     );
     this.storage.sql.exec("DELETE FROM recovery_audit_v7");
+    this.storage.sql.exec("DELETE FROM control_alarm_failures");
     this.storage.sql.exec("DELETE FROM control_maintenance_tasks WHERE epoch<>?", epoch);
   }
 
@@ -394,5 +405,54 @@ export class ControlAdmission {
       operationId: row.hold_operation!,
       expiresAt: row.hold_expires_at!,
     };
+  }
+
+  alarmTransition(): AdmissionTransition {
+    const { epoch, revision, token } = this.#row();
+    return { epoch, revision, token };
+  }
+
+  restoreAlarmSucceeded(transition: AdmissionTransition): void {
+    this.storage.sql.exec(
+      "DELETE FROM control_alarm_failures WHERE epoch=? AND revision=? AND token IS ?",
+      transition.epoch,
+      transition.revision,
+      transition.token,
+    );
+  }
+
+  /** Six consecutive failures of this exact transition require explicit operator repair. */
+  async restoreAlarmFailed(transition: AdmissionTransition): Promise<boolean> {
+    const current = this.#row();
+    if (
+      current.epoch !== transition.epoch ||
+      current.revision !== transition.revision ||
+      current.token !== transition.token
+    )
+      // An old failure cannot close a newer transition. Preserve cleanup scheduling when an
+      // operator pause changed the revision while this alarm was waiting on D1.
+      return (
+        current.phase === "gc_changing" || (current.phase === "open" && current.hold_token !== null)
+      );
+    if (current.phase !== "open" && current.phase !== "gc_changing") return false;
+    const attempts = this.storage.sql
+      .exec<{ failures: number }>(
+        `INSERT INTO control_alarm_failures VALUES(1,?,?,?,1) ON CONFLICT(singleton) DO UPDATE SET
+        failures=CASE WHEN epoch=excluded.epoch AND revision=excluded.revision AND token IS excluded.token
+          THEN MIN(failures+1,6) ELSE 1 END,
+        epoch=excluded.epoch,revision=excluded.revision,token=excluded.token RETURNING failures`,
+        transition.epoch,
+        transition.revision,
+        transition.token,
+      )
+      .one().failures;
+    if (attempts < 6) return true;
+    try {
+      // close() persists the closing intent before D1 I/O. Readback failure stays closed locally.
+      await this.close(current.epoch);
+    } catch {
+      // quiesce() can reconcile this exact pending close after the operator repairs D1.
+    }
+    return false;
   }
 }
