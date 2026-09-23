@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
+import { drainStoppedBlobGarbageCollection, type GcResult } from "../jobs/gc";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
 import {
   inspectMultipartInventory,
@@ -12,7 +13,12 @@ import {
   type MultipartInventoryRepairResult,
   repairUnidentifiedMultipartUploads,
 } from "../jobs/multipartInventoryRepair";
-import { type OrphanScanResult, scanOrphanObjects } from "../jobs/orphanInventory";
+import {
+  drainStoppedOrphanGarbageCollection,
+  type OrphanGcResult,
+  type OrphanScanResult,
+  scanOrphanObjects,
+} from "../jobs/orphanInventory";
 import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2BindingVerification";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
@@ -284,6 +290,46 @@ export class ControlDO extends DurableObject<Env> {
         maxUploads: limit,
         maintenance: true,
       });
+    } finally {
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Finish already-claimed blob deletions while maintenance and GC pause remain set. */
+  async drainBlobGarbageCollection(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ cleanup: GcResult; audit: RecoveryAuditStatus }> {
+    await this.beginRecoveryAudit(expectedEpoch);
+    let cleanup: GcResult;
+    try {
+      cleanup = await drainStoppedBlobGarbageCollection(
+        this.env.DB,
+        this.env.BLOBS,
+        expectedEpoch,
+        { maxBlobs: limit },
+      );
+    } finally {
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Reconcile already-started orphan GC without shortening quarantine or admitting new work. */
+  async drainOrphanGarbageCollection(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ cleanup: OrphanGcResult; audit: RecoveryAuditStatus }> {
+    await this.beginRecoveryAudit(expectedEpoch);
+    let cleanup: OrphanGcResult;
+    try {
+      cleanup = await drainStoppedOrphanGarbageCollection(
+        this.env.DB,
+        this.env.BLOBS,
+        expectedEpoch,
+        { limit },
+      );
     } finally {
       await this.beginRecoveryAudit(expectedEpoch);
     }

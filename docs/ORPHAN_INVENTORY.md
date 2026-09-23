@@ -24,4 +24,8 @@
 
 Cronはadmission後に1ページ走査し、GC許可後に回収する。`ControlDO.inventoryOrphanObjects(epoch,limit)`はquiesceと監査の前後初期化の下で走査だけを行い、削除・admission再開をしない。復旧のR2監査は、隔離済みkeyのsize/etag/version/uploadedを完全一致で照合する。最終fenceは未完了のscan/GC claim、deleting、不正key、未来epoch、owner会計漏れを拒否する。
 
-このcheckpointは完成済み`u/` objectのinventoryを接続したもの。unknown multipart IDのS3 inventory/repair、その他prefixの未追跡生成物、catalogueに残るkeyの不正な置換、maintenance中の未完了GC drain、ControlDO再開、実bucketのlifecycle/restore試験は引き続き必要。forward migrationとexport/purge順序に2tableを追加済みだが、実backup/export/restore実装・演習は未完了。
+このcheckpointは完成済み`u/` objectのinventoryを接続したもの。unknown multipart IDの全体閉鎖/予約精算、その他prefixの未追跡生成物、catalogueに残るkeyの不正な置換、ControlDO再開、実bucketのlifecycle/restore試験は引き続き必要。S3の既存upload未知ID走査・中止と、停止中の既存deleting回収は追加済み。forward migrationとexport/purge順序に2tableを追加済みだが、実backup/export/restore実装・演習は未完了。
+
+## 停止中の削除完了
+
+`ControlDO.drainOrphanGarbageCollection`は、すでにdeletingへ進んだobjectだけをmaintenance/GC pause中に回収する。新しいquarantined objectは対象外で、35日猶予とHEAD identity照合は維持する。詳細と試験範囲は[GC_RECOVERY](GC_RECOVERY.md)。

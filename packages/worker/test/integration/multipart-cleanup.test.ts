@@ -9,7 +9,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { UploadDO } from "../../src/do/UploadDO";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
-import { runGarbageCollection } from "../../src/jobs/gc";
+import { drainStoppedBlobGarbageCollection, runGarbageCollection } from "../../src/jobs/gc";
 import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
 import { uploadRow } from "../../src/services/uploads/access";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
@@ -23,6 +23,37 @@ beforeEach(async () => {
   await env.DB.prepare(
     "UPDATE uploads SET cleanup_next_at=9999999999999 WHERE mode='multipart'",
   ).run();
+});
+
+it("does not let an unclosed upload bypass its reservation through a GC candidate", async () => {
+  const f = await fixture({ known: false });
+  await env.BLOBS.put(f.key, "abc");
+  await env.DB.prepare(
+    "INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'candidate',0)",
+  )
+    .bind(f.blob)
+    .run();
+  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  await atomicBatch(env.DB, [
+    { sql: "UPDATE blobs SET state='deleting' WHERE id=?", values: [f.blob] },
+    {
+      sql: "UPDATE gc_candidates SET state='deleting',claim_token=?,claim_expires_at=0 WHERE blob_id=?",
+      values: [crypto.randomUUID(), f.blob],
+    },
+    { sql: "UPDATE control SET maintenance=1,gc_paused=1" },
+  ]);
+  expect(
+    await drainStoppedBlobGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 }),
+  ).toMatchObject({ claimed: 0, r2Calls: 0 });
+  expect(await env.BLOBS.head(f.key)).not.toBeNull();
+  expect(
+    await env.DB.prepare("SELECT state FROM reservations WHERE id=?")
+      .bind(f.reservation)
+      .first("state"),
+  ).toBe("reserved");
 });
 
 async function fixture(

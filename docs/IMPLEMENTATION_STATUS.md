@@ -7,11 +7,12 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 停止中GC drain | migration `0024`のclaim epoch/counter、blob/orphanの既存deleting回収、ControlDO内部RPCと監査再初期化 | 新規25件を含む全check1,022件が成功。全復旧監査fixtureは成功、実環境・完全restore・admission再開は未完了 |
 | 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
 | 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。対応検証との接続・全体不在証明・予約精算・upload行ごと失われたID・実S3は未完了 |
 | 4 multipart S3診断 | 署名付きListMultipartUploads/ListParts/lifecycle取得、1 GET・最大100件・1 MiB・10秒、厳密XML/echo/markerと停止中ControlDO診断 | Node/workerdで署名・失敗境界、D1 maintenance/epoch fence、監査再初期化と予約保持を検証。対応検証と既存uploadの未知ID中止は別serviceへ接続済み。全体閉鎖・実S3接続は未完了 |
 | 3 private multipart HTTP | 既存routeのcreate/part/status/page/complete/abort、Upload-Attempt-Id、D1 receipt snapshot、期限切れ後照会、中止CAS、初期化結果不明receipt | 実Access JWT/CSRF/D1/R2/DOで再送・上書き・page・失効・中止/確定・遅延part・初期化応答喪失・入力境界を検証。UI・公開共有・実admissionは未実装 |
-| 4 未知完成物inventory | migration `0021`の2table、bounded R2 list/HEAD、D1 cursor/lease、35日grace、owner physical会計、独立GCとキー再利用拒否、Cron/停止中ControlDO inventory/復旧監査 | 応答喪失、並行処理、置換・再出現、owner復元、pause/epochを実D1/R2で検証。incomplete multipart、他prefix、停止中GC drain、実環境は未完了 |
+| 4 未知完成物inventory | migration `0021`の2table、bounded R2 list/HEAD、D1 cursor/lease、35日grace、owner physical会計、独立GCとキー再利用拒否、Cron/停止中ControlDO inventory/復旧監査 | 応答喪失、並行処理、置換・再出現、owner復元、pause/epochを実D1/R2で検証。incomplete multipart、他prefix、実環境は未完了。停止中の既存deleting回収は追加済み |
 | 3 multipart回収 | migration `0020`の永久停止markerと閉鎖証明、独立cleanup budget、R2 abort/HEAD、physical計上/予約精算/GC、Cron/停止中ControlDO repair、DO alarm停止 | 応答喪失、競合、遅延init/HEAD、旧epoch、pin、未知metadata隔離、DO全喪失、偽GC handoff拒否を実D1/R2/DOで検証。未知IDの外部inventory修復・UIは未実装 |
 | 3 multipart確定 | migration `0019`の一度限りcomplete attempt・object proof、paged manifestからR2 complete/HEAD、LockDO/D1原子的公開、旧版保持、DO terminal照合 | D1/R2/DOで応答喪失・同時確定・失効・physical会計・全10 step rollbackを検証。R2 abort/期限切れcleanupは既知IDで接続済み、private HTTPは接続済み |
 | 3 multipart D1/R2 part接続 | migration `0018`の固定geometry・ledger marker・revision、D1予約、1回限りR2 create、認可RPC・dirty part mirror、streaming R2 part/SHA-256、停止再送alarm | 実D1/R2/DOで64 MiB+末尾、応答喪失、同時claim、失効/予約解除競合、storage全喪失を検証。R2 complete/head・原子的公開は追加済み。既知ID cleanupは接続済み、private HTTPは接続済み |
@@ -43,8 +44,8 @@
 | 1.1 契約・schema | 58通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |
-| 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。admission/復旧 verifier/再開と実 GC lease drain は未完了 |
-| 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag と list 全件の D1 blob/derivative/archive 照合、outbox provenance/lease、share 予約量・root・version、credential の参照先種別・有効 scope root と4種の参照元 registry 行を各最大20件ずつ検証。FTS5 `integrity-check` (`rank=1`) と予約・未完了 upload・旧 outbox 等の最終 D1 fence を追加。完了後の再照会でも最終 fence を再確認し、失敗時は監査を先頭に戻す。停止中の FTS `rebuild`、旧 epoch の upload に紐づかない予約の bounded release と、旧 epoch `node.created` / `node.renamed` の bounded failed 収束は監査を初期化。ControlDO SQLite の epoch/token/R2 cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 診断・限定修復。credential/share/outbox の全意味検証、他 event kind の cleanup、他prefix/不正な既知keyの repair、incomplete multipart、Upload/GC/Queue drain と再開 gate は未完了 |
+| 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。停止中GC drainはローカル接続済み。admission/再開と実環境は未完了 |
+| 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag と list 全件の D1 blob/derivative/archive 照合、outbox provenance/lease、share 予約量・root・version、credential の参照先種別・有効 scope root と4種の参照元 registry 行を各最大20件ずつ検証。FTS5 `integrity-check` (`rank=1`) と予約・未完了 upload・旧 outbox 等の最終 D1 fence を追加。完了後の再照会でも最終 fence を再確認し、失敗時は監査を先頭に戻す。停止中の FTS `rebuild`、旧 epoch の upload に紐づかない予約の bounded release と、旧 epoch `node.created` / `node.renamed` の bounded failed 収束は監査を初期化。ControlDO SQLite の epoch/token/R2 cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 診断・限定修復。credential/share/outbox の全意味検証、他 event kind の cleanup、他prefix/不正な既知keyの repair、incomplete multipartの全体閉鎖、残るUpload/Queue drainと再開gateは未完了。既存deletingのGC drainは接続済み |
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
 | R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB制約、同期purge、R2削除GC、private単一uploadと期限切れ回収を実証。multipartの既知R2 ID cleanup・private HTTPは接続済み |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
@@ -92,13 +93,15 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## M/U/I/R と復旧
 
-- **M**: `0001`〜`0021` を追加し、隔離 D1 と SQLite へ適用して58通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proof・永久停止/閉鎖証明を確認。リモート DB は未変更。probe schema は別 test file に隔離。
+- **M**: `0001`〜`0024` を追加し、隔離 D1 と SQLite へ適用して61通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proof・永久停止/閉鎖証明を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
 - **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の453 tests と前回の450/448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 330 + workerd 692 = **1,022 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0024`のclaim epoch/dispatch counterと、停止中ControlDOのblob/orphan GC drainを追加。新規25件で旧deletingだけの回収、猶予/lease/pin保持、claim/counter/final batch/R2応答喪失、同時回収、遅延削除、各dispatch/精算時のepoch/mode/lease、容量の一度だけの精算、未知multipart予約holdの迂回拒否、回収後の全復旧監査を検証。未知multipartの全体閉鎖と予約精算・Queue drain・admission再開・実restore drillは未完了。
 
 - 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 330 + workerd 667 = **997 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0023`のsystem probe台帳（61通常table）と停止中ControlDOのBLOBS/S3対応検証を追加。新規workerd22件とNode4件でfresh nonce、実R2条件付きPUT、遅延create/更新、scope終了・保存SQLの失効、D1/R2応答喪失、誤bucketの古い値、64-byte境界、epoch/pause/lease、復旧監査・容量保持を検証。全体閉鎖/予約精算への接続と実S3/stagingは未完了。
 

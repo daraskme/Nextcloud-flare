@@ -115,7 +115,7 @@ metadata直列化の30秒timeoutと例外時resetは[Durable Object State](https
 
 migration `0021`の`orphan_objects`と`r2_inventory_scan`は、全catalogueから独立した`u/` objectをHEADで観測し、発見から35日保留する。`jobs/orphanInventory.ts`がページcursor/60秒leaseを保存し、再検出でfirst_seenを変えず、version/etag/size/uploadedが変われば猶予を更新する。既存ownerへのphysical計上と削除後の減算はD1 triggerで原子的に行い、owner不在から復元された場合も一度だけ計上する。namespaceには公開せず、全catalogueへの同key登録を相互guardで拒否し、削除後もtombstoneを残す。
 
-回収は35日後、current epoch/GC pause/claim/identityをR2 call直前に検査し、HEAD一致→delete→HEAD不在→D1精算で収束する。停止中のControlDO RPCは走査だけを実行して監査を初期化する。復旧R2 listは隔離台帳の全metadata tupleを照合し、最終fenceは未完了claim/deleting/不正keyを拒否する。incomplete multipartの閉鎖証明、他prefix、既知key不正置換、maintenance中GC drainは別の残作業。詳細は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)。
+回収は35日後、current epoch/GC pause/claim/identityをR2 call直前に検査し、HEAD一致→delete→HEAD不在→D1精算で収束する。停止中のinventory RPCは走査して監査を初期化する。別のdrainOrphanGarbageCollection RPCは既存deletingのみを回収する。復旧R2 listは隔離台帳の全metadata tupleを照合し、最終fenceは未完了claim/deleting/不正keyを拒否する。incomplete multipartの閉鎖証明、他prefix、既知key不正置換は別の残作業。詳細は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)。
 
 ## Access session
 
@@ -276,3 +276,7 @@ native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd
 
 次は Queue ack/DLQ と repair、ControlDO 再開、残る operation tuple の認可と HTTP profile 接続。
 後半が終わるまで Files core を公開しない。
+
+## 停止中GCの収束
+
+[GC_RECOVERY](GC_RECOVERY.md)を参照。migration `0024`のclaim epoch/counterと各dispatch・final batchのcurrent fenceを通常GC/停止中drainで共有する。ControlDOのblob/orphan別RPCは既存deletingだけを回収し、candidate/quarantineの猶予を短縮しない。回収前後の監査初期化、応答喪失と旧Workerの拒否、physical会計、回収後の全監査をローカル検証する。admission再開は別gate。

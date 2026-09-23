@@ -312,6 +312,27 @@ export async function collectOrphanObjects(
   epoch: number,
   options: { limit?: number; maxWallMs?: number } = {},
 ): Promise<OrphanGcResult> {
+  return collect(db, bucket, epoch, options, false);
+}
+
+/** Maintenance may reconcile an existing irreversible deletion, but cannot start quarantine GC. */
+export async function drainStoppedOrphanGarbageCollection(
+  db: D1Database,
+  bucket: R2Bucket,
+  epoch: number,
+  options: { limit?: number; maxWallMs?: number } = {},
+): Promise<OrphanGcResult> {
+  if ((options.limit ?? 20) > 20) throw new Error("invalid_orphan_limit");
+  return collect(db, bucket, epoch, options, true);
+}
+
+async function collect(
+  db: D1Database,
+  bucket: R2Bucket,
+  epoch: number,
+  options: { limit?: number; maxWallMs?: number },
+  stopped: boolean,
+): Promise<OrphanGcResult> {
   const limit = options.limit ?? 20;
   const wall = options.maxWallMs ?? 20000;
   limits(epoch, limit, wall);
@@ -319,16 +340,16 @@ export async function collectOrphanObjects(
   const result: OrphanGcResult = { claimed: 0, deleted: 0, changed: 0, retried: 0, r2Calls: 0 };
   const gate = () =>
     assertExists(
-      "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0 AND gc_paused=0",
-      [epoch],
+      "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
+      [epoch, stopped ? 1 : 0, stopped ? 1 : 0],
     );
-  const due = `state<>'deleted' AND owner_key IS NOT NULL AND first_seen_at<=${CLOCK}-${ORPHAN_GRACE_MS}
+  const due = `${stopped ? "state='deleting'" : "state<>'deleted'"} AND owner_key IS NOT NULL AND first_seen_at<=${CLOCK}-${ORPHAN_GRACE_MS}
     AND next_check_at<=${CLOCK} AND (claim_token IS NULL OR claim_expires_at<=${CLOCK})`;
   const rows = await primary(db)
     .prepare(`SELECT r2_key FROM orphan_objects WHERE ${due} AND epoch<=?
-    AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0 AND gc_paused=0)
+    AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?)
     ORDER BY next_check_at,first_seen_at,r2_key LIMIT ?`)
-    .bind(epoch, epoch, limit)
+    .bind(epoch, epoch, stopped ? 1 : 0, stopped ? 1 : 0, limit)
     .all<{ r2_key: string }>();
   for (const { r2_key: key } of rows.results) {
     if (Date.now() - started >= wall) break;
@@ -355,6 +376,7 @@ export async function collectOrphanObjects(
     if (!row) continue;
     result.claimed++;
     const charge = async () => {
+      if (Date.now() - started >= wall) throw new Error("orphan_gc_budget");
       await atomicBatch(db, [
         gate(),
         objectFence(row, token),

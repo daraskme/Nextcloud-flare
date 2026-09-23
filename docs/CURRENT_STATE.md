@@ -20,14 +20,15 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| schema・契約 | migration `0001`〜`0023`、61通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0024`、61通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
 | Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | Files UI、全route profile |
 | Trash | 一覧、restore、purge、別trash子退避、名前衝突解決 | 最大64層・1,000 node、冪等再送、GC競合、深さ順処理 | 大規模非同期trash/purgeは未実装 |
+| 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
 | GC | 7日猶予candidate、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | unknown multipart ID、既知keyの不正置換、実Cron運用 |
-| 未追跡object | D1のページcursor/lease、HEAD照合、隔離台帳、35日猶予、実physical会計、再利用拒否、Cronと停止中inventory | 応答喪失、同時走査/回収、置換・再出現、owner後日復元、pause/epoch、復旧監査 | incomplete multipart、他prefix、停止中GC drain、実R2運用 |
+| 未追跡object | D1のページcursor/lease、HEAD照合、隔離台帳、35日猶予、実physical会計、再利用拒否、Cronと停止中inventory | 応答喪失、同時走査/回収、置換・再出現、owner後日復元、pause/epoch、復旧監査 | incomplete multipart、他prefix、実R2運用 |
 | multipart S3診断 | 署名付きListMultipartUploads/ListParts/GetBucketLifecycleConfiguration、1 GET/最大100件/1 MiB/10秒、停止中ControlDO診断 | XML/設定/署名/timeout/ページ失敗、実D1 fenceとControlDO監査再初期化、予約保持 | 対応検証との接続、全体不在証明・予約精算、実S3/lifecycle試験 |
 | R2/S3対応検証 | migration `0023`、固定64-byte system probeのfresh nonce/CAS更新、scope付きD1 fence、ControlDO検証と復旧監査 | 実R2条件付きPUT、遅延create/更新、誤bucketの古い値、応答喪失、epoch/pause/lease、system容量保持 | multipart全体閉鎖・予約精算への接続、実S3試験 |
 | multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの全ID走査・実BLOBS abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計 | 対応検証との接続と全体不在証明・予約精算、upload行ごと失われたhandle、実S3、Cron |
@@ -37,10 +38,10 @@
 | content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDO | D1/R2、署名、失効、Range、budget reserve/settle | ZIP/page/entry/track、全route会計 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、bounded repair | send/D1応答喪失、重複delivery、主要node event provenance | 実Queue/DLQ、残るevent kind |
-| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup | DO eviction、R2 inventory、会計・credential/share/outbox監査 | admission再開、未完了GC drain、完全restore drill |
+| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup | DO eviction、R2 inventory、会計・credential/share/outbox監査 | admission再開、完全restore drill |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 330件 + workerd 667件 = 997件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0023`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 330件 + workerd 692件 = 1,022件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0024`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -65,7 +66,7 @@
 - 共有作成・編集・解除、内部共有、公開link、password/unlock、upload-only共有の完全なHTTP surface。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - 日次logical export、backup manifest、Time Travel手順、restore automation。
-- `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換、停止中の未完了orphan GC drain。
+- `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
 ### UI
 
@@ -119,7 +120,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 - mutationはcurrent auth、epoch、permit、revision/tree fence、operation terminalを同じatomic boundaryで確認する。
 - `blobs.state='deleting'` とGC `deleting`は不可逆。
 - blob参照追加は`deleting/deleted`を拒否する。
-- GCはref=0、全pinなし、pause解除、claim所有を再検査し、R2不在確認後だけphysical精算する。
+- GCはref=0、全pinなし、current control mode・epoch・claim所有を各dispatch/精算時に再検査する。通常GCはpause解除時のみ、停止中drainは既存deletingのみ。不在確認後だけphysical精算する。
 - 適用済みmigrationを書き換えず、新しい番号のmigrationを追加する。
 - AVIF・AV1・Opusを保存・配信・Gallery/player要件から外さない。詳細は [MEDIA_FORMATS](MEDIA_FORMATS.md)。
 
