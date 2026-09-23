@@ -223,7 +223,8 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
       AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE state='deleting' OR claim_token IS NOT NULL
         OR (state<>'deleted' AND (owner_key IS NULL OR epoch>c.epoch
           OR (owner_id IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=owner_key)))))
-      AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)`)
+      AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)
+      AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans)`)
     .bind(epoch)
     .first<number>();
   if (ready === null) throw new Error("recovery_final_fence_pending");

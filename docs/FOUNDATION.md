@@ -83,7 +83,7 @@ HTTP契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。multipart PUTはUpload-Attempt-Id�
 
 ## UploadDO multipart台帳
 
-未完了multipartの外部観測は[r2 S3診断](MULTIPART_INVENTORY.md)を参照。ListMultipartUploads/ListParts/lifecycleを停止中ControlDOへ接続済みだが、BLOBS対応証明・永続scan・未知IDの修復は未実装。診断結果を閉鎖証明として既存cleanupへ渡さない。
+未完了multipartの外部観測は[r2 S3診断](MULTIPART_INVENTORY.md)を参照。ListMultipartUploads/ListParts/lifecycleを停止中ControlDOへ接続済みだが、既存uploadの永続scan・未知IDのabortはmigration `0022`とmultipartInventoryRepairへ接続済み。BLOBS対応証明・全体不在証明・予約精算は未実装。診断結果を閉鎖証明として既存cleanupへ渡さない。
 
 `do/uploadPlan.ts`は1 byte〜500 GiB、既定64 MiB・非最終8〜90 MiB・最大10,000 partの固定計画を作る。0 byteはsingle upload用でありmultipartでは拒否する。
 

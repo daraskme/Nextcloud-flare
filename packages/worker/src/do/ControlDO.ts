@@ -8,6 +8,10 @@ import {
   type MultipartInventoryObservation,
   type MultipartInventoryQuery,
 } from "../jobs/multipartInventory";
+import {
+  type MultipartInventoryRepairResult,
+  repairUnidentifiedMultipartUploads,
+} from "../jobs/multipartInventoryRepair";
 import { type OrphanScanResult, scanOrphanObjects } from "../jobs/orphanInventory";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
@@ -317,6 +321,28 @@ export class ControlDO extends DurableObject<Env> {
       await this.beginRecoveryAudit(expectedEpoch);
     }
     return { observation, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Persist discovered handles and abort them through BLOBS, retaining unresolved reservations. */
+  async repairUnidentifiedMultipartUploads(
+    expectedEpoch: number,
+    limit = 5,
+  ): Promise<{ repair: MultipartInventoryRepairResult; audit: RecoveryAuditStatus }> {
+    const inventory = new R2S3Inventory(this.env);
+    await this.beginRecoveryAudit(expectedEpoch);
+    let repair: MultipartInventoryRepairResult;
+    try {
+      repair = await repairUnidentifiedMultipartUploads(
+        this.env.DB,
+        this.env.BLOBS,
+        inventory,
+        expectedEpoch,
+        { maxUploads: limit, maintenance: true },
+      );
+    } finally {
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { repair, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */

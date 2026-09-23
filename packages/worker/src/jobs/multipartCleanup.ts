@@ -13,18 +13,19 @@ import {
 const CLOCK = "strftime('%s','now')*1000";
 const TERMINAL = "'expired','aborted','failed'";
 const LEASE_MS = 60_000;
-interface Candidate extends UploadCleanupCandidate {
+export interface MultipartCleanupCandidate extends UploadCleanupCandidate {
   r2_upload_id: string | null;
   multipart_complete_attempt: string | null;
   multipart_cleanup_closed: "aborted" | "completed" | null;
 }
+type Candidate = MultipartCleanupCandidate;
 
 // Expired leases stop dispatch; elapsed time alone never proves that R2 data is absent.
 const DRAINED = `(u.r2_upload_id IS NOT NULL OR COALESCE(u.write_lease_expires_at,0)<=${CLOCK})
   AND COALESCE(u.multipart_complete_lease,0)<=${CLOCK}
   AND NOT EXISTS(SELECT 1 FROM upload_parts p WHERE p.upload_id=u.id
     AND p.state IN ('in_flight','unknown') AND p.lease_expires_at>${CLOCK})`;
-const ELIGIBLE = `u.mode='multipart' AND u.state<>'completed' AND u.upload_name IS NOT NULL
+export const MULTIPART_CLEANUP_ELIGIBLE = `u.mode='multipart' AND u.state<>'completed' AND u.upload_name IS NOT NULL
   AND u.cleanup_next_at<=${CLOCK}
   AND (u.cleanup_token IS NULL OR u.cleanup_lease_expires_at<=${CLOCK})
   AND (u.epoch<? OR u.expires_at<=${CLOCK} OR u.last_progress_at<=${CLOCK}-86400000
@@ -36,8 +37,13 @@ const ELIGIBLE = `u.mode='multipart' AND u.state<>'completed' AND u.upload_name 
   AND ${UNPUBLISHED}
   AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)
   AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)`;
+const ELIGIBLE = `${MULTIPART_CLEANUP_ELIGIBLE}
+  AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id)`;
+export const MULTIPART_INVENTORY_ELIGIBLE = `${MULTIPART_CLEANUP_ELIGIBLE}
+  AND u.multipart_cleanup_closed IS NULL
+  AND (u.r2_upload_id IS NULL OR EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id))`;
 
-function cleanupFence(row: Candidate, token: string, closed = false) {
+export function multipartCleanupFence(row: Candidate, token: string, closed = false) {
   return assertExists(
     `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id
     WHERE u.id=? AND u.blob_id=? AND u.r2_upload_id IS ?
@@ -51,19 +57,21 @@ function cleanupFence(row: Candidate, token: string, closed = false) {
     [row.id, row.blob_id, row.r2_upload_id, token],
   );
 }
+const cleanupFence = multipartCleanupFence;
 
-async function claim(
+export async function claimMultipartCleanup(
   db: D1Database,
   id: string,
   epoch: number,
   maintenance: boolean,
   token: string,
+  inventorySource?: string,
 ): Promise<Candidate | null> {
   try {
     await atomicBatch(db, [
       controlFence(epoch, maintenance),
       assertExists(
-        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.epoch<=? AND ${ELIGIBLE}`,
+        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.epoch<=? AND ${inventorySource === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
         [id, epoch, epoch],
       ),
       {
@@ -91,6 +99,16 @@ async function claim(
         values: [id],
       },
       assertOneChange,
+      ...(inventorySource === undefined
+        ? []
+        : [
+            {
+              sql: `INSERT INTO multipart_inventory_scans(upload_id,r2_key,source,epoch,round_id)
+          SELECT u.id,b.r2_key,?,?,? FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=?
+          ON CONFLICT(upload_id) DO NOTHING`,
+              values: [inventorySource, epoch, crypto.randomUUID(), id],
+            },
+          ]),
     ]);
   } catch {
     // The durable stop, not a replay of the original dispatch, recovers a lost claim reply.
@@ -138,7 +156,7 @@ export async function repairMultipartUploads(
   for (const { id } of rows.results) {
     if (Date.now() - started >= wall) break;
     const token = crypto.randomUUID();
-    const row = await claim(db, id, epoch, maintenance, token);
+    const row = await claimMultipartCleanup(db, id, epoch, maintenance, token);
     if (!row) continue;
     result.claimed++;
     const charge = async () => {
