@@ -63,10 +63,16 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
     !row ||
     !(
       (row.kind === "node.created" &&
-        ["node.create", "node.copy", "dav.mkcol", "dav.lock", "dav.put", "dav.copy"].includes(
-          row.op_kind,
-        )) ||
-      (row.kind === "node.updated" && row.op_kind === "dav.put") ||
+        [
+          "node.create",
+          "node.copy",
+          "dav.mkcol",
+          "dav.lock",
+          "dav.put",
+          "dav.copy",
+          "upload.complete",
+        ].includes(row.op_kind)) ||
+      (row.kind === "node.updated" && ["dav.put", "upload.complete"].includes(row.op_kind)) ||
       (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
       (row.kind === "node.restored" && row.op_kind === "node.restore") ||
       (row.kind === "node.purged" && row.op_kind === "node.purge") ||

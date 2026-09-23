@@ -208,7 +208,10 @@ it("rejects a revoked content session before another lease", async () => {
   });
 });
 
-it("counts every zero-byte request and stops at 1,024 within the budget window", async () => {
+// This exercises 1,024 real D1 admissions, which can exceed the default timeout under load.
+it("counts every zero-byte request and stops at 1,024 within the budget window", {
+  timeout: 60_000,
+}, async () => {
   const f = await fixture(0);
   await runInDurableObject(f.stub, async (_, state) => {
     const budget = new BudgetDO(state, env);

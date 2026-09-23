@@ -36,6 +36,8 @@ export interface Env {
   NODE_CURSOR_ACTIVE_KID?: string;
   APP_PASSWORD_PEPPERS?: string;
   APP_PASSWORD_ACTIVE_KID?: string;
+  UPLOAD_CAPABILITY_KEYS?: string;
+  UPLOAD_CAPABILITY_ACTIVE_KID?: string;
   PBKDF2_ITERATIONS: string;
   EPOCH_FLOOR?: string;
 }

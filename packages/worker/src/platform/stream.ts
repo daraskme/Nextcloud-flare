@@ -14,46 +14,47 @@ export async function consumeKnownLength<T>(
   source: ReadableStream<Uint8Array>,
   expectedBytes: number,
   consume: (body: ReadableStream<Uint8Array>) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<{ value: T; bytes: number; sha256: string }> {
   validateLength(expectedBytes);
   const fixed = new FixedLengthStream(expectedBytes);
   const writer = fixed.writable.getWriter();
   const digest = new crypto.DigestStream("SHA-256");
   const hashWriter = digest.getWriter();
-  const abort = new AbortController();
+  const reader = source.getReader();
+  let stopped = false;
+  let stopReason: unknown;
   let bytes = 0;
   const stop = (reason: unknown) => {
-    abort.abort(reason);
+    if (stopped) return;
+    stopped = true;
+    stopReason = reason;
+    void reader.cancel(reason).catch(() => {});
     // Conditional R2 rejection can return without locking or reading the stream.
     if (!fixed.readable.locked) void fixed.readable.cancel(reason).catch(() => {});
     void writer.abort(reason).catch(() => {});
     void hashWriter.abort(reason).catch(() => {});
   };
-  const producer = source
-    .pipeTo(
-      new WritableStream<Uint8Array>({
-        async write(chunk) {
-          bytes += chunk.byteLength;
-          if (bytes > expectedBytes) throw new RangeError("invalid_length");
-          for (let offset = 0; offset < chunk.byteLength; offset += LIMITS.streamChunkBytes) {
-            const part = chunk.subarray(offset, offset + LIMITS.streamChunkBytes);
-            await hashWriter.write(part);
-            await writer.write(part);
-          }
-        },
-        async close() {
-          if (bytes !== expectedBytes) throw new RangeError("invalid_length");
-          await writer.close();
-          await hashWriter.close();
-        },
-        abort: stop,
-      }),
-      { signal: abort.signal },
-    )
-    .catch((error) => {
-      stop(error);
-      throw error;
-    });
+  const producer = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (stopped) throw stopReason;
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > expectedBytes) throw new RangeError("invalid_length");
+      for (let offset = 0; offset < value.byteLength; offset += LIMITS.streamChunkBytes) {
+        const part = value.subarray(offset, offset + LIMITS.streamChunkBytes);
+        await hashWriter.write(part);
+        await writer.write(part);
+      }
+    }
+    if (bytes !== expectedBytes) throw new RangeError("invalid_length");
+    await writer.close();
+    await hashWriter.close();
+  })().catch((error) => {
+    stop(error);
+    throw error;
+  });
   const consumer = Promise.resolve()
     .then(() => consume(fixed.readable))
     .catch((error) => {
@@ -61,7 +62,13 @@ export async function consumeKnownLength<T>(
       throw error;
     });
   // Attach all rejection handlers immediately, including the digest's abort rejection.
-  const results = await Promise.allSettled([producer, consumer, digest.digest]);
+  const settled = Promise.allSettled([producer, consumer, digest.digest]);
+  const onAbort = () => stop(signal?.reason);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  const results = await settled;
+  signal?.removeEventListener("abort", onAbort);
+  reader.releaseLock();
   writer.releaseLock();
   hashWriter.releaseLock();
   const failure = results.find((result) => result.status === "rejected");

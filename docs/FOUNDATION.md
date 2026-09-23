@@ -63,6 +63,16 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 outbox の復旧監査は両 kind の元 operation 種別、保存済み operand/result、step 1 の node ID が通知 payload に一致することも確認する。不整合な通知は監査を失敗させる。
 credential の復旧監査では、有効な app password と service の scope root も同じ space root までの生存・所有者・深さを確認する。祖先が trash の場合は資格情報が残っていても監査を失敗させる。
 
+## Private単一upload
+
+`services/uploads/` と `api/uploads.ts` は Access user の `POST /api/v1/uploads`、`PUT /:id/content`、`POST /:id/complete`、`GET/DELETE /:id` を接続する。作成はcredentialとIdempotency-Keyから安定IDを作り、current node authority、quota予約、staging blob、immutable upload identityを同じD1 batchで保存する。migration `0016` は名前・上書きrevision・request digest・capability kid・単一write attempt/lease・completion operationを追加する。公開共有とmultipartのHTTPは未接続。
+
+専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` のHMAC ringを使い、upload ID、credential、epoch、期限を署名する。DBにはcapabilityのhashだけを保存し、作成応答喪失時は保存済みkidで同じtokenを再発行する。旧kidは有効uploadがなくなるまで保持する（現在のsingleは24時間）。JSON mutationはCSRF、binaryはcurrent Access・capability・exact Origin、上書きはstrong If-Matchを要求する。
+
+単一PUTは95,000,000 byte以下の既知長。D1が`created→receiving`と1回限りのattempt/15分leaseを確定し、その応答を受けた呼出しだけがimmutable keyへR2 PUTを開始する。claimの応答喪失では送信せず、R2 PUTの応答喪失では同じobjectのGET・metadata・size・SHA-256照合で回収する。再送のPUTは行わない。sourceを最大64 KiBずつdigestとFixedLengthStreamへ直列供給し、lease signalでreaderと両sinkを中止する。観測した物理bytesは確定失敗でも計上し、R2の不存在を確認するまで戻さない。
+
+completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/physical/hashを検証し、新規10 step/上書き8 stepでnode/version・検索・quota・upload terminal・activity/outboxを一括確定する。DB応答喪失はoperation lookupへ収束し、unknown時は補償しない。既知failedの予約解放は再実行可能。abortは公開を止めorphan/cleanup intentを保存する。未送信の予約だけを解放し、write attemptがある場合は24時間の期限後にR2を照合するまで予約を保持する。abortとclaimの競合は同じD1 batch内のattempt有無で判断する。**期限切れ・orphanのR2 cleanupとCron repairは未実装**で、遅延PUTを見落としたphysical減算をしない。ControlDO admissionは閉じたまま。
+
 ## UploadDO multipart台帳
 
 `do/uploadPlan.ts`は1 byte〜500 GiB、既定64 MiB・非最終8〜90 MiB・最大10,000 partの固定計画を作る。0 byteはsingle upload用でありmultipartでは拒否する。

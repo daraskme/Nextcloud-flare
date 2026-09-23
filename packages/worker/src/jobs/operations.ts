@@ -178,8 +178,12 @@ export function validateClaimAuthorization(
     sourceParentId?: unknown;
     nodeId?: unknown;
   };
-  const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put"].includes(intent.kind);
-  const contentWrite = intent.kind === "dav.put" && authorized.operation === "node.content.write";
+  const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put", "upload.complete"].includes(
+    intent.kind,
+  );
+  const contentWrite =
+    ["dav.put", "upload.complete"].includes(intent.kind) &&
+    authorized.operation === "node.content.write";
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
   const move = ["node.move", "dav.move"].includes(intent.kind);
   const copy = ["node.copy", "dav.copy"].includes(intent.kind);
@@ -328,6 +332,7 @@ export async function lookupOperation(
       row.kind !== "dav.mkcol" &&
       row.kind !== "dav.lock" &&
       row.kind !== "dav.put" &&
+      row.kind !== "upload.complete" &&
       row.kind !== "dav.delete" &&
       row.kind !== "dav.copy" &&
       row.kind !== "dav.move" &&
@@ -343,12 +348,33 @@ export async function lookupOperation(
   try {
     const operands = JSON.parse(row.operands_json) as {
       parentId?: unknown;
+      uploadId?: unknown;
       overwriteTargetId?: unknown;
       sourceNodeId?: unknown;
       sourceParentId?: unknown;
       nodeId?: unknown;
     };
     const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
+    if (row.kind === "upload.complete") {
+      if (typeof operands.uploadId !== "string" || typeof operands.parentId !== "string")
+        return null;
+      const bound = await primary(db)
+        .prepare(`SELECT 1 FROM uploads WHERE id=? AND completion_op_id=?
+        AND credential_id=? AND epoch=? AND space_id=? AND parent_id=? AND target_id IS ?
+        AND (?<>'committed' OR state='completed')`)
+        .bind(
+          operands.uploadId,
+          row.op_id,
+          row.credential_id,
+          row.epoch,
+          row.space_id,
+          operands.parentId,
+          typeof operands.nodeId === "string" ? operands.nodeId : null,
+          row.state,
+        )
+        .first();
+      if (!bound) return null;
+    }
     if (row.kind === "dav.copy" || row.kind === "node.copy") {
       if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
         return null;
@@ -416,7 +442,7 @@ export async function lookupOperation(
         nodeId: operands.parentId,
         spaceId: row.space_id,
       });
-    } else if (row.kind === "dav.put") {
+    } else if (row.kind === "dav.put" || row.kind === "upload.complete") {
       if (typeof operands.nodeId === "string") {
         const authorized = await authorizeNode(db, principal, {
           operation: "node.content.write",
@@ -449,7 +475,7 @@ export async function lookupOperation(
         ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
         : null;
     const expectedStatus =
-      row.kind === "dav.put"
+      row.kind === "dav.put" || row.kind === "upload.complete"
         ? typeof operands.nodeId === "string"
           ? 204
           : 201

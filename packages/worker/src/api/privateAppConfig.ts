@@ -6,6 +6,7 @@ import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { AccessJwks } from "../auth/jwks";
 import { ListCursorTokens } from "../auth/listCursor";
 import { NodeCursorTokens } from "../auth/nodeCursor";
+import { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 import type { PrivateAppDependencies } from "./privateApp";
 
@@ -75,6 +76,15 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
           JSON.parse(env.APP_PASSWORD_PEPPERS),
         )
       : undefined;
+  const uploadCapabilities =
+    env.UPLOAD_CAPABILITY_KEYS && env.UPLOAD_CAPABILITY_ACTIVE_KID
+      ? new UploadCapabilities(
+          await contentKeyRing(
+            env.UPLOAD_CAPABILITY_ACTIVE_KID,
+            JSON.parse(env.UPLOAD_CAPABILITY_KEYS),
+          ),
+        )
+      : undefined;
   return {
     verifier: new AccessVerifier(jwks, env.ACCESS_USER_AUDIENCE, env.ACCESS_SERVICE_AUDIENCE),
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
@@ -82,6 +92,7 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { listCursors: new ListCursorTokens(cursorRing) } : {}),
     ...(appPasswordPepper ? { appPasswordPepper } : {}),
+    ...(uploadCapabilities ? { uploadCapabilities } : {}),
     bootstrap: bootstrapPolicy(env),
   };
 }

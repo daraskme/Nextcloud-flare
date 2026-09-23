@@ -7,6 +7,7 @@ import type { CsrfTokens } from "../auth/csrf";
 import type { ListCursorTokens } from "../auth/listCursor";
 import { loginAccessUser } from "../auth/login";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
+import type { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
@@ -14,6 +15,7 @@ import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleTrashHttp, trashRoute } from "./trash";
+import { handleUploadHttp, uploadRoute } from "./uploads";
 
 export interface PrivateAppDependencies {
   readonly verifier: AccessVerifier;
@@ -23,6 +25,7 @@ export interface PrivateAppDependencies {
   readonly cursors?: NodeCursorTokens;
   readonly listCursors?: ListCursorTokens;
   readonly appPasswordPepper?: AppPasswordPepperRing;
+  readonly uploadCapabilities?: UploadCapabilities;
 }
 
 export function privateAppRoute(request: Request): boolean {
@@ -33,6 +36,7 @@ export function privateAppRoute(request: Request): boolean {
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
+    uploadRoute(request) ||
     (request.method === "POST" &&
       (url.pathname === "/api/v1/csrf" ||
         url.pathname === "/api/v1/content-session" ||
@@ -62,6 +66,7 @@ export async function handlePrivateAppHttp(
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
+  const upload = uploadRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
     /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && request.method === "DELETE";
@@ -73,6 +78,7 @@ export async function handlePrivateAppHttp(
     !trashRead &&
     !nodeMutation &&
     !appPassword &&
+    !upload &&
     !ticketIssue &&
     !ticketCancel
   )
@@ -107,6 +113,19 @@ export async function handlePrivateAppHttp(
     }
   }
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
+  if (upload)
+    return handleUploadHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+      dependencies.uploadCapabilities,
+    );
   if (appPassword)
     return handleAppPasswordHttp(
       request,

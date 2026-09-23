@@ -106,6 +106,21 @@ it("cancels the source when the consumer disconnects", async () => {
   expect(source.produced()).toBeLessThan(95_000_000);
 });
 
+it("cancels a stalled upload source and consumer when its lease signal expires", async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const pending = consumeKnownLength(body, 3, drain, controller.signal);
+  const assertion = expect(pending).rejects.toThrow(/lease_expired/);
+  controller.abort(new Error("lease_expired"));
+  await assertion;
+  expect(cancelled).toBe(true);
+});
+
 it("propagates producer failure to the consumer", async () => {
   const source = new ReadableStream<Uint8Array>({
     pull(controller) {

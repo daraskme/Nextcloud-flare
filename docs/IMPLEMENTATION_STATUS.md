@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 3 multipart台帳 | UploadDOの内部SQLiteにattempt/leaseと独立counterを永続化。固定分割、4並列/3試行、unknown→aborting、idle/deadline、旧epoch失敗、complete/abort排他、200件page | Node/workerd検証。D1認可/予約/mirror、R2 I/O/cleanup、singleとHTTPは未接続。Phase 3完了ではない |
+| 3 private単一upload | migration `0016`、専用HMAC capability、D1予約、1回限りR2 PUT/SHA-256、応答喪失GET照合、原子的新規/上書きcomplete、status/abort HTTP | 実D1/R2/LockDO、10 step rollback、同時送信、失効/応答喪失、CSRF/Origin、stream deadlineを検証。期限切れ/orphan cleanup、公開共有、UIは未実装 |
+| 3 multipart台帳 | UploadDOの内部SQLiteにattempt/leaseと独立counterを永続化。固定分割、4並列/3試行、unknown→aborting、idle/deadline、旧epoch失敗、complete/abort排他、200件page | Node/workerd検証。multipartのD1認可/予約/mirror、R2 I/O/cleanupとHTTPは未接続。Phase 3完了ではない |
 | 0.1 toolchain | Node/pnpm/TS/Wrangler/Vitest/fflate を exact 固定、pnpm lockfile、公開日証拠 `toolchain.json`、CI | ローカル実装済み |
 | 0.1 binding | 全 Env binding、SQLite DO の eviction 後の永続化、未実装 route は fail closed、未処理 Queue は retry | ローカル実装済み |
 | 0.1 KDF/Images | PBKDF2-SHA256 100,000/16B/32B を OpenSSL の vector と照合。PNG→WebP。20,000,000B/寸法/40MP のアプリ入力境界 | ローカル実装済み、実サービス gate は未完了 |
@@ -36,7 +37,7 @@
 | 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。admission/復旧 verifier/再開と実 GC lease drain は未完了 |
 | 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag と list 全件の D1 blob/derivative/archive 照合、outbox provenance/lease、share 予約量・root・version、credential の参照先種別・有効 scope root と4種の参照元 registry 行を各最大20件ずつ検証。FTS5 `integrity-check` (`rank=1`) と予約・未完了 upload・旧 outbox 等の最終 D1 fence を追加。完了後の再照会でも最終 fence を再確認し、失敗時は監査を先頭に戻す。停止中の FTS `rebuild`、旧 epoch の upload に紐づかない予約の bounded release と、旧 epoch `node.created` / `node.renamed` の bounded failed 収束は監査を初期化。ControlDO SQLite の epoch/token/R2 cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 診断・限定修復。credential/share/outbox の全意味検証、他 event kind の cleanup、未知 R2 object の repair、incomplete multipart、Upload/GC/Queue drain と再開 gate は未完了 |
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
-| R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB制約、同期purge、R2削除GCを実証。uploadサービスは未実装 |
+| R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB制約、同期purge、R2削除GC、private単一uploadを実証。期限切れ/orphan cleanupとmultipart接続は未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS、file GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、原子的 PROPPATCH、95 MBまでのstreaming PUT、原子的COPY/MOVEを接続。remote pepper secret 設定は未接続 |
 | 7 DAV conditions | RFC 4918 `If` の tagged/untagged、condition AND、全 list production OR、`Not`、state token、strong/weak ETag と独立 token submission、単一 `Lock-Token` を bounded parser/evaluator に実装 | 8 KiB、resource tag/list 各16、全64・各list16 condition、token/ETag/URI長を unit fixture で検証。same-origin current D1 path/ancestor lock/ETag stateを評価し、提出tokenをMKCOL/PROPPATCH/PUTのLockDO/D1 assertionへ接続。不一致412、malformed 400、条件が常真でも必要token未提出は423。`Lock-Token` はUNLOCK以外で400 |
@@ -82,7 +83,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## M/U/I/R と復旧
 
-- **M**: `0001`〜`0015` を追加し、隔離 D1 と SQLite へ適用して56通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claimを確認。リモート DB は未変更。probe schema は別 test file に隔離。
+- **M**: `0001`〜`0016` を追加し、隔離 D1 と SQLite へ適用して56通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transferを確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
 - **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の453 tests と前回の450/448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
@@ -90,6 +91,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 242 + workerd 390 = **632 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0016`を追加し、private単一uploadのD1予約、HMAC capability、1回限りR2 PUT/SHA-256、GET照合、原子的complete、status/abortを接続。0 byte、上書き旧版保持、全10必須step rollback、R2/DB応答喪失、同時送信、失効、CSRF/Origin/If-Match、鍵rotation、stalled sourceのlease中止を検証。single期限はR6に従い24時間とし、abortとclaimの競合・遅延PUTでは予約とphysical計上を維持する。既存1,024回D1 budget試験が30秒を超えたため、その試験だけ60秒へ調整後、全checkを再実行して成功。虚偽sizeのR2試験ではworkerdが意図した切断診断を出す。期限切れ/orphan cleanup、multipart接続、公開共有、UI、実ControlDO admissionとstagingは未完了。
 - 2026-09-23、ユーザー指定のNixOS workspace `/home/hiroshi/ドキュメント/Nextcloud-flare`へGit履歴・依存・local stateを移し、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 235 + workerd 361 = **596 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。multipart計画17件と台帳18件を追加し、eviction、claim応答再送、4並列、3試行、unknown/lease expiryと遅延応答、idle/deadline、旧epoch、complete/abort排他、SQL rollback、200行page、alarmを検証。D1 schema変更なし。台帳のfixture試験であり、D1/R2接続済みuploadや実Cloudflare試験を意味しない。
 - 2026-09-23、purge blobのbounded GCをCronへ接続。7日猶予後、epoch/maintenance/gc pause/ref count/複数pin/materialized fenceをD1で再検査し、blob/candidateを同時に不可逆`deleting`へ進める。claim leaseで競合と再試行を直列化し、R2 delete応答喪失をheadで収束、不在確認後だけ`deleted`とphysical bytes減算を同時確定する。実R2、複数pin、pause、応答喪失、期限切れlease再取得を検証。Node 218 + workerd 343 = **561 tests**、lint/typecheck/contracts/config/schema generator、Web build、Wrangler dry-runを再検証。
 - 2026-09-23、`POST /api/v1/trash/:opId/purge`をCSRF/Idempotency-Key、所有者trash membership、space root authority、LockDO permitへ接続。migration `0014`のoperation束縛node/blob manifestを作り、credential/share/upload/media/state/search/version/trash membershipをFK順、nodeをdepth降順に削除する。別trash子をNULL親へ退避し、blob ref/quota trigger後のGC candidate、`node.purged` Outbox、復旧監査、terminalを同時確定。REST再送と深いsubtreeを実D1/DOで検証。Node 218 + workerd 338 = **556 tests**、lint/typecheck/contracts/config/schema generator、Web build、Wrangler dry-runを再検証。
