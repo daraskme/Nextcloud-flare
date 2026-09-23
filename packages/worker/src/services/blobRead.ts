@@ -10,6 +10,7 @@ import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
 import { parseRange } from "../platform/range";
+import { streamLeasedContent } from "./contentStream";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
 
 /** A current D1 node/blob plan; callers must also check purpose, content session and budget. */
@@ -237,6 +238,7 @@ export async function streamBudgetedContentBlob(
   purpose: ContentPurpose,
   request: Request,
 ): Promise<Response> {
+  request.signal.throwIfAborted();
   const plan = await prepareCookieBlobRead(
     db,
     bucket,
@@ -249,62 +251,21 @@ export async function streamBudgetedContentBlob(
   const bytes = reservedResponseBytes(plan.blob, request);
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
-  await budget.reserve({
+  request.signal.throwIfAborted();
+  const lease = await budget.reserve({
     budgetId: plan.budgetId,
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
     bytes,
   });
-  let response: Response;
-  try {
-    response = await streamImmutableBlob(bucket, plan.blob, request);
-  } catch (error) {
-    await budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes: 0 });
-    throw error;
-  }
-  if (!response.body) {
-    await budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes: 0 });
-    return response;
-  }
-  const reader = response.body.getReader();
-  let delivered = 0;
-  let terminal = false;
-  const settle = async (known: boolean) => {
-    if (terminal) return;
-    terminal = true;
-    await budget.settle({
-      budgetId: plan.budgetId,
-      requestId,
-      deliveredBytes: known ? delivered : null,
-    });
-  };
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const next = await reader.read();
-        if (next.done) {
-          if (delivered !== bytes) throw new Error("blob_stream_length_mismatch");
-          await settle(true);
-          controller.close();
-          return;
-        }
-        if (delivered + next.value.byteLength > bytes)
-          throw new Error("blob_stream_length_mismatch");
-        delivered += next.value.byteLength;
-        controller.enqueue(next.value);
-      } catch (error) {
-        await reader.cancel(error).catch(() => undefined);
-        await settle(false).catch(() => undefined);
-        controller.error(error);
-      }
-    },
-    async cancel(reason) {
-      await reader.cancel(reason).catch(() => undefined);
-      await settle(false);
-    },
-  });
-  return new Response(body, { status: response.status, headers: response.headers });
+  return streamLeasedContent(
+    (signal, deadline) => streamImmutableBlob(bucket, plan.blob, request, { signal, deadline }),
+    bytes,
+    lease.expiresAt,
+    request.signal,
+    (deliveredBytes) => budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes }),
+  );
 }
 
 async function resolveBlobRead(
@@ -396,13 +357,25 @@ export async function streamImmutableBlob(
   bucket: R2Bucket,
   plan: BlobReadPlan,
   request: Request,
-  options: { readonly etag?: string } = {},
+  options: {
+    readonly etag?: string;
+    readonly signal?: AbortSignal;
+    readonly deadline?: number;
+  } = {},
 ): Promise<Response> {
+  const signal = options.signal ?? request.signal;
+  const active = () => {
+    signal.throwIfAborted();
+    if (options.deadline !== undefined && Date.now() >= options.deadline)
+      throw new Error("content_lease_expired");
+  };
+  active();
   validatePlan(plan);
   if (request.method !== "GET" && request.method !== "HEAD") throw new Error("invalid_blob_read");
   const etag = options.etag ?? plan.contentEtag;
   if (!/^"[\x21\x23-\x7e]{1,512}"$/.test(etag)) throw new Error("invalid_blob_read");
   const object = await bucket.head(plan.key);
+  active();
   if (!object || object.size !== plan.size || object.etag !== plan.r2Etag)
     throw new Error("blob_storage_mismatch");
   const headers = responseHeaders(plan, etag);
@@ -425,8 +398,16 @@ export async function streamImmutableBlob(
     plan.key,
     range.kind === "range" ? { range: { offset: range.offset, length: range.length } } : undefined,
   );
-  if (!body || body.etag !== plan.r2Etag || body.size !== plan.size)
+  try {
+    active();
+  } catch (error) {
+    void body?.body.cancel(error).catch(() => undefined);
+    throw error;
+  }
+  if (!body || body.etag !== plan.r2Etag || body.size !== plan.size) {
+    void body?.body.cancel().catch(() => undefined);
     throw new Error("blob_storage_mismatch");
+  }
   if (range.kind === "range") {
     if (
       !body.range ||
@@ -434,8 +415,10 @@ export async function streamImmutableBlob(
       !("length" in body.range) ||
       body.range.offset !== range.offset ||
       body.range.length !== range.length
-    )
+    ) {
+      void body.body.cancel().catch(() => undefined);
       throw new Error("blob_range_mismatch");
+    }
     headers.set(
       "Content-Range",
       `bytes ${range.offset}-${range.offset + range.length - 1}/${plan.size}`,

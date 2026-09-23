@@ -173,6 +173,20 @@ export class BudgetDO extends DurableObject<Env> {
     );
   }
 
+  #replay(request: BudgetReserveRequest, existing: LeaseRow): BudgetLease {
+    if (
+      existing.session_id !== request.sessionId ||
+      existing.reserved_bytes !== request.bytes ||
+      existing.state !== "active"
+    )
+      throw new Error("budget_request_conflict");
+    return Object.freeze({
+      requestId: existing.request_id,
+      expiresAt: existing.expires_at,
+      reservedBytes: existing.reserved_bytes,
+    });
+  }
+
   async #alarmForActive() {
     const earliest = this.ctx.storage.sql
       .exec<{ at: number | null }>(
@@ -224,6 +238,23 @@ export class BudgetDO extends DurableObject<Env> {
       if (state && (state.budget_id !== request.budgetId || state.epoch > request.epoch))
         throw new Error("budget_epoch_conflict");
       if (!state || state.epoch < request.epoch || state.expires_at <= now) {
+        if (state?.epoch === request.epoch) {
+          const previous = this.#lease(request.requestId);
+          if (previous?.state === "active" && previous.expires_at > now)
+            return this.#replay(request, previous);
+        }
+        // Older instances could grant a lease beyond this byte window. Keep that
+        // live ledger available for settlement before renewing the same epoch.
+        if (
+          state?.epoch === request.epoch &&
+          this.ctx.storage.sql
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) AS n FROM budget_leases WHERE state='active' AND expires_at>?",
+              now,
+            )
+            .one().n > 0
+        )
+          throw new Error("budget_exceeded");
         // A short ticket lifetime may end before the ten-minute rate window.
         // Renewing the byte allowance must not reset that window's request count.
         const previousRate =
@@ -258,17 +289,7 @@ export class BudgetDO extends DurableObject<Env> {
       this.#sweep(now);
       const existing = this.#lease(request.requestId);
       if (existing) {
-        if (
-          existing.session_id !== request.sessionId ||
-          existing.reserved_bytes !== request.bytes ||
-          existing.state !== "active"
-        )
-          throw new Error("budget_request_conflict");
-        return Object.freeze({
-          requestId: existing.request_id,
-          expiresAt: existing.expires_at,
-          reservedBytes: existing.reserved_bytes,
-        });
+        return this.#replay(request, existing);
       }
       const active = this.ctx.storage.sql
         .exec<{ n: number }>("SELECT COUNT(*) AS n FROM budget_leases WHERE state='active'")
@@ -289,6 +310,7 @@ export class BudgetDO extends DurableObject<Env> {
         throw new Error("budget_exceeded");
       const expiresAt = Math.min(
         now + LEASE_MS,
+        state.expires_at,
         authority.sessionExpiresAt,
         authority.budgetExpiresAt,
       );

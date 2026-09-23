@@ -91,6 +91,8 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
+配信leaseの期限をDOのbyte期間内へ制限し、旧実装の有効なleaseは精算まで保持する処理を追加。`/c`も返された期限をR2 HEAD/GETとbody終了まで引き継ぎ、停止した読み込み・未読応答・取消しを扱う。精算は1回、結果不明は全額保持。実D1の期限更新で有効なleaseが消える問題と、修正前の配信関数が期限後の3 byteを返す問題を再現した。詳細は[CONTENT_LEASES](CONTENT_LEASES.md)。実HTTP切断伝播、長時間downloadのRange/ticket更新UI、全media/public配信経路と実環境gateは残る。
+
 作成応答喪失と対象更新が重なる場合のreceipt回収を修正した。同じcreate key/bodyへの再送は現在のnode権限・credential・epoch・owner・parentを原子的に検査し、元のID/capabilityを返す。新規予約・R2初期化・本文・確定の旧revision検査は維持し、multipart初期化が対象変更で止まれば202で中止可能なreceiptを返す。実HTTPの競合/予約不変/失効境界5件、browserの単一・分割の応答喪失/reload/中止2件を追加。対象の移動・削除・失効・期限切れは引き続き制限される。詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)、全結果はIMPLEMENTATION_STATUS。
 
 前回の追加は[確認付き上書き](UPLOAD_OVERWRITE.md)と[異なる配信対象のbudget台帳](BUDGET_ALLOWANCE.md)。上書きは対象node/revision/blobと元file名を保持し、全partのIf-Match、競合停止、完了応答喪失からのreceipt照合へ接続。配信budgetは認可manifestのpurpose/blobを重複排除し、対象追加でも使用量・回数・期限をリセットしない。同期transaction、1,024対象/lease・1 MiB上限、旧DO保存領域の期限までの制限を文書化した。実環境・共有/検索/media・全体admission等は引き続き未完了。全検証結果はIMPLEMENTATION_STATUSを参照。

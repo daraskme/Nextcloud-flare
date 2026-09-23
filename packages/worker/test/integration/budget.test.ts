@@ -1,8 +1,10 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, expect, it } from "vitest";
+import { authorizeNode } from "../../src/auth/authorize";
 import { atomicBatch } from "../../src/db/primary";
 import { BudgetDO } from "../../src/do/BudgetDO";
+import { ensureContentBudget } from "../../src/services/contentBudget";
 import { stageTargetManifest, type TargetEntry } from "../../src/services/targetManifest";
 import { foundationFixture } from "../fixtures/foundation";
 
@@ -222,7 +224,8 @@ it("preserves legacy counters until expiry instead of granting the original targ
   await runInDurableObject(f.stub, async (_, state) => {
     const budget = new BudgetDO(state, env);
     const base = { budgetId: f.ids.budget, sessionId: f.ids.content, epoch: 1 };
-    await budget.reserve({ ...base, requestId: crypto.randomUUID(), bytes: 9 });
+    const legacyRequest = crypto.randomUUID();
+    const originalLease = await budget.reserve({ ...base, requestId: legacyRequest, bytes: 9 });
     state.storage.sql.exec("DELETE FROM budget_allowance_window");
     state.storage.sql.exec("DELETE FROM budget_targets");
     await expect(
@@ -238,6 +241,20 @@ it("preserves legacy counters until expiry instead of granting the original targ
     ).rejects.toThrow("budget_exceeded");
     expect(budget.status()).toMatchObject({ byteLimit: 9, bytesCharged: 9, requests: 1 });
     state.storage.sql.exec("UPDATE budget_state SET expires_at=1");
+    // A pre-upgrade lease may still be valid after that old byte window ended.
+    expect(await budget.reserve({ ...base, requestId: legacyRequest, bytes: 9 })).toEqual(
+      originalLease,
+    );
+    await expect(
+      budget.reserve({
+        ...base,
+        sessionId: larger.session,
+        requestId: crypto.randomUUID(),
+        bytes: 7,
+      }),
+    ).rejects.toThrow("budget_exceeded");
+    expect(budget.status()).toMatchObject({ active: 1, bytesCharged: 9, requests: 1 });
+    await budget.settle({ budgetId: base.budgetId, requestId: legacyRequest, deliveredBytes: 9 });
     await budget.reserve({
       ...base,
       sessionId: larger.session,
@@ -579,4 +596,79 @@ it("counts distinct requests issued in the same millisecond", async () => {
       Date.now = original;
     }
   });
+});
+
+it("retains an outstanding content lease across an earlier budget lifetime boundary", async () => {
+  const f = await fixture(100);
+  const firstExpiry = Date.now() + 4000;
+  await atomicBatch(env.DB, [
+    { sql: "UPDATE budgets SET expires_at=? WHERE id=?", values: [firstExpiry, f.ids.budget] },
+    {
+      sql: "UPDATE content_sessions SET expires_at=? WHERE id=?",
+      values: [firstExpiry, f.ids.content],
+    },
+    { sql: "UPDATE target_sets SET expires_at=? WHERE id=?", values: [firstExpiry, f.ids.target] },
+    { sql: "UPDATE tickets SET expires_at=? WHERE id=?", values: [firstExpiry, f.ids.ticket] },
+  ]);
+  const result = await runInDurableObject(f.stub, async (_, state) => {
+    const budget = new BudgetDO(state, env);
+    const base = { budgetId: f.ids.budget, sessionId: f.ids.content, epoch: 1, bytes: 1 };
+    const first = await budget.reserve({ ...base, requestId: crypto.randomUUID() });
+    const principal = {
+      kind: "user" as const,
+      user_id: f.f.ids.user,
+      credential_id: f.f.ids.credential,
+      epoch: 1,
+    };
+    const authority = await authorizeNode(env.DB, principal, {
+      operation: "node.read",
+      spaceId: f.f.ids.space,
+      nodeId: f.f.ids.file,
+    });
+    const extendedExpiry = Date.now() + 120_000;
+    const renewed = await ensureContentBudget(env.DB, authority, extendedExpiry);
+    const next = await anotherSession(f, [target(f, 100)]);
+    await atomicBatch(env.DB, [
+      {
+        sql: "UPDATE content_sessions SET expires_at=? WHERE id=?",
+        values: [extendedExpiry, next.session],
+      },
+      {
+        sql: "UPDATE target_sets SET expires_at=? WHERE id=?",
+        values: [extendedExpiry, next.manifest.id],
+      },
+      { sql: "UPDATE tickets SET expires_at=? WHERE id=?", values: [extendedExpiry, next.ticket] },
+    ]);
+    const second = await budget.reserve({
+      ...base,
+      sessionId: next.session,
+      requestId: crypto.randomUUID(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, firstExpiry - Date.now() + 50)));
+    const secondStillValid = second.expiresAt > Date.now();
+    await budget.reserve({ ...base, sessionId: next.session, requestId: crypto.randomUUID() });
+    let settlement: string;
+    try {
+      await budget.settle({
+        budgetId: base.budgetId,
+        requestId: second.requestId,
+        deliveredBytes: 1,
+      });
+      settlement = "ok";
+    } catch (error) {
+      settlement = error instanceof Error ? error.message : String(error);
+    }
+    return {
+      firstExpiry: first.expiresAt,
+      secondExpiry: second.expiresAt,
+      secondStillValid,
+      settlement,
+      status: budget.status(),
+      sameBudget: renewed.id === base.budgetId,
+    };
+  });
+  expect(result.sameBudget).toBe(true);
+  // A lease may end at the old boundary, or remain tracked until its own deadline.
+  // Dropping a still-valid request makes its settlement impossible and frees concurrency early.
+  expect(result.secondStillValid ? result.settlement : "ok").toBe("ok");
 });

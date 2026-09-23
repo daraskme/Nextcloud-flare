@@ -14,6 +14,8 @@ manifestはD1のID/ref/hash/total bytesに照合し、R2から最大1 MiB・1,00
 
 ## 原子性と上限
 
+会計期間とlease期限の整合性、R2読み込みからbody終了までの期限伝播は[CONTENT_LEASES](CONTENT_LEASES.md)を参照。ticket更新後も、新しいleaseは保存済みbyte期間内に収める。旧実装の有効なleaseは、精算/期限切れまで台帳を保持する。
+
 DOの同期transactionに、必要なら期間初期化、対象追加、expired lease整理、同時数/回数/byte検査、新leaseと使用量更新をまとめる。後段で拒否した要求は対象追加もrollbackする。D1/R2 I/Oはこのtransactionの外側で行う。
 
 - request: 1,024回/10分、同時active lease: 8。短いticketに由来するbyte期限が先に切れても、同じepochの10分windowとrequest数を保持する。

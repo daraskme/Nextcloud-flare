@@ -22,6 +22,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 | [CONTROL_ADMISSION](docs/CONTROL_ADMISSION.md) | 停止・全監査・受付とGCの段階再開 |
 | [UPLOAD_OVERWRITE](docs/UPLOAD_OVERWRITE.md) | 確認付き上書き・競合拒否・元fileからの再開 |
 | [BUDGET_ALLOWANCE](docs/BUDGET_ALLOWANCE.md) | 配信対象の重複排除と共有budgetの使用量保持 |
+| [CONTENT_LEASES](docs/CONTENT_LEASES.md) | 配信期限の伝播・取消し・旧leaseの保持 |
 | [EMPTY_HTTP_BODY](docs/EMPTY_HTTP_BODY.md) | 本文なしHTTP操作の判定・期限・実通信試験 |
 | [KDF_ADMISSION](docs/KDF_ADMISSION.md) | app password計算のisolate内実行制限と残る全体制御 |
 | [RESTORE_GC](docs/RESTORE_GC.md) | GC稼働中のごみ箱復元・期限付き停止と解放 |

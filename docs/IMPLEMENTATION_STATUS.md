@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 2/3 配信leaseの期限 | DOのbyte期間内のlease、旧有効leaseの保持、R2 HEAD/GETと応答bodyへの期限伝播、取消し・1回限りの精算 | Node追加20件、workerd追加6件と既存境界。最終結果は実行記録。[CONTENT_LEASES](CONTENT_LEASES.md) |
 | 2/3 作成receiptの回収 | 応答喪失後に対象revisionが進んでも同じkey/ID/capabilityを再取得し、中止できる。旧本文/確定は拒否し、二重予約/R2再初期化をしない | workerd HTTP追加5件、browser追加2件。最終結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) |
 | 2/3 上書きupload UI・配信対象budget | 確認付き上書き、target snapshot/元file名保持、single/全part If-Match、競合拒否、完了応答喪失/分割再開。BudgetDOの重複しない対象台帳と使用量保持、CORS error | browser追加3件、workerd追加6件と既存境界を検証。全check結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) / [BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md) |
 | 1/2 本文なしHTTP操作 | DAV MKCOLの415誤判定を修正。COPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutに5秒・16read上限の共通EOF検査 | Node境界13件、workerdの待機中失効/停止2件を追加。独立HTTPのDAV操作・ticket発行/交換/取消しを検証。全結果は実行記録。[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) |
@@ -108,6 +109,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、配信leaseの期限をDOの保存済みbyte期間内へ制限し、旧実装のまだ有効なleaseは精算/期限切れまで保持する処理を追加。実D1のticket期限更新後に有効なleaseが消える`budget_lease_missing`と、修正前の配信関数が期限後の3 byteを返す問題を独立試験で再現。`/c`のR2 HEAD/GET・body・最終精算に期限を伝播し、未読/停止応答、遅延R2、request abort、timerのcallback前に時計が進む境界を処理する。精算は1回とし、結果不明は予約全額を保持。Node追加20件、workerd追加6件。関連結合29件成功（31.16秒）、新規配信5件成功（18.22秒）。最終`pnpm check`はNode376 + workerd777 = **1,153 tests**（22+52 files）、workerd361.14秒。lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。別途browser **16 tests**成功（2.1分）、合計**1,169件**。D1 schema/migration、依存、UI実装は変更していない。実HTTP切断伝播、長時間downloadのRange/ticket更新UI、全media/public配信経路、全体admission・共有/検索/media・復旧/実環境のgateは残る。詳細は[CONTENT_LEASES](CONTENT_LEASES.md)。
 
 - 2026-09-24、上書き作成応答の喪失後に対象revisionが進むと元のreceiptを回収できない問題を修正。実APIの単一・分割2件で修正前の409を確認し、同じkey/bodyへの再送では現行権限を原子的に再検証して元のID/capabilityを返す。予約を加算せず、旧revisionの新規予約・R2初期化・本文・確定は引き続き拒否する。multipart初期化が対象変更で止まれば202 receiptから中止できる。workerd HTTP追加5件で実上書き・quota不変・R2再初期化なし・中止後の新内容保持、最終batch直前のcredential失効、予約直後の対象変更を検証。関連79件成功（37.05秒）。最終`pnpm check`はNode356 + workerd771 = **1,127 tests**（21+51 files）、workerd331.06秒。lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。別途browser **16 tests**成功（2.2分）、合計**1,143件**。追加2件で実作成応答の破棄→別更新→reload→元file再選択→同じreceipt回収→本文/completeなしで中止→新内容保持を確認。D1 schema/migration、依存、UI実装の追加変更はない。対象の移動・削除・失効・期限切れ、全体admission・共有/検索/media・復旧/実環境のgateは残る。詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)。
 

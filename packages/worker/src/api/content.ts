@@ -135,7 +135,10 @@ export async function handleContentHttp(
   } catch (error) {
     if (error instanceof Error && error.message === "budget_exceeded")
       return reply(problem(429, "budget_exceeded"));
-    if (error instanceof Error && error.message === "blob_storage_mismatch")
+    if (
+      error instanceof Error &&
+      ["blob_storage_mismatch", "content_lease_expired"].includes(error.message)
+    )
       return reply(problem(503, "not_ready"));
     return reply(problem(404, "not_found"));
   }
