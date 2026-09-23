@@ -7,7 +7,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 の一部**を実装済み。
 61通常テーブル、migration `0001`〜`0025`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
-アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。完全な閉鎖証明と予約精算、Files UIは未実装です。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
+アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。完全な閉鎖証明と予約精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 
 | 資料 | 用途 |
@@ -16,6 +16,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 | [CURRENT_STATE](docs/CURRENT_STATE.md) | 実装/検証の4区分、未完了一覧、セッション間の固定事項 |
 | [IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md) | 実装状況・検証記録・未完了 gate |
 | [FOUNDATION](docs/FOUNDATION.md) | 現在の内部サービスと DB の契約 |
+| [FILES_UI](docs/FILES_UI.md) | Files画面、再開upload、private assets、browser試験と残る制約 |
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |
 | [CONTROL_ADMISSION](docs/CONTROL_ADMISSION.md) | 停止・全監査・受付とGCの段階再開 |
@@ -44,6 +45,7 @@ pnpm dev
 | `pnpm lint` / `pnpm typecheck` | 静的検査 |
 | `pnpm test:unit` | Node / SQLite 単体テスト |
 | `pnpm test:integration` | assets build 後、workerd の D1 / R2 / DO / Images を検証 |
+| `pnpm test:browser` | 隔離したlocal Worker/D1/R2とChromiumでFiles画面を検証 |
 | `pnpm verify:contracts` | バージョン固定・公開日・上限・禁止 API の検査 |
 | `pnpm verify:config` | ローカル binding と外部公開設定の検査 |
 | `pnpm build` | Web build と Worker の dry-run bundle |

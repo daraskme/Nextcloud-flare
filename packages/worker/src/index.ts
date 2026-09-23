@@ -3,6 +3,7 @@ import { handleContentHttp } from "./api/content";
 import { davPath, handleDavHttp } from "./api/dav";
 import { handlePrivateAppHttp, privateAppRoute } from "./api/privateApp";
 import { privateAppDependencies } from "./api/privateAppConfig";
+import { privateAssetRoute, servePrivateApp } from "./assets/privateApp";
 import { appPasswordPepperRing } from "./auth/appPassword";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { primary } from "./db/primary";
@@ -83,6 +84,16 @@ export default {
               )
             : undefined;
         return handleDavHttp(request, env, epoch, pepper);
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    if (new URL(request.url).origin === env.APP_ORIGIN && privateAssetRoute(request)) {
+      try {
+        const epoch = await admittedEpoch(env);
+        return epoch === null
+          ? problem(503, "not_ready")
+          : await servePrivateApp(request, env, epoch);
       } catch {
         return problem(503, "not_ready");
       }

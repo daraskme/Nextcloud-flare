@@ -103,7 +103,7 @@ migration `0018`はimmutable part geometry、R2 initialization identity、`multi
 
 UploadDOはD1のcompleted flagだけではterminalと認めない。committed operationのcredential/principal/digest/operand/result/stepを照合し、SQLiteをcompletedへ進める。最終ackの喪失、eviction、旧epoch alarmでも公開済みblobをcleanupへ戻さない。D1で完了を証明できる場合、全SQLite喪失後のstatusは台帳を再初期化せず返し、新規partは拒否する。
 
-**private HTTPは接続済み、UIは未接続。** `jobs/multipartCleanup.ts`とmigration `0020`は既知R2 IDの中止・期限/idle/part lease切れ・旧epoch回収を行う。既定20件/最大100件、60秒cleanup leaseと独立counterを使う。稼働中のinit/part/complete leaseを待ち、未公開/ref/pin/operation tupleを再検査して、未確定operationの失敗と永久停止marker `multipart_cleanup_started_at`を同じD1 batchで記録する。以後はDO mirror・part再送・台帳再初期化・completeを拒否する。停止markerを見たDO alarmは削除される。
+**private HTTPとFiles UIは接続済み。** UIの範囲と制約は[FILES_UI](FILES_UI.md)。 `jobs/multipartCleanup.ts`とmigration `0020`は既知R2 IDの中止・期限/idle/part lease切れ・旧epoch回収を行う。既定20件/最大100件、60秒cleanup leaseと独立counterを使う。稼働中のinit/part/complete leaseを待ち、未公開/ref/pin/operation tupleを再検査して、未確定operationの失敗と永久停止marker `multipart_cleanup_started_at`を同じD1 batchで記録する。以後はDO mirror・part再送・台帳再初期化・completeを拒否する。停止markerを見たDO alarmは削除される。
 
 R2 abortの成功を `multipart_cleanup_closed='aborted'`として保存してからHEADを確認する。abortが不明でも既知complete attemptに対応するmetadata付き完成物をHEADで確認できればclosed='completed'とする。NoSuchUploadやHEAD不在単独、7日経過では閉鎖証明としない。actual bytesのphysical観測を先に保存し、予約解放・GC handoff/absent tombstoneを原子的に精算する。完成物のphysical減算とcleanup_pending解除はGCのdelete/HEAD不在後のみ。保存済み閉鎖証明を使って再試行し、遅延応答はcleanup token/current epochで拒否する。
 
@@ -129,7 +129,7 @@ migration `0021`の`orphan_objects`と`r2_inventory_scan`は、全catalogueか�
 `services/contentBudget.ts` は `node.read` の証明を使い、private user、内部共有 user、匿名 unlock session ごとの安定した budget ID を D1 batch で確保する。credential と選択 share root/owner/expiry、ControlDO mirror の maintenance を再照合し、既存の active budget は再利用する。revoked budget の再開は拒否し、owner 64件上限は migration `0010` が確定時に守る。`services/contentTicket.ts` は最大1,000件の現行 node/blob と選択 share を検証し、R2 target manifest を staging・読戻し後、全認可証明と budget/ticket/target set を D1 batch で確定する。commit 応答喪失は primary の行で照合し、未確定時は R2 object を削除する。HTTP 発行 route は未接続。
 `services/contentTicketCancel.ts` は同じ current credential だけに ticket 取り消しを許し、派生 content session の失効と同一 D1 batch で確定する。他の ticket が共有する budget は維持する。HTTP 取り消し route は未接続。
 `api/contentTickets.ts` は認証済み private request の CSRF、同一 origin、bounded JSON を確認し、発行と取消を内部サービスへ渡す。`api/privateApp.ts` は app host で Access JWT を検証し、D1 session を登録して CSRF 発行と ticket handler に接続する。ticket 期限は Access session 期限以内に丸める。Worker entry は ControlDO/D1 admission と issuer/AUD、bootstrap policy、private/public CSRF kid ring、content 署名鍵の設定を要求する。ControlDOは監査後の再開を実装済みだが、remote設定と公開は未完了。
-`api/account.ts` は `/api/v1/me` で current credential/user/space と control epoch を照合し、quota と識別情報だけを返す。`POST /api/v1/auth/logout` は CSRF 検証後に D1 session と派生 content session を失効し、[Access の logout URL](https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/) である app origin の `/cdn-cgi/access/logout` へ 303 を返す。ブラウザー側の state 削除と top-level navigation は Files UI 実装時に接続する。
+`api/account.ts` は `/api/v1/me` で current credential/user/space と control epoch を照合し、quota と識別情報だけを返す。`POST /api/v1/auth/logout` は CSRF 検証後に D1 session と派生 content session を失効し、[Access の logout URL](https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/) である app origin の `/cdn-cgi/access/logout` へ 303 を返す。ブラウザー側のstate削除・BroadcastChannel・top-level navigationをFiles UIへ接続済み。ゼロbyte HTTP streamのlogoutも受け入れ、非空本文は拒否する。[FILES_UI](FILES_UI.md)に範囲を記録した。
 `services/nodeRead.ts` は node 詳細、root-first breadcrumb、children 一覧で current `node.read` の祖先証明・control maintenance を同一 D1 batch で再照合する。breadcrumb は同一space/ownerのlive親だけを最大64 edge辿り、rootに到達しない循環・切断・深さ超過を拒否する。一覧は `nodes_children_keyset` で最大200件を返し、201件目で次 cursor を発行する。`auth/nodeCursor.ts` は専用 HMAC ring で parent/space/owner/user/credential/epoch/tree generation/最終 name_ci+id/10分期限を束縛し、改変・期限切れ・tree 変更を拒否する。Worker entry は app の GET node詳細、path、children routeを接続した。remote cursor ring が未設定なら children は 503。
 `api/nodeMutations.ts` は app の `POST /api/v1/nodes` と `PATCH /api/v1/nodes/:nodeId` を bounded JSON、CSRF、Idempotency-Key で folder 作成・rename の既存サービスに接続する。terminal commit は作成201・rename200、failed/conflict は409、未確定は Operation-Id/Retry-After 付き503。同 credential の `GET /api/v1/operations/:id` は既存の current operand/result 照合を使う。個別HTTPテストのtest-only admissionに加え、実ControlDO/LockDO/D1で全監査から再開後のfolder mutationまで検証済み。
 
@@ -232,7 +232,7 @@ grant の同じ batch で現在の create 認可、parent の depth 0 lock、祖
 token は SHA-256 のみ保存し、同じ利用者の別 credential でも現在 scope と提示 token を要求する。他利用者の token 利用は拒否する。
 再送で parent/actor/credential/share version/token 集合を変えず、D1 permit の終端行を再利用しない。
 SQLite 全喪失後に同 epoch の D1 履歴がある場合は発行を拒否し、新 epoch + maintenance recovery を要求する。
-現在の ControlDO は閉じたままなので、成功側テストは test-only admission fixture と実 DO SQLite/D1/eviction を使う。公開サービスの admission gate 合格を意味しない。
+個別サービスの成功側テストはtest-only admission fixtureと実DO SQLite/D1/evictionを使う。別のControlDO全監査・再開試験とFiles browser試験は実ControlDOを使う。実環境のadmission gate合格を意味しない。
 
 `jobs/operations.ts` は create の claim と内部 lookup を実装する。body と operand は上限付き canonical JSON とし、idempotency key は initiating principal/credential の枠へ固定する。
 異なる payload/space/kind/operand/step 数は同じ operation に再利用できない。同じ claimed の再開は同一 permit/epoch/expiry のみ。
@@ -249,7 +249,7 @@ URL decode は呼出し adapter の責務であり、JSON の `%2F` 等を再 de
 folder name の検索索引は NFKC + full casefold + かな統一と scalar bigram を分離保存し、normalization_version を付ける。media metadata 合成と検索 API は後続。
 
 `services/createFolder.ts` は canonical intent → terminal replay または LockDO permit → current create 認可 → claim → fsMutation → terminal 照合 → release を接続する。
-`services/renameNode.ts` は rename 認可、対象と親の lock、permit、operation claim を確認する。node/parent revision、tree generation、旧 FTS term の削除、search_index 更新、新 FTS term の追加、activity、`node.renamed` outbox、terminal を一つの D1 batch に入れる。同名衝突や必須 step 失敗は全体 rollback する。公開 HTTP と実 ControlDO admission は未接続。
+`services/renameNode.ts` は rename 認可、対象と親の lock、permit、operation claim を確認する。node/parent revision、tree generation、旧 FTS term の削除、search_index 更新、新 FTS term の追加、activity、`node.renamed` outbox、terminal を一つの D1 batch に入れる。同名衝突や必須 step 失敗は全体 rollback する。private HTTPとローカル実ControlDO/browserへの接続は検証済み。実環境の公開は未実施。
 `services/fsMutation.ts` は先頭で permit/operation/current auth/current lock を SQL assertion にし、以下7 step と terminal を一つの D1 batch に入れる。
 
 1. folder node（operation 由来の固定 ID）、2. parent revision、3. space tree_generation、4. search_index、5. search_fts、6. activity、7. outbox。

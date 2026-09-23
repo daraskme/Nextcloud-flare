@@ -75,8 +75,13 @@ it("authorizes metadata and pages 201 children with a signed generation-bound cu
     ],
   }));
   await atomicBatch(env.DB, children);
+  await env.DB.prepare("UPDATE blobs SET mime_sniffed='text/plain' WHERE id=?")
+    .bind(f.ids.blob)
+    .run();
   const first = await listNodeChildren(env.DB, principal, f.ids.folder, cursors);
   expect(first.children).toHaveLength(200);
+  expect(first.children[0]).toMatchObject({ id: f.ids.file, size: 3, mime: "text/plain" });
+  expect(first.children[1]).toMatchObject({ kind: "folder", size: null, mime: null });
   expect(first.nextCursor).toBeTruthy();
   const next = await listNodeChildren(
     env.DB,

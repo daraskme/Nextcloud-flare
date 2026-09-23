@@ -206,8 +206,27 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
       dependencies,
     );
     expect(noCsrfLogout.status).toBe(403);
+    const nonEmptyLogout = await handlePrivateAppHttp(
+      new Request("https://app.invalid/api/v1/auth/logout", {
+        method: "POST",
+        headers,
+        body: "{}",
+      }),
+      appEnv,
+      1,
+      dependencies,
+    );
+    expect(nonEmptyLogout.status).toBe(400);
     const logout = await handlePrivateAppHttp(
-      new Request("https://app.invalid/api/v1/auth/logout", { method: "POST", headers }),
+      new Request("https://app.invalid/api/v1/auth/logout", {
+        method: "POST",
+        headers,
+        body: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+      }),
       appEnv,
       1,
       dependencies,

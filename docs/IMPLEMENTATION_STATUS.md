@@ -7,14 +7,15 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreはGC停止fixture。詳細・残作業は[FILES_UI](FILES_UI.md) |
 | 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account/KDF admissionは未完了 |
 | 4 停止中GC drain | migration `0024`のclaim epoch/counter、blob/orphanの既存deleting回収、ControlDO内部RPCと監査再初期化 | 新規25件を含む全check1,022件が成功。全復旧監査fixtureは成功、実環境・完全restore・admission再開は未完了 |
 | 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
 | 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。対応検証との接続・全体不在証明・予約精算・upload行ごと失われたID・実S3は未完了 |
 | 4 multipart S3診断 | 署名付きListMultipartUploads/ListParts/lifecycle取得、1 GET・最大100件・1 MiB・10秒、厳密XML/echo/markerと停止中ControlDO診断 | Node/workerdで署名・失敗境界、D1 maintenance/epoch fence、監査再初期化と予約保持を検証。対応検証と既存uploadの未知ID中止は別serviceへ接続済み。全体閉鎖・実S3接続は未完了 |
-| 3 private multipart HTTP | 既存routeのcreate/part/status/page/complete/abort、Upload-Attempt-Id、D1 receipt snapshot、期限切れ後照会、中止CAS、初期化結果不明receipt | 実Access JWT/CSRF/D1/R2/DOで再送・上書き・page・失効・中止/確定・遅延part・初期化応答喪失・入力境界を検証。UI・公開共有・実admissionは未実装 |
+| 3 private multipart HTTP | 既存routeのcreate/part/status/page/complete/abort、Upload-Attempt-Id、D1 receipt snapshot、期限切れ後照会、中止CAS、初期化結果不明receipt | 実Access JWT/CSRF/D1/R2/DOで再送・上書き・page・失効・中止/確定・遅延part・初期化応答喪失・入力境界を検証。基本Files UIとローカル実admissionは接続済み。公開共有・実環境は未実装 |
 | 4 未知完成物inventory | migration `0021`の2table、bounded R2 list/HEAD、D1 cursor/lease、35日grace、owner physical会計、独立GCとキー再利用拒否、Cron/停止中ControlDO inventory/復旧監査 | 応答喪失、並行処理、置換・再出現、owner復元、pause/epochを実D1/R2で検証。incomplete multipart、他prefix、実環境は未完了。停止中の既存deleting回収は追加済み |
-| 3 multipart回収 | migration `0020`の永久停止markerと閉鎖証明、独立cleanup budget、R2 abort/HEAD、physical計上/予約精算/GC、Cron/停止中ControlDO repair、DO alarm停止 | 応答喪失、競合、遅延init/HEAD、旧epoch、pin、未知metadata隔離、DO全喪失、偽GC handoff拒否を実D1/R2/DOで検証。未知IDの外部inventory修復・UIは未実装 |
+| 3 multipart回収 | migration `0020`の永久停止markerと閉鎖証明、独立cleanup budget、R2 abort/HEAD、physical計上/予約精算/GC、Cron/停止中ControlDO repair、DO alarm停止 | 応答喪失、競合、遅延init/HEAD、旧epoch、pin、未知metadata隔離、DO全喪失、偽GC handoff拒否を実D1/R2/DOで検証。未知IDの外部inventory修復は未完了。Files UIは接続済み |
 | 3 multipart確定 | migration `0019`の一度限りcomplete attempt・object proof、paged manifestからR2 complete/HEAD、LockDO/D1原子的公開、旧版保持、DO terminal照合 | D1/R2/DOで応答喪失・同時確定・失効・physical会計・全10 step rollbackを検証。R2 abort/期限切れcleanupは既知IDで接続済み、private HTTPは接続済み |
 | 3 multipart D1/R2 part接続 | migration `0018`の固定geometry・ledger marker・revision、D1予約、1回限りR2 create、認可RPC・dirty part mirror、streaming R2 part/SHA-256、停止再送alarm | 実D1/R2/DOで64 MiB+末尾、応答喪失、同時claim、失効/予約解除競合、storage全喪失を検証。R2 complete/head・原子的公開は追加済み。既知ID cleanupは接続済み、private HTTPは接続済み |
 | 3 単一upload回収 | migration `0017`のcleanup lease、24時間後のHEAD、実physical計上/予約精算/GC handoff、CronとControlDO停止中repair、汎用reservation bypass防止 | 実D1/R2/DOでabsent/present、応答喪失、並行claim、遅延HEAD、epoch/pin競合、metadata隔離、原子性、bounded scanを検証。未知object全般・実Cronは未完了 |
@@ -35,11 +36,11 @@
 | 6 target set/ticket 発行基盤 | 最大1,000件の target を決定的 JSON と SHA-256 で R2 に staging・読戻し検証し、全 node/blob/share の現行認可、budget、ticket と target set を D1 batch で確定。応答喪失後は D1 を再照合し、未確定 object を削除 | private・内部共有・匿名リンク、複数 target、credential 失効競合、D1 応答喪失を workerd で検証。HTTP 発行 route は未接続 |
 | 6 ticket 取り消し基盤 | current credential を確認し、ticket と派生 content session を同じ D1 batch で失効。budget は他 ticket と共有するため維持 | 再実行、Cookie と redemption の失効、別 credential・失効 session の拒否、D1 応答喪失後の照合を workerd で検証。HTTP 取り消し route は未接続 |
 | 6 private ticket HTTP handler | app host の Access JWT→D1 session→CSRF 発行→同一 origin・bounded JSON の ticket 発行/取消を Worker entry に接続。ticket 期限は Access session 期限以内 | RS256 JWT、実 D1/R2、CSRF、session 登録から取消、JWT 欠落と設定欠落の拒否を workerd で検証。ControlDO は maintenance 固定で公開停止、remote issuer/AUD/署名鍵/bootstrap 設定は未完了 |
-| 1 private account HTTP | `/api/v1/me` は current credential/user/space/quota を照合、logout は CSRF 後に D1 session と派生 content session を失効して Access logout に 303 | RS256 JWT、CSRF 欠落拒否、logout 後の再入場拒否を workerd で検証。ブラウザーの state 削除と navigation は Files UI 未実装 |
-| 2 Files read HTTP | app の node 詳細、root-first breadcrumb、children 一覧を `node.read` 祖先証明＋maintenance の D1 batch に接続。path は同一space/ownerのlive親を最大64 edge、一覧はkeyset最大200件。専用 HMAC cursor は parent/credential/epoch/tree generation/最終 sort key/期限を束縛 | 実 D1 でpath、201件を2ページ、改変・期限切れ・tree変更・他user・maintenanceを拒否。remote cursor ring と Files UI は未設定・未実装 |
-| 4 trash read/restore/purge/GC | trash一覧、restore、purgeを接続。purgeはmigration `0014`のmanifestからFK順・深さ降順に確定し、7日猶予candidate化。migration `0015`のGC claimはpause/epoch/ref/複数pinを原子的に再検査し、R2 delete/head後だけdeleted/physical精算 | REST冪等再送、別trash子、深いsubtree、Outboxに加え、実R2削除、複数pin、pause、delete応答喪失、lease再取得、一方向stateを実D1/R2で検証。Files UIは未実装 |
+| 1 private account HTTP | `/api/v1/me` は current credential/user/space/quota を照合、logout は CSRF 後に D1 session と派生 content session を失効して Access logout に 303 | RS256 JWT、CSRF 欠落拒否、logout 後の再入場拒否を workerd で検証。ブラウザーのstate削除・複数タブ通知・navigationをFiles UIへ接続済み |
+| 2 Files read HTTP | app の node 詳細、root-first breadcrumb、children 一覧を `node.read` 祖先証明＋maintenance の D1 batch に接続。path は同一space/ownerのlive親を最大64 edge、一覧はkeyset最大200件。専用 HMAC cursor は parent/credential/epoch/tree generation/最終 sort key/期限を束縛 | 実 D1 でpath、201件を2ページ、改変・期限切れ・tree変更・他user・maintenanceを拒否。remote cursor ringは未設定。Files UIは接続済み |
+| 4 trash read/restore/purge/GC | trash一覧、restore、purgeを接続。purgeはmigration `0014`のmanifestからFK順・深さ降順に確定し、7日猶予candidate化。migration `0015`のGC claimはpause/epoch/ref/複数pinを原子的に再検査し、R2 delete/head後だけdeleted/physical精算 | REST冪等再送、別trash子、深いsubtree、Outboxに加え、実R2削除、複数pin、pause、delete応答喪失、lease再取得、一方向stateを実D1/R2で検証。基本Files UIは接続済み。GC稼働中restoreのpause holdは未接続 |
 | 2 folder create HTTP | `POST /api/v1/nodes` の bounded JSON、CSRF、Idempotency-Key を LockDO/permit/D1 の folder mutation に接続。`GET /api/v1/operations/:id` は同 credential の current operand/result を照合 | 実 LockDO/D1 の作成・再送・照会、CSRF 欠落、異 payload の409を workerd で検証。test-only admission であり実 ControlDO 再開は未実装 |
-| 2 Files mutation HTTP | private REST の `DELETE /nodes/:id`、`POST /nodes/:id/move`、`POST /nodes/:id/copy` を CSRF、bounded JSON、Idempotency-Key、LockDO、固定 subtree manifest、atomic trash/MOVE/COW COPY へ接続。REST operation は `node.trash` / `node.move` / `node.copy` として DAV と区別し、consumer・復旧監査も両 provenance を検証 | copy→move→trash、各 namespace 結果、Outbox 消費、operation kind、削除後の同一 DELETE 再送を実 D1/DO で検証。実 ControlDO admission と Files UI は未実装 |
+| 2 Files mutation HTTP | private REST の `DELETE /nodes/:id`、`POST /nodes/:id/move`、`POST /nodes/:id/copy` を CSRF、bounded JSON、Idempotency-Key、LockDO、固定 subtree manifest、atomic trash/MOVE/COW COPY へ接続。REST operation は `node.trash` / `node.move` / `node.copy` として DAV と区別し、consumer・復旧監査も両 provenance を検証 | copy→move→trash、各 namespace 結果、Outbox 消費、operation kind、削除後の同一 DELETE 再送を実 D1/DO で検証。ローカル実ControlDOとFiles UIを接続済み。実環境は未検証 |
 | 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
 | 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
 | 1.1 契約・schema | 58通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
@@ -78,6 +79,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 選定日 2026-09-21、公開日 cutoff 2026-09-14 00:00 UTC。直接依存の registry 証拠は `docs/toolchain.json`。
 - jose 6.2.12 は2026-09-22に追加選定、公開日2026-09-05で既存 cutoff も満たす。Node/workerd の署名検証に使用。
 - unicode-case-folding 1.1.1 は2026-09-22に追加選定、2025-10-01公開。Unicode 17.0.0 公式 C/F 表1,585件と全未割当 mapping の一致を確認。公開日・公式表の hash は `toolchain.json`。
+- React/TanStack/Radix/TailwindとPlaywrightを2026-09-24に追加選定。既存cutoff以前のexact版とpeer/licenseを`toolchain.json`に記録。browser依存はWorker bundleへ入れない。
 - `pnpm-workspace.yaml` の `minimumReleaseAge: 10080` で推移依存にも7日の公開期間を要求。
 - 使用する `@cloudflare/vitest-pool-workers@0.22.0` は Vitest 4 の `cloudflareTest` API。旧 `defineWorkersConfig` は使わない。
 - pool 同梱 workerd が 2026-08-15 のため、compatibility_date を同日へ固定。設計の例示値 2026-09-21 を設定して黙って古い runtime に fallback させない。staging もこの値で検証し、更新時に gate を再実行する。
@@ -101,6 +103,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node335 + workerd719 = **1,054 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。別途`pnpm test:browser`の**8 tests**が成功し、FolderPickerの親階層ボタンがsubmitしない回帰検査を含む実Filesシナリオも再確認。合計1,062件。PC/mobileの実画面を確認。private asset全graphの認証/host/fallback/HEAD、96 MiB multipart中断/reload/同一attempt/既送信part省略、操作応答喪失/同一key、複数タブlogoutを実ローカルAPIで検証。追加Node4件はCSRF失効競合とoperation再照合。既存workerdテストでchildrenのsize/mimeと空stream logout/非空拒否を拡張。schema変更なし。GC稼働中restoreのpause hold、上書き/共有/検索/media UI、実環境gateは未完了。
 
 - 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 331 + workerd 719 = **1,050 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0025`、全監査後のControlDO受付・GC段階再開を追加。追加Node1件/workerd27件でrevision/token境界、実ControlDO/LockDO namespace mutation、Worker entryのJWT/bootstrap/HTTP、commit前後・readbackの応答喪失、遅延open/stop/GC/epoch publication、同時再開、監査後の予約/permit/bootstrap変更、repair hold、eviction/全喪失を検証。workerd全49fileは263.37秒。account/KDF admission、backup barrier、未知multipart全体閉鎖/予約精算、残るQueue修復、Files UIと実環境gateは未完了。
 

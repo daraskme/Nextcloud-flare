@@ -12,6 +12,8 @@ interface ChildRow {
   revision: number;
   currentBlobId: string | null;
   updatedAt: number;
+  size: number | null;
+  mime: string | null;
 }
 
 interface PathRow {
@@ -139,20 +141,24 @@ export async function listNodeChildren(
   const statement: SqlStatement =
     lastNameCi === undefined
       ? {
-          sql: `SELECT id,name,name_ci AS nameCi,kind,revision,
-            current_blob_id AS currentBlobId,updated_at AS updatedAt
-            FROM nodes INDEXED BY nodes_children_keyset
-            WHERE parent_id=? AND deleted_at IS NULL AND space_id=? AND owner_id=?
-            ORDER BY name_ci,id LIMIT 201`,
+          sql: `SELECT n.id,n.name,n.name_ci AS nameCi,n.kind,n.revision,
+            n.current_blob_id AS currentBlobId,n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime
+            FROM nodes n INDEXED BY nodes_children_keyset
+            LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+              AND b.state IN ('committed','gc_candidate')
+            WHERE n.parent_id=? AND n.deleted_at IS NULL AND n.space_id=? AND n.owner_id=?
+            ORDER BY n.name_ci,n.id LIMIT 201`,
           values: [parent.id, parent.space_id, parent.owner_id],
         }
       : {
-          sql: `SELECT id,name,name_ci AS nameCi,kind,revision,
-            current_blob_id AS currentBlobId,updated_at AS updatedAt
-            FROM nodes INDEXED BY nodes_children_keyset
-            WHERE parent_id=? AND deleted_at IS NULL AND space_id=? AND owner_id=?
-              AND (name_ci>? OR (name_ci=? AND id>?))
-            ORDER BY name_ci,id LIMIT 201`,
+          sql: `SELECT n.id,n.name,n.name_ci AS nameCi,n.kind,n.revision,
+            n.current_blob_id AS currentBlobId,n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime
+            FROM nodes n INDEXED BY nodes_children_keyset
+            LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+              AND b.state IN ('committed','gc_candidate')
+            WHERE n.parent_id=? AND n.deleted_at IS NULL AND n.space_id=? AND n.owner_id=?
+              AND (n.name_ci>? OR (n.name_ci=? AND n.id>?))
+            ORDER BY n.name_ci,n.id LIMIT 201`,
           values: [
             parent.id,
             parent.space_id,

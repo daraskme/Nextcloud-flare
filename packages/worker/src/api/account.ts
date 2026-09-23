@@ -37,7 +37,7 @@ export async function handleAccountHttp(
       .first<MeRow>();
     if (!row || row.id !== session.user_id) return problem(403, "forbidden");
     return Response.json(
-      { ...row, epoch: session.epoch },
+      { ...row, epoch: session.epoch, contentOrigin: env.CONTENT_ORIGIN },
       {
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
       },
@@ -53,7 +53,21 @@ export async function handleAccountHttp(
     } catch {
       return problem(403, "forbidden");
     }
-    if (request.body) return problem(400, "bad_request");
+    // HTTP adapters can represent a zero-byte POST as a non-null closed stream.
+    // Accept only EOF; never trust Content-Length or buffer a logout payload.
+    if (request.body) {
+      const reader = request.body.getReader();
+      try {
+        if (!(await reader.read()).done) {
+          await reader.cancel();
+          return problem(400, "bad_request");
+        }
+      } catch {
+        return problem(400, "bad_request");
+      } finally {
+        reader.releaseLock();
+      }
+    }
     await revokeAccessSession(env.DB, session.credential_id, session.epoch);
     return new Response(null, {
       status: 303,
