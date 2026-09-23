@@ -14,6 +14,7 @@ import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { claimOperation, operationIntent } from "../../src/jobs/operations";
 import { copyNode } from "../../src/services/copyNode";
+import { createFolder } from "../../src/services/createFolder";
 import { commitMutationStatements } from "../../src/services/fsMutation";
 import { moveNode } from "../../src/services/moveNode";
 import { purgeTrash } from "../../src/services/purgeTrash";
@@ -138,6 +139,8 @@ function admitted(): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
           return result.value;
         };
         return {
+          acquireCreate: (request: Parameters<LockDO["acquireCreate"]>[0]) =>
+            invoke((lock) => lock.acquireCreate(request)),
           acquireRename: (request: Parameters<LockDO["acquireRename"]>[0]) =>
             invoke((lock) => lock.acquireRename(request)),
           acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
@@ -968,3 +971,63 @@ it("rolls back every effect when the new name conflicts with a sibling", async (
       .first("COUNT(*)"),
   ).toBe(0);
 });
+
+it.each(["rename", "move"] as const)(
+  "%s preserves search after a child-list revision advanced",
+  async (kind) => {
+    const { f, principal } = await seeded();
+    const bindings = admitted();
+    expect(
+      await createFolder(bindings, {
+        principal,
+        idempotencyKey: crypto.randomUUID(),
+        spaceId: f.ids.space,
+        parentId: f.ids.folder,
+        name: "Added child",
+        lockTokens: [],
+      }),
+    ).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+    expect(
+      await env.DB.prepare(
+        "SELECT n.revision,si.revision AS indexed FROM nodes n JOIN search_index si ON si.node_id=n.id WHERE n.id=?",
+      )
+        .bind(f.ids.folder)
+        .first(),
+    ).toEqual({ revision: 2, indexed: 1 });
+    const request = {
+      principal,
+      spaceId: f.ids.space,
+      nodeId: f.ids.folder,
+      name: "検索できる新名",
+      lockTokens: [],
+    };
+    const result =
+      kind === "rename"
+        ? await renameNode(bindings, { ...request, idempotencyKey: crypto.randomUUID() })
+        : await moveNode(bindings, {
+            ...request,
+            requestId: crypto.randomUUID(),
+            destinationParentId: f.ids.root,
+          });
+    expect(result).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+    expect(
+      await env.DB.prepare(
+        "SELECT n.name,n.revision,si.revision AS indexed,si.text_norm FROM nodes n JOIN search_index si ON si.node_id=n.id WHERE n.id=?",
+      )
+        .bind(f.ids.folder)
+        .first(),
+    ).toEqual({
+      name: request.name,
+      revision: 3,
+      indexed: 3,
+      text_norm: searchName(request.name).textNorm,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM search_fts WHERE search_fts MATCH ? AND rowid=(SELECT rowid FROM search_index WHERE node_id=?)",
+      )
+        .bind('tokens:"検索"', f.ids.folder)
+        .first("n"),
+    ).toBe(1);
+  },
+);

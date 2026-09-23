@@ -296,7 +296,7 @@ function moveStatements(
       affectedId: node.id,
       statement: {
         sql: `UPDATE search_index SET text_norm=?,tokens=?,normalization_version=?,revision=?
-          WHERE node_id=? AND revision=? AND space_id=?`,
+          WHERE node_id=? AND revision<=? AND space_id=?`,
         values: [
           search.textNorm,
           search.tokens,

@@ -6,6 +6,7 @@ import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { AccessJwks } from "../auth/jwks";
 import { ListCursorTokens } from "../auth/listCursor";
 import { NodeCursorTokens } from "../auth/nodeCursor";
+import { SearchCursorTokens } from "../auth/searchCursor";
 import { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 import type { PrivateAppDependencies } from "./privateApp";
@@ -89,6 +90,7 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
     verifier: new AccessVerifier(jwks, env.ACCESS_USER_AUDIENCE, env.ACCESS_SERVICE_AUDIENCE),
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
     tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN),
+    ...(cursorRing ? { searchCursors: new SearchCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { listCursors: new ListCursorTokens(cursorRing) } : {}),
     ...(appPasswordPepper ? { appPasswordPepper } : {}),

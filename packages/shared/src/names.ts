@@ -26,10 +26,9 @@ export function portableName(input: string): PortableName {
 
 export const SEARCH_NAME_VERSION = `ncf-name-bigram-1-${NAME_FOLD_VERSION}`;
 
-/** Initial folder-name index. Media metadata composition is added by its own bounded parser. */
-export function searchName(input: string): { textNorm: string; tokens: string; version: string } {
-  const { name } = portableName(input);
-  const textNorm = [...caseFold(name.normalize("NFKC")).normalize("NFD")]
+/** Shared by persisted names and queries; queries are text, not portable filenames. */
+export function normalizeSearchText(input: string): string {
+  return [...caseFold(input.normalize("NFKC")).normalize("NFD")]
     .map((char) => {
       const cp = char.codePointAt(0) ?? 0;
       return (cp >= 0x30a1 && cp <= 0x30f6) || cp === 0x30fd || cp === 0x30fe
@@ -38,6 +37,12 @@ export function searchName(input: string): { textNorm: string; tokens: string; v
     })
     .join("")
     .normalize("NFC");
+}
+
+/** Initial folder-name index. Media metadata composition is added by its own bounded parser. */
+export function searchName(input: string): { textNorm: string; tokens: string; version: string } {
+  const { name } = portableName(input);
+  const textNorm = normalizeSearchText(name);
   const scalars = [...textNorm];
   const tokens =
     scalars.length === 1

@@ -868,6 +868,179 @@ test("concurrent DAV requests share KDF capacity and a revoked app password stop
   expect((await dav(issued.credential.secret)).status()).toBe(401);
 });
 
+test("search finds nested names and preserves their destination for overwrite and navigation", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/files");
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const name = `カタカナ++😀資料-${suffix}.txt`;
+  const file = await writeTestFile(page, name, "before search overwrite");
+  const scope = await page.evaluate(
+    async ({ file, suffix }) => {
+      const json = async (path: string, init?: RequestInit) => {
+        const response = await fetch(path, init);
+        if (!response.ok) throw new Error(`seed_${response.status}_${path}`);
+        return response.json();
+      };
+      const me = await json("/api/v1/me");
+      const csrf = await json("/api/v1/csrf", { method: "POST" });
+      const mutation = (path: string, body: unknown) =>
+        json(path, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrf.token,
+            "Idempotency-Key": crypto.randomUUID(),
+          },
+          body: JSON.stringify(body),
+        });
+      const outer = await mutation("/api/v1/nodes", {
+        spaceId: me.spaceId,
+        parentId: me.rootNodeId,
+        kind: "folder",
+        name: `検索範囲-${suffix}`,
+      });
+      const inner = await mutation("/api/v1/nodes", {
+        spaceId: me.spaceId,
+        parentId: outer.result.nodeId,
+        kind: "folder",
+        name: "奥のフォルダー",
+      });
+      await mutation(`/api/v1/nodes/${file.id}/move`, {
+        spaceId: me.spaceId,
+        destinationParentId: inner.result.nodeId,
+        name: file.name,
+      });
+      return { outer: outer.result.nodeId as string, inner: inner.result.nodeId as string };
+    },
+    { file, suffix },
+  );
+  await page.reload();
+  await expect(page.getByRole("button", { name: `${name}の操作`, exact: true })).toHaveCount(0);
+  await page
+    .getByRole("searchbox", { name: "このフォルダー内を検索" })
+    .fill(`ｶﾀｶﾅ++😀資料-${suffix}`);
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect(page.getByRole("button", { name: `${name}の操作`, exact: true })).toBeVisible();
+  await expect(page.getByText(/サブフォルダーも含む/)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("search-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({ path: testInfo.outputPath("search-mobile.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openOverwrite(page, name);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("dialog").getByRole("button", { name: "ファイルを選択" }).click();
+  await (await chooser).setFiles({
+    name: "置換元.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("search overwrite stayed in its folder"),
+  });
+  await page.getByRole("dialog").getByRole("button", { name: "上書きを開始", exact: true }).click();
+  await expect(page.getByText("アップロード完了", { exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
+  const current = await page.evaluate(
+    async ({ scope, name }) => {
+      const response = await fetch(
+        `/api/v1/search?scopeId=${scope.outer}&q=${encodeURIComponent(name)}`,
+      );
+      if (!response.ok) throw new Error(`search_${response.status}`);
+      return (await response.json()).items[0];
+    },
+    { scope, name },
+  );
+  expect(current.parentId).toBe(scope.inner);
+  expect(await fileContent(page, current)).toBe("search overwrite stayed in its folder");
+  await page.getByRole("button", { name: `${name}の操作`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "保存場所を開く", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "奥のフォルダー", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "検索を終了", exact: true })).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "このフォルダー内を検索" }).fill("++😀");
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect(page.getByRole("button", { name: `${name}の操作`, exact: true })).toBeVisible();
+  await page.getByRole("button", { name: `${name}の操作`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "名前を変更", exact: true }).click();
+  await page.getByLabel("名前", { exact: true }).fill(`更新済み-${suffix}.txt`);
+  await page.getByRole("dialog").getByRole("button", { name: "名前を変更", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "一致する項目がありません" })).toBeVisible();
+  await page.getByRole("button", { name: "検索を終了", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: `更新済み-${suffix}.txtの操作`, exact: true }),
+  ).toBeVisible();
+});
+
+test("search pages real API results and hides stale rows after a tree change or denied refresh", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.goto("/files");
+  const scope = await page.evaluate(async () => {
+    const json = async (path: string, init?: RequestInit) => {
+      const response = await fetch(path, init);
+      if (!response.ok) throw new Error(`seed_${response.status}_${path}`);
+      return response.json();
+    };
+    const me = await json("/api/v1/me");
+    const csrf = await json("/api/v1/csrf", { method: "POST" });
+    const create = (parentId: string, name: string) =>
+      json("/api/v1/nodes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf.token,
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ spaceId: me.spaceId, parentId, name, kind: "folder" }),
+      });
+    const root = await create(me.rootNodeId, `ページ検索-${crypto.randomUUID().slice(0, 8)}`);
+    for (let i = 0; i < 201; i++)
+      await create(root.result.nodeId, `Match ${String(i).padStart(3, "0")}`);
+    return root.result.nodeId as string;
+  });
+  await page.goto(`/files/${scope}`);
+  await page.getByRole("searchbox", { name: "このフォルダー内を検索" }).fill("match");
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect(page.locator(".list-summary strong")).toHaveText("200");
+  await page.getByRole("button", { name: "さらに読み込む" }).click();
+  await expect(page.locator(".list-summary strong")).toHaveText("201");
+  await expect(page.getByRole("button", { name: "さらに読み込む" })).toHaveCount(0);
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect(page.locator(".list-summary strong")).toHaveText("200");
+  await page.evaluate(async (scope) => {
+    const me = await fetch("/api/v1/me").then((r) => r.json());
+    const csrf = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    const response = await fetch("/api/v1/nodes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf.token,
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({
+        spaceId: me.spaceId,
+        parentId: scope,
+        name: "Match newer",
+        kind: "folder",
+      }),
+    });
+    if (!response.ok) throw new Error(`mutate_${response.status}`);
+  }, scope);
+  await page.getByRole("button", { name: "さらに読み込む" }).click();
+  await expect(page.getByRole("alert")).toContainText("検索中に項目が更新されました");
+  await expect(page.getByRole("button", { name: "Match 000の操作", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "一覧を読み直す" }).click();
+  await expect(page.getByRole("button", { name: "Match 000の操作", exact: true })).toBeVisible();
+  await page.route("**/api/v1/search?*", (route) =>
+    route.continue({ headers: { ...route.request().headers(), "X-Test-Without-Auth": "1" } }),
+  );
+  await page.getByRole("button", { name: "一覧を更新", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Match 000の操作", exact: true })).toHaveCount(0);
+});
+
 test("logout clears saved uploads and pending operations in all open tabs", async ({
   page,
   context,

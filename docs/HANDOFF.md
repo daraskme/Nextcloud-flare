@@ -91,6 +91,8 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
+Accessのフォルダー配下検索APIとFiles検索画面を接続。共通正規化、literal query、scope10,000/page200、現在のcredential/祖先/共有read grant、検索専用cursor、同一batchの世代assertを使う。走査は索引付きsuccessor walkで全siblingの先行展開を避ける。検索結果のparentIdを上書きに渡し、保存場所への移動、世代競合/拒否時の古い結果の非表示を実browserで検証。子一覧だけが更新されたfolderのrename/move失敗も再現・修正。詳しくは[SEARCH](SEARCH.md)。media metadata/索引再構築運用/実D1予算、共有・media・全体admission・復旧/公開の全体要件は残る。
+
 配信leaseの期限をDOのbyte期間内へ制限し、旧実装の有効なleaseは精算まで保持する処理を追加。`/c`も返された期限をR2 HEAD/GETとbody終了まで引き継ぎ、停止した読み込み・未読応答・取消しを扱う。精算は1回、結果不明は全額保持。実D1の期限更新で有効なleaseが消える問題と、修正前の配信関数が期限後の3 byteを返す問題を再現した。詳細は[CONTENT_LEASES](CONTENT_LEASES.md)。実HTTP切断伝播、長時間downloadのRange/ticket更新UI、全media/public配信経路と実環境gateは残る。
 
 作成応答喪失と対象更新が重なる場合のreceipt回収を修正した。同じcreate key/bodyへの再送は現在のnode権限・credential・epoch・owner・parentを原子的に検査し、元のID/capabilityを返す。新規予約・R2初期化・本文・確定の旧revision検査は維持し、multipart初期化が対象変更で止まれば202で中止可能なreceiptを返す。実HTTPの競合/予約不変/失効境界5件、browserの単一・分割の応答喪失/reload/中止2件を追加。対象の移動・削除・失効・期限切れは引き続き制限される。詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)、全結果はIMPLEMENTATION_STATUS。

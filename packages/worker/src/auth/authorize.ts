@@ -66,6 +66,7 @@ export type NodeRequest =
   | {
       readonly operation:
         | "node.read"
+        | "search.read"
         | "node.rename"
         | "node.trash"
         | "node.props.write"
@@ -90,6 +91,11 @@ export interface LiveNode {
 export type AuthorizedNode =
   | {
       readonly operation: "node.read" | "automation.list" | "automation.metadata.read";
+      readonly principal: Principal;
+      readonly node: LiveNode;
+    }
+  | {
+      readonly operation: "search.read";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -211,8 +217,9 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
       AND (?6 NOT IN ('node.rename','node.trash') OR n.parent_id IS NOT NULL)
       AND (?6<>'node.content.write' OR n.kind='file')
+      AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
-        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
+        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE u.id=n.owner_id OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
@@ -251,6 +258,7 @@ export async function authorizeNode(
   if (
     ![
       "node.read",
+      "search.read",
       "node.create",
       "node.rename",
       "node.trash",

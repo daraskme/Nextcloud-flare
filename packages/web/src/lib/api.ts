@@ -12,6 +12,7 @@ export interface Account {
 }
 export interface FileNode {
   id: string;
+  parentId?: string;
   name: string;
   kind: "folder" | "file";
   revision: number;
@@ -25,6 +26,14 @@ export interface Children {
   treeGeneration: number;
   children: FileNode[];
   nextCursor: string | null;
+}
+export interface SearchPage {
+  scopeId: string;
+  query: string;
+  treeGeneration: number;
+  items: FileNode[];
+  nextCursor: string | null;
+  truncated: boolean;
 }
 export interface Breadcrumb {
   id: string;
@@ -209,6 +218,11 @@ export class ApiClient {
       `/api/v1/nodes/${encodeURIComponent(id)}/children${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       signal ? { signal } : {},
     );
+  }
+  search(scopeId: string, q: string, cursor?: string | null, signal?: AbortSignal) {
+    const params = new URLSearchParams({ scopeId, q });
+    if (cursor) params.set("cursor", cursor);
+    return this.request<SearchPage>(`/api/v1/search?${params}`, signal ? { signal } : {});
   }
   path(id: string, signal?: AbortSignal) {
     return this.request<{ path: Breadcrumb[] }>(

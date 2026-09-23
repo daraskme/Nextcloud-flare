@@ -409,6 +409,21 @@ h1 {
   align-items: center;
   gap: 11px;
 }
+.search-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.search-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 14px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .list-search {
   display: flex;
   gap: 8px;
@@ -1068,9 +1083,14 @@ h1 {
   }
   .toolbar-controls {
     width: 100%;
+    flex-wrap: wrap;
+  }
+  .search-form {
+    flex: 1 1 100%;
   }
   .list-search {
     flex: 1;
+    min-width: 0;
   }
   .list-search input {
     width: 100%;

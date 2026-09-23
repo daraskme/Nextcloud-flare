@@ -1019,27 +1019,13 @@ INSERT INTO search_fts(rowid,text_norm,tokens)
 SELECT rowid,text_norm,tokens FROM search_index WHERE rowid=?1;
 ```
 
-query bigram はそれぞれ `"..."` で quote し、内部 `"` を `""` に escape して AND 連結する。FTS は候補生成だけで、最終 substring は escaped `text_norm LIKE` で順序照合する。scope CTE 自体に `LIMIT 10000` を置き、候補/FTSも10,000で打ち切る。
+query は保存名と共通の正規化を使うが、ファイル名の禁止文字・予約名規則は適用しない。入力と正規化結果は各256 UTF-8 bytes以内。unicode61 の既知の token 文字からなる bigram をそれぞれ quote し、内部 quote を escape して AND 連結する。FTS は候補生成だけで、最終 substring は escaped `text_norm LIKE` で順序照合する。利用可能な bigram がない一文字・記号・絵文字等は、pattern≤50B の scope 内 LIKE fallback とし、一文字 global scanは禁止する。
 
-```sql
-WITH RECURSIVE scope(id,depth) AS (
-  SELECT ?1,0 UNION ALL
-  SELECT n.id,s.depth+1 FROM nodes n JOIN scope s ON n.parent_id=s.id
-  WHERE n.deleted_at IS NULL AND s.depth<64
-  LIMIT 10000
-), hits AS (
-  SELECT si.node_id,bm25(search_fts) rank
-  FROM search_fts JOIN search_index si ON si.rowid=search_fts.rowid
-  WHERE search_fts MATCH ?2 AND si.space_id=?3 LIMIT 10000
-)
-SELECT n.id,n.name,n.kind,h.rank
-FROM hits h JOIN scope s ON s.id=h.node_id JOIN nodes n ON n.id=h.node_id
-JOIN search_index si ON si.node_id=n.id
-WHERE n.deleted_at IS NULL AND si.text_norm LIKE ?4 ESCAPE '\'
-ORDER BY h.rank,n.id LIMIT ?5;
-```
+scope root を `search.read` で認可し、祖先・credential・epoch・tree generation の最終 assertion と結果 SELECT を同じ D1 batch に置く。子1件・次の sibling1件・親へ戻る1件を索引でたどる successor walk により、全 sibling の先行展開を防ぐ。絶対 depth≤64、訪問node≤10,000、上下移動≤20,000 step。scope CTE 自体に `LIMIT 10000` を置き、その各 rowid に限定した FTS 候補も10,000で打ち切る。無権限の全文書を先に MATCH してから権限 filter する方式は使わない。実 SQL と HTTP/UI の接続は [SEARCH](SEARCH.md) と `services/search.ts` を参照。
 
-scope または hits が上限到達なら `truncated:true` を返し count/facet を確定値にしない。LIKE fallback は pattern≤50B、scope内10,000候補まで。一文字 global scanは禁止。
+結果は `name_ci,id` の安定した名前順で200件の keyset page とする。全索引の文書統計に依存する BM25 順位を返さず、無権限の文書追加が順位・cursorへ影響しないようにする。検索専用 cursor に正規化query/索引version/scope/space/owner/user/credential/epoch/tree generation/最後の名前とIDを結び付け、有効期限を10分にする。
+
+scope または hits が上限到達なら `truncated:true` を返し count/facet を確定値にしない。索引が欠落・旧normalization version・未来のnode revisionの場合も、該当行を返さず不完全さを通知する。`search_index.revision` は最後の検索テキスト更新時のnode revisionであり、子一覧の更新だけで進んだ親のrevisionとは一致しなくてもよい。rename/moveは現行node proofと旧FTS値のdeleteを同じbatchで確認して新しい索引へ進め、索引が現行nodeより未来なら拒否する。media metadata のparser/同期と索引version再構築運用、実D1の予算gateは残る。
 
 ### 12.3 Gallery / media list
 

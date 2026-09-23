@@ -442,6 +442,13 @@ function NodeMenu({
           <Menu.Item onSelect={open}>
             {node.kind === "folder" ? "開く" : "ファイルを開く・保存"}
           </Menu.Item>
+          {node.parentId && (
+            <Menu.Item asChild>
+              <Link to="/files/$folderId" params={{ folderId: node.parentId }}>
+                保存場所を開く
+              </Link>
+            </Menu.Item>
+          )}
           {node.kind === "file" && (
             <Menu.Item onSelect={() => act({ kind: "overwrite", node })}>
               ファイルを上書き
@@ -581,6 +588,8 @@ export function App() {
   const parentId = /^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
+  const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
+  const searching = !trash && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -595,7 +604,15 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && !trash,
+    enabled: !!me && !trash && !searching,
+    retry: false,
+  });
+  const results = useInfiniteQuery({
+    queryKey: ["search", me?.id, me?.epoch, parentId, searchTerm?.query],
+    queryFn: ({ pageParam, signal }) => api.search(parentId, searchTerm!.query, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page) => page.nextCursor,
+    enabled: !!me && searching,
     retry: false,
   });
   const path = useQuery({
@@ -613,7 +630,7 @@ export function App() {
     retry: false,
   });
   const refresh = () => {
-    for (const key of ["children", "trash", "path", "picker"])
+    for (const key of ["children", "trash", "path", "picker", "search"])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
   };
@@ -653,6 +670,7 @@ export function App() {
   }, [me?.id, me?.epoch]);
   useEffect(() => {
     setFilter("");
+    setSearchTerm(null);
     setSidebar(false);
     setAction(null);
   }, [pathname]);
@@ -727,13 +745,16 @@ export function App() {
   };
   const rows = listing.data?.pages.flatMap((page) => page.children) ?? [];
   const items = trashed.data?.pages.flatMap((page) => page.items) ?? [];
-  const filtered = rows.filter((node) =>
-    node.name.toLocaleLowerCase("ja-JP").includes(filter.toLocaleLowerCase("ja-JP")),
-  );
+  const filtered = searching
+    ? results.error
+      ? []
+      : (results.data?.pages.flatMap((page) => page.items) ?? [])
+    : rows;
   const filteredTrash = items.filter((item) =>
     item.name.toLocaleLowerCase("ja-JP").includes(filter.toLocaleLowerCase("ja-JP")),
   );
-  const data = trash ? trashed : listing;
+  const data = trash ? trashed : searching ? results : listing;
+  const truncated = searching && results.data?.pages.some((page) => page.truncated);
   const title = trash ? "ごみ箱" : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
@@ -966,20 +987,42 @@ export function App() {
               <div className="list-toolbar">
                 <div className="list-summary">
                   <strong>{trash ? filteredTrash.length : filtered.length}</strong> 件
-                  {data.hasNextPage && <span>以上</span>}
+                  {!data.error && (data.hasNextPage || truncated) && <span>以上</span>}
                   <span className="toolbar-divider" />
                   {trash ? "削除した項目" : "名前順"}
                 </div>
                 <div className="toolbar-controls">
-                  <label className="list-search">
-                    <Search size={16} />
-                    <input
-                      aria-label="表示中の名前で絞り込む"
-                      placeholder="表示中の名前で絞り込む"
-                      value={filter}
-                      onChange={(event) => setFilter(event.target.value)}
-                    />
-                  </label>
+                  <form
+                    className="search-form"
+                    role="search"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!trash) {
+                        const term = filter.trim();
+                        setSearchTerm(term ? { scopeId: parentId, query: term } : null);
+                        void query.resetQueries({
+                          queryKey: ["search", me.id, me.epoch, parentId, term],
+                        });
+                      }
+                    }}
+                  >
+                    <label className="list-search">
+                      <Search size={16} />
+                      <input
+                        type="search"
+                        aria-label={trash ? "表示中の名前で絞り込む" : "このフォルダー内を検索"}
+                        placeholder={trash ? "表示中の名前で絞り込む" : "このフォルダー内を検索"}
+                        maxLength={256}
+                        value={filter}
+                        onChange={(event) => setFilter(event.target.value)}
+                      />
+                    </label>
+                    {!trash && (
+                      <Button type="submit" size="small">
+                        検索
+                      </Button>
+                    )}
+                  </form>
                   <Button variant="ghost" size="icon" aria-label="一覧を更新" onClick={refresh}>
                     <RefreshCw size={17} className={data.isFetching ? "spin" : ""} />
                   </Button>
@@ -1003,9 +1046,33 @@ export function App() {
                   )}
                 </div>
               </div>
+              {searching && (
+                <div className="search-summary" role="status">
+                  <span>「{searchTerm.query}」の検索結果 · サブフォルダーも含む</span>
+                  <Button
+                    size="small"
+                    variant="ghost"
+                    onClick={() => {
+                      setFilter("");
+                      setSearchTerm(null);
+                    }}
+                  >
+                    検索を終了
+                  </Button>
+                </div>
+              )}
+              {truncated && !data.error && (
+                <p className="notice" role="status">
+                  検索結果は一部です。検索するフォルダーを絞るか、フォルダー一覧からも確認してください。
+                </p>
+              )}
               {data.error && (
                 <div className="notice" role="alert">
-                  {errorMessage(data.error)}
+                  {searching && data.error instanceof ApiError && data.error.status === 400
+                    ? "検索語を短くして再検索してください。"
+                    : searching && data.error instanceof ApiError && data.error.status === 409
+                      ? "検索中に項目が更新されました。検索結果を読み直してください。"
+                      : errorMessage(data.error)}
                   <Button size="small" onClick={refresh}>
                     一覧を読み直す
                   </Button>
@@ -1026,20 +1093,22 @@ export function App() {
                     )}
                   </span>
                   <h2>
-                    {filter
+                    {searching || (trash && filter)
                       ? "一致する項目がありません"
                       : trash
                         ? "ごみ箱は空です"
                         : "ファイルを置く場所ができました"}
                   </h2>
                   <p>
-                    {filter
-                      ? "絞り込み条件を変更するか、次のページを読み込んでください。"
-                      : trash
-                        ? "ごみ箱に移動した項目は、ここに表示されます。"
-                        : "ファイルをドラッグするか、アップロードから追加できます。"}
+                    {searching
+                      ? "検索語や検索するフォルダーを変更してください。"
+                      : trash && filter
+                        ? "絞り込み条件を変更するか、次のページを読み込んでください。"
+                        : trash
+                          ? "ごみ箱に移動した項目は、ここに表示されます。"
+                          : "ファイルをドラッグするか、アップロードから追加できます。"}
                   </p>
-                  {!filter && !trash && (
+                  {!trash && !searching && (
                     <Button variant="primary" onClick={() => input.current?.click()}>
                       <Upload size={17} />
                       最初のファイルを追加
@@ -1081,11 +1150,13 @@ export function App() {
               )}
               <div className="list-footer">
                 <span>
-                  {filter
-                    ? "読み込み済みの項目を絞り込んでいます"
-                    : "ファイルは名前順に表示されます"}
+                  {searching
+                    ? "検索結果は名前順に表示されます"
+                    : filter && trash
+                      ? "読み込み済みの項目を絞り込んでいます"
+                      : "ファイルは名前順に表示されます"}
                 </span>
-                {data.hasNextPage && (
+                {data.hasNextPage && !data.error && (
                   <Button
                     disabled={data.isFetchingNextPage}
                     onClick={() => {
@@ -1117,7 +1188,7 @@ export function App() {
           key={JSON.stringify(action)}
           node={action.node}
           account={me}
-          parentId={parentId}
+          parentId={action.node.parentId ?? parentId}
           onClose={() => setAction(null)}
         />
       )}
