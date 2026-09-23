@@ -21,6 +21,7 @@ import {
   mutationStatements,
 } from "../fsMutation";
 import { accessUpload, type UploadRow, uploadFence } from "./access";
+import { multipartHeadCharge, multipartObjectProof, multipartPartsProof } from "./multipartProof";
 
 const CLOCK = "strftime('%s','now')*1000";
 
@@ -50,7 +51,8 @@ function steps(
       kind: "blob",
       affectedId: row.blob_id,
       statement: {
-        sql: "UPDATE blobs SET state='committed',last_op_id=? WHERE id=? AND state='staging' AND sha256_verified IS NOT NULL",
+        sql: `UPDATE blobs SET state='committed',last_op_id=? WHERE id=? AND state='staging'
+          AND sha256_verified ${row.mode === "single" ? "IS NOT NULL" : "IS NULL"}`,
         values: [op, row.blob_id],
       },
     },
@@ -177,6 +179,7 @@ function steps(
 
 async function settleFailedCompletion(db: D1Database, row: UploadRow, operationId: string) {
   await atomicBatch(db, [
+    ...(row.mode === "multipart" ? [multipartObjectProof(row)] : []),
     assertExists("SELECT 1 FROM operations WHERE op_id=? AND state='failed'", [operationId]),
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=?", [row.epoch]),
     {
@@ -206,6 +209,50 @@ export async function completeSingleUpload(
   requestId: string,
   lockTokens: readonly string[],
 ): Promise<MutationOutcome> {
+  return completeUpload(
+    env,
+    principal,
+    id,
+    capability,
+    capabilities,
+    requestId,
+    lockTokens,
+    "single",
+  );
+}
+
+/** Internal publication after R2 multipart completion and an independently observed object proof. */
+export async function publishMultipartUpload(
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  principal: Principal,
+  id: string,
+  capability: string,
+  capabilities: UploadCapabilities,
+  requestId: string,
+  lockTokens: readonly string[],
+): Promise<MutationOutcome> {
+  return completeUpload(
+    env,
+    principal,
+    id,
+    capability,
+    capabilities,
+    requestId,
+    lockTokens,
+    "multipart",
+  );
+}
+
+async function completeUpload(
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  principal: Principal,
+  id: string,
+  capability: string,
+  capabilities: UploadCapabilities,
+  requestId: string,
+  lockTokens: readonly string[],
+  mode: "single" | "multipart",
+): Promise<MutationOutcome> {
   const { row, authorized } = await accessUpload(
     env.DB,
     principal,
@@ -214,8 +261,7 @@ export async function completeSingleUpload(
     capabilities,
     false,
   );
-  if (principal.kind !== "user" || row.mode !== "single")
-    throw new Error("invalid_upload_complete");
+  if (principal.kind !== "user" || row.mode !== mode) throw new Error("invalid_upload_complete");
   if (row.completion_op_id) {
     const saved = await lookupOperation(env.DB, principal, row.completion_op_id);
     if (saved && saved.state !== "claimed") {
@@ -224,6 +270,14 @@ export async function completeSingleUpload(
     }
   }
   if (row.state !== "completing" || row.in_flight !== 0) throw new Error("upload_content_pending");
+  if (mode === "multipart") {
+    await atomicBatch(env.DB, [
+      authorizationAssertion(authorized),
+      uploadFence(row, ["completing"]),
+      multipartPartsProof(row),
+      multipartObjectProof(row),
+    ]);
+  }
   if (
     authorized.operation === "node.content.write" &&
     authorized.node.revision !== row.target_revision
@@ -277,22 +331,27 @@ export async function completeSingleUpload(
         values: [intent.id, id, intent.id],
       },
       assertOneChange,
+      ...(mode === "multipart" ? multipartHeadCharge(row) : []),
     ]);
     const object = await env.BLOBS.head(`u/${row.owner_id}/b/${row.blob_id}`);
     if (
       !object ||
       object.size !== row.declared_size ||
       object.customMetadata?.upload_id !== id ||
-      object.customMetadata.attempt_id !== row.write_attempt_id
+      object.customMetadata.attempt_id !== row.write_attempt_id ||
+      object.customMetadata.blob_id !== row.blob_id ||
+      object.customMetadata.epoch !== String(row.epoch)
     )
       throw new Error("upload_object_mismatch");
     const hashes = await lockTokenHashes(lockTokens);
     const planSteps = steps(row, claimed.claim, authorized, principal.user_id);
     const guards: SqlStatement[] = [
       uploadFence(row, ["completing"]),
+      ...(mode === "multipart" ? [multipartPartsProof(row), multipartObjectProof(row)] : []),
       assertExists(
         `SELECT 1 FROM blobs b JOIN blob_storage s ON s.blob_id=b.id
-        WHERE b.id=? AND b.owner_id=? AND b.state='staging' AND b.sha256_verified IS NOT NULL
+        WHERE b.id=? AND b.owner_id=? AND b.state='staging'
+          AND b.sha256_verified ${mode === "single" ? "IS NOT NULL" : "IS NULL"}
           AND b.size=? AND b.r2_etag=? AND s.bytes=b.size AND s.r2_etag=b.r2_etag AND s.removed_at IS NULL`,
         [row.blob_id, row.owner_id, row.declared_size, object.etag],
       ),

@@ -7,10 +7,11 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 3 multipart D1/R2 part接続 | migration `0018`の固定geometry・ledger marker・revision、D1予約、1回限りR2 create、認可RPC・dirty part mirror、streaming R2 part/SHA-256、停止再送alarm | 実D1/R2/DOで64 MiB+末尾、応答喪失、同時claim、失効/予約解除競合、storage全喪失を検証。R2 complete/head・原子的公開・abort/cleanup・HTTPは未接続 |
+| 3 multipart確定 | migration `0019`の一度限りcomplete attempt・object proof、paged manifestからR2 complete/HEAD、LockDO/D1原子的公開、旧版保持、DO terminal照合 | D1/R2/DOで応答喪失・同時確定・失効・physical会計・全10 step rollbackを検証。R2 abort/期限切れcleanup・HTTPは未接続 |
+| 3 multipart D1/R2 part接続 | migration `0018`の固定geometry・ledger marker・revision、D1予約、1回限りR2 create、認可RPC・dirty part mirror、streaming R2 part/SHA-256、停止再送alarm | 実D1/R2/DOで64 MiB+末尾、応答喪失、同時claim、失効/予約解除競合、storage全喪失を検証。R2 complete/head・原子的公開は追加済み。abort/cleanup・HTTPは未接続 |
 | 3 単一upload回収 | migration `0017`のcleanup lease、24時間後のHEAD、実physical計上/予約精算/GC handoff、CronとControlDO停止中repair、汎用reservation bypass防止 | 実D1/R2/DOでabsent/present、応答喪失、並行claim、遅延HEAD、epoch/pin競合、metadata隔離、原子性、bounded scanを検証。multipart・未知object全般・実Cronは未完了 |
 | 3 private単一upload | migration `0016`、専用HMAC capability、D1予約、1回限りR2 PUT/SHA-256、応答喪失GET照合、原子的新規/上書きcomplete、status/abort HTTP | 実D1/R2/LockDO、10 step rollback、同時送信、失効/応答喪失、CSRF/Origin、stream deadlineを検証。公開共有、UIは未実装 |
-| 3 multipart台帳 | UploadDOの内部SQLiteにattempt/leaseと独立counterを永続化。固定分割、4並列/3試行、unknown→aborting、idle/deadline、旧epoch失敗、complete/abort排他、200件page | Node/workerd検証。D1認可/予約/mirror、R2 create/partは内部接続済み。complete/cleanupとHTTPは未接続。Phase 3完了ではない |
+| 3 multipart台帳 | UploadDOの内部SQLiteにattempt/leaseと独立counterを永続化。固定分割、4並列/3試行、unknown→aborting、idle/deadline、旧epoch失敗、complete/abort排他、200件page | Node/workerd検証。D1認可/予約/mirror、R2 create/partは内部接続済み。complete/原子的公開は追加済み。cleanupとHTTPは未接続。Phase 3完了ではない |
 | 0.1 toolchain | Node/pnpm/TS/Wrangler/Vitest/fflate を exact 固定、pnpm lockfile、公開日証拠 `toolchain.json`、CI | ローカル実装済み |
 | 0.1 binding | 全 Env binding、SQLite DO の eviction 後の永続化、未実装 route は fail closed、未処理 Queue は retry | ローカル実装済み |
 | 0.1 KDF/Images | PBKDF2-SHA256 100,000/16B/32B を OpenSSL の vector と照合。PNG→WebP。20,000,000B/寸法/40MP のアプリ入力境界 | ローカル実装済み、実サービス gate は未完了 |
@@ -39,7 +40,7 @@
 | 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。admission/復旧 verifier/再開と実 GC lease drain は未完了 |
 | 1 復旧監査ページ | D1 quiesce、bootstrap/admin/root、owner ledger/ref、R2 HEAD size/etag と list 全件の D1 blob/derivative/archive 照合、outbox provenance/lease、share 予約量・root・version、credential の参照先種別・有効 scope root と4種の参照元 registry 行を各最大20件ずつ検証。FTS5 `integrity-check` (`rank=1`) と予約・未完了 upload・旧 outbox 等の最終 D1 fence を追加。完了後の再照会でも最終 fence を再確認し、失敗時は監査を先頭に戻す。停止中の FTS `rebuild`、旧 epoch の upload に紐づかない予約の bounded release と、旧 epoch `node.created` / `node.renamed` の bounded failed 収束は監査を初期化。ControlDO SQLite の epoch/token/R2 cursor 永続化、eviction・失敗ページ再試行・旧 epoch 拒否を実証 | 診断・限定修復。credential/share/outbox の全意味検証、他 event kind の cleanup、未知 R2 object の repair、incomplete multipart、Upload/GC/Queue drain と再開 gate は未完了 |
 | R6 #3 session | fingerprint 一意登録、logout tombstone、同 user の content session 失効、job chunk の current-credential assertion | JWT verifier/内部 login に接続済み。HTTP 経路は未接続 |
-| R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB制約、同期purge、R2削除GC、private単一uploadと期限切れ回収を実証。multipartのR2 complete/cleanup・HTTP接続は未実装 |
+| R6 #5/#6 schema | revoked scope detach、削除中 blob 復帰禁止、single upload 全49遷移の検証 | DB制約、同期purge、R2削除GC、private単一uploadと期限切れ回収を実証。multipartのR2 cleanup・HTTP接続は未実装 |
 | 1 auth/JWKS | jose exact、固定 issuer/AUD、user/service 分離、KV1h・既知 stale24h、single-flight/rate/鍵数/size/timeout 上限 | Node/workerd 検証済み。rate は isolate 単位、実 Access/MFA policy gate は未完了 |
 | 1 app password Basic 基盤 | `ap_<ULID>` と32B secret の厳密な HTTPS/DAV 入力、HMAC pepper kid＋PBKDF2-SHA256 100,000回の16B salt/32B digest、D1 current credential/epoch/maintenance の認証前後照合 | 実 D1 で成功、誤 secret、browser Origin/JWT 混在、失効競合を検証。旧 kid 成功時の条件付き再ハッシュと D1 応答喪失後の再照合を検証。DAV 入口は rate limit、Basic 認証、root 相対 path 解決、Class 1 OPTIONS、file GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、原子的 PROPPATCH、95 MBまでのstreaming PUT、原子的COPY/MOVEを接続。remote pepper secret 設定は未接続 |
 | 7 DAV conditions | RFC 4918 `If` の tagged/untagged、condition AND、全 list production OR、`Not`、state token、strong/weak ETag と独立 token submission、単一 `Lock-Token` を bounded parser/evaluator に実装 | 8 KiB、resource tag/list 各16、全64・各list16 condition、token/ETag/URI長を unit fixture で検証。same-origin current D1 path/ancestor lock/ETag stateを評価し、提出tokenをMKCOL/PROPPATCH/PUTのLockDO/D1 assertionへ接続。不一致412、malformed 400、条件が常真でも必要token未提出は423。`Lock-Token` はUNLOCK以外で400 |
@@ -62,7 +63,7 @@
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
 ControlDO は内部 RPC の epoch 発行・復旧を実装したが、maintenance / GC pause を解除しない。
-LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO はmultipart台帳・認可付き内部RPC・D1 mirror・alarmを接続済み。Worker内部からR2 create/partを実行するが、HTTPは未公開。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO はmultipart台帳・認可付き内部RPC・D1 mirror・alarmを接続済み。Worker内部からR2 create/part/completeと原子的公開を実行するが、HTTPは未公開。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
 
 ## Toolchain の判断
 
@@ -85,7 +86,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## M/U/I/R と復旧
 
-- **M**: `0001`〜`0018` を追加し、隔離 D1 と SQLite へ適用して56通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revisionを確認。リモート DB は未変更。probe schema は別 test file に隔離。
+- **M**: `0001`〜`0019` を追加し、隔離 D1 と SQLite へ適用して56通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proofを確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
 - **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の453 tests と前回の450/448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
@@ -93,6 +94,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 242 + workerd 478 = **720 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0019`でmultipart complete attempt/lease・object etag proof、成功partの不変性、completed終端guardを追加。R2一度限りcomplete/HEAD、physical観測、LockDO/D1原子的公開・旧版保持、DO terminal照合を接続。34件の新規試験でR2/claim/physical/proof/namespace応答喪失、同時確定、R2完了中の失効、metadata/size不一致、HEAD budget、全10 step rollback、偽terminal拒否、DO全喪失/旧epochを検証。既存64 MiB+末尾partの試験も原子的公開まで延長。R2 abort/期限切れcleanup・HTTPは未接続でControlDO admissionは閉鎖中。
 - 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 242 + workerd 444 = **686 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0018`でmultipart geometry・ledger marker・revisionを追加。D1予約、R2一度限りcreate、UploadDO認可RPCとdirty part mirror、part stream/SHA-256、初回/停止再送alarmを接続。27件の統合試験で64 MiB+短い末尾、D1/R2応答喪失、DO全storage喪失、同時create/4並列claim、失効/予約解除との競合、旧epoch停止、complete/abort競合を検証。R2 complete/head照合・原子的公開・R2 abort/期限切れcleanup・HTTPは未接続。ControlDO admissionは閉鎖を維持。
 - 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 242 + workerd 417 = **659 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0017`でcleanup lease/retry/indexを追加。単一uploadの24時間期限後のHEAD、未記録physicalの計上、予約精算、GC handoff、absent確定、Cron、ControlDO停止中repairを接続。回収26件とControlDO1件を追加し、3箇所のD1応答喪失、HEAD失敗、並行claim、遅延結果、epoch/pin競合、未知metadata隔離、虚偽size、completing/未束縛claim、部分step拒否、rollback、bounded scanを検証。汎用旧epoch reservation回収がterminal uploadを先に解放できた経路を閉じ、最終復旧fenceで未処理cleanupを拒否する。実CloudflareのCron/R2障害、multipart接続、未知object全般のrepair、admission再開は未完了。
 - 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 242 + workerd 390 = **632 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0016`を追加し、private単一uploadのD1予約、HMAC capability、1回限りR2 PUT/SHA-256、GET照合、原子的complete、status/abortを接続。0 byte、上書き旧版保持、全10必須step rollback、R2/DB応答喪失、同時送信、失効、CSRF/Origin/If-Match、鍵rotation、stalled sourceのlease中止を検証。single期限はR6に従い24時間とし、abortとclaimの競合・遅延PUTでは予約とphysical計上を維持する。既存1,024回D1 budget試験が30秒を超えたため、その試験だけ60秒へ調整後、全checkを再実行して成功。虚偽sizeのR2試験ではworkerdが意図した切断診断を出す。期限切れ/orphan cleanup、multipart接続、公開共有、UI、実ControlDO admissionとstagingは未完了。

@@ -215,7 +215,49 @@ export class UploadDO extends DurableObject<Env> {
     await this.#schedule(true);
   }
 
-  async #run<T>(request: MultipartRequest, action: () => T): Promise<T> {
+  async #completed(row: UploadRow) {
+    const digest = await digestJson({
+      spaceId: row.space_id,
+      kind: "upload.complete",
+      body: { uploadId: row.id, digest: row.request_digest },
+    });
+    await atomicBatch(this.env.DB, [
+      assertExists(
+        `SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
+        WHERE u.id=? AND u.mode='multipart' AND u.state='completed'
+          AND u.multipart_object_etag IS NOT NULL AND u.multipart_complete_attempt IS NOT NULL
+          AND o.kind='upload.complete' AND o.state='committed'
+          AND o.request_digest=? AND o.principal_kind='user' AND o.credential_version IS NULL
+          AND EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
+            WHERE c.id=u.credential_id AND s.user_id=o.principal_id)
+          AND o.credential_id=u.credential_id AND o.epoch=u.epoch AND o.space_id=u.space_id
+          AND json_extract(o.operands_json,'$.uploadId')=u.id
+          AND json_extract(o.operands_json,'$.parentId')=u.parent_id
+          AND json_extract(o.operands_json,'$.nodeId') IS u.target_id
+          AND json_extract(o.result_json,'$.status')=CASE WHEN u.target_id IS NULL THEN 201 ELSE 204 END
+          AND json_extract(o.result_json,'$.nodeId')=COALESCE(u.target_id,o.op_id||'_node')
+          AND o.expected_steps=CASE WHEN u.target_id IS NULL THEN 10 ELSE 8 END
+          AND (SELECT COUNT(*) FROM operation_steps s WHERE s.op_id=o.op_id)=o.expected_steps
+          AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id AND s.kind='upload' AND s.affected_id=u.id)
+          AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id AND s.kind='blob' AND s.affected_id=u.blob_id)`,
+        [row.id, digest],
+      ),
+    ]);
+    const local = this.#ledger.status(Date.now());
+    if (local) {
+      if (local.uploadId !== row.id || this.#binding() !== row.multipart_ledger_id)
+        throw new Error("upload_terminal_conflict");
+      this.#ledger.acknowledgeCompleted(row.epoch);
+    }
+    // A lost journal does not need reconstruction for a durably completed upload. D1 blocks writes.
+    await this.ctx.storage.deleteAlarm();
+  }
+
+  async #run<T>(
+    request: MultipartRequest,
+    action: () => T,
+    terminal?: (row: UploadRow) => T,
+  ): Promise<T> {
     // Serialize only short control-plane operations, never streams or R2 calls. The gate also
     // prevents an older D1 response from clearing dirty rows belonging to a newer part result.
     return this.#serialized(async () => {
@@ -240,7 +282,21 @@ export class UploadDO extends DurableObject<Env> {
         (await digestJson(request.capability)) !== row.capability_hash
       )
         throw new Error("invalid_upload_capability");
-      const authorized = await uploadAuthority(this.env.DB, request.principal, row);
+      const authorized = await uploadAuthority(
+        this.env.DB,
+        request.principal,
+        row,
+        row.state !== "completed",
+      );
+      if (row.state === "completed") {
+        await atomicBatch(this.env.DB, [
+          authorizationAssertion(authorized),
+          uploadFence(row, ["completed"], false),
+        ]);
+        await this.#completed(row);
+        if (!terminal) throw new Error("upload_already_completed");
+        return terminal(row);
+      }
       this.#identity(row);
       await this.#initialize(row, authorized);
       const assertions = [
@@ -265,7 +321,34 @@ export class UploadDO extends DurableObject<Env> {
   }
 
   status(request: MultipartRequest) {
-    return this.#run(request, () => this.#ledger.status(Date.now())!);
+    return this.#run(
+      request,
+      () => this.#ledger.status(Date.now())!,
+      (row) => ({
+        uploadId: row.id,
+        epoch: row.epoch,
+        state: "completed" as const,
+        partCount: row.part_count!,
+        inFlight: 0,
+        completedParts: row.part_count!,
+        dataCalls: row.data_calls,
+        dataBytes: row.data_bytes,
+        controlCalls: row.control_calls,
+        cleanupCalls: row.cleanup_calls,
+        cleanupPending: false,
+        errorCode: null,
+      }),
+    );
+  }
+
+  acknowledgeCompletion(request: MultipartRequest) {
+    return this.#run(
+      request,
+      () => {
+        throw new Error("upload_not_completed");
+      },
+      () => {},
+    );
   }
 
   claimPart(request: MultipartPartRequest) {
@@ -304,6 +387,14 @@ export class UploadDO extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     await this.#serialized(async () => {
+      const before = this.#ledger.status(Date.now());
+      if (before && this.#binding()) {
+        const row = await uploadRow(this.env.DB, before.uploadId);
+        if (row?.state === "completed") {
+          await this.#completed(row);
+          return;
+        }
+      }
       if (this.#binding()) {
         const control = await this.env.CONTROL.get(
           this.env.CONTROL.idFromName(CONTROL_NAME),

@@ -20,7 +20,7 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| schema・契約 | migration `0001`〜`0018`、56通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0019`、56通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
@@ -28,7 +28,7 @@
 | Trash | 一覧、restore、purge、別trash子退避、名前衝突解決 | 最大64層・1,000 node、冪等再送、GC競合、深さ順処理 | 大規模非同期trash/purgeは未実装 |
 | GC | 7日猶予candidate、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | orphan/multipart全般のrepair、実Cron運用 |
 | private単一upload | HMAC capability、D1予約、1回だけのR2 PUT、SHA-256、GETによる応答喪失回収、原子的新規作成/上書き、status/abort HTTP、24時間後のCron回収・GC接続 | 実D1/R2/LockDO、0 byte、同時送信、10 step rollback、失効、DB/R2応答喪失、CSRF/Origin、回収lease競合、旧epoch、実ControlDO停止中repair | 公開共有、Files UI、未知object修復、stagingは未完了 |
-| multipart内部サービス | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、停止alarm・200件page | D1/R2/DO、64 MiB+末尾part、同時claim、応答喪失、storage全喪失、失効/予約解除競合、complete/abort排他 | R2 complete/head照合・原子的公開・abort/期限切れ回収・HTTP/UIは未接続 |
+| multipart内部サービス | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、R2一度限りcomplete/HEAD、原子的新規/上書き公開、terminal照合 | D1/R2/DO/LockDO、64 MiB+末尾の公開、同時確定、応答喪失、storage全喪失、失効、10 step rollback、complete/abort排他 | R2 abort/期限切れ回収・HTTP/UIは未接続 |
 | WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation | 実OS client gate、共有DAV、残るmethod/profile |
 | content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDO | D1/R2、署名、失効、Range、budget reserve/settle | ZIP/page/entry/track、全route会計 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
@@ -36,7 +36,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup | DO eviction、R2 inventory、会計・credential/share/outbox監査 | admission再開、未知object repair、完全restore drill |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 242件 + workerd 444件 = 686件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0018`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 242件 + workerd 478件 = 720件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0019`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -52,7 +52,7 @@
 
 ### サービスとデータ処理
 
-- multipartのR2 complete/head照合・原子的namespace公開・R2 abort/期限切れcleanup。create/part送信・認可RPC・D1 mirror・同attemptの再照会は内部サービスで接続済み。HTTPは503を維持する。
+- multipartのR2 abort/期限切れcleanup。create/part送信・認可RPC・D1 mirror・R2 complete/HEAD照合・原子的公開は内部サービスで接続済み。HTTPは503を維持する。
 - multipartのunknown creation ID/DO全storage喪失からの回収、7日incomplete lifecycle検証。単一uploadはHTTP・期限切れ回収まで接続済み。
 - orphan blobとincomplete multipartのinventory・repair。
 - 大規模tree向けの非同期trash/restore/purge job。
@@ -121,7 +121,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. `UploadDO`内部台帳をD1認可・予約・状態mirrorとR2送信へ接続し、multipartのpart lease・再開・complete/abortを実装。
+1. multipartの中止・期限切れ回収をR2 abort/HEADと会計へ接続し、create/part/status/complete/abortのHTTPを開く。
 2. multipartの期限切れ回収・旧epoch修復と、未知R2 objectの隔離・inventory・修復を実装。
 3. Queueの残るevent kindとrepair。
 4. recovery auditの不足を埋め、ControlDO admission/resumeを実装。

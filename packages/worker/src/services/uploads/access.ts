@@ -40,6 +40,9 @@ export interface UploadRow {
   part_count: number | null;
   multipart_ledger_id: string | null;
   multipart_revision: number;
+  multipart_complete_attempt: string | null;
+  multipart_complete_lease: number | null;
+  multipart_object_etag: string | null;
 }
 
 export async function uploadRow(db: D1Database, id: string): Promise<UploadRow | null> {

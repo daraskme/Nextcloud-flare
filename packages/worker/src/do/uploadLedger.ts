@@ -1,6 +1,13 @@
 import { expectedPartBytes, multipartPlan, UPLOAD_LIMITS } from "./uploadPlan";
 
-type State = "created" | "uploading" | "completing" | "aborting" | "expired" | "failed";
+type State =
+  | "created"
+  | "uploading"
+  | "completing"
+  | "completed"
+  | "aborting"
+  | "expired"
+  | "failed";
 interface UploadRow extends Record<string, SqlStorageValue> {
   upload_id: string;
   epoch: number;
@@ -360,10 +367,21 @@ export class MultipartLedger {
       throw new Error("invalid_upload_epoch");
     this.storage.transactionSync(() => {
       const row = this.#row();
-      if (!row || row.epoch === authoritativeEpoch) return;
+      if (!row || row.epoch === authoritativeEpoch || row.state === "completed") return;
       if (row.epoch > authoritativeEpoch) throw new Error("upload_epoch_conflict");
       this.#stop("failed", "stale_epoch");
     });
+  }
+
+  /** Only UploadDO's verified D1 committed operation may authorize this terminal transition. */
+  acknowledgeCompleted(epoch: number): void {
+    const row = this.#required(epoch);
+    if (row.state === "completed") return;
+    if (row.state !== "completing" && !(row.state === "failed" && row.error_code === "stale_epoch"))
+      throw new Error("upload_terminal_conflict");
+    this.storage.sql.exec(
+      "UPDATE multipart_state SET state='completed',cleanup_pending=0,error_code=NULL WHERE singleton=1",
+    );
   }
 
   /** Cleanup is counted separately and remains available after the data budget is spent. */

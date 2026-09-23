@@ -93,7 +93,13 @@ migration `0018`はimmutable part geometry、R2 initialization identity、`multi
 
 `services/uploads/multipart.ts`は内部private userサービス。予約とstaging blobを作り、一度限りのD1 initialization claimを確認してからR2 multipart IDを取得する。create応答喪失では同uploadを再作成しない。既知R2 IDのD1保存は失効後も可能だが送信権限を与えない。partは現在のD1認可/予約を再確認し、固定長streamとSHA-256を同時に処理して結果をDOへ精算する。R2呼出し後の結果不明はupload全体を停止し、呼出し前の確実な失敗だけをnot_startedとする。個別part hashをwhole-objectの`sha256_verified`へ転用しない。
 
-**R2 complete/HEAD照合・原子的namespace公開・R2 abort/期限切れcleanup・HTTP/UIは未接続。** R2へのpart送信成功は製品のupload完了を意味しない。unknown creation IDと台帳消失では予約を保持する。7日incomplete lifecycleの実bucket検証とrepairが必要で、ローカル試験で代替しない。
+`services/uploads/multipartComplete.ts`とmigration `0019`は一度限りのcomplete attempt/leaseをD1に保存し、確認済みclaimだけがR2 completeを呼ぶ。台帳は200行ずつ読み、R2 APIに必要なetag配列だけを一時的に構築する。claim/completeの応答喪失時は不変keyのHEADで照合し、不在でも再completeしない。HEADはcontrol_calls上限64を使い、cleanup budgetは消費しない。size/upload/blob/epoch/初期化attemptのmetadataを照合し、実在bytesをblob_storageへ一度だけ記録してmultipart_object_etagを固定する。権限失効がR2 completeと競合した時もphysical観測は行い、公開は拒否する。
+
+`complete.ts`のsingle専用wrapperとmultipart publication wrapperは同じLockDO/fsMutationを使用する。multipartでは全partの件数・固定geometry・etag/hashとobject proof/physicalを、operation claim前と最終publishing batchで検査する。singleのwhole hash必須条件は維持し、multipartのsha256_verifiedはNULLを要求する。新規10 step、上書き8 stepは予約消費・blob・node/旧版・検索・activity/outbox・terminalを同時確定する。既知namespace失敗の予約解放にもobject proofを必要とし、complete結果不明を補償しない。
+
+UploadDOはD1のcompleted flagだけではterminalと認めない。committed operationのcredential/principal/digest/operand/result/stepを照合し、SQLiteをcompletedへ進める。最終ackの喪失、eviction、旧epoch alarmでも公開済みblobをcleanupへ戻さない。D1で完了を証明できる場合、全SQLite喪失後のstatusは台帳を再初期化せず返し、新規partは拒否する。
+
+**R2 abort/期限切れcleanup・HTTP/UIは未接続。** unknown creation ID、complete結果不明、未完了台帳消失では予約を保持する。7日incomplete lifecycleの実bucket検証とrepairが必要で、ローカル試験で代替しない。
 
 metadata直列化の30秒timeoutと例外時resetは[Durable Object State](https://developers.cloudflare.com/durable-objects/api/state/)に従う。SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
 

@@ -8,11 +8,12 @@ import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
 import { UploadDO } from "../../src/do/UploadDO";
 import { UPLOAD_LIMITS } from "../../src/do/uploadPlan";
-import type { Env } from "../../src/env";
 import { uploadRow } from "../../src/services/uploads/access";
 import { reserveMultipartUpload } from "../../src/services/uploads/create";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
+import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { foundationFixture } from "../fixtures/foundation";
+import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
@@ -20,50 +21,6 @@ beforeEach(async () => {
 });
 const SHA = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const stream = (text = "abc") => new Blob([text]).stream();
-
-function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
-  const app: Env = {
-    ...env,
-    DB: db,
-    CONTROL: {
-      idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ status: async () => ({ epoch, maintenance, gcPaused: true }) }),
-    } as unknown as Env["CONTROL"],
-  };
-  app.UPLOADS = {
-    idFromName: env.UPLOADS.idFromName.bind(env.UPLOADS),
-    get(id: DurableObjectId) {
-      const invoke = async <T>(callback: (upload: UploadDO) => Promise<T>) => {
-        const result = await runInDurableObject(env.UPLOADS.get(id), async (_, state) => {
-          try {
-            return { ok: true as const, value: await callback(new UploadDO(state, app)) };
-          } catch (error) {
-            return {
-              ok: false as const,
-              message: error instanceof Error ? error.message : "upload_failed",
-            };
-          }
-        });
-        if (!result.ok) throw new Error(result.message);
-        return result.value;
-      };
-      return {
-        status: (r: Parameters<UploadDO["status"]>[0]) => invoke((upload) => upload.status(r)),
-        claimPart: (r: Parameters<UploadDO["claimPart"]>[0]) =>
-          invoke((upload) => upload.claimPart(r)),
-        settlePart: (r: Parameters<UploadDO["settlePart"]>[0]) =>
-          invoke((upload) => upload.settlePart(r)),
-        completedParts: (r: Parameters<UploadDO["completedParts"]>[0]) =>
-          invoke((upload) => upload.completedParts(r)),
-        beginComplete: (r: Parameters<UploadDO["beginComplete"]>[0]) =>
-          invoke((upload) => upload.beginComplete(r)),
-        requestAbort: (r: Parameters<UploadDO["requestAbort"]>[0]) =>
-          invoke((upload) => upload.requestAbort(r)),
-      };
-    },
-  } as unknown as Env["UPLOADS"];
-  return app;
-}
 
 async function fixture(size = 3, initialize = true) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -121,41 +78,6 @@ async function part(f: Awaited<ReturnType<typeof fixture>>) {
   return env.DB.prepare("SELECT * FROM upload_parts WHERE upload_id=? AND part_number=1")
     .bind(f.created.id)
     .first();
-}
-function injectBatch(
-  predicate: (sql: string) => boolean,
-  effect: () => Promise<void>,
-  after: boolean,
-): D1Database {
-  const queries = new WeakMap<object, string>();
-  let injected = false;
-  return {
-    prepare(query: string) {
-      const statement = env.DB.prepare(query);
-      return new Proxy(statement, {
-        get(target, key) {
-          if (key === "bind")
-            return (...values: unknown[]) => {
-              const bound = target.bind(...values);
-              queries.set(bound, query);
-              return bound;
-            };
-          const value = Reflect.get(target, key);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      });
-    },
-    async batch(statements: D1PreparedStatement[]) {
-      const matches = !injected && statements.some((s) => predicate(queries.get(s) ?? ""));
-      if (matches) {
-        injected = true;
-        if (!after) await effect();
-      }
-      const result = await env.DB.batch(statements);
-      if (matches && after) await effect();
-      return result;
-    },
-  } as D1Database;
 }
 
 it("reserves once, creates R2 once, fixes geometry, and arms the first idle alarm", async () => {
@@ -672,9 +594,17 @@ it("stores fixed 64 MiB geometry and the short final part in R2 without bufferin
   await f.stub.beginComplete(f.request);
   const row = (await uploadRow(env.DB, f.created.id))!;
   const key = `u/${row.owner_id}/b/${row.blob_id}`;
-  await env.BLOBS.resumeMultipartUpload(key, row.r2_upload_id!).complete(
-    [...first, ...second].map((p) => ({ partNumber: p.partNumber, etag: p.etag! })),
-  );
+  expect(
+    await completeMultipartUpload(
+      f.app,
+      f.principal,
+      f.created.id,
+      f.created.capability,
+      f.capabilities,
+      "complete-large",
+      [],
+    ),
+  ).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
   expect((await env.BLOBS.head(key))?.size).toBe(bytes + 3);
   expect(await (await env.BLOBS.get(key, { range: { offset: bytes, length: 3 } }))!.text()).toBe(
     "abc",
