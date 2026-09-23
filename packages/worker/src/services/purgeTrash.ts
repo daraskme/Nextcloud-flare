@@ -367,7 +367,7 @@ function statements(
     trashOpId,
     {
       sql: `INSERT OR IGNORE INTO gc_candidates(blob_id,trash_op_id,state,not_before)
-      SELECT b.id,?,'candidate',${clock} FROM blobs b JOIN purge_blobs p ON p.blob_id=b.id
+      SELECT b.id,?,'candidate',${clock}+604800000 FROM blobs b JOIN purge_blobs p ON p.blob_id=b.id
       WHERE p.purge_op_id=? AND b.state NOT IN ('deleting','deleted')`,
       values: [trashOpId, op],
     },

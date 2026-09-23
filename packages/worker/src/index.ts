@@ -9,6 +9,7 @@ import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
+import { runGarbageCollection } from "./jobs/gc";
 import { dispatchPendingOutbox } from "./jobs/outbox";
 import { handleOutboxBatch } from "./jobs/queue";
 
@@ -113,5 +114,14 @@ export default {
     const epoch = await admittedEpoch(env);
     if (epoch === null) return;
     await dispatchPendingOutbox(env.DB, env.JOBS, epoch);
+    const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.epoch !== epoch || status.maintenance || status.gcPaused) return;
+    const enabled = await primary(env.DB)
+      .prepare(
+        "SELECT 1 AS ok FROM control WHERE singleton=1 AND epoch=? AND maintenance=0 AND gc_paused=0",
+      )
+      .bind(epoch)
+      .first<number>("ok");
+    if (enabled === 1) await runGarbageCollection(env.DB, env.BLOBS, epoch);
   },
 } satisfies ExportedHandler<Env>;

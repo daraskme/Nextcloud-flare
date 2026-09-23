@@ -318,7 +318,10 @@ it("unaccounts a physically deleted object once and preserves the removal tombst
         values: [f.ids.blob],
       },
       { sql: "UPDATE blobs SET state='deleting' WHERE id=?", values: [f.ids.blob] },
-      { sql: "UPDATE gc_candidates SET state='deleting' WHERE blob_id=?", values: [f.ids.blob] },
+      {
+        sql: "UPDATE gc_candidates SET state='deleting',claim_token='fixture',claim_expires_at=9999999999999 WHERE blob_id=?",
+        values: [f.ids.blob],
+      },
     ]);
     expect((await audit(f.ids.user))?.physical_bytes).toBe(3);
     await env.BLOBS.delete(key);
@@ -326,7 +329,10 @@ it("unaccounts a physically deleted object once and preserves the removal tombst
     // Fixture for the future fenced GC finalizer, after actual R2 absence verification.
     await atomicBatch(env.DB, [
       { sql: "UPDATE blobs SET state='deleted' WHERE id=?", values: [f.ids.blob] },
-      { sql: "UPDATE gc_candidates SET state='deleted' WHERE blob_id=?", values: [f.ids.blob] },
+      {
+        sql: "UPDATE gc_candidates SET state='deleted',claim_token=NULL,claim_expires_at=NULL WHERE blob_id=?",
+        values: [f.ids.blob],
+      },
       {
         sql: "UPDATE blob_storage SET removed_at=? WHERE blob_id=?",
         values: [Date.now(), f.ids.blob],

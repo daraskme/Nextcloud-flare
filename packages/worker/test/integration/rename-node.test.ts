@@ -457,8 +457,10 @@ it("restores only the fixed trash membership after GC deletion leases drain", as
   });
   if (trashed.kind !== "terminal") throw new Error("trash_commit_unknown");
   const trashId = trashed.operation.id;
-  await env.DB.prepare("INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'deleting',0)")
-    .bind(f.ids.blob)
+  await env.DB.prepare(
+    "INSERT INTO gc_candidates(blob_id,state,not_before,claim_token,claim_expires_at) VALUES(?,'deleting',0,?,?)",
+  )
+    .bind(f.ids.blob, crypto.randomUUID(), Date.now() + 60_000)
     .run();
   await expect(
     restoreTrash(admitted(), {
@@ -528,10 +530,11 @@ it("restores only the fixed trash membership after GC deletion leases drain", as
       .first(),
   ).toEqual({ parent_id: null, deleted_op_id: foreignOp });
   expect(
-    await env.DB.prepare("SELECT state,trash_op_id FROM gc_candidates WHERE blob_id=?")
+    await env.DB.prepare(`SELECT state,trash_op_id,
+      not_before>strftime('%s','now')*1000 AS delayed FROM gc_candidates WHERE blob_id=?`)
       .bind(f.ids.blob)
       .first(),
-  ).toEqual({ state: "candidate", trash_op_id: secondTrash.operation.id });
+  ).toEqual({ state: "candidate", trash_op_id: secondTrash.operation.id, delayed: 1 });
   expect(
     await env.DB.prepare("SELECT tree_generation FROM spaces WHERE id=?")
       .bind(f.ids.space)
