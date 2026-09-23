@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreはGC停止fixture。詳細・残作業は[FILES_UI](FILES_UI.md) |
+| 4 通常稼働中のtrash復元 | migration `0026`、永続GC pause、管理者設定保持、既存deleting drain、原子的なoperation/token/epoch/期限assertと解放alarm | 実ControlDO/LockDO/D1/R2の24件とschema制約1件を追加。実browserの復元・応答喪失再照会。詳細は[RESTORE_GC](RESTORE_GC.md) |
+| 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreもGC稼働中のfixtureで検証。詳細・残作業は[FILES_UI](FILES_UI.md) |
 | 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account/KDF admissionは未完了 |
 | 4 停止中GC drain | migration `0024`のclaim epoch/counter、blob/orphanの既存deleting回収、ControlDO内部RPCと監査再初期化 | 新規25件を含む全check1,022件が成功。全復旧監査fixtureは成功、実環境・完全restore・admission再開は未完了 |
 | 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
@@ -96,13 +97,15 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## M/U/I/R と復旧
 
-- **M**: `0001`〜`0025` を追加し、隔離 D1 と SQLite へ適用して61通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proof・永久停止/閉鎖証明を確認。リモート DB は未変更。probe schema は別 test file に隔離。
+- **M**: `0001`〜`0026` を追加し、隔離 D1 と SQLite へ適用して61通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proof・永久停止/閉鎖証明を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
 - **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の453 tests と前回の450/448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node335 + workerd744 = **1,079 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。workerd全50fileは370.46秒。別途実ブラウザー**9 tests**成功（1.6分）、合計**1,088件**。migration `0026`（61通常table）でGC稼働中のごみ箱復元を接続。復元専用24件とschema1件を追加し、管理者設定・期限・lease・token・停止/epoch競合、D1/R2応答喪失と遅延削除、eviction/全喪失、HTTP再試行を確認。browserは復元前後のGC再開と、復元commit後の応答喪失から同一key再照会を確認。補助fetchのFetch Metadata不足と再照会待機を修正し、作成/復元が実際に成功した後だけ応答を破棄する。最終のbrowser修正後にlint/typecheckも成功。実環境、account/KDF admission、backup barrier、残るQueue・共有・検索・mediaは未完了。
 
 - 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node335 + workerd719 = **1,054 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。別途`pnpm test:browser`の**8 tests**が成功し、FolderPickerの親階層ボタンがsubmitしない回帰検査を含む実Filesシナリオも再確認。合計1,062件。PC/mobileの実画面を確認。private asset全graphの認証/host/fallback/HEAD、96 MiB multipart中断/reload/同一attempt/既送信part省略、操作応答喪失/同一key、複数タブlogoutを実ローカルAPIで検証。追加Node4件はCSRF失効競合とoperation再照合。既存workerdテストでchildrenのsize/mimeと空stream logout/非空拒否を拡張。schema変更なし。GC稼働中restoreのpause hold、上書き/共有/検索/media UI、実環境gateは未完了。
 

@@ -10,6 +10,7 @@ import {
 } from "../auth/locks";
 import { grantPermit, type Permit, releasePermit, revokeSpacePermits } from "../db/permits";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertRestorePause, type RestorePause } from "../db/restorePause";
 import type { Env } from "../env";
 import { CONTROL_NAME } from "./ControlDO";
 
@@ -53,6 +54,7 @@ export interface TrashPermitRequest {
   lockTokens: readonly string[];
 }
 export interface RestorePermitRequest extends CreatePermitRequest {
+  gcPause: RestorePause;
   trashOpId: string;
   rootNodeId: string;
 }
@@ -750,6 +752,7 @@ export class LockDO extends DurableObject<Env> {
         authorizationAssertion(destination),
         assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
         restoreGuard,
+        assertRestorePause(request.gcPause, request.requestId),
       ],
     );
   }

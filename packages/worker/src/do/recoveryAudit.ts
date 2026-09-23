@@ -205,6 +205,7 @@ export async function rebuildRecoverySearchFts(db: D1Database, epoch: number): P
 /** Also asserted inside the admission transaction, not just observed before it. */
 export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=?
       AND c.maintenance=1 AND c.gc_paused=1
+      AND c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))

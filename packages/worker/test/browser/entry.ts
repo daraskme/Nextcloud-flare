@@ -62,6 +62,7 @@ async function initialize(bindings: Env) {
     completed = (await control.nextRecoveryAuditPage(epoch, 20)).completed;
   if (!completed) throw new Error("browser_audit_incomplete");
   await control.resumeAdmission(epoch);
+  await control.resumeGarbageCollection(epoch);
   const response = await worker.fetch(
     new Request(`${env.APP_ORIGIN}/api/v1/me`, { headers: { "Cf-Access-Jwt-Assertion": token } }),
     env,
@@ -75,6 +76,10 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    if (path === "/__test__/control" && request.method === "GET") {
+      const control = ready.env.CONTROL.get(ready.env.CONTROL.idFromName(CONTROL_NAME));
+      return Response.json(await control.status());
+    }
     if (path === "/cdn-cgi/access/logout")
       return new Response("ローカルテスト: ログアウトしました", {
         headers: { "Content-Type": "text/plain; charset=utf-8" },

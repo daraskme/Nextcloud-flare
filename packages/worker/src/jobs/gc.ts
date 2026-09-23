@@ -5,6 +5,7 @@ import {
   primary,
   type SqlStatement,
 } from "../db/primary";
+import { type RestorePause, restorePauseCondition } from "../db/restorePause";
 
 const MAX_BLOBS = 1_000;
 const MAX_R2_CALLS = 2_000;
@@ -15,6 +16,16 @@ const SETTLED_UPLOADS = `NOT EXISTS(SELECT 1 FROM uploads u WHERE u.blob_id=b.id
   u.state NOT IN ('completed','expired','aborted','failed') OR u.cleanup_token IS NOT NULL
   OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=u.reservation_id AND r.state='reserved')
   OR (u.mode='multipart' AND u.state<>'completed' AND u.multipart_cleanup_closed IS NULL)))`;
+
+type GcMode = boolean | RestorePause;
+function modeFence(mode: GcMode, alias: string) {
+  const proof =
+    typeof mode === "object" ? restorePauseCondition(mode, alias) : { sql: "1=1", values: [] };
+  return {
+    sql: proof.sql,
+    values: [mode === true ? 1 : 0, mode === false ? 0 : 1, ...proof.values],
+  };
+}
 
 interface Candidate {
   blobId: string;
@@ -33,8 +44,9 @@ async function nextCandidate(
   db: D1Database,
   epoch: number,
   now: number,
-  stopped: boolean,
+  stopped: GcMode,
 ): Promise<Candidate | null> {
+  const mode = modeFence(stopped, "control");
   return primary(db)
     .prepare(`SELECT g.blob_id AS blobId,b.r2_key AS key,g.state
       FROM gc_candidates g JOIN blobs b ON b.id=g.blob_id
@@ -43,9 +55,9 @@ async function nextCandidate(
         AND b.ref_count=0 AND g.pinned_by IS NULL
         AND ${SETTLED_UPLOADS}
         AND NOT EXISTS(SELECT 1 FROM blob_pins p WHERE p.blob_id=g.blob_id)
-        AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?)
+        AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=? AND ${mode.sql})
       ORDER BY CASE g.state WHEN 'deleting' THEN 0 ELSE 1 END,g.not_before,g.blob_id LIMIT 1`)
-    .bind(stopped ? 1 : 0, now, now, epoch, stopped ? 1 : 0, stopped ? 1 : 0)
+    .bind(stopped === false ? 0 : 1, now, now, epoch, ...mode.values)
     .first<Candidate>();
 }
 
@@ -55,14 +67,15 @@ async function claimCandidate(
   epoch: number,
   token: string,
   now: number,
-  stopped: boolean,
+  stopped: GcMode,
 ): Promise<boolean> {
+  if (stopped !== false && candidate.state === "candidate") return false;
   const expires = now + CLAIM_MS;
+  const mode = modeFence(stopped, "control");
   const common = `blob_id=? AND pinned_by IS NULL
     AND NOT EXISTS(SELECT 1 FROM blob_pins p WHERE p.blob_id=gc_candidates.blob_id)
     AND EXISTS(SELECT 1 FROM blobs b WHERE b.id=gc_candidates.blob_id AND b.ref_count=0 AND ${SETTLED_UPLOADS})
-    AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?)`;
-  const mode = stopped ? 1 : 0;
+    AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=? AND ${mode.sql})`;
   const statements =
     candidate.state === "candidate"
       ? [
@@ -75,7 +88,7 @@ async function claimCandidate(
           {
             sql: `UPDATE gc_candidates SET state='deleting',claim_token=?,claim_expires_at=?,claim_epoch=?,
               attempt=MIN(attempt+1,100),last_error=NULL WHERE state='candidate' AND not_before<=? AND ${common}`,
-            values: [token, expires, epoch, now, candidate.blobId, epoch, mode, mode],
+            values: [token, expires, epoch, now, candidate.blobId, epoch, ...mode.values],
           },
           assertOneChange,
         ]
@@ -84,7 +97,7 @@ async function claimCandidate(
             sql: `UPDATE gc_candidates SET claim_token=?,claim_expires_at=?,claim_epoch=?,attempt=MIN(attempt+1,100),last_error=NULL
               WHERE state='deleting' AND (claim_token IS NULL OR claim_expires_at<=?) AND ${common}
               AND EXISTS(SELECT 1 FROM blobs WHERE id=gc_candidates.blob_id AND state='deleting')`,
-            values: [token, expires, epoch, now, candidate.blobId, epoch, mode, mode],
+            values: [token, expires, epoch, now, candidate.blobId, epoch, ...mode.values],
           },
           assertOneChange,
         ];
@@ -107,17 +120,18 @@ function dispatchFence(
   candidate: Candidate,
   token: string,
   epoch: number,
-  stopped: boolean,
+  stopped: GcMode,
 ): SqlStatement {
+  const mode = modeFence(stopped, "c");
   return assertExists(
     `SELECT 1 FROM gc_candidates g JOIN blobs b ON b.id=g.blob_id
     JOIN control c ON c.singleton=1 WHERE g.blob_id=? AND b.r2_key=?
     AND g.state='deleting' AND b.state='deleting' AND b.ref_count=0 AND g.pinned_by IS NULL
     AND g.claim_token=? AND g.claim_epoch=? AND g.claim_expires_at>${CLOCK}
-    AND c.epoch=g.claim_epoch AND c.maintenance=? AND c.gc_paused=?
+    AND c.epoch=g.claim_epoch AND c.maintenance=? AND c.gc_paused=? AND ${mode.sql}
     AND ${SETTLED_UPLOADS}
     AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)`,
-    [candidate.blobId, candidate.key, token, epoch, stopped ? 1 : 0, stopped ? 1 : 0],
+    [candidate.blobId, candidate.key, token, epoch, ...mode.values],
   );
 }
 
@@ -135,7 +149,7 @@ async function finalizeCandidate(
   token: string,
   now: number,
   epoch: number,
-  stopped: boolean,
+  stopped: GcMode,
 ): Promise<boolean> {
   const blobId = candidate.blobId;
   try {
@@ -203,12 +217,23 @@ export async function drainStoppedBlobGarbageCollection(
   return collect(db, bucket, epoch, { ...options, maxBlobs: options.maxBlobs ?? 20 }, true);
 }
 
+/** Drain irreversible deletions under this exact live restore window; no new candidates. */
+export async function drainRestoreBlobGarbageCollection(
+  db: D1Database,
+  bucket: R2Bucket,
+  pause: RestorePause,
+  options: { maxBlobs?: number; maxWallMs?: number } = {},
+): Promise<GcResult> {
+  restorePauseCondition(pause);
+  return collect(db, bucket, pause.epoch, { ...options, maxBlobs: options.maxBlobs ?? 20 }, pause);
+}
+
 async function collect(
   db: D1Database,
   bucket: R2Bucket,
   epoch: number,
   options: { maxBlobs?: number; maxWallMs?: number },
-  stopped: boolean,
+  stopped: GcMode,
 ): Promise<GcResult> {
   const limit = options.maxBlobs ?? 50;
   const wall = options.maxWallMs ?? MAX_WALL_MS;

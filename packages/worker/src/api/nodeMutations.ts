@@ -317,6 +317,13 @@ export async function handleNodeMutationHttp(
       headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === "blob_unrecoverable")
+      return problem(409, "blob_unrecoverable");
+    if (error instanceof Error && ["gc_quiescing", "gc_restore_busy"].includes(error.message)) {
+      const response = problem(503, "gc_quiescing");
+      response.headers.set("Retry-After", "5");
+      return response;
+    }
     if (error instanceof Error && error.message === "idempotency_conflict")
       return problem(409, "conflict");
     if (

@@ -16,7 +16,9 @@ export type PlatformErrorCode =
   | "insufficient_storage"
   | "unsupported_media_type"
   | "method_not_allowed"
-  | "locked";
+  | "locked"
+  | "blob_unrecoverable"
+  | "gc_quiescing";
 
 export function problem(status: number, code: PlatformErrorCode): Response {
   return new Response(JSON.stringify({ type: `urn:ncf:error:${code}`, status, title: code }), {

@@ -83,16 +83,42 @@ async function planned() {
   return { f, plan: renameMutationPlan(claimed.claim, authorized, parentRevision, name, []) };
 }
 
-function admitted(): Pick<Env, "DB" | "LOCKS"> {
+function admitted(): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
   const doEnv = {
     ...env,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }) }),
+      get: () => ({
+        status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
+        // Namespace-only fixture. Real pause/dispatch/alarm races are tested separately.
+        acquireRestorePause: async (epoch: number, operationId: string) => {
+          const token = crypto.randomUUID(),
+            expiresAt = Date.now() + 300_000;
+          const ready =
+            (await env.DB.prepare(
+              "SELECT 1 FROM gc_candidates WHERE state='deleting' LIMIT 1",
+            ).first()) === null;
+          if (ready)
+            await env.DB.prepare(
+              "UPDATE control SET gc_paused=1,gc_hold_token=?,gc_hold_operation=?,gc_hold_expires_at=? WHERE epoch=?",
+            )
+              .bind(token, operationId, expiresAt, epoch)
+              .run();
+          return { epoch, operationId, token, expiresAt, ready };
+        },
+        releaseRestorePause: async (epoch: number, token: string) => {
+          await env.DB.prepare(
+            "UPDATE control SET gc_hold_token=NULL,gc_hold_operation=NULL,gc_hold_expires_at=NULL WHERE epoch=? AND gc_hold_token=?",
+          )
+            .bind(epoch, token)
+            .run();
+        },
+      }),
     } as unknown as Env["CONTROL"],
   };
   return {
     DB: env.DB,
+    CONTROL: doEnv.CONTROL,
     LOCKS: {
       idFromName: env.LOCKS.idFromName.bind(env.LOCKS),
       get(id: DurableObjectId) {

@@ -1,8 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { type RestorePause, restorePauseCondition } from "../db/restorePause";
 import type { Env } from "../env";
-import { drainStoppedBlobGarbageCollection, type GcResult } from "../jobs/gc";
+import {
+  drainRestoreBlobGarbageCollection,
+  drainStoppedBlobGarbageCollection,
+  type GcResult,
+} from "../jobs/gc";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
 import {
   inspectMultipartInventory,
@@ -180,6 +185,39 @@ export class ControlDO extends DurableObject<Env> {
 
   async pauseGarbageCollection(expectedEpoch: number): Promise<ControlStatus> {
     return this.#admission.setGcPaused(expectedEpoch, true);
+  }
+
+  async acquireRestorePause(
+    expectedEpoch: number,
+    operationId: string,
+  ): Promise<RestorePause & { ready: boolean }> {
+    const pause = await this.#admission.acquireRestorePause(expectedEpoch, operationId);
+    await drainRestoreBlobGarbageCollection(this.env.DB, this.env.BLOBS, pause);
+    const condition = restorePauseCondition(pause);
+    const ready = await primary(this.env.DB)
+      .prepare(`SELECT 1 FROM control c WHERE c.singleton=1
+      AND c.epoch=? AND c.maintenance=0 AND c.gc_paused=1 AND ${condition.sql}
+      AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')`)
+      .bind(pause.epoch, ...condition.values)
+      .first<number>();
+    return { ...pause, ready: ready !== null };
+  }
+
+  async releaseRestorePause(expectedEpoch: number, token: string): Promise<void> {
+    await this.#admission.releaseRestorePause(expectedEpoch, token);
+  }
+
+  async alarm(): Promise<void> {
+    if (this.#row().phase !== "ready") return;
+    try {
+      const pause = await this.#admission.reconcileRestorePause();
+      if (!pause) return;
+      await this.ctx.storage.setAlarm(Date.now() + 5_000);
+      await drainRestoreBlobGarbageCollection(this.env.DB, this.env.BLOBS, pause);
+    } catch {
+      // Unknown D1/R2 outcomes retain the durable intent; never infer a released window.
+      await this.ctx.storage.setAlarm(Date.now() + 5_000);
+    }
   }
 
   async #maintenance<T>(expectedEpoch: number, action: () => Promise<T>): Promise<T> {
@@ -461,7 +499,7 @@ export class ControlDO extends DurableObject<Env> {
     });
     await atomicBatch(this.env.DB, [
       {
-        sql: `UPDATE control SET epoch=?,maintenance=1,gc_paused=1,updated_at=?,admission_revision=0,admission_token=?
+        sql: `UPDATE control SET epoch=?,maintenance=1,gc_paused=1,gc_operator_paused=1,gc_hold_token=NULL,gc_hold_operation=NULL,gc_hold_expires_at=NULL,updated_at=?,admission_revision=0,admission_token=?
           WHERE singleton=1 AND (epoch<? OR (epoch=? AND admission_revision=0 AND maintenance=1 AND gc_paused=1
             AND (admission_token IS NULL OR admission_token=?)))`,
         values: [

@@ -43,15 +43,15 @@ pnpm test:browser
 
 このPCではrepository rootから `.local-toolchain/run pnpm ...` を使う。PlaywrightはNixOSの既存Chromeを検出し、他の環境ではインストールしたChromiumを使う。CIはUbuntuのbrowser jobとUbuntu/Windowsの全check jobを別々に実行する。
 
-`test:browser` は `packages/worker/test/browser/entry.ts` を専用entryにして、実Worker/API/ControlDO/LockDO/UploadDO/D1/R2を動かす。JWT/JWKS・署名鍵・bootstrap userはテスト専用で起動時生成。新しい隔離DBで全監査→resumeAdmission→bootstrapを行う。GCは停止のまま。production entryにはこの認証注入をimportしない。
+`test:browser` は `packages/worker/test/browser/entry.ts` を専用entryにして、実Worker/API/ControlDO/LockDO/UploadDO/D1/R2を動かす。JWT/JWKS・署名鍵・bootstrap userはテスト専用で起動時生成。新しい隔離DBで全監査→resumeAdmission→resumeGarbageCollection→bootstrapを行う。通常稼働中の復元前後にGCが再開していることを確認する。production entryにはこの認証注入をimportしない。
 
 設定/状態は `.wrangler/browser-config.json` と `.wrangler/browser-tests/` のみ。起動時に後者だけを作り直し、開発DB・remote DBは変更しない。HTTPSのapp/content test hostをChromeのhost-resolverでloopbackへ向け、hosts/OS設定は変えない。port8879を専用に使い、他processが使用中なら失敗させる。
 
-8件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・複数タブlogout。通信障害だけをPlaywrightで注入する。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
+9件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・複数タブlogout。通信障害だけをPlaywrightで注入する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
 
 ## 残る制約
 
-- **restoreは現行backendのGC停止fenceを維持する。** browser fixtureはresumeAdmission後もGC停止中なので成功する。GCを再開した通常運用でrestoreに必要な永続pause holdを取得・解放する経路は未接続。単にD1のgc_pausedを書き換えて通してはいけない。
+- restoreは[RESTORE_GC](RESTORE_GC.md)の永続pauseを取得し、既存削除の終了後に原子的に復元する。競合・回収待ちは同じkeyで再試行する。管理者のGC停止設定は保持し、単一hold・5分期限・1,000ノード上限がある。
 - upload上書きUI、公開/内部共有、検索API、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
 - gridの大量ページ仮想化、pagination競合の専用browser scenario、大容量/低速網/実Access/実R2/実Cookie policy/各ブラウザーのstaging試験は残る。
 - Browserの96 MiB成功は500 GiB・実R2 lifecycle・未知multipart ID閉鎖の証明ではない。既存の予約holdとrepair gateは変更していない。

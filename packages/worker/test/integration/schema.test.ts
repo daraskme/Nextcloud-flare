@@ -13,7 +13,7 @@ beforeAll(async () => {
 it("applies the production migrations on D1 with every foreign key enabled", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); // idempotent runner, not repeated SQL
   expect((await env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(25);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(26);
   const graph = [];
   for (const name of exportTables) {
     const result = await env.DB.prepare(`PRAGMA foreign_key_list('${name}')`).all<ForeignKey>();
@@ -77,4 +77,38 @@ it("exports base search data and rebuilds FTS in D1", async () => {
     (await env.DB.prepare("SELECT rowid FROM search_fts WHERE search_fts MATCH 'hello'").all())
       .results,
   ).toHaveLength(1);
+});
+
+it("requires a complete bounded restore pause tuple and keeps operator policy separate", async () => {
+  const token = crypto.randomUUID(),
+    operation = `op_${"a".repeat(64)}`;
+  for (const [held, op, expires] of [
+    [token, null, null],
+    [null, operation, 1],
+    [token, operation, null],
+    [token, operation, 0],
+    [token, operation, 1.5],
+    [token, operation, 9007199254740992],
+    ["short", operation, 1],
+    [token, "not_an_operation", 1],
+  ]) {
+    await expect(
+      env.DB.prepare("UPDATE control SET gc_hold_token=?,gc_hold_operation=?,gc_hold_expires_at=?")
+        .bind(held, op, expires)
+        .run(),
+    ).rejects.toThrow();
+  }
+  await expect(env.DB.prepare("UPDATE control SET gc_operator_paused=2").run()).rejects.toThrow();
+  await env.DB.prepare(
+    "UPDATE control SET gc_operator_paused=0,gc_paused=1,gc_hold_token=?,gc_hold_operation=?,gc_hold_expires_at=?",
+  )
+    .bind(token, operation, Date.now() + 60_000)
+    .run();
+  expect(await env.DB.prepare("SELECT gc_operator_paused,gc_paused FROM control").first()).toEqual({
+    gc_operator_paused: 0,
+    gc_paused: 1,
+  });
+  await env.DB.prepare(
+    "UPDATE control SET gc_operator_paused=1,gc_hold_token=NULL,gc_hold_operation=NULL,gc_hold_expires_at=NULL",
+  ).run();
 });

@@ -1,4 +1,5 @@
 import { assertExists, assertOneChange, atomicBatch } from "../db/primary";
+import { type RestorePause } from "../db/restorePause";
 import type { ControlStatus } from "./ControlDO";
 import { epochNumber } from "./epochHistory";
 import { RECOVERY_FINAL_QUERY } from "./recoveryAudit";
@@ -11,6 +12,11 @@ interface AdmissionRow extends Record<string, SqlStorageValue> {
   prior_token: string | null;
   gc_paused: number;
   audit_token: string | null;
+  operator_paused: number;
+  hold_token: string | null;
+  hold_operation: string | null;
+  hold_expires_at: number | null;
+  prior_gc_paused: number;
 }
 
 const clock = "strftime('%s','now')*1000";
@@ -33,6 +39,13 @@ export class ControlAdmission {
     )`);
     storage.sql.exec(`INSERT OR IGNORE INTO control_admission(singleton,epoch,revision,phase,gc_paused)
       SELECT 1,epoch,0,'closed',1 FROM control_state WHERE singleton=1`);
+    storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_gc_policy(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,
+      operator_paused INTEGER NOT NULL CHECK(operator_paused IN (0,1)),
+      hold_token TEXT,hold_operation TEXT,hold_expires_at INTEGER,prior_gc_paused INTEGER NOT NULL
+    )`);
+    storage.sql.exec(`INSERT OR IGNORE INTO control_gc_policy
+      SELECT singleton,epoch,gc_paused,NULL,NULL,NULL,gc_paused FROM control_admission`);
     // An interrupted repair cannot be treated as complete just because its isolate was evicted.
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_maintenance_tasks(
       token TEXT PRIMARY KEY,epoch INTEGER NOT NULL
@@ -42,7 +55,9 @@ export class ControlAdmission {
   #row(epoch = this.currentEpoch()): AdmissionRow {
     if (this.currentEpoch() !== epoch) throw new Error("admission_epoch_conflict");
     const row = this.storage.sql
-      .exec<AdmissionRow>("SELECT * FROM control_admission WHERE singleton=1")
+      .exec<AdmissionRow>(
+        "SELECT a.*,p.operator_paused,p.hold_token,p.hold_operation,p.hold_expires_at,p.prior_gc_paused FROM control_admission a JOIN control_gc_policy p ON p.singleton=a.singleton AND p.epoch=a.epoch WHERE a.singleton=1",
+      )
       .one();
     if (row.epoch !== epoch) throw new Error("admission_epoch_conflict");
     return row;
@@ -65,6 +80,10 @@ export class ControlAdmission {
       prior_token=NULL,gc_paused=1,audit_token=NULL WHERE singleton=1`,
       epoch,
       token,
+    );
+    this.storage.sql.exec(
+      "UPDATE control_gc_policy SET epoch=?,operator_paused=1,hold_token=NULL,hold_operation=NULL,hold_expires_at=NULL,prior_gc_paused=1 WHERE singleton=1",
+      epoch,
     );
     this.storage.sql.exec("DELETE FROM recovery_audit_v7");
     this.storage.sql.exec("DELETE FROM control_maintenance_tasks WHERE epoch<>?", epoch);
@@ -97,7 +116,16 @@ export class ControlAdmission {
     return audit.token;
   }
 
-  #transition(row: AdmissionRow, phase: AdmissionRow["phase"], gc: number, audit: string | null) {
+  #transition(
+    row: AdmissionRow,
+    phase: AdmissionRow["phase"],
+    gc: number,
+    audit: string | null,
+    policy: Pick<
+      AdmissionRow,
+      "operator_paused" | "hold_token" | "hold_operation" | "hold_expires_at"
+    > = { operator_paused: 1, hold_token: null, hold_operation: null, hold_expires_at: null },
+  ) {
     const revision = epochNumber(row.revision + 1);
     this.storage.transactionSync(() => {
       this.#current(row);
@@ -110,6 +138,15 @@ export class ControlAdmission {
         gc,
         audit,
       );
+      this.storage.sql.exec(
+        "UPDATE control_gc_policy SET operator_paused=?,hold_token=?,hold_operation=?,hold_expires_at=?,prior_gc_paused=? WHERE singleton=1 AND epoch=?",
+        policy.operator_paused,
+        policy.hold_token,
+        policy.hold_operation,
+        policy.hold_expires_at,
+        row.gc_paused,
+        row.epoch,
+      );
       if (phase === "closing") this.storage.sql.exec("DELETE FROM recovery_audit_v7");
     });
     return this.#row(row.epoch);
@@ -119,8 +156,19 @@ export class ControlAdmission {
     const receipt = await this.db
       .prepare(`SELECT 1 FROM control WHERE singleton=1 AND epoch=?
         AND admission_revision=? AND admission_token IS ? AND maintenance=? AND gc_paused=?
+        AND gc_operator_paused=? AND gc_hold_token IS ? AND gc_hold_operation IS ? AND gc_hold_expires_at IS ?
         ${maintenance ? `AND ${closedWork}` : ""}`)
-      .bind(row.epoch, row.revision, row.token, maintenance, row.gc_paused)
+      .bind(
+        row.epoch,
+        row.revision,
+        row.token,
+        maintenance,
+        row.gc_paused,
+        row.operator_paused,
+        row.hold_token,
+        row.hold_operation,
+        row.hold_expires_at,
+      )
       .first<number>();
     return receipt !== null;
   }
@@ -141,7 +189,7 @@ export class ControlAdmission {
     try {
       await atomicBatch(this.db, [
         {
-          sql: `UPDATE control SET maintenance=1,gc_paused=1,admission_revision=?,admission_token=?,
+          sql: `UPDATE control SET maintenance=1,gc_paused=1,gc_operator_paused=1,gc_hold_token=NULL,gc_hold_operation=NULL,gc_hold_expires_at=NULL,admission_revision=?,admission_token=?,
             updated_at=MAX(updated_at,${clock}) WHERE singleton=1 AND epoch=?
             AND (admission_revision<? OR (admission_revision=? AND admission_token IS ?))`,
           values: [
@@ -201,7 +249,7 @@ export class ControlAdmission {
         await atomicBatch(this.db, [
           assertExists(RECOVERY_FINAL_QUERY, [epoch]),
           {
-            sql: `UPDATE control SET maintenance=0,gc_paused=1,admission_revision=?,admission_token=?,
+            sql: `UPDATE control SET maintenance=0,gc_paused=1,gc_operator_paused=1,gc_hold_token=NULL,gc_hold_operation=NULL,gc_hold_expires_at=NULL,admission_revision=?,admission_token=?,
               updated_at=MAX(updated_at,${clock}) WHERE singleton=1 AND epoch=?
               AND admission_revision=? AND admission_token IS ? AND maintenance=1 AND gc_paused=1`,
             values: [intent.revision, intent.token, epoch, intent.revision - 1, intent.prior_token],
@@ -217,34 +265,48 @@ export class ControlAdmission {
     return this.status();
   }
 
-  /** Separate final GC gate, and an explicit pause for maintenance operations such as restore. */
+  /** Operator pause remains authoritative after a temporary restore window ends. */
   async setGcPaused(epoch: number, paused: boolean): Promise<ControlStatus> {
     epochNumber(epoch);
     const row = this.#row(epoch);
-    const target = paused ? 1 : 0;
-    if (row.phase === "open" && row.gc_paused === target) return this.status();
-    if (row.phase !== "open" && !(row.phase === "gc_changing" && row.gc_paused === target))
+    if (row.hold_token && !paused) throw new Error("gc_restore_busy");
+    if (row.phase === "open" && row.operator_paused === Number(paused)) return this.status();
+    if (
+      row.phase !== "open" &&
+      !(row.phase === "gc_changing" && row.operator_paused === Number(paused))
+    )
       throw new Error("admission_not_open");
     const intent =
       row.phase === "gc_changing"
         ? row
-        : this.#transition(row, "gc_changing", target, row.audit_token);
+        : this.#transition(row, "gc_changing", row.hold_token || paused ? 1 : 0, row.audit_token, {
+            ...row,
+            operator_paused: Number(paused),
+          });
+    return this.#applyGc(intent);
+  }
+
+  async #applyGc(intent: AdmissionRow): Promise<ControlStatus> {
     if (!(await this.#receipt(intent, 0))) {
       this.#current(intent);
       try {
         await atomicBatch(this.db, [
           {
-            sql: `UPDATE control SET gc_paused=?,admission_revision=?,admission_token=?,
-              updated_at=MAX(updated_at,${clock}) WHERE singleton=1 AND epoch=? AND maintenance=0
-              AND admission_revision=? AND admission_token IS ? AND gc_paused=?`,
+            sql: `UPDATE control SET gc_paused=?,gc_operator_paused=?,gc_hold_token=?,gc_hold_operation=?,gc_hold_expires_at=?,
+            admission_revision=?,admission_token=?,updated_at=MAX(updated_at,${clock})
+            WHERE singleton=1 AND epoch=? AND maintenance=0 AND admission_revision=? AND admission_token IS ? AND gc_paused=?`,
             values: [
-              target,
+              intent.gc_paused,
+              intent.operator_paused,
+              intent.hold_token,
+              intent.hold_operation,
+              intent.hold_expires_at,
               intent.revision,
               intent.token,
-              epoch,
+              intent.epoch,
               intent.revision - 1,
               intent.prior_token,
-              1 - target,
+              intent.prior_gc_paused,
             ],
           },
           assertOneChange,
@@ -255,5 +317,82 @@ export class ControlAdmission {
     }
     this.#finish(intent, "open");
     return this.status();
+  }
+
+  async acquireRestorePause(epoch: number, operationId: string): Promise<RestorePause> {
+    epochNumber(epoch);
+    if (!/^op_[a-f0-9]{64}$/.test(operationId)) throw new Error("invalid_restore_pause");
+    let row = this.#row(epoch);
+    if (row.hold_token && row.hold_expires_at! <= Date.now()) {
+      await this.releaseRestorePause(epoch, row.hold_token);
+      row = this.#row(epoch);
+    }
+    if (row.hold_token && row.hold_operation !== operationId) throw new Error("gc_restore_busy");
+    if (
+      row.phase !== "open" &&
+      !(row.phase === "gc_changing" && row.hold_operation === operationId)
+    )
+      throw new Error("admission_not_open");
+    const intent = row.hold_token
+      ? row
+      : this.#transition(row, "gc_changing", 1, row.audit_token, {
+          operator_paused: row.operator_paused,
+          hold_token: crypto.randomUUID(),
+          hold_operation: operationId,
+          hold_expires_at: Date.now() + 300_000,
+        });
+    // Persist retry scheduling before any external dispatch. A lost reply cannot orphan the hold.
+    await this.storage.setAlarm(Date.now() + 5_000);
+    if (intent.phase === "gc_changing") await this.#applyGc(intent);
+    else {
+      await this.status();
+      this.#current(intent);
+    }
+    return { epoch, token: intent.hold_token!, operationId, expiresAt: intent.hold_expires_at! };
+  }
+
+  async releaseRestorePause(epoch: number, token: string): Promise<void> {
+    let row = this.#row(epoch);
+    if (row.phase === "gc_changing") {
+      await this.#applyGc(row);
+      row = this.#row(epoch);
+    }
+    if (row.hold_token !== token || row.phase !== "open") return;
+    const intent = this.#transition(row, "gc_changing", row.operator_paused, row.audit_token, {
+      operator_paused: row.operator_paused,
+      hold_token: null,
+      hold_operation: null,
+      hold_expires_at: null,
+    });
+    await this.storage.setAlarm(Date.now() + 5_000);
+    await this.#applyGc(intent);
+  }
+
+  /** Restart interrupted transitions; expiration revokes the SQL capability before GC resumes. */
+  async reconcileRestorePause(): Promise<RestorePause | null> {
+    let row = this.#row();
+    if (row.phase === "gc_changing") {
+      await this.#applyGc(row);
+      row = this.#row();
+    }
+    if (row.phase !== "open" || !row.hold_token) return null;
+    if (
+      row.hold_expires_at! <= Date.now() ||
+      (await this.db
+        .prepare(
+          "SELECT 1 FROM operations WHERE op_id=? AND epoch=? AND state IN ('committed','failed')",
+        )
+        .bind(row.hold_operation, row.epoch)
+        .first<number>()) !== null
+    ) {
+      await this.releaseRestorePause(row.epoch, row.hold_token);
+      return null;
+    }
+    return {
+      epoch: row.epoch,
+      token: row.hold_token,
+      operationId: row.hold_operation!,
+      expiresAt: row.hold_expires_at!,
+    };
   }
 }

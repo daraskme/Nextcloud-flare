@@ -1,12 +1,18 @@
 import { open } from "node:fs/promises";
 import { expect, type Route, test } from "@playwright/test";
 
-// Playwright's Node fetch does not inherit Chromium's host-resolver rules.
-const localFetch = (route: Route) =>
-  route.fetch({
+// Node fetch inherits neither Chromium's host resolver nor its later Fetch Metadata headers.
+const localFetch = async (route: Route) => {
+  expect(new URL(route.request().url()).origin).toBe("https://app.ncf.test:8879");
+  return route.fetch({
     url: route.request().url().replace("app.ncf.test", "127.0.0.1"),
-    headers: { ...route.request().headers(), host: "app.ncf.test:8879" },
+    headers: {
+      ...(await route.request().allHeaders()),
+      host: "app.ncf.test:8879",
+      "sec-fetch-site": "same-origin",
+    },
   });
+};
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -51,9 +57,15 @@ test("real Files API: create, rename, upload, open, trash, restore, copy and mov
   await page.getByRole("dialog").getByRole("button", { name: "ごみ箱に移動", exact: true }).click();
   await page.getByRole("link", { name: "ごみ箱", exact: true }).click();
   await expect(page.getByText("保存したメモ.txt", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => fetch("/__test__/control").then((r) => r.json()))).toMatchObject(
+    { maintenance: false, gcPaused: false },
+  );
   await page.getByRole("button", { name: "復元", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "復元先を選択", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.evaluate(() => fetch("/__test__/control").then((r) => r.json()))).toMatchObject(
+    { maintenance: false, gcPaused: false },
+  );
   await page
     .getByRole("navigation")
     .getByRole("link", { name: "マイドライブ", exact: true })
@@ -100,6 +112,46 @@ test("real Files API: create, rename, upload, open, trash, restore, copy and mov
   await popup.close();
 });
 
+test("a lost restore response replays the same operation after GC has resumed", async ({
+  page,
+}) => {
+  await page.goto("/files");
+  await page.getByRole("button", { name: "新規フォルダー", exact: true }).click();
+  await page.getByLabel("名前", { exact: true }).fill("復元の応答喪失");
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "復元の応答喪失の操作" }).click();
+  await page.getByRole("menuitem", { name: "ごみ箱に移動" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "ごみ箱に移動", exact: true }).click();
+  await page.getByRole("navigation").getByRole("link", { name: "ごみ箱", exact: true }).click();
+  const keys: string[] = [];
+  await page.route("**/api/v1/trash/*/restore", async (route) => {
+    keys.push(route.request().headers()["idempotency-key"]!);
+    if (keys.length === 1) {
+      expect((await localFetch(route)).status()).toBe(200);
+      await route.abort("connectionfailed");
+    } else await route.continue();
+  });
+  await page.getByRole("button", { name: "復元", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "復元先を選択", exact: true }).click();
+  await expect(page.getByRole("button", { name: "同じ操作の結果を確認" })).toBeVisible();
+  expect(await page.evaluate(() => fetch("/__test__/control").then((r) => r.json()))).toMatchObject(
+    { maintenance: false, gcPaused: false },
+  );
+  await page.reload();
+  await page.getByRole("button", { name: "結果を確認", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("ncf-pending-operation")))
+    .toBeNull();
+  await expect(page.getByText("復元の応答喪失", { exact: true })).toHaveCount(0);
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  await page
+    .getByRole("navigation")
+    .getByRole("link", { name: "マイドライブ", exact: true })
+    .click();
+  await expect(page.getByRole("button", { name: "復元の応答喪失の操作" })).toHaveCount(1);
+});
+
 test("mobile layout, grid and keyboard dialog", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/files");
@@ -127,7 +179,7 @@ test("a lost mutation response survives reload and reuses its original idempoten
   await page.route("**/api/v1/nodes", async (route) => {
     keys.push(route.request().headers()["idempotency-key"]!);
     if (keys.length === 1) {
-      await localFetch(route);
+      expect((await localFetch(route)).status()).toBe(201);
       await route.abort("connectionfailed");
     } else await route.continue();
   });
@@ -140,6 +192,9 @@ test("a lost mutation response survives reload and reuses its original idempoten
   await expect(page.getByRole("button", { name: "同じ操作の結果を確認" })).toBeVisible();
   await page.reload();
   await page.getByRole("button", { name: "結果を確認", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("ncf-pending-operation")))
+    .toBeNull();
   await expect(
     page.getByRole("button", { name: "応答喪失でも一つの操作", exact: true }),
   ).toHaveCount(1);

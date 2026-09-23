@@ -7,7 +7,7 @@ maintenance/GC pauseを解除せず、停止前に`deleting`へ進んだblob・�
 | `drainBlobGarbageCollection(expectedEpoch, limit=20)` | `gc_candidates`と`blobs`がともにdeleting、旧claimのlease失効済み | 20 object、25秒、各delete+HEAD |
 | `drainOrphanGarbageCollection(expectedEpoch, limit=20)` | 35日猶予経過済みの`orphan_objects.deleting`、claim失効済み | 20 object、20秒既定、各HEAD+delete+HEAD |
 
-両RPCは前後で`beginRecoveryAudit`を実行する。ControlDOのcurrent epoch、D1 mirror、maintenance=1、gc_paused=1を要求し、監査を先頭へ戻す。active job leaseが残れば処理を始めない。受付再開は別の未実装gateであり、drain成功や監査完了だけでは再開しない。
+両RPCは前後で`beginRecoveryAudit`を実行する。ControlDOのcurrent epoch、D1 mirror、maintenance=1、gc_paused=1を要求し、監査を先頭へ戻す。active job leaseが残れば処理を始めない。受付再開は[CONTROL_ADMISSION](CONTROL_ADMISSION.md)の別RPCであり、drain成功や監査完了だけでは再開しない。
 
 ## 通常blob
 
@@ -20,7 +20,7 @@ migration `0024`で`gc_candidates.claim_epoch`と単調増加`r2_calls`を追加
 - final batchの応答喪失はblob/GC両方のdeleted、key一致、claim解除、未精算physical・cleanup_pendingがないことを照合する。rollbackなら容量を保持し、lease失効後に再試行する。
 - 遅れた旧Workerは新しいtokenやepochを使えず、HEADのdispatch・最終精算を行えない。すでにdispatch済みのdelete自体を取り消すものではないため、deleting状態とkey再利用禁止は維持する。
 
-通常稼働時も、claim取得後にGC pause/maintenance/epochが変われば後続dispatch・精算を止める。停止中drainは`candidate→deleting`を新たに進めず、7日猶予を短縮しない。
+通常稼働時も、claim取得後にGC pause/maintenance/epochが変われば後続dispatch・精算を止める。停止中drainは`candidate→deleting`を新たに進めず、7日猶予を短縮しない。受付を維持する復元用drainも同じ回収本体を使うが、管理者停止とは異なるoperation/token/epoch/期限のSQL条件を各claim・dispatch・精算に追加する。詳細は[RESTORE_GC](RESTORE_GC.md)。
 
 ## 未追跡object
 
@@ -32,4 +32,4 @@ HEADで別version/ETag/size/uploadedを見つけた場合は、新しい実容�
 
 実workerd D1/R2/ControlDOで、旧epoch回収、有効lease・pin・新候補の保持、claim/counter/final batch/R2応答喪失、同時回収、遅延削除、停止変更、容量の一度だけの精算を試験する。専用fixtureでblob・orphan双方の回収後に全復旧監査が完了し、maintenance/GC pauseは維持されることを確認する。
 
-未知multipartの全体閉鎖・予約精算、Queueの完全なdrain、ControlDO再開、実Time Travel/logical restore drillは残る。空のmultipart一覧や日数だけでこれらの完了を推測しない。特に[S3 AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)には進行中partとの競合時に再確認が必要な場合がある。R2での保証と実サービスの検証はfixtureだけで代替しない。
+未知multipartの全体閉鎖・予約精算、Queueの完全なdrain、実環境のControlDO再開、実Time Travel/logical restore drillは残る。空のmultipart一覧や日数だけでこれらの完了を推測しない。特に[S3 AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)には進行中partとの競合時に再確認が必要な場合がある。R2での保証と実サービスの検証はfixtureだけで代替しない。

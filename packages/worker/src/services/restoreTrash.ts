@@ -3,6 +3,8 @@ import { authorizationAssertion, authorizeNode, type Principal } from "../auth/a
 import { assertCreateLocks, lockTokenHashes } from "../auth/locks";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
+import { assertRestorePause, type RestorePause } from "../db/restorePause";
+import { CONTROL_NAME } from "../do/ControlDO";
 import type { Env } from "../env";
 import {
   assertOperationClaim,
@@ -153,6 +155,7 @@ function statements(
   name: ReturnType<typeof portableName>,
   parentRevision: number,
   hashes: readonly string[],
+  gcPause: RestorePause,
 ): SqlStatement[] {
   if (
     claim.intent.kind !== "node.restore" ||
@@ -292,6 +295,7 @@ function statements(
     authorizationAssertion(destination),
     assertCreateLocks(destination.parent.id, claim.intent.spaceId, destination.principal, hashes),
     restoreGuard(claim, rootId, memberCount),
+    assertRestorePause(gcPause, claim.intent.id),
     assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=?)", [op]),
   ];
   steps.forEach((step, index) =>
@@ -316,7 +320,7 @@ function statements(
 }
 
 export async function restoreTrash(
-  env: Pick<Env, "DB" | "LOCKS">,
+  env: Pick<Env, "DB" | "LOCKS" | "CONTROL">,
   request: RestoreTrashRequest,
 ): Promise<MutationOutcome> {
   if (request.principal.kind !== "user" || !ID.test(request.trashOpId))
@@ -374,63 +378,89 @@ export async function restoreTrash(
     if (!operation) throw new Error("authorization_denied");
     return { kind: "terminal", operation };
   }
-  const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
-  const permit = await lock.acquireRestore({
-    requestId: intent.id,
-    spaceId: request.spaceId,
+  await authorizeNode(env.DB, principal, {
+    operation: "node.create",
     parentId: request.destinationParentId,
-    trashOpId: request.trashOpId,
-    rootNodeId: initial.rootId,
-    principal,
-    lockTokens: request.lockTokens,
+    spaceId: request.spaceId,
   });
-  let terminal = false;
+  const lost = await primary(env.DB)
+    .prepare(`SELECT 1 FROM trash_members tm JOIN nodes n ON n.id=tm.node_id
+    JOIN blobs b ON b.id=n.current_blob_id WHERE tm.trash_op_id=? AND b.state IN ('deleting','deleted')
+    UNION ALL SELECT 1 FROM trash_members tm JOIN node_versions v ON v.node_id=tm.node_id
+    JOIN blobs b ON b.id=v.blob_id WHERE tm.trash_op_id=? AND b.state IN ('deleting','deleted') LIMIT 1`)
+    .bind(request.trashOpId, request.trashOpId)
+    .first<number>();
+  if (lost !== null) throw new Error("blob_unrecoverable");
+  const control = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
+  const gcPause = await control.acquireRestorePause(principal.epoch, intent.id);
+  if (!gcPause.ready) throw new Error("gc_quiescing");
   try {
-    const destination = await authorizeNode(env.DB, principal, {
-      operation: "node.create",
-      parentId: request.destinationParentId,
+    const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
+    const permit = await lock.acquireRestore({
+      gcPause,
+      requestId: intent.id,
       spaceId: request.spaceId,
+      parentId: request.destinationParentId,
+      trashOpId: request.trashOpId,
+      rootNodeId: initial.rootId,
+      principal,
+      lockTokens: request.lockTokens,
     });
-    if (destination.operation !== "node.create") throw new Error("authorization_denied");
-    const current = await snapshot(env.DB, principal, request.spaceId, request.trashOpId);
-    if (current.rootId !== initial.rootId || current.memberDigest !== initial.memberDigest)
-      throw new Error("authorization_denied");
-    const claimed = await claimOperation(env.DB, intent, permit, destination, steps);
-    if (claimed.kind === "terminal") {
-      const operation = await lookupOperation(env.DB, principal, intent.id);
-      if (!operation) throw new Error("authorization_denied");
-      terminal = true;
-      return { kind: "terminal", operation };
-    }
-    const name = await availableName(env.DB, destination.parent.id, current.name);
-    const parentRevision = await primary(env.DB)
-      .prepare("SELECT revision FROM nodes WHERE id=? AND deleted_at IS NULL")
-      .bind(destination.parent.id)
-      .first<number>("revision");
-    if (parentRevision === null) throw new Error("authorization_denied");
-    const outcome = await commitMutationStatements(
-      env.DB,
-      claimed.claim,
-      statements(
-        claimed.claim,
-        destination,
-        request.trashOpId,
-        current.rootId,
-        current.memberCount,
-        current.levels,
-        name,
-        parentRevision,
-        await lockTokenHashes(request.lockTokens),
-      ),
-    );
-    terminal = outcome.kind === "terminal";
-    return outcome;
-  } finally {
-    if (terminal)
-      try {
-        await lock.release(intent.id, permit);
-      } catch {
-        /* lease recovery */
+    let terminal = false;
+    try {
+      const destination = await authorizeNode(env.DB, principal, {
+        operation: "node.create",
+        parentId: request.destinationParentId,
+        spaceId: request.spaceId,
+      });
+      if (destination.operation !== "node.create") throw new Error("authorization_denied");
+      const current = await snapshot(env.DB, principal, request.spaceId, request.trashOpId);
+      if (current.rootId !== initial.rootId || current.memberDigest !== initial.memberDigest)
+        throw new Error("authorization_denied");
+      const claimed = await claimOperation(env.DB, intent, permit, destination, steps);
+      if (claimed.kind === "terminal") {
+        const operation = await lookupOperation(env.DB, principal, intent.id);
+        if (!operation) throw new Error("authorization_denied");
+        terminal = true;
+        return { kind: "terminal", operation };
       }
+      const name = await availableName(env.DB, destination.parent.id, current.name);
+      const parentRevision = await primary(env.DB)
+        .prepare("SELECT revision FROM nodes WHERE id=? AND deleted_at IS NULL")
+        .bind(destination.parent.id)
+        .first<number>("revision");
+      if (parentRevision === null) throw new Error("authorization_denied");
+      const outcome = await commitMutationStatements(
+        env.DB,
+        claimed.claim,
+        statements(
+          claimed.claim,
+          destination,
+          request.trashOpId,
+          current.rootId,
+          current.memberCount,
+          current.levels,
+          name,
+          parentRevision,
+          await lockTokenHashes(request.lockTokens),
+          gcPause,
+        ),
+      );
+      terminal = outcome.kind === "terminal";
+      return outcome;
+    } finally {
+      if (terminal)
+        try {
+          await lock.release(intent.id, permit);
+        } catch {
+          /* lease recovery */
+        }
+    }
+  } finally {
+    try {
+      await control.releaseRestorePause(principal.epoch, gcPause.token);
+    } catch {
+      /* The durable alarm reconciles a lost release acknowledgement. */
+    }
   }
 }
