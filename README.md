@@ -7,7 +7,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV の一部**を実装済み。
 56通常テーブル、migration `0001`〜`0015`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信までローカル接続しています。
-ControlDO admissionは安全な再開処理が完成するまで閉じており、Files UIとUploadDOも未実装なので、製品としてはまだ利用できません。
+UploadDOには分割計画と永続attempt台帳を追加済みですが、D1認可・予約とR2送信の接続、Files UIは未実装です。ControlDO admissionも安全な再開処理が完成するまで閉じており、製品としてはまだ利用できません。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 
 | 資料 | 用途 |

@@ -34,6 +34,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 | ファイル | 実装内容 |
 |---|---|
+| `packages/worker/src/do/UploadDO.ts` / `uploadLedger.ts` / `uploadPlan.ts` | 固定multipart分割、SQLite attempt台帳、4並列/3試行/15分lease、unknown・期限切れ・旧epochの停止、complete/abort排他。D1/R2/受付RPCは未接続 |
 | `packages/shared/src/names.ts` | NFC/portable name、Unicode 17 full casefold、folder-name search text/bigram |
 | `packages/worker/src/services/fsMutation.ts` | SQL assertion、全 step と terminal の atomic commit、確実な rollback と commit_unknown の分離 |
 | `packages/worker/src/services/createFolder.ts` | LockDO/認可/claim/7 step/terminal/release を接続した最初の folder create |
@@ -72,7 +73,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - **ControlDO.status は maintenance=true / gcPaused=true。** `recover`/`bumpEpoch` はあるが、admission/quiesce/検証後の再開は未実装。単純に false に変えない。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
-- UploadDO、Files UI、uploadの本実装、orphan/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実 ControlDO admission とリモート Access/署名鍵設定、全 route 会計も未接続。
+- UploadDO内部のmultipart台帳は追加済み。D1認可/予約/状態mirror、R2送信/cleanup、single upload、受付RPC/HTTPとFiles UIは未接続。orphan/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実 ControlDO admission とリモート Access/署名鍵設定、全 route 会計も未接続。
 - AVIF/AV1/Opus は形式基盤まで。実 track parser・配信経路・player/lightbox・ブラウザー実ファイル試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。
@@ -80,6 +81,10 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - children とtrash一覧の続きには `NODE_CURSOR_KEYS` と `NODE_CURSOR_ACTIVE_KID` の専用 ring が必要。未設定時も node 詳細は使えるが両一覧 route は 503。
 
 ## 次に進める順序
+
+直近はCURRENT_STATEの優先順に従い、UploadDOのmultipart台帳から再開した。次はD1で認可・予約したimmutable identityと台帳を接続し、R2送信前のcurrent credential/epoch検証、D1状態mirrorと応答喪失回収、single upload、R2 complete/head/abort、physical会計・fsMutation公開を実装する。台帳だけではupload APIを開けない。`claim`の`dispatch`だけが新しいR2 callを許し、同attempt再送の`in_flight`では送信しない。`not_started`はR2未呼出しが確定している場合だけ使用する。DO storage全喪失を空の新規uploadとして再開せず、D1とepochの復旧gateを通す。
+
+以下の全体gateも引き続き必要:
 
 1. **outbox Queue 実サービス / repair**: `node.created` と `node.renamed` のローカル handler を基に実 Queue/DLQ/requeue を検証し、残る kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
 2. **ControlDO admission / resume**: durable な監査進捗へ credential/share/outbox の全意味検証、未知 R2 object の repair と incomplete multipart の扱い、GC/Upload/Queue drain と最終 D1 fence 後の admission 再開を追加する。正本は DO、D1 は mirror。空 DB 専用の解除処理を完成形にしない。
@@ -91,7 +96,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 再開コマンド
 
-作業場所は実環境で確認する。現在の NixOS workspace は `/tmp/Nextcloud-flare`、Windows workspace は `C:\Users\micro\Documents\Nextcloud-flare`。remote: `https://github.com/daraskme/Nextcloud-flare.git`、branch: `main`。
+作業場所は実環境で確認する。現在の NixOS workspace は `/home/hiroshi/ドキュメント/Nextcloud-flare`（2026-09-23にユーザー指定で移動）。`/tmp/Nextcloud-flare`は移動前の保管用コピーで、開発先として使わない。Windows workspace は `C:\Users\micro\Documents\Nextcloud-flare`。remote: `https://github.com/daraskme/Nextcloud-flare.git`、branch: `main`。
 
 ```powershell
 git status --short
@@ -103,6 +108,7 @@ pnpm --version
 
 Node 24.21.0 / pnpm 12.4.1。依存は exact、公開後7日以上。`docs/toolchain.json` に選定証拠、`pnpm-lock.yaml` に固定版。
 環境の準備が必要なら `pnpm install --frozen-lockfile`、変更後の checkpoint は `pnpm check`。
+このPCにはGit対象外の`.local-toolchain/`に両固定版を用意した。NixOS用loaderで起動でき、repository rootから`.local-toolchain/run pnpm check`、`.local-toolchain/run pnpm dev`で使える。Node配布物は公式SHASUMS256との一致を確認後にloader/RPATHのみ調整した。OS全体の設定は変更していない。
 範囲を絞った検証例:
 
 ```powershell

@@ -27,6 +27,7 @@
 | Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | Files UI、全route profile |
 | Trash | 一覧、restore、purge、別trash子退避、名前衝突解決 | 最大64層・1,000 node、冪等再送、GC競合、深さ順処理 | 大規模非同期trash/purgeは未実装 |
 | GC | 7日猶予candidate、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | orphan/multipart全般のrepair、実Cron運用 |
+| UploadDO内部台帳 | 固定分割計画、SQLite attempt/lease、4並列・3試行、unknown/expiry/stale epoch停止、complete/abort排他、200件page | workerd SQLiteのeviction・alarm・rollback、応答再送、遅延応答、上限 | D1認可/予約/状態mirror、R2送信/cleanup、single upload、HTTP/UIは未接続 |
 | WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation | 実OS client gate、共有DAV、残るmethod/profile |
 | content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDO | D1/R2、署名、失効、Range、budget reserve/settle | ZIP/page/entry/track、全route会計 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
@@ -34,7 +35,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup | DO eviction、R2 inventory、会計・credential/share/outbox監査 | admission再開、未知object repair、完全restore drill |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 218件 + workerd 343件 = 561件で、lint、typecheck、contracts、config、schema generator、Web build、Wrangler dry-runを含む。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 235件 + workerd 361件 = 596件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。今回D1 schema変更はない。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -50,7 +51,7 @@
 
 ### サービスとデータ処理
 
-- `UploadDO`本体。現在は503を返すplaceholder。
+- `UploadDO`のD1認可・予約・状態mirrorとR2送信/cleanupの接続。内部のmultipart attempt台帳とalarmは実装済みだが、受付RPC/HTTPは503のまま。
 - resumable upload、multipart upload、part lease、再開、abort、期限切れcleanup。
 - orphan blobとincomplete multipartのinventory・repair。
 - 大規模tree向けの非同期trash/restore/purge job。
@@ -119,7 +120,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. `UploadDO`とresumable/multipart upload。
+1. `UploadDO`内部台帳をD1認可・予約・状態mirrorとR2送信へ接続し、single/resumable/multipart uploadを実装。
 2. upload reservation、part lease、応答喪失、abort、orphan cleanup。
 3. Queueの残るevent kindとrepair。
 4. recovery auditの不足を埋め、ControlDO admission/resumeを実装。
@@ -131,7 +132,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 ### 次回開始時の確認
 
 ```sh
-cd /tmp/Nextcloud-flare
+cd /home/hiroshi/ドキュメント/Nextcloud-flare
 git status --short
 git diff
 git log -5 --oneline

@@ -1,4 +1,3 @@
-import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { handleContentHttp } from "./api/content";
 import { davPath, handleDavHttp } from "./api/dav";
@@ -24,17 +23,10 @@ async function admittedEpoch(env: Env): Promise<number | null> {
   return mirror === null ? null : status.epoch;
 }
 
-// Phase 0 exports establish binding compatibility only. No authority is issued yet.
-class UnavailableDO extends DurableObject<Env> {
-  fetch(): Response {
-    return problem(503, "not_ready");
-  }
-}
-
 export { BudgetDO } from "./do/BudgetDO";
 export { ControlDO } from "./do/ControlDO";
 export { LockDO } from "./do/LockDO";
-export class UploadDO extends UnavailableDO {}
+export { UploadDO } from "./do/UploadDO";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

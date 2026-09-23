@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 3 multipart台帳 | UploadDOの内部SQLiteにattempt/leaseと独立counterを永続化。固定分割、4並列/3試行、unknown→aborting、idle/deadline、旧epoch失敗、complete/abort排他、200件page | Node/workerd検証。D1認可/予約/mirror、R2 I/O/cleanup、singleとHTTPは未接続。Phase 3完了ではない |
 | 0.1 toolchain | Node/pnpm/TS/Wrangler/Vitest/fflate を exact 固定、pnpm lockfile、公開日証拠 `toolchain.json`、CI | ローカル実装済み |
 | 0.1 binding | 全 Env binding、SQLite DO の eviction 後の永続化、未実装 route は fail closed、未処理 Queue は retry | ローカル実装済み |
 | 0.1 KDF/Images | PBKDF2-SHA256 100,000/16B/32B を OpenSSL の vector と照合。PNG→WebP。20,000,000B/寸法/40MP のアプリ入力境界 | ローカル実装済み、実サービス gate は未完了 |
@@ -58,7 +59,7 @@
 `packages/worker/test/fixtures/d1-schema.sql` は最小 probe schema であり、本番 migration ではない。
 `src/db` と `src/platform` の基盤コードも公開 route には接続していない。
 ControlDO は内部 RPC の epoch 発行・復旧を実装したが、maintenance / GC pause を解除しない。
-LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO は拒否実装。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装したが、実 ControlDO の admission は閉じている。UploadDO はmultipart台帳とalarmのみ追加し、受付RPC/HTTPは未公開。BudgetDO の内部 RPC と content HTTP handler は動作するが、ControlDO admission が閉じ、署名鍵も未設定のため実公開は停止している。実装契約・残る境界は [`FOUNDATION.md`](FOUNDATION.md) を参照。
 
 ## Toolchain の判断
 
@@ -89,6 +90,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-23、ユーザー指定のNixOS workspace `/home/hiroshi/ドキュメント/Nextcloud-flare`へGit履歴・依存・local stateを移し、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 235 + workerd 361 = **596 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。multipart計画17件と台帳18件を追加し、eviction、claim応答再送、4並列、3試行、unknown/lease expiryと遅延応答、idle/deadline、旧epoch、complete/abort排他、SQL rollback、200行page、alarmを検証。D1 schema変更なし。台帳のfixture試験であり、D1/R2接続済みuploadや実Cloudflare試験を意味しない。
 - 2026-09-23、purge blobのbounded GCをCronへ接続。7日猶予後、epoch/maintenance/gc pause/ref count/複数pin/materialized fenceをD1で再検査し、blob/candidateを同時に不可逆`deleting`へ進める。claim leaseで競合と再試行を直列化し、R2 delete応答喪失をheadで収束、不在確認後だけ`deleted`とphysical bytes減算を同時確定する。実R2、複数pin、pause、応答喪失、期限切れlease再取得を検証。Node 218 + workerd 343 = **561 tests**、lint/typecheck/contracts/config/schema generator、Web build、Wrangler dry-runを再検証。
 - 2026-09-23、`POST /api/v1/trash/:opId/purge`をCSRF/Idempotency-Key、所有者trash membership、space root authority、LockDO permitへ接続。migration `0014`のoperation束縛node/blob manifestを作り、credential/share/upload/media/state/search/version/trash membershipをFK順、nodeをdepth降順に削除する。別trash子をNULL親へ退避し、blob ref/quota trigger後のGC candidate、`node.purged` Outbox、復旧監査、terminalを同時確定。REST再送と深いsubtreeを実D1/DOで検証。Node 218 + workerd 338 = **556 tests**、lint/typecheck/contracts/config/schema generator、Web build、Wrangler dry-runを再検証。
 - 2026-09-23、`POST /api/v1/trash/:opId/restore`をCSRF/Idempotency-Key、所有者trash membership、復元先`node:create`、LockDO permitへ接続。GC pauseとdeleting不在、参照blob状態をfenceし、最大64層・1,000 nodeをrootから深さ順に同じD1 transactionで復元する。名前衝突suffix、別trash operationの削除済み子を維持し、tree/search/activity/`node.restored` Outbox/terminalを同時確定する。Node 218 + workerd 338 = **556 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-runを再検証。

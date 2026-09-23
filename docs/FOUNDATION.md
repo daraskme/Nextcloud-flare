@@ -63,6 +63,18 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 outbox の復旧監査は両 kind の元 operation 種別、保存済み operand/result、step 1 の node ID が通知 payload に一致することも確認する。不整合な通知は監査を失敗させる。
 credential の復旧監査では、有効な app password と service の scope root も同じ space root までの生存・所有者・深さを確認する。祖先が trash の場合は資格情報が残っていても監査を失敗させる。
 
+## UploadDO multipart台帳
+
+`do/uploadPlan.ts`は1 byte〜500 GiB、既定64 MiB・非最終8〜90 MiB・最大10,000 partの固定計画を作る。0 byteはsingle upload用でありmultipartでは拒否する。
+
+`do/uploadLedger.ts`はUploadDO専用SQLiteの内部部品。immutable upload/R2 ID/epoch/分割/期限を初期化し、attemptを一行ずつ保存する。claimとcounter更新は`transactionSync`で原子的に行い、同part排他、全体4並列、part毎3試行、calls≤parts×3、bytes≤declared×3を守る。成功metadataはサイズ・SHA-256形式・etag境界を検査する。再送では保存済み結果を返し、`dispatch`以外ではR2 I/Oを開始してはいけない。`not_started`はR2を一度も呼んでいないと確定した失敗に限り、消費済みbudgetは戻さない。
+
+15分lease切れとunknown応答はupload全体を`aborting`にし、全in-flightをunknownへ固定する。遅れた成功を採用せず、同upload/R2 IDでは再送しない。無進捗24時間/作成から最大6日の期限と旧epoch失敗も永続化する。全part成功後のみ`completing`へ進み、abortと追加partを拒否する。complete応答喪失はR2 head/D1照合が必要なので期限切れからabortへ変えない。cleanup counterはdata/controlと独立で、data budget枯渇後も記録できる。完了partは数値keysetで最大200行ずつ取得する。
+
+`do/UploadDO.ts`は台帳schemaを初期化し、alarmで期限切れを記録する。**受付RPC/HTTP、初回alarm scheduling、D1認可/予約/mirror、R2送信/head/abort、terminalとphysical会計、Cron cleanupは未接続。** 内部台帳の試験をupload全体の成功と扱わない。将来の呼出し側はD1で証明したidentityと現在のcredential/epochを渡し、停止・結果不明をD1へ収束させてからnamespace公開する。DO全storage喪失時は同uploadを新規初期化せず復旧gateを通す。
+
+SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
+
 ## Access session
 
 `services/blobRead.ts` は `node.read` の現在認可 assertion と node/blob/物理観測行を同じ D1 batch で照合し、R2 配信用 plan を作る。R2 HEAD と GET のサイズ/ETag を plan と照合し、D1 content ETag による 304/If-Range、HEAD、単一 Range の 206/416、MIME/Disposition、no-store/nosniff を返す。purpose・content session・予算の検証は呼出し側の必須条件であり、公開 route にはまだ接続していない。
