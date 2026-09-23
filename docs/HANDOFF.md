@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-22。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-23。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -14,11 +14,12 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 資料の読み方
 
-1. この資料で直近の状態と再開点を確認する。
-2. [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) が実装状況・テスト件数・実行記録の正本。
-3. [FOUNDATION](FOUNDATION.md) で変更対象の内部契約だけを読む。
-4. [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) §2 が全 phase の順序、§8 が R6 の確定条件。
-5. [DESIGN](DESIGN.md) v0.6 の該当章を参照。R6 は BRIEF §8、メディア追加要件は MEDIA_FORMATS を併読する。
+1. [CURRENT_STATE](CURRENT_STATE.md) で実装済み・未実装・検証済み・未検証と、セッション間の固定事項を確認する。
+2. この資料で直近の状態と再開点を確認する。
+3. [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) をテスト件数・実行記録の正本とする。
+4. [FOUNDATION](FOUNDATION.md) で変更対象の内部契約だけを読む。
+5. [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) §2 が全 phase の順序、§8 が R6 の確定条件。
+6. [DESIGN](DESIGN.md) v0.6 の該当章を参照。R6 は BRIEF §8、メディア追加要件は MEDIA_FORMATS を併読する。
 
 `reviews/` と REVIEW_LOG は判断経緯。通常の再開時に全レビューを読み直す必要はない。
 
