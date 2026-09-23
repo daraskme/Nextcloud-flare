@@ -20,7 +20,7 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| schema・契約 | migration `0001`〜`0024`、61通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0025`、61通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
@@ -38,14 +38,14 @@
 | content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDO | D1/R2、署名、失効、Range、budget reserve/settle | ZIP/page/entry/track、全route会計 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、bounded repair | send/D1応答喪失、重複delivery、主要node event provenance | 実Queue/DLQ、残るevent kind |
-| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup | DO eviction、R2 inventory、会計・credential/share/outbox監査 | admission再開、完全restore drill |
+| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account/KDF admission |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 330件 + workerd 692件 = 1,022件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0024`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 331件 + workerd 719件 = 1,050件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0025`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
-- Workerのprivate/content/DAV handler。ControlDOが閉じているため公開停止中。
+- Workerのprivate/content/DAV handler。ControlDOは監査後に再開可能だが、実環境の設定・公開は未実施。
 - Queue consumer、Cron outbox dispatch、Cron GC。ローカルworkerdでは検証済みだが実Queue/DLQ/Cron deliveryは未検証。
 - Cloudflare Images bindingの入力境界。実codec、制限、費用は未検証。
 - Access JWT、app password、content ticket、cursor鍵。remote secretと実鍵rotationは未設定・未検証。
@@ -78,8 +78,8 @@
 
 ### 制御・運用
 
-- ControlDOの安全なadmission/resume。`maintenance=true` / `gcPaused=true`を単純に解除してはいけない。
-- Upload/GC/Queue/permit drainと復旧監査を束ねた最終再開gate。
+- account単位のmutation同時数・待ちqueue、KDF admission、backup専用barrier。
+- operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。
 - backup/restore drill、release、rollback、障害対応runbookの実行。
@@ -93,7 +93,7 @@
 - 実Cronの重複・遅延・同時実行。
 - 実R2のdelete/head障害、429、長時間ネットワーク断、lifecycle。
 - 実D1 Time Travelとlogical exportからの復元。
-- ControlDO storage lossを含む完全な停止→監査→再開。
+- 実CloudflareでのControlDO storage lossを含む完全な停止→監査→再開。ローカルfixtureは検証済み。
 - 実Images codecとAVIF生成。
 - 複数ブラウザー、モバイル、支援技術、実WebDAV client。
 - セキュリティheader、CORS、Cookie、domain aliasのdeploy後検査。
@@ -115,7 +115,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 壊してはいけない条件
 
-- ControlDOは安全なresumeが完成するまでfail closedを維持する。
+- ControlDO再開は全監査と同一D1 batchの最終fenceを通す。flagsを直接解除しない。実環境再開は未実施。
 - D1がnamespace・authorization・ledgerの正本、R2がimmutable contentの正本。
 - mutationはcurrent auth、epoch、permit、revision/tree fence、operation terminalを同じatomic boundaryで確認する。
 - `blobs.state='deleting'` とGC `deleting`は不可逆。
@@ -129,7 +129,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 1. unknown multipart IDのS3/BLOBS対応証明・全体不在証明・予約精算を実装。S3診断と完成済み`u/` objectの隔離・35日回収は接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
-4. recovery auditの不足を埋め、ControlDO admission/resumeを実装。
+4. account/KDF admission、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。
 5. Files UI。
 6. share、search、ZIP/reader/media配信。
 7. backup/export/restore drill。

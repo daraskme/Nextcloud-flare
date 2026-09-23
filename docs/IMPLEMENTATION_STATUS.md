@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account/KDF admissionは未完了 |
 | 4 停止中GC drain | migration `0024`のclaim epoch/counter、blob/orphanの既存deleting回収、ControlDO内部RPCと監査再初期化 | 新規25件を含む全check1,022件が成功。全復旧監査fixtureは成功、実環境・完全restore・admission再開は未完了 |
 | 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
 | 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。対応検証との接続・全体不在証明・予約精算・upload行ごと失われたID・実S3は未完了 |
@@ -88,18 +89,20 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 1. 承認された staging inventory で全 binding/環境 marker/Access を照合し、実 D1 で同じ SQL barrier を再実行する。今回の「応答喪失」は commit 後の fault injection であり実ネットワーク断ではない。
 2. Images 実サービスの20MB境界・codec・dimension、KDF CPU/cost、R2転送/キャンセルを計測する。ローカル Images は Miniflare 実装なので料金やサービス限界の証拠にしない。
-3. Phase 1 残り: outbox の実 Queue ack/DLQ、他 kind の result CAS と repair、残る operation tuple の authorize/LockDO。ControlDO admission/再開と HTTP surface/CSRF の接続も必要。
+3. Phase 1 残り: outbox の実 Queue ack/DLQ、他 kind の result CAS と repair、残る operation tuple の authorize/LockDO。account/KDF admission、backup barrier、残るHTTP surface/CSRFの接続も必要。全監査後の内部RPC受付再開はローカル実装済み。
 4. R6 §8 の残りの fixture と仕様 v0.7 反映を Phase 1 内で閉じる。Files core/upload/trash/GC の本実装は Phase 1 gate 後。
 
 ## M/U/I/R と復旧
 
-- **M**: `0001`〜`0024` を追加し、隔離 D1 と SQLite へ適用して61通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proof・永久停止/閉鎖証明を確認。リモート DB は未変更。probe schema は別 test file に隔離。
+- **M**: `0001`〜`0025` を追加し、隔離 D1 と SQLite へ適用して61通常table、FK/CHECK/trigger/FTS/会計/permit/operation/outbox identity/trash keyset/purge manifest/GC claim/upload transfer/cleanup lease/multipart geometry・marker・revision・completion proof・永久停止/閉鎖証明を確認。リモート DB は未変更。probe schema は別 test file に隔離。
 - **U**: Node の Range/Images 入力/長さ/commit分類・期限/SQLite テスト。
 - **I**: Windows と NixOS のローカル workerd binding テスト。初回 CI の Windows 改行失敗を `.gitattributes` で修正し、[2fd68ac の CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35629022538) は Windows/Ubuntu 両方で成功（media 込み350 tests 時点）。今回の453 tests と前回の450/448/447/446/443/442/440/439/437/436/433/429/426/422/415 tests は以下のローカル実行記録。最新 HEAD の CI は GitHub Actions で照合する。
 - **R**: 本番状態を変更していないため production rollback は N/A。依存更新の rollback は manifests/lockfile/toolchain記録を同じ版へ戻して frozen install。テスト R2 object は test 内の finally で削除する。
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 331 + workerd 719 = **1,050 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0025`、全監査後のControlDO受付・GC段階再開を追加。追加Node1件/workerd27件でrevision/token境界、実ControlDO/LockDO namespace mutation、Worker entryのJWT/bootstrap/HTTP、commit前後・readbackの応答喪失、遅延open/stop/GC/epoch publication、同時再開、監査後の予約/permit/bootstrap変更、repair hold、eviction/全喪失を検証。workerd全49fileは263.37秒。account/KDF admission、backup barrier、未知multipart全体閉鎖/予約精算、残るQueue修復、Files UIと実環境gateは未完了。
 
 - 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 330 + workerd 692 = **1,022 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0024`のclaim epoch/dispatch counterと、停止中ControlDOのblob/orphan GC drainを追加。新規25件で旧deletingだけの回収、猶予/lease/pin保持、claim/counter/final batch/R2応答喪失、同時回収、遅延削除、各dispatch/精算時のepoch/mode/lease、容量の一度だけの精算、未知multipart予約holdの迂回拒否、回収後の全復旧監査を検証。未知multipartの全体閉鎖と予約精算・Queue drain・admission再開・実restore drillは未完了。
 

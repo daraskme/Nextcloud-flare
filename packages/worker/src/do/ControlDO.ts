@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
-import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
 import { drainStoppedBlobGarbageCollection, type GcResult } from "../jobs/gc";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
@@ -22,6 +22,7 @@ import {
 import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2BindingVerification";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
+import { ControlAdmission } from "./controlAdmission";
 import {
   type EpochReason,
   epochNumber,
@@ -50,8 +51,8 @@ interface ControlRow extends Record<string, SqlStorageValue> {
 
 export interface ControlStatus {
   epoch: number;
-  maintenance: true;
-  gcPaused: true;
+  maintenance: boolean;
+  gcPaused: boolean;
 }
 
 export interface QuiesceStatus extends ControlStatus {
@@ -85,6 +86,7 @@ export interface RecoveryAuditStatus {
 }
 
 export class ControlDO extends DurableObject<Env> {
+  readonly #admission: ControlAdmission;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -103,6 +105,11 @@ export class ControlDO extends DurableObject<Env> {
       token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','r2','outbox','shares','credentials','credential_sources','fts','fence','complete')),
       after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
     )`);
+    this.#admission = new ControlAdmission(ctx.storage, env.DB, () => {
+      const row = this.#row();
+      if (row.phase !== "ready") throw new Error("control_not_ready");
+      return epochNumber(row.epoch);
+    });
   }
 
   fetch(): Response {
@@ -119,9 +126,7 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   async status(): Promise<ControlStatus> {
-    const row = this.#row();
-    if (row.phase !== "ready") throw new Error("control_not_ready");
-    return { epoch: epochNumber(row.epoch), maintenance: true, gcPaused: true };
+    return this.#admission.status();
   }
 
   /** Operator/maintenance RPC only. HTTP remains closed; no public recovery endpoint. */
@@ -158,49 +163,38 @@ export class ControlDO extends DurableObject<Env> {
   /** Close D1 admission before inspecting in-flight work. Safe to repeat after an unknown response. */
   async quiesce(expectedEpoch: number): Promise<QuiesceStatus> {
     epochNumber(expectedEpoch);
-    const status = await this.status();
-    if (status.epoch !== expectedEpoch || !status.maintenance || !status.gcPaused)
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("quiesce_epoch_conflict");
-    const clock = "strftime('%s','now')*1000";
-    const statements = [
-      {
-        sql: `UPDATE control SET maintenance=1,gc_paused=1,updated_at=MAX(updated_at,${clock})
-          WHERE singleton=1 AND epoch=?`,
-        values: [expectedEpoch],
-      },
-      assertOneChange,
-      { sql: "UPDATE permits SET state='revoked' WHERE state='open'" },
-      {
-        sql: `UPDATE operations SET state='failed',error_code='maintenance',
-          updated_at=MAX(updated_at,${clock}) WHERE state='claimed'`,
-      },
-      assertExists(
-        `SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1
-        AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
-        AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')`,
-        [expectedEpoch],
-      ),
-    ] as const;
+    return this.#admission.close(expectedEpoch);
+  }
+
+  /** Internal operator RPCs; never exposed as unauthenticated HTTP endpoints. */
+  async resumeAdmission(expectedEpoch: number): Promise<ControlStatus> {
+    return this.#admission.resume(expectedEpoch);
+  }
+
+  async resumeGarbageCollection(expectedEpoch: number): Promise<ControlStatus> {
+    return this.#admission.setGcPaused(expectedEpoch, false);
+  }
+
+  async pauseGarbageCollection(expectedEpoch: number): Promise<ControlStatus> {
+    return this.#admission.setGcPaused(expectedEpoch, true);
+  }
+
+  async #maintenance<T>(expectedEpoch: number, action: () => Promise<T>): Promise<T> {
+    const token = this.#admission.beginTask(expectedEpoch);
     try {
-      await atomicBatch(this.env.DB, statements);
-    } catch (error) {
-      // A lost batch acknowledgement is success only if every D1 postcondition is visible.
-      const converged = await primary(this.env.DB)
-        .prepare(`SELECT 1 FROM control
-        WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1
-          AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
-          AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')`)
-        .bind(expectedEpoch)
-        .first<number>();
-      if (converged === null) throw error;
+      await this.beginRecoveryAudit(expectedEpoch);
+      return await action();
+    } finally {
+      try {
+        if (this.#row().phase === "ready" && this.#row().epoch === expectedEpoch)
+          await this.beginRecoveryAudit(expectedEpoch);
+      } finally {
+        this.#admission.finishTask(token);
+      }
     }
-    const active = await primary(this.env.DB)
-      .prepare(`SELECT 1 FROM job_leases
-      WHERE expires_at>${clock} LIMIT 1`)
-      .first<number>();
-    const current = await this.status();
-    if (current.epoch !== expectedEpoch) throw new Error("quiesce_epoch_conflict");
-    return { ...current, activeJobLease: active !== null };
   }
 
   #auditStatus(row: AuditRow): RecoveryAuditStatus {
@@ -230,6 +224,7 @@ export class ControlDO extends DurableObject<Env> {
     const row = this.#row();
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("recovery_audit_epoch_conflict");
+    this.#admission.assertClosed(expectedEpoch);
     this.ctx.storage.sql.exec(
       `INSERT INTO recovery_audit_v7(singleton,epoch,token,stage,after_id,pages)
       VALUES(1,?,?,'users','',0) ON CONFLICT(singleton) DO UPDATE SET
@@ -242,10 +237,10 @@ export class ControlDO extends DurableObject<Env> {
 
   /** Rebuild restored external-content FTS, then invalidate every previous diagnostic page. */
   async rebuildRecoveryFts(expectedEpoch: number): Promise<RecoveryAuditStatus> {
-    const stopped = await this.quiesce(expectedEpoch);
-    if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
-    await rebuildRecoverySearchFts(this.env.DB, expectedEpoch);
-    return this.beginRecoveryAudit(expectedEpoch);
+    await this.#maintenance(expectedEpoch, () =>
+      rebuildRecoverySearchFts(this.env.DB, expectedEpoch),
+    );
+    return this.#auditStatus(this.#auditRow(expectedEpoch));
   }
 
   /** Bounded stale reservation repair; upload cleanup remains a separate prerequisite. */
@@ -253,10 +248,10 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ released: number; audit: RecoveryAuditStatus }> {
-    const stopped = await this.quiesce(expectedEpoch);
-    if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
-    const released = await releaseStaleRecoveryReservations(this.env.DB, expectedEpoch, limit);
-    return { released, audit: await this.beginRecoveryAudit(expectedEpoch) };
+    const released = await this.#maintenance(expectedEpoch, () =>
+      releaseStaleRecoveryReservations(this.env.DB, expectedEpoch, limit),
+    );
+    return { released, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Stop mutation claims and reconcile expired single uploads without reopening admission. */
@@ -264,17 +259,12 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ cleanup: UploadCleanupResult; audit: RecoveryAuditStatus }> {
-    await this.beginRecoveryAudit(expectedEpoch);
-    let cleanup: UploadCleanupResult;
-    try {
-      cleanup = await repairSingleUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
+    const cleanup = await this.#maintenance(expectedEpoch, () =>
+      repairSingleUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
         maxUploads: limit,
         maintenance: true,
-      });
-    } finally {
-      // Even a partially completed repair invalidates pages read during its R2 calls.
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+      }),
+    );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -283,16 +273,12 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ cleanup: UploadCleanupResult; audit: RecoveryAuditStatus }> {
-    await this.beginRecoveryAudit(expectedEpoch);
-    let cleanup: UploadCleanupResult;
-    try {
-      cleanup = await repairMultipartUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
+    const cleanup = await this.#maintenance(expectedEpoch, () =>
+      repairMultipartUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
         maxUploads: limit,
         maintenance: true,
-      });
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+      }),
+    );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -301,18 +287,11 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ cleanup: GcResult; audit: RecoveryAuditStatus }> {
-    await this.beginRecoveryAudit(expectedEpoch);
-    let cleanup: GcResult;
-    try {
-      cleanup = await drainStoppedBlobGarbageCollection(
-        this.env.DB,
-        this.env.BLOBS,
-        expectedEpoch,
-        { maxBlobs: limit },
-      );
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+    const cleanup = await this.#maintenance(expectedEpoch, () =>
+      drainStoppedBlobGarbageCollection(this.env.DB, this.env.BLOBS, expectedEpoch, {
+        maxBlobs: limit,
+      }),
+    );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -321,18 +300,9 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ cleanup: OrphanGcResult; audit: RecoveryAuditStatus }> {
-    await this.beginRecoveryAudit(expectedEpoch);
-    let cleanup: OrphanGcResult;
-    try {
-      cleanup = await drainStoppedOrphanGarbageCollection(
-        this.env.DB,
-        this.env.BLOBS,
-        expectedEpoch,
-        { limit },
-      );
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+    const cleanup = await this.#maintenance(expectedEpoch, () =>
+      drainStoppedOrphanGarbageCollection(this.env.DB, this.env.BLOBS, expectedEpoch, { limit }),
+    );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -341,16 +311,9 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ inventory: OrphanScanResult; audit: RecoveryAuditStatus }> {
-    await this.beginRecoveryAudit(expectedEpoch);
-    let inventory: OrphanScanResult;
-    try {
-      inventory = await scanOrphanObjects(this.env.DB, this.env.BLOBS, expectedEpoch, {
-        limit,
-        maintenance: true,
-      });
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+    const inventory = await this.#maintenance(expectedEpoch, () =>
+      scanOrphanObjects(this.env.DB, this.env.BLOBS, expectedEpoch, { limit, maintenance: true }),
+    );
     return { inventory, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -360,13 +323,9 @@ export class ControlDO extends DurableObject<Env> {
     query: MultipartInventoryQuery,
   ): Promise<{ observation: MultipartInventoryObservation; audit: RecoveryAuditStatus }> {
     const client = new R2S3Inventory(this.env);
-    await this.beginRecoveryAudit(expectedEpoch);
-    let observation: MultipartInventoryObservation;
-    try {
-      observation = await inspectMultipartInventory(this.env.DB, client, expectedEpoch, query);
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+    const observation = await this.#maintenance(expectedEpoch, () =>
+      inspectMultipartInventory(this.env.DB, client, expectedEpoch, query),
+    );
     return { observation, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -375,19 +334,15 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
   ): Promise<{ verification: BindingVerification; audit: RecoveryAuditStatus }> {
     const inventory = new R2S3Inventory(this.env);
-    await this.beginRecoveryAudit(expectedEpoch);
-    let verification: BindingVerification;
-    try {
-      verification = await withVerifiedR2Inventory(
+    const verification = await this.#maintenance(expectedEpoch, () =>
+      withVerifiedR2Inventory(
         this.env.DB,
         this.env.BLOBS,
         inventory,
         expectedEpoch,
         async (verified) => verified.observation,
-      );
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+      ),
+    );
     return { verification, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -397,19 +352,12 @@ export class ControlDO extends DurableObject<Env> {
     limit = 5,
   ): Promise<{ repair: MultipartInventoryRepairResult; audit: RecoveryAuditStatus }> {
     const inventory = new R2S3Inventory(this.env);
-    await this.beginRecoveryAudit(expectedEpoch);
-    let repair: MultipartInventoryRepairResult;
-    try {
-      repair = await repairUnidentifiedMultipartUploads(
-        this.env.DB,
-        this.env.BLOBS,
-        inventory,
-        expectedEpoch,
-        { maxUploads: limit, maintenance: true },
-      );
-    } finally {
-      await this.beginRecoveryAudit(expectedEpoch);
-    }
+    const repair = await this.#maintenance(expectedEpoch, () =>
+      repairUnidentifiedMultipartUploads(this.env.DB, this.env.BLOBS, inventory, expectedEpoch, {
+        maxUploads: limit,
+        maintenance: true,
+      }),
+    );
     return { repair, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
@@ -418,10 +366,10 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     limit = 20,
   ): Promise<{ failed: number; audit: RecoveryAuditStatus }> {
-    const stopped = await this.quiesce(expectedEpoch);
-    if (stopped.activeJobLease) throw new Error("recovery_job_lease_active");
-    const failed = await failStaleRecoveryOutbox(this.env.DB, expectedEpoch, limit);
-    return { failed, audit: await this.beginRecoveryAudit(expectedEpoch) };
+    const failed = await this.#maintenance(expectedEpoch, () =>
+      failStaleRecoveryOutbox(this.env.DB, expectedEpoch, limit),
+    );
+    return { failed, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Checks one page; a failed page leaves the durable cursor unchanged. */
@@ -429,6 +377,7 @@ export class ControlDO extends DurableObject<Env> {
     epochNumber(expectedEpoch);
     const status = await this.status();
     if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
+    this.#admission.assertClosed(expectedEpoch);
     const row = this.#auditRow(expectedEpoch);
     if (row.stage === "complete") {
       try {
@@ -446,7 +395,10 @@ export class ControlDO extends DurableObject<Env> {
         if (reset.rowsWritten !== 1) throw new Error("recovery_audit_conflict");
         throw error;
       }
-      return this.#auditStatus(this.#auditRow(expectedEpoch));
+      this.#admission.assertClosed(expectedEpoch);
+      const current = this.#auditRow(expectedEpoch);
+      if (current.token !== row.token) throw new Error("recovery_audit_conflict");
+      return this.#auditStatus(current);
     }
     const cursor: RecoveryCursor = { stage: row.stage, afterId: row.after_id };
     const page = await inspectRecoveryPage(
@@ -459,6 +411,7 @@ export class ControlDO extends DurableObject<Env> {
     const current = this.#row();
     if (current.phase !== "ready" || current.epoch !== expectedEpoch)
       throw new Error("recovery_audit_epoch_conflict");
+    this.#admission.assertClosed(expectedEpoch);
     const next = page.next;
     const updated = this.ctx.storage.sql.exec(
       `UPDATE recovery_audit_v7
@@ -488,6 +441,7 @@ export class ControlDO extends DurableObject<Env> {
       expected,
     );
     if (result.rowsWritten !== 1) throw new Error("epoch_conflict");
+    this.ctx.storage.sql.exec("DELETE FROM recovery_audit_v7");
   }
 
   async #completePending(row: ControlRow): Promise<ControlStatus> {
@@ -507,8 +461,17 @@ export class ControlDO extends DurableObject<Env> {
     });
     await atomicBatch(this.env.DB, [
       {
-        sql: "UPDATE control SET epoch=?,maintenance=1,gc_paused=1,updated_at=? WHERE singleton=1 AND epoch<=?",
-        values: [row.pending_epoch, Date.now(), row.pending_epoch],
+        sql: `UPDATE control SET epoch=?,maintenance=1,gc_paused=1,updated_at=?,admission_revision=0,admission_token=?
+          WHERE singleton=1 AND (epoch<? OR (epoch=? AND admission_revision=0 AND maintenance=1 AND gc_paused=1
+            AND (admission_token IS NULL OR admission_token=?)))`,
+        values: [
+          row.pending_epoch,
+          Date.now(),
+          row.pending_token,
+          row.pending_epoch,
+          row.pending_epoch,
+          row.pending_token,
+        ],
       },
       assertOneChange,
       { sql: "UPDATE permits SET state='revoked' WHERE state='open'" },
@@ -517,18 +480,22 @@ export class ControlDO extends DurableObject<Env> {
         values: [Date.now(), row.pending_epoch],
       },
     ]);
-    const result = this.ctx.storage.sql.exec(
-      `UPDATE control_state SET epoch=pending_epoch,phase='ready',
-      pending_epoch=NULL,pending_at=NULL,pending_reason=NULL,pending_token=NULL
-      WHERE singleton=1 AND phase='pending' AND pending_token=?`,
-      row.pending_token,
-    );
-    if (result.rowsWritten !== 1) {
-      const current = this.#row();
-      if (current.phase !== "ready" || current.epoch !== row.pending_epoch)
-        throw new Error("epoch_conflict");
-    }
-    // Recovery never resumes service. Admission/quiesce verification comes later in Foundation.
+    this.ctx.storage.transactionSync(() => {
+      const result = this.ctx.storage.sql.exec(
+        `UPDATE control_state SET epoch=pending_epoch,phase='ready',
+        pending_epoch=NULL,pending_at=NULL,pending_reason=NULL,pending_token=NULL
+        WHERE singleton=1 AND phase='pending' AND pending_token=?`,
+        row.pending_token,
+      );
+      if (result.rowsWritten === 1) {
+        this.#admission.resetEpoch(row.pending_epoch!, row.pending_token!);
+      } else {
+        const current = this.#row();
+        if (current.phase !== "ready" || current.epoch !== row.pending_epoch)
+          throw new Error("epoch_conflict");
+      }
+    });
+    // Epoch recovery always closes admission; reopening requires a new complete audit.
     return this.status();
   }
 }

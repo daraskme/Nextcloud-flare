@@ -30,6 +30,21 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
+it("bounds the durable admission revision and transition token without opening legacy control rows", () => {
+  expect(
+    db
+      .prepare("SELECT maintenance,gc_paused,admission_revision,admission_token FROM control")
+      .get(),
+  ).toEqual({ maintenance: 1, gc_paused: 1, admission_revision: 0, admission_token: null });
+  for (const invalid of [-1, 0.5, 9007199254740992])
+    expect(() => db.prepare("UPDATE control SET admission_revision=?").run(invalid)).toThrow();
+  for (const invalid of ["", "x".repeat(129)])
+    expect(() => db.prepare("UPDATE control SET admission_token=?").run(invalid)).toThrow();
+  db.prepare("UPDATE control SET admission_revision=9007199254740991,admission_token=?").run(
+    crypto.randomUUID(),
+  );
+});
+
 it("migrates all 61 normal tables with strict types, explicit PK nullability and a complete FK graph", () => {
   const tables = db
     .prepare("PRAGMA table_list")

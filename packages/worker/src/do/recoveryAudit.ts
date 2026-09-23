@@ -202,12 +202,8 @@ export async function rebuildRecoverySearchFts(db: D1Database, epoch: number): P
   await inspectRecoverySearchFts(db, epoch);
 }
 
-/** Last D1 observation before an audit is marked complete; admission stays closed. */
-export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): Promise<void> {
-  epochNumber(epoch);
-  await assertQuiesced(db, epoch);
-  const ready = await primary(db)
-    .prepare(`SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=?
+/** Also asserted inside the admission transaction, not just observed before it. */
+export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=?
       AND c.maintenance=1 AND c.gc_paused=1
       AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
@@ -226,9 +222,23 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
           OR (owner_id IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=owner_key)))))
       AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)
       AND NOT EXISTS(SELECT 1 FROM r2_binding_probe WHERE phase<>'idle' OR lease_token IS NOT NULL OR epoch>c.epoch)
-      AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans)`)
-    .bind(epoch)
-    .first<number>();
+      AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans)
+      AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+      AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
+      AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
+        AND claim_expires_at>strftime('%s','now')*1000)
+      AND ((c.bootstrap_done_at IS NULL AND c.bootstrap_iss IS NULL AND c.bootstrap_sub IS NULL
+        AND NOT EXISTS(SELECT 1 FROM users) AND NOT EXISTS(SELECT 1 FROM spaces))
+        OR (c.bootstrap_done_at IS NOT NULL AND length(c.bootstrap_iss)>0 AND length(c.bootstrap_sub)>0
+          AND EXISTS(SELECT 1 FROM users
+          WHERE role='app_admin' AND disabled_at IS NULL
+            AND access_iss=c.bootstrap_iss AND access_sub=c.bootstrap_sub)))`;
+
+/** Last D1 observation before an audit is marked complete; admission stays closed. */
+export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): Promise<void> {
+  epochNumber(epoch);
+  await assertQuiesced(db, epoch);
+  const ready = await primary(db).prepare(RECOVERY_FINAL_QUERY).bind(epoch).first<number>();
   if (ready === null) throw new Error("recovery_final_fence_pending");
 }
 

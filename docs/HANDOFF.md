@@ -25,15 +25,16 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。61通常テーブル、migration `0001`〜`0024`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。61通常テーブル、migration `0001`〜`0025`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
-直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admission は閉じたまま。
+直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
 
 主要な内部成果物（最新状態は進捗表を参照）:
 
 | ファイル | 実装内容 |
 |---|---|
+| `do/controlAdmission.ts` / `ControlDO.resumeAdmission`・`resumeGarbageCollection` | migration `0025`、永続intentとD1 revision/token、最終batch fence、repair hold、停止と応答喪失の競合、初回bootstrapと実LockDO mutation |
 | `jobs/gc.ts` / `jobs/orphanInventory.ts` / `ControlDO.drainBlobGarbageCollection`・`drainOrphanGarbageCollection` | migration `0024`、旧deletingのみの停止中回収、dispatch/final fence・counter・physical精算、全復旧監査fixture |
 | `jobs/r2BindingVerification.ts` / `ControlDO.verifyInventoryBinding` | migration `0023`、固定64-byte system objectのfresh nonce/CASによるBLOBS/S3検証。scope内のみ有効なD1 fence、復旧監査・容量保持。全体閉鎖への接続は次段階 |
 | `jobs/multipartInventoryRepair.ts` / `ControlDO.repairUnidentifiedMultipartUploads` | migration `0022`でscan/handleを永続化。全ページ後の実BLOBS abort、immutable receipt、physical観測。予約・復旧再開は保持 |
@@ -77,7 +78,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 ## 公開・接続していないもの
 
 - content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。SPA は準備用 HTML のみ。147 route の存在は handler の完成を意味しない。
-- **ControlDO.status は maintenance=true / gcPaused=true。** `recover`/`bumpEpoch` はあるが、admission/quiesce/検証後の再開は未実装。単純に false に変えない。
+- **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
 - private単一uploadのHTTP・D1予約・R2送信・原子的complete・abort・期限切れ回収・GC handoffは接続済み。multipartのD1予約/認可RPC/状態mirrorとR2 create/part送信は内部接続済み。multipartのR2 complete/HEAD・原子的新規/上書き公開は内部接続済み。既知IDのR2 abort・期限切れ回収は接続済み。private HTTPは接続済み。Files UIは未接続。未知object/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実 ControlDO admission とリモート Access/署名鍵設定、全 route 会計も未接続。
@@ -89,6 +90,8 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - 単一uploadは専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` が必要。32-byte base64url鍵をkidで選ぶ。旧kidは有効uploadの期限まで保持する。remote secret未設定ならupload routeは503。
 
 ## 次に進める順序
+
+直近はControlDOの受付とGCの段階再開を追加した。migration `0025`、61通常table。全監査とD1最終assert、永続revision/token、repair holdを使い、応答喪失・停止/epoch競合・eviction/全喪失を検証。手順と限界は[CONTROL_ADMISSION](CONTROL_ADMISSION.md)。Files UI、account/KDF admission、残るQueue/共有/検索/媒体サービス、backup/exportと実環境gateを続ける。
 
 直近は停止中GC drainを追加した。[GC_RECOVERY](GC_RECOVERY.md)に対象・上限・再試行と残作業を記録した。通常blob GCも各R2 dispatchと最終精算でepoch/mode/leaseを再確認する。schemaは61通常table/migration `0024`。未知multipartの全体閉鎖は進行中partとの競合を含むR2保証の確認が必要で、予約holdは解除していない。
 
@@ -109,7 +112,7 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 以下の全体gateも引き続き必要:
 
 1. **outbox Queue 実サービス / repair**: `node.created` と `node.renamed` のローカル handler を基に実 Queue/DLQ/requeue を検証し、残る kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
-2. **ControlDO admission / resume**: durable な監査進捗へ credential/share/outbox の全意味検証、未知 R2 object の repair と incomplete multipart の扱い、GC/Upload/Queue drain と最終 D1 fence 後の admission 再開を追加する。正本は DO、D1 は mirror。空 DB 専用の解除処理を完成形にしない。
+2. **ControlDOの残る制御**: account単位のmutation同時数と待ちqueue、KDF admission、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
 
