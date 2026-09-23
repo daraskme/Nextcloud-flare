@@ -83,6 +83,8 @@ HTTP契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。multipart PUTはUpload-Attempt-Id�
 
 ## UploadDO multipart台帳
 
+未完了multipartの外部観測は[r2 S3診断](MULTIPART_INVENTORY.md)を参照。ListMultipartUploads/ListParts/lifecycleを停止中ControlDOへ接続済みだが、BLOBS対応証明・永続scan・未知IDの修復は未実装。診断結果を閉鎖証明として既存cleanupへ渡さない。
+
 `do/uploadPlan.ts`は1 byte〜500 GiB、既定64 MiB・非最終8〜90 MiB・最大10,000 partの固定計画を作る。0 byteはsingle upload用でありmultipartでは拒否する。
 
 `do/uploadLedger.ts`はUploadDO専用SQLiteの内部部品。immutable upload/R2 ID/epoch/分割/期限を初期化し、attemptを一行ずつ保存する。claimとcounter更新は`transactionSync`で原子的に行い、同part排他、全体4並列、part毎3試行、calls≤parts×3、bytes≤declared×3を守る。成功metadataはサイズ・SHA-256形式・etag境界を検査する。再送では保存済み結果を返し、`dispatch`以外ではR2 I/Oを開始してはいけない。`not_started`はR2を一度も呼んでいないと確定した失敗に限り、消費済みbudgetは戻さない。

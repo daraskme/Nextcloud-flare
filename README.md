@@ -18,6 +18,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 | [FOUNDATION](docs/FOUNDATION.md) | 現在の内部サービスと DB の契約 |
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |
+| [MULTIPART_INVENTORY](docs/MULTIPART_INVENTORY.md) | S3未完了multipart/part/lifecycleの診断と修復前提 |
 | [IMPLEMENTATION_BRIEF](docs/IMPLEMENTATION_BRIEF.md) | 全体の実装順序・R6 確定条件 |
 | [DESIGN](docs/DESIGN.md) | 製品全体の設計・受入条件 |
 | [MEDIA_FORMATS](docs/MEDIA_FORMATS.md) | AVIF・AV1・Opus の追加要件 |

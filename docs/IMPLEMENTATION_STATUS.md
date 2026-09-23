@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 multipart S3診断 | 署名付きListMultipartUploads/ListParts/lifecycle取得、1 GET・最大100件・1 MiB・10秒、厳密XML/echo/markerと停止中ControlDO診断 | Node/workerdで署名・失敗境界、D1 maintenance/epoch fence、監査再初期化と予約保持を検証。実BLOBS対応証明・永続inventory・未知ID修復・実S3接続は未完了 |
 | 3 private multipart HTTP | 既存routeのcreate/part/status/page/complete/abort、Upload-Attempt-Id、D1 receipt snapshot、期限切れ後照会、中止CAS、初期化結果不明receipt | 実Access JWT/CSRF/D1/R2/DOで再送・上書き・page・失効・中止/確定・遅延part・初期化応答喪失・入力境界を検証。UI・公開共有・実admissionは未実装 |
 | 4 未知完成物inventory | migration `0021`の2table、bounded R2 list/HEAD、D1 cursor/lease、35日grace、owner physical会計、独立GCとキー再利用拒否、Cron/停止中ControlDO inventory/復旧監査 | 応答喪失、並行処理、置換・再出現、owner復元、pause/epochを実D1/R2で検証。incomplete multipart、他prefix、停止中GC drain、実環境は未完了 |
 | 3 multipart回収 | migration `0020`の永久停止markerと閉鎖証明、独立cleanup budget、R2 abort/HEAD、physical計上/予約精算/GC、Cron/停止中ControlDO repair、DO alarm停止 | 応答喪失、競合、遅延init/HEAD、旧epoch、pin、未知metadata隔離、DO全喪失、偽GC handoff拒否を実D1/R2/DOで検証。未知IDの外部inventory修復・UIは未実装 |
@@ -96,6 +97,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 326 + workerd 612 = **938 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。未完了multipartのS3診断にNode 84件とworkerd 7件を追加。XML/echo/marker・署名・redirect/再送なし・timeout・body上限、D1停止fence、ControlDO監査再初期化、空一覧/404時の予約保持を検証。最終の解析前markup上限追加後も対象Node 84件を再実行して成功。実S3接続・BLOBS対応証明・永続scan・未知ID修復は未完了。
 
 - 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 242 + workerd 605 = **847 tests**、lint/typecheck/contracts/config、schema整合性、Web build、Wrangler dry-run成功。migration `0021`に未知完成物と走査cursor/leaseの2tableを追加（58通常table）。`u/`のbounded list/HEAD、35日grace、owner physical計上/後日復元、独立GC、同key再利用拒否、Cron/停止中ControlDO inventory/復旧監査を接続。新規41件とControlDO3件で、cursor/観測/精算の応答喪失、並行走査/GC、古いHEAD対置換/削除、期限・pause・epoch・token、置換/再出現、所有者不明、不正key、会計を検証。4catalogueのkey照合が索引検索になることもSQLite query planで確認。unknown multipart ID、他prefix、未完了GC drain・ControlDO再開、UI、stagingは未完了。
 

@@ -3,8 +3,14 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
+import {
+  inspectMultipartInventory,
+  type MultipartInventoryObservation,
+  type MultipartInventoryQuery,
+} from "../jobs/multipartInventory";
 import { type OrphanScanResult, scanOrphanObjects } from "../jobs/orphanInventory";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
+import { R2S3Inventory } from "../r2/s3Inventory";
 import {
   type EpochReason,
   epochNumber,
@@ -295,6 +301,22 @@ export class ControlDO extends DurableObject<Env> {
       await this.beginRecoveryAudit(expectedEpoch);
     }
     return { inventory, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Read one S3 diagnostic page; never attach IDs, close handles, or release reservations. */
+  async inspectIncompleteMultipart(
+    expectedEpoch: number,
+    query: MultipartInventoryQuery,
+  ): Promise<{ observation: MultipartInventoryObservation; audit: RecoveryAuditStatus }> {
+    const client = new R2S3Inventory(this.env);
+    await this.beginRecoveryAudit(expectedEpoch);
+    let observation: MultipartInventoryObservation;
+    try {
+      observation = await inspectMultipartInventory(this.env.DB, client, expectedEpoch, query);
+    } finally {
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { observation, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */

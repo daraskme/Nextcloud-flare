@@ -3,6 +3,14 @@
   "cutoff": "2026-09-14T00:00:00.000Z",
   "registry": "https://registry.npmjs.org",
   "versions": {
+    "aws4fetch": {
+      "version": "1.0.20",
+      "publishedAt": "2024-08-28T07:29:54.308Z",
+      "selectedAt": "2026-09-23",
+      "engines": {},
+      "peers": {},
+      "review": "Dependency-free MIT WebCrypto signer documented by Cloudflare for R2. Inventory uses sign() with s3/auto and one explicit fetch, manual redirects, bounded response and timeout; AwsClient.fetch retries are not used."
+    },
     "unicode-case-folding": {
       "version": "1.1.1",
       "publishedAt": "2025-10-01T18:38:32.834Z",
