@@ -131,7 +131,7 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
 
 フォルダー作成は current parent/revision/tree を読み、7 step を一括確定する内部サービス。SQL plan は server code のみで生成し、外部から任意 step/SQL を受け付けない。
-現在の検索 helper は folder-name 用。media metadata の全文索引や検索 API が実装済みと扱わない。
+名前検索は private API と Files UI へ接続済み（[SEARCH](SEARCH.md)）。media metadata の全文索引・索引更新の運用・実 D1 の処理量/応答時間 gate は未完了。
 
 ## 再開コマンド
 

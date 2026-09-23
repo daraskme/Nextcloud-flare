@@ -72,7 +72,7 @@
 | AVIF/AV1/Opus 追加要件 | bounded container sniff、実 codec の MIME、native 再生可否 probe、AVIF 原本 fallback | 単体20件。track parser/content/UI 接続は後続 phase、詳細 `MEDIA_FORMATS.md` |
 | 1 fsMutation/create | node/parent/tree/search base/FTS/activity/outbox/terminal を一括確定。全必須 step の0行 rollback、並行再送、commit 応答喪失 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
 | 1 rename mutation | 対象と親の lock/認可/permit、node/parent/tree revision、FTS の旧語削除と新語追加、activity/outbox/terminal を D1 batch で確定。実 LockDO 経由の実行、同一キー再送、異なる意図の衝突、失効後の拒否、衝突時 rollback を検証 | 内部サービス実装。公開 HTTP/実 ControlDO admission は未接続 |
-| 1 名前/検索索引 | NFC/portable/byte/scalar、固定 Unicode 17 full casefold、NFKC/かな統一/bigram、同名拒否 | folder create の保存・初期 FTS に接続。検索 API は未実装 |
+| 1 名前/検索索引 | NFC/portable/byte/scalar、固定 Unicode 17 full casefold、NFKC/かな統一/bigram、同名拒否 | 名前検索を private API / Files UI へ接続済み。media metadata の全文索引・索引更新の運用・実 D1 の性能 gate は未完了 |
 | 1 outbox producer | D1 lease→ID-only Queue send→sent、応答喪失/lease 回収/旧 sender/fast completed、bounded repair scan。Worker scheduled handler と毎分 Cron を設定し、ControlDO/D1 admission 後に最大50件を送る | ローカル接続済み。ControlDO が maintenance 中のため実送信は停止。実 Cron/Queue/DLQ 配信は未検証 |
 | 1 outbox consumer 基盤 | `node.created` と `node.renamed` の current credential/権限、30秒 claim、元 operation step による由来確認、terminal CAS を D1 で検証。ID-only Queue の terminal ack と claim 中の再送抑止を追加。Worker Queue handler は ControlDO status と D1 mirror の一致を admission gate にして consumer に接続 | ControlDO が maintenance 中のため実 delivery は retry。実 Queue/DLQ、残る kind、再開は未完了 |
 
