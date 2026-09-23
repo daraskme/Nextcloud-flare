@@ -5,6 +5,8 @@ export interface UploadRecord {
   spaceId: string;
   parentId: string;
   name: string;
+  sourceName?: string;
+  target?: { id: string; revision: number; blobId: string };
   size: number;
   modified: number;
   sample: string;

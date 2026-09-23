@@ -112,12 +112,14 @@ export async function handleContentHttp(
   if (!nodeId || !blobId || !NODE_ID.test(nodeId) || !NODE_ID.test(blobId))
     return problem(404, "not_found");
   if (origin !== null && origin !== env.APP_ORIGIN) return problem(403, "forbidden");
+  const reply = (response: Response) =>
+    origin === env.APP_ORIGIN ? cors(response, env.APP_ORIGIN) : response;
   try {
     const node = await primary(env.DB)
       .prepare("SELECT space_id AS spaceId FROM nodes WHERE id=? AND current_blob_id=?")
       .bind(nodeId, blobId)
       .first<{ spaceId: string }>();
-    if (!node) return problem(404, "not_found");
+    if (!node) return reply(problem(404, "not_found"));
     const response = await streamBudgetedContentBlob(
       env.DB,
       env.BLOBS,
@@ -129,12 +131,12 @@ export async function handleContentHttp(
       "content",
       request,
     );
-    return origin === env.APP_ORIGIN ? cors(response, env.APP_ORIGIN) : response;
+    return reply(response);
   } catch (error) {
     if (error instanceof Error && error.message === "budget_exceeded")
-      return problem(429, "budget_exceeded");
+      return reply(problem(429, "budget_exceeded"));
     if (error instanceof Error && error.message === "blob_storage_mismatch")
-      return problem(503, "not_ready");
-    return problem(404, "not_found");
+      return reply(problem(503, "not_ready"));
+    return reply(problem(404, "not_found"));
   }
 }

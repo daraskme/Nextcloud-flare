@@ -2,6 +2,8 @@
 
 Access user向けの単一・分割upload契約。ControlDO admissionとremote設定はまだ閉じており、実Cloudflare公開は未実施。公開共有のupload routeは別実装で、本契約では有効化しない。
 
+Files画面の確認付き上書きと再開は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)を参照。
+
 ## 認証と入力
 
 全routeはapp origin上で現在のAccess session・credential・node authority・epochを検査する。作成以外は`Upload-Capability`も必要。tokenは同じcredentialとupload identityに束縛し、URLやlogには入れない。

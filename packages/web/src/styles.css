@@ -718,9 +718,13 @@ h1 {
 }
 .dialog-heading {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 23px;
+}
+.dialog-heading > .button-icon {
+  flex-shrink: 0;
 }
 .dialog-heading h2 {
   margin: 0;
@@ -755,6 +759,31 @@ h1 {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+.overwrite-summary {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 20px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #f4f6f9;
+  font-size: 13px;
+  color: #657184;
+  overflow-wrap: anywhere;
+}
+.overwrite-summary strong {
+  color: #26364c;
+  font-size: 15px;
+}
+.overwrite-source,
+.overwrite-note {
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  color: #657184;
+}
+.overwrite-picker {
+  margin-top: 9px;
 }
 .form-error {
   margin: 17px 0 0;

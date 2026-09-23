@@ -32,6 +32,7 @@ import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } fro
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { type UploadTask, uploads } from "./features/uploads/manager";
+import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import {
   type Account,
   ApiError,
@@ -45,6 +46,7 @@ import {
 type Action =
   | { kind: "create" }
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
+  | { kind: "overwrite"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
   accountId: string;
@@ -259,7 +261,7 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Action;
+  action: Exclude<Action, { kind: "overwrite" }>;
   account: Account;
   parentId: string;
   onClose: () => void;
@@ -440,6 +442,11 @@ function NodeMenu({
           <Menu.Item onSelect={open}>
             {node.kind === "folder" ? "開く" : "ファイルを開く・保存"}
           </Menu.Item>
+          {node.kind === "file" && (
+            <Menu.Item onSelect={() => act({ kind: "overwrite", node })}>
+              ファイルを上書き
+            </Menu.Item>
+          )}
           <Menu.Item onSelect={() => act({ kind: "rename", node })}>名前を変更</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "move", node })}>移動</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "copy", node })}>コピー</Menu.Item>
@@ -1105,7 +1112,16 @@ export function App() {
         </main>
       </div>
       <UploadPanel />
-      {action && me && (
+      {action?.kind === "overwrite" && me && (
+        <OverwriteDialog
+          key={JSON.stringify(action)}
+          node={action.node}
+          account={me}
+          parentId={parentId}
+          onClose={() => setAction(null)}
+        />
+      )}
+      {action && action.kind !== "overwrite" && me && (
         <OperationDialog
           key={JSON.stringify(action)}
           action={action}

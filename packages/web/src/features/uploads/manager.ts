@@ -3,6 +3,7 @@ import {
   ApiError,
   api,
   errorMessage,
+  type FileNode,
   type Operation,
   type Part,
   type UploadReceipt,
@@ -52,6 +53,25 @@ export class UploadManager {
     return this.#controllers.size > 0;
   }
 
+  async #assertTarget(record: UploadRecord) {
+    if (!record.target) return;
+    const current = await api.request<FileNode & { parentId: string; spaceId: string }>(
+      `/api/v1/nodes/${encodeURIComponent(record.target.id)}`,
+    );
+    if (
+      current.id !== record.target.id ||
+      current.kind !== "file" ||
+      current.spaceId !== record.spaceId ||
+      current.parentId !== record.parentId ||
+      current.name !== record.name ||
+      current.revision !== record.target.revision ||
+      current.currentBlobId !== record.target.blobId
+    )
+      throw new Error(
+        "上書き先が変更されています。この送信を中止し、一覧を更新して選び直してください。",
+      );
+  }
+
   async load(account: Account) {
     const scope = `${account.id}:${account.epoch}`;
     if (this.#loaded === scope) return;
@@ -90,10 +110,18 @@ export class UploadManager {
     this.#notify();
   }
 
-  async enqueue(file: File, account: Account, parentId: string) {
+  async enqueue(file: File, account: Account, parentId: string, replacement?: FileNode) {
     if (this.#tasks.filter((task) => !["completed", "cancelled"].includes(task.phase)).length >= 32)
       throw new Error("同時に待機できるファイルは32件までです。");
     if (file.size > 536_870_912_000) throw new Error("1ファイルの上限は500 GBです。");
+    if (
+      replacement &&
+      (replacement.kind !== "file" ||
+        !replacement.currentBlobId ||
+        !Number.isSafeInteger(replacement.revision) ||
+        replacement.revision < 1)
+    )
+      throw new Error("上書き先を確認できません。一覧を更新して選び直してください。");
     const generation = this.#generation;
     const record: UploadRecord = {
       localId: crypto.randomUUID(),
@@ -101,7 +129,17 @@ export class UploadManager {
       epoch: account.epoch,
       spaceId: account.spaceId,
       parentId,
-      name: file.name,
+      name: replacement?.name ?? file.name,
+      sourceName: file.name,
+      ...(replacement
+        ? {
+            target: {
+              id: replacement.id,
+              revision: replacement.revision,
+              blobId: replacement.currentBlobId!,
+            },
+          }
+        : {}),
       size: file.size,
       modified: file.lastModified,
       sample: await fingerprint(file),
@@ -111,6 +149,9 @@ export class UploadManager {
       mode: file.size <= 95_000_000 ? "single" : "multipart",
       attempts: {},
     };
+    if (generation !== this.#generation) return;
+    // Early feedback only. The server still fences every transfer and final commit.
+    await this.#assertTarget(record);
     if (generation !== this.#generation) return;
     await saveUpload(record);
     if (generation !== this.#generation) {
@@ -128,7 +169,7 @@ export class UploadManager {
     const generation = this.#generation;
     if (this.#controllers.has(record.localId)) return;
     if (
-      file.name !== record.name ||
+      file.name !== (record.sourceName ?? record.name) ||
       file.size !== record.size ||
       file.lastModified !== record.modified ||
       (await fingerprint(file)) !== record.sample
@@ -166,6 +207,9 @@ export class UploadManager {
                   parentId: record.parentId,
                   name: record.name,
                   declared_size: record.size,
+                  ...(record.target
+                    ? { targetId: record.target.id, targetRevision: record.target.revision }
+                    : {}),
                 },
                 record.createKey,
               );
@@ -177,6 +221,9 @@ export class UploadManager {
             }
             current();
             const headers = { "Upload-Capability": record.capability };
+            const contentHeaders = record.target
+              ? { ...headers, "If-Match": `"b-${record.target.blobId}"` }
+              : headers;
             const base = `/api/v1/uploads/${encodeURIComponent(record.uploadId)}`;
             let receipt = await api.request<UploadReceipt>(base, { headers });
             current();
@@ -185,6 +232,8 @@ export class UploadManager {
                 "この送信は停止済みです。中止を確認してから新しくアップロードしてください。",
               );
             if (receipt.state === "completed") return this.#complete(task);
+            await this.#assertTarget(record);
+            current();
             if (controller.signal.aborted) return;
             this.#update(task, { phase: "uploading", message: "アップロード中" });
             if (record.mode === "single") {
@@ -195,11 +244,22 @@ export class UploadManager {
                 try {
                   await api.request<UploadReceipt>(
                     `${base}/content`,
-                    { method: "PUT", headers, body: file, signal: controller.signal },
+                    {
+                      method: "PUT",
+                      headers: contentHeaders,
+                      body: file,
+                      signal: controller.signal,
+                    },
                     900_000,
                   );
                 } catch (error) {
                   if (controller.signal.aborted) throw error;
+                  if (
+                    record.target &&
+                    error instanceof ApiError &&
+                    [409, 412, 423, 428].includes(error.status)
+                  )
+                    throw error;
                 }
               }
               current();
@@ -255,7 +315,7 @@ export class UploadManager {
                       `${base}/parts/${number}`,
                       {
                         method: "PUT",
-                        headers: { ...headers, "Upload-Attempt-Id": attempt },
+                        headers: { ...contentHeaders, "Upload-Attempt-Id": attempt },
                         body: file.slice(
                           (number - 1) * partBytes,
                           Math.min(file.size, number * partBytes),
@@ -266,6 +326,12 @@ export class UploadManager {
                     );
                   } catch (error) {
                     if (controller.signal.aborted) throw error;
+                    if (
+                      record.target &&
+                      error instanceof ApiError &&
+                      [409, 412, 423, 428].includes(error.status)
+                    )
+                      throw error;
                   }
                   current();
                   if (result?.disposition === "not_started") {

@@ -814,7 +814,7 @@ upload-only は create/upload receipt/status だけを許可し、list/read/over
 2. app は audience=`CONTENT_ORIGIN`、expiry≤600秒かつ share expiry 以下の署名 ticket を返す。ticket は個別 cancel 可能で、`content_sessions.revoked_at` と ticket cancel row を毎 request 検査する。
 3. browser は `POST <CONTENT_ORIGIN>/session` を `credentials:'include'` で呼ぶ。§5.1 の OPTIONS/POST 固定 allowlist CORS を使う。
 4. content origin は署名した opaque session ID の `__Host-ncf_cs` を `Secure; HttpOnly; SameSite=None; Path=/; Max-Age≤600` で設定する。`content_sessions` は user/share/credential/target set/budget/ticket ID/expiry/revoked_at を持ち、各配信 request で発行元 ticket の現行状態を再確認する。
-5. 同じ user+share（private は user+credential）の session 更新・別 tab 発行は、期限内の既存 `budget_id` を再利用する。新 session で budget を増やさない。budget 上限は対象合計 bytes×3、1,024 requests/10分、parallel≤8。
+5. 同じ user+share（private は user+credential）の session 更新・別 tab 発行は、期限内の既存 `budget_id` を再利用する。新 session で budget を増やさない。budget 上限は対象合計 bytes×3、1,024 requests/10分、parallel≤8。異なる対象へ移る場合は、有効期間内の認可manifestに含まれるpurpose/blob IDを重複排除したsize合計を用いる。同じ内容の新manifest・別tab・COW別名では加算せず、対象追加でも使用量・request/lease・期限をリセットしない。台帳は1,024対象までとし、leaseと合わせたSQLite容量を1MiBに制限する。詳細と移行境界は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)。
 6. `/c` content、thumb、page、entry、track、ZIP、対応 public route の全 byte/request/HEAD/Range を同じ BudgetDO へ接続する。BudgetDO storage は≤1MiB、lease TTL 10分、disconnect/cancel は明示精算し、漏れは alarm が回収する。
 
 単一 host 構成も同じ host-only Cookie を使うが §10 の CSP/attachment 制限は維持する。fetch→blob URL は≤32MiB の plain text、sanitized Markdown input、pdf.js inputだけ。大容量 audio/video/image/EPUB を blob 化しない。

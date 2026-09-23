@@ -1,4 +1,4 @@
-import { applyD1Migrations } from "cloudflare:test";
+import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { contentSessionAssertion } from "../../src/auth/contentSession";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { atomicBatch } from "../../src/db/primary";
+import { BudgetDO } from "../../src/do/BudgetDO";
 import type { Env } from "../../src/env";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { foundationFixture } from "../fixtures/foundation";
@@ -200,6 +201,48 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   expect(httpHead.status).toBe(200);
   expect(httpHead.headers.get("Content-Length")).toBe("3");
   expect(httpHead.body).toBeNull();
+  expect(await env.BUDGETS.get(env.BUDGETS.idFromName(ids.budget)).status()).toMatchObject({
+    requests: 6,
+    bytesCharged: 8,
+    active: 0,
+  });
+  const limitedEnv = {
+    ...contentEnv,
+    BUDGETS: {
+      idFromName: env.BUDGETS.idFromName.bind(env.BUDGETS),
+      get(id: DurableObjectId) {
+        const stub = env.BUDGETS.get(id);
+        return {
+          async reserve(input: Parameters<BudgetDO["reserve"]>[0]) {
+            const result = await runInDurableObject(stub, async (_, state) => {
+              try {
+                return { ok: true as const, lease: await new BudgetDO(state, env).reserve(input) };
+              } catch (error) {
+                return {
+                  ok: false as const,
+                  error: error instanceof Error ? error.message : "unexpected",
+                };
+              }
+            });
+            if (!result.ok) throw new Error(result.error);
+            return result.lease;
+          },
+        };
+      },
+    } as unknown as Env["BUDGETS"],
+  };
+  const limited = await handleContentHttp(
+    new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
+      headers: { Cookie: httpCookie, Origin: contentEnv.APP_ORIGIN },
+    }),
+    limitedEnv,
+    tokens,
+  );
+  expect(limited.status).toBe(429);
+  expect(limited.headers.get("Access-Control-Allow-Origin")).toBe(contentEnv.APP_ORIGIN);
+  expect(limited.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+  expect(limited.headers.get("Vary")).toBe("Origin");
+  expect(await limited.json()).toMatchObject({ title: "budget_exceeded" });
   expect(await env.BUDGETS.get(env.BUDGETS.idFromName(ids.budget)).status()).toMatchObject({
     requests: 6,
     bytesCharged: 8,
