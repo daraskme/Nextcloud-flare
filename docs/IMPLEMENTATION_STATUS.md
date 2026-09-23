@@ -1,14 +1,15 @@
 # 実装進捗
 
-更新: 2026-09-23。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-09-24。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
 ## 今回の実装
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。実BLOBS対応証明・全体不在証明・予約精算・upload行ごと失われたID・実S3は未完了 |
-| 4 multipart S3診断 | 署名付きListMultipartUploads/ListParts/lifecycle取得、1 GET・最大100件・1 MiB・10秒、厳密XML/echo/markerと停止中ControlDO診断 | Node/workerdで署名・失敗境界、D1 maintenance/epoch fence、監査再初期化と予約保持を検証。実BLOBS対応証明・永続inventory・未知ID修復・実S3接続は未完了 |
+| 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
+| 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。対応検証との接続・全体不在証明・予約精算・upload行ごと失われたID・実S3は未完了 |
+| 4 multipart S3診断 | 署名付きListMultipartUploads/ListParts/lifecycle取得、1 GET・最大100件・1 MiB・10秒、厳密XML/echo/markerと停止中ControlDO診断 | Node/workerdで署名・失敗境界、D1 maintenance/epoch fence、監査再初期化と予約保持を検証。対応検証と既存uploadの未知ID中止は別serviceへ接続済み。全体閉鎖・実S3接続は未完了 |
 | 3 private multipart HTTP | 既存routeのcreate/part/status/page/complete/abort、Upload-Attempt-Id、D1 receipt snapshot、期限切れ後照会、中止CAS、初期化結果不明receipt | 実Access JWT/CSRF/D1/R2/DOで再送・上書き・page・失効・中止/確定・遅延part・初期化応答喪失・入力境界を検証。UI・公開共有・実admissionは未実装 |
 | 4 未知完成物inventory | migration `0021`の2table、bounded R2 list/HEAD、D1 cursor/lease、35日grace、owner physical会計、独立GCとキー再利用拒否、Cron/停止中ControlDO inventory/復旧監査 | 応答喪失、並行処理、置換・再出現、owner復元、pause/epochを実D1/R2で検証。incomplete multipart、他prefix、停止中GC drain、実環境は未完了 |
 | 3 multipart回収 | migration `0020`の永久停止markerと閉鎖証明、独立cleanup budget、R2 abort/HEAD、physical計上/予約精算/GC、Cron/停止中ControlDO repair、DO alarm停止 | 応答喪失、競合、遅延init/HEAD、旧epoch、pin、未知metadata隔離、DO全喪失、偽GC handoff拒否を実D1/R2/DOで検証。未知IDの外部inventory修復・UIは未実装 |
@@ -98,6 +99,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 330 + workerd 667 = **997 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0023`のsystem probe台帳（61通常table）と停止中ControlDOのBLOBS/S3対応検証を追加。新規workerd22件とNode4件でfresh nonce、実R2条件付きPUT、遅延create/更新、scope終了・保存SQLの失効、D1/R2応答喪失、誤bucketの古い値、64-byte境界、epoch/pause/lease、復旧監査・容量保持を検証。全体閉鎖/予約精算への接続と実S3/stagingは未完了。
 
 - 2026-09-23、Node 24.21.0 / pnpm 12.4.1で`pnpm check`成功。Node 326 + workerd 645 = **971 tests**、lint/typecheck/contracts/config、Web build、Wrangler dry-run成功。migration `0022`のscan/handle台帳2table（60通常table）と停止中ControlDOの未知ID修復を追加。新規33件で複数IDの実R2 abort、全ページ後の中止、隣接key除外、cursor/claim/receiptの応答喪失、counter未確認時のdispatch抑止、遅延IDと旧cleanupの排他、epoch/token/pin/lease、source再走査、完成物のphysical計上（S3障害時も）を検証。実S3/BLOBS対応証明・全体不在証明・予約精算は未完了で、予約holdと最終復旧fenceを維持する。
 

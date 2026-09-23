@@ -1,5 +1,6 @@
 import { AwsClient } from "aws4fetch";
 import type { Env } from "../env";
+import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY, isProbeNonce } from "./bindingProbe";
 import {
   type MultipartMarker,
   multipartLifecycle,
@@ -92,7 +93,11 @@ export class R2S3Inventory {
     return { ...this.#source };
   }
 
-  async #get(path: string, query: Record<string, string>): Promise<string> {
+  async #get(
+    path: string,
+    query: Record<string, string>,
+    maxBytes = MAX_S3_XML_BYTES,
+  ): Promise<string> {
     const url = new URL(`${this.#endpoint}/${this.#source.bucket}${path}`);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
     const controller = new AbortController();
@@ -123,7 +128,7 @@ export class R2S3Inventory {
       if (
         !response.body ||
         (declared !== null &&
-          (!/^(?:0|[1-9]\d{0,6})$/.test(declared) || Number(declared) > MAX_S3_XML_BYTES))
+          (!/^(?:0|[1-9]\d{0,6})$/.test(declared) || Number(declared) > maxBytes))
       ) {
         void response.body?.cancel().catch(() => {});
         throw new Error("s3_inventory_body_limit");
@@ -137,7 +142,7 @@ export class R2S3Inventory {
           if (controller.signal.aborted) throw new Error("s3_inventory_timeout");
           if (next.done) break;
           length += next.value.byteLength;
-          if (length > MAX_S3_XML_BYTES) {
+          if (length > maxBytes) {
             void reader.cancel().catch(() => {});
             throw new Error("s3_inventory_body_limit");
           }
@@ -174,6 +179,13 @@ export class R2S3Inventory {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** Fixed private protocol key only; this is not a general-purpose object reader. */
+  async readBindingProbe(): Promise<string> {
+    const nonce = await this.#get(`/${BINDING_PROBE_KEY}`, {}, BINDING_PROBE_BYTES);
+    if (!isProbeNonce(nonce)) throw new Error("invalid_r2_binding_probe");
+    return nonce;
   }
 
   async listMultipartUploads(

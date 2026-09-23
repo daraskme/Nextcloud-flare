@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { multipartLifecycle, multipartPage, partPage } from "../../src/r2/s3InventoryPages";
 import {
@@ -19,6 +20,66 @@ const partExpected = {
   limit: 20,
   marker: 0,
 };
+
+describe("fixed S3 binding probe read", () => {
+  it("signs only the fixed protocol key and reads exactly one nonce", async () => {
+    const nonce = "a9".repeat(32);
+    const fetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      expect(url.pathname).toBe(`/test-blobs/${BINDING_PROBE_KEY}`);
+      expect(url.search).toBe("");
+      expect(request.method).toBe("GET");
+      expect(request.redirect).toBe("manual");
+      expect(request.headers.get("Authorization")).toMatch(/\/auto\/s3\/aws4_request/);
+      return new Response(nonce);
+    });
+    expect(await new R2S3Inventory(inventoryEnv, { fetch }).readBindingProbe()).toBe(nonce);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces the smaller 64-byte cap on declared and streamed bodies", async () => {
+    for (const declared of [true, false]) {
+      const cancel = vi.fn();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (!declared) controller.enqueue(new Uint8Array(65));
+        },
+        cancel,
+      });
+      const fetch = async () =>
+        new Response(stream, declared ? { headers: { "Content-Length": "65" } } : {});
+      await expect(new R2S3Inventory(inventoryEnv, { fetch }).readBindingProbe()).rejects.toThrow(
+        "s3_inventory_body_limit",
+      );
+      expect(cancel).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("rejects truncated, padded and non-hex challenges", async () => {
+    for (const body of [
+      "",
+      "a".repeat(63),
+      "A".repeat(64),
+      `${"a".repeat(63)}\n`,
+      "g".repeat(64),
+    ]) {
+      await expect(
+        new R2S3Inventory(inventoryEnv, {
+          fetch: async () => new Response(body),
+        }).readBindingProbe(),
+      ).rejects.toThrow("invalid_r2_binding_probe");
+    }
+  });
+
+  it("applies the same transport deadline while reading a probe body", async () => {
+    const cancel = vi.fn();
+    const fetch = async () => new Response(new ReadableStream({ cancel }));
+    await expect(
+      new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).readBindingProbe(),
+    ).rejects.toThrow("s3_inventory_timeout");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("bounded multipart inventory XML", () => {
   it("checks UTF-8 key order and rejects pages that move behind the cursor", () => {

@@ -13,6 +13,7 @@ import {
   repairUnidentifiedMultipartUploads,
 } from "../jobs/multipartInventoryRepair";
 import { type OrphanScanResult, scanOrphanObjects } from "../jobs/orphanInventory";
+import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2BindingVerification";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import {
@@ -321,6 +322,27 @@ export class ControlDO extends DurableObject<Env> {
       await this.beginRecoveryAudit(expectedEpoch);
     }
     return { observation, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Fresh binding witness only; the returned observation never authorizes later cleanup. */
+  async verifyInventoryBinding(
+    expectedEpoch: number,
+  ): Promise<{ verification: BindingVerification; audit: RecoveryAuditStatus }> {
+    const inventory = new R2S3Inventory(this.env);
+    await this.beginRecoveryAudit(expectedEpoch);
+    let verification: BindingVerification;
+    try {
+      verification = await withVerifiedR2Inventory(
+        this.env.DB,
+        this.env.BLOBS,
+        inventory,
+        expectedEpoch,
+        async (verified) => verified.observation,
+      );
+    } finally {
+      await this.beginRecoveryAudit(expectedEpoch);
+    }
+    return { verification, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Persist discovered handles and abort them through BLOBS, retaining unresolved reservations. */

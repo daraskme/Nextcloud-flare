@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-23。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-24。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。60通常テーブル、migration `0001`〜`0022`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。61通常テーブル、migration `0001`〜`0023`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admission は閉じたまま。
@@ -34,6 +34,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 | ファイル | 実装内容 |
 |---|---|
+| `jobs/r2BindingVerification.ts` / `ControlDO.verifyInventoryBinding` | migration `0023`、固定64-byte system objectのfresh nonce/CASによるBLOBS/S3検証。scope内のみ有効なD1 fence、復旧監査・容量保持。全体閉鎖への接続は次段階 |
 | `jobs/multipartInventoryRepair.ts` / `ControlDO.repairUnidentifiedMultipartUploads` | migration `0022`でscan/handleを永続化。全ページ後の実BLOBS abort、immutable receipt、physical観測。予約・復旧再開は保持 |
 | `r2/s3Inventory.ts` / `jobs/multipartInventory.ts` / `ControlDO.inspectIncompleteMultipart` | S3署名付き未完了multipart/part/lifecycleのbounded診断。停止中のepoch fenceと監査再初期化へ接続。既存uploadの未知ID走査・中止は別serviceへ接続。予約解放は未接続 |
 | `jobs/orphanInventory.ts` / `ControlDO.inventoryOrphanObjects` | 永続cursor/lease付き完成済みR2走査、未知keyの隔離・実physical会計・35日回収・同key再利用拒否、停止中の走査と復旧監査 |
@@ -88,9 +89,11 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-直近の変更は既存uploadに対する未知multipart IDの永続走査とabort。`multipart_inventory_scans`登録と永久停止/claimを同じbatchにし、以後は普通のknown-ID cleanupによる早期精算を拒否する。別source/epochでcursorを再開せずroundを作り直す。1回1page/20件、既定10handleのabort。marker破壊を避けて全ページ後に中止する。R2 abort成功を各handleに保存し、S3の空一覧・NoSuchUpload・応答喪失は全体閉鎖としない。S3障害時にも完成物を計上するためHEADを一覧取得前と処理後に行う。後から判明した元IDも追加handleとして扱う。schemaは60通常table/migration `0022`。次は実BLOBS対応証明・完全な不在証明と予約精算。scan/handleのdelete guardや予約holdを外すだけで完成扱いにしない。
+直近の変更はmigration `0023`と`withVerifiedR2Inventory`によるBLOBS/S3対応検証。固定system keyの64-byte nonceを条件付きPUTで更新し、S3 GETとの一致を同じ60秒lease内で確かめる。成功booleanは後日再利用せず、callbackのcurrent D1 fenceと同じbatchでのみ後続変更を確定する。全体閉鎖・予約精算への接続は次段階。system probeを通常処理で削除しない。
 
-未完了multipartのS3取得境界と停止中ControlDOの診断RPCを追加した。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)。1回1 GET、20件既定/100件上限、1 MiB/10秒、manual redirect・retryなし、XML/echo/markerを検査する。`aws4fetch@1.0.20`をexactで追加し選定証拠を記録した。実S3設定・接続試験は未実施。返却の`bindingVerified:false`/`closureProven:false`を変更して修復扱いにしない。migration `0022`で複数IDの永続走査とpermanent stop/drain後のabortを追加済み。次は実BLOBS対応証明、全体不在証明、予約精算を実装する。D1 snapshotでpart行がないだけでは未完了bytesなしと推測できず、最初のIDだけuploadsへ保存して予約を解放してはいけない。
+その前の変更は既存uploadに対する未知multipart IDの永続走査とabort。`multipart_inventory_scans`登録と永久停止/claimを同じbatchにし、以後は普通のknown-ID cleanupによる早期精算を拒否する。別source/epochでcursorを再開せずroundを作り直す。1回1page/20件、既定10handleのabort。marker破壊を避けて全ページ後に中止する。R2 abort成功を各handleに保存し、S3の空一覧・NoSuchUpload・応答喪失は全体閉鎖としない。S3障害時にも完成物を計上するためHEADを一覧取得前と処理後に行う。後から判明した元IDも追加handleとして扱う。schemaは61通常table/migration `0023`。次は対応検証との接続・完全な不在証明と予約精算。scan/handleのdelete guardや予約holdを外すだけで完成扱いにしない。
+
+未完了multipartのS3取得境界と停止中ControlDOの診断RPCを追加した。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)。1回1 GET、20件既定/100件上限、1 MiB/10秒、manual redirect・retryなし、XML/echo/markerを検査する。`aws4fetch@1.0.20`をexactで追加し選定証拠を記録した。実S3設定・接続試験は未実施。返却の`bindingVerified:false`/`closureProven:false`を変更して修復扱いにしない。migration `0022`で複数IDの永続走査とpermanent stop/drain後のabortを追加済み。fresh nonceによるBLOBS/S3対応検証は別serviceへ追加済み。次は全体不在証明、予約精算へ接続する。D1 snapshotでpart行がないだけでは未完了bytesなしと推測できず、最初のIDだけuploadsへ保存して予約を解放してはいけない。
 
 直近はprivate multipart HTTPのcreate/part/status/page/complete/abortを既存route契約へ接続した。契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。完成済み`u/` objectのinventory/35日回収も追加済み（[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)）。次はunknown multipart IDのS3 inventory修復と、未完了GC drain・復旧監査・再開gateを進める。readUploadは現在認可をsnapshot batchで再確認するD1照会専用で、DO台帳を再初期化しない。期限/idle/回収後も現在権限でreceiptを読むが、transfer fenceは維持する。multipart DELETEはD1のcreated/uploadingだけをabortingへCASし、completing/completedは409。遅延partの予約はR2回収まで保持する。`claim`の`dispatch`だけが新しいR2 callを許し、同attempt再送の`in_flight`では送信しない。`not_started`はR2未呼出しが確定している場合だけ使用する。D1のimmutable `multipart_ledger_id`をSQLite初期化より先に確定する。markerの応答喪失やDO storage全喪失では`upload_ledger_recovery_required`として停止し、空の新規台帳でbudgetをリセットしない。dirty part mirrorはSQLiteのrevisionで保持し、D1応答喪失時も同attemptへdispatchを再発行しない。D1 mirror失敗後の停止intentには再試行alarmを残す。R2 createの結果不明IDは再作成せず予約を保持するため、unknown IDは外部inventory/lifecycle実確認に基づくrepairが必要。7日経過だけでは予約を解放しない。
 

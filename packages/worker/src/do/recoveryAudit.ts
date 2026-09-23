@@ -1,4 +1,5 @@
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
 import { auditOwnerLedger } from "../services/refs";
 import { loadTargetManifest, type TargetManifestRecord } from "../services/targetManifest";
 import { epochNumber } from "./epochHistory";
@@ -224,6 +225,7 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
         OR (state<>'deleted' AND (owner_key IS NULL OR epoch>c.epoch
           OR (owner_id IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=owner_key)))))
       AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)
+      AND NOT EXISTS(SELECT 1 FROM r2_binding_probe WHERE phase<>'idle' OR lease_token IS NOT NULL OR epoch>c.epoch)
       AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans)`)
     .bind(epoch)
     .first<number>();
@@ -395,12 +397,25 @@ export async function inspectRecoveryPage(
     };
   }
   if (cursor.stage === "r2") {
+    if (!cursor.afterId) {
+      const probe = await primary(db).prepare("SELECT 1 FROM r2_binding_probe").first<number>();
+      if (probe !== null) {
+        const object = await bucket.head(BINDING_PROBE_KEY);
+        if (!object || !(await trackedBindingProbe(db, object, epoch)))
+          throw new Error("recovery_binding_probe_mismatch");
+      }
+    }
     const listed = await bucket.list({
       limit,
       ...(cursor.afterId ? { cursor: cursor.afterId } : {}),
     });
     if (listed.objects.length > limit) throw new Error("recovery_r2_page_overflow");
     for (const object of listed.objects) {
+      if (object.key === BINDING_PROBE_KEY) {
+        if (!(await trackedBindingProbe(db, object, epoch)))
+          throw new Error("recovery_binding_probe_mismatch");
+        continue;
+      }
       const blob = await primary(db)
         .prepare(`SELECT 1 FROM blobs b JOIN blob_storage s ON s.blob_id=b.id
           WHERE b.r2_key=? AND b.state NOT IN ('deleting','deleted')
@@ -705,4 +720,20 @@ export async function inspectRecoveryPage(
         ? { stage: "blobs", afterId: page.at(-1)?.id ?? cursor.afterId }
         : { stage: "r2", afterId: "" },
   };
+}
+
+async function trackedBindingProbe(
+  db: D1Database,
+  object: R2Object,
+  epoch: number,
+): Promise<boolean> {
+  if (object.key !== BINDING_PROBE_KEY || object.size !== BINDING_PROBE_BYTES) return false;
+  return (
+    (await primary(db)
+      .prepare(`SELECT 1 FROM r2_binding_probe WHERE singleton=1
+    AND phase='idle' AND lease_token IS NULL AND epoch<=? AND r2_key=? AND allocated_bytes=?
+    AND r2_etag=? AND r2_version=? AND uploaded_at=?`)
+      .bind(epoch, object.key, object.size, object.etag, object.version, object.uploaded.getTime())
+      .first<number>()) !== null
+  );
 }

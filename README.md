@@ -6,7 +6,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 **別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 実装済み・未実装・検証済み・未検証の一覧は [現在状態](docs/CURRENT_STATE.md) にまとめています。
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 の一部**を実装済み。
-60通常テーブル、migration `0001`〜`0022`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
+61通常テーブル、migration `0001`〜`0023`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
 アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。完全な閉鎖証明と予約精算、Files UIは未実装です。ControlDO admissionも安全な再開処理が完成するまで閉じており、製品としてはまだ利用できません。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 

@@ -83,7 +83,7 @@ HTTP契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。multipart PUTはUpload-Attempt-Id�
 
 ## UploadDO multipart台帳
 
-未完了multipartの外部観測は[r2 S3診断](MULTIPART_INVENTORY.md)を参照。ListMultipartUploads/ListParts/lifecycleを停止中ControlDOへ接続済みだが、既存uploadの永続scan・未知IDのabortはmigration `0022`とmultipartInventoryRepairへ接続済み。BLOBS対応証明・全体不在証明・予約精算は未実装。診断結果を閉鎖証明として既存cleanupへ渡さない。
+未完了multipartの外部観測は[r2 S3診断](MULTIPART_INVENTORY.md)を参照。ListMultipartUploads/ListParts/lifecycleを停止中ControlDOへ接続済みだが、既存uploadの永続scan・未知IDのabortはmigration `0022`とmultipartInventoryRepairへ接続済み。BLOBS/S3対応検証はmigration `0023`のsystem probeとr2BindingVerificationへ接続済み。全体不在証明・予約精算への接続は未実装。診断結果を閉鎖証明として既存cleanupへ渡さない。
 
 `do/uploadPlan.ts`は1 byte〜500 GiB、既定64 MiB・非最終8〜90 MiB・最大10,000 partの固定計画を作る。0 byteはsingle upload用でありmultipartでは拒否する。
 
@@ -107,7 +107,7 @@ UploadDOはD1のcompleted flagだけではterminalと認めない。committed op
 
 R2 abortの成功を `multipart_cleanup_closed='aborted'`として保存してからHEADを確認する。abortが不明でも既知complete attemptに対応するmetadata付き完成物をHEADで確認できればclosed='completed'とする。NoSuchUploadやHEAD不在単独、7日経過では閉鎖証明としない。actual bytesのphysical観測を先に保存し、予約解放・GC handoff/absent tombstoneを原子的に精算する。完成物のphysical減算とcleanup_pending解除はGCのdelete/HEAD不在後のみ。保存済み閉鎖証明を使って再試行し、遅延応答はcleanup token/current epochで拒否する。
 
-Cronと `ControlDO.repairStoppedMultipartUploads`に接続する。停止中repairは既知multipart handleをabortするが、完成objectをdeleteせず監査を前後で初期化する。最終復旧fenceは、終端flagやGC candidateがあってもmultipart閉鎖証明がなければ拒否する。unknown creation ID、不正metadataはphysical計上と予約を保持して隔離する。外部inventoryと7日incomplete lifecycleの実bucket確認・repairは未実装であり、ローカル試験で代替しない。
+Cronと `ControlDO.repairStoppedMultipartUploads`に接続する。停止中repairは既知multipart handleをabortするが、完成objectをdeleteせず監査を前後で初期化する。最終復旧fenceは、終端flagやGC candidateがあってもmultipart閉鎖証明がなければ拒否する。unknown creation ID、不正metadataはphysical計上と予約を保持して隔離する。外部inventoryの既存upload未知ID修復は接続済み。全体閉鎖・予約精算と7日incomplete lifecycleの実bucket確認は未完了であり、ローカル試験で代替しない。
 
 metadata直列化の30秒timeoutと例外時resetは[Durable Object State](https://developers.cloudflare.com/durable-objects/api/state/)に従う。SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
 
@@ -206,7 +206,7 @@ GET/HEAD、DAV、content-origin や upload binary の扱いは各 HTTP profile �
 - `blob_storage` は R2 HEAD で実測した size/etag の会計行。staging/orphan を含めて一度だけ physical を計上する。宣言 size と違う物も実測 bytes を記録してから公開を拒否し、cleanup 完了まで課金を残す。既に存在する bytes は quota が下げられていても記録し、次の reservation を拒否する。
 - removed_at は blob deleted 後の一方向 tombstone。GC claim lease、quiesce、実R2 delete/head、不在確認後の最終batchへ接続し、応答喪失と再claimを含めて物理減算を実証する。
 - caller は reservation/pin SQL を認可・permit/operation guard と同じ batch に入れる。consume は新 logical reference 公開より先。trigger が counter を更新するため、handler から counter を重ねて加減算しない。
-- `auditOwnerLedger` は D1 集合から used/reserved/physical observation/ref count の差を診断する。R2 の完成済み object は監査ページで全件照合する。単一uploadに紐づく旧epoch予約は期限後のHEAD照合で回収する。未知完成物のinventoryはorphanInventoryへ接続し、ownerのphysical監査にも合算する。unknown multipart IDの外部inventory repairは後続実装。既知IDの回収はmultipartCleanupへ接続済み。
+- `auditOwnerLedger` は D1 集合から used/reserved/physical observation/ref count の差を診断する。R2 の完成済み object は監査ページで全件照合する。単一uploadに紐づく旧epoch予約は期限後のHEAD照合で回収する。未知完成物のinventoryはorphanInventoryへ接続し、ownerのphysical監査にも合算する。unknown multipart IDの外部inventory repairは既存uploadの複数ID中止まで接続済み。全体閉鎖と予約精算は後続実装。既知IDの回収はmultipartCleanupへ接続済み。
 
 migration 0005 は既存 node/version/pin と予約行から logical/ref/reserved を再計算する。以前の実装は physical 会計を公開していないため、既存 physical_bytes が非0なら migration を拒否し、先に個別 inventory 移行を要求する。物理実在を推定して埋めない。
 

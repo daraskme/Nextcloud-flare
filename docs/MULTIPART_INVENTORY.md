@@ -1,6 +1,6 @@
 # 未完了multipartのS3診断
 
-`r2/s3Inventory.ts`、`r2/s3InventoryPages.ts`、`r2/s3Xml.ts`は、Workers bindingでは列挙できない未完了multipartをS3 APIから読み取る。`jobs/multipartInventory.ts`と`ControlDO.inspectIncompleteMultipart`はmaintenance中の診断へ接続する。migration `0022`と`jobs/multipartInventoryRepair.ts`は、D1にupload行が残っている未知IDを永続走査し、実BLOBS bindingから中止する。完全な不在証明・予約解放は未接続。
+`r2/s3Inventory.ts`、`r2/s3InventoryPages.ts`、`r2/s3Xml.ts`は、Workers bindingでは列挙できない未完了multipartをS3 APIから読み取る。`jobs/multipartInventory.ts`と`ControlDO.inspectIncompleteMultipart`はmaintenance中の診断へ接続する。migration `0022`と`jobs/multipartInventoryRepair.ts`は、D1にupload行が残っている未知IDを永続走査し、実BLOBS bindingから中止する。migration `0023`と`jobs/r2BindingVerification.ts`は、fresh nonceによるBLOBS/S3対応検証を追加する。完全な不在証明・予約解放は未接続。
 
 ## サーバー設定
 
@@ -63,9 +63,27 @@ ControlDOは前後でquiesceと監査再初期化を行う。S3取得前後でD1
 
 scan登録後は、後から元のR2 IDが判明しても通常cleanupへ戻さず、既存IDを追加handleとして中止する。D1 triggerは予約のreserved以外への遷移、cleanup完了flag、閉鎖marker、scan/handle削除を拒否する。復旧最終fenceもscanの存在を拒否する。これらの解除には、検証済み閉鎖証明を導入するforward migrationが必要。
 
+## BLOBSとS3の対応検証
+
+内部RPC `ControlDO.verifyInventoryBinding(expectedEpoch)`は、停止・GC pause中に一度限りの対応検証を実行し、前後で復旧監査を初期化する。設定済みS3接続先以外のURL・資格情報・確認値をRPCから受け取らない。既存の`inspectIncompleteMultipart`は読み取り専用のままで、引き続き`bindingVerified:false`を返す。
+
+`withVerifiedR2Inventory`は、実BLOBSへ新しい256-bit乱数を64文字のhexとして保存し、認証済みS3 GETで同じ内容を読み取る。古い成功記録や、別bucketへコピーされた以前の確認値を再利用しない。
+
+- 固定keyは`system/r2-binding-probe-v1`。ユーザーobjectと分離し、blob/derivative/archive/target manifestへの同key登録・更新をD1 triggerで拒否する。migration時に既存catalogueが衝突していれば適用を拒否する。
+- objectは最大1個・64 bytes。D1の`r2_binding_probe.allocated_bytes=64`で、PUT結果不明のときもsystem用の容量を確保する。userのused/reserved/physical quotaには混ぜない。実運用の総容量集計ではこのsystem枠を別途加算する。
+- current objectをBLOBS GETで読み、size・protocol metadata・64文字hexを検査する。既存の未認識objectは上書きしない。初回は`If-None-Match: *`、更新は取得したETagの`etagMatches`を付けてPUTを1回だけ行う。条件不成立のnullは成功扱いにしない。
+- keyは通常処理で削除しない。古い初回createが遅れて到着しても既存objectにより拒否され、旧ETagを条件にした遅延更新も新世代を上書きできない。外部からの削除・置換は監査で検出する。
+- D1にはepoch、世代、source、nonce、状態、期待ETag、R2実観測tuple、検証時刻、60秒lease、呼出しcounterを保存する。BLOBS GET/PUT/S3 GETの各dispatch前にcounterの確定応答を要求する。D1やR2の応答が不明なら後続dispatch・proof使用を停止し、lease期限後の新nonce・条件付き更新で再検証する。PUTの無条件再送は行わない。
+- S3 GETは固定keyだけを許し、応答上限64 bytes・既存の10秒transport deadlineを使う。404・403・redirect・壊れたbodyを不在証明に変換しない。
+- 検証後の内部callbackは同じbucket/clientとcurrent proof fenceを受け取る。権限を使うD1変更は`verified.fence()`と同一batchで実行する。scope終了、epoch/pause変更、lease失効、世代交代後は保存したSQL fenceも失敗する。最終保存前にもfenceを再確認する。
+- RPCの`bindingVerified:true`はその呼出し時点の診断結果であり、後のcleanupに渡す許可証ではない。nonce・署名・資格情報を返さない。cleanupは内部helperで毎回新しい検証を取得する必要がある。
+- 復旧R2監査はsettled objectのsize/ETag/version/uploadedを照合し、最初のページでHEADして消失も検出する。未解決phase/leaseは最終fenceで拒否する。成功済み検証の存在だけではmultipart scanの予約holdを解除しない。
+
+[Workers APIの条件付きPUT](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)と[R2の整合性モデル](https://developers.cloudflare.com/r2/reference/consistency/)を根拠にする。ローカルworkerdで条件付きPUT・競合・遅延初回create/更新を実行して検証した。S3応答はfixtureであり、実R2 S3でのbinding対応・権限・lifecycle検証はstagingに残る。
+
 ## 次の修復段階
 
-1. S3対象bucketと実BLOBS bindingの対応を実証する。設定値や呼出者のbooleanだけで一致扱いにしない。
+1. 実装したBLOBS/S3対応検証を、全体閉鎖証明の同じ呼出しとD1 fenceへ接続する。過去の成功booleanだけで一致扱いにしない。実S3でのstaging試験も必要。
 2. D1のupload行自体が失われたhandleのbucket全体inventory・所有者/容量会計を実装する。既存uploadの複数ID走査・中止は接続済み。
 3. 発見IDの中止receiptに加え、全handleの閉鎖と不在証明を確立し、予約精算・GCへ接続する。
 4. lifecycle経過だけで閉鎖とせず、未知create/completeの遅延完了も含めた不在証明を定義・検証する。

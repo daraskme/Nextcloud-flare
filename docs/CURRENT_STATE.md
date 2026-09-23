@@ -1,6 +1,6 @@
 # 現在の実装・検証状態
 
-更新日: 2026-09-23
+更新日: 2026-09-24
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -20,7 +20,7 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| schema・契約 | migration `0001`〜`0022`、60通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0023`、61通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
@@ -28,8 +28,9 @@
 | Trash | 一覧、restore、purge、別trash子退避、名前衝突解決 | 最大64層・1,000 node、冪等再送、GC競合、深さ順処理 | 大規模非同期trash/purgeは未実装 |
 | GC | 7日猶予candidate、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | unknown multipart ID、既知keyの不正置換、実Cron運用 |
 | 未追跡object | D1のページcursor/lease、HEAD照合、隔離台帳、35日猶予、実physical会計、再利用拒否、Cronと停止中inventory | 応答喪失、同時走査/回収、置換・再出現、owner後日復元、pause/epoch、復旧監査 | incomplete multipart、他prefix、停止中GC drain、実R2運用 |
-| multipart S3診断 | 署名付きListMultipartUploads/ListParts/GetBucketLifecycleConfiguration、1 GET/最大100件/1 MiB/10秒、停止中ControlDO診断 | XML/設定/署名/timeout/ページ失敗、実D1 fenceとControlDO監査再初期化、予約保持 | 実BLOBS対応証明、全体不在証明・予約精算、実S3/lifecycle試験 |
-| multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの全ID走査・実BLOBS abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計 | 実BLOBS対応証明と全体不在証明・予約精算、upload行ごと失われたhandle、実S3、Cron |
+| multipart S3診断 | 署名付きListMultipartUploads/ListParts/GetBucketLifecycleConfiguration、1 GET/最大100件/1 MiB/10秒、停止中ControlDO診断 | XML/設定/署名/timeout/ページ失敗、実D1 fenceとControlDO監査再初期化、予約保持 | 対応検証との接続、全体不在証明・予約精算、実S3/lifecycle試験 |
+| R2/S3対応検証 | migration `0023`、固定64-byte system probeのfresh nonce/CAS更新、scope付きD1 fence、ControlDO検証と復旧監査 | 実R2条件付きPUT、遅延create/更新、誤bucketの古い値、応答喪失、epoch/pause/lease、system容量保持 | multipart全体閉鎖・予約精算への接続、実S3試験 |
+| multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの全ID走査・実BLOBS abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計 | 対応検証との接続と全体不在証明・予約精算、upload行ごと失われたhandle、実S3、Cron |
 | private単一upload | HMAC capability、D1予約、1回だけのR2 PUT、SHA-256、GETによる応答喪失回収、原子的新規作成/上書き、status/abort HTTP、24時間後のCron回収・GC接続 | 実D1/R2/LockDO、0 byte、同時送信、10 step rollback、失効、DB/R2応答喪失、CSRF/Origin、回収lease競合、旧epoch、実ControlDO停止中repair | 公開共有、Files UI、未知object修復、stagingは未完了 |
 | private multipart upload | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、R2一度限りcomplete/HEAD、原子的新規/上書き公開、terminal照合、既知R2 IDのabort/期限切れ回収・GC接続、HTTP create/part/status/page/complete/abort | D1/R2/DO/LockDO、64 MiB+末尾の公開、同時確定、応答喪失、storage全喪失、失効、10 step rollback、complete/abort排他 | UI・未知ID回収後の予約精算は未接続 |
 | WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation | 実OS client gate、共有DAV、残るmethod/profile |
@@ -39,7 +40,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup | DO eviction、R2 inventory、会計・credential/share/outbox監査 | admission再開、未完了GC drain、完全restore drill |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 326件 + workerd 645件 = 971件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0022`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 330件 + workerd 667件 = 997件で、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0023`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -56,7 +57,7 @@
 ### サービスとデータ処理
 
 - multipartのFiles UI。private HTTP create/part/status/page/complete/abortは接続済み。契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。
-- multipartのunknown creation IDの外部inventoryからの回収、実BLOBS対応証明、実7日incomplete lifecycle検証。S3設定読取りと一覧/partのbounded診断は接続済み（[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)）。
+- multipartのunknown creation IDの全体閉鎖・予約精算と実7日incomplete lifecycle検証。既存uploadの未知ID中止とfresh nonceによるBLOBS/S3対応検証は実装済み。S3設定読取りと一覧/partのbounded診断は接続済み（[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)）。
 - upload行自体が失われたincomplete multipartの全体inventory・repair。未知の完成済み`u/` objectの隔離・35日回収は接続済み。
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
