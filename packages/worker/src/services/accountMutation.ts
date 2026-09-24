@@ -31,7 +31,12 @@ export async function acquireAccountMutation(
     | "content.issue"
     | "content.accept"
     | "content.cancel"
-    | "upload.reserve",
+    | "upload.reserve"
+    | "upload.single-start"
+    | "upload.single-recover"
+    | "upload.single-verify"
+    | "upload.multipart-start"
+    | "upload.multipart-complete",
 ): Promise<MutationAdmission> {
   const spaceId = await primary(env.DB)
     .prepare(
@@ -60,7 +65,25 @@ export async function acquireAccountMutation(
   }
 }
 
-/** SQL stays local to the service: only the typed ticket request crosses the ControlDO RPC. */
+/** Dispatch claims use the batch directly: receipt readback must never authorize external writes. */
+export function accountMutationStatements(
+  admission: MutationAdmission,
+  ownerId: string,
+  statements: readonly SqlStatement[],
+  options: { allowDisabled?: boolean } = {},
+): readonly SqlStatement[] {
+  return [
+    assertMutationAdmission(admission),
+    assertExists(
+      "SELECT 1 FROM spaces s JOIN users u ON u.id=s.owner_id WHERE s.id=? AND u.id=? AND (u.disabled_at IS NULL OR ?=1)",
+      [admission.space_id, ownerId, options.allowDisabled ? 1 : 0],
+    ),
+    ...statements,
+    ...commitMutationAdmission(admission),
+  ];
+}
+
+/** Recover a DB-only update from its exact receipt; external dispatch requires a direct batch ACK. */
 export async function commitAccountMutation(
   db: D1Database,
   admission: MutationAdmission,
@@ -69,15 +92,7 @@ export async function commitAccountMutation(
   options: { allowDisabled?: boolean } = {},
 ): Promise<void> {
   try {
-    await atomicBatch(db, [
-      assertMutationAdmission(admission),
-      assertExists(
-        "SELECT 1 FROM spaces s JOIN users u ON u.id=s.owner_id WHERE s.id=? AND u.id=? AND (u.disabled_at IS NULL OR ?=1)",
-        [admission.space_id, ownerId, options.allowDisabled ? 1 : 0],
-      ),
-      ...statements,
-      ...commitMutationAdmission(admission),
-    ]);
+    await atomicBatch(db, accountMutationStatements(admission, ownerId, statements, options));
   } catch (error) {
     if (!(await hasCommittedMutation(db, admission))) throw error;
   }

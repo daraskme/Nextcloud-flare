@@ -27,6 +27,8 @@ JSON mutationはexact Origin、`Sec-Fetch-Site: same-origin`、`Content-Type: ap
 
 同じkey/bodyの保存済み予約の再取得は追加の枠を取らず、現在の認可を検査する読取りとして扱う。batch応答喪失はexactな確定記録で照合する。並行する別要求の保存済みreceiptへ合流することもできるが、それを自分のbatchの成功証明にせず、自分の未確定枠は解放しない。照合が全部失敗した場合も予約・容量を保持し、同じkeyで再照会できる。予約の再取得だけでR2送信を許可せず、後続の初期化/転送は既存の独立したclaim・current authorityを必要とする。
 
+転送の単一PUT開始・読戻し・検証済み情報と、multipart初期化/completeの送信claimも共通受付を通る。外部送信にはclaim batchの直接ACKが必要で、確定記録の読戻しだけでは送信しない。単一PUT後の検証済み情報の受付が混雑した場合は物理容量/予約を保持し、503/Retry-Afterで再試行する。再試行はGET照合でありPUTを再送しない。physical観測・UploadDO台帳反映・abort/cleanupの受付統合は後続。
+
 createの同じkey/bodyへの再送は、上書き対象のrevisionが変わった場合も元のreceipt/capabilityを返す。現在の認証・node権限とowner/parent/epochを最終D1 batchで確認し、予約を追加しない。multipartの初期化がrevision変更で停止した場合は202となる。これは状態確認・中止のための回収であり、新規予約、R2初期化、本文送信、確定での旧revision検査を緩めない。対象の移動・失効・期限切れの制限は継続する。
 
 `Upload-Attempt-Id`は`[A-Za-z0-9_-]{1,128}`。同じpart・attemptの再送で新しいR2 callを発行しない。part応答の`disposition`を確認する。

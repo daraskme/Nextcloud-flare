@@ -4,6 +4,7 @@ import { assertExists, assertOneChange, atomicBatch } from "../../db/primary";
 import { CONTROL_NAME } from "../../do/ControlDO";
 import { expectedPartBytes, multipartPlan, UPLOAD_LIMITS } from "../../do/uploadPlan";
 import type { Env } from "../../env";
+import { accountMutationStatements, acquireAccountMutation } from "../accountMutation";
 import type { MutationOutcome } from "../fsMutation";
 import { accessUpload, type UploadRow, uploadFence, uploadRow } from "./access";
 import { publishMultipartUpload } from "./complete";
@@ -181,18 +182,27 @@ export async function completeMultipartUpload(
       const attempt = crypto.randomUUID();
       const lease = Math.min(Date.now() + UPLOAD_LIMITS.leaseMs, row.expires_at);
       let dispatch = false;
+      const admission = await acquireAccountMutation(
+        env,
+        row.owner_id,
+        row.epoch,
+        "upload.multipart-complete",
+      );
       try {
-        await atomicBatch(env.DB, [
-          authorizationAssertion(authorized),
-          uploadFence(row, ["completing"]),
-          multipartPartsProof(row),
-          {
-            sql: `UPDATE uploads SET multipart_complete_attempt=?,multipart_complete_lease=?
+        await atomicBatch(
+          env.DB,
+          accountMutationStatements(admission, row.owner_id, [
+            authorizationAssertion(authorized),
+            uploadFence(row, ["completing"]),
+            multipartPartsProof(row),
+            {
+              sql: `UPDATE uploads SET multipart_complete_attempt=?,multipart_complete_lease=?
               WHERE id=? AND multipart_complete_attempt IS NULL`,
-            values: [attempt, lease, id],
-          },
-          assertOneChange,
-        ]);
+              values: [attempt, lease, id],
+            },
+            assertOneChange,
+          ]),
+        );
         dispatch = true;
       } catch (error) {
         const current = await uploadRow(env.DB, id);

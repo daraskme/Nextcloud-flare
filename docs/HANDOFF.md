@@ -25,7 +25,9 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-単一/分割uploadの新規予約を共通mutation枠へ接続。署名/hash後に所有spaceで取得し、待機後の認可/revision/期限/quotaとreservation/blob/upload/確定記録/解放を同一batchで確認する。同keyの既存receiptは枠を取らず読取り。別要求の共有receiptへ合流しても自分の未確定枠を解放しない。全照合喪失でも予約/容量を保持する。workerd42件追加、既存55件・新規境界40件・実ControlDO37件成功。全check1,504件（Node408/workerd1096）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。直前522f616のCIは全成功、Node408/workerd1054/browser19、計1,481件。schema0032/67table・依存変更なし。残る転送開始/終了記録・abort/cleanup・Queue/backup統合は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。全体完成扱いにしない。
+直前commit e90ee88の[CI36024332349](https://github.com/daraskme/Nextcloud-flare/actions/runs/36024332349)は全成功。Node408/workerd1096/browser19、計1,523件。
+
+単一uploadの送信開始・読戻し・検証済み情報の保存、multipartの初期化・complete送信claimの5経路を共通32枠へ接続。現在の権限/対象/期限と変更・確定記録・枠返却を同一batchで検査する。外部送信はclaim batchの直接ACKを受けた場合だけ許可し、確定記録の読戻しでは再送しない。単一の検証済みDB情報だけはexact receiptから復旧する。workerd45件追加。既存upload55件・境界40件・実ControlDO5件成功。全check1,549件（Node408/workerd1141）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 schema0032/67table・依存変更なし。physical観測・既知R2 ID記録・UploadDO台帳反映・abort/cleanup・Queue/backupが残る。失効後の物理会計を今回の認可gateで停止しない。全体完成扱いにしない。
 
 ## 現在動いている範囲
 
@@ -96,7 +98,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約の共通受付を接続済み。upload転送開始/終了記録・abort/cleanup・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送5経路の共通受付を接続済み。upload物理観測・UploadDO台帳反映・abort/cleanup・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

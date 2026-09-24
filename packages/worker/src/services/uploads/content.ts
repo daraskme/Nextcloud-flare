@@ -3,6 +3,11 @@ import type { UploadCapabilities } from "../../auth/uploadCapability";
 import { assertExists, assertOneChange, atomicBatch } from "../../db/primary";
 import type { Env } from "../../env";
 import { consumeKnownLength } from "../../platform/stream";
+import {
+  accountMutationStatements,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "../accountMutation";
 import { observePhysicalObject } from "../physical";
 import { accessUpload, type UploadRow, uploadFence, uploadRow, uploadStatus } from "./access";
 
@@ -37,7 +42,7 @@ async function recoverBody(env: Pick<Env, "DB" | "BLOBS">, row: UploadRow): Prom
 }
 
 export async function writeSingleUpload(
-  env: Pick<Env, "DB" | "BLOBS">,
+  env: Pick<Env, "DB" | "BLOBS" | "CONTROL">,
   principal: Principal,
   id: string,
   capability: string,
@@ -53,17 +58,26 @@ export async function writeSingleUpload(
   const leaseExpires = Math.min(Date.now() + 900000, row.expires_at);
   let dispatch = false;
   if (row.state === "created") {
+    const admission = await acquireAccountMutation(
+      env,
+      row.owner_id,
+      row.epoch,
+      "upload.single-start",
+    );
     try {
-      await atomicBatch(env.DB, [
-        authorizationAssertion(authorized),
-        uploadFence(row, ["created"]),
-        {
-          sql: `UPDATE uploads SET state='receiving',write_attempt_id=?,write_lease_expires_at=?,
+      await atomicBatch(
+        env.DB,
+        accountMutationStatements(admission, row.owner_id, [
+          authorizationAssertion(authorized),
+          uploadFence(row, ["created"]),
+          {
+            sql: `UPDATE uploads SET state='receiving',write_attempt_id=?,write_lease_expires_at=?,
           in_flight=1,data_calls=data_calls+1,data_bytes=data_bytes+declared_size WHERE id=? AND state='created'`,
-          values: [attempt, leaseExpires, id],
-        },
-        assertOneChange,
-      ]);
+            values: [attempt, leaseExpires, id],
+          },
+          assertOneChange,
+        ]),
+      );
       dispatch = true;
     } catch {
       // Even if this attempt is recorded, a lost claim response does not grant dispatch.
@@ -97,15 +111,24 @@ export async function writeSingleUpload(
       hash = result.sha256;
     } else {
       await body.cancel();
-      await atomicBatch(env.DB, [
-        authorizationAssertion(authorized),
-        uploadFence(row, ["receiving"]),
-        {
-          sql: "UPDATE uploads SET control_calls=control_calls+1 WHERE id=? AND control_calls<32",
-          values: [id],
-        },
-        assertOneChange,
-      ]);
+      const admission = await acquireAccountMutation(
+        env,
+        row.owner_id,
+        row.epoch,
+        "upload.single-recover",
+      );
+      await atomicBatch(
+        env.DB,
+        accountMutationStatements(admission, row.owner_id, [
+          authorizationAssertion(authorized),
+          uploadFence(row, ["receiving"]),
+          {
+            sql: "UPDATE uploads SET control_calls=control_calls+1 WHERE id=? AND control_calls<32",
+            values: [id],
+          },
+          assertOneChange,
+        ]),
+      );
       hash = await recoverBody(env, row);
     }
   } catch (error) {
@@ -120,7 +143,13 @@ export async function writeSingleUpload(
   await observePhysicalObject(env.DB, env.BLOBS, row.blob_id, row.epoch);
   ({ row, authorized } = await accessUpload(env.DB, principal, id, capability, capabilities));
   if (row.state === "completing") return uploadStatus(row);
-  await atomicBatch(env.DB, [
+  const admission = await acquireAccountMutation(
+    env,
+    row.owner_id,
+    row.epoch,
+    "upload.single-verify",
+  );
+  await commitAccountMutation(env.DB, admission, row.owner_id, [
     authorizationAssertion(authorized),
     uploadFence(row, ["receiving"]),
     assertExists("SELECT 1 FROM blob_storage WHERE blob_id=? AND bytes=? AND removed_at IS NULL", [

@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 1/3 upload予約の全体受付 | 単一/分割・新規/上書きの共有32枠、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加。既存55件・新規境界40件・実ControlDO37件成功。全check1,504件（Node408/workerd1096）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 upload転送の全体受付 | 単一start/recover/verify・multipart start/complete、current authority/claim/receipt/返却、直接ACKのみdispatch | workerd45件追加。既存upload55件・境界40件・実ControlDO5件成功。全check1,549件（Node408/workerd1141）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 upload予約の全体受付 | 単一/分割・新規/上書きの共有32枠、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加。e90ee88のCI全成功、Node408/workerd1096/browser19、計1,523件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/2 配信更新の全体受付 | budget・ticket発行/交換/取消しの共有32枠、コンテンツ所有space、待機後の現行認可/期限と確定記録、取消し証明後のR2 manifest削除 | workerd70件追加。522f616のCI全成功、Node408/workerd1054/browser19、計1,481件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 session・初回owner・logout受付 | migration0032、space作成前も共有32枠、既存JWTのread-only照合、変更/確定記録/解放を一括保存 | Node4/workerd22件追加。8e7243eのCI全成功、Node408/workerd984/browser19、計1,411件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 app password更新受付 | 発行・失効・pepper更新を共通32枠へ接続、KDF後取得、変更/確定記録/解放を一括保存、混雑503 | workerd32件追加。既存認証55件と最終境界60件、計1,366件を検証。旧fixture1件修正後の再検証・残るgateも成功。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
@@ -122,6 +123,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、commit e90ee882efe5c79655cf45603ad01ec52ffde4b4の[CI36024332349](https://github.com/daraskme/Nextcloud-flare/actions/runs/36024332349)全成功。Ubuntu5分4秒、Windows12分20秒、browser2分47秒。両OSでNode408/25files、workerd1096/65files（Ubuntu261.30秒/Windows656.65秒）、browser19（1.5分）、合計1,523件。
+
+- 2026-09-25、upload転送5経路の共通受付を追加。workerd45件追加。既存upload55件・境界40件・実ControlDO5件成功。全check1,549件（Node408/workerd1141）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 初期の実ControlDO fixtureで不変sessionのepochを更新しようとしたため、作成時の値へ修正。後処理もclosed receiptを再更新しない条件へ修正。最終境界40件と実ControlDO5件（5.89秒）は成功。製品の制約は変更なし。最終pnpm check成功: Node408/25files（5.19秒）、workerd1141/67files（549.33秒）、lint/typecheck/contracts/config・Web build・Worker dry-run成功。migration・依存追加なし。
 
 - 2026-09-25、upload新規予約の共通受付を追加。workerd42件追加。既存single/multipart55件（27.78秒）、初期境界と実ControlDO73件（49.42秒）、全照合喪失と実時計の期限切れ追加後の新規境界40件（14.08秒）成功。最終pnpm check成功。Node408/25files（5.33秒）+ workerd1096/65files（517.53秒）=1,504件。lint/typecheck/contracts/config、Web build、Worker dry-runも成功。今回のbrowserと両OSのCIはpush後に確認する。schema0032/通常67table・migrationと依存追加なし。
 - 2026-09-25、直前commit522f616009359e5bc0a40c42575442b01c7d57b7の[CI36020805225](https://github.com/daraskme/Nextcloud-flare/actions/runs/36020805225)全成功。Ubuntu4分14秒、Windows12分59秒、browser2分36秒。両OSでNode408/25files、workerd1054/64files（Ubuntu214.22秒/Windows699.53秒）、browser19（1.5分）、合計1,481件。

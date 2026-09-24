@@ -69,9 +69,9 @@ credential の復旧監査では、有効な app password と service の scope 
 
 専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` のHMAC ringを使い、upload ID、credential、epoch、期限を署名する。DBにはcapabilityのhashだけを保存し、作成応答喪失時は保存済みkidで同じtokenを再発行する。旧kidは有効uploadがなくなるまで保持する（現在のsingleは24時間）。JSON mutationはCSRF、binaryはcurrent Access・capability・exact Origin、上書きはstrong If-Matchを要求する。
 
-単一PUTは95,000,000 byte以下の既知長。D1が`created→receiving`と1回限りのattempt/15分leaseを確定し、その応答を受けた呼出しだけがimmutable keyへR2 PUTを開始する。claimの応答喪失では送信せず、R2 PUTの応答喪失では同じobjectのGET・metadata・size・SHA-256照合で回収する。再送のPUTは行わない。sourceを最大64 KiBずつdigestとFixedLengthStreamへ直列供給し、lease signalでreaderと両sinkを中止する。観測した物理bytesは確定失敗でも計上し、R2の不存在を確認するまで戻さない。
+単一PUTは95,000,000 byte以下の既知長。単一の送信開始/読戻し/検証済み情報とmultipartの初期化/complete claimは共有mutation枠を取得し、最終認可・変更・exact receipt・返却を原子的に保存する。外部送信は直接ACKだけで許可する。D1が`created→receiving`と1回限りのattempt/15分leaseを確定し、その応答を受けた呼出しだけがimmutable keyへR2 PUTを開始する。claimの応答喪失では送信せず、R2 PUTの応答喪失では同じobjectのGET・metadata・size・SHA-256照合で回収する。再送のPUTは行わない。sourceを最大64 KiBずつdigestとFixedLengthStreamへ直列供給し、lease signalでreaderと両sinkを中止する。観測した物理bytesは確定失敗でも計上し、R2の不存在を確認するまで戻さない。
 
-completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/physical/hashを検証し、新規10 step/上書き8 stepでnode/version・検索・quota・upload terminal・activity/outboxを一括確定する。DB応答喪失はoperation lookupへ収束し、unknown時は補償しない。既知failedの予約解放は再実行可能。abortは公開を止めorphan/cleanup intentを保存する。未送信の予約だけを解放し、write attemptがある場合は24時間の期限後にR2を照合するまで予約を保持する。abortとclaimの競合は同じD1 batch内のattempt有無で判断する。ControlDO admissionは閉じたまま。
+completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/physical/hashを検証し、新規10 step/上書き8 stepでnode/version・検索・quota・upload terminal・activity/outboxを一括確定する。DB応答喪失はoperation lookupへ収束し、unknown時は補償しない。既知failedの予約解放は再実行可能。abortは公開を止めorphan/cleanup intentを保存する。未送信の予約だけを解放し、write attemptがある場合は24時間の期限後にR2を照合するまで予約を保持する。abortとclaimの競合は同じD1 batch内のattempt有無で判断する。ControlDOの監査後の受付再開はローカル実装済み。物理観測・UploadDO台帳反映・abort/cleanupの共有受付は後続。
 
 `jobs/uploadCleanup.ts` は期限切れsingleを既定20件/最大100件、既定20秒の処理時間予算で回収する。migration `0017`の60秒lease・token・次回時刻・errorと専用indexで重複Cron、再試行、失敗候補による後続処理の停滞を防ぐ。D1 batchでcurrent epoch/maintenance、未公開blob/ref/pin、completion operandを検査し、`created/receiving→expired`、`completing→failed`と未確定completion claimを同時に終端化してからHEADする。completion_op_id保存前のclaimもuploadId/credential/space/parent/target tupleで照合する。committed operationや部分stepが残る矛盾した行は回収しない。
 

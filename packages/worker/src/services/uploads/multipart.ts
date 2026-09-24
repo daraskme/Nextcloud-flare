@@ -5,6 +5,7 @@ import { CONTROL_NAME } from "../../do/ControlDO";
 import { UPLOAD_LIMITS } from "../../do/uploadPlan";
 import type { Env } from "../../env";
 import { consumeKnownLength } from "../../platform/stream";
+import { accountMutationStatements, acquireAccountMutation } from "../accountMutation";
 import { accessUpload, uploadFence, uploadRow } from "./access";
 import { type CreateSingleUpload, reserveMultipartUpload } from "./create";
 import { readUpload } from "./read";
@@ -80,19 +81,28 @@ export async function createMultipartUpload(
   if (row.state !== "created" || row.write_attempt_id) throw new Error("upload_init_unknown");
   const attempt = crypto.randomUUID();
   const lease = Math.min(Date.now() + UPLOAD_LIMITS.leaseMs, row.expires_at);
+  const admission = await acquireAccountMutation(
+    env,
+    row.owner_id,
+    row.epoch,
+    "upload.multipart-start",
+  );
   // Only this confirmed claim permits createMultipartUpload. Retrying the same request never
   // creates another R2 upload ID, even when the first call or its acknowledgement was lost.
   try {
-    await atomicBatch(env.DB, [
-      authorizationAssertion(authorized),
-      uploadFence(row, ["created"]),
-      {
-        sql: `UPDATE uploads SET write_attempt_id=?,write_lease_expires_at=?,control_calls=control_calls+1
+    await atomicBatch(
+      env.DB,
+      accountMutationStatements(admission, row.owner_id, [
+        authorizationAssertion(authorized),
+        uploadFence(row, ["created"]),
+        {
+          sql: `UPDATE uploads SET write_attempt_id=?,write_lease_expires_at=?,control_calls=control_calls+1
         WHERE id=? AND write_attempt_id IS NULL AND r2_upload_id IS NULL`,
-        values: [attempt, lease, row.id],
-      },
-      assertOneChange,
-    ]);
+          values: [attempt, lease, row.id],
+        },
+        assertOneChange,
+      ]),
+    );
   } catch (error) {
     // A committed claim with a lost reply never grants dispatch. Do not stop a concurrent
     // caller's different claim; only this attempt can be declared not dispatched here.

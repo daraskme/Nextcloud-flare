@@ -85,7 +85,7 @@ createSingleUploadとreserveMultipartUploadはmandatoryなCONTROL bindingを受�
 
 自分のbatch応答喪失はexact receiptで照合する。別要求が同じkeyの予約を作った場合や自分のreceipt読取りを失った場合も、current authorityと一致する保存済みuploadを読めれば、その共有HTTP receiptへ合流できる。ただしそれは自分の確定証明ではなく、自分の未確定ticketを閉じない。予約・blob・容量を消さず、自動で予約SQLやR2を再実行しない。全照合応答を失ったときはエラーを返し、同じkeyで次に照会する。capabilityやhashを受付台帳に入れない。
 
-HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。R2送信開始/観測・UploadDO台帳反映・abort/cleanupなどの更新受付は後続であり、予約接続だけでupload全体を完了扱いにしない。
+HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。物理観測・UploadDO台帳反映・abort/cleanupなどの更新受付は後続。
 
 ## 応答喪失・失効・復旧
 
@@ -97,6 +97,24 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 - active/waitingは削除禁止。closed receiptは元待機期限後、確定記録付きならさらにcommit後60秒を過ぎてから、索引を使って最大256件ずつ掃除する。終端permitは保持するため、受付receiptの掃除後も同じpermit intentを再発行できない。通常の枠確認はactive/waitingの最大288件を対象とし、全終端履歴を走査しない。
 - DB namespaceの失効は、R2 I/Oが終了した証拠にはならない。upload・blob・物理容量の保留をこの受付処理から解放しない。
 - REST/WebDAV/upload HTTPは受付失敗を503と`Retry-After: 1`で返す。namespace operationはIDを変えずに再照会・再送する既存契約を維持する。DAVロックの別HTTP要求は上記の再生対象ではない。
+
+## upload転送claimと検証済み情報
+
+単一uploadの送信開始・読戻し・検証済み情報の保存、multipartの初期化・complete送信claimの5経路を共通32枠へ接続。現在の権限/対象/期限と変更・確定記録・枠返却を同一batchで検査する。外部送信はclaim batchの直接ACKを受けた場合だけ許可し、確定記録の読戻しでは再送しない。単一の検証済みDB情報だけはexact receiptから復旧する。
+
+| admission種別 | 同一batchの主な変更 | 応答喪失後の扱い |
+|---|---|---|
+| upload.single-start | created→receiving、write attempt/lease、data counter | receiptからPUTしない。別の読戻しclaimへ進む |
+| upload.single-recover | receivingのcontrol_calls加算・上限検査 | このclaimではGETしない。次回も独立した受付とcounterが必要 |
+| upload.single-verify | blob SHA-256/ETag、receiving→completing | exact receiptでDB確定を回収可能。PUTなし |
+| upload.multipart-start | 初回write attempt/lease、control counter | R2 createなし。自分の未送信attemptを既存処理で停止 |
+| upload.multipart-complete | 一度限りのcomplete attempt/lease | R2 completeなし。既存のHEAD照合へ収束 |
+
+受付はpreflight後、最終batch前。4つの外部送信claimはaccountMutationStatementsの共通fence/receiptを使うが、commitAccountMutationのACK回収ではdispatchしない。R2 PUT/create/completeの再送禁止とGET回数上限を維持する。待機後の失効・maintenance・revision・SQL時計を再検査し、rollbackした未確定枠は推測で閉じない。
+
+単一PUT後に検証済み情報の受付が満杯でも、観測済みphysicalとreservationを保持する。次回はGETで同じobjectを検査し、PUTを再送しない。受付失敗のHTTPは503/Retry-After: 1。physical観測や既知R2 IDの記録は失効後も回収に必要なため、今回のowner認可付き受付をそのまま適用しない。これらとUploadDO台帳反映・abort/cleanupは別途接続する。DB枠の返却は外部I/Oの終了証明ではない。
+
+境界試験は5経路の混雑/待機後失効/停止/対象変更/rollback、直接ACK喪失時の送信拒否、実時計期限、検証済み情報のACK/読戻し喪失と容量保持、HTTP503を検証する。実ControlDOで各経路を32枠満杯から待機させ、commit後の枠をnamespace permitへ渡す。
 
 ## migrationと残作業
 
@@ -112,11 +130,12 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 | content budget / ticket発行・交換・取消し | 接続済み。コンテンツ所有spaceで受付し、current authorityと変更/確定記録/解放を同一batch |
 | CSRF helperの発行/検証 | DBはcurrent credentialの読取りのみ、tokenは署名。入口のsession登録も上記の共有受付へ接続済み |
 | 単一/分割upload新規予約 | 接続済み。reservation/blob/uploadと確定記録/解放を同一batch。同keyの既存receiptは追加受付なし |
-| R2 create/part/completeの外部I/O・転送台帳更新・abort/cleanup | 既存upload制御を維持。新規予約とnamespace公開以外は未接続 |
+| 単一送信開始/読戻し/検証済み情報、multipart初期化/complete claim | 接続済み。外部送信には直接ACK必須。検証済みDB情報のみexact receiptで回収 |
+| 物理観測・既知R2 ID記録・UploadDO台帳反映・abort/cleanup | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
 
-検証記録: 直前content commit 522f616はCI全成功（Node408/workerd1054/browser19、計1,481件）。今回のupload予約接続の全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
+検証記録: 直前commit e90ee88の[CI36024332349](https://github.com/daraskme/Nextcloud-flare/actions/runs/36024332349)は全成功。Node408/workerd1096/browser19、計1,523件。今回のupload転送受付の全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。

@@ -2,7 +2,7 @@
 
 更新日: 2026-09-25
 
-直近の到達点は[PROGRESS](PROGRESS.md)へ記録する。直前commit522f616のCI全成功、Node408/workerd1054/browser19、計1,481件。今回は単一/分割uploadの新規予約を共通受付へ接続。workerd42件追加、既存55件・新規境界40件・実ControlDO37件成功。全check1,504件（Node408/workerd1096）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+直近の到達点は[PROGRESS](PROGRESS.md)へ記録する。直前commit e90ee88の[CI36024332349](https://github.com/daraskme/Nextcloud-flare/actions/runs/36024332349)は全成功。Node408/workerd1096/browser19、計1,523件。単一uploadの送信開始・読戻し・検証済み情報の保存、multipartの初期化・complete送信claimの5経路を共通32枠へ接続。現在の権限/対象/期限と変更・確定記録・枠返却を同一batchで検査する。外部送信はclaim batchの直接ACKを受けた場合だけ許可し、確定記録の読戻しでは再送しない。単一の検証済みDB情報だけはexact receiptから復旧する。workerd45件追加。既存upload55件・境界40件・実ControlDO5件成功。全check1,549件（Node408/workerd1141）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -22,7 +22,8 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 転送開始/終了記録・abort/cleanup/Queue/backupと実環境は後続 |
+| upload転送の全体受付 | 単一start/recover/verify、multipart start/completeの5経路、直接ACKによる外部送信とDB-only receipt回収を分離 | workerd45件追加。既存upload55件・境界40件・実ControlDO5件成功。全check1,549件（Node408/workerd1141）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 | 物理観測・UploadDO台帳・abort/cleanup/Queue/backupは後続 |
+| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 物理観測・UploadDO台帳反映・abort/cleanup/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
 | schema・契約 | migration `0001`〜`0032`、67通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
@@ -55,7 +56,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-直前522f616のCIは1,481件成功。今回のupload予約受付の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
+直前e90ee88のCIは1,523件成功。今回のupload転送受付の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -90,7 +91,7 @@
 
 ### 制御・運用
 
-- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
+- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送5経路は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。
