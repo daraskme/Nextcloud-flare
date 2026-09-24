@@ -59,6 +59,7 @@ export const GLOBAL_MUTATION_KINDS = [
   "bucket.parts-page",
   "bucket.abort-start",
   "bucket.abort-finish",
+  "recovery.fts-rebuild",
 ] as const;
 export type GlobalMutationKind = (typeof GLOBAL_MUTATION_KINDS)[number];
 export function isGlobalMutationId(id: string): boolean {
@@ -122,6 +123,8 @@ export const SYSTEM_MUTATION_KINDS = [
   "outbox.sent",
   "outbox.consume-claim",
   "outbox.complete",
+  "recovery.reservation-release",
+  "recovery.outbox-fail",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

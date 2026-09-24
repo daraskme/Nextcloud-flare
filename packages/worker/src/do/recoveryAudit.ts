@@ -1,6 +1,17 @@
-import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import type { MutationAdmission } from "../db/mutationAdmission";
+import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
+import {
+  acquireGlobalMutation,
+  commitGlobalMutation,
+  type GlobalMutationSource,
+} from "../services/globalMutation";
 import { auditOwnerLedger } from "../services/refs";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationSource,
+} from "../services/systemMutation";
 import { loadTargetManifest, type TargetManifestRecord } from "../services/targetManifest";
 import { epochNumber } from "./epochHistory";
 
@@ -133,21 +144,39 @@ const credentialSources = [
   },
 ] as const;
 
-async function assertQuiesced(db: D1Database, epoch: number): Promise<void> {
-  const gate = await primary(db)
-    .prepare(`SELECT 1 FROM control WHERE singleton=1
+function quiescenceQuery(ownAdmission = false): string {
+  return `SELECT 1 FROM control WHERE singleton=1
     AND epoch=? AND maintenance=1 AND gc_paused=1
     AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
-    AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
+    AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed'${ownAdmission ? " AND id<>?" : ""})
     AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
     AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
     AND NOT EXISTS(SELECT 1 FROM job_leases WHERE expires_at>strftime('%s','now')*1000)
     AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
       AND claim_expires_at>strftime('%s','now')*1000)
     AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')
-    AND NOT EXISTS(SELECT 1 FROM uploads WHERE state IN ('receiving','completing'))`)
-    .bind(epoch)
-    .first<number>();
+    AND NOT EXISTS(SELECT 1 FROM uploads WHERE state IN ('receiving','completing'))`;
+}
+
+/** The common wrapper proves this one exempted receipt is active/current in the same batch. */
+function repairFence(epoch: number, admission: MutationAdmission<string | null>): SqlStatement {
+  return assertExists(
+    quiescenceQuery(true) +
+      ` AND (
+    (bootstrap_done_at IS NULL AND bootstrap_iss IS NULL AND bootstrap_sub IS NULL
+      AND NOT EXISTS(SELECT 1 FROM users) AND NOT EXISTS(SELECT 1 FROM spaces))
+    OR (bootstrap_done_at IS NOT NULL AND length(bootstrap_iss)>0 AND length(bootstrap_sub)>0
+      AND EXISTS(SELECT 1 FROM users u WHERE u.role='app_admin' AND u.disabled_at IS NULL
+        AND u.access_iss=control.bootstrap_iss AND u.access_sub=control.bootstrap_sub)))`,
+    [epoch, admission.id],
+  );
+}
+function withinRepairBudget(deadline: number): void {
+  if (Date.now() >= deadline) throw new Error("recovery_repair_budget");
+}
+
+async function assertQuiesced(db: D1Database, epoch: number): Promise<void> {
+  const gate = await primary(db).prepare(quiescenceQuery()).bind(epoch).first<number>();
   if (gate === null) throw new Error("recovery_not_quiesced");
   const bootstrap = await primary(db)
     .prepare("SELECT bootstrap_done_at,bootstrap_iss,bootstrap_sub FROM control WHERE singleton=1")
@@ -188,11 +217,23 @@ export async function inspectRecoverySearchFts(db: D1Database, epoch: number): P
 }
 
 /** Operator repair after restore; an ambiguous rebuild response is checked before retrying. */
-export async function rebuildRecoverySearchFts(db: D1Database, epoch: number): Promise<void> {
+export async function rebuildRecoverySearchFts(
+  env: GlobalMutationSource,
+  epoch: number,
+): Promise<void> {
+  const { DB: db } = env,
+    deadline = Date.now() + 25_000;
   epochNumber(epoch);
   await assertQuiesced(db, epoch);
+  const admission = await acquireGlobalMutation(env, "recovery.fts-rebuild", deadline);
+  withinRepairBudget(deadline);
   try {
-    await primary(db).prepare("INSERT INTO search_fts(search_fts) VALUES('rebuild')").run();
+    await commitGlobalMutation(db, admission, [
+      repairFence(epoch, admission),
+      {
+        sql: "INSERT INTO search_fts(search_fts) VALUES('rebuild')",
+      },
+    ]);
   } catch (error) {
     try {
       await inspectRecoverySearchFts(db, epoch);
@@ -254,17 +295,20 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
 
 /** Old-epoch node notifications cannot be safely replayed after recovery. */
 export async function failStaleRecoveryOutbox(
-  db: D1Database,
+  env: SystemMutationSource,
   epoch: number,
   limit = 20,
 ): Promise<number> {
+  const { DB: db } = env,
+    deadline = Date.now() + 25_000;
   epochNumber(epoch);
   if (!Number.isInteger(limit) || limit < 1 || limit > 20)
     throw new Error("invalid_recovery_limit");
   await assertQuiesced(db, epoch);
   const clock = "strftime('%s','now')*1000";
   const rows = await primary(db)
-    .prepare(`SELECT b.outbox_id FROM outbox b JOIN operations o ON o.op_id=b.op_id
+    .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.epoch,o.space_id,s.owner_id
+      FROM outbox b JOIN operations o ON o.op_id=b.op_id LEFT JOIN spaces s ON s.id=o.space_id
       WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
         (b.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
         (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
@@ -280,20 +324,35 @@ export async function failStaleRecoveryOutbox(
           (b.claim_token IS NOT NULL AND b.claim_expires_at<=${clock}))
       ORDER BY b.outbox_id LIMIT ?`)
     .bind(epoch, limit)
-    .all<{ outbox_id: string }>();
+    .all<{
+      outbox_id: string;
+      op_id: string;
+      kind: string;
+      payload_ref: string;
+      epoch: number;
+      space_id: string | null;
+      owner_id: string | null;
+    }>();
   let failed = 0;
-  for (const { outbox_id } of rows.results) {
+  for (const row of rows.results) {
+    if (Date.now() >= deadline) break;
+    const { outbox_id, op_id, kind, payload_ref, epoch: sourceEpoch, space_id, owner_id } = row;
+    if (!owner_id || !space_id) throw new Error("recovery_outbox_owner_missing");
+    const admission = await acquireSystemMutation(env, owner_id, "recovery.outbox-fail", deadline);
+    withinRepairBudget(deadline);
+    if (admission.space_id !== space_id) throw new Error("recovery_outbox_space_changed");
     try {
-      await atomicBatch(db, [
+      await commitSystemMutation(db, admission, owner_id, [
+        repairFence(epoch, admission),
         {
           sql: `UPDATE outbox SET state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
             claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
-            WHERE outbox_id=? AND epoch<? AND kind IN ('node.created','node.updated','node.trashed','node.restored','node.purged','node.renamed')
+            WHERE outbox_id=? AND op_id=? AND kind=? AND payload_ref=? AND epoch=? AND epoch<?
               AND state IN ('pending','dispatching','sent')
               AND ((state='pending') OR (dispatch_token IS NOT NULL AND dispatch_expires_at IS NOT NULL))
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
                 (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
-              AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
+              AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id AND o.space_id=?
                 AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
                   (outbox.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
                   (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
@@ -305,14 +364,16 @@ export async function failStaleRecoveryOutbox(
                   AND s.kind='node' AND s.affected_id=outbox.payload_ref))
               AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?
                 AND maintenance=1 AND gc_paused=1)`,
-          values: [outbox_id, epoch, epoch],
+          values: [outbox_id, op_id, kind, payload_ref, sourceEpoch, epoch, space_id, epoch],
         },
         assertOneChange,
       ]);
     } catch (error) {
       const terminal = await primary(db)
-        .prepare("SELECT 1 FROM outbox WHERE outbox_id=? AND epoch<? AND state='failed'")
-        .bind(outbox_id, epoch)
+        .prepare(
+          "SELECT 1 FROM outbox WHERE outbox_id=? AND op_id=? AND kind=? AND payload_ref=? AND epoch=? AND state='failed'",
+        )
+        .bind(outbox_id, op_id, kind, payload_ref, sourceEpoch)
         .first<number>();
       if (terminal === null) throw error;
     }
@@ -324,36 +385,57 @@ export async function failStaleRecoveryOutbox(
 
 /** Upload reservations require R2-aware cleanup, including terminal uploads with unknown writes. */
 export async function releaseStaleRecoveryReservations(
-  db: D1Database,
+  env: SystemMutationSource,
   epoch: number,
   limit = 20,
 ): Promise<number> {
+  const { DB: db } = env,
+    deadline = Date.now() + 25_000;
   epochNumber(epoch);
   if (!Number.isInteger(limit) || limit < 1 || limit > 20)
     throw new Error("invalid_recovery_limit");
   await assertQuiesced(db, epoch);
   const rows = await primary(db)
-    .prepare(`SELECT r.id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
+    .prepare(`SELECT r.id,r.owner_id,r.epoch,r.bytes,r.expires_at,r.share_id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id)
       ORDER BY r.id LIMIT ?`)
     .bind(epoch, limit)
-    .all<{ id: string }>();
+    .all<{
+      id: string;
+      owner_id: string;
+      epoch: number;
+      bytes: number;
+      expires_at: number;
+      share_id: string | null;
+    }>();
   let released = 0;
-  for (const { id } of rows.results) {
+  for (const { id, owner_id, epoch: sourceEpoch, bytes, expires_at, share_id } of rows.results) {
+    if (Date.now() >= deadline) break;
+    const admission = await acquireSystemMutation(
+      env,
+      owner_id,
+      "recovery.reservation-release",
+      deadline,
+    );
+    withinRepairBudget(deadline);
     try {
-      await atomicBatch(db, [
+      await commitSystemMutation(db, admission, owner_id, [
+        repairFence(epoch, admission),
         {
-          sql: `UPDATE reservations SET state='released' WHERE id=? AND state='reserved' AND epoch<?
+          sql: `UPDATE reservations SET state='released' WHERE id=? AND owner_id=? AND epoch=? AND bytes=?
+            AND expires_at=? AND share_id IS ? AND state='reserved' AND epoch<?
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1)
             AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id)`,
-          values: [id, epoch, epoch],
+          values: [id, owner_id, sourceEpoch, bytes, expires_at, share_id, epoch, epoch],
         },
         assertOneChange,
       ]);
     } catch (error) {
       const terminal = await primary(db)
-        .prepare("SELECT 1 FROM reservations WHERE id=? AND state='released' AND epoch<?")
-        .bind(id, epoch)
+        .prepare(
+          "SELECT 1 FROM reservations WHERE id=? AND owner_id=? AND epoch=? AND bytes=? AND expires_at=? AND share_id IS ? AND state='released'",
+        )
+        .bind(id, owner_id, sourceEpoch, bytes, expires_at, share_id)
         .first<number>();
       if (terminal === null) throw error;
     }

@@ -431,7 +431,7 @@ export class ControlDO extends DurableObject<Env> {
   /** Rebuild restored external-content FTS, then invalidate every previous diagnostic page. */
   async rebuildRecoveryFts(expectedEpoch: number): Promise<RecoveryAuditStatus> {
     await this.#maintenance(expectedEpoch, () =>
-      rebuildRecoverySearchFts(this.env.DB, expectedEpoch),
+      rebuildRecoverySearchFts({ DB: this.env.DB, systemControl: this }, expectedEpoch),
     );
     return this.#auditStatus(this.#auditRow(expectedEpoch));
   }
@@ -442,7 +442,11 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ released: number; audit: RecoveryAuditStatus }> {
     const released = await this.#maintenance(expectedEpoch, () =>
-      releaseStaleRecoveryReservations(this.env.DB, expectedEpoch, limit),
+      releaseStaleRecoveryReservations(
+        { DB: this.env.DB, systemControl: this },
+        expectedEpoch,
+        limit,
+      ),
     );
     return { released, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
@@ -641,7 +645,7 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ failed: number; audit: RecoveryAuditStatus }> {
     const failed = await this.#maintenance(expectedEpoch, () =>
-      failStaleRecoveryOutbox(this.env.DB, expectedEpoch, limit),
+      failStaleRecoveryOutbox({ DB: this.env.DB, systemControl: this }, expectedEpoch, limit),
     );
     return { failed, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }

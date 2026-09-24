@@ -183,7 +183,7 @@ migration0033でsystem/modeを不変にし、通常操作・namespace permitへ�
 
 systemとmaintenanceの2列は0033で既存台帳へ追加する。旧rowは0/0、receiptとAUTOINCREMENT high-water markは保持する。適用前にmaintenance・全ticket/permit/claimed operationのdrainを必須とする。閉鎖状態のsystem mirror照合は稼働中system ticketを許すが、復旧監査と再開の全体fenceは維持する。
 
-物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。Cron/Queue・GC・orphanの受付は後述の経路へ接続済み。全bucket multipartは後述。旧epoch repair・backup barrierの接続は後続。
+物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。Cron/Queue・GC・orphanの受付は後述の経路へ接続済み。全bucket multipartは後述。旧epoch repairは後述。backup barrierの接続は後続。
 
 ## UploadDO台帳の初期化・反映・喪失
 
@@ -200,7 +200,7 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 同じUploadDO内の既存直列化を維持し、R2やstreamをDOへ渡さない。待機後もSQL時計・現行認可・予約・正確なjournal binding/revisionを検査する。dirty partsは最大200、追加envelopeを含めてもD1の1,000 statement上限内。終端公開証明の読取りとローカルのcompleted照合は新たなD1 mutation受付を増やさない。
 
-停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。GC・所有upload inventory・Queue・orphanの受付は後述。全bucket multipartは後述。旧epoch repair・backup barrierは後続。
+停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。GC・所有upload inventory・Queue・orphanの受付は後述。全bucket multipartは後述。旧epoch repairは後述。backup barrierは後続。
 
 ## 単一・分割アップロードの自動回収
 
@@ -219,7 +219,7 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 CronはCONTROL binding、ControlDO内のmaintenanceは同一instanceのstatus/acquireSystemMutationを必須引数で供給する。DBだけのfallbackはない。回収前後の復旧監査・quiesceは維持する。disabled owner/失効credential/旧source epochでも現在のsystem受付で回収できるが、元のcontrol epoch/mode、cleanup lease、未公開・pin・GC・閉鎖条件はbatchで再検査する。
 
-unknown-ID inventoryの停止claimに加え、既存upload行の走査・観測・中止は後述の受付へ接続済み。Queue・global probe・orphanは後述の共通受付へ接続済み。全bucket multipartは後述。旧epoch repair・backupは後続。この所有uploadの更新は既存owner-spaceのsystem受付を維持する。
+unknown-ID inventoryの停止claimに加え、既存upload行の走査・観測・中止は後述の受付へ接続済み。Queue・global probe・orphanは後述の共通受付へ接続済み。全bucket multipartは後述。旧epoch repairは後述。backupは後続。この所有uploadの更新は既存owner-spaceのsystem受付を維持する。
 
 ## 所有blobのGC
 
@@ -238,7 +238,7 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 claimの60秒leaseとremoved_atは待機後のSQL時計を使う。removed_atはobserved_atを下回らない。1回のmaxBlobsは失敗したclaimも含む候補検査数の上限とし、同じ失敗を無制限に再試行しない。既定50件（停止/復元20件）、25秒の外部dispatch開始期限を維持する。進行中R2呼出しの強制終了は保証しない。
 
-owner未復元のorphan・そのcursor/leaseは後述のglobal受付、Queueは所有spaceの受付へ接続済み。全bucket multipart inventoryは後述。旧epoch repair・backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。
+owner未復元のorphan・そのcursor/leaseは後述のglobal受付、Queueは所有spaceの受付へ接続済み。全bucket multipart inventoryは後述。旧epoch repairは後述。backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。
 
 ## 所有uploadの未知multipart調査・回収
 
@@ -275,7 +275,7 @@ Queueの送信・受信処理を共通system受付へ接続しました。送信
 | outbox.consume-claim | 現在の認可と保存済みoperand/result/node stepを検査し30秒claim | exact receipt回収。後続の完了も別受付と現行認可が必要 |
 | outbox.complete | 自分のclaim/leaseと現行認可を検査してcompleted | exact receiptまたはdurable terminalだけをackの根拠にする |
 
-completed/failedの照会は枠を取らない。他のconsumerが完成させたterminalはQueue応答の判断に使えるが、自分の未確定枠を返す証拠にはならない。既存のID-only/at-least-onceを維持し、R2初期化や転送の一回限定dispatchとは区別する。公開Workerのqueue/scheduledからmandatory SystemMutationSourceを渡す。全bucket multipart inventoryは後述。旧epoch repairとbackup barrierは後続。詳しい制限と試験は[OUTBOX](OUTBOX.md)。
+completed/failedの照会は枠を取らない。他のconsumerが完成させたterminalはQueue応答の判断に使えるが、自分の未確定枠を返す証拠にはならない。既存のID-only/at-least-onceを維持し、R2初期化や転送の一回限定dispatchとは区別する。公開Workerのqueue/scheduledからmandatory SystemMutationSourceを渡す。全bucket multipart inventoryは後述。旧epoch repairは後述。backup barrierは後続。詳しい制限と試験は[OUTBOX](OUTBOX.md)。
 
 
 ## 所有者を持たない内部更新とR2接続確認
@@ -323,3 +323,11 @@ owner不在でもscopeは明示nullで、架空のspaceを作りません。待�
 8kindはbucket.scan-init/scan-call/scan-page、bucket.parts-init/parts-call/parts-page、bucket.abort-start/abort-finish。DB-onlyのinit/finishはcommitGlobalMutationで確定記録を照合する。call/abort-startは外部I/Oの許可なのでraw batchの直接ACKが必須。結果付きpage batchもrawで保存し、共通assert/receiptを返却値から除外する。受付不能や確定不明でcapacity・probe・保留容量を手動返却しない。
 
 新しい中止は待機後に完了した一覧と競合upload/leaseをtriggerで検査する。既存attemptの照会は新しい中止枠を取らず、fresh proof後に保存結果を返すだけである。詳しい試験と制約は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
+
+## 旧epochの予約・通知・索引修復
+
+旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。
+
+修復の前後は従来どおり全更新の停止を要求します。更新batch内だけは自分の有効な受付IDを除外し、他のactive/waiting、permit・claim・job・GC・uploadとbootstrap管理者の条件を待機後に原子的に再検査します。自分の枠が空いても他の更新が残れば修復しません。DB-onlyの確定記録と厳密な終端・索引照合で応答喪失を扱い、他の処理の完了では自分の未確定枠を返しません。uploadへ結び付いた予約は保持し、元の行・所有者・通知のoperation由来を再検査します。予約・通知は1回最大20件、次の更新開始には固定25秒の期限を使い、ControlDO内部は同じinstanceで受け付けます。
+
+kindはsystem:recovery.reservation-release、system:recovery.outbox-fail、global:recovery.fts-rebuild。所有者のspaceが未復元なら修復を拒否し、globalへ代替しない。既存の終端/FTS整合照合で結果を報告できても、自分のactiveで未確定な共通枠は解放しない。厳密な処理後の停止確認もその枠を拒否する。ControlDOのfinallyによる停止は別のcoordinator操作である。詳細は[RECOVERY_REPAIR](RECOVERY_REPAIR.md)。
