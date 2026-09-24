@@ -114,7 +114,9 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
-- 2026-09-24、upload行喪失時の全bucket multipart走査とpart容量保留を追加。新機能27件成功（10.42秒）、schema5件成功。新規migration `0027`、64通常table、依存追加なし。最終`pnpm check`成功、Node389 + workerd838 = **1,227 tests**（23+55 files）、workerd395.26秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-runも成功。今回のbrowser試験はpush後のCIで確認する。実S3・全体閉鎖・中止・容量精算は未完了。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
+- 2026-09-24、commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後の検索9件は成功（6.07秒）、lint/typecheckも成功。新しいSHAでCI全checkを確認する。
+
+- 2026-09-24、upload行喪失時の全bucket multipart走査とpart容量保留を追加。新機能27件成功（10.42秒）、schema5件成功。新規migration `0027`、64通常table、依存追加なし。最終`pnpm check`成功、Node389 + workerd838 = **1,227 tests**（23+55 files）、workerd395.26秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-runも成功。browser19件も同commitのCIで成功（計1,246件）。Windowsの検索fixture timeoutは別記録。実S3・全体閉鎖・中止・容量精算は未完了。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
 
 - 2026-09-24、未知multipart IDの修復にfreshなBLOBS/S3対応検証を接続。maintenance/GC pauseとcurrent proofをclaim・round reset・各dispatch・page/abort receipt・physical観測・lease解放の同一D1 batchで検査する。誤bucket、旧nonce、停止解除、期限切れ、page応答喪失後のdispatch、再開時のfresh検証など12境界を追加し、旧epoch試験を実ControlDO復旧へ統合（net +11件）。関連100件成功（27.79秒）に加え追加2境界成功（2.99秒）。最終`pnpm check`はNode389 + workerd811 = **1,200 tests**（23+54 files）、workerd380.36秒。lint/typecheck/contracts/config/schema、Web build、Wrangler dry-run成功。同commit `9811560`の[CI run35954162544](https://github.com/daraskme/Nextcloud-flare/actions/runs/35954162544)はUbuntu・Windows・browser全job成功、browser19件。D1 migration・依存追加なし。全体閉鎖・容量精算・upload行喪失・実S3/stagingは未完了。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)。
 

@@ -14,7 +14,9 @@ D1のupload行が失われた未完了multipartを、保存先の`u/`全体か�
 
 毎回freshなBLOBS/S3対応検証と同一batchのfenceを使い、競合するdispatch・二重計上・古いcursorの再利用を防ぐ。0 bytesの隔離handleも復旧再開を止める。migration `0027`で3tableを追加し、合計64通常table。既存migrationと依存は変更していない。
 
-新機能27件とschema5件の関連検証に加え、最終`pnpm check`も成功。Node389 + workerd838 = **1,227件**（23+55 files）、workerd395.26秒。lint・型・契約・設定・schema・Web build・Wrangler dry-run成功。今回のbrowser試験はpush後のCIで確認する。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
+新機能27件とschema5件の関連検証に加え、最終`pnpm check`も成功。Node389 + workerd838 = **1,227件**（23+55 files）、workerd395.26秒。lint・型・契約・設定・schema・Web build・Wrangler dry-run成功。browser19件もCI成功し、計1,246件。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
+
+commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後のCIは最新SHAで確認する。
 
 ここでの走査完了・容量保留は、回収完了ではない。記録を失ったhandleの中止、未知create/part/completeの遅延、全handleの閉鎖証明と予約・保留容量の精算は未完了。実S3のstaging検証も残る。
 
