@@ -2,7 +2,7 @@
 
 更新日: 2026-09-25
 
-直近の到達点は[PROGRESS](PROGRESS.md)。直前commit bb6e6a6はmainへプッシュ済み。[CI36070823970](https://github.com/daraskme/Nextcloud-flare/actions/runs/36070823970)は全4ジョブ成功。Ubuntu6m25s、Windows 1/2は15m51s（47file/1,016件）、2/2は11m46s（47file/975件）、browser2m9sです。Node432・workerd1,991・browser19、重複を除く計2,442件を確認しました。今回の生成コマンドはこのCIには含まれません。 バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。 検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+直近の到達点は[PROGRESS](PROGRESS.md)。直前commit `2b6f23f`の[CI36072846945](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072846945)は全5ジョブ成功。Ubuntu7m42s、Windows 1/2は14m50s・2/2は13m40s、browser2m14s、backupドリル2m31s。Node464・workerd1,991・browser19、重複を除く計2,474件と67tableの復元を確認しました。今回のR2保存・ダウンロードはこのCIには含まれず、プッシュ後のCIで確認します。 検証済みの論理バックアップをR2へ保存し、ダウンロード後に再度復元検証するコマンドを追加しました。8MiBごとのpartを条件付きで保存・読戻しし、SQL全体のhashを確認してからmanifestを最後に確定します。応答喪失時は実objectを照合し、同じ世代の再実行で一致済みpartを再利用します。既存世代を上書きしません。 検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -22,7 +22,8 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| バックアップ世代・オフライン復元 | 実Wrangler抽出、全行/hash/schema/FK/FTSの照合、ローカル世代保存、新規DB復元 | Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。 | ControlDOの運用呼出し経路、R2への世代公開・日次実行/保持管理、旧version・全データ形式の互換性、Time Travelとlive restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続です。旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。 |
+| バックアップR2保存・取得 | 条件付きpart保存、manifest最終確定、応答喪失照合、download後の全検証 | Node41件を追加し、全505件（30file、12.43s）が成功。lint329file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→local BACKUPS publish→download→restore-offlineが67table・SQL9,599bytesで成功し、実R2の条件競合、FTS/FK/容量、元DBの凍結保持を確認しました。8MiB超の複数part、途中失敗からの再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験しています。Worker本体・schema0037・通常67table・依存は変更していません。 | 保存対象はD1の論理SQLで、元のBLOBS object本体は含みません。barrier解除・backup_runs.completed・live復旧は未接続です。local R2は検証済み、remote S3経路は実装済みですが実環境では未検証です。途中失敗partのdeleteや自動回収は行いません。 運用経路・日次実行/保持管理は後続。 |
+| バックアップ世代・オフライン復元 | 実Wrangler抽出、全行/hash/schema/FK/FTSの照合、ローカル世代保存、新規DB復元 | Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。 | ControlDOの運用呼出し経路、R2保存の完了記録・日次実行/保持管理、旧version・全データ形式の互換性、Time Travelとlive restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続です。旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。 |
 | バックアップ書込み停止 | 専用永続intent、全通常table凍結、原子的なpolicy復元 | Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | logical export・checksum/manifest公開・FTSを含むrestore drill、backup停止中のControlDO全喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
 | DAVの転送と公開の分離 | 本文後のfresh30秒permit、開始受付、未結合記録の回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
 | DAV PUTの保存台帳 | 送信前の永続記録・共通受付・未知結果の容量保留・回収/GC | Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
@@ -94,7 +95,7 @@
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
 - 共有作成・編集・解除、内部共有、公開link、password/unlock、upload-only共有の完全なHTTP surface。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
-- 日次logical export、backup manifest、Time Travel手順、restore automation。
+- バックアップの日次実行・D1完了記録・保持管理、Time Travel手順、live restore automation。世代生成/検証・R2保存/取得・オフライン復元はローカル検証済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
 ### UI
@@ -106,7 +107,7 @@
 
 ### 制御・運用
 
-- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
+- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限。KDFの全体rate/枠・isolate内制限とbackup専用barrierは接続済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。

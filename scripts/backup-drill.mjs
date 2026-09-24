@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { foundationFixture } from "../packages/worker/test/fixtures/foundation.ts";
+import { digest, localBackupStore } from "./backup/objectStore.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 await mkdir(join(root, ".wrangler"), { recursive: true });
@@ -26,6 +27,7 @@ await writeFile(
     main: "worker.js",
     compatibility_date: "2026-08-15",
     workers_dev: false,
+    r2_buckets: [{ binding: "BACKUPS", bucket_name: "backup-drill" }],
     d1_databases: [
       {
         binding: "DB",
@@ -115,10 +117,52 @@ await run(cli, [
   generations,
 ]);
 await run(cli, ["verify", "--directory", generation]);
+const publicationOutput = await run(cli, [
+  "publish",
+  "--directory",
+  generation,
+  "--local",
+  "--config",
+  config,
+]);
+const publication = JSON.parse(
+  publicationOutput
+    .trim()
+    .split("\n")
+    .findLast((line) => line.startsWith('{"result":')),
+);
+assert.match(publication.manifestSha256, /^[a-f0-9]{64}$/);
+const store = await localBackupStore(config);
+try {
+  // Exercise the real local R2 conditional write, independently of the publisher's early GET.
+  assert.equal(
+    await store.put(publication.objectKey, Buffer.from("must not replace manifest")),
+    false,
+  );
+  assert.equal(
+    digest(await store.get(publication.objectKey, 1024 * 1024)),
+    publication.manifestSha256,
+  );
+} finally {
+  await store.dispose();
+}
+const download = join(directory, "download");
+await run(cli, [
+  "download",
+  "--directory",
+  download,
+  "--id",
+  id,
+  "--local",
+  "--config",
+  config,
+  "--manifest-sha256",
+  publication.manifestSha256,
+]);
 await run(cli, [
   "restore-offline",
   "--directory",
-  generation,
+  join(download, id),
   "--target",
   join(directory, "restored.sqlite"),
 ]);
@@ -156,9 +200,9 @@ const report = {
   tables: manifest.tables.length,
   bytes: manifest.data.bytes,
   proof:
-    "Real local Wrangler capture, source-to-target row fingerprints, verify CLI, offline restore CLI, FTS/accounting/FK/schema and source freeze retained.",
+    "Real local Wrangler capture, source fingerprints, verify CLI, local BACKUPS publication/readback/conditional-conflict/download, offline restore, FTS/accounting/FK/schema and source freeze retained.",
   limits:
-    "Fixture freeze, no ControlDO operator channel or R2 content/manifest publication, live restore, epoch recovery or remote commands.",
+    "Fixture freeze; no ControlDO operator channel, original BLOBS content recovery, backup_runs completion, live restore, epoch recovery or remote commands.",
 };
 await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report));

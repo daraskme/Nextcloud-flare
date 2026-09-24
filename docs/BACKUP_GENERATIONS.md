@@ -1,12 +1,14 @@
 # 論理バックアップ世代とオフライン復元
 
-更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。ControlDOの運用呼出し経路、R2への公開、日次実行・保持管理、live D1 restore・epoch更新・全復旧監査は後続である。
+更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。ControlDOの運用呼出し経路、D1の完了記録、日次実行・保持管理、live D1 restore・epoch更新・全復旧監査は後続である。
 
 ## コマンド
 
 ```sh
 pnpm backup capture --config CONFIG --database DB --local --id UUID --epoch EPOCH --directory GENERATIONS
 pnpm backup verify --directory GENERATIONS/UUID
+pnpm backup publish --directory GENERATIONS/UUID --local --config CONFIG
+pnpm backup download --id UUID --directory DOWNLOADED --local --config CONFIG --manifest-sha256 HASH
 pnpm backup restore-offline --directory GENERATIONS/UUID --target NEW_FILE.sqlite
 pnpm backup:drill
 ```
@@ -15,7 +17,7 @@ captureは[ControlDO.beginBackup](BACKUP_BARRIER.md)が`frozen`を返した世�
 
 captureは開始・解除のRPCを代行せず、成功時も失敗時もbarrierを保持する。全source fingerprint取得とexportの前後で同じ凍結世代・epoch・token・watermarkを確認する。途中で解除・世代変更が起きた出力は採用しない。exportのsnapshot開始点が確認できていないため、抽出前のACKだけで解除しない。
 
-`backup:drill`は`.wrangler/backup-drill-*`に専用config、local D1、fixture、世代と復元先を作り、実際のcapture/verify/restore-offlineコマンド、FTS検索、容量、元DBの凍結保持を検査する。既存開発DBを消さず、remoteを呼び出さない。fixtureの凍結はこの隔離試験だけの準備であり、運用RPCや全復旧監査の実証ではない。
+`backup:drill`は`.wrangler/backup-drill-*`に専用config、local D1/R2、fixture、世代と復元先を作り、実際のcapture→verify→publish→download→restore-offlineコマンド、FTS検索、容量、元DBの凍結保持を検査する。実local R2への条件付きPUTが既存manifestの置換を拒否することも確認する。既存開発DBを消さず、remoteを呼び出さない。fixtureの凍結はこの隔離試験だけの準備であり、運用RPCや全復旧監査の実証ではない。
 
 ## 世代の内容と一致検証
 
@@ -34,6 +36,34 @@ checksumだけが合っていても、元DBとの全行一致を示したこと�
 復元先は新規ファイルだけに限定する。versioned migrationを一つのtransactionで適用し、隔離先のtriggerだけを一時除去する。生成済みpurgeOrderでseed行を削除し、FKをdeferした同じtransactionでdataをimport、同一triggerを再作成、FK検査・FTS rebuild/integrity-checkを行う。稼働D1のtriggerは外さない。quota/ref/physical等をtriggerで二重加算せず、元の値を保存する。committed/failedのterminal履歴も書き換えない。
 
 復元後もbackup freezeを保持し、control更新が拒否されることを確認する。`restore-offline`は別DBの確認用ファイルを作るだけで、旧epochのまま稼働再開するコマンドではない。ControlDOによる新epoch、R2実体、認可・operation由来・会計・共有等の全監査がlive復旧には必要である。
+
+## R2への保存・ダウンロード
+
+`publish`はローカル世代の全検証を通してからR2を読み書きする。SQLを8MiB単位（最後だけ短くできる）の通常objectへ分割し、最大131,072個・合計1TiBに制限する。圧縮やSQLの書換えはせず、ダウンロード時に元のbyte列へ連結する。multipart uploadは使わない。manifestは最大16MiB。これはCLIの対応上限であり、最大容量での実運用性能を実証した値ではない。
+
+保存keyは`sys/backups/v1/UUID/parts/000000-SHA256.bin`と`sys/backups/v1/UUID/manifest.json`に限定する。partは順序番号・内容hash、manifestは世代IDに束縛する。transport manifest v1は元の論理manifest、固定chunkBytes、順序付きのpart byte数/SHA-256を持ち、任意のkeyやURLを含めない。JSONのobject keyは決定的な順序で保存する。
+
+保存前にGETで既存byte列を照合し、不在の場合だけ`If-None-Match: *`付きでPUTする。PUT後は必ずGETして一致を確認する。応答を失った場合も、実際に一致したobjectだけを採用する。全partとSQL全体のhashを確認した後に、manifestを最後に確定・読み戻す。既存内容が異なる世代を上書きせず、同じ世代の再実行では一致済みpartを再利用する。保存中のローカルSQL変更も検査する。
+
+`download`はmanifestの形・世代ID・part数/サイズ/順序を検査し、一つずつchecksumを照合して新規ディレクトリへ取り込む。その後、元の`verify`と同じschema/FK/FTS/全行hash検証を通った世代だけを確定する。既存のダウンロード先を置換しない。`--manifest-sha256`にはpublishの最終JSONが返す`manifestSha256`を指定できる。別途信頼できる場所に記録した値との照合であり、署名ではない。
+
+localは指定configの`BACKUPS` bindingを使う。Wranglerの`remoteBindings: false`と`envFiles: []`を明示し、configがremote bindingを指定していてもlocalで操作する。remoteは`--local --config CONFIG`を`--remote`へ置き換え、次の環境変数を設定する。remoteでconfig/environmentは受け付けない。
+
+| 環境変数 | 用途 |
+|---|---|
+| `R2_BACKUP_ACCOUNT_ID` | Cloudflare account ID |
+| `R2_BACKUP_BUCKET` | private backup bucket名 |
+| `R2_BACKUP_JURISDICTION` | `default`（既定）、`eu`、`us`、`fedramp` |
+| `R2_BACKUP_ACCESS_KEY_ID` | 対象bucketのobject読取り・書込み資格情報 |
+| `R2_BACKUP_SECRET_ACCESS_KEY` | 対応するsecret。コマンド引数やログへ記載しない |
+
+remoteの接続先は上記account/bucketから生成する固定R2 S3 endpointに限る。署名付きGETと条件付きPUTだけを使い、redirectとtransportの自動retryはしない。署名から本文読取りまで1要求60秒、object本文の実byte数も制限する。GET404だけを不在、PUT412だけを条件競合として扱い、それ以外の通信失敗を不在に読み替えない。providerの本文・signed URL・資格情報をエラーへ含めない。
+
+APIの根拠はCloudflareの[R2 S3互換性](https://developers.cloudflare.com/r2/api/s3/api/)、[R2制限](https://developers.cloudflare.com/r2/platform/limits/)、[Wrangler API](https://developers.cloudflare.com/workers/wrangler/api/)。署名・異常応答はfake transport、条件付き書込みと一連のCLIは実local R2で検証した。remote R2の相互運用は未検証である。
+
+途中失敗のpartは残し、再実行で照合する。delete/list、保存期限、世代の自動回収はまだ実装しない。遅延したPUTがあり得るため、経過時間だけで未完了partを消さない。このCLIによる上書き拒否はbucket全体のObject Lock保証ではない。保存先の真正性はprivate bucketと運用資格情報の管理に依存する。
+
+保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。R2保存に成功しても元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。ControlDOでの世代・bucket対応の確認と完了receipt、保持管理、元BLOBSの保護、live復元を別途接続する。
 
 ## 失敗・再実行・信頼の境界
 

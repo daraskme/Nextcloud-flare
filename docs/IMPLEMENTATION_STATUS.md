@@ -3,14 +3,15 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前検証: 直前commit bb6e6a6はmainへプッシュ済み。[CI36070823970](https://github.com/daraskme/Nextcloud-flare/actions/runs/36070823970)は全4ジョブ成功。Ubuntu6m25s、Windows 1/2は15m51s（47file/1,016件）、2/2は11m46s（47file/975件）、browser2m9sです。Node432・workerd1,991・browser19、重複を除く計2,442件を確認しました。今回の生成コマンドはこのCIには含まれません。
+直前検証: 直前commit `2b6f23f`の[CI36072846945](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072846945)は全5ジョブ成功。Ubuntu7m42s、Windows 1/2は14m50s・2/2は13m40s、browser2m14s、backupドリル2m31s。Node464・workerd1,991・browser19、重複を除く計2,474件と67tableの復元を確認しました。今回のR2保存・ダウンロードはこのCIには含まれず、プッシュ後のCIで確認します。
 
 ## 今回の実装
 
-ae2dc58の[CI36072480898](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072480898)では、backupドリル（67table/9,599bytes、2m33s）とbrowser19件（2m4s）が成功しました。Windows 1/2は既存S3 timeout試験で463/464件成功・1件失敗。20ms内に署名が終わらずfetch未開始だったため、通信/本文読取り開始を同期してからtimerを19ms+1ms進める試験へ修正しました。製品の期限は変更していません。関連120件（9.07s）、型検査、lintが成功。修正版のCIはプッシュ後に確認します。
+前回のWindows S3 timeout試験1件の失敗は、通信開始を同期して時計を進める修正で解消し、上記CIの全OSで成功しました。製品の期限は変更していません。
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 バックアップR2保存・取得 | objectStore/publication、publish/download CLI、実local R2を含むdrill | Node41件を追加し、全505件（30file、12.43s）が成功。lint329file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→local BACKUPS publish→download→restore-offlineが67table・SQL9,599bytesで成功し、実R2の条件競合、FTS/FK/容量、元DBの凍結保持を確認しました。8MiB超の複数part、途中失敗からの再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験しています。Worker本体・schema0037・通常67table・依存は変更していません。 保存対象はD1の論理SQLで、元のBLOBS object本体は含みません。barrier解除・backup_runs.completed・live復旧は未接続です。local R2は検証済み、remote S3経路は実装済みですが実環境では未検証です。途中失敗partのdeleteや自動回収は行いません。 [BACKUP_GENERATIONS](BACKUP_GENERATIONS.md) |
 | 4 バックアップ世代・オフライン復元 | pnpm backup、capture/verify/restore-offline、専用local drill、backup CI job | Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。 [BACKUP_GENERATIONS](BACKUP_GENERATIONS.md) |
 | 1/4 バックアップ書込み停止 | migration0037、ControlDOの永続barrier、watermark、全通常table guard、前のpolicyへ原子的復帰 | Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 [BACKUP_BARRIER](BACKUP_BARRIER.md) |
 | 1/3/7 DAV長時間転送 | migration0036、本文後のpermit、未結合操作IDの原子的公開・回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 [DAV_UPLOAD](DAV_UPLOAD.md) |
@@ -143,6 +144,9 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、Node41件を追加し、全505件（30file、12.43s）が成功。lint329file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→local BACKUPS publish→download→restore-offlineが67table・SQL9,599bytesで成功し、実R2の条件競合、FTS/FK/容量、元DBの凍結保持を確認しました。8MiB超の複数part、途中失敗からの再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験しています。Worker本体・schema0037・通常67table・依存は変更していません。 保存対象はD1の論理SQLで、元のBLOBS object本体は含みません。barrier解除・backup_runs.completed・live復旧は未接続です。local R2は検証済み、remote S3経路は実装済みですが実環境では未検証です。途中失敗partのdeleteや自動回収は行いません。 今回のCIはプッシュ後に確認。
+- 2026-09-25、直前commit `2b6f23f`の[CI36072846945](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072846945)は全5ジョブ成功。Ubuntu7m42s、Windows 1/2は14m50s・2/2は13m40s、browser2m14s、backupドリル2m31s。Node464・workerd1,991・browser19、重複を除く計2,474件と67tableの復元を確認しました。今回のR2保存・ダウンロードはこのCIには含まれず、プッシュ後のCIで確認します。
 
 - 2026-09-25、WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。 Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
 - 2026-09-25、直前commit a9b8af2はmainへプッシュ済み。[CI36064368977](https://github.com/daraskme/Nextcloud-flare/actions/runs/36064368977)は全4ジョブ成功。Ubuntu6m46s、Windows 1/2は16m1s（46file/1,057件）、2/2は12m19s（45file/888件）、browser2m6sです。Node424・workerd1,945・browser19、重複を除く計2,388件を確認しました。Windows分割後も全件とbuild/dry-runを通過し、前回の30分上限中断を解消しました。今回の転送と公開の分離はこのCIには含まれません。
