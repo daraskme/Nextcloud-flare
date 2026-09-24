@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1/4 既存uploadの未知multipart調査受付 | round・予算・観測・ID/page・中止receipt・lease返却・エラー、同一ControlDO受付 | workerd66件追加（境界59件・実ControlDO7件）。全体check成功、Node416件（25file、5.90秒）・workerd1,468件（75file、755.11秒）、計1,884件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 [MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
 | 1/3 blob GCの全体受付 | 通常/停止中/復元中、claim・外部予算・精算・エラー、同一ControlDO受付 | workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload自動回収の全体受付 | claim・外部予算・観測・閉鎖・精算・エラー、ControlDO直接受付 | workerd62件追加。90c4593のローカル全check成功、Node416/workerd1322、計1,738件。CIは以下の実行記録参照。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、dirty/alarm/容量保持 | workerd33件追加。8892b4fのローカル全check成功、Node416/workerd1260、計1,676件。CIは以下の実行記録参照。 |
@@ -128,6 +129,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 workerd66件追加（境界59件・実ControlDO7件）。全体check成功、Node416件（25file、5.90秒）・workerd1,468件（75file、755.11秒）、計1,884件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 実ControlDO6経路の満杯待機・返却と、予算ACK喪失後のeviction/別予算での再試行を検証。最初の境界試験は58/59成功、1件のfixtureが存在しないcredentials.revoked_atを参照していたため、実session失効へ修正。最終対象66件成功、製品の制約は変更なし。
+
+- 2026-09-25、直前commit1993f9cはmainへプッシュ済み。[CI36040104582](https://github.com/daraskme/Nextcloud-flare/actions/runs/36040104582)はUbuntu・Windows・browser全成功。Node416/workerd1402/browser19、計1,837件。 Ubuntu6分22秒、Windows13分42秒、browser2分9秒。workerdはUbuntu345.11秒/Windows728.79秒。
 
 - 2026-09-25、台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 実ControlDOで通常4経路の満杯待機・返却、停止/復元中の同一instance受付、送信予算ACK喪失後のevictionと再精算を検証。製品コードは全体check前に確定。
 

@@ -43,6 +43,14 @@ export const SYSTEM_MUTATION_KINDS = [
   "gc.call",
   "gc.finalize",
   "gc.error",
+  "upload.inventory-reset",
+  "upload.inventory-call",
+  "upload.inventory-observe",
+  "upload.inventory-handle",
+  "upload.inventory-page",
+  "upload.inventory-abort",
+  "upload.inventory-release",
+  "upload.inventory-error",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

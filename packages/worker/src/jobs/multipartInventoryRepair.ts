@@ -1,3 +1,4 @@
+import type { SystemMutationKind } from "../db/mutationAdmission";
 import {
   assertExists,
   assertOneChange,
@@ -6,7 +7,12 @@ import {
   type SqlStatement,
 } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
-import type { SystemMutationSource } from "../services/systemMutation";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationSource,
+  systemMutationStatements,
+} from "../services/systemMutation";
 import {
   claimMultipartCleanup,
   MULTIPART_INVENTORY_ELIGIBLE,
@@ -138,6 +144,11 @@ async function repairVerified(
     });
     if (!row) continue;
     result.claimed++;
+    const commit = async (kind: SystemMutationKind, statements: () => readonly SqlStatement[]) => {
+      const admission = await acquireSystemMutation(env, row.owner_id, kind);
+      // Rebuild domain proofs after the wait. A shared grant never extends the binding lease.
+      await commitSystemMutation(db, admission, row.owner_id, statements());
+    };
     try {
       let scan = await scanRow(db, id);
       if (!scan) throw new Error("multipart_inventory_missing");
@@ -148,11 +159,11 @@ async function repairVerified(
       ) {
         const round = crypto.randomUUID();
         try {
-          await atomicBatch(db, [
+          await commit("upload.inventory-reset", () => [
             verified.fence(),
             controlFence(epoch, maintenance),
             multipartCleanupFence(row, token),
-            scanFence(scan),
+            scanFence(scan!),
             {
               sql: `UPDATE multipart_inventory_scans SET source=?,epoch=?,round_id=?,cursor_key=NULL,cursor_upload_id=NULL,
               pages=0,completed_at=NULL,next_scan_at=0,last_token=? WHERE upload_id=?`,
@@ -180,37 +191,54 @@ async function repairVerified(
         scanFence(scan!),
       ];
       const charge = async (handle?: Handle) => {
+        const admission = await acquireSystemMutation(
+          env,
+          row.owner_id,
+          "upload.inventory-call",
+          started + wall,
+        );
         if (Date.now() - started >= wall) throw new Error("multipart_inventory_budget");
-        await atomicBatch(db, [
-          ...fences(),
-          {
-            sql: "UPDATE uploads SET cleanup_calls=cleanup_calls+1 WHERE id=? AND cleanup_token=?",
-            values: [id, token],
-          },
-          assertOneChange,
-          ...(handle
-            ? [
-                {
-                  sql: `UPDATE multipart_inventory_handles SET attempts=attempts+1,last_attempt_at=MAX(last_attempt_at,${CLOCK}),last_error=NULL
+        await atomicBatch(
+          db,
+          systemMutationStatements(admission, row.owner_id, [
+            ...fences(),
+            {
+              sql: "UPDATE uploads SET cleanup_calls=cleanup_calls+1 WHERE id=? AND cleanup_token=?",
+              values: [id, token],
+            },
+            assertOneChange,
+            ...(handle
+              ? [
+                  {
+                    sql: `UPDATE multipart_inventory_handles SET attempts=attempts+1,last_attempt_at=MAX(last_attempt_at,${CLOCK}),last_error=NULL
             WHERE id=? AND upload_id=? AND state='observed'`,
-                  values: [handle.id, id],
-                },
-                assertOneChange,
-              ]
-            : []),
-        ]);
+                    values: [handle.id, id],
+                  },
+                  assertOneChange,
+                ]
+              : []),
+          ]),
+        );
         // Unknown counter acknowledgement never grants permission to dispatch.
+        if (Date.now() - started >= wall) throw new Error("multipart_inventory_budget");
         result.r2Calls++;
       };
       const observeHead = async () => {
         await charge();
         const object = await bucket.head(row.r2_key);
-        if (object) await atomicBatch(db, [...fences(), ...observedObject(row, object)]);
+        if (object)
+          await commit("upload.inventory-observe", () => [
+            ...fences(),
+            ...observedObject(row, object),
+          ]);
       };
 
       // Late initialization may reveal the original ID. Retain it alongside every discovered ID.
       if (row.r2_upload_id)
-        await atomicBatch(db, [...fences(), handleInsert(row, source, row.r2_upload_id)]);
+        await commit("upload.inventory-handle", () => [
+          ...fences(),
+          handleInsert(row, source, row.r2_upload_id!),
+        ]);
 
       if (scan.completed_at === null) {
         // Even unavailable or malformed S3 inventory must not hide a completed object's charge.
@@ -227,7 +255,7 @@ async function repairVerified(
         const exact = page.uploads.filter((upload) => upload.key === row.r2_key);
         // The S3 operation is a prefix scan. Neighbour keys are never handed to abort.
         const next = page.uploads.some((upload) => upload.key !== row.r2_key) ? null : page.next;
-        const statements: SqlStatement[] = [...fences()];
+        const statements: SqlStatement[] = [];
         for (const upload of exact) {
           statements.push(
             {
@@ -266,7 +294,7 @@ async function repairVerified(
           assertOneChange,
         );
         try {
-          await atomicBatch(db, statements);
+          await commit("upload.inventory-page", () => [...fences(), ...statements]);
         } catch {
           const saved = await scanRow(db, id);
           if (
@@ -302,7 +330,7 @@ async function repairVerified(
             await bucket.resumeMultipartUpload(row.r2_key, handle.r2_upload_id).abort();
           } catch {
             uncertain = true;
-            await atomicBatch(db, [
+            await commit("upload.inventory-error", () => [
               ...fences(),
               {
                 sql: "UPDATE multipart_inventory_handles SET last_error='abort_unconfirmed' WHERE id=? AND state='observed'",
@@ -312,7 +340,7 @@ async function repairVerified(
             continue;
           }
           try {
-            await atomicBatch(db, [
+            await commit("upload.inventory-abort", () => [
               ...fences(),
               {
                 sql: `UPDATE multipart_inventory_handles SET state='aborted',aborted_at=MAX(first_seen_at,${CLOCK}),last_error=NULL WHERE id=? AND state='observed'`,
@@ -340,18 +368,18 @@ async function repairVerified(
         )
         .bind(id)
         .first();
-      await atomicBatch(db, [
+      await commit("upload.inventory-release", () => [
         ...fences(),
         {
           sql: `UPDATE uploads SET cleanup_token=NULL,cleanup_lease_expires_at=NULL,cleanup_error='multipart_inventory_closure_required',cleanup_next_at=? WHERE id=? AND cleanup_token=?`,
-          values: [scan.completed_at === null || pending ? 0 : scan.next_scan_at, id, token],
+          values: [scan!.completed_at === null || pending ? 0 : scan!.next_scan_at, id, token],
         },
         assertOneChange,
       ]);
     } catch {
       result.retried++;
       // Keep the lease after unknown I/O. Every partial page and every confirmed abort is durable.
-      await atomicBatch(db, [
+      await commit("upload.inventory-error", () => [
         verified.fence(),
         controlFence(epoch, maintenance),
         {

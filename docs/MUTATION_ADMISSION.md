@@ -85,7 +85,7 @@ createSingleUploadとreserveMultipartUploadはmandatoryなCONTROL bindingを受�
 
 自分のbatch応答喪失はexact receiptで照合する。別要求が同じkeyの予約を作った場合や自分のreceipt読取りを失った場合も、current authorityと一致する保存済みuploadを読めれば、その共有HTTP receiptへ合流できる。ただしそれは自分の確定証明ではなく、自分の未確定ticketを閉じない。予約・blob・容量を消さず、自動で予約SQLやR2を再実行しない。全照合応答を失ったときはエラーを返し、同じkeyで次に照会する。capabilityやhashを受付台帳に入れない。
 
-HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。自動回収/GCなどの更新受付は後続。
+HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。自動回収・所有blob GCの受付は後述。
 
 ## 応答喪失・失効・復旧
 
@@ -130,7 +130,7 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 
 DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中止結果/完成物proofへ合流しても、それを自分のbatchの成功証明とせず、自分の未確定枠は閉じない。ACKと全照合応答を失った場合も次回の状態照会・同じ要求で回収する。物理容量はこのreceiptの有無だけで戻さない。
 
-待機後のcredential失効/maintenance/epoch/対象変更/owner無効化、実時計期限、rollback、ACK/全照合喪失、別要求の成功、HTTP503、送信claimと中止の競合、検証混雑後の二重complete防止を検証する。実ControlDOの32枠待機/返却も3経路へ追加した。物理観測・既知R2 ID・初期化停止は後述のsystem受付へ接続。自動回収の受付は後続。
+待機後のcredential失効/maintenance/epoch/対象変更/owner無効化、実時計期限、rollback、ACK/全照合喪失、別要求の成功、HTTP503、送信claimと中止の競合、検証混雑後の二重complete防止を検証する。実ControlDOの32枠待機/返却も3経路へ追加した。物理観測・既知R2 ID・初期化停止は後述のsystem受付へ接続。自動回収の受付も後述の共通system枠へ接続済み。
 
 ## migrationと残作業
 
@@ -152,7 +152,8 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | UploadDO台帳初期化/反映/喪失時停止 | 接続済み。初期化と通常反映はaccount、停止/喪失はsystem。直接ACK契約は後述 |
 | 単一/分割upload自動回収 | 接続済み。停止claim・外部予算・観測・閉鎖・精算・エラーが共通system受付 |
 | blob GC（通常/停止中/復元中） | 接続済み。claim・delete/HEAD予算・完了精算・エラーが共通system受付 |
-| 残るorphan/multipart inventory更新 | 既存制御を維持。共通受付は未接続 |
+| 既存uploadの未知multipart ID調査・回収 | 接続済み。claimに加えて走査・予算・観測・中止receipt・lease返却・エラーが共通system受付 |
+| global probe・orphan/全bucket inventory更新 | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | 残るQueue consumer・inventory・repair更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
@@ -216,7 +217,7 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 CronはCONTROL binding、ControlDO内のmaintenanceは同一instanceのstatus/acquireSystemMutationを必須引数で供給する。DBだけのfallbackはない。回収前後の復旧監査・quiesceは維持する。disabled owner/失効credential/旧source epochでも現在のsystem受付で回収できるが、元のcontrol epoch/mode、cleanup lease、未公開・pin・GC・閉鎖条件はbatchで再検査する。
 
-unknown-ID inventoryは共有する停止claimだけがこの段階の接続対象。残るscan/cursor/page・全bucket/GC・Queue・backupは後続。migration0033/67tableを維持し、global scopeや偽のowner-spaceを追加しない。
+unknown-ID inventoryの停止claimに加え、既存upload行の走査・観測・中止は後述の受付へ接続済み。global probe・全bucket/orphan・Queue・backupは後続。migration0033/67tableを維持し、global scopeや偽のowner-spaceを追加しない。
 
 ## 所有blobのGC
 
@@ -235,4 +236,25 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 claimの60秒leaseとremoved_atは待機後のSQL時計を使う。removed_atはobserved_atを下回らない。1回のmaxBlobsは失敗したclaimも含む候補検査数の上限とし、同じ失敗を無制限に再試行しない。既定50件（停止/復元20件）、25秒の外部dispatch開始期限を維持する。進行中R2呼出しの強制終了は保証しない。
 
-owner未復元のorphan、global cursor/lease、残るmultipart inventory/Queue、backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。schema0033/67tableを維持し、migration・依存追加なし。
+owner未復元のorphan、global cursor/lease、全bucket multipart inventory/Queue、backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。schema0033/67tableを維持し、migration・依存追加なし。
+
+## 所有uploadの未知multipart調査・回収
+
+既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
+
+| system kind | 同一batchの処理 | ACK喪失後 |
+|---|---|---|
+| upload.inventory-reset | source/epoch変更または再走査期限によるround初期化 | exact receipt、または自分のround/source/epoch/tokenを照合 |
+| upload.inventory-call | cleanup_calls、abort時のhandle attempts/時刻 | 直接ACKのみ。保存済みreceiptから外部dispatchしない |
+| upload.inventory-observe | HEADで確認した完成objectのphysical計上 | exact receipt回収。予約は保持 |
+| upload.inventory-handle | 遅れて判明した元のR2 IDを台帳へ保存 | exact receipt回収。新しい初期化/送信許可にしない |
+| upload.inventory-page | exact-key handlesとcursor/pages/完了時刻を一括保存 | exact receiptまたは完全一致するpage tuple |
+| upload.inventory-abort | 実R2 abortの成功receipt | exact receiptまたはupload/handle/abortedの完全一致 |
+| upload.inventory-release | cleanup leaseの返却と次回時刻だけ | exact receipt回収。予約とclosure-requiredは維持 |
+| upload.inventory-error | handle失敗または自分のcleanup tokenの診断 | 保存不能でも未解決lease・容量を保持 |
+
+受付はmandatoryなSystemMutationSourceを使い、ControlDO内部は同じinstanceへ直接接続する。待機時間は1回最大5秒、外部操作開始はfresh検証後から既定20秒/最大25秒。R2/S3対応証明の60秒leaseを延長しない。既存のmaxUploads20/maxHandles20、1 uploadにつき1ページ20件、全ページ完了後だけabortする制限を維持する。
+
+別の処理が残した機能上のreceiptは、自分の未確定共通枠を返す証拠にはしない。probeそのもののglobal更新は所有spaceへ流用せず、別途明示的なscopeを設計する。全bucket走査や未知ID全体の閉鎖・予約精算の完成を意味しない。

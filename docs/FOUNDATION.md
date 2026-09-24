@@ -78,7 +78,7 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 単一PUTは95,000,000 byte以下の既知長。単一の送信開始/読戻し/検証済み情報とmultipartの初期化/complete claimは共有mutation枠を取得し、最終認可・変更・exact receipt・返却を原子的に保存する。外部送信は直接ACKだけで許可する。D1が`created→receiving`と1回限りのattempt/15分leaseを確定し、その応答を受けた呼出しだけがimmutable keyへR2 PUTを開始する。claimの応答喪失では送信せず、R2 PUTの応答喪失では同じobjectのGET・metadata・size・SHA-256照合で回収する。再送のPUTは行わない。sourceを最大64 KiBずつdigestとFixedLengthStreamへ直列供給し、lease signalでreaderと両sinkを中止する。観測した物理bytesは確定失敗でも計上し、R2の不存在を確認するまで戻さない。
 
-completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/physical/hashを検証し、新規10 step/上書き8 stepでnode/version・検索・quota・upload terminal・activity/outboxを一括確定する。DB応答喪失はoperation lookupへ収束し、unknown時は補償しない。既知failedの予約解放は再実行可能。abortは共通mutation受付を取り、現在の認可・中止・orphan/cleanup intent・確定記録/返却を同一batchで保存する。未送信の予約だけを解放し、write attemptがある場合は24時間の期限後にR2を照合するまで予約を保持する。abortとclaimの競合は同じD1 batch内のattempt有無で判断する。ControlDOの監査後の受付再開はローカル実装済み。自動回収/GCの共有受付は後続。
+completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/physical/hashを検証し、新規10 step/上書き8 stepでnode/version・検索・quota・upload terminal・activity/outboxを一括確定する。DB応答喪失はoperation lookupへ収束し、unknown時は補償しない。既知failedの予約解放は再実行可能。abortは共通mutation受付を取り、現在の認可・中止・orphan/cleanup intent・確定記録/返却を同一batchで保存する。未送信の予約だけを解放し、write attemptがある場合は24時間の期限後にR2を照合するまで予約を保持する。abortとclaimの競合は同じD1 batch内のattempt有無で判断する。ControlDOの監査後の受付再開はローカル実装済み。単一/分割自動回収と所有blob GCは共通受付へ接続済み。
 
 `jobs/uploadCleanup.ts` は期限切れsingleを既定20件/最大100件、既定20秒の処理時間予算で回収する。migration `0017`の60秒lease・token・次回時刻・errorと専用indexで重複Cron、再試行、失敗候補による後続処理の停滞を防ぐ。D1 batchでcurrent epoch/maintenance、未公開blob/ref/pin、completion operandを検査し、`created/receiving→expired`、`completing→failed`と未確定completion claimを同時に終端化してからHEADする。completion_op_id保存前のclaimもuploadId/credential/space/parent/target tupleで照合する。committed operationや部分stepが残る矛盾した行は回収しない。
 
@@ -291,3 +291,11 @@ native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd
 deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
 
 [GC_RECOVERY](GC_RECOVERY.md)を参照。migration `0024`のclaim epoch/counterと各dispatch・final batchのcurrent fenceを通常GC/停止中drainで共有する。ControlDOのblob/orphan別RPCは既存deletingだけを回収し、candidate/quarantineの猶予を短縮しない。回収前後の監査初期化、応答喪失と旧Workerの拒否、physical会計、回収後の全監査をローカル検証する。admission再開は別gate。
+
+## 所有uploadの未知multipart調査受付
+
+既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
+
+global probe・orphan/全bucket inventory・Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。

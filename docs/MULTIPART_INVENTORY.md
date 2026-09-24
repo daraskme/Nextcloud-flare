@@ -2,6 +2,14 @@
 
 `r2/s3Inventory.ts`、`r2/s3InventoryPages.ts`、`r2/s3Xml.ts`は、Workers bindingでは列挙できない未完了multipartをS3 APIから読み取る。`jobs/multipartInventory.ts`と`ControlDO.inspectIncompleteMultipart`はmaintenance中の診断へ接続する。migration `0022`と`jobs/multipartInventoryRepair.ts`は、D1にupload行が残っている未知IDを永続走査し、実BLOBS bindingから中止する。migration `0023`と`jobs/r2BindingVerification.ts`は、fresh nonceによるBLOBS/S3対応検証を追加する。migration `0027`でupload行喪失時の[全bucket走査・part容量保留](MULTIPART_BUCKET_INVENTORY.md)も追加した。完全な不在証明・予約解放は未接続。
 
+## 既存uploadの共通更新受付
+
+既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
+
+ControlDO内部では同じinstanceのsystem受付を直接使う。待機後のproofを同じbatchで検査し、外部dispatchの予算は直接ACKだけで許可する。DB-only更新と自分の確定記録/枠返却は原子的に保存する。globalなbinding probe・全bucket走査の受付統合、未知multipart全体の閉鎖証明・容量精算は残る。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。
+
 ## サーバー設定
 
 | 変数 | 内容 |

@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit90c4593はmainへプッシュ済み。[CI36037522754](https://github.com/daraskme/Nextcloud-flare/actions/runs/36037522754)はUbuntu・Windows・browser全成功。Node416/workerd1322/browser19、計1,757件。
+直前commit1993f9cはmainへプッシュ済み。[CI36040104582](https://github.com/daraskme/Nextcloud-flare/actions/runs/36040104582)はUbuntu・Windows・browser全成功。Node416/workerd1402/browser19、計1,837件。
 
-台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
 
-deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
+待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
 
-workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 残るorphan/multipart inventory・Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
+workerd66件追加（境界59件・実ControlDO7件）。全体check成功、Node416件（25file、5.90秒）・workerd1,468件（75file、755.11秒）、計1,884件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 global probe・orphan/全bucket inventory・Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
 
-ControlDOのmaintenance RPC・acquireRestorePause・alarmはいずれも同じinstanceのsystem受付を直接使う。別queue/自己RPC/DB-only bypassは作らない。停止・復元中は既存deletingだけを回収し、新しいcandidateや猶予を短縮しない。global cursor/owner未復元のorphan台帳は未接続。偽のowner-spaceやnull shortcutで0033を迂回せず設計を確認する。
+SystemMutationSourceはmandatory。ControlDO内は同じinstanceの受付へ直接接続し、自己RPCや別queueを作らない。global probe/cursor・owner未復元の台帳は共通受付へ未接続。0033のowner必須CHECKを偽のowner-space/null shortcutで迂回しない。明示的global scopeは新migrationで設計し、既存migrationを編集しない。
 
 ## 現在動いている範囲
 
