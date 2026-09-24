@@ -124,7 +124,7 @@ export default {
     await dispatchPendingOutbox(env, env.JOBS, epoch);
     await repairSingleUploads(env, env.BLOBS, epoch);
     await repairMultipartUploads(env, env.BLOBS, epoch);
-    await scanOrphanObjects(env.DB, env.BLOBS, epoch);
+    await scanOrphanObjects(env, env.BLOBS, epoch);
     const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
     if (status.epoch !== epoch || status.maintenance || status.gcPaused) return;
     const enabled = await primary(env.DB)
@@ -135,7 +135,7 @@ export default {
       .first<number>("ok");
     if (enabled === 1) {
       await runGarbageCollection(env, env.BLOBS, epoch);
-      await collectOrphanObjects(env.DB, env.BLOBS, epoch);
+      await collectOrphanObjects(env, env.BLOBS, epoch);
     }
   },
 } satisfies ExportedHandler<Env>;

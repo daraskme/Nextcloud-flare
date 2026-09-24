@@ -5,6 +5,12 @@ import {
   primary,
   type SqlStatement,
 } from "../db/primary";
+import {
+  acquireGlobalMutation,
+  commitGlobalMutation,
+  type GlobalMutationSource,
+  globalMutationStatements,
+} from "../services/globalMutation";
 import { controlFence } from "./uploadCleanup";
 
 export const ORPHAN_GRACE_MS = 35 * 86400000;
@@ -183,16 +189,20 @@ export interface OrphanScanResult {
 
 /** One durable page per invocation. A partial/failed page retains its original cursor. */
 export async function scanOrphanObjects(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number; maintenance?: boolean } = {},
 ): Promise<OrphanScanResult> {
+  const { DB: db } = env;
   const limit = options.limit ?? 20;
   const wall = options.maxWallMs ?? 20000;
   const maintenance = options.maintenance ?? false;
   limits(epoch, limit, wall);
-  const started = Date.now();
+  const deadline = Date.now() + wall;
+  const withinBudget = () => {
+    if (Date.now() >= deadline) throw new Error("orphan_scan_budget");
+  };
   const token = crypto.randomUUID();
   const result: OrphanScanResult = {
     claimed: false,
@@ -203,7 +213,8 @@ export async function scanOrphanObjects(
     r2Calls: 0,
   };
   try {
-    await atomicBatch(db, [
+    const admission = await acquireGlobalMutation(env, "orphan.scan-claim", deadline);
+    await commitGlobalMutation(db, admission, [
       controlFence(epoch, maintenance),
       {
         sql: `UPDATE r2_inventory_scan SET cursor=CASE WHEN epoch<>? THEN '' ELSE cursor END,
@@ -224,9 +235,22 @@ export async function scanOrphanObjects(
     .first<{ cursor: string }>();
   if (!claim) return result;
   result.claimed = true;
-  try {
-    await atomicBatch(db, [controlFence(epoch, maintenance), scanFence(epoch, token)]);
+  const charge = async () => {
+    const admission = await acquireGlobalMutation(env, "orphan.scan-call", deadline);
+    withinBudget();
+    // Only a direct acknowledgement authorizes this external call.
+    await atomicBatch(
+      db,
+      globalMutationStatements(admission, [
+        controlFence(epoch, maintenance),
+        scanFence(epoch, token),
+      ]),
+    );
+    withinBudget();
     result.r2Calls++;
+  };
+  try {
+    await charge();
     const page = await bucket.list({
       prefix: "u/",
       limit,
@@ -240,7 +264,7 @@ export async function scanOrphanObjects(
     )
       throw new Error("invalid_orphan_inventory_page");
     for (const listed of page.objects) {
-      if (Date.now() - started >= wall) return result;
+      if (Date.now() >= deadline) return result;
       validObject(listed);
       result.examined++;
       const unknown = await primary(db)
@@ -254,21 +278,26 @@ export async function scanOrphanObjects(
         .bind(listed.key)
         .first<ObservedOrphan>();
       if (expected?.claim_token) continue;
-      await atomicBatch(db, [controlFence(epoch, maintenance), scanFence(epoch, token)]);
-      result.r2Calls++;
+      await charge();
       const current = await bucket.head(listed.key);
       if (!current) continue; // Absence never releases an existing record's physical charge here.
       if (current.key !== listed.key) throw new Error("orphan_key_mismatch");
-      const saved = await atomicBatch(db, [
-        controlFence(epoch, maintenance),
-        scanFence(epoch, token),
-        observation(current, epoch, expected),
-      ]);
-      result.observed += saved[2]?.meta.changes ? 1 : 0;
+      const admission = await acquireGlobalMutation(env, "orphan.scan-observe");
+      // Preserve the original batch result: a receipt cannot reconstruct its changes count.
+      const saved = await atomicBatch(
+        db,
+        globalMutationStatements(admission, [
+          controlFence(epoch, maintenance),
+          scanFence(epoch, token),
+          observation(current, epoch, expected),
+        ]),
+      );
+      result.observed += saved[3]?.meta.changes ? 1 : 0;
     }
     const cursor = page.truncated ? page.cursor : "";
     try {
-      await atomicBatch(db, [
+      const admission = await acquireGlobalMutation(env, "orphan.scan-page");
+      await commitGlobalMutation(db, admission, [
         controlFence(epoch, maintenance),
         scanFence(epoch, token),
         {
@@ -289,11 +318,19 @@ export async function scanOrphanObjects(
     result.completed = !page.truncated;
     return result;
   } finally {
-    await primary(db)
-      .prepare(`UPDATE r2_inventory_scan SET lease_token=NULL,lease_expires_at=NULL
-      WHERE singleton=1 AND epoch=? AND lease_token=?`)
-      .bind(epoch, token)
-      .run();
+    try {
+      const admission = await acquireGlobalMutation(env, "orphan.scan-release");
+      await commitGlobalMutation(db, admission, [
+        controlFence(epoch, maintenance),
+        {
+          sql: `UPDATE r2_inventory_scan SET lease_token=NULL,lease_expires_at=NULL
+          WHERE singleton=1 AND epoch=? AND lease_token=?`,
+          values: [epoch, token],
+        },
+      ]);
+    } catch {
+      /* Keep an unresolved lease until expiry; never mask the original scan outcome. */
+    }
   }
 }
 
@@ -307,36 +344,40 @@ export interface OrphanGcResult {
 
 /** Separate from normal blob GC: immutable quarantine keys, 35-day grace, HEAD before and after delete. */
 export async function collectOrphanObjects(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number } = {},
 ): Promise<OrphanGcResult> {
-  return collect(db, bucket, epoch, options, false);
+  return collect(env, bucket, epoch, options, false);
 }
 
 /** Maintenance may reconcile an existing irreversible deletion, but cannot start quarantine GC. */
 export async function drainStoppedOrphanGarbageCollection(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number } = {},
 ): Promise<OrphanGcResult> {
   if ((options.limit ?? 20) > 20) throw new Error("invalid_orphan_limit");
-  return collect(db, bucket, epoch, options, true);
+  return collect(env, bucket, epoch, options, true);
 }
 
 async function collect(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number },
   stopped: boolean,
 ): Promise<OrphanGcResult> {
+  const { DB: db } = env;
   const limit = options.limit ?? 20;
   const wall = options.maxWallMs ?? 20000;
   limits(epoch, limit, wall);
-  const started = Date.now();
+  const deadline = Date.now() + wall;
+  const withinBudget = () => {
+    if (Date.now() >= deadline) throw new Error("orphan_gc_budget");
+  };
   const result: OrphanGcResult = { claimed: 0, deleted: 0, changed: 0, retried: 0, r2Calls: 0 };
   const gate = () =>
     assertExists(
@@ -352,10 +393,11 @@ async function collect(
     .bind(epoch, epoch, stopped ? 1 : 0, stopped ? 1 : 0, limit)
     .all<{ r2_key: string }>();
   for (const { r2_key: key } of rows.results) {
-    if (Date.now() - started >= wall) break;
+    if (Date.now() >= deadline) break;
     const token = crypto.randomUUID();
     try {
-      await atomicBatch(db, [
+      const admission = await acquireGlobalMutation(env, "orphan.gc-claim", deadline);
+      await commitGlobalMutation(db, admission, [
         gate(),
         assertExists(`SELECT 1 WHERE ${UNKNOWN}`, keys(key)),
         {
@@ -376,16 +418,21 @@ async function collect(
     if (!row) continue;
     result.claimed++;
     const charge = async () => {
-      if (Date.now() - started >= wall) throw new Error("orphan_gc_budget");
-      await atomicBatch(db, [
-        gate(),
-        objectFence(row, token),
-        {
-          sql: "UPDATE orphan_objects SET r2_calls=r2_calls+1 WHERE r2_key=? AND claim_token=?",
-          values: [key, token],
-        },
-        assertOneChange,
-      ]);
+      const admission = await acquireGlobalMutation(env, "orphan.gc-call", deadline);
+      withinBudget();
+      await atomicBatch(
+        db,
+        globalMutationStatements(admission, [
+          gate(),
+          objectFence(row, token),
+          {
+            sql: "UPDATE orphan_objects SET r2_calls=r2_calls+1 WHERE r2_key=? AND claim_token=?",
+            values: [key, token],
+          },
+          assertOneChange,
+        ]),
+      );
+      withinBudget();
       result.r2Calls++;
     };
     try {
@@ -394,7 +441,8 @@ async function collect(
       if (object && !matches(row, object)) {
         validObject(object);
         if (object.key !== key) throw new Error("orphan_key_mismatch");
-        await atomicBatch(db, [
+        const admission = await acquireGlobalMutation(env, "orphan.gc-observe");
+        await commitGlobalMutation(db, admission, [
           gate(),
           objectFence(row, token),
           {
@@ -419,7 +467,8 @@ async function collect(
       }
       if (object) throw new Error("orphan_removal_unconfirmed");
       try {
-        await atomicBatch(db, [
+        const admission = await acquireGlobalMutation(env, "orphan.gc-finalize");
+        await commitGlobalMutation(db, admission, [
           gate(),
           objectFence(row, token),
           {
@@ -440,12 +489,19 @@ async function collect(
       result.deleted++;
     } catch {
       // Keep the lease until it expires; another worker must not immediately race unknown I/O.
-      await primary(db)
-        .prepare(
-          "UPDATE orphan_objects SET last_error='orphan_removal_unconfirmed' WHERE r2_key=? AND claim_token=?",
-        )
-        .bind(key, token)
-        .run();
+      try {
+        const admission = await acquireGlobalMutation(env, "orphan.gc-error");
+        await commitGlobalMutation(db, admission, [
+          gate(),
+          {
+            sql: "UPDATE orphan_objects SET last_error='orphan_removal_unconfirmed' WHERE r2_key=? AND claim_token=?",
+            values: [key, token],
+          },
+          assertOneChange,
+        ]);
+      } catch {
+        /* Retain the claim and physical charge when annotation cannot be confirmed. */
+      }
       result.retried++;
     }
   }

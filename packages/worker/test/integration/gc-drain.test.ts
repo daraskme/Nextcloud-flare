@@ -17,7 +17,7 @@ const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
 const drain = (db = env.DB, bucket = env.BLOBS) =>
   drainStoppedBlobGarbageCollection(mutationEnv(db), bucket, 2, { maxBlobs: 1 });
 const orphans = (bucket = env.BLOBS) =>
-  drainStoppedOrphanGarbageCollection(env.DB, bucket, 2, { limit: 1 });
+  drainStoppedOrphanGarbageCollection(mutationEnv(), bucket, 2, { limit: 1 });
 const bucketWith = (overrides: Partial<R2Bucket>): R2Bucket =>
   new Proxy(env.BLOBS, {
     get(target, key) {
@@ -168,7 +168,7 @@ it("requires both stopped flags and the current epoch for either drain", async (
   expect(await drainStoppedBlobGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     claimed: 0,
   });
-  expect(await drainStoppedOrphanGarbageCollection(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await drainStoppedOrphanGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     claimed: 0,
   });
 });
@@ -396,7 +396,7 @@ it("validates drain limits before touching R2", async () => {
       drainStoppedBlobGarbageCollection(mutationEnv(), env.BLOBS, 2, { maxBlobs: limit }),
     ).rejects.toThrow("invalid_gc_limit");
     await expect(
-      drainStoppedOrphanGarbageCollection(env.DB, env.BLOBS, 2, { limit }),
+      drainStoppedOrphanGarbageCollection(mutationEnv(), env.BLOBS, 2, { limit }),
     ).rejects.toThrow("invalid_orphan_limit");
   }
 });

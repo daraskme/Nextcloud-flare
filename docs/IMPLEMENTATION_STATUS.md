@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1 未追跡object調査・回収の全体受付 | scan/GCの10経路、所有者なし、直接ACK、固定期限、同一ControlDO | workerd105件追加（境界93件・実ControlDO12件）。全体check成功、Node422件（25file、6.01s）・workerd1,698件（81file、888.73s）、計2,120件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [ORPHAN_INVENTORY](ORPHAN_INVENTORY.md) |
 | 1 所有者なし更新の全体受付 | migration0034・global RPC・R2 probe、通常と同じ枠 | Node6件・workerd68件追加（probe境界58件・実ControlDO等9件・移行1件）。全体check成功、Node422件（25file、6.04秒）・workerd1,593件（79file、851.58秒）、計2,015件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。診断表示の追加後も関連59件（44.02秒）と型検査が成功。schema0034/通常67table、依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 Queue送信・受信の全体受付 | 所有spaceの5経路、直接send ACK、current認可、終端のread-only再照会、固定25秒batch | workerd57件追加（境界51件・実ControlDO6件）。全体check成功、Node416件（25file、5.55秒）・workerd1,525件（77file、778.32秒）、計1,941件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。S3タイムアウト試験の修正後88件（261ms）も成功。schema0033/通常67table、migration・依存追加なし。 [OUTBOX](OUTBOX.md) |
 | 1/4 既存uploadの未知multipart調査受付 | round・予算・観測・ID/page・中止receipt・lease返却・エラー、同一ControlDO受付 | workerd66件追加（境界59件・実ControlDO7件）。全体check成功、Node416件（25file、5.90秒）・workerd1,468件（75file、755.11秒）、計1,884件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 [MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
@@ -131,6 +132,9 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 workerd105件追加（境界93件・実ControlDO12件）。全体check成功、Node422件（25file、6.01s）・workerd1,698件（81file、888.73s）、計2,120件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。
+- 2026-09-25、直前commitb971f01はmainへプッシュ済み。[CI36048664003](https://github.com/daraskme/Nextcloud-flare/actions/runs/36048664003)はUbuntu・Windows・browserすべて成功しました。Node422/workerd1593/browser19、計2,034件を確認済みです。Ubuntu5分43秒、Windows17分17秒、browser2分20秒。以前Windowsで失敗したmultipart試験も今回は成功しました。今回のorphan受付はまだ含まれません。
 
 - 2026-09-25、所有者を持たないR2接続確認を共通受付へ接続しました。専用global RPCは通常操作・初回登録・所有者付きsystem更新と同じ32 active/256 waiting枠を使い、架空のownerや別枠を作りません。 Node6件・workerd68件追加（probe境界58件・実ControlDO等9件・移行1件）。全体check成功、Node422件（25file、6.04秒）・workerd1,593件（79file、851.58秒）、計2,015件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。診断表示の追加後も関連59件（44.02秒）と型検査が成功。schema0034/通常67table、依存追加なし。
 

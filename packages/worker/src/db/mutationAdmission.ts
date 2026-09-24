@@ -41,6 +41,16 @@ export const GLOBAL_MUTATION_KINDS = [
   "r2.probe-phase",
   "r2.probe-release",
   "r2.probe-error",
+  "orphan.scan-claim",
+  "orphan.scan-call",
+  "orphan.scan-observe",
+  "orphan.scan-page",
+  "orphan.scan-release",
+  "orphan.gc-claim",
+  "orphan.gc-call",
+  "orphan.gc-observe",
+  "orphan.gc-finalize",
+  "orphan.gc-error",
 ] as const;
 export type GlobalMutationKind = (typeof GLOBAL_MUTATION_KINDS)[number];
 export function isGlobalMutationId(id: string): boolean {

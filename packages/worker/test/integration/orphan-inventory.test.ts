@@ -11,6 +11,12 @@ import {
 } from "../../src/jobs/orphanInventory";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { foundationFixture } from "../fixtures/foundation";
+import { acquireGlobalMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  orphanBucket as bucket,
+  orphanFixture as fixture,
+  trackOrphan as track,
+} from "../fixtures/orphanInventory";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -22,25 +28,6 @@ beforeEach(async () => {
   await env.DB.prepare("UPDATE orphan_objects SET next_check_at=9999999999999").run();
 });
 
-function bucket(overrides: Partial<R2Bucket>): R2Bucket {
-  return new Proxy(env.BLOBS, {
-    get(target, key) {
-      const value = Reflect.get(overrides, key) ?? Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-async function fixture() {
-  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
-  await atomicBatch(env.DB, f.statements);
-  const key = `u/${f.ids.user}/b/unknown`;
-  const object = (await env.BLOBS.put(key, "abc"))!;
-  const scoped = bucket({
-    list: (options) => env.BLOBS.list({ ...options, prefix: `u/${f.ids.user}/` }),
-  });
-  return { ...f, key, object, bucket: scoped };
-}
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const row = (f: Fixture) =>
   env.DB.prepare("SELECT * FROM orphan_objects WHERE r2_key=?")
@@ -50,30 +37,14 @@ const physical = (f: Fixture) =>
   env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
     .bind(f.ids.user)
     .first<number>("physical_bytes");
-async function track(f: Fixture, age = ORPHAN_GRACE_MS + 2000) {
-  const seen = Date.now() - age;
-  await env.DB.prepare(`INSERT INTO orphan_objects(r2_key,owner_key,blob_key,owner_id,bytes,r2_etag,r2_version,
-    uploaded_at,first_seen_at,last_seen_at,epoch) VALUES(?,?,'unknown',?,3,?,?,?,?,?,1)`)
-    .bind(
-      f.key,
-      f.ids.user,
-      f.ids.user,
-      f.object.etag,
-      f.object.version,
-      f.object.uploaded.getTime(),
-      seen,
-      seen,
-    )
-    .run();
-}
 async function rescan(f: Fixture, db = env.DB) {
   await env.DB.prepare("UPDATE r2_inventory_scan SET next_scan_at=0").run();
-  return scanOrphanObjects(db, f.bucket, 1);
+  return scanOrphanObjects(mutationEnv(db), f.bucket, 1);
 }
 
 it("quarantines unknown objects, charges physical capacity once, and preserves the first discovery", async () => {
   const f = await fixture();
-  expect(await scanOrphanObjects(env.DB, f.bucket, 1)).toMatchObject({
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({
     claimed: true,
     examined: 1,
     observed: 1,
@@ -92,11 +63,11 @@ it("quarantines unknown objects, charges physical capacity once, and preserves t
     physical_bytes: 3,
     observed_physical_bytes: 3,
   });
-  expect(await scanOrphanObjects(env.DB, f.bucket, 1)).toMatchObject({ claimed: false });
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({ claimed: false });
   await rescan(f);
   expect((await row(f))?.first_seen_at).toBe(first?.first_seen_at);
   expect(await physical(f)).toBe(3);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     claimed: 0,
     r2Calls: 0,
   });
@@ -112,7 +83,10 @@ it("does not classify an existing blob as an orphan or duplicate its charge", as
   )
     .bind(crypto.randomUUID(), f.ids.user, f.key)
     .run();
-  expect(await scanOrphanObjects(env.DB, f.bucket, 1)).toMatchObject({ observed: 0, r2Calls: 1 });
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({
+    observed: 0,
+    r2Calls: 1,
+  });
   expect(await row(f)).toBeNull();
   expect(await physical(f)).toBe(0);
 });
@@ -120,7 +94,7 @@ it("does not classify an existing blob as an orphan or duplicate its charge", as
 it("persists keyset progress page by page and begins a new pass after completion", async () => {
   const f = await fixture();
   await env.BLOBS.put(`u/${f.ids.user}/b/z-last`, "defg");
-  expect(await scanOrphanObjects(env.DB, f.bucket, 1, { limit: 1 })).toMatchObject({
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1, { limit: 1 })).toMatchObject({
     examined: 1,
     advanced: true,
     completed: false,
@@ -128,7 +102,7 @@ it("persists keyset progress page by page and begins a new pass after completion
   expect(await env.DB.prepare("SELECT cursor,pages FROM r2_inventory_scan").first()).toMatchObject({
     pages: 1,
   });
-  expect(await scanOrphanObjects(env.DB, f.bucket, 1, { limit: 1 })).toMatchObject({
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1, { limit: 1 })).toMatchObject({
     examined: 1,
     advanced: true,
     completed: true,
@@ -153,12 +127,12 @@ it("keeps a failed page cursor and resumes without losing or double charging its
       return env.BLOBS.head(key);
     },
   });
-  await expect(scanOrphanObjects(env.DB, broken, 1)).rejects.toThrow("head_failed");
+  await expect(scanOrphanObjects(mutationEnv(), broken, 1)).rejects.toThrow("head_failed");
   expect(
     await env.DB.prepare("SELECT cursor,lease_token,pages FROM r2_inventory_scan").first(),
   ).toEqual({ cursor: "", lease_token: null, pages: 0 });
   expect(await physical(f)).toBe(3);
-  expect(await scanOrphanObjects(env.DB, f.bucket, 1)).toMatchObject({ completed: true });
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({ completed: true });
   expect(await physical(f)).toBe(7);
 });
 
@@ -179,12 +153,17 @@ it.each(["claim", "observation", "cursor"])(
       true,
     );
     if (phase === "observation") {
-      await expect(scanOrphanObjects(db, f.bucket, 1)).rejects.toThrow("ack_lost");
+      await expect(scanOrphanObjects(mutationEnv(db), f.bucket, 1)).rejects.toThrow("ack_lost");
       expect(
         await env.DB.prepare("SELECT cursor,pages FROM r2_inventory_scan").first(),
       ).toMatchObject({ cursor: "", pages: 0 });
-      expect(await scanOrphanObjects(env.DB, f.bucket, 1)).toMatchObject({ completed: true });
-    } else expect(await scanOrphanObjects(db, f.bucket, 1)).toMatchObject({ completed: true });
+      expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({
+        completed: true,
+      });
+    } else
+      expect(await scanOrphanObjects(mutationEnv(db), f.bucket, 1)).toMatchObject({
+        completed: true,
+      });
     expect(await physical(f)).toBe(3);
   },
 );
@@ -195,11 +174,11 @@ it("serializes concurrent scans without blocking the first scan's external HEAD"
   const intercepted = bucket({
     list: f.bucket.list.bind(f.bucket),
     head: async (key) => {
-      competing = await scanOrphanObjects(env.DB, f.bucket, 1);
+      competing = await scanOrphanObjects(mutationEnv(), f.bucket, 1);
       return env.BLOBS.head(key);
     },
   });
-  expect(await scanOrphanObjects(env.DB, intercepted, 1)).toMatchObject({ observed: 1 });
+  expect(await scanOrphanObjects(mutationEnv(), intercepted, 1)).toMatchObject({ observed: 1 });
   expect(competing).toMatchObject({ claimed: false, r2Calls: 0 });
 });
 
@@ -220,7 +199,7 @@ it.each(["epoch", "token", "lease", "maintenance"])(
         return env.BLOBS.head(key);
       },
     });
-    await expect(scanOrphanObjects(env.DB, intercepted, 1)).rejects.toThrow();
+    await expect(scanOrphanObjects(mutationEnv(), intercepted, 1)).rejects.toThrow();
     expect(await row(f)).toBeNull();
     expect(await physical(f)).toBe(0);
   },
@@ -239,7 +218,7 @@ it("lets a normal blob registration win the race before the quarantine batch", a
     },
     false,
   );
-  expect(await scanOrphanObjects(db, f.bucket, 1)).toMatchObject({ observed: 0 });
+  expect(await scanOrphanObjects(mutationEnv(db), f.bucket, 1)).toMatchObject({ observed: 0 });
   expect(await row(f)).toBeNull();
 });
 
@@ -253,7 +232,7 @@ it("blocks later namespace registration and key reuse even after confirmed remov
       .bind(crypto.randomUUID(), f.ids.user, f.key)
       .run();
   await expect(insert()).rejects.toThrow(/orphan_key_quarantined/);
-  await collectOrphanObjects(env.DB, env.BLOBS, 1);
+  await collectOrphanObjects(mutationEnv(), env.BLOBS, 1);
   await expect(insert()).rejects.toThrow(/orphan_key_quarantined/);
   await expect(
     env.DB.prepare("DELETE FROM orphan_objects WHERE r2_key=?").bind(f.key).run(),
@@ -267,7 +246,7 @@ it("counts replacement bytes and restarts grace using version even when ETag and
   await rescan(f);
   expect((await row(f))?.r2_version).not.toBe(f.object.version);
   expect((await row(f))?.first_seen_at).toBeGreaterThan(Date.now() - 5000);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
   await env.BLOBS.put(f.key, "longer");
   await rescan(f);
   expect(await physical(f)).toBe(6);
@@ -282,7 +261,7 @@ it("records missing owners and charges their actual bytes if the owner is restor
   const scoped = bucket({
     list: (options) => env.BLOBS.list({ ...options, prefix: `u/${owner}/` }),
   });
-  expect(await scanOrphanObjects(env.DB, scoped, 1)).toMatchObject({ observed: 1 });
+  expect(await scanOrphanObjects(mutationEnv(), scoped, 1)).toMatchObject({ observed: 1 });
   expect(
     await env.DB.prepare("SELECT owner_id FROM orphan_objects WHERE r2_key=?").bind(key).first(),
   ).toEqual({ owner_id: null });
@@ -302,26 +281,26 @@ it("quarantines malformed keys without deleting them", async () => {
   const f = await fixture();
   const key = `u/${f.ids.user}/foreign/data`;
   await env.BLOBS.put(key, "x");
-  await scanOrphanObjects(env.DB, f.bucket, 1);
+  await scanOrphanObjects(mutationEnv(), f.bucket, 1);
   expect(
     await env.DB.prepare("SELECT owner_key,blob_key FROM orphan_objects WHERE r2_key=?")
       .bind(key)
       .first(),
   ).toEqual({ owner_key: null, blob_key: null });
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
   expect(await env.BLOBS.head(key)).not.toBeNull();
 });
 
 it("collects only after 35 days and releases physical capacity only after confirmed absence", async () => {
   const f = await fixture();
   await track(f, ORPHAN_GRACE_MS - 10000);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     claimed: 0,
     r2Calls: 0,
   });
   const due = await fixture();
   await track(due);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     claimed: 1,
     deleted: 1,
     r2Calls: 3,
@@ -329,14 +308,14 @@ it("collects only after 35 days and releases physical capacity only after confir
   expect(await row(due)).toMatchObject({ state: "deleted", claim_token: null });
   expect(await physical(due)).toBe(0);
   expect(await env.BLOBS.head(due.key)).toBeNull();
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
 });
 
 it("settles a physically absent object without issuing delete", async () => {
   const f = await fixture();
   await track(f);
   await env.BLOBS.delete(f.key);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     deleted: 1,
     r2Calls: 1,
   });
@@ -347,14 +326,14 @@ it("renews grace instead of deleting a replacement discovered immediately before
   const f = await fixture();
   await track(f);
   await env.BLOBS.put(f.key, "replacement");
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     changed: 1,
     deleted: 0,
     r2Calls: 1,
   });
   expect(await row(f)).toMatchObject({ state: "deleting", bytes: 11, claim_token: null });
   expect(await physical(f)).toBe(11);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
   expect(await env.BLOBS.head(f.key)).not.toBeNull();
 });
 
@@ -366,7 +345,7 @@ it.each(["maintenance", "gc_paused", "epoch"])(
     await env.DB.prepare(`UPDATE control SET ${gate}=?`)
       .bind(gate === "epoch" ? 2 : 1)
       .run();
-    expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+    expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
       claimed: 0,
       r2Calls: 0,
     });
@@ -387,7 +366,7 @@ it("rechecks GC pause between HEAD and irreversible deletion", async () => {
       deletes++;
     },
   });
-  expect(await collectOrphanObjects(env.DB, interrupted, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), interrupted, 1)).toMatchObject({
     retried: 1,
     r2Calls: 1,
   });
@@ -411,9 +390,9 @@ it("recovers unknown delete responses and terminal D1 acknowledgements without d
     },
     true,
   );
-  expect(await collectOrphanObjects(db, interrupted, 1)).toMatchObject({ deleted: 1 });
+  expect(await collectOrphanObjects(mutationEnv(db), interrupted, 1)).toMatchObject({ deleted: 1 });
   expect(await physical(f)).toBe(0);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
 });
 
 it("retains capacity when HEAD after deletion is unknown, then reconciles on the next lease", async () => {
@@ -426,7 +405,7 @@ it("retains capacity when HEAD after deletion is unknown, then reconciles on the
       return env.BLOBS.head(key);
     },
   });
-  expect(await collectOrphanObjects(env.DB, interrupted, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), interrupted, 1)).toMatchObject({
     retried: 1,
     deleted: 0,
   });
@@ -436,7 +415,7 @@ it("retains capacity when HEAD after deletion is unknown, then reconciles on the
   )
     .bind(f.key)
     .run();
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     deleted: 1,
     r2Calls: 1,
   });
@@ -456,7 +435,7 @@ it("keeps the old worker from finalizing after its GC lease is replaced", async 
       return env.BLOBS.head(key);
     },
   });
-  expect(await collectOrphanObjects(env.DB, interrupted, 1)).toMatchObject({
+  expect(await collectOrphanObjects(mutationEnv(), interrupted, 1)).toMatchObject({
     retried: 1,
     deleted: 0,
   });
@@ -472,21 +451,23 @@ it("serializes concurrent GC claims and skips inventory updates while the object
     head: async (key) => {
       if (!once) {
         once = true;
-        expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+        expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+          claimed: 0,
+        });
         expect(await rescan(f)).toMatchObject({ observed: 0 });
       }
       return env.BLOBS.head(key);
     },
   });
-  expect(await collectOrphanObjects(env.DB, interrupted, 1)).toMatchObject({ deleted: 1 });
+  expect(await collectOrphanObjects(mutationEnv(), interrupted, 1)).toMatchObject({ deleted: 1 });
   expect(await physical(f)).toBe(0);
 });
 
 it.each([0, 101, 1.5, NaN])("rejects invalid bounded page/collection limits %s", async (limit) => {
-  await expect(scanOrphanObjects(env.DB, env.BLOBS, 1, { limit })).rejects.toThrow(
+  await expect(scanOrphanObjects(mutationEnv(), env.BLOBS, 1, { limit })).rejects.toThrow(
     "invalid_orphan_limit",
   );
-  await expect(collectOrphanObjects(env.DB, env.BLOBS, 1, { limit })).rejects.toThrow(
+  await expect(collectOrphanObjects(mutationEnv(), env.BLOBS, 1, { limit })).rejects.toThrow(
     "invalid_orphan_limit",
   );
 });
@@ -496,13 +477,13 @@ it("does not advance an overflowing or stalled R2 page", async () => {
   const overflow = bucket({
     list: async () => ({ objects: [f.object, f.object], truncated: false, delimitedPrefixes: [] }),
   });
-  await expect(scanOrphanObjects(env.DB, overflow, 1, { limit: 1 })).rejects.toThrow(
+  await expect(scanOrphanObjects(mutationEnv(), overflow, 1, { limit: 1 })).rejects.toThrow(
     "invalid_orphan_inventory_page",
   );
   const stalled = bucket({
     list: async () => ({ objects: [], truncated: true, cursor: "", delimitedPrefixes: [] }),
   });
-  await expect(scanOrphanObjects(env.DB, stalled, 1)).rejects.toThrow(
+  await expect(scanOrphanObjects(mutationEnv(), stalled, 1)).rejects.toThrow(
     "invalid_orphan_inventory_page",
   );
   expect(await env.DB.prepare("SELECT cursor,pages FROM r2_inventory_scan").first()).toMatchObject({
@@ -526,7 +507,10 @@ it("does not dispatch R2 when the cleanup counter acknowledgement is lost", asyn
       throw new Error("must_not_dispatch");
     },
   });
-  expect(await collectOrphanObjects(db, noIO, 1)).toMatchObject({ retried: 1, r2Calls: 0 });
+  expect(await collectOrphanObjects(mutationEnv(db), noIO, 1)).toMatchObject({
+    retried: 1,
+    r2Calls: 0,
+  });
   expect(await row(f)).toMatchObject({ r2_calls: 1, state: "deleting" });
   expect(await physical(f)).toBe(3);
 });
@@ -541,7 +525,10 @@ it("keeps settlement pending when its final batch is unavailable and later refun
     },
     false,
   );
-  expect(await collectOrphanObjects(db, env.BLOBS, 1)).toMatchObject({ retried: 1, deleted: 0 });
+  expect(await collectOrphanObjects(mutationEnv(db), env.BLOBS, 1)).toMatchObject({
+    retried: 1,
+    deleted: 0,
+  });
   expect(await physical(f)).toBe(3);
   expect(await env.BLOBS.head(f.key)).toBeNull();
   await env.DB.prepare(
@@ -549,7 +536,7 @@ it("keeps settlement pending when its final batch is unavailable and later refun
   )
     .bind(f.key)
     .run();
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await physical(f)).toBe(0);
 });
 
@@ -565,7 +552,7 @@ it("restarts from the beginning under a new epoch even if the old scan still hel
       return f.bucket.list(options);
     },
   });
-  expect(await scanOrphanObjects(env.DB, scoped, 2)).toMatchObject({
+  expect(await scanOrphanObjects(mutationEnv(), scoped, 2)).toMatchObject({
     completed: true,
     observed: 1,
   });
@@ -575,12 +562,12 @@ it("restarts from the beginning under a new epoch even if the old scan still hel
 it("re-quarantines and charges an externally recreated deleted key with a fresh grace", async () => {
   const f = await fixture();
   await track(f);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   await env.BLOBS.put(f.key, "restored");
   await rescan(f);
   expect(await row(f)).toMatchObject({ state: "quarantined", bytes: 8, removed_at: null });
   expect(await physical(f)).toBe(8);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
 });
 
 it("ignores an object that disappeared after listing without prematurely refunding its old observation", async () => {
@@ -593,12 +580,12 @@ it("ignores an object that disappeared after listing without prematurely refundi
       return null;
     },
   });
-  expect(await scanOrphanObjects(env.DB, scoped, 1)).toMatchObject({
+  expect(await scanOrphanObjects(mutationEnv(), scoped, 1)).toMatchObject({
     completed: true,
     observed: 0,
   });
   expect(await physical(f)).toBe(3);
-  expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await physical(f)).toBe(0);
 });
 
@@ -612,7 +599,10 @@ it("runs inventory and orphan GC through Cron only under both admission and GC g
     BLOBS: f.bucket,
     CONTROL: {
       idFromName: () => "singleton",
-      get: () => ({ status: async () => ({ epoch: 1, maintenance, gcPaused }) }),
+      get: () => ({
+        status: async () => ({ epoch: 1, maintenance, gcPaused }),
+        acquireGlobalMutation,
+      }),
     },
   } as unknown as Env;
   await worker.scheduled({} as ScheduledController, runtime);
@@ -639,13 +629,13 @@ it.each(["replacement", "removal"])(
       head: async (key) => {
         const stale = await env.BLOBS.head(key);
         if (change === "replacement") await env.BLOBS.put(key, "new-larger-object");
-        expect(await collectOrphanObjects(env.DB, env.BLOBS, 1)).toMatchObject(
+        expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject(
           change === "replacement" ? { changed: 1 } : { deleted: 1 },
         );
         return stale;
       },
     });
-    expect(await scanOrphanObjects(env.DB, scoped, 1)).toMatchObject({
+    expect(await scanOrphanObjects(mutationEnv(), scoped, 1)).toMatchObject({
       observed: 0,
       completed: true,
     });

@@ -504,7 +504,12 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ cleanup: OrphanGcResult; audit: RecoveryAuditStatus }> {
     const cleanup = await this.#maintenance(expectedEpoch, () =>
-      drainStoppedOrphanGarbageCollection(this.env.DB, this.env.BLOBS, expectedEpoch, { limit }),
+      drainStoppedOrphanGarbageCollection(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        expectedEpoch,
+        { limit },
+      ),
     );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
@@ -515,7 +520,10 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ inventory: OrphanScanResult; audit: RecoveryAuditStatus }> {
     const inventory = await this.#maintenance(expectedEpoch, () =>
-      scanOrphanObjects(this.env.DB, this.env.BLOBS, expectedEpoch, { limit, maintenance: true }),
+      scanOrphanObjects({ DB: this.env.DB, systemControl: this }, this.env.BLOBS, expectedEpoch, {
+        limit,
+        maintenance: true,
+      }),
     );
     return { inventory, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }

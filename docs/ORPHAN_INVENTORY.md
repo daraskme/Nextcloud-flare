@@ -24,8 +24,30 @@
 
 Cronはadmission後に1ページ走査し、GC許可後に回収する。`ControlDO.inventoryOrphanObjects(epoch,limit)`はquiesceと監査の前後初期化の下で走査だけを行い、削除・admission再開をしない。復旧のR2監査は、隔離済みkeyのsize/etag/version/uploadedを完全一致で照合する。最終fenceは未完了のscan/GC claim、deleting、不正key、未来epoch、owner会計漏れを拒否する。
 
-このcheckpointは完成済み`u/` objectのinventoryを接続したもの。unknown multipart IDの全体閉鎖/予約精算、その他prefixの未追跡生成物、catalogueに残るkeyの不正な置換、ControlDO再開、実bucketのlifecycle/restore試験は引き続き必要。S3の既存upload未知ID走査・中止と、停止中の既存deleting回収は追加済み。forward migrationとexport/purge順序に2tableを追加済みだが、実backup/export/restore実装・演習は未完了。
+このcheckpointは完成済み`u/` objectのinventoryを接続したもの。unknown multipart IDの全体閉鎖/予約精算、その他prefixの未追跡生成物、catalogueに残るkeyの不正な置換、実環境でのControlDO再開、実bucketのlifecycle/restore試験は引き続き必要。S3の既存upload未知ID走査・中止と、停止中の既存deleting回収は追加済み。forward migrationとexport/purge順序に2tableを追加済みだが、実backup/export/restore実装・演習は未完了。
 
 ## 停止中の削除完了
 
 `ControlDO.drainOrphanGarbageCollection`は、すでにdeletingへ進んだobjectだけをmaintenance/GC pause中に回収する。新しいquarantined objectは対象外で、35日猶予とHEAD identity照合は維持する。詳細と試験範囲は[GC_RECOVERY](GC_RECOVERY.md)。
+
+
+## 共通global受付
+
+未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+owner不在でもscopeは明示nullで、架空のspaceを作りません。待機後にepoch/mode/pause、元のtoken・60秒lease、object世代・全catalogueからの独立を再検査します。LIST・HEAD・deleteは各回の直接ACKが必要で、既定20秒/最大25秒の開始期限を受付後とACK後に確認します。DB-onlyの確定記録と既存の厳密なtoken/終端照合を維持し、他の処理の完了で自分の未確定枠を返しません。35日猶予・後日owner復元・不在確認後だけのphysical精算を維持し、ControlDO内部は同じinstanceの受付を使います。
+
+| global kind | 同一batch・外部開始の条件 | 応答喪失後 |
+|---|---|---|
+| orphan.scan-claim | 現epoch/mode、元cursor、SQL時計から60秒lease | 自己のexact receiptまたは正確なtoken/live leaseを照合 |
+| orphan.scan-call | LIST/HEADごとの現epoch/mode・scan token/lease | 直接ACKなしでは今回の外部操作を実行しない |
+| orphan.scan-observe | HEAD前snapshot、UNKNOWN、現在の観測とphysical計上 | changes件数を推測せずページ再試行。cursor未更新・二重課金なし |
+| orphan.scan-page | 自己token/cursor、pages/last_token保存とlease返却 | exact receiptまたは厳密なlast_token/cursor/epoch照合 |
+| orphan.scan-release | 現epoch/mode・自己tokenのlease返却 | best effort。元エラーを隠さず、別世代を変更しない |
+| orphan.gc-claim | 現epoch/mode/pause、35日猶予、UNKNOWN、SQL時計60秒lease | exact receiptまたは自己のlive claimを照合 |
+| orphan.gc-call | HEAD/delete/確認HEADごとの全object tuple・自己token/lease・counter | 直接ACK必須、遅いACK後も固定期限を確認 |
+| orphan.gc-observe | 自己claim下の置換観測・新猶予・実bytes | exact receipt回収。確認できない容量は返さない |
+| orphan.gc-finalize | 自己claim・同一世代・HEAD不在、deletedとphysical精算 | exact receiptまたは完全なterminal tupleを照合 |
+| orphan.gc-error | 現epoch/mode/pause・自己tokenのエラー記録 | best effort。leaseとphysicalを維持 |
+
+GlobalMutationSourceはscan/通常GC/停止中drainの必須引数。Cronはenv、ControlDOの復旧RPCは同じinstanceのproviderを渡す。元のclaim/terminal tupleはDB進捗の証明に使えるが、自分の未知共通枠を返す証明にはしない。外部I/Oは常に独立した新しい受付と直接ACKを要求する。各受付の最大待機5秒と元の60秒leaseを延長しない。停止中は既存deletingだけを収束させ、quarantinedから新しい削除を始めない。
