@@ -47,6 +47,7 @@ import {
   persistEpoch,
   recoverEpochFloor,
 } from "./epochHistory";
+import { type KdfRepairResult, KdfSettlements } from "./kdfSettlements";
 import {
   failStaleRecoveryOutbox,
   inspectRecoveryFinalFence,
@@ -105,6 +106,7 @@ export interface RecoveryAuditStatus {
 export class ControlDO extends DurableObject<Env> {
   readonly #admission: ControlAdmission;
   readonly #kdf: ControlKdf;
+  readonly #kdfSettlements: KdfSettlements;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -123,11 +125,17 @@ export class ControlDO extends DurableObject<Env> {
       token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','r2','outbox','shares','credentials','credential_sources','fts','fence','complete')),
       after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
     )`);
-    this.#admission = new ControlAdmission(ctx.storage, env.DB, () => {
-      const row = this.#row();
-      if (row.phase !== "ready") throw new Error("control_not_ready");
-      return epochNumber(row.epoch);
-    });
+    this.#kdfSettlements = new KdfSettlements(ctx.storage.sql, env.DB);
+    this.#admission = new ControlAdmission(
+      ctx.storage,
+      env.DB,
+      () => {
+        const row = this.#row();
+        if (row.phase !== "ready") throw new Error("control_not_ready");
+        return epochNumber(row.epoch);
+      },
+      () => this.#kdfSettlements.assertEmpty(),
+    );
     this.#kdf = new ControlKdf(
       env.DB,
       async (epoch) => {
@@ -135,6 +143,7 @@ export class ControlDO extends DurableObject<Env> {
         if (status.maintenance || status.epoch !== epoch) throw new Error("kdf_unavailable");
       },
       (epoch) => this.#admission.assertKdfOpen(epoch),
+      this.#kdfSettlements,
     );
   }
 
@@ -158,6 +167,11 @@ export class ControlDO extends DurableObject<Env> {
   /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */
   async deriveKdf(request: KdfRequest): Promise<ArrayBuffer> {
     return this.#kdf.derive(request);
+  }
+
+  /** Operator-only bounded reconciliation; unknown executions never become terminal here. */
+  async repairKdfSettlements(expectedEpoch: number, limit = 20): Promise<KdfRepairResult> {
+    return this.#maintenance(expectedEpoch, () => this.#kdfSettlements.repair(limit));
   }
 
   /** Operator/maintenance RPC only. HTTP remains closed; no public recovery endpoint. */
@@ -496,6 +510,7 @@ export class ControlDO extends DurableObject<Env> {
   /** Checks one page; a failed page leaves the durable cursor unchanged. */
   async nextRecoveryAuditPage(expectedEpoch: number, limit = 10): Promise<RecoveryAuditStatus> {
     epochNumber(expectedEpoch);
+    this.#kdfSettlements.assertEmpty();
     const status = await this.status();
     if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
     this.#admission.assertClosed(expectedEpoch);

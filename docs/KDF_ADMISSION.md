@@ -1,6 +1,6 @@
 # 認証KDFの実行・全体制限
 
-更新: 2026-09-24。アプリパスワードの作成・検証・pepper更新を、Worker内の待機制限とControlDO/D1の全体予算へ接続した。migration `0029`を追加。実CloudflareのCPU・費用・処理量・切断挙動と、共有passwordのper-share/IP制限は未検証・未接続。
+更新: 2026-09-24。アプリパスワードの作成・検証・pepper更新を、Worker内の待機制限とControlDO/D1の全体予算へ接続した。D1はmigration `0029`、今回ControlDO SQLiteの終了記録と修復を追加。実CloudflareのCPU・費用・処理量・切断挙動と、共有passwordのper-share/IP制限は未検証・未接続。
 
 ## 実行経路
 
@@ -38,15 +38,28 @@ current epoch、maintenance、cooldown、rate、枠数をD1 insert triggerで検
 
 リモート配備・旧版へのrollbackは停止と復旧手順の下で行う。旧版のWorkerはローカル計算経路を持つため、混在した配備を新しい全体制限の検証済み状態としない。epoch復旧後、KDFはcooldown満了まで503を返す。ローカルbrowser fixtureは準備済み状態としてこの時刻を設定するが、productionへその設定経路は公開しない。
 
+## 終了記録の修復
+
+ControlDO SQLiteの`control_kdf_receipts`に、id・handler token・元epoch・元送信期限・状態だけを最大20件保存する。D1 claimより前に`reserved`を保存し、枠がなければ新しいclaim/計算を始めない。native計算の実終了後は`finished`、handlerが以後送信しないと確定した場合だけ`not_started`へ一度遷移する。入力・salt・結果はここにも保存しない。
+
+終了記録を保存してから、同じid/token/epochのD1行を精算する。D1終端receiptを確認した後だけローカル記録を削除する。DB書込み・読戻しの応答喪失やeviction後も、次のKDF受付前に最大20件を照合する。内部RPC `repairKdfSettlements(expectedEpoch, limit=20)`は受付を停止し、復旧監査を前後で初期化して同じ処理を行う。返す件数は`checked/reconciled/pending/unknown`。public HTTPへの公開・自動alarm再試行は行わない。復旧監査と受付再開はD1未精算行に加え、ローカル未解決記録も拒否する。
+
+SQL cursorは`await`前に配列として読み切る。[SQLite-backed DOのstorage契約](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従い、非同期I/Oをまたぐcursorをsnapshotとして使わない。保存とD1送信の順序は[DOのoutput gate](https://blog.cloudflare.com/durable-objects-easy-fast-correct-choose-three/)を前提とし、未確認書込みを許可する設定は使わない。
+
+D1に同じtokenの行がない場合は、primaryの書込みbatchでcontrol行に書込みを行ってから、同一transaction内で不在とDB時刻を照合する。元送信期限を過ぎている場合だけ、**既に終了または未送信が確定した**ローカル記録を削除できる。後に実行されるclaimのSQLは元期限を再検査するため拒否される。単独SELECTやWorker側の時計だけではこの判定を行わない。[D1 batchのtransaction契約](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)と[SQLiteのwrite transaction直列化](https://sqlite.org/lang_transaction.html)に基づく処理で、遅延claim・書込み応答喪失をローカル試験する。不在を確認した場合も、計算結果を成功として返さない。
+
+`reserved`のまま停止した記録は終了証明を持たないため、期限切れ・epoch変更・evictionだけでは修復も削除もしない。別handlerのtokenや異なる終端状態を上書きしない。完全なDO storage喪失、終了記録の保存前にinstanceが失われた場合、旧版が残したD1行など、証明のない試行は保留を維持する。稼働中D1 restore・時計異常・混在versionの安全な運用はstaging/restore gateに残る。
+
 ## 検証
 
 - 既存Node executor試験: FIFO、256件、5秒、例外後の回復、待機/実行中の取消し、遅延timer。
 - 新規Node budget 7件: 600/65秒境界、20枠と旧epoch、cooldown、未知枠保持、不変receipt、時計巻戻り。
 - 新規workerd 20件: 実PBKDF2・D1・ControlDO RPC、instance内直列化、重複/未知枠の全体上限、claim/精算ACK喪失、送信直前の停止・期限・storage fence、取消し、3つの認証経路、600回境界と両HTTPの503、eviction/全storage喪失後の保持。
-- 既存認証34件と合わせて54件成功。全check・browserの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
+- 終了記録repairの追加14件が成功: D1/ローカル保存・ACK喪失、eviction、元epoch、未送信の遅延claim、別token、20件上限、不変receipt、重複repair、実ControlDO停止/修復/再監査、未知ローカル記録の再開拒否。
+- 全体制限の既存認証34件と合わせた54件は前回成功。全check・browserの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
 ## 残作業
 
-DBへの精算が永続的に失敗して`claimed`が残った場合の専用repair/運用経路は未実装。経過時間や再起動だけで手動削除しない。共有password/unlock、per-share10/min・client IP30/min、account mutation32並列と待機列、backup専用barrierも残る。
+終了記録がある試行の内部repairは接続済み。終了証明を失った未知試行の運用上の収束、実Cloudflareでの修復・restore drillは未完了。経過時間や再起動だけで手動削除しない。共有password/unlock、per-share10/min・client IP30/min、account mutation32並列と待機列、backup専用barrierも残る。
 
 実CloudflareでのCPU・処理量・費用、混在version、時計/ネットワーク遅延、接続切断の検証が必要。`enable_request_signal`を有効化しているが、以前のローカルWrangler前段ではHTTP切断がWorkerのsignalへ伝播しない経路があった。明示的AbortSignalの試験を実ネットワーク切断の証明にしない。

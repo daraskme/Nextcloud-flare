@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 1 KDF全体制限 | migration `0029`、D1 rate/未精算台帳、ControlDO固定PBKDF2、600受付/65秒・20未精算枠、通常instance内1件、epoch cooldown、発行/認証/鍵更新 | 新規Node7件・workerd20件と既存認証34件成功。応答喪失/取消し/601回目/HTTP503/実RPCとstorage喪失を検証。未精算repair・共有/IP制限・実環境は未完了。[KDF_ADMISSION](KDF_ADMISSION.md) |
+| 1 KDF終了記録repair | ControlDO SQLite最大20件の送信前記録と終端proof、D1精算の再照合、停止中内部RPC、ローカル未解決も復旧再開fence | 追加14件で応答喪失/eviction/遅延/重複/未知保持を検証済み。終了証明を失った試行は保持。実環境未検証 |
+| 1 KDF全体制限 | migration `0029`、D1 rate/未精算台帳、ControlDO固定PBKDF2、600受付/65秒・20未精算枠、通常instance内1件、epoch cooldown、発行/認証/鍵更新 | 新規Node7件・workerd20件と既存認証34件成功。応答喪失/取消し/601回目/HTTP503/実RPCとstorage喪失を検証。終了証明を失った試行の運用収束・共有/IP制限・実環境は未完了。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 upload行喪失時のmultipart中止 | migration `0028`の不変attempt台帳、正確なhandleの1回dispatch、fresh proof、同一ID再送、64件予算、10秒待機、ControlDO接続 | 新規19件でhold維持、稼働upload/lease、claim/receipt応答喪失、proof期限、遅い応答と上限を検証。全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
 | 4 upload行喪失時のmultipart容量保留 | migration `0027`の3table、全`u/`走査、正確なkey/ID対応、partページと最大観測bytesのowner physical計上、ControlDOと復旧fence | 27件でページ上限/競合/応答喪失/所有者復元/整数上限/0-byte再開拒否を検証。全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
 | 4 multipart修復の対応検証接続 | 毎回fresh nonceでBLOBS/S3を照合し、claim・page・abort・physical観測・lease解放を同一batchのproof fenceで保護。停止/GC pause必須、保存済み成功を再利用しない | 誤bucket・旧nonce・失効・応答喪失の境界を追加。全体閉鎖・容量精算・実S3は未完了。[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
@@ -20,7 +21,7 @@
 | 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、待機256件・5秒、取消し・例外時解放、503再試行、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件が成功。全check/browserの結果は実行記録。ControlDO/D1全体制限は上記へ接続済み。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 通常稼働中のtrash復元 | migration `0026`、永続GC pause、管理者設定保持、既存deleting drain、原子的なoperation/token/epoch/期限assertと解放alarm | 実ControlDO/LockDO/D1/R2の29件とschema制約1件を追加。連続alarm失敗6回で閉じる。実browserの復元・応答喪失再照会。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreもGC稼働中のfixtureで検証。詳細・残作業は[FILES_UI](FILES_UI.md) |
-| 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account mutation・KDF未精算repairは未完了 |
+| 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account mutation・終了証明を失ったKDFの運用収束は未完了 |
 | 4 停止中GC drain | migration `0024`のclaim epoch/counter、blob/orphanの既存deleting回収、ControlDO内部RPCと監査再初期化 | 新規25件を含む全check1,022件が成功。全復旧監査fixtureは成功、実環境・完全restore・admission再開は未完了 |
 | 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
 | 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。毎回freshな対応検証との接続は追加済み。全体不在証明・予約精算・upload行ごと失われたIDの中止・実S3は未完了 |
@@ -103,7 +104,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 1. 承認された staging inventory で全 binding/環境 marker/Access を照合し、実 D1 で同じ SQL barrier を再実行する。今回の「応答喪失」は commit 後の fault injection であり実ネットワーク断ではない。
 2. Images 実サービスの20MB境界・codec・dimension、KDF CPU/cost、R2転送/キャンセルを計測する。ローカル Images は Miniflare 実装なので料金やサービス限界の証拠にしない。
-3. Phase 1 残り: outbox の実 Queue ack/DLQ、他 kind の result CAS と repair、残る operation tuple の authorize/LockDO。account mutation / KDF未精算repair、backup barrier、残るHTTP surface/CSRFの接続も必要。isolate内KDF実行制限は接続済み。全監査後の内部RPC受付再開はローカル実装済み。
+3. Phase 1 残り: outbox の実 Queue ack/DLQ、他 kind の result CAS と repair、残る operation tuple の authorize/LockDO。account mutation / 終了証明を失ったKDFの運用収束、backup barrier、残るHTTP surface/CSRFの接続も必要。isolate内KDF実行制限は接続済み。全監査後の内部RPC受付再開はローカル実装済み。
 4. R6 §8 の残りの fixture と仕様 v0.7 反映を Phase 1 内で閉じる。Files core/upload/trash/GC の本実装は Phase 1 gate 後。
 
 ## M/U/I/R と復旧
@@ -115,6 +116,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、KDF終了記録の永続化・修復を追加。関連4file/89件成功（89.48秒）、追加の最終14件成功（11.54秒）。最終`pnpm check`成功: Node396 + workerd891 = **1,287 tests**（24+58 files）、workerd425.30秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。新規D1 migration・依存なし、DO SQLiteに最大20件の記録。取消しfixtureはAbortControllerの作成と取消しを同じDO contextへまとめ、productionの取消し条件を維持した。今回のbrowser/Windowsはpush後のCIで照合する。
+
+- 2026-09-24、commit `4dbafdd`の[CI run35997960544](https://github.com/daraskme/Nextcloud-flare/actions/runs/35997960544)は全成功。Ubuntu3分4秒・Windows10分43秒・browser2分56秒。Node396 + workerd877 + browser19 = **1,292 tests**。WindowsのKDF20件13.176秒、workerd552.04秒。
 
 - 2026-09-24、KDF全体制限を追加。Node budget7件 + schema71件が成功（3.77秒）、新規workerd20件 + 既存認証34件が成功（19.67秒）。最終`pnpm check`成功: Node396 + workerd877 = **1,273 tests**（24+57 files）、workerd410.07秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。testの待機終了処理を調整後にもlint/typecheckと新規workerd20件が成功（4.95秒）。migration `0029`、66通常table、追加依存なし。browser19件も成功し、合計**1,292件**。Windows CIは前回13分57秒の実績と追加coverageに合わせjob全体上限を15分から20分へ変更した。Ubuntu/browserの15分、個々のtest/hook timeoutとproduction deadline・assertionは維持。今回のCIはpush後に照合する。
 

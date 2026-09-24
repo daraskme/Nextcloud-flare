@@ -535,10 +535,12 @@ it("pause-bound GC refuses a stale capability after release even if another rest
   const next = await runInDurableObject(control(), async (_, state) => {
     // Acquire without the RPC's drain so the stale collector is tested against a live object.
     const { ControlAdmission } = await import("../../src/do/controlAdmission");
-    return new ControlAdmission(state.storage, env.DB, () => epoch).acquireRestorePause(
-      epoch,
-      op(),
-    );
+    return new ControlAdmission(
+      state.storage,
+      env.DB,
+      () => epoch,
+      () => {},
+    ).acquireRestorePause(epoch, op());
   });
   expect(await drainRestoreBlobGarbageCollection(env.DB, env.BLOBS, held)).toMatchObject({
     claimed: 0,

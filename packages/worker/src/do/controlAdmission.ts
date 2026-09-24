@@ -35,6 +35,7 @@ export class ControlAdmission {
     private readonly storage: DurableObjectStorage,
     private readonly db: D1Database,
     private readonly currentEpoch: () => number,
+    private readonly assertKdfQuiescent: () => void,
   ) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_admission(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,
@@ -112,6 +113,7 @@ export class ControlAdmission {
   }
 
   #audit(epoch: number, token?: string | null): string {
+    this.assertKdfQuiescent();
     const busy = this.storage.sql
       .exec("SELECT 1 FROM control_maintenance_tasks WHERE epoch=? LIMIT 1", epoch)
       .toArray();

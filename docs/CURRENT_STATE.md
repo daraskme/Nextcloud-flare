@@ -2,7 +2,7 @@
 
 更新日: 2026-09-24
 
-直近の到達点と進行中の作業は[PROGRESS](PROGRESS.md)へ記録する。直前commit `026f534`はpush済みで、[CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35993638387)のUbuntu・Windows・browser全jobが成功した。
+直近の到達点と進行中の作業は[PROGRESS](PROGRESS.md)へ記録する。直前commit `4dbafdd`はpush済みで、[CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35997960544)のUbuntu・Windows・browser全jobが成功した。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -24,7 +24,8 @@
 |---|---|---|---|
 | schema・契約 | migration `0001`〜`0029`、66通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
-| KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 未精算repair、共有password/IP制限、実CPU・処理量・切断 |
+| KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
+| KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
 | Files UI | React/TanStackの一覧・操作・trash・確認付き上書き/再開upload・logout、認証付きprivate assets | ローカル実APIの19 browser scenario、NodeのCSRF競合4件 | 共有・media・実環境。検索は[SEARCH](SEARCH.md)。詳細は[FILES_UI](FILES_UI.md) |
@@ -45,10 +46,10 @@
 | content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDOの対象重複排除/共有使用量、R2/bodyへのlease期限伝播 | D1/R2、署名、失効、Range、budget reserve/settle、実HTTPの発行・交換・空本文取消し、上書き/別target配信、1MiB/対象数上限、期限更新/遅延R2/停止body/取消し。詳細は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)と[CONTENT_LEASES](CONTENT_LEASES.md) | ZIP/page/entry/track、全route会計、長時間download再開UI・実環境 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、bounded repair | send/D1応答喪失、重複delivery、主要node event provenance | 実Queue/DLQ、残るevent kind |
-| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・KDF未精算repair |
+| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-直前commit `026f534`はNode389 + workerd857 + browser19 = **1,265件**、Ubuntu・Windows・browserのCI全成功。今回のKDF制限を含む全checkはNode396 + workerd877 = **1,273件**成功。新規workerd20件の最終再検証も成功。browser19件も成功し、合計**1,292件**。確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
+直前commit `4dbafdd`はNode396 + workerd877 + browser19 = **1,292件**、Ubuntu・Windows・browserのCI全成功。今回の終了記録repairは新規14件、全checkはNode396 + workerd891 = **1,287件**成功。今回のCI/browserはpush後に確認する。確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -83,7 +84,7 @@
 
 ### 制御・運用
 
-- account単位のmutation同時数・待ちqueue、KDF未精算のrepairと共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
+- account単位のmutation同時数・待ちqueue、終了証明を失ったKDFの運用収束と共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。
@@ -134,7 +135,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 1. unknown multipart IDの全体不在証明・予約精算を実装。毎回freshなS3/BLOBS対応検証は走査・中止へ接続済み。upload行喪失時の全bucket走査・容量保留、S3診断と完成済み`u/` objectの隔離・35日回収も接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
-4. account mutation / KDF未精算repair、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。
+4. account mutation / 終了証明を失ったKDFの運用収束、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。
 5. Files UIの残り（共有・media・metadata検索）。
 6. share、media metadata検索、ZIP/reader/media配信。
 7. backup/export/restore drill。

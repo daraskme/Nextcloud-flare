@@ -11,6 +11,7 @@ import { atomicBatch, type SqlStatement } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { ControlKdf } from "../../src/do/controlKdf";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { KdfSettlements } from "../../src/do/kdfSettlements";
 import { RECOVERY_FINAL_QUERY } from "../../src/do/recoveryAudit";
 import type { Env } from "../../src/env";
 import { createAppPassword } from "../../src/services/appPasswords";
@@ -49,8 +50,29 @@ async function admit(epoch: number) {
   )
     throw new KdfUnavailableError();
 }
-const executor = (db = env.DB, current = (_epoch: number) => {}) =>
-  new ControlKdf(db, admit, current);
+const executor = (db = env.DB, current = (_epoch: number) => {}, admission = admit) => {
+  const stub = env.CONTROL.get(env.CONTROL.idFromName(`kdf-fixture-${crypto.randomUUID()}`));
+  let service: ControlKdf | undefined;
+  return {
+    async derive(r: KdfRequest) {
+      const result = await runInDurableObject(stub, async (_, state) => {
+        service ??= new ControlKdf(
+          db,
+          admission,
+          current,
+          new KdfSettlements(state.storage.sql, db),
+        );
+        try {
+          return { value: await service.derive(r) };
+        } catch {
+          return { value: null };
+        }
+      });
+      if (!result.value) throw new KdfUnavailableError();
+      return result.value;
+    },
+  };
+};
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -58,7 +80,7 @@ function deferred() {
   });
   return { promise, resolve };
 }
-function backend(service: ControlKdf) {
+function backend(service: Pick<ControlKdf, "derive">) {
   return globalKdf(
     {
       idFromName: () => ({}),
@@ -196,9 +218,11 @@ it("does not dispatch after losing the claim acknowledgement and retains the spe
 it.each(["maintenance", "deadline", "local-fence"])(
   "rechecks %s after the confirmed claim",
   async (boundary) => {
+    let claimed = false;
     const db = injectBatch(
       (sql) => sql.includes("INSERT INTO kdf_attempts"),
       async () => {
+        claimed = true;
         if (boundary === "maintenance")
           await env.DB.prepare("UPDATE control SET maintenance=1").run();
         if (boundary === "deadline") vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6000);
@@ -209,7 +233,7 @@ it.each(["maintenance", "deadline", "local-fence"])(
       native = vi.spyOn(crypto.subtle, "deriveBits");
     await expect(
       executor(db, () => {
-        if (boundary === "local-fence") throw new Error("replaced");
+        if (claimed && boundary === "local-fence") throw new Error("replaced");
       }).derive(r),
     ).rejects.toThrow("kdf_unavailable");
     expect(native).not.toHaveBeenCalled();
@@ -269,28 +293,34 @@ it("settles a rejected native calculation without refunding its rate charge", as
 });
 
 it("retains running capacity after caller cancellation until the actual result arrives", async () => {
-  const held = deferred(),
-    entered = deferred(),
-    abort = new AbortController();
-  const native = crypto.subtle.deriveBits.bind(crypto.subtle);
-  vi.spyOn(crypto.subtle, "deriveBits").mockImplementationOnce(async (...args) => {
-    entered.resolve();
-    await held.promise;
-    return native(...args);
+  const stub = env.CONTROL.get(env.CONTROL.idFromName(`cancel-kdf-${crypto.randomUUID()}`));
+  // AbortController is request-context bound: create and cancel it in the same DO context.
+  await runInDurableObject(stub, async (_, state) => {
+    const held = deferred(),
+      entered = deferred(),
+      abort = new AbortController();
+    const native = crypto.subtle.deriveBits.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, "deriveBits").mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await held.promise;
+      return native(...args);
+    });
+    const derive = backend(
+        new ControlKdf(env.DB, admit, () => {}, new KdfSettlements(state.storage.sql, env.DB)),
+      ),
+      r = request();
+    const pending = derive(r.input, r.salt, abort.signal);
+    const rejected = expect(pending).rejects.toBeInstanceOf(KdfUnavailableError);
+    try {
+      await Promise.race([entered.promise, pending.then(() => undefined)]);
+      abort.abort();
+      expect(await count("state='claimed'")).toBe(1);
+    } finally {
+      held.resolve();
+      await rejected;
+    }
+    expect(await count("state='finished'")).toBe(1);
   });
-  const derive = backend(executor()),
-    r = request();
-  const pending = derive(r.input, r.salt, abort.signal);
-  const rejected = expect(pending).rejects.toBeInstanceOf(KdfUnavailableError);
-  try {
-    await Promise.race([entered.promise, pending.then(() => undefined)]);
-    abort.abort();
-    expect(await count("state='claimed'")).toBe(1);
-  } finally {
-    held.resolve();
-    await rejected;
-  }
-  expect(await count("state='finished'")).toBe(1);
 });
 
 it("uses real ControlDO RPC, keeps counters across eviction and cools down after full storage recovery", async () => {
@@ -371,9 +401,9 @@ it.each(["id", "input", "salt", "epoch", "deadline"])(
               : 0,
     };
     const admitSpy = vi.fn(async () => {});
-    await expect(
-      new ControlKdf(env.DB, admitSpy, () => {}).derive(broken as KdfRequest),
-    ).rejects.toThrow("kdf_unavailable");
+    await expect(executor(env.DB, () => {}, admitSpy).derive(broken as KdfRequest)).rejects.toThrow(
+      "kdf_unavailable",
+    );
     expect(admitSpy).not.toHaveBeenCalled();
     expect(await count()).toBe(0);
   },

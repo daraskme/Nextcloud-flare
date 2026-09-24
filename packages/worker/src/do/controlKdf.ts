@@ -1,6 +1,7 @@
 import type { KdfRequest } from "../auth/globalKdf";
 import { KdfExecutor, KdfUnavailableError } from "../auth/kdf";
-import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertOneChange, atomicBatch } from "../db/primary";
+import type { KdfSettlements } from "./kdfSettlements";
 
 const CLOCK = "strftime('%s','now')*1000";
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/;
@@ -12,6 +13,7 @@ export class ControlKdf {
     private readonly db: D1Database,
     private readonly admit: (epoch: number) => Promise<void>,
     private readonly current: (epoch: number) => void,
+    private readonly settlements: KdfSettlements,
   ) {}
 
   async derive(request: KdfRequest): Promise<ArrayBuffer> {
@@ -38,9 +40,13 @@ export class ControlKdf {
         await this.admit(epoch);
         const key = await crypto.subtle.importKey("raw", input, "PBKDF2", false, ["deriveBits"]);
         const token = crypto.randomUUID();
+        const dispatch = { id, token, epoch, deadline };
         let dispatched = false;
         try {
+          await this.settlements.repair();
+          this.current(epoch);
           if (deadline <= Date.now()) throw new KdfUnavailableError();
+          this.settlements.reserve(dispatch);
           const rows = await atomicBatch(this.db, [
             {
               sql: `DELETE FROM kdf_attempts WHERE state<>'claimed' AND issued_at<=${CLOCK}-65000`,
@@ -71,14 +77,14 @@ export class ControlKdf {
             );
           } finally {
             // Native crypto cannot be cancelled. Only its actual settlement releases the slot.
-            await this.#settle(id, token, "finished");
+            await this.settlements.settle(dispatch, "finished");
           }
           return output;
         } catch {
           if (!dispatched) {
             // A lost claim reply cannot dispatch. This token cannot clear another invocation's claim.
             try {
-              await this.#settle(id, token, "not_started");
+              await this.settlements.settle(dispatch, "not_started");
             } catch {
               /* retain unknown slot */
             }
@@ -90,22 +96,5 @@ export class ControlKdf {
       new Uint8Array(input).fill(0);
       salt.fill(0);
     }
-  }
-
-  async #settle(id: string, token: string, state: "finished" | "not_started"): Promise<void> {
-    try {
-      await primary(this.db)
-        .prepare(`UPDATE kdf_attempts SET state=?,finished_at=MAX(issued_at,${CLOCK})
-        WHERE id=? AND dispatch_token=? AND state='claimed'`)
-        .bind(state, id, token)
-        .run();
-    } catch {
-      /* Confirm the exact receipt after a possibly committed response loss. */
-    }
-    const saved = await primary(this.db)
-      .prepare("SELECT state FROM kdf_attempts WHERE id=? AND dispatch_token=?")
-      .bind(id, token)
-      .first<string>("state");
-    if (saved !== state) throw new KdfUnavailableError();
   }
 }
