@@ -4,6 +4,7 @@ import type { CsrfTokens } from "../auth/csrf";
 import { KdfUnavailableError } from "../auth/kdf";
 import type { AccessSession } from "../auth/sessions";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import {
   type CreateAppPasswordInput,
   createAppPassword,
@@ -118,9 +119,14 @@ export async function handleAppPasswordHttp(
       return problem(404, "not_found");
     }
     try {
-      await revokeAppPassword(env.DB, session, credentialId);
+      await revokeAppPassword(env, session, credentialId);
       return new Response(null, { status: 204, headers: PRIVATE_HEADERS });
     } catch (error) {
+      if (error instanceof MutationUnavailableError) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (error instanceof Error && error.message === "app_password_not_found")
         return problem(404, "not_found");
       return problem(503, "not_ready");
@@ -134,12 +140,12 @@ export async function handleAppPasswordHttp(
     return problem(400, "bad_request");
   }
   try {
-    return Response.json(await createAppPassword(env.DB, session, body, pepper, request.signal), {
+    return Response.json(await createAppPassword(env, session, body, pepper, request.signal), {
       status: 201,
       headers: PRIVATE_HEADERS,
     });
   } catch (error) {
-    if (error instanceof KdfUnavailableError) {
+    if (error instanceof KdfUnavailableError || error instanceof MutationUnavailableError) {
       const response = problem(503, "not_ready");
       response.headers.set("Retry-After", "1");
       return response;

@@ -27,6 +27,7 @@ import {
   parseProppatchRequest,
 } from "../dav/xml";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
 import { copyNode } from "../services/copyNode";
 import { createFolder } from "../services/createFolder";
@@ -163,9 +164,9 @@ export async function handleDavHttp(
   }
   let principal;
   try {
-    principal = await authenticateAppPassword(env.DB, request, env.APP_ORIGIN, epoch, pepper);
+    principal = await authenticateAppPassword(env, request, env.APP_ORIGIN, epoch, pepper);
   } catch (error) {
-    if (error instanceof KdfUnavailableError) {
+    if (error instanceof KdfUnavailableError || error instanceof MutationUnavailableError) {
       const response = problem(503, "not_ready");
       response.headers.set("Retry-After", "1");
       return response;

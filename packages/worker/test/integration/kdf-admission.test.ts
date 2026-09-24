@@ -17,6 +17,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { createAppPassword } from "../../src/services/appPasswords";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(() => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -41,13 +42,13 @@ async function fixture() {
   };
   const ring = await appPasswordPepperRing("v1", { v1: key() }, localKdf);
   const credential = await createAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     session,
     { name: "KDF test", scopes: ["node:read"] },
     ring,
   );
   const app = {
-    ...env,
+    ...mutationEnv(),
     APP_ORIGIN: "https://app.invalid",
     EDGE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
   };
@@ -86,7 +87,7 @@ it("runs concurrent real PBKDF2 calls one at a time and retains valid records", 
   try {
     const jobs = Array.from({ length: 8 }, (_, i) =>
       i % 2
-        ? authenticateAppPassword(env.DB, f.request(), f.app.APP_ORIGIN, 1, f.ring)
+        ? authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, f.ring)
         : hashAppPassword(key(), f.ring),
     );
     expect(await Promise.all(jobs)).toHaveLength(8);
@@ -172,7 +173,7 @@ it("skips aborted crypto work and does not retain a cancelled caller's place", a
     abort = new AbortController();
   const spy = vi.spyOn(crypto.subtle, "deriveBits");
   const attempt = authenticateAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     f.request(abort.signal),
     f.app.APP_ORIGIN,
     1,
@@ -189,7 +190,7 @@ it("skips aborted crypto work and does not retain a cancelled caller's place", a
     spy.mockRestore();
   }
   expect(
-    await authenticateAppPassword(env.DB, f.request(), f.app.APP_ORIGIN, 1, f.ring),
+    await authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, f.ring),
   ).toMatchObject({ credential_id: f.credential.credentialId });
 });
 
@@ -199,7 +200,7 @@ it("checks current access and root authorization before spending KDF capacity on
   try {
     await expect(
       createAppPassword(
-        env.DB,
+        mutationEnv(env.DB),
         f.session,
         { name: "Bad root", scopes: ["node:read"], spaceId: f.f.ids.space, rootNodeId: "missing" },
         f.ring,
@@ -209,7 +210,12 @@ it("checks current access and root authorization before spending KDF capacity on
       .bind(Date.now(), f.f.ids.session)
       .run();
     await expect(
-      createAppPassword(env.DB, f.session, { name: "Revoked", scopes: ["node:read"] }, f.ring),
+      createAppPassword(
+        mutationEnv(env.DB),
+        f.session,
+        { name: "Revoked", scopes: ["node:read"] },
+        f.ring,
+      ),
     ).rejects.toThrow(/CHECK constraint failed/);
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM app_passwords WHERE user_id=?")
@@ -234,7 +240,13 @@ it.each(["revoked", "maintenance"])(
       queued.resolve();
       return result;
     });
-    const attempt = authenticateAppPassword(env.DB, f.request(), f.app.APP_ORIGIN, 1, f.ring);
+    const attempt = authenticateAppPassword(
+      mutationEnv(env.DB),
+      f.request(),
+      f.app.APP_ORIGIN,
+      1,
+      f.ring,
+    );
     const rejection = expect(attempt).rejects.toThrow("app_password_denied");
     try {
       await queued.promise;
@@ -264,7 +276,7 @@ it("does not write a credential when creation is cancelled in the queue", async 
     return result;
   });
   const attempt = createAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     f.session,
     { name: "Cancelled", scopes: ["node:read"] },
     f.ring,
@@ -309,7 +321,7 @@ it("shares capacity across pepper verification, rotation and re-verification", a
   });
   try {
     const [principal] = await Promise.all([
-      authenticateAppPassword(env.DB, f.request(), f.app.APP_ORIGIN, 1, ring),
+      authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, ring),
       hashAppPassword(key(), ring),
       hashAppPassword(key(), ring),
     ]);

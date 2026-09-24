@@ -6,13 +6,25 @@ import {
 } from "../../src/db/mutationAdmission";
 import { grantPermit as grant } from "../../src/db/permits";
 import type { SqlStatement } from "../../src/db/primary";
+import type { Env } from "../../src/env";
 
-/** Explicit namespace-only fixture; actual ControlDO FIFO/stop/restart is tested separately. */
+/** Explicit immediate admission fixture; actual ControlDO FIFO/stop/restart is tested separately. */
 export async function acquireMutation(request: MutationRequest): Promise<MutationAdmission> {
   const receipt = await enqueueMutation(env.DB, request);
   if (receipt.state !== "active" || receipt.expires_at === null)
     throw new Error("fixture_mutation_waiting");
   return { ...receipt, expires_at: receipt.expires_at };
+}
+
+export function mutationEnv(db = env.DB): Env {
+  return {
+    ...env,
+    DB: db,
+    CONTROL: {
+      idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
+      get: () => ({ acquireMutation }),
+    } as unknown as Env["CONTROL"],
+  };
 }
 
 export async function grantPermit(

@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1 app password更新受付 | 発行・失効・pepper更新を共通32枠へ接続、KDF後取得、変更/確定記録/解放を一括保存、混雑503 | workerd32件追加。既存認証55件と最終境界60件、計1,366件を検証。旧fixture1件修正後の再検証・残るgateも成功。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 DAVロックの全体受付 | migration0031、LOCK/refresh/UNLOCK共有枠、lock変更・確定記録・枠解放の一括確定、60秒保持と索引cleanup | Node4/workerd22件追加、対象Node8/workerd72件成功。全check1,334件（Node404/workerd930）成功。HTTP token再取得・別RPC結果再生は未実装。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 namespace全体受付 | migration0030、ControlDO/D1 active32・waiting256・5秒、LockDO全8許可経路、失効と復旧fence、HTTP 503 | 追加21件と全check1,308件成功。全account経路・backup barrier・実環境は後続。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 KDF終了記録repair | ControlDO SQLite最大20件の送信前記録と終端proof、D1精算の再照合、停止中内部RPC、ローカル未解決も復旧再開fence | 追加14件で応答喪失/eviction/遅延/重複/未知保持を検証済み。終了証明を失った試行は保持。実環境未検証 |
@@ -119,6 +120,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-24、app password発行・失効・pepper更新の共通mutation受付を追加。workerd32件追加。既存認証55件と最終境界60件成功。初回 `pnpm check` はNode404/25files成功、workerd961成功/1失敗（962件・61files、454.01秒）。content-ticketの旧fixtureが停止中ControlDOを参照し、発行201に対して503となったため、fixtureのみ明示受付へ修正。対象file全11件（3.95秒）、lint/typecheck/Web build/Wrangler dry-runを再確認して成功。productionコードは全体試験から変更なし。契約・設定を含む全検証項目、計Node404 + workerd962 = **1,366 tests**を確認。CIで全checkとbrowserを新規実行する。owner/current authority、root/20件上限、停止/epoch、ACK/readback喪失、並行rotation、全rollback、HTTP503・Basic再認証不要、実ControlDOのKDF/32枠を検証。migration0031/通常67table・依存変更なし。
+- 2026-09-24、直前DAV commit `64ed2375ebf58da6d2a18383262ff96befdf83e6`の[CI36008397681](https://github.com/daraskme/Nextcloud-flare/actions/runs/36008397681)全成功。Ubuntu4分27秒、Windows10分40秒、browser2分46秒。Windows Node404/workerd930（558.21秒）、browser19（1.8分）。合計1,353件。
 - 2026-09-24、DAVロックの共通受付と確定記録を追加。Node4/workerd22件追加、対象Node8件・workerd72件成功。最終 `pnpm check` はNode404/25files + workerd930/60files = **1,334 tests**、workerd440.79秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。今回のbrowser/CIはpush後に確認する。migration0031・通常67table・依存変更なし。認可fixtureのID組立てを修正し、productionの拒否条件は維持。実ControlDOの32枠待機/返却、HTTP503、停止/epoch/失効、batchとreadbackの応答喪失、別unlockとの混同防止、全rollback、旧DB移行、60秒保持・clock rollback・cleanup query planを検証する。
 - 2026-09-24、直前namespace受付commit `89cc9b7952f9658c013bf90bee240a72d80f5d84` の[CI 36005018219](https://github.com/daraskme/Nextcloud-flare/actions/runs/36005018219)全成功を確認。Ubuntu3分44秒、Windows10分49秒、browser2分52秒。Windows Node400/workerd908（workerd555.72秒）、browser19成功。合計1,327件。
 - 2026-09-24、namespace更新の全体受付を追加。新規Node4件・workerd17件。最終 `pnpm check` 成功: Node400 + workerd908 = **1,308 tests**（25+59 files）、workerd436.48秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。D1 migration0030・通常67table、依存変更なし。待機後の認可/lock/停止、FIFOと32/256上限、応答喪失、実ControlDO再起動、clock rollback、HTTP 503を検証。先行試験のfixture初期化順・HTTP path・制約エラー判定を修正し、productionの期限・拒否条件は維持した。今回のbrowser/Windowsはpush後のCIで確認する。

@@ -1,4 +1,4 @@
-# Namespace・DAVロック更新の全体受付
+# 更新の全体受付
 
 更新日: 2026-09-24。migration `0030` / `0031`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
 
@@ -7,6 +7,8 @@
 LockDOのcreate・rename・move・copy・node write・trash・restore・purgeの8許可経路で、`ControlDO.acquireMutation`が必須になった。REST/WebDAVのファイル更新と、upload completeのnamespace公開がこの経路を通る。
 
 既存resourceのDAV LOCK・refresh・UNLOCKも同じ32枠へ接続した。未存在pathへのLOCKは従来のlocked empty file作成とnamespace permitを通る。
+
+app passwordの発行・失効・認証時pepper更新も同じ枠へ接続済み。既に現行kidの資格情報による認証と一覧読取りにはmutation枠を使わない。
 
 | 上限 | 実装 |
 |---|---|
@@ -37,6 +39,18 @@ batch応答を失った場合は、正確なticket ID・内部ID・space・epoch
 
 生のlock tokenはDBに保存しない。この記録は同じRPCのbatch応答喪失を照合するためのもの。LOCKのHTTP応答ごと失われた場合にtokenを再取得する機能や、別RPCの自動再送・結果再生は追加していない。
 
+## App passwordの更新
+
+`accountMutation`は所有spaceをprimaryで解決し、ControlDOへ操作種別付きのfresh ID・space・epoch・元deadlineだけを送る。secret・digest・SQLをRPCへ渡さない。発行前のhash生成、鍵更新前の検証と新hash生成を終えてからDB更新枠を取るため、KDFの待機中にmutation枠を占有しない。KDF自体のrate/実行枠は[KDF_ADMISSION](KDF_ADMISSION.md)を維持する。
+
+- 最終batchでexact ticket、space所有者とuser有効性、各操作のcurrent authorityを確認し、資格情報の変更と`0031`の確定記録・解放を一括保存する。
+- 発行はAccess session、必要なroot認可、20件上限を待機後に再確認。secretの別HTTP要求への再表示や保存は追加しない。
+- 失効は他owner/不存在を受付前に拒否。待機後も所有権とAccess sessionを検査し、app passwordと派生content sessionを一括失効する。既に失効済みの再送は204を維持する。
+- pepper更新は旧digest/salt/kidのCAS、current credential/user・期限・epochを最終batchで確認する。自分のbatchが失敗しても他のloginが鍵更新した場合は、現在のrecordとsecretを再検証して認証できる。ただし、それを自分のcommit証明と扱わず、自分の未確定枠は保持する。
+- 発行・失効のAPIと鍵更新が必要なDAV認証は、受付不可を503・`Retry-After: 1`で返す。DAVの受付混雑ではBasic再認証を要求しない。
+
+serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。migration追加なし（0031、通常67table）、依存変更なし。
+
 ## 応答喪失・失効・復旧
 
 - active ticketのRPC応答が失われても枠を解放しない。同じintentの再送で再照合できる。DOのevictionやローカルの受付期限超過も解放根拠にしない。
@@ -55,7 +69,9 @@ batch応答を失った場合は、正確なticket ID・内部ID・space・epoch
 | 更新経路 | この受付への接続 |
 |---|---|
 | 上記8種類のnamespace permit / upload公開 | 接続済み |
-| session/bootstrap/logout、CSRF、app password、content ticket/budget | 未接続。KDFの別制限は実装済み |
+| app password発行・失効・pepper更新 | 接続済み。KDF後に取得、current authorityと変更/確定記録/解放を同一batch |
+| session/bootstrap/logout、content ticket/budget | 未接続 |
+| CSRF helperの発行/検証 | DBはcurrent credentialの読取りのみ、tokenは署名。入口のsession登録は上記の未接続経路 |
 | upload予約・R2 create/part/completeの外部I/O・abort/cleanup | 既存upload制御を維持。namespace公開以外は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
@@ -63,4 +79,4 @@ batch応答を失った場合は、正確なticket ID・内部ID・space・epoch
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
 
-検証記録: namespace受付はcommit89cc9b7のCI全成功（Node400/workerd908/browser19）。今回のDAV追加はNode4件・workerd22件。対象Node8件・workerd72件と全check1,334件（Node404/workerd930）は成功。今回のbrowser/CI結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)で照合する。
+検証記録: 直前のDAV受付commit64ed237はCI全成功（Node404/workerd930/browser19）。今回のapp password接続はworkerd32件追加。全検証項目（Node404/workerd962）は成功。初回の旧fixture失敗と再検証、今回のbrowser/CI結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)で照合する。

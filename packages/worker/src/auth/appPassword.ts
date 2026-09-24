@@ -1,5 +1,10 @@
 import { base64url } from "jose";
-import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertOneChange, primary } from "../db/primary";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "../services/accountMutation";
 import type { Principal } from "./authorize";
 import type { KdfDeriver } from "./globalKdf";
 import { KdfUnavailableError, runKdf } from "./kdf";
@@ -193,12 +198,13 @@ async function matchesSecret(
 
 /** Authenticate a DAV Basic credential; route admission and rate limiting precede this call. */
 export async function authenticateAppPassword(
-  db: D1Database,
+  env: AccountMutationEnv,
   request: Request,
   appOrigin: string,
   epoch: number,
   ring: AppPasswordPepperRing,
 ): Promise<Principal> {
+  const db = env.DB;
   const { id, secret } = basicCredentials(request, appOrigin);
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("app_password_denied");
   const row = await livePasswordRow(db, id, epoch);
@@ -207,8 +213,9 @@ export async function authenticateAppPassword(
   let finalRow = row;
   if (row.kid !== ring.activeKid) {
     const rotated = await hashAppPassword(secret, ring, request.signal);
+    const admission = await acquireAccountMutation(env, row.user_id, epoch, "app-password.rotate");
     try {
-      await atomicBatch(db, [
+      await commitAccountMutation(db, admission, row.user_id, [
         {
           sql: `UPDATE app_passwords SET secret_digest=?,salt=?,kid=?
             WHERE id=? AND secret_digest=? AND salt=? AND kid=?
@@ -233,7 +240,8 @@ export async function authenticateAppPassword(
         assertOneChange,
       ]);
     } catch {
-      // A concurrent login or lost D1 acknowledgement can still have rotated this record.
+      // Another login may have rotated it. Reverify authentication independently below;
+      // that is not proof of our commit and must not close our uncommitted ticket.
     }
     const refreshed = await livePasswordRow(db, id, epoch);
     if (

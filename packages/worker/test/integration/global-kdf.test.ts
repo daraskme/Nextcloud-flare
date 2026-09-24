@@ -17,6 +17,7 @@ import type { Env } from "../../src/env";
 import { createAppPassword } from "../../src/services/appPasswords";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -370,7 +371,7 @@ it("connects issuance, authentication and pepper rotation to the same durable ra
     expires_at: Date.now() + 600000,
   };
   const credential = await createAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     session,
     { name: "global", scopes: ["node:read"] },
     ring,
@@ -380,7 +381,7 @@ it("connects issuance, authentication and pepper rotation to the same durable ra
   });
   const rotated = await appPasswordPepperRing("v2", keys, derive);
   expect(
-    await authenticateAppPassword(env.DB, login, "https://app.invalid", 1, rotated),
+    await authenticateAppPassword(mutationEnv(env.DB), login, "https://app.invalid", 1, rotated),
   ).toMatchObject({ credential_id: credential.credentialId });
   expect(await count("state='finished'")).toBe(4);
 });
@@ -423,7 +424,7 @@ it("rejects the 601st dispatch and returns retryable global overload on both pro
     expires_at: Date.now() + 600000,
   };
   const credential = await createAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     session,
     { name: "global overload", scopes: ["node:read"] },
     fixtureRing,

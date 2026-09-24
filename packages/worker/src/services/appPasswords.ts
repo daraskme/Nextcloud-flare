@@ -3,6 +3,11 @@ import { type AppPasswordPepperRing, hashAppPassword } from "../auth/appPassword
 import { authorizationAssertion, authorizeNode } from "../auth/authorize";
 import { type AccessSession, assertLiveAccessCredential } from "../auth/sessions";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "./accountMutation";
 
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const MANAGED_SCOPES = ["node:read", "node:create", "node:write", "node:delete"] as const;
@@ -109,12 +114,13 @@ export async function listAppPasswords(db: D1Database, session: AccessSession) {
 }
 
 export async function createAppPassword(
-  db: D1Database,
+  env: AccountMutationEnv,
   session: AccessSession,
   input: CreateAppPasswordInput,
   ring: AppPasswordPepperRing,
   signal?: AbortSignal,
 ) {
+  const db = env.DB;
   const validated = validatedInput(input);
   await atomicBatch(db, currentAccess(session));
   const active = await primary(db)
@@ -147,8 +153,14 @@ export async function createAppPassword(
   const credentialId = `ap:${id}`;
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const hashed = await hashAppPassword(secret, ring, signal);
+  const admission = await acquireAccountMutation(
+    env,
+    session.user_id,
+    session.epoch,
+    "app-password.create",
+  );
   const clock = "strftime('%s','now')*1000";
-  await atomicBatch(db, [
+  await commitAccountMutation(db, admission, session.user_id, [
     ...currentAccess(session),
     ...(root ? [authorizationAssertion(root)] : []),
     assertExists(
@@ -201,20 +213,35 @@ export async function createAppPassword(
 }
 
 export async function revokeAppPassword(
-  db: D1Database,
+  env: AccountMutationEnv,
   session: AccessSession,
   credentialId: string,
 ): Promise<void> {
+  const db = env.DB;
   if (!/^ap:ap_[0-9A-HJKMNP-TV-Z]{26}$/.test(credentialId))
     throw new Error("app_password_not_found");
-  const clock = "strftime('%s','now')*1000";
-  await atomicBatch(db, [
-    ...currentAccess(session),
-    assertExists(
-      `SELECT 1 FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+  await atomicBatch(db, currentAccess(session));
+  const target = assertExists(
+    `SELECT 1 FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
         WHERE c.id=? AND c.kind='app_password' AND ap.user_id=?`,
-      [credentialId, session.user_id],
-    ),
+    [credentialId, session.user_id],
+  );
+  const exists = await primary(db)
+    .prepare(`SELECT 1 FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+    WHERE c.id=? AND c.kind='app_password' AND ap.user_id=?`)
+    .bind(credentialId, session.user_id)
+    .first();
+  if (!exists) throw new Error("app_password_not_found");
+  const admission = await acquireAccountMutation(
+    env,
+    session.user_id,
+    session.epoch,
+    "app-password.revoke",
+  );
+  const clock = "strftime('%s','now')*1000";
+  await commitAccountMutation(db, admission, session.user_id, [
+    ...currentAccess(session),
+    target,
     {
       sql: `UPDATE app_passwords SET revoked_at=COALESCE(revoked_at,${clock})
         WHERE id=(SELECT app_password_id FROM credentials WHERE id=?) AND user_id=?`,

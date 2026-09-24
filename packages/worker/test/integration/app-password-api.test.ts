@@ -11,6 +11,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { createAppPassword } from "../../src/services/appPasswords";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -18,7 +19,7 @@ beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0"
 it("creates, lists, authenticates and revokes a scoped app password through the private API", async () => {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   await atomicBatch(env.DB, f.statements);
-  const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
+  const appEnv = { ...mutationEnv(), APP_ORIGIN: "https://app.invalid" };
   const session: AccessSession = {
     credential_id: f.ids.credential,
     session_id: f.ids.session,
@@ -94,7 +95,9 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
   const dav = new Request("https://app.invalid/dav/file", {
     headers: { Authorization: `Basic ${btoa(`${credential.id}:${credential.secret}`)}` },
   });
-  expect(await authenticateAppPassword(env.DB, dav, appEnv.APP_ORIGIN, 1, pepper)).toMatchObject({
+  expect(
+    await authenticateAppPassword(mutationEnv(env.DB), dav, appEnv.APP_ORIGIN, 1, pepper),
+  ).toMatchObject({
     credential_id: credential.credentialId,
     user_id: f.ids.user,
   });
@@ -147,7 +150,9 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
       csrf,
     );
     expect(rejected.status).toBe(400);
-    expect(await authenticateAppPassword(env.DB, dav, appEnv.APP_ORIGIN, 1, pepper)).toMatchObject({
+    expect(
+      await authenticateAppPassword(mutationEnv(env.DB), dav, appEnv.APP_ORIGIN, 1, pepper),
+    ).toMatchObject({
       credential_id: credential.credentialId,
     });
   }
@@ -167,9 +172,9 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
       .bind(contentSessionId)
       .first<number>("revoked_at"),
   ).not.toBeNull();
-  await expect(authenticateAppPassword(env.DB, dav, appEnv.APP_ORIGIN, 1, pepper)).rejects.toThrow(
-    "app_password_denied",
-  );
+  await expect(
+    authenticateAppPassword(mutationEnv(env.DB), dav, appEnv.APP_ORIGIN, 1, pepper),
+  ).rejects.toThrow("app_password_denied");
   expect(
     (
       await handleAppPasswordHttp(
@@ -204,11 +209,16 @@ it("rejects privilege scopes and roots outside the Access user's space", async (
     localKdf,
   );
   await expect(
-    createAppPassword(env.DB, session, { name: "admin", scopes: ["admin:user"] }, pepper),
+    createAppPassword(
+      mutationEnv(env.DB),
+      session,
+      { name: "admin", scopes: ["admin:user"] },
+      pepper,
+    ),
   ).rejects.toThrow("invalid_app_password_request");
   await expect(
     createAppPassword(
-      env.DB,
+      mutationEnv(env.DB),
       session,
       {
         name: "outside",
@@ -241,6 +251,11 @@ it("rejects privilege scopes and roots outside the Access user's space", async (
     ]);
   }
   await expect(
-    createAppPassword(env.DB, session, { name: "extra", scopes: ["node:read"] }, pepper),
+    createAppPassword(
+      mutationEnv(env.DB),
+      session,
+      { name: "extra", scopes: ["node:read"] },
+      pepper,
+    ),
   ).rejects.toThrow("app_password_limit");
 });

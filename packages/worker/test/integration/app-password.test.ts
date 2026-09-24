@@ -17,7 +17,7 @@ import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
-import { acquireMutation, grantPermit } from "../fixtures/mutationAdmission";
+import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -130,7 +130,9 @@ async function fixture(suffix: string) {
 
 it("authenticates a live DAV Basic app password and rejects a wrong secret", async () => {
   const { f, id, secret, ring, request } = await fixture("1");
-  expect(await authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, ring)).toEqual({
+  expect(
+    await authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 1, ring),
+  ).toEqual({
     kind: "app_password",
     user_id: f.ids.user,
     credential_id: `ap:${id}`,
@@ -139,11 +141,11 @@ it("authenticates a live DAV Basic app password and rejects a wrong secret", asy
   const wrong = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   expect(wrong).not.toBe(secret);
   await expect(
-    authenticateAppPassword(env.DB, request(wrong), "https://app.invalid", 1, ring),
+    authenticateAppPassword(mutationEnv(env.DB), request(wrong), "https://app.invalid", 1, ring),
   ).rejects.toThrow("app_password_denied");
   await expect(
     authenticateAppPassword(
-      env.DB,
+      mutationEnv(env.DB),
       request(secret, { Origin: "https://app.invalid" }),
       "https://app.invalid",
       1,
@@ -152,7 +154,7 @@ it("authenticates a live DAV Basic app password and rejects a wrong secret", asy
   ).rejects.toThrow("app_password_denied");
   await expect(
     authenticateAppPassword(
-      env.DB,
+      mutationEnv(env.DB),
       request(secret, { "Cf-Access-Jwt-Assertion": "wrong-profile" }),
       "https://app.invalid",
       1,
@@ -164,11 +166,11 @@ it("authenticates a live DAV Basic app password and rejects a wrong secret", asy
 it("rejects maintenance, old epoch, revoked records and unknown pepper kids", async () => {
   const { id, ring, request } = await fixture("2");
   await expect(
-    authenticateAppPassword(env.DB, request(), "https://app.invalid", 2, ring),
+    authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 2, ring),
   ).rejects.toThrow("app_password_denied");
   await env.DB.prepare("UPDATE control SET maintenance=1").run();
   await expect(
-    authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, ring),
+    authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 1, ring),
   ).rejects.toThrow("app_password_denied");
   await env.DB.prepare("UPDATE control SET maintenance=0").run();
   const other = await appPasswordPepperRing(
@@ -179,13 +181,13 @@ it("rejects maintenance, old epoch, revoked records and unknown pepper kids", as
     localKdf,
   );
   await expect(
-    authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, other),
+    authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 1, other),
   ).rejects.toThrow("app_password_denied");
   await env.DB.prepare("UPDATE app_passwords SET revoked_at=? WHERE id=?")
     .bind(Date.now(), id)
     .run();
   await expect(
-    authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, ring),
+    authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 1, ring),
   ).rejects.toThrow("app_password_denied");
 });
 
@@ -211,7 +213,7 @@ it("rechecks revocation after the password KDF completes", async () => {
     },
   } as unknown as D1Database;
   await expect(
-    authenticateAppPassword(db, request(), "https://app.invalid", 1, ring),
+    authenticateAppPassword(mutationEnv(db), request(), "https://app.invalid", 1, ring),
   ).rejects.toThrow("app_password_denied");
 });
 
@@ -222,7 +224,7 @@ it("rotates an old pepper kid after successful authentication", async () => {
   const before = await env.DB.prepare("SELECT secret_digest,salt FROM app_passwords WHERE id=?")
     .bind(id)
     .first<{ secret_digest: string; salt: string }>();
-  await authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, ring);
+  await authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 1, ring);
   const after = await env.DB.prepare("SELECT secret_digest,salt,kid FROM app_passwords WHERE id=?")
     .bind(id)
     .first<{ secret_digest: string; salt: string; kid: string }>();
@@ -231,7 +233,7 @@ it("rotates an old pepper kid after successful authentication", async () => {
   expect(after?.salt).not.toBe(before?.salt);
   const currentOnly = await appPasswordPepperRing("v2", { v2: next }, localKdf);
   await expect(
-    authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, currentOnly),
+    authenticateAppPassword(mutationEnv(env.DB), request(), "https://app.invalid", 1, currentOnly),
   ).resolves.toMatchObject({ kind: "app_password" });
 });
 
@@ -253,7 +255,7 @@ it("accepts a committed rotation when the D1 acknowledgement is lost", async () 
     },
   } as unknown as D1Database;
   await expect(
-    authenticateAppPassword(db, request(), "https://app.invalid", 1, ring),
+    authenticateAppPassword(mutationEnv(db), request(), "https://app.invalid", 1, ring),
   ).resolves.toMatchObject({ kind: "app_password" });
   expect(
     await env.DB.prepare("SELECT kid FROM app_passwords WHERE id=?")
@@ -1637,7 +1639,7 @@ it("resolves an app password DAV path relative to its authorized root", async ()
     .bind(`ap:${id}`)
     .run();
   const principal = await authenticateAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     request(),
     "https://app.invalid",
     1,
@@ -1666,7 +1668,7 @@ it("rejects a DAV path whose node moves after its initial lookup", async () => {
     .bind(`ap:${id}`)
     .run();
   const principal = await authenticateAppPassword(
-    env.DB,
+    mutationEnv(env.DB),
     request(),
     "https://app.invalid",
     1,

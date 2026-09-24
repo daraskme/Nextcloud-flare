@@ -1,12 +1,16 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { appPasswordPepperRing, authenticateAppPassword } from "../../src/auth/appPassword";
+import { globalKdf } from "../../src/auth/globalKdf";
 import { advanceMutations } from "../../src/db/mutationAdmission";
 import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import type { Env } from "../../src/env";
+import { createAppPassword, revokeAppPassword } from "../../src/services/appPasswords";
 import { createFolder } from "../../src/services/createFolder";
 import { foundationFixture } from "../fixtures/foundation";
 import { grantPermit } from "../fixtures/mutationAdmission";
@@ -171,84 +175,162 @@ it("runs a real namespace mutation through real LockDO and ControlDO after resum
   await audited();
 });
 
-it("queues DAV behind the shared 32 grants and returns its slot after commit", async () => {
-  await audited();
-  await control().resumeAdmission(epoch);
-  const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
-  await atomicBatch(
-    env.DB,
-    seeds.map((id) => ({
-      sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
-      values: [id, id, f.ids.space, epoch],
-    })),
-  );
-  expect((await advanceMutations(env.DB)).filter((row) => row.state === "active")).toHaveLength(32);
-  const pending = env.LOCKS.get(env.LOCKS.idFromName(f.ids.space)).createDavLock({
-    requestId: crypto.randomUUID(),
-    spaceId: f.ids.space,
-    nodeId: f.ids.file,
-    principal: { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch },
-    displayHref: "/dav/File",
-    depth: "0",
-    ownerText: "owner",
-    timeoutSeconds: 60,
-  });
-  // Attach a rejection handler immediately while waiting for observable D1 admission.
-  const outcome = pending.then(
-    (value) => ({ value }),
-    (error) => ({ error }),
-  );
-  try {
-    await expect
-      .poll(
-        async () =>
-          env.DB.prepare(
-            "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND permit_id LIKE 'dav:create:%'",
-          ).first("n"),
-        { timeout: 4000, interval: 25 },
-      )
-      .toBe(1);
-    expect(
-      await env.DB.prepare("SELECT COUNT(*) AS n FROM locks WHERE space_id=?")
-        .bind(f.ids.space)
-        .first("n"),
-    ).toBe(0);
-    await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
-      .bind(seeds[0])
-      .run();
-    const result = await outcome;
-    if ("error" in result) throw result.error;
-    expect(result.value.token).toMatch(/^opaquelocktoken:/);
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
-      ).first("n"),
-    ).toBe(31);
-    expect(
-      await env.DB.prepare(
-        "SELECT state,committed_at FROM mutation_admissions WHERE permit_id LIKE 'dav:create:%' ORDER BY seq DESC LIMIT 1",
-      ).first(),
-    ).toMatchObject({ state: "closed", committed_at: expect.any(Number) });
-    const next = await control().acquireMutation({
-      permitId: crypto.randomUUID(),
-      spaceId: f.ids.space,
+it.each(["dav", "create", "revoke", "rotate"] as const)(
+  "queues %s behind the shared 32 grants and returns its slot after commit",
+  async (action) => {
+    await audited();
+    await control().resumeAdmission(epoch);
+    const prefix = action === "dav" ? "dav:create:%" : `app-password.${action}:%`;
+    const session = {
+      credential_id: f.ids.credential,
+      session_id: f.ids.session,
+      user_id: f.ids.user,
+      role: "app_admin" as const,
       epoch,
-      deadline: Date.now() + 5000,
-    });
-    expect(
-      await grantAdmittedPermit(env.DB, next.permit_id, f.ids.space, epoch, next),
-    ).toMatchObject({ permit_id: next.permit_id });
-    expect(
+      expires_at: Date.now() + 600000,
+    };
+    const keys = {
+      v1: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+      v2: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    };
+    // Simulate an already elapsed recovery cooldown; cold-start rejection has its own KDF tests.
+    await env.DB.prepare("UPDATE control SET kdf_not_before=0").run();
+    const derive = globalKdf(env.CONTROL, epoch);
+    const ring = await appPasswordPepperRing("v1", keys, derive);
+    const next = await appPasswordPepperRing("v2", keys, derive);
+    const input = { name: "shared pool", scopes: ["node:read"] };
+    const credential =
+      action === "revoke" || action === "rotate"
+        ? await createAppPassword(env, session, input, ring)
+        : null;
+    const beforePasswords = await env.DB.prepare(
+      "SELECT id,kid,revoked_at FROM app_passwords WHERE user_id=? ORDER BY id",
+    )
+      .bind(f.ids.user)
+      .all();
+    const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+    await atomicBatch(
+      env.DB,
+      seeds.map((id) => ({
+        sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+        values: [id, id, f.ids.space, epoch],
+      })),
+    );
+    expect((await advanceMutations(env.DB)).filter((row) => row.state === "active")).toHaveLength(
+      32,
+    );
+    const pending =
+      action === "dav"
+        ? env.LOCKS.get(env.LOCKS.idFromName(f.ids.space)).createDavLock({
+            requestId: crypto.randomUUID(),
+            spaceId: f.ids.space,
+            nodeId: f.ids.file,
+            principal: {
+              kind: "user",
+              user_id: f.ids.user,
+              credential_id: f.ids.credential,
+              epoch,
+            },
+            displayHref: "/dav/File",
+            depth: "0",
+            ownerText: "owner",
+            timeoutSeconds: 60,
+          })
+        : action === "create"
+          ? createAppPassword(env, session, input, ring)
+          : action === "revoke"
+            ? revokeAppPassword(env, session, credential!.credentialId)
+            : authenticateAppPassword(
+                env,
+                new Request("https://app.invalid/dav", {
+                  headers: {
+                    Authorization: `Basic ${btoa(`${credential!.id}:${credential!.secret}`)}`,
+                  },
+                }),
+                "https://app.invalid",
+                epoch,
+                next,
+              );
+    // Attach a rejection handler immediately while waiting for observable D1 admission.
+    const outcome = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      await expect
+        .poll(
+          async () =>
+            env.DB.prepare(
+              "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND permit_id LIKE ?",
+            )
+              .bind(prefix)
+              .first("n"),
+          { timeout: 4000, interval: 25 },
+        )
+        .toBe(1);
+      expect(
+        await env.DB.prepare("SELECT COUNT(*) AS n FROM locks WHERE space_id=?")
+          .bind(f.ids.space)
+          .first("n"),
+      ).toBe(0);
+      expect(
+        (
+          await env.DB.prepare(
+            "SELECT id,kid,revoked_at FROM app_passwords WHERE user_id=? ORDER BY id",
+          )
+            .bind(f.ids.user)
+            .all()
+        ).results,
+      ).toEqual(beforePasswords.results);
+      await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+        .bind(seeds[0])
+        .run();
+      const result = await outcome;
+      if ("error" in result) throw result.error;
+      if (action === "dav")
+        expect(result.value).toMatchObject({ token: expect.stringMatching(/^opaquelocktoken:/) });
+      if (action === "create")
+        expect(result.value).toMatchObject({ credentialId: expect.stringMatching(/^ap:ap_/) });
+      if (action === "rotate")
+        expect(result.value).toMatchObject({ credential_id: credential!.credentialId });
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+        ).first("n"),
+      ).toBe(31);
+      expect(
+        await env.DB.prepare(
+          "SELECT state,committed_at FROM mutation_admissions WHERE permit_id LIKE ? ORDER BY seq DESC LIMIT 1",
+        )
+          .bind(prefix)
+          .first(),
+      ).toMatchObject({ state: "closed", committed_at: expect.any(Number) });
+      const next = await control().acquireMutation({
+        permitId: crypto.randomUUID(),
+        spaceId: f.ids.space,
+        epoch,
+        deadline: Date.now() + 5000,
+      });
+      expect(
+        await grantAdmittedPermit(env.DB, next.permit_id, f.ids.space, epoch, next),
+      ).toMatchObject({ permit_id: next.permit_id });
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+        ).first("n"),
+      ).toBe(32);
+    } finally {
+      await control().quiesce(epoch);
+      await outcome;
+      await env.DB.prepare("DELETE FROM locks WHERE space_id=?").bind(f.ids.space).run();
       await env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
-      ).first("n"),
-    ).toBe(32);
-  } finally {
-    await control().quiesce(epoch);
-    await outcome;
-    await env.DB.prepare("DELETE FROM locks WHERE space_id=?").bind(f.ids.space).run();
-  }
-});
+        "UPDATE app_passwords SET revoked_at=COALESCE(revoked_at,?) WHERE user_id=?",
+      )
+        .bind(Date.now(), f.ids.user)
+        .run();
+    }
+  },
+);
 
 for (const operation of [
   "resumeAdmission",
