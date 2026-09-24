@@ -6,9 +6,9 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 **別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 実装済み・未実装・検証済み・未検証の一覧は [現在状態](docs/CURRENT_STATE.md) にまとめています。
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 の一部**を実装済み。
-67通常テーブル、migration `0001`〜`0036`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
+67通常テーブル、migration `0001`〜`0037`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
 アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査・中止とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)も接続しました。完全な閉鎖証明と予約・保留容量の精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
-[共通の更新受付](docs/MUTATION_ADMISSION.md)は、namespace・DAVロック・app password更新・session登録/初回owner/logout・配信budgetとticketの発行/交換/取消し・upload新規予約・単一送信開始/読戻し/検証済み情報・multipart初期化/complete送信claim/検証済み情報・利用者によるupload中止を同時32件・待機256件で制御します。更新と確定記録・枠解放を一括保存します。同じ要求IDのupload予約再取得は枠を増やさず、混雑中も利用できます。以下の復旧処理とQueueも同じ枠を使います。旧epoch repairも接続済みで、backup barrierとlogical export/restore drillは開発中です。
+[共通の更新受付](docs/MUTATION_ADMISSION.md)は、namespace・DAVロック・app password更新・session登録/初回owner/logout・配信budgetとticketの発行/交換/取消し・upload新規予約・単一送信開始/読戻し/検証済み情報・multipart初期化/complete送信claim/検証済み情報・利用者によるupload中止を同時32件・待機256件で制御します。更新と確定記録・枠解放を一括保存します。同じ要求IDのupload予約再取得は枠を増やさず、混雑中も利用できます。以下の復旧処理とQueueも同じ枠を使います。旧epoch repairも接続済みで、[backup barrier](docs/BACKUP_BARRIER.md)をローカル実装し、logical export/restore drillは開発中です。
 物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。 migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。
 UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳喪失時の停止を共通受付へ接続しました。初期化と通常反映は現在の利用者認可、停止反映と喪失処理は復旧用system受付を使い、すべて同じ32 active/256 waiting枠を共有します。 初期化markerや部品送信につながる台帳反映は、D1 batchの直接ACKがなければローカル台帳を確定せず、送信許可も返しません。混雑・rollback・応答喪失でもdirty行、アラーム、予約容量を保持します。台帳全喪失では停止記録を回収できても再初期化しません。
 単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 停止claimは正確なcleanup tokenで回収できますが、外部HEAD/abortは予算batchの直接ACKが必要です。確定済みDB記録はexact receiptで照合し、他の回収処理の終端記録で自分の未確定枠を返しません。待機・遅いACKで実行時間を超えた場合は外部送信を止め、予約・leaseを保持します。ControlDO内の復旧は同じinstanceの受付を直接使い、自己RPCや別枠を作りません。
@@ -21,6 +21,8 @@ Queueの送信・受信処理を共通system受付へ接続しました。送信
 全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。 所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
 
 WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。 詳細は[DAV PUTの保存台帳](docs/DAV_UPLOAD.md)。
+
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。 詳細は[バックアップ書込み停止](docs/BACKUP_BARRIER.md)。
 
 単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。 詳細は[公開失敗後の精算](docs/UPLOAD_FAILED_COMPLETION.md)。
 

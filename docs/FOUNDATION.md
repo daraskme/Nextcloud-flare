@@ -3,6 +3,16 @@
 2026-09-22。設計 v0.6 と IMPLEMENTATION_BRIEF §8 の確定条件を具体化する。
 Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node 認可基盤の実装記録。
 
+## バックアップ書込み停止（0037）
+
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
+
+migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
+
+Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+
+凍結は通常67tableに適用し、controlは同じtokenの解除batch内でflagだけを先に戻す。新しいtable/列を追加するときはfreeze guardの対象も更新する。watermarkは操作のcommitted遷移と同じtransactionで記録し、legacy初期値だけupdated_at/op_id順で決める。legacyの同時刻内の順序を復元したとは主張しない。[BACKUP_BARRIER](BACKUP_BARRIER.md)を正本とする。
+
 ## 契約・schema
 
 - `packages/shared/src/contracts.ts`: scope、operation、state と single upload 遷移。

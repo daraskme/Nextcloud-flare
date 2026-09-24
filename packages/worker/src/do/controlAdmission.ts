@@ -1,6 +1,11 @@
 import { assertExists, assertOneChange, atomicBatch } from "../db/primary";
 import { type RestorePause } from "../db/restorePause";
 import type { ControlStatus } from "./ControlDO";
+import {
+  assertNoBackup,
+  type BackupAdmissionSnapshot,
+  initializeBackupState,
+} from "./controlBackup";
 import { epochNumber } from "./epochHistory";
 import { RECOVERY_FINAL_QUERY } from "./recoveryAudit";
 
@@ -38,6 +43,7 @@ export class ControlAdmission {
     private readonly currentEpoch: () => number,
     private readonly assertKdfQuiescent: () => void,
   ) {
+    initializeBackupState(storage.sql);
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_admission(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,
       revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),
@@ -64,7 +70,8 @@ export class ControlAdmission {
     )`);
   }
 
-  #row(epoch = this.currentEpoch()): AdmissionRow {
+  #row(epoch = this.currentEpoch(), allowBackup = false): AdmissionRow {
+    if (!allowBackup) assertNoBackup(this.storage.sql);
     if (this.currentEpoch() !== epoch) throw new Error("admission_epoch_conflict");
     const row = this.storage.sql
       .exec<AdmissionRow>(
@@ -73,6 +80,40 @@ export class ControlAdmission {
       .one();
     if (row.epoch !== epoch) throw new Error("admission_epoch_conflict");
     return row;
+  }
+
+  captureBackup(): BackupAdmissionSnapshot {
+    const row = this.#row();
+    if ((row.phase !== "open" && row.phase !== "closed") || row.hold_token !== null)
+      throw new Error("backup_admission_busy");
+    if (this.storage.sql.exec("SELECT 1 FROM control_maintenance_tasks LIMIT 1").toArray().length)
+      throw new Error("backup_maintenance_active");
+    return {
+      epoch: row.epoch,
+      revision: row.revision,
+      phase: row.phase,
+      token: row.token,
+      gc_paused: row.gc_paused,
+      operator_paused: row.operator_paused,
+      audit_token: row.audit_token,
+    };
+  }
+
+  /** Called only after the backup's exact D1 release receipt, in the caller's local transaction. */
+  restoreBackup(snapshot: BackupAdmissionSnapshot, token: string): void {
+    const row = this.#row(snapshot.epoch, true);
+    if (
+      row.revision !== snapshot.revision ||
+      row.token !== snapshot.token ||
+      row.phase !== snapshot.phase
+    )
+      throw new Error("backup_admission_conflict");
+    this.storage.sql.exec(
+      `UPDATE control_admission SET revision=?,token=?,prior_token=NULL WHERE singleton=1`,
+      snapshot.revision + 2,
+      token,
+    );
+    this.storage.sql.exec("DELETE FROM control_alarm_failures");
   }
 
   #current(intent: AdmissionRow, phase = intent.phase): void {

@@ -4,20 +4,20 @@
 
 ## 確定した到達点
 
-Files基本操作、単一/分割upload、確認付き上書き・再開、trash/restore/purge、検索、フォルダー集計を接続済み。認証・会計・復旧・共通更新受付とKDF全体制限を実装しています。
+Files基本操作、単一/分割upload、確認付き上書き・再開、trash/restore/purge、検索、フォルダー集計を接続済み。認証・会計・復旧・共通更新受付とKDF全体制限、WebDAVの転送と公開の分離を実装しています。
 
-直前commit a9b8af2はmainへプッシュ済み。[CI36064368977](https://github.com/daraskme/Nextcloud-flare/actions/runs/36064368977)は全4ジョブ成功。Ubuntu6m46s、Windows 1/2は16m1s（46file/1,057件）、2/2は12m19s（45file/888件）、browser2m6sです。Node424・workerd1,945・browser19、重複を除く計2,388件を確認しました。Windows分割後も全件とbuild/dry-runを通過し、前回の30分上限中断を解消しました。今回の転送と公開の分離はこのCIには含まれません。
+直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。
 
 ## 今回の変更
 
-WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
 
-migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
+migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
 
-Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)と[DAV_UPLOAD](DAV_UPLOAD.md)。
+Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)と[BACKUP_BARRIER](BACKUP_BARRIER.md)。
 
 ## 後続の主要項目
 
-旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。
+logical export・checksum/manifest公開・FTSを含むrestore drill、backup停止中のControlDO全喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。
 
 全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9を維持する。remote migration・deployは未実施。

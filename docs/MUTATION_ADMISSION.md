@@ -2,6 +2,12 @@
 
 更新日: 2026-09-25。migration `0030` / `0031` / `0032` / `0033` / `0034`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
 
+## バックアップ中の停止
+
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
+
+準備開始からsystem/global grantも拒否する。凍結中は通常tableへのINSERT/UPDATE/DELETEをDB guardで拒否し、既存処理の遅い更新も通さない。開始・解除の専用ControlDO intentは通常の32枠を借用せず、元の受付状態を保存して全枠を停止する制御である。[BACKUP_BARRIER](BACKUP_BARRIER.md)参照。
+
 ## 接続した範囲
 
 LockDOのcreate・rename・move・copy・node write・trash・restore・purgeの8許可経路で、`ControlDO.acquireMutation`が必須になった。REST/WebDAVのファイル更新と、upload completeのnamespace公開がこの経路を通る。

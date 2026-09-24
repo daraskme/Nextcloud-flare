@@ -2,7 +2,7 @@
 
 更新日: 2026-09-25
 
-直近の到達点は[PROGRESS](PROGRESS.md)。直前commit a9b8af2はmainへプッシュ済み。[CI36064368977](https://github.com/daraskme/Nextcloud-flare/actions/runs/36064368977)は全4ジョブ成功。Ubuntu6m46s、Windows 1/2は16m1s（46file/1,057件）、2/2は12m19s（45file/888件）、browser2m6sです。Node424・workerd1,945・browser19、重複を除く計2,388件を確認しました。Windows分割後も全件とbuild/dry-runを通過し、前回の30分上限中断を解消しました。今回の転送と公開の分離はこのCIには含まれません。 WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。 Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+直近の到達点は[PROGRESS](PROGRESS.md)。直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。 バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。 Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -22,6 +22,7 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| バックアップ書込み停止 | 専用永続intent、全通常table凍結、原子的なpolicy復元 | Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | logical export・checksum/manifest公開・FTSを含むrestore drill、backup停止中のControlDO全喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
 | DAVの転送と公開の分離 | 本文後のfresh30秒permit、開始受付、未結合記録の回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
 | DAV PUTの保存台帳 | 送信前の永続記録・共通受付・未知結果の容量保留・回収/GC | Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
 | upload公開失敗後の精算受付 | 実ownerの共通枠・物理計上証明・GC後の再照会 | workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
@@ -155,7 +156,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 1. unknown multipart IDの全体不在証明・予約精算を実装。毎回freshなS3/BLOBS対応検証は走査・中止へ接続済み。upload行喪失時の全bucket走査・容量保留、S3診断と完成済み`u/` objectの隔離・35日回収も接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
-4. account mutation / 終了証明を失ったKDFの運用収束、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。
+4. account mutation / 終了証明を失ったKDFの運用収束、backup logical export/manifest、実環境のrestore/再開drill。内部RPCの段階再開とbackup barrierはローカル実装済み。
 5. Files UIの残り（共有・media・metadata検索）。
 6. share、media metadata検索、ZIP/reader/media配信。
 7. backup/export/restore drill。

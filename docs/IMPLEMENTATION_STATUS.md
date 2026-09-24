@@ -3,10 +3,13 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+直前検証: 直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。
+
 ## 今回の実装
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1/4 バックアップ書込み停止 | migration0037、ControlDOの永続barrier、watermark、全通常table guard、前のpolicyへ原子的復帰 | Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 [BACKUP_BARRIER](BACKUP_BARRIER.md) |
 | 1/3/7 DAV長時間転送 | migration0036、本文後のpermit、未結合操作IDの原子的公開・回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 [DAV_UPLOAD](DAV_UPLOAD.md) |
 | 1/3/7 DAV PUTの保存台帳 | migration0035、直接ACK/条件付きPUT、所有spaceの保存事実/失敗精算、24h回収/GC | Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。 [DAV_UPLOAD](DAV_UPLOAD.md) |
 | 1/3 upload公開失敗後の精算受付 | 所有space・DB-only補償・厳密な保存証明と再照会 | workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md) |

@@ -47,6 +47,12 @@ import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2Bin
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
+import {
+  assertNoBackup,
+  type BackupBarrierStatus,
+  backupActive,
+  ControlBackup,
+} from "./controlBackup";
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
@@ -119,6 +125,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #kdf: ControlKdf;
   readonly #kdfSettlements: KdfSettlements;
   readonly #mutations: ControlMutations;
+  readonly #backup: ControlBackup;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -157,6 +164,17 @@ export class ControlDO extends DurableObject<Env> {
       (epoch) => this.#admission.assertKdfOpen(epoch),
       this.#kdfSettlements,
     );
+    this.#backup = new ControlBackup(
+      ctx.storage,
+      env.DB,
+      () => {
+        const row = this.#row();
+        if (row.phase !== "ready") throw new Error("control_not_ready");
+        return row.epoch;
+      },
+      () => this.#admission.captureBackup(),
+      (snapshot, token) => this.#admission.restoreBackup(snapshot, token),
+    );
     this.#mutations = new ControlMutations(
       env.DB,
       async (request) => {
@@ -190,7 +208,35 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   async status(): Promise<ControlStatus> {
+    if (backupActive(this.ctx.storage.sql)) {
+      const row = this.#row();
+      if (row.phase !== "ready") throw new Error("control_not_ready");
+      return { epoch: row.epoch, maintenance: true, gcPaused: true };
+    }
     return this.#admission.status();
+  }
+
+  async beginBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {
+    return this.#backup.begin(expectedEpoch, id);
+  }
+
+  async releaseBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {
+    return this.#backup.release(expectedEpoch, id);
+  }
+
+  async cancelBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {
+    return this.#backup.release(expectedEpoch, id, true);
+  }
+
+  async #assertNoBackup(): Promise<void> {
+    assertNoBackup(this.ctx.storage.sql);
+    const clear = await primary(this.env.DB)
+      .prepare(
+        "SELECT 1 FROM control WHERE singleton=1 AND backup_token IS NULL AND backup_frozen=0",
+      )
+      .first();
+    assertNoBackup(this.ctx.storage.sql);
+    if (!clear) throw new Error("backup_active");
   }
 
   /** Space-scoped admission; current authorization remains in the service transaction. */
@@ -279,6 +325,7 @@ export class ControlDO extends DurableObject<Env> {
   async recover(): Promise<ControlStatus> {
     const row = this.#row();
     if (row.phase === "ready") return this.status();
+    await this.#assertNoBackup();
     if (row.phase === "pending") return this.#completePending(row);
     const d1Epoch = await primary(this.env.DB)
       .prepare("SELECT epoch FROM control WHERE singleton=1")
@@ -299,6 +346,7 @@ export class ControlDO extends DurableObject<Env> {
     epochNumber(expectedEpoch);
     if (!["restore", "credential_rotation", "operator"].includes(reason))
       throw new Error("invalid_epoch_reason");
+    await this.#assertNoBackup();
     const row = this.#row();
     if (row.phase !== "ready" || row.epoch !== expectedEpoch) throw new Error("epoch_conflict");
     const next = epochNumber(expectedEpoch + 1);
@@ -354,6 +402,7 @@ export class ControlDO extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (this.#row().phase !== "ready") return;
+    if (backupActive(this.ctx.storage.sql)) return;
     const transition = this.#admission.alarmTransition();
     try {
       const pause = await this.#admission.reconcileRestorePause();
@@ -709,6 +758,7 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   #reserve(epoch: number, reason: EpochReason, phase: ControlRow["phase"], expected: number): void {
+    assertNoBackup(this.ctx.storage.sql);
     const result = this.ctx.storage.sql.exec(
       `UPDATE control_state SET phase='pending',pending_epoch=?,pending_at=?,
       pending_reason=?,pending_token=? WHERE singleton=1 AND phase=? AND epoch=?`,
@@ -732,6 +782,7 @@ export class ControlDO extends DurableObject<Env> {
     ) {
       throw new Error("invalid_pending_epoch");
     }
+    await this.#assertNoBackup();
     // A lost response leaves this durable pending row. recover() rechecks the immutable R2 record.
     await persistEpoch(this.env.BACKUPS, {
       epoch: row.pending_epoch,

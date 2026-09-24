@@ -25,23 +25,23 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit a9b8af2はmainへプッシュ済み。[CI36064368977](https://github.com/daraskme/Nextcloud-flare/actions/runs/36064368977)は全4ジョブ成功。Ubuntu6m46s、Windows 1/2は16m1s（46file/1,057件）、2/2は12m19s（45file/888件）、browser2m6sです。Node424・workerd1,945・browser19、重複を除く計2,388件を確認しました。Windows分割後も全件とbuild/dry-runを通過し、前回の30分上限中断を解消しました。今回の転送と公開の分離はこのCIには含まれません。
+直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。
 
-WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
 
-migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
+migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
 
-Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
 
-開始時にnamespace permit/operationを作らず、dav.put-startのDB batchで自分の受付枠を返す。保存事実はsystem:dav.put-stored。公開時のoperation IDは元のintentから変えず、元の認可snapshotとHTTP対象revisionを維持する。NULL→操作IDの結合は公開と同一batch。旧bound DAV/private行も維持する。migration0036以後の変更は前方migrationを追加する。詳細は[DAV_UPLOAD](DAV_UPLOAD.md)。
+内部RPCはbeginBackup/releaseBackup/cancelBackup。開始がfrozenのときだけsnapshotを取得でき、releasedの再照会を新しい許可にしない。解除時にbackup_runsをcompletedにしない。全tableのexportが同じsnapshotと実証できるまで、barrierを全抽出期間保持する。通常maintenance中のsystem/global更新もD1 guardで止める。詳細は[BACKUP_BARRIER](BACKUP_BARRIER.md)。
 
-operation未claimのまま停止・権限失効・許可ACK喪失になった場合も、完成bodyの物理容量と予約を保持して24h後の回収へ渡す。既知のfailed operationがある完成bodyは従来の厳密な精算・GCを使う。cleanupは未結合のclaimed operationも検出し、同時終端化で遅い公開を拒否する。
+ControlDO全storage喪失時はD1のbackup tokenを確認し、epochのR2履歴を変更する前に拒否する。元の受付状態を推測で復元する回避策は追加していない。logical restore時の凍結状態解除・epoch更新・全監査も後続である。0037は新規migration。以後は前方migrationを追加する。
 
-旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 全体完成扱いにしない。次はbackup barrier/export/restoreを進め、旧DAVの証明付き回収も残課題として維持する。旧PUTは終了期限を保存していないため、24h期限やHEADだけで新しいwrite leaseの証明を代用しない。詳細は[RECOVERY_REPAIR](RECOVERY_REPAIR.md)。
+logical export・checksum/manifest公開・FTSを含むrestore drill、backup停止中のControlDO全喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 全体完成扱いにしない。旧DAVは終了期限を保存していないため24h期限やHEADだけでwrite leaseの証明を代用しない。[RECOVERY_REPAIR](RECOVERY_REPAIR.md)を参照する。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0036`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0037`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
