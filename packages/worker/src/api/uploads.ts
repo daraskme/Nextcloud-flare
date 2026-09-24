@@ -287,7 +287,7 @@ export async function handleUploadHttp(
         headers: HEADERS,
       });
     }
-    const result = await createSingleUpload(env.DB, input, capabilities);
+    const result = await createSingleUpload(env, input, capabilities);
     return Response.json(result, { status: 201, headers: HEADERS });
   } catch (error) {
     if (error instanceof Error && error.message === "mutation_unavailable") {

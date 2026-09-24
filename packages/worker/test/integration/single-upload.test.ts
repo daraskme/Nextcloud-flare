@@ -17,7 +17,7 @@ import { completeSingleUpload } from "../../src/services/uploads/complete";
 import { writeSingleUpload } from "../../src/services/uploads/content";
 import { createSingleUpload } from "../../src/services/uploads/create";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireMutation } from "../fixtures/mutationAdmission";
+import { acquireMutation, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
@@ -39,6 +39,7 @@ function admitted(): Env {
   return {
     ...env,
     APP_ORIGIN: "https://app.invalid",
+    CONTROL: doEnv.CONTROL,
     LOCKS: {
       idFromName: env.LOCKS.idFromName.bind(env.LOCKS),
       get(id: DurableObjectId) {
@@ -89,7 +90,7 @@ async function fixture(size = 3) {
     declaredSize: size,
   };
   const app = admitted();
-  const created = await createSingleUpload(env.DB, input, capabilities);
+  const created = await createSingleUpload(mutationEnv(), input, capabilities);
   return { ...f, principal, capabilities, input, created, app };
 }
 async function write(f: Awaited<ReturnType<typeof fixture>>, text = "abc", app = f.app) {
@@ -210,13 +211,13 @@ it("replays a lost create response and concurrent same-key requests without doub
     true,
   );
   const [a, b] = await Promise.all([
-    createSingleUpload(db, input, f.capabilities),
-    createSingleUpload(env.DB, input, f.capabilities),
+    createSingleUpload(mutationEnv(db), input, f.capabilities),
+    createSingleUpload(mutationEnv(), input, f.capabilities),
   ]);
   expect(a).toEqual(b);
   expect(await counters(f)).toMatchObject({ reserved_bytes: 6 });
   await expect(
-    createSingleUpload(env.DB, { ...input, name: "different.txt" }, f.capabilities),
+    createSingleUpload(mutationEnv(), { ...input, name: "different.txt" }, f.capabilities),
   ).rejects.toThrow(/idempotency_conflict/);
 });
 
@@ -294,7 +295,7 @@ it("retains the previous blob as a version during atomic overwrite", async () =>
   const first = await complete(f);
   if (first.kind !== "terminal" || !first.operation.result?.nodeId) throw new Error("missing_node");
   const second = await createSingleUpload(
-    env.DB,
+    mutationEnv(),
     {
       ...f.input,
       requestId: "overwrite",
@@ -381,7 +382,7 @@ it("rejects oversize reservation before any R2 I/O", async () => {
   const f = await fixture();
   await expect(
     createSingleUpload(
-      env.DB,
+      mutationEnv(),
       { ...f.input, requestId: "quota", declaredSize: 10000000 },
       f.capabilities,
     ),

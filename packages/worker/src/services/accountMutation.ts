@@ -30,7 +30,8 @@ export async function acquireAccountMutation(
     | "content.budget"
     | "content.issue"
     | "content.accept"
-    | "content.cancel",
+    | "content.cancel"
+    | "upload.reserve",
 ): Promise<MutationAdmission> {
   const spaceId = await primary(env.DB)
     .prepare(

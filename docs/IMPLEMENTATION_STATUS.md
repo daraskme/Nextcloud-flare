@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 1/2 配信更新の全体受付 | budget・ticket発行/交換/取消しの共有32枠、コンテンツ所有space、待機後の現行認可/期限と確定記録、取消し証明後のR2 manifest削除 | workerd70件追加。対象101件と全check1,462件（Node408/workerd1054）成功。静的検査・契約・設定・buildも成功。browser/CIはpush後。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 upload予約の全体受付 | 単一/分割・新規/上書きの共有32枠、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加。既存55件・新規境界40件・実ControlDO37件成功。全check1,504件（Node408/workerd1096）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/2 配信更新の全体受付 | budget・ticket発行/交換/取消しの共有32枠、コンテンツ所有space、待機後の現行認可/期限と確定記録、取消し証明後のR2 manifest削除 | workerd70件追加。522f616のCI全成功、Node408/workerd1054/browser19、計1,481件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 session・初回owner・logout受付 | migration0032、space作成前も共有32枠、既存JWTのread-only照合、変更/確定記録/解放を一括保存 | Node4/workerd22件追加。8e7243eのCI全成功、Node408/workerd984/browser19、計1,411件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 app password更新受付 | 発行・失効・pepper更新を共通32枠へ接続、KDF後取得、変更/確定記録/解放を一括保存、混雑503 | workerd32件追加。既存認証55件と最終境界60件、計1,366件を検証。旧fixture1件修正後の再検証・残るgateも成功。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 DAVロックの全体受付 | migration0031、LOCK/refresh/UNLOCK共有枠、lock変更・確定記録・枠解放の一括確定、60秒保持と索引cleanup | Node4/workerd22件追加、対象Node8/workerd72件成功。全check1,334件（Node404/workerd930）成功。HTTP token再取得・別RPC結果再生は未実装。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
@@ -122,6 +123,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-25、upload新規予約の共通受付を追加。workerd42件追加。既存single/multipart55件（27.78秒）、初期境界と実ControlDO73件（49.42秒）、全照合喪失と実時計の期限切れ追加後の新規境界40件（14.08秒）成功。最終pnpm check成功。Node408/25files（5.33秒）+ workerd1096/65files（517.53秒）=1,504件。lint/typecheck/contracts/config、Web build、Worker dry-runも成功。今回のbrowserと両OSのCIはpush後に確認する。schema0032/通常67table・migrationと依存追加なし。
+- 2026-09-25、直前commit522f616009359e5bc0a40c42575442b01c7d57b7の[CI36020805225](https://github.com/daraskme/Nextcloud-flare/actions/runs/36020805225)全成功。Ubuntu4分14秒、Windows12分59秒、browser2分36秒。両OSでNode408/25files、workerd1054/64files（Ubuntu214.22秒/Windows699.53秒）、browser19（1.5分）、合計1,481件。
 - 2026-09-25、content budget・ticket発行/交換/取消しの共通受付を追加。workerd70件追加。既存対象17件成功。初期境界83件のうちapp password fixture4件が既存kdf_params CHECKに失敗したため、fixtureのiterationsを既存制約に合わせた。4 principalの失効と待機中の実時計による期限切れ、実ControlDOの満杯待機/返却を追加し、最終対象101件（新規content66件+ControlDO35件、67.96秒）成功。最終pnpm check成功。Node408/25files（5.53秒）+ workerd1054/64files（498.38秒）=1,462件。lint/typecheck/contracts/config、Web build、Worker dry-runも成功。今回のbrowserと両OSのCIはpush後に確認する。migration0032/通常67table・依存変更なし。
 - 2026-09-25、直前commit `8e7243ede16285dfbb8330b60b1d8b0d28af516b`の[CI36016276272](https://github.com/daraskme/Nextcloud-flare/actions/runs/36016276272)全成功。Ubuntu4分32秒、Windows9分25秒、browser2分12秒。Node408/25files、workerd984/63files（Ubuntu202.73秒/Windows481.36秒）、browser19（1.5分）、合計1,411件。
 - 2026-09-24、session/初回owner/logoutの共通受付を追加。Node4/workerd22件追加。型検査成功。対象Node83件、認証更新21件と既存29件・受付12件、bootstrap/実ControlDO5件成功。初期の旧エラー文字列期待とRPC拒否を試験内で捕捉するfixtureを修正した。初回全checkでNode用fingerprint試験にCloudflare runtimeが混入するimport依存を検出し、canonical ControlDO名をruntime非依存moduleへ分離。再実行はNode408/25files成功、workerd983成功/1失敗（984件・63files、464.31秒）。app-passwordの応答喪失fixtureが受付側にも同じ故障を注入していたため、fixtureの受付DBを独立させた。関連3files全57件（23.68秒）とlint/typecheck/Web build/Wrangler dry-runを再検証し成功。productionコードは全体試験から変更なし。契約・設定も成功。合計Node408/workerd984=1,392件を確認。CIで全check/browserを新規実行する。migration0032/通常67table・依存変更なし。

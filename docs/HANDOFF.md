@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-content budget・ticket発行/交換/取消しを共通mutation枠へ接続した。共有もコンテンツ所有者のspaceを使い、待機後のcurrent authority/SQL時計とexact receiptで確定する。manifestは公開前にR2へ準備し、発行失敗時はDBで遅延公開を原子的に取り消した証明がある場合だけ削除する。応答喪失では保持する。追加workerd70件、対象101件と全check1,462件（Node408/workerd1054）、静的検査・契約・設定・Web build・Worker dry-run成功。今回のbrowser/CIはpush後に確認する。直前8e7243eのCIは全成功、Node408/workerd984/browser19、計1,411件。schema0032/67table・依存変更なし。詳細と残るupload準備・Queue/backup統合は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。全体完成扱いにしない。
+単一/分割uploadの新規予約を共通mutation枠へ接続。署名/hash後に所有spaceで取得し、待機後の認可/revision/期限/quotaとreservation/blob/upload/確定記録/解放を同一batchで確認する。同keyの既存receiptは枠を取らず読取り。別要求の共有receiptへ合流しても自分の未確定枠を解放しない。全照合喪失でも予約/容量を保持する。workerd42件追加、既存55件・新規境界40件・実ControlDO37件成功。全check1,504件（Node408/workerd1096）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。直前522f616のCIは全成功、Node408/workerd1054/browser19、計1,481件。schema0032/67table・依存変更なし。残る転送開始/終了記録・abort/cleanup・Queue/backup統合は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。全体完成扱いにしない。
 
 ## 現在動いている範囲
 
@@ -96,7 +96,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticketの共通受付を接続済み。upload準備・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約の共通受付を接続済み。upload転送開始/終了記録・abort/cleanup・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

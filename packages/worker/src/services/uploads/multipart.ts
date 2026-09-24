@@ -18,7 +18,7 @@ export async function createMultipartUploadReceipt(
   const control = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
   if (control.maintenance || control.epoch !== input.principal.epoch)
     throw new Error("admission_closed");
-  const reserved = await reserveMultipartUpload(env.DB, input, capabilities);
+  const reserved = await reserveMultipartUpload(env, input, capabilities);
   let pending = false;
   try {
     await createMultipartUpload(env, input, capabilities);
@@ -63,7 +63,7 @@ export async function createMultipartUpload(
   const control = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
   if (control.maintenance || control.epoch !== input.principal.epoch)
     throw new Error("admission_closed");
-  const created = await reserveMultipartUpload(env.DB, input, capabilities);
+  const created = await reserveMultipartUpload(env, input, capabilities);
   const { row, authorized } = await accessUpload(
     env.DB,
     input.principal,

@@ -7,6 +7,7 @@ import { authorizeNode } from "../../src/auth/authorize";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { globalKdf } from "../../src/auth/globalKdf";
+import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { advanceMutations } from "../../src/db/mutationAdmission";
 import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
@@ -18,6 +19,7 @@ import { ensureContentBudget } from "../../src/services/contentBudget";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { createFolder } from "../../src/services/createFolder";
+import { createSingleUpload, reserveMultipartUpload } from "../../src/services/uploads/create";
 import { foundationFixture } from "../fixtures/foundation";
 import { grantPermit } from "../fixtures/mutationAdmission";
 
@@ -464,6 +466,127 @@ it.each(["budget", "issue", "accept", "cancel"] as const)(
         { sql: "DELETE FROM budgets WHERE owner_id=?", values: [f.ids.user] },
       ]);
       if (sets.length) await env.BLOBS.delete(sets.map((set) => set.manifest_ref));
+    }
+  },
+);
+
+it.each(["single", "multipart"] as const)(
+  "queues new %s reservations with real ControlDO while reading an existing receipt at capacity",
+  async (mode) => {
+    await audited();
+    await control().resumeAdmission(epoch);
+    const capabilities = new UploadCapabilities(
+      await contentKeyRing("test", {
+        test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+      }),
+    );
+    const create = mode === "single" ? createSingleUpload : reserveMultipartUpload;
+    const input = {
+      principal: {
+        kind: "user" as const,
+        user_id: f.ids.user,
+        credential_id: f.ids.credential,
+        epoch,
+      },
+      requestId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      parentId: f.ids.folder,
+      name: "control-upload.txt",
+      declaredSize: 3,
+    };
+    const existing = await create(env, input, capabilities);
+    const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+    await atomicBatch(
+      env.DB,
+      seeds.map((id) => ({
+        sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+        values: [id, id, f.ids.space, epoch],
+      })),
+    );
+    expect((await advanceMutations(env.DB)).filter((row) => row.state === "active")).toHaveLength(
+      32,
+    );
+    expect(await create(env, input, capabilities)).toEqual(existing);
+    const pending = create(env, { ...input, requestId: crypto.randomUUID() }, capabilities);
+    const outcome = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      await expect
+        .poll(
+          () =>
+            env.DB.prepare(
+              "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND permit_id LIKE 'upload.reserve:%'",
+            ).first("n"),
+          { timeout: 4000, interval: 25 },
+        )
+        .toBe(1);
+      expect(
+        await env.DB.prepare("SELECT COUNT(*) AS n FROM uploads WHERE owner_id=?")
+          .bind(f.ids.user)
+          .first("n"),
+      ).toBe(1);
+      expect(
+        await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
+          .bind(f.ids.user)
+          .first("reserved_bytes"),
+      ).toBe(3);
+      await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+        .bind(seeds[0])
+        .run();
+      const result = await outcome;
+      if ("error" in result) throw result.error;
+      expect(result.value.state).toBe("created");
+      expect(
+        await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
+          .bind(f.ids.user)
+          .first("reserved_bytes"),
+      ).toBe(6);
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+        ).first("n"),
+      ).toBe(31);
+      const grant = await control().acquireMutation({
+        permitId: crypto.randomUUID(),
+        spaceId: f.ids.space,
+        epoch,
+        deadline: Date.now() + 5000,
+      });
+      expect(
+        await grantAdmittedPermit(env.DB, grant.permit_id, f.ids.space, epoch, grant),
+      ).toMatchObject({ permit_id: grant.permit_id });
+    } finally {
+      await control().quiesce(epoch);
+      await outcome;
+      // Test-created reservations never started external I/O; release before removing fixture rows.
+      const rows = (
+        await env.DB.prepare(
+          "SELECT id,blob_id,reservation_id,write_attempt_id,r2_upload_id FROM uploads WHERE owner_id=?",
+        )
+          .bind(f.ids.user)
+          .all<{
+            id: string;
+            blob_id: string;
+            reservation_id: string;
+            write_attempt_id: string | null;
+            r2_upload_id: string | null;
+          }>()
+      ).results;
+      for (const row of rows) {
+        expect(row.write_attempt_id).toBeNull();
+        expect(row.r2_upload_id).toBeNull();
+        await atomicBatch(env.DB, [
+          {
+            sql: "UPDATE reservations SET state='released' WHERE id=?",
+            values: [row.reservation_id],
+          },
+          { sql: "DELETE FROM uploads WHERE id=?", values: [row.id] },
+          { sql: "DELETE FROM reservations WHERE id=?", values: [row.reservation_id] },
+          { sql: "DELETE FROM blobs WHERE id=?", values: [row.blob_id] },
+        ]);
+      }
     }
   },
 );

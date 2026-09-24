@@ -77,6 +77,16 @@ APIは受付不可を503・Retry-After: 1で返す。Cookie交換はCORSを維�
 
 追加70件で4 principal、混雑、停止/失効、待機中の実時計による期限切れ、全rollback、exact receiptとreadback喪失、遅延公開対取消し、HTTP503/CORSを検証する。実ControlDOでも32枠満杯から待機・確定・返却し、namespace操作へ枠を渡す4経路を確認する。migration・依存追加なし。
 
+## 単一・分割uploadの新規予約
+
+createSingleUploadとreserveMultipartUploadはmandatoryなCONTROL bindingを受け、既存receiptがない場合に所有spaceの共有枠を取得する。署名/hash計算と現在の認可の事前確認を終えてから入る。最終batchでexact admission・所有者・credential・node/祖先・revision/tree generation・epoch・SQL時計を検査し、quota triggerを含むreservation、staging blob、upload、確定記録と枠解放を一括保存する。許可待機中や受付不可では予約もR2初期化も行わない。
+
+同じrequest ID/bodyの保存済みreceiptは従来のcurrent authority検査で返し、新しい枠を取らない。32枠が満杯でも、上書き対象のrevisionが変わった既存予約を確認できる。これは転送許可の再発行ではなく、新規予約・R2初期化・本文・確定のrevision検査は維持する。異なるbody、失効したcredential、移動などの拒否条件も維持する。
+
+自分のbatch応答喪失はexact receiptで照合する。別要求が同じkeyの予約を作った場合や自分のreceipt読取りを失った場合も、current authorityと一致する保存済みuploadを読めれば、その共有HTTP receiptへ合流できる。ただしそれは自分の確定証明ではなく、自分の未確定ticketを閉じない。予約・blob・容量を消さず、自動で予約SQLやR2を再実行しない。全照合応答を失ったときはエラーを返し、同じkeyで次に照会する。capabilityやhashを受付台帳に入れない。
+
+HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。R2送信開始/観測・UploadDO台帳反映・abort/cleanupなどの更新受付は後続であり、予約接続だけでupload全体を完了扱いにしない。
+
 ## 応答喪失・失効・復旧
 
 - active ticketのRPC応答が失われても枠を解放しない。同じintentの再送で再照合できる。DOのevictionやローカルの受付期限超過も解放根拠にしない。
@@ -101,11 +111,12 @@ APIは受付不可を503・Retry-After: 1で返す。Cookie交換はCORSを維�
 | session/bootstrap/logout | 接続済み。既存sessionはcurrent primary読取りのみ |
 | content budget / ticket発行・交換・取消し | 接続済み。コンテンツ所有spaceで受付し、current authorityと変更/確定記録/解放を同一batch |
 | CSRF helperの発行/検証 | DBはcurrent credentialの読取りのみ、tokenは署名。入口のsession登録も上記の共有受付へ接続済み |
-| upload予約・R2 create/part/completeの外部I/O・abort/cleanup | 既存upload制御を維持。namespace公開以外は未接続 |
+| 単一/分割upload新規予約 | 接続済み。reservation/blob/uploadと確定記録/解放を同一batch。同keyの既存receiptは追加受付なし |
+| R2 create/part/completeの外部I/O・転送台帳更新・abort/cleanup | 既存upload制御を維持。新規予約とnamespace公開以外は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
 
-検証記録: 直前session/bootstrap/logout commit 8e7243eはCI全成功（Node408/workerd984/browser19、計1,411件）。今回のcontent接続はworkerd70件追加。全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
+検証記録: 直前content commit 522f616はCI全成功（Node408/workerd1054/browser19、計1,481件）。今回のupload予約接続の全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。

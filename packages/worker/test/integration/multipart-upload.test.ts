@@ -50,7 +50,7 @@ async function fixture(size = 3, initialize = true) {
   const app = admitted();
   const created = initialize
     ? await createMultipartUpload(app, input, capabilities)
-    : await reserveMultipartUpload(env.DB, input, capabilities);
+    : await reserveMultipartUpload(admitted(), input, capabilities);
   const request = { uploadId: created.id, principal, capability: created.capability };
   const stub = app.UPLOADS.get(app.UPLOADS.idFromName(created.id));
   const actual = env.UPLOADS.get(env.UPLOADS.idFromName(created.id));
@@ -438,7 +438,7 @@ it("validates fixed sizes, pagination, zero-byte mode, and immutable D1 geometry
   );
   await expect(
     reserveMultipartUpload(
-      env.DB,
+      admitted(),
       { ...f.input, requestId: "zero", declaredSize: 0 },
       f.capabilities,
     ),

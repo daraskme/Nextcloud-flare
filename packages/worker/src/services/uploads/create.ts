@@ -5,6 +5,11 @@ import { assertExists, atomicBatch } from "../../db/primary";
 import { multipartPlan, UPLOAD_LIMITS } from "../../do/uploadPlan";
 import { digestJson } from "../../jobs/operations";
 import { validateLength } from "../../platform/stream";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "../accountMutation";
 import { reservationStatements } from "../quota";
 import { type UploadRow, uploadAuthority, uploadFence, uploadRow, uploadStatus } from "./access";
 
@@ -21,28 +26,29 @@ export interface CreateSingleUpload {
 
 /** Reservation and immutable staging metadata are committed together before any R2 call. */
 export async function createSingleUpload(
-  db: D1Database,
+  env: AccountMutationEnv,
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
 ) {
-  return reserveUpload(db, input, capabilities, "single");
+  return reserveUpload(env, input, capabilities, "single");
 }
 
 /** Metadata reservation shared by multipart initialization and its recoverable HTTP receipt. */
 export async function reserveMultipartUpload(
-  db: D1Database,
+  env: AccountMutationEnv,
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
 ) {
-  return reserveUpload(db, input, capabilities, "multipart");
+  return reserveUpload(env, input, capabilities, "multipart");
 }
 
 async function reserveUpload(
-  db: D1Database,
+  env: AccountMutationEnv,
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
   mode: "single" | "multipart",
 ) {
+  const db = env.DB;
   if (
     input.principal.kind !== "user" ||
     !/^[\x21-\x7e]{1,200}$/.test(input.requestId) ||
@@ -118,10 +124,18 @@ async function reserveUpload(
     capability_kid: capabilities.ring.activeKid,
   };
   const capability = await capabilities.issue(identity);
+  const capabilityHash = await digestJson(capability);
   const blob = `${id}_blob`;
   const reservation = `${id}_reservation`;
+  await atomicBatch(db, [authorizationAssertion(authorized)]);
+  const admission = await acquireAccountMutation(
+    env,
+    owner,
+    input.principal.epoch,
+    "upload.reserve",
+  );
   try {
-    await atomicBatch(db, [
+    await commitAccountMutation(db, admission, owner, [
       authorizationAssertion(authorized),
       ...reservationStatements({
         id: reservation,
@@ -151,7 +165,7 @@ async function reserveUpload(
           reservation,
           mode,
           input.declaredSize,
-          await digestJson(capability),
+          capabilityHash,
           input.principal.epoch,
           now,
           identity.expires_at,
@@ -167,7 +181,8 @@ async function reserveUpload(
       assertExists("SELECT 1 FROM uploads WHERE id=? AND request_digest=?", [id, digest]),
     ]);
   } catch (error) {
-    // Same-key races and a lost batch response are resolved from current D1 rows, never recharged.
+    // The shared request receipt may belong to a concurrent attempt. Returning it does not
+    // prove this admission committed or release its uncertain slot, and never dispatches R2.
     const recovered = await replay();
     if (recovered) return recovered;
     throw error;
