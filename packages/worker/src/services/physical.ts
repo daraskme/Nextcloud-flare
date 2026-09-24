@@ -1,21 +1,31 @@
-import { assertExists, atomicBatch, primary } from "../db/primary";
+import { assertExists, primary } from "../db/primary";
+
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationEnv,
+} from "./systemMutation";
 
 /** Repeating this after response loss is safe. Never infer R2 presence from a client report. */
 export async function observePhysicalObject(
-  db: D1Database,
+  env: SystemMutationEnv,
   bucket: R2Bucket,
   blobId: string,
   epoch: number,
 ): Promise<void> {
+  const { DB: db } = env;
   const blob = await primary(db)
-    .prepare("SELECT r2_key,size FROM blobs WHERE id=? AND state NOT IN ('deleting','deleted')")
+    .prepare(
+      "SELECT owner_id,r2_key,size FROM blobs WHERE id=? AND state NOT IN ('deleting','deleted')",
+    )
     .bind(blobId)
-    .first<{ r2_key: string; size: number }>();
+    .first<{ owner_id: string; r2_key: string; size: number }>();
   if (!blob) throw new Error("blob_not_observable");
   const object = await bucket.head(blob.r2_key);
   if (!object || !Number.isSafeInteger(object.size) || object.size < 0)
     throw new Error("physical_object_mismatch");
-  await atomicBatch(db, [
+  const admission = await acquireSystemMutation(env, blob.owner_id, "upload.observe");
+  await commitSystemMutation(db, admission, blob.owner_id, [
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=?", [epoch]),
     assertExists(
       "SELECT 1 FROM blobs WHERE id=? AND r2_key=? AND size=? AND state NOT IN ('deleting','deleted')",

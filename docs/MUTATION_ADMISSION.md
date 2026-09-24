@@ -1,6 +1,6 @@
 # 更新の全体受付
 
-更新日: 2026-09-25。migration `0030` / `0031` / `0032`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
+更新日: 2026-09-25。migration `0030` / `0031` / `0032` / `0033`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
 
 ## 接続した範囲
 
@@ -49,7 +49,7 @@ batch応答を失った場合は、正確なticket ID・内部ID・space・epoch
 - pepper更新は旧digest/salt/kidのCAS、current credential/user・期限・epochを最終batchで確認する。自分のbatchが失敗しても他のloginが鍵更新した場合は、現在のrecordとsecretを再検証して認証できる。ただし、それを自分のcommit証明と扱わず、自分の未確定枠は保持する。
 - 発行・失効のAPIと鍵更新が必要なDAV認証は、受付不可を503・`Retry-After: 1`で返す。DAVの受付混雑ではBasic再認証を要求しない。
 
-serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。このapp password接続自体にはmigration追加なし。最新schemaは0032、通常67table、依存変更なし。
+serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。このapp password接続自体にはmigration追加なし。最新schemaは0033、通常67table、依存変更なし。
 
 ## Access session・初回owner・logout
 
@@ -85,7 +85,7 @@ createSingleUploadとreserveMultipartUploadはmandatoryなCONTROL bindingを受�
 
 自分のbatch応答喪失はexact receiptで照合する。別要求が同じkeyの予約を作った場合や自分のreceipt読取りを失った場合も、current authorityと一致する保存済みuploadを読めれば、その共有HTTP receiptへ合流できる。ただしそれは自分の確定証明ではなく、自分の未確定ticketを閉じない。予約・blob・容量を消さず、自動で予約SQLやR2を再実行しない。全照合応答を失ったときはエラーを返し、同じkeyで次に照会する。capabilityやhashを受付台帳に入れない。
 
-HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。物理観測・UploadDO台帳反映・内部停止/cleanupなどの更新受付は後続。
+HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。UploadDO台帳反映・自動回収/GCなどの更新受付は後続。
 
 ## 応答喪失・失効・復旧
 
@@ -112,7 +112,7 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 
 受付はpreflight後、最終batch前。4つの外部送信claimはaccountMutationStatementsの共通fence/receiptを使うが、commitAccountMutationのACK回収ではdispatchしない。R2 PUT/create/completeの再送禁止とGET回数上限を維持する。待機後の失効・maintenance・revision・SQL時計を再検査し、rollbackした未確定枠は推測で閉じない。
 
-単一PUT後に検証済み情報の受付が満杯でも、観測済みphysicalとreservationを保持する。次回はGETで同じobjectを検査し、PUTを再送しない。受付失敗のHTTPは503/Retry-After: 1。physical観測や既知R2 IDの記録は失効後も回収に必要なため、今回のowner認可付き受付をそのまま適用しない。これらとUploadDO台帳反映・内部停止/cleanupは別途接続する。利用者の中止は次節。DB枠の返却は外部I/Oの終了証明ではない。
+単一PUT後に検証済み情報の受付が満杯でも、観測済みphysicalとreservationを保持する。次回はGETで同じobjectを検査し、PUTを再送しない。受付失敗のHTTPは503/Retry-After: 1。physical観測や既知R2 IDの記録は後述のsystem受付へ接続した。UploadDO台帳反映・自動回収/GCは後続。利用者の中止は次節。DB枠の返却は外部I/Oの終了証明ではない。
 
 境界試験は5経路の混雑/待機後失効/停止/対象変更/rollback、直接ACK喪失時の送信拒否、実時計期限、検証済み情報のACK/読戻し喪失と容量保持、HTTP503を検証する。実ControlDOで各経路を32枠満杯から待機させ、commit後の枠をnamespace permitへ渡す。
 
@@ -130,13 +130,13 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 
 DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中止結果/完成物proofへ合流しても、それを自分のbatchの成功証明とせず、自分の未確定枠は閉じない。ACKと全照合応答を失った場合も次回の状態照会・同じ要求で回収する。物理容量はこのreceiptの有無だけで戻さない。
 
-待機後のcredential失効/maintenance/epoch/対象変更/owner無効化、実時計期限、rollback、ACK/全照合喪失、別要求の成功、HTTP503、送信claimと中止の競合、検証混雑後の二重complete防止を検証する。実ControlDOの32枠待機/返却も3経路へ追加した。自動回収/停止・物理観測そのもの・既知R2 ID記録・UploadDO台帳反映の受付は残る。
+待機後のcredential失効/maintenance/epoch/対象変更/owner無効化、実時計期限、rollback、ACK/全照合喪失、別要求の成功、HTTP503、送信claimと中止の競合、検証混雑後の二重complete防止を検証する。実ControlDOの32枠待機/返却も3経路へ追加した。物理観測・既知R2 ID・初期化停止は後述のsystem受付へ接続。UploadDO台帳反映・自動回収の受付は後続。
 
 ## migrationと残作業
 
 0032は新tableへのcopy・旧tableのdrop・renameでnullable scopeを追加し、関連trigger/indexを再作成する。既存closed receiptの全列と、削除済み行を含むAUTOINCREMENT最大sequenceを保持する。FKを無効化しない。現schemaでこのtableを参照するFKはない。SQLiteの[table再構築手順](https://www.sqlite.org/lang_altertable.html#otheralter)と[sqlite_sequence](https://www.sqlite.org/autoinc.html)を根拠に実装し、SQLiteの空/既存tableとworkerd D1の既存receipt移行で検証する。
 
-`0030`はmaintenance中、open permitなし、claimed operationなしでのみ適用できる。`0031`と`0032`ではさらにwaiting/active ticketなしが必要。先に旧実装のquiesceを完了させる。適用済みmigrationは変更しない。通常table数67、依存変更なし。旧binaryと新binaryを混在させて受付を開く運用は未検証。remote migration・deployは未実施。
+`0030`はmaintenance中、open permitなし、claimed operationなしでのみ適用できる。`0031`〜`0033`ではさらにwaiting/active ticketなしが必要。先に旧実装のquiesceを完了させる。適用済みmigrationは変更しない。通常table数67、依存変更なし。旧binaryと新binaryを混在させて受付を開く運用は未検証。remote migration・deployは未実施。
 
 | 更新経路 | この受付への接続 |
 |---|---|
@@ -148,11 +148,33 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | 単一/分割upload新規予約 | 接続済み。reservation/blob/uploadと確定記録/解放を同一batch。同keyの既存receiptは追加受付なし |
 | 単一送信開始/読戻し/検証済み情報、multipart初期化/complete claim | 接続済み。外部送信には直接ACK必須。検証済みDB情報のみexact receiptで回収 |
 | 利用者によるsingle/multipart中止、multipart検証済み情報 | 接続済み。DB-onlyのexact receipt回収。容量返却は既存の安全条件を維持 |
-| 物理観測・既知R2 ID記録・UploadDO台帳反映・内部停止/cleanup | 既存制御を維持。共通受付は未接続 |
+| 物理観測・既知R2 ID記録・初期化停止/緊急abort予算 | 接続済み。後述のsystem受付、通常と同じ枠 |
+| UploadDO台帳反映・自動回収/GC | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
 
-検証記録: 直前commit 47160c4の[CI36027205940](https://github.com/daraskme/Nextcloud-flare/actions/runs/36027205940)は全成功。Node408/workerd1141/browser19、計1,568件。今回のupload中止/検証受付の全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
+検証記録: 直前commit f62dad8の[CI36029086734](https://github.com/daraskme/Nextcloud-flare/actions/runs/36029086734)はUbuntu・Windows・browser全成功。Node408/workerd1186/browser19、計1,613件。今回の復旧用受付の全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
+
+## 復旧用の物理観測・multipart初期化後処理
+
+物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。
+
+migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。
+
+| 内部kind | 同一batchに含む記録 | 応答喪失後の扱い |
+|---|---|---|
+| upload.observe | 単一objectのblob_storageとphysical加算 | DB receiptで照合。size不一致でも実bytesは保持 |
+| upload.multipart-head | 完成物をHEADするcontrol_calls予算 | 直接ACKがなければHEADしない |
+| upload.multipart-observe | multipart完成物のphysical加算 | DB receiptで照合。後の公開は現行認可が必要 |
+| upload.multipart-record | 自分のinit attemptに対応する既知R2 ID | DB receipt、または同じ保存済みIDの照合。別処理の記録で自分の枠を返さない |
+| upload.multipart-stop | 自分の初期化attemptの停止・cleanup intent | DB receiptで照合。予約は保持 |
+| upload.multipart-abort | 既知ID保存失敗後の緊急abort予算 | 直接ACKがなければabortしない |
+
+通常/初回owner RPCは余分なsystem/mode入力を捨て、system接頭辞を拒否する。内部RPCは固定kindと具体的owner-spaceを要求し、modeはControlDOの安定した永続状態から取得する。D1 mirror読取りも共有256件の処理中制限の内側で行う。system ticketはopen時でも通常のassert/commit/receiptやnamespace permitに使用できない。
+
+systemとmaintenanceの2列は0033で既存台帳へ追加する。旧rowは0/0、receiptとAUTOINCREMENT high-water markは保持する。適用前にmaintenance・全ticket/permit/claimed operationのdrainを必須とする。閉鎖状態のsystem mirror照合は稼働中system ticketを許すが、復旧監査と再開の全体fenceは維持する。
+
+物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。UploadDO台帳・Cron/Queue・GC/全bucket repair・backup barrierの接続は未完了。

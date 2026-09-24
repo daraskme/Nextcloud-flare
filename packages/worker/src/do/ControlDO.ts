@@ -1,7 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { KdfRequest } from "../auth/globalKdf";
-import type { MutationAdmission, MutationRequest } from "../db/mutationAdmission";
+import {
+  isSystemMutationId,
+  type MutationAdmission,
+  type MutationRequest,
+  type SystemMutationAdmission,
+} from "../db/mutationAdmission";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import { type RestorePause, restorePauseCondition } from "../db/restorePause";
 import type { Env } from "../env";
@@ -152,11 +157,20 @@ export class ControlDO extends DurableObject<Env> {
     );
     this.#mutations = new ControlMutations(
       env.DB,
-      async (epoch) => {
+      async (request) => {
+        if ("system" in request) {
+          if ((await this.#admission.systemMutationMode(request.epoch)) !== request.maintenance)
+            throw new Error("mutation_unavailable");
+          return;
+        }
         const status = await this.status();
-        if (status.maintenance || status.epoch !== epoch) throw new Error("mutation_unavailable");
+        if (status.maintenance || status.epoch !== request.epoch)
+          throw new Error("mutation_unavailable");
       },
-      (epoch) => this.#admission.assertMutationOpen(epoch),
+      (request) =>
+        "system" in request
+          ? this.#admission.assertSystemMutationMode(request.epoch, request.maintenance)
+          : this.#admission.assertMutationOpen(request.epoch),
     );
   }
 
@@ -180,7 +194,12 @@ export class ControlDO extends DurableObject<Env> {
   /** Space-scoped admission; current authorization remains in the service transaction. */
   async acquireMutation(request: MutationRequest): Promise<MutationAdmission> {
     if (typeof request.spaceId !== "string") throw new Error("mutation_unavailable");
-    const admission = await this.#mutations.acquire(request);
+    const admission = await this.#mutations.acquire({
+      permitId: request.permitId,
+      spaceId: request.spaceId,
+      epoch: request.epoch,
+      deadline: request.deadline,
+    });
     if (admission.space_id !== request.spaceId) throw new Error("mutation_unavailable");
     return { ...admission, space_id: request.spaceId };
   }
@@ -189,9 +208,36 @@ export class ControlDO extends DurableObject<Env> {
   async acquireBootstrapMutation(
     request: Omit<MutationRequest, "spaceId">,
   ): Promise<MutationAdmission<null>> {
-    const admission = await this.#mutations.acquire({ ...request, spaceId: null });
+    const admission = await this.#mutations.acquire({
+      permitId: request.permitId,
+      spaceId: null,
+      epoch: request.epoch,
+      deadline: request.deadline,
+    });
     if (admission.space_id !== null) throw new Error("mutation_unavailable");
     return { ...admission, space_id: null };
+  }
+
+  /** Typed internal facts only; this uses the very same queue and never grants namespace authority. */
+  async acquireSystemMutation(request: MutationRequest): Promise<SystemMutationAdmission> {
+    if (!request || typeof request.spaceId !== "string" || !isSystemMutationId(request.permitId))
+      throw new Error("mutation_unavailable");
+    const maintenance = this.#admission.captureSystemMutationMode(request.epoch);
+    const admission = await this.#mutations.acquire({
+      permitId: request.permitId,
+      spaceId: request.spaceId,
+      epoch: request.epoch,
+      deadline: request.deadline,
+      system: 1,
+      maintenance,
+    });
+    if (
+      admission.space_id !== request.spaceId ||
+      admission.system !== 1 ||
+      admission.maintenance !== maintenance
+    )
+      throw new Error("mutation_unavailable");
+    return { ...admission, space_id: request.spaceId, system: 1, maintenance };
   }
 
   /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */

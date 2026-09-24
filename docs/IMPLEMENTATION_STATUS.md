@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 1/3 upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receipt/返却、遅延PUTの容量保持 | workerd45件追加。新規境界42件（27.01秒）、既存upload/転送/実ControlDO103件（58.79秒）成功。全check1,594件（Node408/workerd1186）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 復旧用更新の全体受付 | migration0033、system/mode不変、共有32/256、物理観測・既知ID・初期化停止・直接ACK claim | Node8件/workerd41件を追加。最終的にNode416件/workerd1227件、計1,643件を検証済み。全体実行で見つかった旧期待値2件（物理記録ACK回収・migration数）を修正し、関連39件を再実行して全成功。lint・型・契約・設定・Web build・Worker dry-runも成功。今回のCIはpush後に確認する。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receipt/返却、遅延PUTの容量保持 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload転送の全体受付 | 単一start/recover/verify・multipart start/complete、current authority/claim/receipt/返却、直接ACKのみdispatch | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload予約の全体受付 | 単一/分割・新規/上書きの共有32枠、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加。e90ee88のCI全成功、Node408/workerd1096/browser19、計1,523件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/2 配信更新の全体受付 | budget・ticket発行/交換/取消しの共有32枠、コンテンツ所有space、待機後の現行認可/期限と確定記録、取消し証明後のR2 manifest削除 | workerd70件追加。522f616のCI全成功、Node408/workerd1054/browser19、計1,481件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
@@ -127,7 +128,7 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 - 2026-09-25、commit47160c422f76d82eb11fcbb7ecd57f0a15d712d3の[CI36027205940](https://github.com/daraskme/Nextcloud-flare/actions/runs/36027205940)全成功。Ubuntu4分39秒、Windows12分42秒、browser2分19秒。両OSでNode408/25files、workerd1141/67files（Ubuntu237.23秒/Windows587.72秒）、browser19（1.5分）、計1,568件。
 
-- 2026-09-25、upload中止/検証3経路の共通受付を追加。workerd45件追加。新規境界42件（27.01秒）、既存upload/転送/実ControlDO103件（58.79秒）成功。全check1,594件（Node408/workerd1186）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 最終pnpm check成功: Node408/25files（5.32秒）+ workerd1186/68files（575.28秒）。lint/typecheck/contracts/config・Web build・Worker dry-run成功。中止とclaimの競合、別要求terminalと自分の確定証明の分離、全照合喪失、物理容量/予約保持を検証。migration・依存追加なし。
+- 2026-09-25、upload中止/検証3経路の共通受付を追加。workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 最終pnpm check成功: Node408/25files（5.32秒）+ workerd1186/68files（575.28秒）。lint/typecheck/contracts/config・Web build・Worker dry-run成功。中止とclaimの競合、別要求terminalと自分の確定証明の分離、全照合喪失、物理容量/予約保持を検証。migration・依存追加なし。
 
 - 2026-09-25、commit e90ee882efe5c79655cf45603ad01ec52ffde4b4の[CI36024332349](https://github.com/daraskme/Nextcloud-flare/actions/runs/36024332349)全成功。Ubuntu5分4秒、Windows12分20秒、browser2分47秒。両OSでNode408/25files、workerd1096/65files（Ubuntu261.30秒/Windows656.65秒）、browser19（1.5分）、合計1,523件。
 

@@ -41,7 +41,11 @@ async function admit(epoch: number) {
     throw new Error("mutation_unavailable");
 }
 const service = (db = env.DB, current = (_epoch: number) => {}) =>
-  new ControlMutations(db, admit, current);
+  new ControlMutations(
+    db,
+    (request) => admit(request.epoch),
+    (request) => current(request.epoch),
+  );
 async function ticket(r = request()): Promise<MutationAdmission> {
   const row = await enqueueMutation(env.DB, r);
   if (row.state !== "active" || row.expires_at === null || row.space_id !== r.spaceId)

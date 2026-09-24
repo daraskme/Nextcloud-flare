@@ -6,6 +6,11 @@ import { UPLOAD_LIMITS } from "../../do/uploadPlan";
 import type { Env } from "../../env";
 import { consumeKnownLength } from "../../platform/stream";
 import { accountMutationStatements, acquireAccountMutation } from "../accountMutation";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  systemMutationStatements,
+} from "../systemMutation";
 import { accessUpload, uploadFence, uploadRow } from "./access";
 import { type CreateSingleUpload, reserveMultipartUpload } from "./create";
 import { readUpload } from "./read";
@@ -106,7 +111,8 @@ export async function createMultipartUpload(
   } catch (error) {
     // A committed claim with a lost reply never grants dispatch. Do not stop a concurrent
     // caller's different claim; only this attempt can be declared not dispatched here.
-    await atomicBatch(env.DB, [
+    const stopped = await acquireSystemMutation(env, row.owner_id, "upload.multipart-stop");
+    await commitSystemMutation(env.DB, stopped, row.owner_id, [
       {
         sql: `UPDATE uploads SET state='failed',accept_parts=0,cleanup_pending=1,error_code='upload_init_unknown'
         WHERE id=? AND state='created' AND write_attempt_id=?`,
@@ -130,7 +136,8 @@ export async function createMultipartUpload(
     try {
       // Recording a known external ID must still work after credential revocation. It grants
       // no permission to send parts, and makes eventual cleanup possible under the old epoch.
-      await atomicBatch(env.DB, [
+      const recorded = await acquireSystemMutation(env, row.owner_id, "upload.multipart-record");
+      await commitSystemMutation(env.DB, recorded, row.owner_id, [
         {
           sql: `UPDATE uploads SET r2_upload_id=? WHERE id=? AND write_attempt_id=? AND r2_upload_id IS NULL`,
           values: [multipart.uploadId, row.id, attempt],
@@ -142,13 +149,17 @@ export async function createMultipartUpload(
       if (saved?.r2_upload_id !== multipart.uploadId) {
         // Keep the reservation: abort response loss and late control calls need durable repair.
         try {
-          await atomicBatch(env.DB, [
-            {
-              sql: `UPDATE uploads SET cleanup_pending=1,cleanup_calls=cleanup_calls+1 WHERE id=? AND write_attempt_id=?`,
-              values: [row.id, attempt],
-            },
-            assertOneChange,
-          ]);
+          const cleanup = await acquireSystemMutation(env, row.owner_id, "upload.multipart-abort");
+          await atomicBatch(
+            env.DB,
+            systemMutationStatements(cleanup, row.owner_id, [
+              {
+                sql: `UPDATE uploads SET cleanup_pending=1,cleanup_calls=cleanup_calls+1 WHERE id=? AND write_attempt_id=?`,
+                values: [row.id, attempt],
+              },
+              assertOneChange,
+            ]),
+          );
           await multipart.abort();
         } catch {
           /* cleanup remains pending */
@@ -157,7 +168,8 @@ export async function createMultipartUpload(
       }
     }
   } catch (error) {
-    await atomicBatch(env.DB, [
+    const stopped = await acquireSystemMutation(env, row.owner_id, "upload.multipart-stop");
+    await commitSystemMutation(env.DB, stopped, row.owner_id, [
       {
         sql: `UPDATE uploads SET state='failed',accept_parts=0,cleanup_pending=1,error_code='upload_init_unknown'
         WHERE id=? AND state='created' AND write_attempt_id=?`,

@@ -166,12 +166,12 @@ export class ControlAdmission {
     return this.#row(row.epoch);
   }
 
-  async #receipt(row: AdmissionRow, maintenance: number): Promise<boolean> {
+  async #receipt(row: AdmissionRow, maintenance: number, quiescent = true): Promise<boolean> {
     const receipt = await this.db
       .prepare(`SELECT 1 FROM control WHERE singleton=1 AND epoch=?
         AND admission_revision=? AND admission_token IS ? AND maintenance=? AND gc_paused=?
         AND gc_operator_paused=? AND gc_hold_token IS ? AND gc_hold_operation IS ? AND gc_hold_expires_at IS ?
-        ${maintenance ? `AND ${closedWork}` : ""}`)
+        ${maintenance && quiescent ? `AND ${closedWork}` : ""}`)
       .bind(
         row.epoch,
         row.revision,
@@ -203,6 +203,28 @@ export class ControlAdmission {
 
   assertMutationOpen(epoch: number): void {
     if (this.#row(epoch).phase !== "open") throw new Error("mutation_unavailable");
+  }
+
+  /** Capture locally before entering the bounded queue; all D1 work stays inside that queue. */
+  captureSystemMutationMode(epoch: number): 0 | 1 {
+    const phase = this.#row(epoch).phase;
+    if (phase !== "open" && phase !== "closed") throw new Error("mutation_unavailable");
+    return phase === "closed" ? 1 : 0;
+  }
+
+  /** Internal facts may queue in a stable closed mode; transitional or mismatched mirrors cannot. */
+  async systemMutationMode(epoch: number): Promise<0 | 1> {
+    const row = this.#row(epoch);
+    if (row.phase !== "open" && row.phase !== "closed") throw new Error("mutation_unavailable");
+    const maintenance = row.phase === "closed" ? 1 : 0;
+    if (!(await this.#receipt(row, maintenance, false))) throw new Error("control_mirror_conflict");
+    this.#current(row);
+    return maintenance;
+  }
+
+  assertSystemMutationMode(epoch: number, maintenance: 0 | 1): void {
+    if (this.#row(epoch).phase !== (maintenance ? "closed" : "open"))
+      throw new Error("mutation_unavailable");
   }
 
   async close(epoch: number): Promise<ControlStatus & { activeJobLease: boolean }> {

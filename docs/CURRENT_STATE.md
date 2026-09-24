@@ -2,7 +2,7 @@
 
 更新日: 2026-09-25
 
-直近の到達点は[PROGRESS](PROGRESS.md)。直前commit 47160c4の[CI36027205940](https://github.com/daraskme/Nextcloud-flare/actions/runs/36027205940)は全成功。Node408/workerd1141/browser19、計1,568件。単一/分割uploadの利用者による中止と、multipart完成物の検証済み情報保存を共通32枠へ接続。待機後の現行認可・期限・状態を再検査し、変更・確定記録・枠返却を同一batchで保存する。未送信の単一uploadだけ予約を返し、待機中に送信claimが入った場合も予約を保持する。multipart中止は送信を停止するだけで、回収前に予約を返さない。multipart検証の受付混雑時は物理容量/予約を保持し、再試行でR2 completeを再送しない。workerd45件追加。新規境界42件（27.01秒）、既存upload/転送/実ControlDO103件（58.79秒）成功。全check1,594件（Node408/workerd1186）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+直近の到達点は[PROGRESS](PROGRESS.md)。直前commit f62dad8の[CI36029086734](https://github.com/daraskme/Nextcloud-flare/actions/runs/36029086734)はUbuntu・Windows・browser全成功。Node408/workerd1186/browser19、計1,613件。 物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。 migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。 Node8件/workerd41件を追加。最終的にNode416件/workerd1227件、計1,643件を検証済み。全体実行で見つかった旧期待値2件（物理記録ACK回収・migration数）を修正し、関連39件を再実行して全成功。lint・型・契約・設定・Web build・Worker dry-runも成功。今回のCIはpush後に確認する。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -22,12 +22,13 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receiptと返却 | workerd45件追加。新規境界42件（27.01秒）、既存upload/転送/実ControlDO103件（58.79秒）成功。全check1,594件（Node408/workerd1186）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 | 物理観測・台帳・内部停止/cleanup/Queue/backupは後続 |
-| upload転送の全体受付 | 単一start/recover/verify、multipart start/completeの5経路、直接ACKによる外部送信とDB-only receipt回収を分離 | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 | 物理観測・UploadDO台帳・内部停止/cleanup/Queue/backupは後続 |
-| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 物理観測・UploadDO台帳反映・内部停止/cleanup/Queue/backupと実環境は後続 |
+| 復旧用更新の全体受付 | migration0033、通常と同じ枠、物理観測・既知ID・初期化停止・外部claim | Node8件/workerd41件を追加。最終的にNode416件/workerd1227件、計1,643件を検証済み。全体実行で見つかった旧期待値2件（物理記録ACK回収・migration数）を修正し、関連39件を再実行して全成功。lint・型・契約・設定・Web build・Worker dry-runも成功。今回のCIはpush後に確認する。 | UploadDO台帳・自動回収/GC・Queue等の残る更新受付、backup barrier、未知KDF/multipartの収束、共有/メディア/実環境検証は後続です。 |
+| upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receiptと返却 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 | UploadDO台帳・自動回収/GC/Queue/backupは後続 |
+| upload転送の全体受付 | 単一start/recover/verify、multipart start/completeの5経路、直接ACKによる外部送信とDB-only receipt回収を分離 | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 | UploadDO台帳・自動回収/GC/Queue/backupは後続 |
+| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | UploadDO台帳反映・自動回収/GC/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | migration `0001`〜`0032`、67通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0033`、67通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |

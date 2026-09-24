@@ -8,7 +8,7 @@ import { runGarbageCollection } from "../../src/jobs/gc";
 import { repairSingleUploads } from "../../src/jobs/uploadCleanup";
 import { observePhysicalObject } from "../../src/services/physical";
 import { foundationFixture } from "../fixtures/foundation";
-import { grantPermit } from "../fixtures/mutationAdmission";
+import { grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
@@ -187,7 +187,7 @@ it("does not treat absent R2 content before the 24-hour deadline as a failed wri
 it("removes a previous physical charge only after observing absence", async () => {
   const f = await fixture();
   await store(f);
-  await observePhysicalObject(env.DB, env.BLOBS, f.blob, 1);
+  await observePhysicalObject(mutationEnv(), env.BLOBS, f.blob, 1);
   await env.BLOBS.delete(f.key);
   expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 3 });
   expect(await repairSingleUploads(env.DB, env.BLOBS, 1)).toMatchObject({ absent: 1 });

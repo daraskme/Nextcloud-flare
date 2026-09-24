@@ -10,6 +10,11 @@ import {
   commitAccountMutation,
 } from "../accountMutation";
 import type { MutationOutcome } from "../fsMutation";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  systemMutationStatements,
+} from "../systemMutation";
 import { accessUpload, type UploadRow, uploadFence, uploadRow } from "./access";
 import { publishMultipartUpload } from "./complete";
 import { multipartHeadCharge, multipartPartsProof } from "./multipartProof";
@@ -57,19 +62,23 @@ async function observeCompletedObject(
   capability: string,
   capabilities: UploadCapabilities,
 ) {
-  await atomicBatch(env.DB, [
-    // The authorized caller may have been revoked while complete was in flight. Recording
-    // external storage facts is still necessary; only the later publication requires live auth.
-    assertExists(
-      `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
+  const headAdmission = await acquireSystemMutation(env, row.owner_id, "upload.multipart-head");
+  await atomicBatch(
+    env.DB,
+    systemMutationStatements(headAdmission, row.owner_id, [
+      // The authorized caller may have been revoked while complete was in flight. Recording
+      // external storage facts is still necessary; only the later publication requires live auth.
+      assertExists(
+        `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
       WHERE u.id=? AND u.epoch=? AND c.epoch=u.epoch AND u.mode='multipart'
         AND u.state='completing' AND u.blob_id=? AND u.r2_upload_id=?
         AND u.multipart_complete_attempt IS NOT NULL`,
-      [row.id, row.epoch, row.blob_id, row.r2_upload_id],
-    ),
-    multipartPartsProof(row),
-    ...multipartHeadCharge(row),
-  ]);
+        [row.id, row.epoch, row.blob_id, row.r2_upload_id],
+      ),
+      multipartPartsProof(row),
+      ...multipartHeadCharge(row),
+    ]),
+  );
   const key = `u/${row.owner_id}/b/${row.blob_id}`;
   const object = await env.BLOBS.head(key);
   // A missing object says nothing about whether an already dispatched complete is still running.
@@ -78,7 +87,12 @@ async function observeCompletedObject(
     throw new Error("upload_object_mismatch");
   // Charge observed bytes even for a malformed object or a subsequently revoked credential.
   // No reservation refund is allowed until a valid complete object or cleanup proves safety.
-  await atomicBatch(env.DB, [
+  const physicalAdmission = await acquireSystemMutation(
+    env,
+    row.owner_id,
+    "upload.multipart-observe",
+  );
+  await commitSystemMutation(env.DB, physicalAdmission, row.owner_id, [
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=?", [row.epoch]),
     assertExists(
       `SELECT 1 FROM blobs WHERE id=? AND owner_id=? AND r2_key=? AND state IN ('staging','orphan')`,

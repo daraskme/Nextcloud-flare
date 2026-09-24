@@ -11,6 +11,7 @@ import {
 } from "../../src/services/quota";
 import { addPinStatements, auditOwnerLedger, removePinStatements } from "../../src/services/refs";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -242,11 +243,9 @@ it("counts staging/orphan physical bytes from R2 once, even after response loss 
         throw new Error("response_lost");
       },
     } as unknown as D1Database;
-    await expect(observePhysicalObject(lossy, env.BLOBS, f.ids.blob, 1)).rejects.toThrow(
-      "response_lost",
-    );
-    await observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1);
-    await observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1);
+    await observePhysicalObject(mutationEnv(lossy), env.BLOBS, f.ids.blob, 1);
+    await observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1);
+    await observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1);
     expect((await audit(f.ids.user))?.physical_bytes).toBe(3);
     await expect(
       atomicBatch(env.DB, reservationStatements({ ...f.reservation, bytes: 0 })),
@@ -264,20 +263,22 @@ it("counts staging/orphan physical bytes from R2 once, even after response loss 
 it("accounts size-mismatched objects while rejecting publication, and rejects stale-epoch observations", async () => {
   const f = await fixture();
   const key = `u/${f.ids.user}/b/${f.ids.blob}`;
-  await expect(observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1)).rejects.toThrow(
+  await expect(observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1)).rejects.toThrow(
     "physical_object_mismatch",
   );
   await env.BLOBS.put(key, new Uint8Array(2));
   try {
-    await expect(observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1)).rejects.toThrow();
+    await expect(observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1)).rejects.toThrow();
     expect((await audit(f.ids.user))?.physical_bytes).toBe(2);
-    await expect(observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1)).rejects.toThrow();
+    await expect(observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1)).rejects.toThrow();
     expect((await audit(f.ids.user))?.physical_bytes).toBe(2);
     const other = await fixture();
     const otherKey = `u/${other.ids.user}/b/${other.ids.blob}`;
     await env.BLOBS.put(otherKey, new Uint8Array(3));
     try {
-      await expect(observePhysicalObject(env.DB, env.BLOBS, other.ids.blob, 2)).rejects.toThrow();
+      await expect(
+        observePhysicalObject(mutationEnv(), env.BLOBS, other.ids.blob, 2),
+      ).rejects.toThrow();
       expect((await audit(other.ids.user))?.physical_bytes).toBe(0);
     } finally {
       await env.BLOBS.delete(otherKey);
@@ -294,7 +295,7 @@ it("uses the physical reserve cap and exact integer arithmetic at the maximum qu
   const key = `u/${f.ids.user}/b/${f.ids.blob}`;
   await env.BLOBS.put(key, new Uint8Array(3));
   try {
-    await observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1);
+    await observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1);
     await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(f.ids.file).run();
     await env.DB.prepare("UPDATE users SET quota_bytes=10 WHERE id=?").bind(f.ids.user).run();
     await expect(atomicBatch(env.DB, reservationStatements(f.reservation))).rejects.toThrow(); // 3 + 10 > 12
@@ -310,7 +311,7 @@ it("unaccounts a physically deleted object once and preserves the removal tombst
   const key = `u/${f.ids.user}/b/${f.ids.blob}`;
   await env.BLOBS.put(key, new Uint8Array(3));
   try {
-    await observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1);
+    await observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1);
     await atomicBatch(env.DB, [
       { sql: "UPDATE nodes SET current_blob_id=NULL WHERE id=?", values: [f.ids.file] },
       {
@@ -347,7 +348,7 @@ it("unaccounts a physically deleted object once and preserves the removal tombst
         .bind(f.ids.blob)
         .run(),
     ).rejects.toThrow();
-    await expect(observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1)).rejects.toThrow();
+    await expect(observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1)).rejects.toThrow();
   } finally {
     await env.BLOBS.delete(key);
   }

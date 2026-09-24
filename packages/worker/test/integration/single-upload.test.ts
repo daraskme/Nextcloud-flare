@@ -17,7 +17,7 @@ import { completeSingleUpload } from "../../src/services/uploads/complete";
 import { writeSingleUpload } from "../../src/services/uploads/content";
 import { createSingleUpload } from "../../src/services/uploads/create";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { acquireMutation, acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
@@ -32,6 +32,7 @@ function admitted(): Env {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
         acquireMutation,
+        acquireSystemMutation,
         status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
       }),
     } as unknown as Env["CONTROL"],

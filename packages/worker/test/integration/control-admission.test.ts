@@ -8,7 +8,14 @@ import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { globalKdf } from "../../src/auth/globalKdf";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
-import { advanceMutations } from "../../src/db/mutationAdmission";
+import {
+  advanceMutations,
+  assertMutationAdmission,
+  assertSystemMutationAdmission,
+  commitSystemMutationAdmission,
+  hasCommittedMutation,
+  hasCommittedSystemMutation,
+} from "../../src/db/mutationAdmission";
 import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
@@ -93,6 +100,176 @@ it("persists exact mutation grants across eviction and invalidates old grants be
   expect(await grantAdmittedPermit(env.DB, permitId, f.ids.space, epoch, second)).toMatchObject({
     permit_id: permitId,
   });
+});
+
+const systemRequest = () => ({
+  permitId: "system:upload.observe:" + crypto.randomUUID(),
+  spaceId: f.ids.space,
+  epoch,
+  deadline: Date.now() + 5000,
+});
+it.each([false, true])(
+  "system facts work with stable closed=%s, survive eviction and cannot authorize ordinary writes",
+  async (closed) => {
+    if (!closed) {
+      await audited();
+      await control().resumeAdmission(epoch);
+    }
+    const request = systemRequest();
+    const first = await control().acquireSystemMutation(request);
+    expect(first).toMatchObject({ system: 1, maintenance: closed ? 1 : 0, space_id: f.ids.space });
+    await evictDurableObject(control());
+    expect(
+      await control().acquireSystemMutation({ ...request, deadline: Date.now() + 5000 }),
+    ).toEqual(first);
+    await expect(atomicBatch(env.DB, [assertMutationAdmission(first)])).rejects.toThrow();
+    await expect(
+      grantAdmittedPermit(env.DB, first.permit_id, f.ids.space, epoch, first),
+    ).rejects.toThrow();
+    await atomicBatch(env.DB, [
+      assertSystemMutationAdmission(first),
+      ...commitSystemMutationAdmission(first),
+    ]);
+    expect(await hasCommittedSystemMutation(env.DB, first)).toBe(true);
+    expect(await hasCommittedMutation(env.DB, first)).toBe(false);
+    expect(
+      await hasCommittedSystemMutation(env.DB, { ...first, maintenance: closed ? 0 : 1 }),
+    ).toBe(false);
+    const second = await control().acquireSystemMutation(systemRequest());
+    await control().quiesce(epoch);
+    await expect(atomicBatch(env.DB, [assertSystemMutationAdmission(second)])).rejects.toThrow();
+  },
+);
+it("system grants share actual normal/bootstrap FIFO and returned capacity", async () => {
+  await audited();
+  await control().resumeAdmission(epoch);
+  const ids = Array.from({ length: 32 }, () => crypto.randomUUID());
+  await atomicBatch(
+    env.DB,
+    ids.map((id) => ({
+      sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+      values: [id, id, f.ids.space, epoch],
+    })),
+  );
+  await advanceMutations(env.DB);
+  const req = systemRequest();
+  const pending = control()
+    .acquireSystemMutation(req)
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+  const queued = () =>
+    env.DB.prepare("SELECT state FROM mutation_admissions WHERE permit_id=? AND state<>'closed'")
+      .bind(req.permitId)
+      .first("state");
+  await expect.poll(queued, { timeout: 4000, interval: 25 }).toBe("waiting");
+  const bootstrapReq = {
+    permitId: "bootstrap:" + crypto.randomUUID(),
+    epoch,
+    deadline: Date.now() + 5000,
+  };
+  const bootstrap = control()
+    .acquireBootstrapMutation(bootstrapReq)
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+  try {
+    await expect
+      .poll(
+        () =>
+          env.DB.prepare("SELECT state FROM mutation_admissions WHERE permit_id=?")
+            .bind(bootstrapReq.permitId)
+            .first("state"),
+        { timeout: 4000, interval: 25 },
+      )
+      .toBe("waiting");
+    await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+      .bind(ids[0])
+      .run();
+    const result = await pending;
+    if ("error" in result) throw result.error;
+    expect(
+      await env.DB.prepare("SELECT state FROM mutation_admissions WHERE permit_id=?")
+        .bind(bootstrapReq.permitId)
+        .first("state"),
+    ).toBe("waiting");
+    await atomicBatch(env.DB, commitSystemMutationAdmission(result.value));
+    const next = await bootstrap;
+    if ("error" in next) throw next.error;
+    expect(next.value.space_id).toBeNull();
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+      ).first("n"),
+    ).toBe(32);
+  } finally {
+    await control().quiesce(epoch);
+    await pending;
+    await bootstrap;
+  }
+});
+it("normal RPCs cannot smuggle internal flags and a closed mirror must match", async () => {
+  await runInDurableObject(control(), async (instance) => {
+    const req = { ...systemRequest(), system: 1, maintenance: 1 };
+    await expect(instance.acquireMutation(req)).rejects.toThrow();
+    await expect(instance.acquireBootstrapMutation(req)).rejects.toThrow();
+    await expect(
+      instance.acquireSystemMutation({ ...req, permitId: "user:" + crypto.randomUUID() }),
+    ).rejects.toThrow();
+    await env.DB.prepare("UPDATE control SET admission_token='wrong-system-mirror'").run();
+    await expect(instance.acquireSystemMutation(req)).rejects.toThrow("mutation_unavailable");
+    await instance.quiesce(epoch);
+  });
+  await audited();
+  await control().resumeAdmission(epoch);
+  const normal = await control().acquireMutation({
+    ...systemRequest(),
+    permitId: crypto.randomUUID(),
+    system: 1,
+    maintenance: 1,
+  } as Parameters<ControlDO["acquireMutation"]>[0]);
+  expect(
+    await env.DB.prepare("SELECT system,maintenance FROM mutation_admissions WHERE id=?")
+      .bind(normal.id)
+      .first(),
+  ).toEqual({ system: 0, maintenance: 0 });
+});
+it.each(["closing", "opening", "gc_changing"] as const)(
+  "system admission rejects transitional %s",
+  async (phase) => {
+    await runInDurableObject(control(), async (instance, state) => {
+      // Explicit persisted transitional fixture, not a production escape hatch.
+      state.storage.sql.exec("UPDATE control_admission SET phase=? WHERE singleton=1", phase);
+      await expect(instance.acquireSystemMutation(systemRequest())).rejects.toThrow(
+        "mutation_unavailable",
+      );
+      await instance.quiesce(epoch);
+    });
+  },
+);
+it("lost system grant ACK keeps the slot; eviction recovers the same receipt", async () => {
+  const req = systemRequest();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const lossy = new ControlDO(
+      state,
+      withBatch(async (statements) => {
+        await env.DB.batch(statements);
+        throw new Error("lost_system_grant");
+      }),
+    );
+    await expect(lossy.acquireSystemMutation(req)).rejects.toThrow("mutation_unavailable");
+  });
+  const saved = await env.DB.prepare("SELECT id,state FROM mutation_admissions WHERE permit_id=?")
+    .bind(req.permitId)
+    .first();
+  expect(saved).toMatchObject({ state: "active" });
+  await evictDurableObject(control());
+  expect((await control().acquireSystemMutation({ ...req, deadline: Date.now() + 5000 })).id).toBe(
+    saved!.id,
+  );
+  await control().quiesce(epoch);
 });
 
 function withBatch(batch: (statements: D1PreparedStatement[]) => Promise<D1Result[]>): Env {

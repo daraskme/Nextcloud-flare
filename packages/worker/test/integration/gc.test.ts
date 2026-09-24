@@ -7,6 +7,7 @@ import worker from "../../src/index";
 import { runGarbageCollection } from "../../src/jobs/gc";
 import { observePhysicalObject } from "../../src/services/physical";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -21,7 +22,7 @@ async function candidate() {
   await atomicBatch(env.DB, f.statements);
   const key = `u/${f.ids.user}/b/${f.ids.blob}`;
   await env.BLOBS.put(key, new Uint8Array([1, 2, 3]));
-  await observePhysicalObject(env.DB, env.BLOBS, f.ids.blob, 1);
+  await observePhysicalObject(mutationEnv(), env.BLOBS, f.ids.blob, 1);
   await atomicBatch(env.DB, [
     { sql: "UPDATE nodes SET current_blob_id=NULL WHERE id=?", values: [f.ids.file] },
     { sql: "UPDATE blobs SET state='gc_candidate' WHERE id=?", values: [f.ids.blob] },

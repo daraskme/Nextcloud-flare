@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit 47160c4の[CI36027205940](https://github.com/daraskme/Nextcloud-flare/actions/runs/36027205940)は全成功。Node408/workerd1141/browser19、計1,568件。
+直前commit f62dad8の[CI36029086734](https://github.com/daraskme/Nextcloud-flare/actions/runs/36029086734)はUbuntu・Windows・browser全成功。Node408/workerd1186/browser19、計1,613件。
 
-単一/分割uploadの利用者による中止と、multipart完成物の検証済み情報保存を共通32枠へ接続。待機後の現行認可・期限・状態を再検査し、変更・確定記録・枠返却を同一batchで保存する。未送信の単一uploadだけ予約を返し、待機中に送信claimが入った場合も予約を保持する。multipart中止は送信を停止するだけで、回収前に予約を返さない。multipart検証の受付混雑時は物理容量/予約を保持し、再試行でR2 completeを再送しない。
+物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。 migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。
 
-workerd45件追加。新規境界42件（27.01秒）、既存upload/転送/実ControlDO103件（58.79秒）成功。全check1,594件（Node408/workerd1186）・静的検査・契約・設定・build成功。今回のbrowser/CIはpush後に確認する。 schema0032/67table・migration/依存追加なし。物理観測・既知R2 ID記録・UploadDO台帳反映・内部停止/cleanup・Queue/backupが残る。失効後の物理会計を通常の認可gateで止めない。全体完成扱いにしない。
+Node8件/workerd41件を追加。最終的にNode416件/workerd1227件、計1,643件を検証済み。全体実行で見つかった旧期待値2件（物理記録ACK回収・migration数）を修正し、関連39件を再実行して全成功。lint・型・契約・設定・Web build・Worker dry-runも成功。今回のCIはpush後に確認する。 schema0033/67table、依存追加なし。UploadDO台帳・自動回収/GC・Queue等の残る更新受付、backup barrier、未知KDF/multipartの収束、共有/メディア/実環境検証は後続です。 全体完成扱いにしない。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0032`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0033`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -100,7 +100,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証の共通受付を接続済み。upload物理観測・UploadDO台帳反映・内部停止/cleanup・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証の共通受付を接続済み。uploadUploadDO台帳反映・自動回収/GC・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

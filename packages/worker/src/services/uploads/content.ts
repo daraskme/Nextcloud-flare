@@ -134,13 +134,13 @@ export async function writeSingleUpload(
   } catch (error) {
     // R2 may have committed despite a lost response. Charge any observed bytes before returning.
     try {
-      await observePhysicalObject(env.DB, env.BLOBS, row.blob_id, row.epoch);
+      await observePhysicalObject(env, env.BLOBS, row.blob_id, row.epoch);
     } catch {
       /* repair retries observation */
     }
     throw error;
   }
-  await observePhysicalObject(env.DB, env.BLOBS, row.blob_id, row.epoch);
+  await observePhysicalObject(env, env.BLOBS, row.blob_id, row.epoch);
   ({ row, authorized } = await accessUpload(env.DB, principal, id, capability, capabilities));
   if (row.state === "completing") return uploadStatus(row);
   const admission = await acquireAccountMutation(

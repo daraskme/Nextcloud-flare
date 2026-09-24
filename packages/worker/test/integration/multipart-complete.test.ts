@@ -445,7 +445,7 @@ it("freezes the completed part metadata and immutable completion attempt", async
   ).rejects.toThrow(/immutable_multipart_completion/);
 });
 
-it("reconciles a lost physical observation acknowledgement without charging the object twice", async () => {
+it("recovers a lost physical observation acknowledgement and publishes without charging twice", async () => {
   const f = await fixture();
   const db = injectBatch(
     (sql) => sql.includes("INSERT INTO blob_storage"),
@@ -454,8 +454,11 @@ it("reconciles a lost physical observation acknowledgement without charging the 
     },
     true,
   );
-  await expect(complete(f, admitted(db))).rejects.toThrow(/lost_physical_observation/);
-  expect(await counters(f)).toMatchObject({ physical_bytes: 3, reserved_bytes: 3 });
+  expect(await complete(f, admitted(db))).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed" },
+  });
+  expect(await counters(f)).toMatchObject({ physical_bytes: 3, reserved_bytes: 0 });
   expect(await complete(f)).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
   expect(await counters(f)).toMatchObject({ physical_bytes: 3, reserved_bytes: 0 });
 });

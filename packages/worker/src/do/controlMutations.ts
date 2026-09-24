@@ -1,10 +1,10 @@
 import {
+  type AnyMutationRequest,
   advanceMutations,
   enqueueMutation,
+  enqueueSystemMutation,
   MUTATION_QUEUE_LIMIT,
-  type MutationAdmission,
   type MutationReceipt,
-  type MutationRequest,
 } from "../db/mutationAdmission";
 
 /** D1 owns the capacity. Instance loss, caller timeout and lost RPC replies never free a grant. */
@@ -13,13 +13,11 @@ export class ControlMutations {
   #round: Promise<MutationReceipt[]> | undefined;
   constructor(
     private readonly db: D1Database,
-    private readonly admit: (epoch: number) => Promise<void>,
-    private readonly current: (epoch: number) => void,
+    private readonly admit: (request: AnyMutationRequest) => Promise<void>,
+    private readonly current: (request: AnyMutationRequest) => void,
   ) {}
 
-  async acquire(
-    request: MutationRequest<string | null>,
-  ): Promise<MutationAdmission<string | null>> {
+  async acquire(request: AnyMutationRequest): Promise<MutationReceipt & { expires_at: number }> {
     if (
       !request ||
       this.#pending >= MUTATION_QUEUE_LIMIT ||
@@ -50,14 +48,14 @@ export class ControlMutations {
     }
   }
 
-  async #acquire(
-    request: MutationRequest<string | null>,
-  ): Promise<MutationAdmission<string | null>> {
-    await this.admit(request.epoch);
-    this.current(request.epoch);
-    let receipt = await enqueueMutation(this.db, request);
+  async #acquire(request: AnyMutationRequest): Promise<MutationReceipt & { expires_at: number }> {
+    await this.admit(request);
+    this.current(request);
+    let receipt = await ("system" in request
+      ? enqueueSystemMutation(this.db, request)
+      : enqueueMutation(this.db, request));
     for (;;) {
-      this.current(request.epoch);
+      this.current(request);
       if (Date.now() >= request.deadline) throw new Error("mutation_unavailable");
       if (
         receipt.state === "active" &&

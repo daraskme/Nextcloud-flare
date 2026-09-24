@@ -13,7 +13,7 @@ import { createSingleUpload, reserveMultipartUpload } from "../../src/services/u
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { foundationFixture } from "./foundation";
-import { acquireMutation } from "./mutationAdmission";
+import { acquireMutation, acquireSystemMutation } from "./mutationAdmission";
 import { admitted } from "./uploadEnv";
 
 export const actions = [
@@ -118,6 +118,10 @@ export async function transferFixture(
   const configure = (
     acquire = (request: MutationRequest) => acquireMutation(request),
     db = env.DB,
+    systemAcquire = (request: MutationRequest) =>
+      realControl
+        ? env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).acquireSystemMutation(request)
+        : acquireSystemMutation(request),
   ) => {
     const app = realControl ? { ...env, DB: db } : admitted(db, epoch);
     app.APP_ORIGIN = "https://app.invalid";
@@ -126,6 +130,7 @@ export async function transferFixture(
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
         acquireMutation: acquire,
+        acquireSystemMutation: systemAcquire,
         status: realControl
           ? () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status()
           : async () => ({ epoch, maintenance: false, gcPaused: true }),
