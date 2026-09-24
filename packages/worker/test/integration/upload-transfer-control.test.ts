@@ -7,7 +7,12 @@ import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { foundationFixture } from "../fixtures/foundation";
-import { actions, cleanupTransferObjects, transferFixture } from "../fixtures/uploadTransfer";
+import {
+  actions,
+  cleanupTransferObjects,
+  settlementActions,
+  transferFixture,
+} from "../fixtures/uploadTransfer";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
 let epoch = 2;
@@ -48,7 +53,7 @@ afterAll(async () => {
   await control().quiesce(epoch);
 });
 
-it.each(actions)(
+it.each([...actions, ...settlementActions])(
   "queues %s in the real shared pool and returns capacity after commit",
   async (action) => {
     const f = await transferFixture(action, epoch, true);
@@ -85,7 +90,8 @@ it.each(actions)(
           { timeout: 4000, interval: 25 },
         )
         .toBe(1);
-      expect(f.calls.get + f.calls.create + f.calls.complete).toBe(0);
+      expect(f.calls.get + f.calls.create).toBe(0);
+      expect(f.calls.complete).toBe(action === "multipart-verify" ? 1 : 0);
       expect(f.calls.put).toBe(action === "single-verify" ? 1 : 0);
       expect((await f.receipt())[0]).toEqual({ state: "waiting", committed_at: null });
       await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
@@ -94,9 +100,18 @@ it.each(actions)(
       const result = await outcome;
       if ("error" in result) throw result.error;
       expect(result.value).toMatchObject(
-        action === "multipart-complete"
+        action === "multipart-complete" || action === "multipart-verify"
           ? { kind: "terminal", operation: { state: "committed" } }
-          : { state: action === "multipart-start" ? "created" : "completing" },
+          : {
+              state:
+                action === "single-abort"
+                  ? "aborted"
+                  : action === "multipart-abort"
+                    ? "aborting"
+                    : action === "multipart-start"
+                      ? "created"
+                      : "completing",
+            },
       );
       expect(await f.receipt()).toEqual([{ state: "closed", committed_at: expect.any(Number) }]);
       expect(

@@ -4,7 +4,11 @@ import { assertExists, assertOneChange, atomicBatch } from "../../db/primary";
 import { CONTROL_NAME } from "../../do/ControlDO";
 import { expectedPartBytes, multipartPlan, UPLOAD_LIMITS } from "../../do/uploadPlan";
 import type { Env } from "../../env";
-import { accountMutationStatements, acquireAccountMutation } from "../accountMutation";
+import {
+  accountMutationStatements,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "../accountMutation";
 import type { MutationOutcome } from "../fsMutation";
 import { accessUpload, type UploadRow, uploadFence, uploadRow } from "./access";
 import { publishMultipartUpload } from "./complete";
@@ -99,7 +103,13 @@ async function observeCompletedObject(
   )
     throw new Error("upload_object_mismatch");
   const current = await accessUpload(env.DB, principal, row.id, capability, capabilities);
-  await atomicBatch(env.DB, [
+  const admission = await acquireAccountMutation(
+    env,
+    row.owner_id,
+    row.epoch,
+    "upload.multipart-verify",
+  );
+  await commitAccountMutation(env.DB, admission, row.owner_id, [
     authorizationAssertion(current.authorized),
     uploadFence(row, ["completing"]),
     multipartPartsProof(row),

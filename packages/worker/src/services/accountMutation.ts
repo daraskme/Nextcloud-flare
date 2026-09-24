@@ -36,7 +36,10 @@ export async function acquireAccountMutation(
     | "upload.single-recover"
     | "upload.single-verify"
     | "upload.multipart-start"
-    | "upload.multipart-complete",
+    | "upload.multipart-complete"
+    | "upload.single-abort"
+    | "upload.multipart-abort"
+    | "upload.multipart-verify",
 ): Promise<MutationAdmission> {
   const spaceId = await primary(env.DB)
     .prepare(

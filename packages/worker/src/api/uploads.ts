@@ -204,7 +204,7 @@ export async function handleUploadHttp(
       );
       return Response.json(
         await (row.mode === "multipart" ? abortMultipartUpload : abortSingleUpload)(
-          env.DB,
+          env,
           principal,
           id,
           capability,

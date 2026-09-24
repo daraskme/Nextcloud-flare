@@ -260,13 +260,7 @@ it("does not dispatch after a lost D1 lease response and can abort the durable i
     data_calls: 1,
   });
   expect(
-    await abortSingleUpload(
-      env.DB,
-      f.principal,
-      f.created.id,
-      f.created.capability,
-      f.capabilities,
-    ),
+    await abortSingleUpload(f.app, f.principal, f.created.id, f.created.capability, f.capabilities),
   ).toMatchObject({ state: "aborted", cleanupPending: true });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 3 });
   await expect(write(f)).rejects.toThrow(/not_receiving/);
@@ -412,14 +406,14 @@ it("does not abort a completing upload", async () => {
   const f = await fixture();
   await write(f);
   await expect(
-    abortSingleUpload(env.DB, f.principal, f.created.id, f.created.capability, f.capabilities),
+    abortSingleUpload(f.app, f.principal, f.created.id, f.created.capability, f.capabilities),
   ).rejects.toThrow(/abort_conflict/);
   expect(await complete(f)).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
 });
 
 it("releases an unstarted upload reservation when abort wins before any write claim", async () => {
   const f = await fixture();
-  await abortSingleUpload(env.DB, f.principal, f.created.id, f.created.capability, f.capabilities);
+  await abortSingleUpload(f.app, f.principal, f.created.id, f.created.capability, f.capabilities);
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 0 });
   await expect(write(f)).rejects.toThrow(/not_receiving/);
 });
@@ -458,7 +452,13 @@ it("retains the reservation when a write claim races abort and charges a late su
     false,
   );
   try {
-    await abortSingleUpload(db, f.principal, f.created.id, f.created.capability, f.capabilities);
+    await abortSingleUpload(
+      { ...f.app, DB: db },
+      f.principal,
+      f.created.id,
+      f.created.capability,
+      f.capabilities,
+    );
     expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 0 });
   } finally {
     release();

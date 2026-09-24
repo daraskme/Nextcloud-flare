@@ -7,6 +7,7 @@ import type { MutationRequest } from "../../src/db/mutationAdmission";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import type { Env } from "../../src/env";
+import { abortMultipartUpload, abortSingleUpload } from "../../src/services/uploads/abort";
 import { writeSingleUpload } from "../../src/services/uploads/content";
 import { createSingleUpload, reserveMultipartUpload } from "../../src/services/uploads/create";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
@@ -23,6 +24,8 @@ export const actions = [
   "multipart-complete",
 ] as const;
 export type Action = (typeof actions)[number];
+export const settlementActions = ["single-abort", "multipart-abort", "multipart-verify"] as const;
+export type SettlementAction = (typeof settlementActions)[number];
 const objects = new Set<string>();
 const handles: R2MultipartUpload[] = [];
 const stream = () => new Blob(["abc"]).stream();
@@ -33,7 +36,11 @@ export async function cleanupTransferObjects() {
   objects.clear();
 }
 
-export async function transferFixture(action: Action, epoch = 1, realControl = false) {
+export async function transferFixture(
+  action: Action | SettlementAction,
+  epoch = 1,
+  realControl = false,
+) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   await atomicBatch(
     env.DB,
@@ -152,7 +159,7 @@ export async function transferFixture(action: Action, epoch = 1, realControl = f
     ).rejects.toThrow("prepared_put_ack_lost");
     losePut = false;
   }
-  if (action === "multipart-complete") {
+  if (action === "multipart-complete" || action === "multipart-verify") {
     await createMultipartUpload(app, input, capabilities);
     await writeMultipartPart(
       app,
@@ -171,27 +178,35 @@ export async function transferFixture(action: Action, epoch = 1, realControl = f
     "SELECT MAX(seq) AS n FROM mutation_admissions",
   ).first<number>("n");
   const run = (configured = configure(), body = stream()) =>
-    action === "multipart-start"
-      ? createMultipartUpload(configured, input, capabilities)
-      : action === "multipart-complete"
-        ? completeMultipartUpload(
-            configured,
-            input.principal,
-            created.id,
-            created.capability,
-            capabilities,
-            "complete",
-            [],
-          )
-        : writeSingleUpload(
-            configured,
-            input.principal,
-            created.id,
-            created.capability,
-            capabilities,
-            body,
-            3,
-          );
+    action === "single-abort" || action === "multipart-abort"
+      ? (action === "single-abort" ? abortSingleUpload : abortMultipartUpload)(
+          configured,
+          input.principal,
+          created.id,
+          created.capability,
+          capabilities,
+        )
+      : action === "multipart-start"
+        ? createMultipartUpload(configured, input, capabilities)
+        : action === "multipart-complete" || action === "multipart-verify"
+          ? completeMultipartUpload(
+              configured,
+              input.principal,
+              created.id,
+              created.capability,
+              capabilities,
+              "complete",
+              [],
+            )
+          : writeSingleUpload(
+              configured,
+              input.principal,
+              created.id,
+              created.capability,
+              capabilities,
+              body,
+              3,
+            );
   const row = () =>
     env.DB.prepare(
       "SELECT u.state,u.write_attempt_id,u.multipart_complete_attempt,u.r2_upload_id,u.data_calls,u.control_calls,b.sha256_verified FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=?",

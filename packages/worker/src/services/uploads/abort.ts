@@ -1,17 +1,23 @@
 import { authorizationAssertion, type Principal } from "../../auth/authorize";
 import type { UploadCapabilities } from "../../auth/uploadCapability";
-import { assertExists, assertOneChange, atomicBatch } from "../../db/primary";
+import { assertExists, assertOneChange } from "../../db/primary";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "../accountMutation";
 import { accessUpload, uploadFence, uploadReceiptFence, uploadRow, uploadStatus } from "./access";
 import { readUpload } from "./read";
 
 /** D1 is the dispatch/publication fence, including initialization without a known R2 ID. */
 export async function abortMultipartUpload(
-  db: D1Database,
+  env: AccountMutationEnv,
   principal: Principal,
   id: string,
   token: string,
   capabilities: UploadCapabilities,
 ) {
+  const { DB: db } = env;
   const { row, authorized } = await accessUpload(
     db,
     principal,
@@ -24,8 +30,14 @@ export async function abortMultipartUpload(
   if (row.mode !== "multipart") throw new Error("upload_mode_conflict");
   if (["completing", "completed"].includes(row.state)) throw new Error("upload_abort_conflict");
   if (["created", "uploading"].includes(row.state)) {
+    const admission = await acquireAccountMutation(
+      env,
+      row.owner_id,
+      row.epoch,
+      "upload.multipart-abort",
+    );
     try {
-      await atomicBatch(db, [
+      await commitAccountMutation(db, admission, row.owner_id, [
         authorizationAssertion(authorized),
         uploadReceiptFence(row),
         {
@@ -37,7 +49,8 @@ export async function abortMultipartUpload(
         assertOneChange,
       ]);
     } catch (error) {
-      // Re-read authorization and terminal state before accepting a lost acknowledgement.
+      // Another caller's terminal state is a read-only receipt, never proof of our own commit
+      // and never permission to close this call's uncertain admission.
       const current = await readUpload(db, principal, id, token, capabilities);
       if (["completing", "completed"].includes(current.state))
         throw new Error("upload_abort_conflict");
@@ -52,17 +65,24 @@ export async function abortMultipartUpload(
 
 /** Stop publication first. R2 outcome/cleanup remains durable even if an old PUT finishes late. */
 export async function abortSingleUpload(
-  db: D1Database,
+  env: AccountMutationEnv,
   principal: Principal,
   id: string,
   token: string,
   capabilities: UploadCapabilities,
 ) {
+  const { DB: db } = env;
   const { row, authorized } = await accessUpload(db, principal, id, token, capabilities, false);
   if (row.state === "aborted") return uploadStatus(row);
   if (row.mode !== "single" || !["created", "receiving"].includes(row.state))
     throw new Error("upload_abort_conflict");
-  await atomicBatch(db, [
+  const admission = await acquireAccountMutation(
+    env,
+    row.owner_id,
+    row.epoch,
+    "upload.single-abort",
+  );
+  await commitAccountMutation(db, admission, row.owner_id, [
     authorizationAssertion(authorized),
     uploadFence(row, ["created", "receiving"]),
     {
