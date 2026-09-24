@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 1/3 復旧用更新の全体受付 | migration0033、system/mode不変、共有32/256、物理観測・既知ID・初期化停止・直接ACK claim | Node8件/workerd41件を追加。最終的にNode416件/workerd1227件、計1,643件を検証済み。全体実行で見つかった旧期待値2件（物理記録ACK回収・migration数）を修正し、関連39件を再実行して全成功。lint・型・契約・設定・Web build・Worker dry-runも成功。今回のCIはpush後に確認する。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、dirty/alarm/容量保持 | workerd33件追加。新規台帳境界29件と実ControlDO12件が成功。全体checkはNode416/workerd1260、計1,676件が成功し、lint・型・契約・設定・Web build・Worker dry-runも通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 復旧用更新の全体受付 | migration0033、system/mode不変、共有32/256、物理観測・既知ID・初期化停止・直接ACK claim | Node8件/workerd41件追加。f9dffcbのCI全成功、Node416/workerd1227/browser19、計1,662件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receipt/返却、遅延PUTの容量保持 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload転送の全体受付 | 単一start/recover/verify・multipart start/complete、current authority/claim/receipt/返却、直接ACKのみdispatch | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload予約の全体受付 | 単一/分割・新規/上書きの共有32枠、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加。e90ee88のCI全成功、Node408/workerd1096/browser19、計1,523件。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |

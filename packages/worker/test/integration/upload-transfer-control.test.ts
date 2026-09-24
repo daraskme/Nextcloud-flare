@@ -7,6 +7,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { foundationFixture } from "../fixtures/foundation";
+import { journalFixture, journalStages } from "../fixtures/uploadJournal";
 import {
   actions,
   cleanupTransferObjects,
@@ -130,6 +131,89 @@ it.each([...actions, ...settlementActions])(
       );
     } finally {
       // Explicit fixture cleanup, after any live request settles; no production release shortcut.
+      await env.DB.prepare(
+        "UPDATE mutation_admissions SET state='closed' WHERE space_id=? AND state<>'closed'",
+      )
+        .bind(f.f.ids.space)
+        .run();
+      await outcome;
+      await env.DB.prepare("UPDATE permits SET state='revoked' WHERE space_id=? AND state='open'")
+        .bind(f.f.ids.space)
+        .run();
+    }
+  },
+);
+
+it.each(journalStages)(
+  "queues journal %s behind real shared capacity and returns its slot",
+  async (stage) => {
+    const f = await journalFixture(stage, epoch, control),
+      target = f.atGate();
+    const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+    const before = async (request: { permitId: string }) => {
+      if (!target({ ...request, spaceId: f.f.ids.space, epoch, deadline: Date.now() + 5000 }))
+        return;
+      await atomicBatch(
+        env.DB,
+        seeds.map((id) => ({
+          sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+          values: [id, id, f.f.ids.space, epoch],
+        })),
+      );
+      expect((await advanceMutations(env.DB)).filter((r) => r.state === "active")).toHaveLength(32);
+    };
+    const outcome = f.run(
+      f.configure({
+        acquire: async (r) => {
+          await before(r);
+          return control().acquireMutation(r);
+        },
+        systemAcquire: async (r) => {
+          await before(r);
+          return control().acquireSystemMutation(r);
+        },
+      }),
+    );
+    try {
+      await expect
+        .poll(
+          () =>
+            env.DB.prepare(
+              "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND space_id=? AND permit_id LIKE ?",
+            )
+              .bind(f.f.ids.space, f.prefix + "%")
+              .first("n"),
+          { timeout: 4000, interval: 25 },
+        )
+        .toBe(1);
+      expect(f.parts()).toBe(0);
+      expect(await f.counters()).toMatchObject({ reserved_bytes: 3 });
+      await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+        .bind(seeds[0])
+        .run();
+      const result = await outcome;
+      if (stage === "lost")
+        expect(result).toMatchObject({ error: { message: "upload_ledger_recovery_required" } });
+      else if ("error" in result) throw result.error;
+      expect(
+        (await f.receipt()).every((r) => r.state === "closed" && r.committed_at !== null),
+      ).toBe(true);
+      expect(f.parts()).toBe(stage === "part" ? 1 : 0);
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+        ).first("n"),
+      ).toBe(31);
+      const grant = await control().acquireMutation({
+        permitId: crypto.randomUUID(),
+        spaceId: f.f.ids.space,
+        epoch,
+        deadline: Date.now() + 5000,
+      });
+      expect(await grantPermit(env.DB, grant.permit_id, f.f.ids.space, epoch, grant)).toMatchObject(
+        { permit_id: grant.permit_id },
+      );
+    } finally {
       await env.DB.prepare(
         "UPDATE mutation_admissions SET state='closed' WHERE space_id=? AND state<>'closed'",
       )

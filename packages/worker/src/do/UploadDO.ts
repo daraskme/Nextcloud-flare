@@ -4,6 +4,12 @@ import { authorizationAssertion, type Principal } from "../auth/authorize";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { digestJson } from "../jobs/operations";
+import { accountMutationStatements, acquireAccountMutation } from "../services/accountMutation";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  systemMutationStatements,
+} from "../services/systemMutation";
 import {
   type UploadRow,
   uploadAuthority,
@@ -73,7 +79,12 @@ export class UploadDO extends DurableObject<Env> {
 
   async #lost(row: UploadRow): Promise<never> {
     // A D1 marker is written BEFORE the first local journal. Empty storage can never reset budgets.
-    await atomicBatch(this.env.DB, [
+    const admission = await acquireSystemMutation(
+      this.env,
+      row.owner_id,
+      "upload.multipart-journal-lost",
+    );
+    await commitSystemMutation(this.env.DB, admission, row.owner_id, [
       {
         sql: `UPDATE uploads SET state='failed',accept_parts=0,cleanup_pending=1,
           error_code='upload_ledger_lost' WHERE id=? AND mode='multipart'
@@ -96,18 +107,27 @@ export class UploadDO extends DurableObject<Env> {
     } else {
       if (binding || this.#ledger.status(Date.now())) return this.#lost(row);
       const marker = crypto.randomUUID();
+      const admission = await acquireAccountMutation(
+        this.env,
+        row.owner_id,
+        row.epoch,
+        "upload.multipart-journal-init",
+      );
       // A lost acknowledgement deliberately leaves an unrecoverable initialization gap.
       // Neither the failed caller nor a replay may start a new ledger from that marker.
-      await atomicBatch(this.env.DB, [
-        authorizationAssertion(authorized),
-        uploadFence(row, ["created"]),
-        {
-          sql: `UPDATE uploads SET multipart_ledger_id=? WHERE id=? AND multipart_ledger_id IS NULL
+      await atomicBatch(
+        this.env.DB,
+        accountMutationStatements(admission, row.owner_id, [
+          authorizationAssertion(authorized),
+          uploadFence(row, ["created"]),
+          {
+            sql: `UPDATE uploads SET multipart_ledger_id=? WHERE id=? AND multipart_ledger_id IS NULL
             AND data_calls=0 AND multipart_revision=0 AND r2_upload_id IS NOT NULL`,
-          values: [marker, row.id],
-        },
-        assertOneChange,
-      ]);
+            values: [marker, row.id],
+          },
+          assertOneChange,
+        ]),
+      );
       this.ctx.storage.transactionSync(() => {
         this.#ledger.initialize(this.#identity(row), Date.now());
         this.ctx.storage.sql.exec("INSERT INTO multipart_binding VALUES(1,?)", marker);
@@ -138,7 +158,7 @@ export class UploadDO extends DurableObject<Env> {
       throw new Error("upload_ledger_recovery_required");
     const stopping = ["aborting", "expired", "failed"].includes(snapshot.state);
     if (!assertions.length && !stopping) throw new Error("upload_mirror_authority_required");
-    await atomicBatch(this.env.DB, [
+    const statements: SqlStatement[] = [
       ...assertions,
       ...(!stopping
         ? [
@@ -211,7 +231,26 @@ export class UploadDO extends DurableObject<Env> {
           ],
         }),
       ),
-    ]);
+    ];
+    const admitted = stopping
+      ? systemMutationStatements(
+          await acquireSystemMutation(this.env, row.owner_id, "upload.multipart-journal-stop"),
+          row.owner_id,
+          statements,
+        )
+      : accountMutationStatements(
+          await acquireAccountMutation(
+            this.env,
+            row.owner_id,
+            row.epoch,
+            "upload.multipart-journal-mirror",
+          ),
+          row.owner_id,
+          statements,
+        );
+    // A claimPart result may authorize R2 dispatch. Only a direct ACK permits returning it.
+    // Receipt recovery cannot clear dirty journal rows or turn an unknown claim into dispatch.
+    await atomicBatch(this.env.DB, admitted);
     this.#ledger.markMirrored(snapshot.revision);
     await this.#schedule(true);
   }

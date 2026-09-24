@@ -726,6 +726,12 @@ it("arms cleanup after epoch invalidation even if completing had already removed
   ).rejects.toThrow(/admission_closed/);
   await runInDurableObject(f.actual, async (_, state) => {
     expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now());
+    // Internal admission still requires the authoritative epoch to be mirrored in D1.
+    await expect(new UploadDO(state, app).alarm()).rejects.toThrow("mutation_unavailable");
+  });
+  expect(await uploadRow(env.DB, f.created.id)).toMatchObject({ state: "completing" });
+  await env.DB.prepare("UPDATE control SET epoch=2,maintenance=1").run();
+  await runInDurableObject(f.actual, async (_, state) => {
     await new UploadDO(state, app).alarm();
   });
   expect(await uploadRow(env.DB, f.created.id)).toMatchObject({

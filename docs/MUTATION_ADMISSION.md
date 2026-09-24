@@ -85,7 +85,7 @@ createSingleUploadとreserveMultipartUploadはmandatoryなCONTROL bindingを受�
 
 自分のbatch応答喪失はexact receiptで照合する。別要求が同じkeyの予約を作った場合や自分のreceipt読取りを失った場合も、current authorityと一致する保存済みuploadを読めれば、その共有HTTP receiptへ合流できる。ただしそれは自分の確定証明ではなく、自分の未確定ticketを閉じない。予約・blob・容量を消さず、自動で予約SQLやR2を再実行しない。全照合応答を失ったときはエラーを返し、同じkeyで次に照会する。capabilityやhashを受付台帳に入れない。
 
-HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。UploadDO台帳反映・自動回収/GCなどの更新受付は後続。
+HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・無課金、既存receipt読取り、枠返却後のnamespace許可を検証する。単一/分割・新規/上書き、待機後の失効/停止/epoch/祖先/revision/quota、実時計での期限切れ、rollback、ACK/照合喪失、遅延SQL、別owner grantも検証する。migration・依存追加なし。送信claimの接続は後述。自動回収/GCなどの更新受付は後続。
 
 ## 応答喪失・失効・復旧
 
@@ -112,7 +112,7 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 
 受付はpreflight後、最終batch前。4つの外部送信claimはaccountMutationStatementsの共通fence/receiptを使うが、commitAccountMutationのACK回収ではdispatchしない。R2 PUT/create/completeの再送禁止とGET回数上限を維持する。待機後の失効・maintenance・revision・SQL時計を再検査し、rollbackした未確定枠は推測で閉じない。
 
-単一PUT後に検証済み情報の受付が満杯でも、観測済みphysicalとreservationを保持する。次回はGETで同じobjectを検査し、PUTを再送しない。受付失敗のHTTPは503/Retry-After: 1。physical観測や既知R2 IDの記録は後述のsystem受付へ接続した。UploadDO台帳反映・自動回収/GCは後続。利用者の中止は次節。DB枠の返却は外部I/Oの終了証明ではない。
+単一PUT後に検証済み情報の受付が満杯でも、観測済みphysicalとreservationを保持する。次回はGETで同じobjectを検査し、PUTを再送しない。受付失敗のHTTPは503/Retry-After: 1。physical観測や既知R2 IDの記録は後述のsystem受付へ接続した。自動回収/GCは後続。利用者の中止は次節。DB枠の返却は外部I/Oの終了証明ではない。
 
 境界試験は5経路の混雑/待機後失効/停止/対象変更/rollback、直接ACK喪失時の送信拒否、実時計期限、検証済み情報のACK/読戻し喪失と容量保持、HTTP503を検証する。実ControlDOで各経路を32枠満杯から待機させ、commit後の枠をnamespace permitへ渡す。
 
@@ -130,7 +130,7 @@ HTTPは混雑503・Retry-After: 1。実ControlDOで32枠満杯からの待機・
 
 DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中止結果/完成物proofへ合流しても、それを自分のbatchの成功証明とせず、自分の未確定枠は閉じない。ACKと全照合応答を失った場合も次回の状態照会・同じ要求で回収する。物理容量はこのreceiptの有無だけで戻さない。
 
-待機後のcredential失効/maintenance/epoch/対象変更/owner無効化、実時計期限、rollback、ACK/全照合喪失、別要求の成功、HTTP503、送信claimと中止の競合、検証混雑後の二重complete防止を検証する。実ControlDOの32枠待機/返却も3経路へ追加した。物理観測・既知R2 ID・初期化停止は後述のsystem受付へ接続。UploadDO台帳反映・自動回収の受付は後続。
+待機後のcredential失効/maintenance/epoch/対象変更/owner無効化、実時計期限、rollback、ACK/全照合喪失、別要求の成功、HTTP503、送信claimと中止の競合、検証混雑後の二重complete防止を検証する。実ControlDOの32枠待機/返却も3経路へ追加した。物理観測・既知R2 ID・初期化停止は後述のsystem受付へ接続。自動回収の受付は後続。
 
 ## migrationと残作業
 
@@ -149,7 +149,8 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | 単一送信開始/読戻し/検証済み情報、multipart初期化/complete claim | 接続済み。外部送信には直接ACK必須。検証済みDB情報のみexact receiptで回収 |
 | 利用者によるsingle/multipart中止、multipart検証済み情報 | 接続済み。DB-onlyのexact receipt回収。容量返却は既存の安全条件を維持 |
 | 物理観測・既知R2 ID記録・初期化停止/緊急abort予算 | 接続済み。後述のsystem受付、通常と同じ枠 |
-| UploadDO台帳反映・自動回収/GC | 既存制御を維持。共通受付は未接続 |
+| UploadDO台帳初期化/反映/喪失時停止 | 接続済み。初期化と通常反映はaccount、停止/喪失はsystem。直接ACK契約は後述 |
+| 自動回収/GC | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
@@ -177,4 +178,21 @@ migration0033でsystem/modeを不変にし、通常操作・namespace permitへ�
 
 systemとmaintenanceの2列は0033で既存台帳へ追加する。旧rowは0/0、receiptとAUTOINCREMENT high-water markは保持する。適用前にmaintenance・全ticket/permit/claimed operationのdrainを必須とする。閉鎖状態のsystem mirror照合は稼働中system ticketを許すが、復旧監査と再開の全体fenceは維持する。
 
-物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。UploadDO台帳・Cron/Queue・GC/全bucket repair・backup barrierの接続は未完了。
+物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。Cron/Queue・GC/全bucket repair・backup barrierの接続は未完了。
+
+## UploadDO台帳の初期化・反映・喪失
+
+UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳喪失時の停止を共通受付へ接続しました。初期化と通常反映は現在の利用者認可、停止反映と喪失処理は復旧用system受付を使い、すべて同じ32 active/256 waiting枠を共有します。
+
+初期化markerや部品送信につながる台帳反映は、D1 batchの直接ACKがなければローカル台帳を確定せず、送信許可も返しません。混雑・rollback・応答喪失でもdirty行、アラーム、予約容量を保持します。台帳全喪失では停止記録を回収できても再初期化しません。
+
+| kind | 同一batchの処理 | ACK喪失後 |
+|---|---|---|
+| upload.multipart-journal-init | 現在の認可・upload fence・一度限りledger marker・確定記録/返却 | ローカル台帳を開始しない。再送は喪失処理へ収束 |
+| upload.multipart-journal-mirror | 現在の認可・予約/期限・binding/revision・uploadとdirty parts・確定記録/返却 | markMirroredせず部品送信許可を返さない |
+| system:upload.multipart-journal-stop | 停止snapshotのbinding/source epoch・upload/parts・確定記録/返却 | dirty/alarmを残し、次回の直接ACKまで保持 |
+| system:upload.multipart-journal-lost | multipartのfailed/cleanup intent・in-flight partsをunknown・確定記録/返却 | exact DB receiptで記録だけ回収し、必ずrecovery_requiredを返す |
+
+同じUploadDO内の既存直列化を維持し、R2やstreamをDOへ渡さない。待機後もSQL時計・現行認可・予約・正確なjournal binding/revisionを検査する。dirty partsは最大200、追加envelopeを含めてもD1の1,000 statement上限内。終端公開証明の読取りとローカルのcompleted照合は新たなD1 mutation受付を増やさない。
+
+停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。自動回収/GC・Queue・backupの受付接続は後続。

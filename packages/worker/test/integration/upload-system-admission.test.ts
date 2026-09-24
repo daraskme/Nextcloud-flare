@@ -1,7 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
-import type { MutationRequest, SystemMutationKind } from "../../src/db/mutationAdmission";
+import type { MutationRequest } from "../../src/db/mutationAdmission";
 import type { Env } from "../../src/env";
 import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
 import { cleanupTransferObjects, transferFixture } from "../fixtures/uploadTransfer";
@@ -19,7 +19,8 @@ const kinds = [
   "upload.multipart-stop",
   "upload.multipart-abort",
 ] as const;
-const writes: Record<SystemMutationKind, string> = {
+type ObservedKind = (typeof kinds)[number];
+const writes: Record<ObservedKind, string> = {
   "upload.observe": "INSERT INTO blob_storage",
   "upload.multipart-observe": "INSERT INTO blob_storage",
   "upload.multipart-record": "SET r2_upload_id=?",
@@ -27,7 +28,7 @@ const writes: Record<SystemMutationKind, string> = {
   "upload.multipart-stop": "SET state='failed',accept_parts=0",
   "upload.multipart-abort": "SET cleanup_pending=1,cleanup_calls=cleanup_calls+1",
 };
-function faultDatabase(kind: SystemMutationKind, mode: "ack" | "all_reads" | "rollback") {
+function faultDatabase(kind: ObservedKind, mode: "ack" | "all_reads" | "rollback") {
   const queries = new WeakMap<object, string>();
   let attempted = false,
     reads = 0;
@@ -70,7 +71,7 @@ function faultDatabase(kind: SystemMutationKind, mode: "ack" | "all_reads" | "ro
   } as unknown as D1Database;
   return { db, reads: () => reads };
 }
-async function fixture(kind: SystemMutationKind) {
+async function fixture(kind: ObservedKind) {
   const f = await transferFixture(
     kind === "upload.observe"
       ? "single-start"
