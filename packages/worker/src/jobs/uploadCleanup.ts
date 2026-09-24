@@ -44,14 +44,22 @@ export function controlFence(epoch: number, maintenance: boolean): SqlStatement 
 export const COMPLETION = `((u.source='private' AND o.kind='upload.complete'
     AND json_extract(o.operands_json,'$.uploadId')=u.id)
   OR (u.source='dav' AND o.kind='dav.put' AND o.principal_kind='app_password'
-    AND o.op_id=u.completion_op_id AND u.id='dav_'||o.op_id AND o.request_digest=u.request_digest
-    AND EXISTS(SELECT 1 FROM reservations r WHERE r.id=u.reservation_id AND r.op_id=o.op_id)))
+    AND (u.completion_op_id IS NULL OR o.op_id=u.completion_op_id)
+    AND u.id='dav_'||o.op_id AND o.request_digest=u.request_digest
+    AND EXISTS(SELECT 1 FROM reservations r WHERE r.id=u.reservation_id AND r.op_id IS u.completion_op_id)))
   AND o.credential_id=u.credential_id
   AND o.epoch=u.epoch AND o.space_id=u.space_id
   AND json_extract(o.operands_json,'$.parentId')=u.parent_id
   AND json_extract(o.operands_json,'$.nodeId') IS u.target_id`;
 
 export const UNPUBLISHED = `b.owner_id=u.owner_id AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id
+  AND (u.source='private' OR (u.mode='single' AND u.capability_hash='internal:dav' AND u.capability_kid IS NULL
+    AND EXISTS(SELECT 1 FROM reservations r JOIN spaces s ON s.id=u.space_id
+      JOIN credentials c ON c.id=u.credential_id AND c.kind='app_password'
+      WHERE r.id=u.reservation_id AND r.owner_id=u.owner_id AND s.owner_id=u.owner_id
+        AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at
+        AND r.share_id IS NULL AND r.op_id IS u.completion_op_id)
+    AND NOT EXISTS(SELECT 1 FROM operations o WHERE u.id='dav_'||o.op_id AND (${COMPLETION}) IS NOT 1)))
   AND (u.completion_op_id IS NULL OR EXISTS(SELECT 1 FROM operations o
     WHERE o.op_id=u.completion_op_id AND ${COMPLETION}))
   AND NOT EXISTS(SELECT 1 FROM operations o WHERE ${COMPLETION}

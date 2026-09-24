@@ -11,14 +11,21 @@ export async function davUploadHistory(
     present?: boolean;
     epoch?: number;
     operationState?: "claimed" | "failed" | "committed";
+    publication?: "bound" | "claimed" | "absent";
   } = {},
 ) {
   const f = await davPutFixture(),
-    op = "op_" + crypto.randomUUID(),
+    op =
+      "op_" +
+      (options.publication
+        ? crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "")
+        : crypto.randomUUID()),
     id = "dav_" + op,
     blob = op + "_blob",
     reservation = op + "_reservation";
   const state = options.state ?? "receiving",
+    unbound = options.publication === "claimed" || options.publication === "absent",
+    digest = unbound ? "b".repeat(64) : "history",
     created = Date.now() - (options.expired === false ? 1000 : 25 * 3600000),
     expires = created + 86400000,
     epoch = options.epoch ?? 1,
@@ -30,30 +37,35 @@ export async function davUploadHistory(
     : null;
   const stored = state === "completing";
   await atomicBatch(env.DB, [
-    {
-      sql: "INSERT INTO permits(permit_id,space_id,epoch,expires_at,state) VALUES(?,?,?,1,'released')",
-      values: [op, f.ids.space, epoch],
-    },
-    {
-      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,
+    ...(options.publication === "absent"
+      ? []
+      : [
+          {
+            sql: "INSERT INTO permits(permit_id,space_id,epoch,expires_at,state) VALUES(?,?,?,1,'released')",
+            values: [op, f.ids.space, epoch],
+          },
+          {
+            sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,
       permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,created_at,updated_at)
-      VALUES(?,'app_password',?,?,?,'dav.put',?,'history',?,?,1,1,10,?,?,?)`,
-      values: [
-        op,
-        f.ids.user,
-        f.input.principal.credential_id,
-        f.ids.space,
-        options.operationState ?? (stored ? "failed" : "claimed"),
-        epoch,
-        op,
-        JSON.stringify({ parentId: f.ids.folder }),
-        created,
-        created,
-      ],
-    },
+      VALUES(?,'app_password',?,?,?,'dav.put',?,?,?, ?,1,1,10,?,?,?)`,
+            values: [
+              op,
+              f.ids.user,
+              f.input.principal.credential_id,
+              f.ids.space,
+              options.operationState ?? (stored ? "failed" : "claimed"),
+              digest,
+              epoch,
+              op,
+              JSON.stringify({ parentId: f.ids.folder }),
+              created,
+              created,
+            ],
+          },
+        ]),
     {
       sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch,op_id) VALUES(?,?,3,'reserved',?,?,?)",
-      values: [reservation, f.ids.user, expires, epoch, op],
+      values: [reservation, f.ids.user, expires, epoch, unbound ? null : op],
     },
     {
       sql: "INSERT INTO blobs(id,owner_id,r2_key,size,sha256_verified,content_etag,r2_etag,state,created_at) VALUES(?,?,?,3,?,'content',?,'staging',?)",
@@ -78,7 +90,7 @@ export async function davUploadHistory(
       sql: `INSERT INTO uploads(id,source,owner_id,space_id,parent_id,blob_id,reservation_id,credential_id,mode,state,declared_size,
       capability_hash,epoch,accept_parts,in_flight,created_at,expires_at,last_progress_at,upload_name,request_digest,
       write_attempt_id,write_lease_expires_at,completion_op_id)
-      VALUES(?,'dav',?,?,?,?,?,?,'single',?,3,'internal:dav',?,0,?,?,?,?, 'history.txt','history',?,?,?)`,
+      VALUES(?,'dav',?,?,?,?,?,?,'single',?,3,'internal:dav',?,0,?,?,?,?, 'history.txt',?,?,?,?)`,
       values: [
         id,
         f.ids.user,
@@ -93,9 +105,10 @@ export async function davUploadHistory(
         created,
         expires,
         created,
+        digest,
         attempt,
         created + 900000,
-        op,
+        unbound ? null : op,
       ],
     },
   ]);

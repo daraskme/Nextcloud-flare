@@ -45,7 +45,11 @@ export async function davPutFixture(size = 3) {
       .bind(input.principal.credential_id)
       .first<string>("op_id");
   const row = async () => {
-    const id = await op();
+    const id = await env.DB.prepare(
+      "SELECT substr(id,5) op FROM uploads WHERE credential_id=? AND source='dav'",
+    )
+      .bind(input.principal.credential_id)
+      .first<string>("op");
     return id ? davUploadRow(env.DB, id) : null;
   };
   const counters = () =>

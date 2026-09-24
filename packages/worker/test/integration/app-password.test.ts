@@ -1348,7 +1348,7 @@ it("streams DAV PUT creates and conditional overwrites into immutable versioned 
     await env.DB.prepare(
       "SELECT state,error_code AS errorCode FROM operations WHERE kind='dav.put' AND error_code='quota_exceeded'",
     ).first(),
-  ).toEqual({ state: "failed", errorCode: "quota_exceeded" });
+  ).toBeNull(); // Quota failure precedes body transfer and any namespace operation claim.
   const locked = await handleDavHttp(
     new Request("https://app.invalid/dav/Put.txt", {
       method: "LOCK",

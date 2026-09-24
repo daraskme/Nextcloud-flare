@@ -41,7 +41,8 @@ export async function acquireAccountMutation(
     | "upload.multipart-abort"
     | "upload.multipart-verify"
     | "upload.multipart-journal-init"
-    | "upload.multipart-journal-mirror",
+    | "upload.multipart-journal-mirror"
+    | "dav.put-start",
 ): Promise<MutationAdmission> {
   const spaceId = await primary(env.DB)
     .prepare(

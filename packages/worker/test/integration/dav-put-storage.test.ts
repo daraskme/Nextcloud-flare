@@ -119,7 +119,21 @@ it.each([0, 3])(
             data_calls: 1,
             data_bytes: size,
             capability_kid: null,
+            completion_op_id: null,
           });
+          expect(await f.op()).toBeNull();
+          expect(
+            await env.DB.prepare("SELECT COUNT(*) n FROM permits WHERE space_id=?")
+              .bind(f.ids.space)
+              .first("n"),
+          ).toBe(0);
+          expect(
+            await env.DB.prepare(
+              "SELECT state,committed_at FROM mutation_admissions WHERE space_id=? AND permit_id LIKE 'dav.put-start:%'",
+            )
+              .bind(f.ids.space)
+              .first(),
+          ).toEqual({ state: "closed", committed_at: expect.any(Number) });
           expect(await f.counters()).toEqual({ reserved_bytes: size, physical_bytes: 0 });
           expect(options).toMatchObject({
             onlyIf: { etagDoesNotMatch: "*" },
@@ -343,7 +357,7 @@ it.each(["ack", "rollback", "reads"] as const)(
   },
 );
 
-it("does not delete an existing object when claiming the operation fails", async () => {
+it("retains the finished body when its later publication claim fails", async () => {
   const f = await fixture();
   let deleted = false,
     put = false,
@@ -363,33 +377,35 @@ it("does not delete an existing object when claiming the operation fails", async
         delete: async () => {
           deleted = true;
         },
-        put: async () => {
+        put: async (key, body, options) => {
           put = true;
-          throw new Error("unexpected_put");
+          return env.BLOBS.put(key, body, options);
         },
       }),
     }),
   ).rejects.toThrow();
   expect(fired).toBe(true);
-  expect({ deleted, put }).toEqual({ deleted: false, put: false });
-  expect(await f.counters()).toEqual({ reserved_bytes: 0, physical_bytes: 0 });
+  expect({ deleted, put }).toEqual({ deleted: false, put: true });
+  expect(await f.counters()).toEqual({ reserved_bytes: 3, physical_bytes: 3 });
+  expect(await f.row()).toMatchObject({ state: "completing", completion_op_id: null });
+  expect(await f.op()).toBeNull();
 });
 
-it("records a finished native PUT after its namespace permit is revoked and hands the failed publication to GC", async () => {
+it("hands the saved body to GC when the later namespace permit is revoked", async () => {
   const f = await fixture();
   const outcome = await f.run({
-    BLOBS: davBucket({
-      put: async (k, b, o) => {
-        const object = await env.BLOBS.put(k, b, o),
-          op = await f.op();
+    DB: injectBatch(
+      (sql) => sql.includes("INSERT INTO operations"),
+      async () => {
+        const op = await f.op();
         await env.DB.prepare(
           "UPDATE permits SET state='revoked' WHERE permit_id=(SELECT permit_id FROM operations WHERE op_id=?)",
         )
           .bind(op)
           .run();
-        return object;
       },
-    }),
+      true,
+    ),
   });
   expect(outcome).toMatchObject({
     kind: "terminal",

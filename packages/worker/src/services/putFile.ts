@@ -5,7 +5,7 @@ import {
   authorizeNode,
   type Principal,
 } from "../auth/authorize";
-import { assertCreateLocks, lockTokenHashes } from "../auth/locks";
+import { assertCreateLocks, hasBlockingLocks, lockTokenHashes } from "../auth/locks";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -20,7 +20,7 @@ import {
 import { consumeKnownLength } from "../platform/stream";
 import {
   type DavUploadRow,
-  davPublicationFence,
+  davPublicationStatements,
   davUploadMetadata,
   davUploadRow,
   matchesDavObject,
@@ -51,6 +51,7 @@ export interface PutFileRequest {
   readonly parentId: string;
   readonly name: string;
   readonly nodeId?: string;
+  readonly expectedRevision?: number;
   readonly body: ReadableStream<Uint8Array>;
   readonly size: number;
   readonly mime: string;
@@ -337,6 +338,9 @@ export async function putFile(
       name: name.name,
       size: request.size,
       mime: request.mime,
+      ...(request.expectedRevision !== undefined
+        ? { expectedRevision: request.expectedRevision }
+        : {}),
     },
     { parentId: request.parentId, ...(request.nodeId ? { nodeId: request.nodeId } : {}) },
   );
@@ -349,13 +353,83 @@ export async function putFile(
     await request.body.cancel();
     return { kind: "terminal", operation };
   }
-  if (existing && (await davUploadRow(env.DB, intent.id))) {
-    // A protocol retry uses a new request ID; the old immutable attempt never dispatches twice.
-    if (!(await lookupOperation(env.DB, request.principal, intent.id)))
-      throw new Error("authorization_denied");
+  const authorized = create
+    ? await authorizeNode(env.DB, request.principal, {
+        operation: "node.create",
+        parentId: request.parentId,
+        spaceId: request.spaceId,
+      })
+    : await authorizeNode(env.DB, request.principal, {
+        operation: "node.content.write",
+        nodeId: request.nodeId!,
+        spaceId: request.spaceId,
+      });
+  if (
+    (create && authorized.operation !== "node.create") ||
+    (!create &&
+      (authorized.operation !== "node.content.write" ||
+        authorized.parentId !== request.parentId ||
+        authorized.node.name !== name.name))
+  )
+    throw new Error("authorization_denied");
+  if (
+    request.expectedRevision !== undefined &&
+    (authorized.operation !== "node.content.write" ||
+      authorized.node.revision !== request.expectedRevision)
+  )
+    throw new Error("dav_precondition_failed");
+  const ownerId =
+    authorized.operation === "node.create" ? authorized.parent.owner_id : authorized.node.owner_id;
+  const previousUpload = await davUploadRow(env.DB, intent.id);
+  if (previousUpload) {
+    if (
+      previousUpload.credential_id !== request.principal.credential_id ||
+      previousUpload.owner_id !== ownerId ||
+      previousUpload.space_id !== intent.spaceId ||
+      previousUpload.parent_id !== request.parentId ||
+      previousUpload.target_id !== (request.nodeId ?? null) ||
+      previousUpload.request_digest !== intent.digest
+    )
+      throw new Error("idempotency_conflict");
+    // Prepublication retries have no operation yet. The immutable attempt still cannot dispatch again.
+    await atomicBatch(env.DB, [authorizationAssertion(authorized)]);
     await request.body.cancel();
     return { kind: "commit_unknown", operationId: intent.id };
   }
+  const hashes = await lockTokenHashes(request.lockTokens);
+  if (
+    await hasBlockingLocks(
+      env.DB,
+      request.nodeId ?? request.parentId,
+      request.spaceId,
+      request.principal,
+      hashes,
+    )
+  )
+    throw new Error("dav_locked");
+  const upload = await startDavUpload(
+    env,
+    intent,
+    authorized,
+    { ...request, name: name.name },
+    ownerId,
+    hashes,
+  );
+  let stored: StoredBody;
+  try {
+    stored = await storeBody(env.BLOBS, upload, request.body);
+    await recordStoredDavUpload(env, upload, stored);
+    upload.state = "completing";
+  } catch (error) {
+    // Neither a failed response nor a failed publication claim proves that R2 is empty.
+    try {
+      await observePhysicalObject(env, env.BLOBS, upload.blob_id, upload.epoch);
+    } catch {
+      /* The durable reservation covers unobserved storage. */
+    }
+    throw error;
+  }
+  // The body has ended before this short, immutable publication permit is requested.
   const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
   const permit = create
     ? await lock.acquireCreate({
@@ -375,29 +449,6 @@ export async function putFile(
       });
   let terminal = false;
   try {
-    const authorized = create
-      ? await authorizeNode(env.DB, request.principal, {
-          operation: "node.create",
-          parentId: request.parentId,
-          spaceId: request.spaceId,
-        })
-      : await authorizeNode(env.DB, request.principal, {
-          operation: "node.content.write",
-          nodeId: request.nodeId!,
-          spaceId: request.spaceId,
-        });
-    if (
-      (create && authorized.operation !== "node.create") ||
-      (!create &&
-        (authorized.operation !== "node.content.write" ||
-          authorized.parentId !== request.parentId ||
-          authorized.node.name !== name.name))
-    )
-      throw new Error("authorization_denied");
-    const ownerId =
-      authorized.operation === "node.create"
-        ? authorized.parent.owner_id
-        : authorized.node.owner_id;
     const claimed = await claimOperation(env.DB, intent, permit, authorized, steps);
     if (claimed.kind === "terminal") {
       const operation = await lookupOperation(env.DB, request.principal, intent.id);
@@ -405,62 +456,17 @@ export async function putFile(
       terminal = true;
       const upload = await davUploadRow(env.DB, intent.id);
       if (operation.state === "failed" && upload) await settleFailedDavUpload(env, upload);
-      await request.body.cancel();
       return { kind: "terminal", operation };
     }
-    let upload: DavUploadRow;
-    try {
-      upload = await startDavUpload(
-        env.DB,
-        claimed.claim,
-        authorized,
-        { ...request, name: name.name },
-        ownerId,
-      );
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("quota_exceeded")) {
-        try {
-          await atomicBatch(env.DB, [
-            assertOpenPermit(claimed.claim.permit),
-            assertOperationClaim(claimed.claim),
-            {
-              sql: `UPDATE operations SET state='failed',error_code='quota_exceeded',updated_at=strftime('%s','now')*1000
-                WHERE op_id=? AND state='claimed'`,
-              values: [intent.id],
-            },
-            assertOneChange,
-          ]);
-          terminal = true;
-        } catch {
-          /* A concurrent permit transition is reconciled by lease recovery. */
-        }
-      }
-      throw error;
-    }
-    let stored: StoredBody;
-    try {
-      stored = await storeBody(env.BLOBS, upload, request.body);
-      await recordStoredDavUpload(env, upload, stored);
-      upload.state = "completing";
-    } catch (error) {
-      // A response/stream failure cannot prove absence. Keep the durable hold until expiry cleanup.
-      try {
-        await observePhysicalObject(env, env.BLOBS, upload.blob_id, upload.epoch);
-      } catch {
-        /* The reservation covers unobserved storage. */
-      }
-      throw error;
-    }
-    const hashes = await lockTokenHashes(request.lockTokens);
     let outcome: MutationOutcome;
     if (authorized.operation === "node.create") {
       outcome = await commitMutationStatements(env.DB, claimed.claim, [
-        davPublicationFence(upload, stored),
+        ...davPublicationStatements(upload, stored),
         ...mutationStatements(createPlan(claimed.claim, authorized, request, stored, hashes)),
       ]);
     } else if (authorized.operation === "node.content.write") {
       outcome = await commitMutationStatements(env.DB, claimed.claim, [
-        davPublicationFence(upload, stored),
+        ...davPublicationStatements(upload, stored),
         ...overwriteStatements(claimed.claim, authorized, request, stored, hashes),
       ]);
     } else {

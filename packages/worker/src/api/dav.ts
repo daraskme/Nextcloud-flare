@@ -292,7 +292,7 @@ export async function handleDavHttp(
         spaceId: parent.spaceId,
         parentId: parent.parent.id,
         name: path.segments.at(-1)!.name,
-        ...(target ? { nodeId: target.node.id } : {}),
+        ...(target ? { nodeId: target.node.id, expectedRevision: target.node.revision } : {}),
         body,
         size,
         mime: contentType,

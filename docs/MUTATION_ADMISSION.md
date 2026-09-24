@@ -346,4 +346,12 @@ WebDAV PUTの保存前に予約・staging blob・転送台帳を原子的に保�
 
 migration0035でprivate/DAVの台帳種別を固定しました。開始batchの直接ACK後だけ、attempt metadata付きの条件付きPUTを1回送信します。同じoperationへの再送は追加PUTを発行せず、ストリーム障害時もnative処理の終了を待ちます。成功時は物理計上・hashを保存してからファイルと転送完了を同時確定します。既知の公開失敗はphysicalを保持してGCへ渡し、未知の保存結果は予約を24時間保持してHEAD確認・既存回収へ引き継ぎます。旧DAVの追跡不能な予約も汎用復旧では解放しません。
 
-kindはsystem:dav.put-storedとsystem:dav.put-failed。転送開始は既存namespace permitの原子的なguard、外部送信は開始batchの直接ACKを必須とする。DB-onlyの確定記録を再送許可にしない。private capability認可をapp_passwordへ拡張しない。詳細と長時間転送の残作業は[DAV_UPLOAD](DAV_UPLOAD.md)。
+kindはsystem:dav.put-storedとsystem:dav.put-failed。migration0035時点の転送開始はnamespace permit内だったが、0036以後は以下のdav.put-start受付へ分離した。外部送信は開始batchの直接ACKを必須とする。DB-onlyの確定記録を再送許可にしない。private capability認可をapp_passwordへ拡張しない。現行の転送・公開契約は[DAV_UPLOAD](DAV_UPLOAD.md)。
+
+## DAVの転送と公開の分離
+
+WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
+
+migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
+
+開始は通常owner受付dav.put-start、保存事実と既知公開失敗の精算は既存system受付を使う。原子的な自己receipt確定後は本文に共通枠を持ち越さない。未結合の台帳も旧epoch汎用予約回収の対象外で、24h後のR2-aware cleanupが担当する。Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。

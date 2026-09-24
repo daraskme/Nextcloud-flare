@@ -1,5 +1,5 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
-import { assertOpenPermit } from "../db/permits";
+import { assertCreateLocks } from "../auth/locks";
 import {
   assertExists,
   assertOneChange,
@@ -8,7 +8,12 @@ import {
   primary,
   type SqlStatement,
 } from "../db/primary";
-import { assertOperationClaim, type OperationClaim } from "../jobs/operations";
+import type { OperationIntent } from "../jobs/operations";
+import {
+  type AccountMutationEnv,
+  accountMutationStatements,
+  acquireAccountMutation,
+} from "./accountMutation";
 import type { PutFileRequest } from "./putFile";
 import { reservationStatements } from "./quota";
 import {
@@ -31,7 +36,7 @@ export interface DavUploadRow {
   epoch: number;
   declared_size: number;
   request_digest: string;
-  completion_op_id: string;
+  completion_op_id: string | null;
   write_attempt_id: string;
   write_lease_expires_at: number;
   expires_at: number;
@@ -44,7 +49,9 @@ export interface StoredDavBody {
 
 export function davUploadRow(db: D1Database, op: string): Promise<DavUploadRow | null> {
   return primary(db)
-    .prepare("SELECT * FROM uploads WHERE id=? AND source='dav' AND completion_op_id=?")
+    .prepare(
+      "SELECT * FROM uploads WHERE id=? AND source='dav' AND (completion_op_id IS NULL OR completion_op_id=?)",
+    )
     .bind("dav_" + op, op)
     .first<DavUploadRow>();
 }
@@ -67,14 +74,15 @@ export function matchesDavObject(row: DavUploadRow, object: R2Object): boolean {
 
 /** Only the direct ACK of this unique INSERT permits the one conditional R2 PUT. */
 export async function startDavUpload(
-  db: D1Database,
-  claim: OperationClaim,
+  env: AccountMutationEnv,
+  intent: OperationIntent,
   authorized: AuthorizedNode,
   request: PutFileRequest,
   owner: string,
+  hashes: readonly string[],
 ): Promise<DavUploadRow> {
   const now = Date.now(),
-    op = claim.intent.id;
+    op = intent.id;
   const row: DavUploadRow = {
     id: "dav_" + op,
     owner_id: owner,
@@ -86,71 +94,79 @@ export async function startDavUpload(
     blob_id: op + "_blob",
     reservation_id: op + "_reservation",
     credential_id: request.principal.credential_id,
-    epoch: claim.permit.epoch,
+    epoch: intent.principal.epoch,
     declared_size: request.size,
-    request_digest: claim.intent.digest,
-    completion_op_id: op,
+    request_digest: intent.digest,
+    completion_op_id: null,
     write_attempt_id: crypto.randomUUID(),
     write_lease_expires_at: now + 900_000,
     expires_at: now + 86_400_000,
     state: "receiving",
   };
-  await atomicBatch(db, [
-    assertOpenPermit(claim.permit),
-    assertOperationClaim(claim),
-    authorizationAssertion(authorized),
-    assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)", [row.id]),
-    ...reservationStatements({
-      id: row.reservation_id,
-      ownerId: owner,
-      bytes: request.size,
-      expiresAt: row.expires_at,
-      epoch: row.epoch,
-      operationId: op,
-    }),
-    {
-      sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at)
+  const admission = await acquireAccountMutation(env, owner, row.epoch, "dav.put-start");
+  await atomicBatch(
+    env.DB,
+    accountMutationStatements(admission, owner, [
+      authorizationAssertion(authorized),
+      assertCreateLocks(
+        request.nodeId ?? request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      ),
+      assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)", [row.id]),
+      assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operations WHERE op_id=?)", [op]),
+      ...reservationStatements({
+        id: row.reservation_id,
+        ownerId: owner,
+        bytes: request.size,
+        expiresAt: row.expires_at,
+        epoch: row.epoch,
+      }),
+      {
+        sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at)
         VALUES(?,?,?,?,?,'staging',?)`,
-      values: [
-        row.blob_id,
-        owner,
-        `u/${owner}/b/${row.blob_id}`,
-        request.size,
-        `"b-${row.blob_id}"`,
-        now,
-      ],
-    },
-    assertOneChange,
-    {
-      sql: `INSERT INTO uploads(id,source,owner_id,space_id,parent_id,target_id,target_revision,blob_id,reservation_id,
+        values: [
+          row.blob_id,
+          owner,
+          `u/${owner}/b/${row.blob_id}`,
+          request.size,
+          `"b-${row.blob_id}"`,
+          now,
+        ],
+      },
+      assertOneChange,
+      {
+        sql: `INSERT INTO uploads(id,source,owner_id,space_id,parent_id,target_id,target_revision,blob_id,reservation_id,
         credential_id,epoch,mode,state,declared_size,capability_hash,upload_name,request_digest,completion_op_id,
         write_attempt_id,write_lease_expires_at,created_at,expires_at,last_progress_at,accept_parts,in_flight,data_calls,data_bytes)
         VALUES(?,'dav',?,?,?,?,?,?,?,?,?,'single','receiving',?,'internal:dav',?,?,?,?,?,?,?,?,0,1,1,?)`,
-      values: [
-        row.id,
-        owner,
-        row.space_id,
-        row.parent_id,
-        row.target_id,
-        row.target_revision,
-        row.blob_id,
-        row.reservation_id,
-        row.credential_id,
-        row.epoch,
-        row.declared_size,
-        request.name,
-        row.request_digest,
-        op,
-        row.write_attempt_id,
-        row.write_lease_expires_at,
-        now,
-        row.expires_at,
-        now,
-        request.size,
-      ],
-    },
-    assertOneChange,
-  ]);
+        values: [
+          row.id,
+          owner,
+          row.space_id,
+          row.parent_id,
+          row.target_id,
+          row.target_revision,
+          row.blob_id,
+          row.reservation_id,
+          row.credential_id,
+          row.epoch,
+          row.declared_size,
+          request.name,
+          row.request_digest,
+          null,
+          row.write_attempt_id,
+          row.write_lease_expires_at,
+          now,
+          row.expires_at,
+          now,
+          request.size,
+        ],
+      },
+      assertOneChange,
+    ]),
+  );
   return row;
 }
 
@@ -158,20 +174,22 @@ export async function startDavUpload(
 function source(row: DavUploadRow): SqlStatement {
   return {
     sql: `SELECT 1 FROM uploads u JOIN reservations r ON r.id=u.reservation_id
-    JOIN blobs b ON b.id=u.blob_id JOIN operations o ON o.op_id=u.completion_op_id
+    JOIN blobs b ON b.id=u.blob_id LEFT JOIN operations o ON u.id='dav_'||o.op_id
     JOIN spaces space ON space.id=u.space_id AND space.owner_id=u.owner_id JOIN control c ON c.singleton=1
     WHERE (u.id=? AND u.source='dav' AND u.owner_id=? AND u.space_id=? AND u.parent_id=? AND u.target_id IS ?
       AND u.target_revision IS ? AND u.blob_id=? AND u.reservation_id=? AND u.credential_id=? AND u.epoch=?)
-      AND (u.declared_size=? AND u.request_digest=? AND u.completion_op_id=? AND u.write_attempt_id=?
+      AND (u.declared_size=? AND u.request_digest=? AND u.completion_op_id IS ? AND u.write_attempt_id=?
       AND u.write_lease_expires_at=? AND u.expires_at=? AND u.mode='single' AND c.epoch=u.epoch)
       AND (r.owner_id=u.owner_id AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at
-      AND r.share_id IS NULL AND r.op_id=o.op_id)
+      AND r.share_id IS NULL AND r.op_id IS u.completion_op_id)
       AND (b.owner_id=u.owner_id AND b.size=u.declared_size AND b.ref_count=0
       AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id)
-      AND (o.kind='dav.put' AND o.principal_kind='app_password' AND o.credential_id=u.credential_id
+      AND ((o.op_id IS NULL AND u.completion_op_id IS NULL) OR
+      (o.kind='dav.put' AND o.principal_kind='app_password' AND o.credential_id=u.credential_id
       AND o.epoch=u.epoch AND o.space_id=u.space_id AND o.request_digest=u.request_digest
+      AND (u.completion_op_id IS NULL OR u.completion_op_id=o.op_id)
       AND json_extract(o.operands_json,'$.parentId')=u.parent_id
-      AND json_extract(o.operands_json,'$.nodeId') IS u.target_id)
+      AND json_extract(o.operands_json,'$.nodeId') IS u.target_id))
       AND NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=o.op_id)`,
     values: [
       row.id,
@@ -207,7 +225,7 @@ export async function recordStoredDavUpload(
   await commitSystemMutation(env.DB, admission, row.owner_id, [
     assertExists(
       proof.sql +
-        " AND u.state='receiving' AND u.in_flight=1 AND r.state='reserved' AND b.state='staging' AND o.state IN ('claimed','failed')",
+        " AND u.state='receiving' AND u.in_flight=1 AND r.state='reserved' AND b.state='staging' AND (o.op_id IS NULL OR o.state IN ('claimed','failed'))",
       proof.values,
     ),
     {
@@ -231,15 +249,28 @@ export async function recordStoredDavUpload(
   ]);
 }
 
-export function davPublicationFence(row: DavUploadRow, stored: StoredDavBody): SqlStatement {
+export function davPublicationStatements(row: DavUploadRow, stored: StoredDavBody): SqlStatement[] {
   const proof = source(row);
-  return assertExists(
-    proof.sql +
-      ` AND u.state='completing' AND u.in_flight=0 AND u.accept_parts=0
+  const op = row.id.slice(4);
+  return [
+    assertExists(
+      proof.sql +
+        ` AND u.state='completing' AND u.in_flight=0 AND u.accept_parts=0 AND u.cleanup_token IS NULL AND u.expires_at>${CLOCK}
     AND r.state='reserved' AND b.state='staging' AND o.state='claimed' AND b.sha256_verified=? AND b.r2_etag=?
     AND EXISTS(SELECT 1 FROM blob_storage s WHERE s.blob_id=b.id AND s.bytes=b.size AND s.r2_etag=b.r2_etag AND s.removed_at IS NULL)`,
-    [...proof.values!, stored.sha256, stored.object.etag],
-  );
+      [...proof.values!, stored.sha256, stored.object.etag],
+    ),
+    {
+      sql: "UPDATE reservations SET op_id=? WHERE id=? AND op_id IS ? AND state='reserved'",
+      values: [op, row.reservation_id, row.completion_op_id],
+    },
+    assertOneChange,
+    {
+      sql: "UPDATE uploads SET completion_op_id=? WHERE id=? AND completion_op_id IS ? AND state='completing'",
+      values: [op, row.id, row.completion_op_id],
+    },
+    assertOneChange,
+  ];
 }
 
 /** Known failed publication releases only the logical reservation, never deletes/refunds R2. */

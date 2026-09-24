@@ -1,33 +1,37 @@
-# DAV PUTの保存台帳
+# DAV PUTの保存・公開・回収
 
 更新: 2026-09-25。
 
-WebDAV PUTの保存前に予約・staging blob・転送台帳を原子的に保存し、保存結果が不明でも容量を保持する処理を実装しました。保存事実と公開失敗後の精算は、実ownerの共通32 active/256 waiting枠を通ります。
+WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
 
-migration0035でprivate/DAVの台帳種別を固定しました。開始batchの直接ACK後だけ、attempt metadata付きの条件付きPUTを1回送信します。同じoperationへの再送は追加PUTを発行せず、ストリーム障害時もnative処理の終了を待ちます。成功時は物理計上・hashを保存してからファイルと転送完了を同時確定します。既知の公開失敗はphysicalを保持してGCへ渡し、未知の保存結果は予約を24時間保持してHEAD確認・既存回収へ引き継ぎます。旧DAVの追跡不能な予約も汎用復旧では解放しません。
+migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
 
-## 送信と公開
+## 本文を受け取る前
 
-migration0035はuploads.sourceをprivate/DAVで固定し、既存行はprivateとして維持する。DAV行は実app_password credential・dav.put operation・owner/space・parent/target・request digest・予約のop_id/size/epoch/expiryへ束縛する。private upload capabilityは発行しない。台帳IDはdav_ + operation ID、blob/reservationのIDは元のDAV契約を維持する。
+現在のapp_password認可・対象revision・parent/tree/blobのsnapshotとlock tokenを確認する。操作IDは元のrequest intentから安定して導出するが、namespace permitとoperations行はまだ作らない。実ownerのdav.put-start受付を取得し、待機後の現在認可・lock・同ID不在を再検査して、24h予約・staging blob・receiving台帳・不変attempt/15分write leaseを原子的に保存する。同じbatchで自分の共通受付枠を閉じる。quota不足は507で本文とoperation claimより前に拒否する。
 
-開始batchは現在のnamespace permit/operation/認可を検査し、24h予約・staging blob・receiving台帳・不変のwrite attemptと15分leaseを保存する。同じIDの競合/ACK喪失は送信許可にならない。conditional-onlyIf PUTとmetadataを必須とし、consumeKnownLengthでproducer/consumer/digestの終了を全て待つ。未確定の同一operationは現在の認可を確認してcommit_unknownとして再照会し、本文を再送しない。HTTP再試行は別request IDとなる。
+migration0035で固定したsource=davを維持する。0036はcompletion_op_idと予約op_idの両方NULLを許すが、real app_password/owner/space/parent、derived blob/reservation、hex64 digest、size/epoch/expiryを検査する。既存のbound DAVとprivate行はそのまま保持する。private capabilityは発行しない。
 
-実PUTの成功応答からsize/metadata/etagとhashを検証し、system:dav.put-stored受付でphysical charge・hash・completing/in_flight=0・自分の確定記録を一つのbatchへ保存する。permitやcredentialが失効しても内部の保存事実は必要になる。通常公開の認可は別途現在の状態を検査する。namespaceは保存済みphysical/hashを原子的に照合し、create10/overwrite8 stepのうち従来のblob_storage markerをupload完了markerに置き換える。node/version/outbox/予約消費/blob公開/台帳完了は同時確定する。
+## 保存と公開
+
+開始batchの直接ACKだけで1回のconditional PUTを送る。metadataはupload/attempt/blob/epoch。consumeKnownLengthでproducer/consumer/digestの終了を待つ。同じIDの再送は現在認可と元digestを検査し、未結合でも本文を再送しない。HTTP再試行は別request IDになる。
+
+実PUT応答のsize/metadata/etagとhashを照合し、system:dav.put-storedで物理計上・completing・自己receiptを一括保存する。その後に初めてfresh30秒のLockDO permitを取得し、元intentでclaimする。転送前の認可snapshotとlockを公開batchでも検査し、変更済みtargetへ新しいrevisionで置き換えて上書きしない。HTTPで最初に解決したrevisionの不一致も保存前に拒否する。
+
+公開batchはready body/physical/hash、unexpired upload、cleanup不在、exact operationを検査する。予約op_id→completion_op_idを結び付け、node/version/blob/予約消費/台帳完了/outbox/全stepを同時確定する。create10/overwrite8 stepを維持する。0036の結合triggerと従来の不変identityが別操作IDへの付替えを拒否する。permitの期限延長・immutable claimの更新は行わない。
 
 ## 失敗と回収
 
-既知のfailed operationかつ完成bodyの証明がある場合だけsystem:dav.put-failed受付で予約を解放する。元のupload/owner/credential/epoch/attempt・operation operand/step不在・physical proofを待機後に再検査し、同じbatchでorphanとGC candidateを保存する。他のcleanup_tokenが有効ならGCへ割り込まない。R2をinline deleteせず、physicalはGCの実削除/不在確認まで維持する。混雑時には保留し、既知終端の元namespace permitは返す。
+保存・許可・claim・namespaceの応答が不明なら、例外だけでR2を削除せず容量も返さない。operation未claimの段階で権限失効・停止・lock競合になった完成bodyも、予約と物理計上を保持し24h後の回収へ渡す。known failed operationと完成bodyの証明が揃う場合はsystem:dav.put-failedでlogical予約だけを解放し、physicalを維持してorphan/GC candidateへ原子的に渡す。GC後の厳密な終端再照会は新規受付不要。他のcleanup tokenや未確定receiptへ割り込まない。
 
-失敗精算済みの終端は読取りだけで返す。共通確定記録を失った場合も厳密な元の終端を照合できるが、他処理の結果で自分のunknown枠を明示解放しない。GC後・全32枠占有・ControlDO eviction後も追加受付なしで再照会する。
+cleanupは未claimのDAV台帳と、claim後・結合前のderived operationも扱う。source/owner/credential/space/epoch/parent/target/digest/予約を検査し、committedまたはstepのある操作を回収しない。upload終端化と該当claimed操作の失敗化が一つのbatchなので、その後の遅い公開は拒否される。期限後HEADのpresentはphysicalを保持してGC、absentは容量解放、metadata不一致は計上・隔離する。期限前のabsentはwrite終了証明にしない。
 
-receivingのままのbody/PUT応答喪失は、operationがfailedでも予約を解放しない。期限前のHEAD absentは終了証明にならない。24時間後、既存single cleanupがDAV由来を照合してHEADを実行し、presentはphysical計上を保ってGC、absentは容量解放へ収束する。metadata不一致は計上・隔離し、committed operationやoperation stepがあれば回収しない。旧DAVのupload台帳がない予約も汎用旧epoch修復から除外し、証拠不足のまま返さない。
+旧DAVのupload台帳がない予約は汎用復旧で解放しない。新しいNULL結合記録と旧記録を混同せず、証拠付きの専用回収は後続。
 
 ## 検証と残作業
 
-Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。
+Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
 
-試験は0B/create/overwrite/版/outbox、送信前の台帳、同じIDの並行再送、stream/nativeの終了順、開始/保存事実/精算/namespaceのACK喪失、primary照合不能、grant後のepoch/mode/receipt/op/step競合、実ControlDO共有枠・eviction、期限後のHEAD/GC、旧予約の保留、private API分離、forward migrationを検査する。
+試験は31秒を超える実本文、転送中のpermit/operation/active枠不在、本文後の正確な30秒grant、停止/eviction、共有32枠、grant待機中と本文中の認可/lock/revision変更、native/permit/namespace ACK喪失、再送、NULL結合とcleanupの競合、旧schemaの前方移行を対象にする。
 
-この実装でも本文の前にnamespace permitを取得し、その有効期間は既存の30秒である。長い転送は保存を失わず保留・回収できるが、長時間PUTの正常な公開を満たすには、本文転送を短い公開用permitから分離する必要がある。これは次の実装項目であり、DAV全体の完成とは扱わない。
-
-DAVの長い転送と短い公開用permitの分離、旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。
+旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。

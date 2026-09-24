@@ -62,3 +62,5 @@ multipart DELETEはD1に`aborting`と送信停止を原子的に保存する。�
 202はR2の回収完了ではない。`cleanupPending`を確認する。実行中のlease・結果不明・未知R2 IDがある間は予約容量を保持し、Cron/停止中repairが中止・実在確認を行う。完成物が残っていれば物理容量を計上してGCへ引き渡し、R2不在確認後だけ物理容量を戻す。unknown creation IDの外部inventory修復と実bucketの7日lifecycle確認は残る。
 
 物理観測・既知R2 ID等の後処理は、資格情報失効やメンテナンス後にも必要な事実として共通枠へ記録する。受付失敗時は予約を保持し、未確定の枠を推測で返さない。DB-onlyのACK喪失回収は外部HEAD/abortの送信許可にはならない。内部kindと停止時の契約は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)を参照。
+
+DAV PUTはmigration0036以後、本文保存後にnamespace permit/operationを取得する。quota不足の507は本文・operation claimより前に返し、HTTPで解決したtarget revisionも公開前の認可へ束縛する。private upload capability経路とは分離を維持する。詳細は[DAV_UPLOAD](DAV_UPLOAD.md)。
