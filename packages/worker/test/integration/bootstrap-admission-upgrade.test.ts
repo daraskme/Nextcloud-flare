@@ -31,7 +31,7 @@ const commitMutationAdmission = (a: { id: string }) => [
     values: [a.id],
   },
 ];
-it.each([32, 33])(
+it.each([32, 33, 34])(
   "upgrade %s preserves populated D1 receipts and FIFO sequence",
   async (version) => {
     await applyD1Migrations(
@@ -50,6 +50,29 @@ it.each([32, 33])(
     const committed = await acquireMutation(request());
     await atomicBatch(env.DB, commitMutationAdmission(committed));
     await acquireMutation(request());
+    if (version === 34) {
+      const bootstrap = await acquireMutation({
+        ...request(),
+        spaceId: null,
+        permitId: "bootstrap:" + crypto.randomUUID(),
+      });
+      await atomicBatch(env.DB, commitMutationAdmission(bootstrap));
+      for (const maintenance of [0, 1]) {
+        await env.DB.prepare("UPDATE control SET maintenance=?").bind(maintenance).run();
+        const id = crypto.randomUUID();
+        await env.DB.prepare(
+          "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,?,1,1,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+        )
+          .bind(id, "system:upload.observe:" + crypto.randomUUID(), f.ids.space, maintenance)
+          .run();
+        await env.DB.prepare(
+          "UPDATE mutation_admissions SET state='active',granted_at=strftime('%s','now')*1000,expires_at=strftime('%s','now')*1000+30000 WHERE id=?",
+        )
+          .bind(id)
+          .run();
+        await atomicBatch(env.DB, commitMutationAdmission({ id }));
+      }
+    }
     await env.DB.prepare("UPDATE control SET maintenance=1").run();
     const highWater =
       100 +

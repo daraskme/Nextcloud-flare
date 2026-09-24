@@ -7,6 +7,7 @@ import {
 } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
 import type { MultipartInventoryPage } from "../r2/s3InventoryPages";
+import type { GlobalMutationSource } from "../services/globalMutation";
 import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -135,14 +136,15 @@ function observation(
 
 /** One verified u/ listing page. An empty page is never a closure certificate. */
 export async function scanMultipartBucket(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
   limit = 20,
 ): Promise<MultipartBucketScanResult> {
+  const { DB: db } = env;
   limits(epoch, limit);
-  return withVerifiedR2Inventory(db, bucket, inventory, epoch, (verified) =>
+  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
     scanPage(db, verified, epoch, limit),
   );
 }
@@ -223,17 +225,18 @@ async function scanPage(
 
 /** Observe one part page; high-water holds survive missing/shrinking parts and lost replies. */
 export async function observeMultipartBucketParts(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
   handleId: string,
   limit = 20,
 ): Promise<MultipartPartObservationResult> {
+  const { DB: db } = env;
   limits(epoch, limit);
   if (typeof handleId !== "string" || !/^[a-f\d-]{36}$/.test(handleId))
     throw new Error("invalid_multipart_bucket_handle");
-  return withVerifiedR2Inventory(db, bucket, inventory, epoch, (verified) =>
+  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
     observeParts(db, verified, epoch, handleId, limit),
   );
 }

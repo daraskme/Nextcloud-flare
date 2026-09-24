@@ -6,6 +6,12 @@ import {
   isProbeNonce,
 } from "../r2/bindingProbe";
 import type { InventorySource, R2S3Inventory } from "../r2/s3Inventory";
+import {
+  acquireGlobalMutation,
+  commitGlobalMutation,
+  type GlobalMutationSource,
+  globalMutationStatements,
+} from "../services/globalMutation";
 import { controlFence } from "./uploadCleanup";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -84,12 +90,17 @@ function errorCode(error: unknown): string {
  * the permanent probe: delayed initial conditional creates must continue to fail.
  */
 export async function withVerifiedR2Inventory<T>(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
   action: (verified: VerifiedR2Inventory) => Promise<T>,
 ): Promise<T> {
+  const { DB: db } = env;
+  const deadline = Date.now() + 25_000;
+  const withinBudget = () => {
+    if (Date.now() >= deadline) throw new Error("r2_binding_verification_failed");
+  };
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_s3_inventory_request");
   const token = crypto.randomUUID();
   const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
@@ -104,27 +115,45 @@ export async function withVerifiedR2Inventory<T>(
       [epoch, token, nonce, source, phase],
     );
   const transition = async (from: string, sql: string, values: SqlStatement["values"] = []) => {
-    await atomicBatch(db, [fence(from), { sql, values }, assertOneChange]);
+    const admission = await acquireGlobalMutation(env, "r2.probe-phase");
+    await commitGlobalMutation(db, admission, [fence(from), { sql, values }, assertOneChange]);
   };
-  const countCall = (phase: string) =>
-    transition(phase, "UPDATE r2_binding_probe SET calls=calls+1 WHERE singleton=1");
+  const countCall = async (phase: string) => {
+    const admission = await acquireGlobalMutation(env, "r2.probe-call", deadline);
+    withinBudget();
+    await atomicBatch(
+      db,
+      globalMutationStatements(admission, [
+        fence(phase),
+        { sql: "UPDATE r2_binding_probe SET calls=calls+1 WHERE singleton=1" },
+        assertOneChange,
+      ]),
+    );
+    withinBudget();
+  };
   let active = false;
   try {
     // Unknown claim/counter ACK means no dispatch. Retry only after expiry, with a fresh nonce.
-    await atomicBatch(db, [
-      controlFence(epoch, true),
-      {
-        sql: `INSERT INTO r2_binding_probe(singleton,epoch,generation,source,nonce,phase,lease_token,lease_expires_at)
+    const admission = await acquireGlobalMutation(env, "r2.probe-claim", deadline);
+    withinBudget();
+    await atomicBatch(
+      db,
+      globalMutationStatements(admission, [
+        controlFence(epoch, true),
+        {
+          sql: `INSERT INTO r2_binding_probe(singleton,epoch,generation,source,nonce,phase,lease_token,lease_expires_at)
         VALUES(1,?,1,?,?,'claimed',?,${CLOCK}+60000)
         ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,generation=r2_binding_probe.generation+1,
           source=excluded.source,nonce=excluded.nonce,phase='claimed',expected_etag=NULL,
           r2_etag=NULL,r2_version=NULL,uploaded_at=NULL,verified_at=NULL,
           lease_token=excluded.lease_token,lease_expires_at=excluded.lease_expires_at,last_error=NULL
         WHERE r2_binding_probe.lease_expires_at<=${CLOCK} AND r2_binding_probe.epoch<=excluded.epoch`,
-        values: [epoch, source, nonce, token],
-      },
-      assertOneChange,
-    ]);
+          values: [epoch, source, nonce, token],
+        },
+        assertOneChange,
+      ]),
+    );
+    withinBudget();
     await countCall("claimed");
     const current = await readCurrent(bucket);
     await transition(
@@ -173,20 +202,32 @@ export async function withVerifiedR2Inventory<T>(
         },
       }),
     );
-    await transition(
-      "verified",
-      "UPDATE r2_binding_probe SET phase='idle',lease_token=NULL,lease_expires_at=0 WHERE singleton=1",
-    );
+    const release = await acquireGlobalMutation(env, "r2.probe-release");
+    await commitGlobalMutation(db, release, [
+      fence("verified"),
+      {
+        sql: "UPDATE r2_binding_probe SET phase='idle',lease_token=NULL,lease_expires_at=0 WHERE singleton=1",
+      },
+      assertOneChange,
+    ]);
     return result;
   } catch (error) {
     const code = errorCode(error);
     // Retain lease and allocation after every ambiguous write. A new CAS generation reconciles it.
-    await db
-      .prepare(`UPDATE r2_binding_probe SET phase='failed',last_error=?
-      WHERE singleton=1 AND lease_token=? AND phase<>'idle'`)
-      .bind(code, token)
-      .run()
-      .catch(() => {});
+    try {
+      const admission = await acquireGlobalMutation(env, "r2.probe-error");
+      await commitGlobalMutation(db, admission, [
+        controlFence(epoch, true),
+        {
+          sql: `UPDATE r2_binding_probe SET phase='failed',last_error=?
+          WHERE singleton=1 AND epoch=? AND lease_token=? AND nonce=? AND source=? AND phase<>'idle'`,
+          values: [code, epoch, token, nonce, source],
+        },
+        assertOneChange,
+      ]);
+    } catch {
+      /* Keep the unresolved lease and allocation when annotation is unavailable. */
+    }
     throw new Error(code);
   } finally {
     active = false;

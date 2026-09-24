@@ -1,6 +1,6 @@
 # 更新の全体受付
 
-更新日: 2026-09-25。migration `0030` / `0031` / `0032` / `0033`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
+更新日: 2026-09-25。migration `0030` / `0031` / `0032` / `0033` / `0034`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
 
 ## 接続した範囲
 
@@ -49,7 +49,7 @@ batch応答を失った場合は、正確なticket ID・内部ID・space・epoch
 - pepper更新は旧digest/salt/kidのCAS、current credential/user・期限・epochを最終batchで確認する。自分のbatchが失敗しても他のloginが鍵更新した場合は、現在のrecordとsecretを再検証して認証できる。ただし、それを自分のcommit証明と扱わず、自分の未確定枠は保持する。
 - 発行・失効のAPIと鍵更新が必要なDAV認証は、受付不可を503・`Retry-After: 1`で返す。DAVの受付混雑ではBasic再認証を要求しない。
 
-serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。このapp password接続自体にはmigration追加なし。最新schemaは0033、通常67table、依存変更なし。
+serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。このapp password接続自体にはmigration追加なし。最新schemaは0034、通常67table、依存変更なし。
 
 ## Access session・初回owner・logout
 
@@ -153,7 +153,8 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | 単一/分割upload自動回収 | 接続済み。停止claim・外部予算・観測・閉鎖・精算・エラーが共通system受付 |
 | blob GC（通常/停止中/復元中） | 接続済み。claim・delete/HEAD予算・完了精算・エラーが共通system受付 |
 | 既存uploadの未知multipart ID調査・回収 | 接続済み。claimに加えて走査・予算・観測・中止receipt・lease返却・エラーが共通system受付 |
-| global probe・orphan/全bucket inventory更新 | 既存制御を維持。共通受付は未接続 |
+| global R2接続確認 | 専用global scopeで接続済み。後述の同一32/256枠 |
+| orphan/全bucket inventoryの台帳更新 | 共通受付への接続は後続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | 通常Outbox送信・node event consumer | 接続済み。送信claim/send/sent・受信claim/complete、所有space、同じ32/256枠 |
 | global inventory・旧epoch repair更新 | 未接続 |
@@ -275,3 +276,33 @@ Queueの送信・受信処理を共通system受付へ接続しました。送信
 | outbox.complete | 自分のclaim/leaseと現行認可を検査してcompleted | exact receiptまたはdurable terminalだけをackの根拠にする |
 
 completed/failedの照会は枠を取らない。他のconsumerが完成させたterminalはQueue応答の判断に使えるが、自分の未確定枠を返す証拠にはならない。既存のID-only/at-least-onceを維持し、R2初期化や転送の一回限定dispatchとは区別する。公開Workerのqueue/scheduledからmandatory SystemMutationSourceを渡す。global inventory・旧epoch repairとbackup barrierは後続。詳しい制限と試験は[OUTBOX](OUTBOX.md)。
+
+
+## 所有者を持たない内部更新とR2接続確認
+
+所有者を持たないR2接続確認を共通受付へ接続しました。専用global RPCは通常操作・初回登録・所有者付きsystem更新と同じ32 active/256 waiting枠を使い、架空のownerや別枠を作りません。
+
+migration0034で既存の全確定記録、受付sequence、外部キー、索引と60秒保持を維持します。globalのscopeは明示nullで、owner/system・bootstrap・namespace許可への流用を拒否します。R2確認のclaim・各GET/条件付きPUT/S3読取り予算は直接ACKと固定25秒の開始期限が必要です。段階記録・終了はDB-onlyのexact receiptで回収し、待機後のnonce/source/token・元の60秒lease・epoch/pauseを再確認します。エラー記録も同じ確定記録方式を使い、現epoch/pauseと自己nonce/source/tokenで制限します。期限切れ後のエラー記録でも容量を返しません。ControlDO内は同一instanceの受付を使います。
+
+| class | scope / 接頭辞 | authority |
+|---|---|---|
+| 通常 | 所有space / 通常ID（system:/global:禁止） | 現行認可を別途検査しnamespace permitへ接続可能 |
+| 初回登録 | null / bootstrap: | 初回owner登録のみ。system=0/mode=0 |
+| 所有者付きsystem | 所有space / system: | 内部の事実記録。namespace不可 |
+| global | null / global: | allowlistにある所有者なし内部処理。namespace不可 |
+
+新migration0034は既存台帳のCHECKをtable再構築で拡張する。maintenance=1・active/waiting枠なし・open permitなし・claimed operationなしを適用条件とする。全列、停止だけのreceipt、commit receipt、削除済み行を含むAUTOINCREMENT high-water、FK/index/trigger、commit後60秒保持を維持し、既存migrationを編集しない。
+
+ControlDO.acquireGlobalMutationはscopeを明示nullに固定し、呼出し側のsystem/modeを採用しない。安定したmodeを同期取得して同じControlMutationsへ入り、D1 mirror読取りの前に256 pendingの制限を適用する。待機期限は5秒、grantは30秒。owner/globalのassert・commit・readbackもruntimeでclassとscopeを検査し、型castや通常/初回登録RPCでの流用を拒否する。停止・再開・epoch変更はすべてのclassを閉じる。
+
+| global kind | 同一batch | 応答喪失後 |
+|---|---|---|
+| r2.probe-claim | nonce/source/generation・SQL時計60秒lease | 直接ACK必須、外部読取りを開始しない |
+| r2.probe-call | phase/token/lease/epoch/pause検査・呼出しcounter | GET/条件付きPUT/S3ごとに直接ACK必須。receiptで送信を推測しない |
+| r2.probe-phase | prepared/written/verifiedの段階記録 | exact receiptで回収可能。次のI/Oは別受付が必要 |
+| r2.probe-release | verified→idle・lease返却 | exact receiptのみ。idle状態だけでは自己の未確定枠を返さない |
+| r2.probe-error | 現在epoch/pause・自己nonce/source/tokenのエラー記録 | best effort。別generationやidleを上書きしない |
+
+外部確認の開始は1回の25秒期限を共有し、受付後と直接ACK後も期限を確認する。既に実行中のI/Oを強制停止する保証ではない。最終DB記録は別途5秒の受付を使うが、元の60秒proofを延長しない。固定64-byte probeは削除せず、遅れた初回PUTの再生成を防ぐ。callback終了後はscoped fenceを無効化し、返却したbindingVerified booleanを後続の削除・精算権限にしない。
+
+GlobalMutationSourceは必須で、ControlDO内の確認・bucket走査・部品観測・中止は同じinstanceのproviderを渡す。owner側のmultipart修復は両scopeを要求する。DBだけのfallbackはない。この接続はprobeの共通受付であり、orphan/全bucket走査の台帳本体・保留容量精算・backup barrierの完成を意味しない。

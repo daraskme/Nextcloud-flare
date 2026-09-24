@@ -1,6 +1,7 @@
 import {
   type AnyMutationRequest,
   advanceMutations,
+  enqueueGlobalMutation,
   enqueueMutation,
   enqueueSystemMutation,
   MUTATION_QUEUE_LIMIT,
@@ -52,7 +53,9 @@ export class ControlMutations {
     await this.admit(request);
     this.current(request);
     let receipt = await ("system" in request
-      ? enqueueSystemMutation(this.db, request)
+      ? request.spaceId === null
+        ? enqueueGlobalMutation(this.db, request)
+        : enqueueSystemMutation(this.db, request)
       : enqueueMutation(this.db, request));
     for (;;) {
       this.current(request);

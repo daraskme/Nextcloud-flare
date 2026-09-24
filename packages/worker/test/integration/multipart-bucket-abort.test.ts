@@ -15,6 +15,7 @@ import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { inventoryEnv, partsXml, partXml, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -89,10 +90,10 @@ async function fixture(
     );
   };
   const inventory = new R2S3Inventory(inventoryEnv, { fetch });
-  const scanned = await scanMultipartBucket(env.DB, env.BLOBS, inventory, 1);
+  const scanned = await scanMultipartBucket(mutationEnv(env.DB), env.BLOBS, inventory, 1);
   const handleId = scanned.handles[0]!.id;
   if (options.observe !== false && options.application !== "known")
-    await observeMultipartBucketParts(env.DB, env.BLOBS, inventory, 1, handleId);
+    await observeMultipartBucketParts(mutationEnv(env.DB), env.BLOBS, inventory, 1, handleId);
   const abort = vi.fn(async () => remote.abort());
   const bucket = new Proxy(env.BLOBS, {
     get(target, property) {
@@ -112,7 +113,7 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 const attempt = (id: string) =>
   env.DB.prepare("SELECT * FROM multipart_bucket_abort_attempts WHERE id=?").bind(id).first();
 const run = (f: Fixture, id = crypto.randomUUID(), db = env.DB) =>
-  abortMultipartBucketHandle(db, f.bucket, f.inventory, 1, f.handleId, id);
+  abortMultipartBucketHandle(mutationEnv(db), f.bucket, f.inventory, 1, f.handleId, id);
 
 it("aborts the exact lost handle while retaining the physical hold and immutable receipt", async () => {
   const f = await fixture();
@@ -287,9 +288,17 @@ it("returns after its wait budget and never upgrades a late abort to a confirmed
   });
   const id = crypto.randomUUID();
   expect(
-    await abortMultipartBucketHandle(env.DB, f.bucket, f.inventory, 1, f.handleId, id, {
-      maxWaitMs: 1,
-    }),
+    await abortMultipartBucketHandle(
+      mutationEnv(env.DB),
+      f.bucket,
+      f.inventory,
+      1,
+      f.handleId,
+      id,
+      {
+        maxWaitMs: 1,
+      },
+    ),
   ).toMatchObject({ outcome: "unconfirmed", heldBytes: 3 });
   expect(await attempt(id)).toMatchObject({ outcome: "unconfirmed", error: "abort_timeout" });
   release();
@@ -319,27 +328,33 @@ it("requires fresh matching bucket verification even when replaying a receipt", 
 
 it("enforces the lifetime cap even when all earlier dispatch acknowledgements were lost", async () => {
   const f = await fixture();
-  await withVerifiedR2Inventory(env.DB, env.BLOBS, f.inventory, 1, async (verified) => {
-    const row =
-      await env.DB.prepare(`SELECT p.generation,s.round_id,h.part_round_id FROM r2_binding_probe p
+  await withVerifiedR2Inventory(
+    mutationEnv(env.DB),
+    env.BLOBS,
+    f.inventory,
+    1,
+    async (verified) => {
+      const row =
+        await env.DB.prepare(`SELECT p.generation,s.round_id,h.part_round_id FROM r2_binding_probe p
       JOIN multipart_bucket_scan s ON s.singleton=p.singleton JOIN multipart_bucket_handles h ON h.id=?`)
-        .bind(f.handleId)
-        .first<{ generation: number; round_id: string; part_round_id: string }>();
-    await atomicBatch(env.DB, [
-      verified.fence(),
-      ...Array.from({ length: 64 }, (_, i) => ({
-        sql: "INSERT INTO multipart_bucket_abort_attempts(id,handle_id,ordinal,epoch,proof_generation,scan_round_id,part_round_id,held_bytes,started_at) VALUES(?,?,?,1,?,?,?,3,1)",
-        values: [
-          crypto.randomUUID(),
-          f.handleId,
-          i + 1,
-          row!.generation,
-          row!.round_id,
-          row!.part_round_id,
-        ],
-      })),
-    ]);
-  });
+          .bind(f.handleId)
+          .first<{ generation: number; round_id: string; part_round_id: string }>();
+      await atomicBatch(env.DB, [
+        verified.fence(),
+        ...Array.from({ length: 64 }, (_, i) => ({
+          sql: "INSERT INTO multipart_bucket_abort_attempts(id,handle_id,ordinal,epoch,proof_generation,scan_round_id,part_round_id,held_bytes,started_at) VALUES(?,?,?,1,?,?,?,3,1)",
+          values: [
+            crypto.randomUUID(),
+            f.handleId,
+            i + 1,
+            row!.generation,
+            row!.round_id,
+            row!.part_round_id,
+          ],
+        })),
+      ]);
+    },
+  );
   await expect(run(f)).rejects.toThrow();
   expect(f.abort).not.toHaveBeenCalled();
   expect(

@@ -1,5 +1,6 @@
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
+import type { GlobalMutationSource } from "../services/globalMutation";
 import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -26,7 +27,7 @@ export interface MultipartBucketAbortResult {
 
 /** One explicit attempt. A retry of its ID never dispatches R2 again, even after an unknown ACK. */
 export async function abortMultipartBucketHandle(
-  db: D1Database,
+  env: GlobalMutationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -34,6 +35,7 @@ export async function abortMultipartBucketHandle(
   attemptId: string,
   options: { maxWaitMs?: number } = {},
 ): Promise<MultipartBucketAbortResult> {
+  const { DB: db } = env;
   const wait = options.maxWaitMs ?? 10_000;
   if (
     !Number.isSafeInteger(epoch) ||
@@ -47,7 +49,7 @@ export async function abortMultipartBucketHandle(
     wait > 10_000
   )
     throw new Error("invalid_multipart_bucket_abort");
-  return withVerifiedR2Inventory(db, bucket, inventory, epoch, (verified) =>
+  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
     abortVerified(db, verified, epoch, handleId, attemptId, wait),
   );
 }

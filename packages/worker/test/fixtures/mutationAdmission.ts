@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
 import {
+  enqueueGlobalMutation,
   enqueueMutation,
   enqueueSystemMutation,
+  type GlobalMutationAdmission,
   type MutationAdmission,
   type MutationRequest,
   type SystemMutationAdmission,
@@ -49,6 +51,25 @@ export async function acquireSystemMutation(
   };
 }
 
+export async function acquireGlobalMutation(
+  request: Omit<MutationRequest, "spaceId">,
+  db = env.DB,
+): Promise<GlobalMutationAdmission> {
+  const maintenance = await db
+    .prepare("SELECT maintenance FROM control WHERE singleton=1")
+    .first<0 | 1>("maintenance");
+  if (maintenance !== 0 && maintenance !== 1) throw new Error("fixture_control_missing");
+  const receipt = await enqueueGlobalMutation(db, {
+    ...request,
+    spaceId: null,
+    system: 1,
+    maintenance,
+  });
+  if (receipt.state !== "active" || receipt.expires_at === null || receipt.space_id !== null)
+    throw new Error("fixture_mutation_waiting");
+  return { ...receipt, space_id: null, expires_at: receipt.expires_at, system: 1, maintenance };
+}
+
 /** Domain-batch fault injection is independent of the admission backend. */
 export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
   return {
@@ -58,6 +79,8 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
         acquireMutation: (request: MutationRequest) => acquireMutation(request, admissionDb),
+        acquireGlobalMutation: (request: Omit<MutationRequest, "spaceId">) =>
+          acquireGlobalMutation(request, admissionDb),
         acquireSystemMutation: (request: MutationRequest) =>
           acquireSystemMutation(request, admissionDb),
         status: async () => {

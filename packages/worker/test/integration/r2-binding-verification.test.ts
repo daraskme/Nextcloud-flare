@@ -12,6 +12,7 @@ import {
 import { BINDING_PROBE_KEY, BINDING_PROBE_KIND } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { inventoryEnv } from "../fixtures/s3Inventory";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -40,7 +41,7 @@ const verify = (
   } = {},
 ) =>
   withVerifiedR2Inventory(
-    options.db ?? env.DB,
+    mutationEnv(options.db ?? env.DB),
     options.bucket ?? env.BLOBS,
     options.inventory ?? client(),
     epoch,
@@ -192,7 +193,7 @@ it("checks maintenance, GC pause and epoch before dispatch", async () => {
   }
   await env.DB.prepare("UPDATE control SET maintenance=1,gc_paused=1").run();
   await expect(
-    withVerifiedR2Inventory(env.DB, env.BLOBS, inventory, 1, async () => true),
+    withVerifiedR2Inventory(mutationEnv(env.DB), env.BLOBS, inventory, 1, async () => true),
   ).rejects.toThrow();
   expect(fetch).not.toHaveBeenCalled();
 });
@@ -254,7 +255,7 @@ it.each([
   ["observation", "SET phase='written'", 2],
   ["verification", "SET phase='verified'", 3],
 ] as const)(
-  "stops on lost %s D1 acknowledgement, then reconciles with a new nonce",
+  "recovers lost %s acknowledgement only for DB facts, then rotates a new nonce",
   async (_name, sql, dispatched) => {
     const get = vi.fn(env.BLOBS.get.bind(env.BLOBS));
     const put = vi.fn(env.BLOBS.put.bind(env.BLOBS));
@@ -267,19 +268,20 @@ it.each([
       true,
     );
     const action = vi.fn(async () => true);
-    await expect(
-      verify({
-        db,
-        bucket: { get, put } as unknown as R2Bucket,
-        inventory: new R2S3Inventory(inventoryEnv, { fetch }),
-        action,
-      }),
-    ).rejects.toThrow("r2_binding_verification_failed");
+    const result = verify({
+      db,
+      bucket: { get, put } as unknown as R2Bucket,
+      inventory: new R2S3Inventory(inventoryEnv, { fetch }),
+      action,
+    });
+    const direct = _name === "claim" || _name === "counter";
+    if (direct) await expect(result).rejects.toThrow("r2_binding_verification_failed");
+    else await expect(result).resolves.toBe(true);
     expect(get.mock.calls.length + put.mock.calls.length + fetch.mock.calls.length).toBe(
-      dispatched,
+      direct ? dispatched : 3,
     );
-    expect(action).not.toHaveBeenCalled();
-    expect(await row()).toMatchObject({ phase: "failed", allocated_bytes: 64 });
+    expect(action).toHaveBeenCalledTimes(direct ? 0 : 1);
+    expect(await row()).toMatchObject({ phase: direct ? "failed" : "idle", allocated_bytes: 64 });
     const failedNonce = (await row())!.nonce;
     await expire();
     await verify();

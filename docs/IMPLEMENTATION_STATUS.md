@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1 所有者なし更新の全体受付 | migration0034・global RPC・R2 probe、通常と同じ枠 | Node6件・workerd68件追加（probe境界58件・実ControlDO等9件・移行1件）。全体check成功、Node422件（25file、6.04秒）・workerd1,593件（79file、851.58秒）、計2,015件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。診断表示の追加後も関連59件（44.02秒）と型検査が成功。schema0034/通常67table、依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 Queue送信・受信の全体受付 | 所有spaceの5経路、直接send ACK、current認可、終端のread-only再照会、固定25秒batch | workerd57件追加（境界51件・実ControlDO6件）。全体check成功、Node416件（25file、5.55秒）・workerd1,525件（77file、778.32秒）、計1,941件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。S3タイムアウト試験の修正後88件（261ms）も成功。schema0033/通常67table、migration・依存追加なし。 [OUTBOX](OUTBOX.md) |
 | 1/4 既存uploadの未知multipart調査受付 | round・予算・観測・ID/page・中止receipt・lease返却・エラー、同一ControlDO受付 | workerd66件追加（境界59件・実ControlDO7件）。全体check成功、Node416件（25file、5.90秒）・workerd1,468件（75file、755.11秒）、計1,884件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 [MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
 | 1/3 blob GCの全体受付 | 通常/停止中/復元中、claim・外部予算・精算・エラー、同一ControlDO受付 | workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
@@ -130,6 +131,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、所有者を持たないR2接続確認を共通受付へ接続しました。専用global RPCは通常操作・初回登録・所有者付きsystem更新と同じ32 active/256 waiting枠を使い、架空のownerや別枠を作りません。 Node6件・workerd68件追加（probe境界58件・実ControlDO等9件・移行1件）。全体check成功、Node422件（25file、6.04秒）・workerd1,593件（79file、851.58秒）、計2,015件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。診断表示の追加後も関連59件（44.02秒）と型検査が成功。schema0034/通常67table、依存追加なし。
+
+- 2026-09-25、直前commit2bb6659はmainへプッシュ済み。[CI36044950637](https://github.com/daraskme/Nextcloud-flare/actions/runs/36044950637)はUbuntu・browser成功、Windowsは既存multipart inventoryのrollback-release試験1件で失敗しました。UbuntuはNode416/workerd1525、browser19。WindowsはNode416件成功、workerd1,524件成功・1件失敗です。今回のglobal受付はまだ含まれません。 Ubuntu5分28秒（workerd283.44秒）、browser2分7秒。
 
 - 2026-09-25、Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。 workerd57件追加（境界51件・実ControlDO6件）。全体check成功、Node416件（25file、5.55秒）・workerd1,525件（77file、778.32秒）、計1,941件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。S3タイムアウト試験の修正後88件（261ms）も成功。schema0033/通常67table、migration・依存追加なし。 製品コードは全体check前に確定。
 

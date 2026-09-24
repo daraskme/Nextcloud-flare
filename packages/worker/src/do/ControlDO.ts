@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { KdfRequest } from "../auth/globalKdf";
 import {
+  type GlobalMutationAdmission,
+  isGlobalMutationId,
   isSystemMutationId,
   type MutationAdmission,
   type MutationRequest,
@@ -238,6 +240,29 @@ export class ControlDO extends DurableObject<Env> {
     )
       throw new Error("mutation_unavailable");
     return { ...admission, space_id: request.spaceId, system: 1, maintenance };
+  }
+
+  /** Ownerless internal facts use the same coordinator; callers cannot borrow a personal scope. */
+  async acquireGlobalMutation(
+    request: Omit<MutationRequest, "spaceId">,
+  ): Promise<GlobalMutationAdmission> {
+    if (!request || !isGlobalMutationId(request.permitId)) throw new Error("mutation_unavailable");
+    const maintenance = this.#admission.captureSystemMutationMode(request.epoch);
+    const admission = await this.#mutations.acquire({
+      permitId: request.permitId,
+      spaceId: null,
+      epoch: request.epoch,
+      deadline: request.deadline,
+      system: 1,
+      maintenance,
+    });
+    if (
+      admission.space_id !== null ||
+      admission.system !== 1 ||
+      admission.maintenance !== maintenance
+    )
+      throw new Error("mutation_unavailable");
+    return { ...admission, space_id: null, system: 1, maintenance };
   }
 
   /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */
@@ -514,7 +539,7 @@ export class ControlDO extends DurableObject<Env> {
     const inventory = new R2S3Inventory(this.env);
     const verification = await this.#maintenance(expectedEpoch, () =>
       withVerifiedR2Inventory(
-        this.env.DB,
+        { DB: this.env.DB, systemControl: this },
         this.env.BLOBS,
         inventory,
         expectedEpoch,
@@ -551,7 +576,13 @@ export class ControlDO extends DurableObject<Env> {
   ): Promise<{ inventory: MultipartBucketScanResult; audit: RecoveryAuditStatus }> {
     const client = new R2S3Inventory(this.env);
     const inventory = await this.#maintenance(expectedEpoch, () =>
-      scanMultipartBucket(this.env.DB, this.env.BLOBS, client, expectedEpoch, limit),
+      scanMultipartBucket(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        client,
+        expectedEpoch,
+        limit,
+      ),
     );
     return { inventory, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
@@ -565,7 +596,7 @@ export class ControlDO extends DurableObject<Env> {
     const client = new R2S3Inventory(this.env);
     const observation = await this.#maintenance(expectedEpoch, () =>
       observeMultipartBucketParts(
-        this.env.DB,
+        { DB: this.env.DB, systemControl: this },
         this.env.BLOBS,
         client,
         expectedEpoch,
@@ -585,7 +616,7 @@ export class ControlDO extends DurableObject<Env> {
     const client = new R2S3Inventory(this.env);
     const abort = await this.#maintenance(expectedEpoch, () =>
       abortMultipartBucketHandle(
-        this.env.DB,
+        { DB: this.env.DB, systemControl: this },
         this.env.BLOBS,
         client,
         expectedEpoch,

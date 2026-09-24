@@ -7,10 +7,10 @@ import {
   type SqlStatement,
 } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
+import type { InventoryMutationSource } from "../services/globalMutation";
 import {
   acquireSystemMutation,
   commitSystemMutation,
-  type SystemMutationSource,
   systemMutationStatements,
 } from "../services/systemMutation";
 import {
@@ -76,7 +76,7 @@ function scanFence(scan: Scan): SqlStatement {
 
 /** Verify the binding afresh, discover stopped handles, and retain unresolved reservations. */
 export async function repairUnidentifiedMultipartUploads(
-  env: SystemMutationSource,
+  env: InventoryMutationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -86,7 +86,6 @@ export async function repairUnidentifiedMultipartUploads(
     maxWallMs?: number;
   } = {},
 ): Promise<MultipartInventoryRepairResult> {
-  const { DB: db } = env;
   const limit = options.maxUploads ?? 5;
   const maxHandles = options.maxHandles ?? 10;
   const wall = options.maxWallMs ?? 20_000;
@@ -104,13 +103,13 @@ export async function repairUnidentifiedMultipartUploads(
     wall > 25_000
   )
     throw new Error("invalid_multipart_inventory_limit");
-  return withVerifiedR2Inventory(db, bucket, inventory, epoch, (verified) =>
+  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
     repairVerified(env, verified, epoch, { limit, maxHandles, wall }),
   );
 }
 
 async function repairVerified(
-  env: SystemMutationSource,
+  env: InventoryMutationSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   { limit, maxHandles, wall }: { limit: number; maxHandles: number; wall: number },

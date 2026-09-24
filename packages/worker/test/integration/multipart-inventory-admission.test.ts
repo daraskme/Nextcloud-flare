@@ -5,9 +5,13 @@ import type { MutationRequest, SystemMutationAdmission } from "../../src/db/muta
 import { repairUnidentifiedMultipartUploads } from "../../src/jobs/multipartInventoryRepair";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
-import type { SystemMutationSource } from "../../src/services/systemMutation";
+import type { InventoryMutationSource } from "../../src/services/globalMutation";
 import { multipartInventoryFixture } from "../fixtures/multipartInventory";
-import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireGlobalMutation,
+  acquireSystemMutation,
+  mutationEnv,
+} from "../fixtures/mutationAdmission";
 import { inventoryEnv, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 import { injectBatch } from "../fixtures/uploadEnv";
@@ -91,11 +95,24 @@ async function fixture(stage: Stage) {
       },
     }),
   } as R2Bucket;
-  const configure = (gate: Gate = acquireSystemMutation, db = env.DB): SystemMutationSource => ({
+  const admissionTrace: string[] = [];
+  const configure = (gate: Gate = acquireSystemMutation, db = env.DB): InventoryMutationSource => ({
     DB: db,
     systemControl: {
       status: () => mutationEnv().CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
-      acquireSystemMutation: gate,
+      acquireSystemMutation: async (r) => {
+        const kind = r.permitId.split(":")[1];
+        admissionTrace.push(kind + ":requested");
+        try {
+          const grant = await gate(r);
+          admissionTrace.push(kind + ":granted");
+          return grant;
+        } catch (error) {
+          admissionTrace.push(kind + ":rejected");
+          throw error;
+        }
+      },
+      acquireGlobalMutation,
     },
   });
   const run = (source = configure(), maxWallMs = 25000) =>
@@ -128,7 +145,7 @@ async function fixture(stage: Stage) {
     ).toBe("reserved");
     expect(await row()).toMatchObject({ cleanup_pending: 1, multipart_cleanup_closed: null });
   };
-  return { ...f, stage, calls, configure, run, row, handles, receipts, held };
+  return { ...f, stage, calls, admissionTrace, configure, run, row, handles, receipts, held };
 }
 
 it.each(stages)(
@@ -201,7 +218,10 @@ it.each(stages)("rolls back %s and retains its unresolved admission", async (sta
   const f = await fixture(stage),
     fault = systemMutationFault(prefix(stage), "rollback");
   expect(await f.run(f.configure(undefined, fault.db))).toMatchObject({ retried: 1 });
-  expect(fault.fired()).toBe(true);
+  expect(
+    fault.fired(),
+    JSON.stringify({ stage, calls: f.calls, admissionTrace: f.admissionTrace }),
+  ).toBe(true);
   expect((await f.receipts())[0]).toMatchObject({ state: "active", committed_at: null });
   expect(await f.row()).toMatchObject({ cleanup_token: expect.any(String) });
   if (stage === "page") expect(await f.handles()).toEqual([]);

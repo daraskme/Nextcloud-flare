@@ -14,6 +14,7 @@ import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { inventoryEnv, partsXml, partXml, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -77,9 +78,9 @@ function client(f: Fixture, jurisdiction: "default" | "eu" = "default") {
   };
 }
 const scan = (s3: ReturnType<typeof client>, db = env.DB) =>
-  scanMultipartBucket(db, env.BLOBS, s3.inventory, 1);
+  scanMultipartBucket(mutationEnv(db), env.BLOBS, s3.inventory, 1);
 const observe = (s3: ReturnType<typeof client>, id: string, db = env.DB) =>
-  observeMultipartBucketParts(db, env.BLOBS, s3.inventory, 1, id);
+  observeMultipartBucketParts(mutationEnv(db), env.BLOBS, s3.inventory, 1, id);
 const discover = async (s3: ReturnType<typeof client>) => (await scan(s3)).handles[0]!.id;
 
 async function seedUpload(f: Fixture, uploadId: string | null = f.handle.uploadId) {
@@ -494,7 +495,7 @@ it("persists maximum-size pages and restarts after the last allowed part number"
         }),
       ),
   );
-  const result = await scanMultipartBucket(env.DB, env.BLOBS, s3.inventory, 1, 100);
+  const result = await scanMultipartBucket(mutationEnv(env.DB), env.BLOBS, s3.inventory, 1, 100);
   expect(result).toMatchObject({ examined: 100, completed: true });
   expect(new Set(result.handles.map((h) => h.id)).size).toBe(100);
   const id = result.handles[0]!.id;
@@ -509,7 +510,9 @@ it("persists maximum-size pages and restarts after the last allowed part number"
         }),
       ),
   );
-  expect(await observeMultipartBucketParts(env.DB, env.BLOBS, s3.inventory, 1, id, 100)).toEqual({
+  expect(
+    await observeMultipartBucketParts(mutationEnv(env.DB), env.BLOBS, s3.inventory, 1, id, 100),
+  ).toEqual({
     observed: 100,
     heldBytes: 100,
     completed: true,
@@ -606,9 +609,9 @@ it.each([0, 101, 1.5, Number.NaN])(
   "rejects invalid page limit %s before obtaining a binding proof",
   async (limit) => {
     const s3 = client(await fixture());
-    await expect(scanMultipartBucket(env.DB, env.BLOBS, s3.inventory, 1, limit)).rejects.toThrow(
-      "invalid_multipart_bucket_limit",
-    );
+    await expect(
+      scanMultipartBucket(mutationEnv(env.DB), env.BLOBS, s3.inventory, 1, limit),
+    ).rejects.toThrow("invalid_multipart_bucket_limit");
     expect(s3.binding).not.toHaveBeenCalled();
   },
 );
@@ -622,21 +625,21 @@ it("keeps recovery closed for unfinished scans and zero-byte unknown handles", a
   const f = await fixture();
   const s3 = client(f);
   s3.uploads.mockImplementation(async () => new Response(uploadsXml({ uploads: "" })));
-  await scanMultipartBucket(db, env.BLOBS, s3.inventory, 1);
+  await scanMultipartBucket(mutationEnv(db, db), env.BLOBS, s3.inventory, 1);
   expect(await ready()).not.toBeNull();
   await db
     .prepare("UPDATE multipart_bucket_scan SET round_id=?,completed_at=NULL,pages=0")
     .bind(crypto.randomUUID())
     .run();
   expect(await ready()).toBeNull();
-  await scanMultipartBucket(db, env.BLOBS, s3.inventory, 1);
+  await scanMultipartBucket(mutationEnv(db, db), env.BLOBS, s3.inventory, 1);
   expect(await ready()).not.toBeNull();
   s3.uploads.mockImplementation(
     async () => new Response(uploadsXml({ uploads: uploadXml(f.key, f.handle.uploadId) })),
   );
-  await scanMultipartBucket(db, env.BLOBS, s3.inventory, 1);
+  await scanMultipartBucket(mutationEnv(db, db), env.BLOBS, s3.inventory, 1);
   expect(await ready()).toBeNull();
-  await withVerifiedR2Inventory(db, env.BLOBS, s3.inventory, 1, async () => {});
+  await withVerifiedR2Inventory(mutationEnv(db, db), env.BLOBS, s3.inventory, 1, async () => {});
   expect(await ready()).toBeNull();
 });
 

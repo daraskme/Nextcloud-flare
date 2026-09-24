@@ -25,21 +25,21 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit0f1cb82はmainへプッシュ済み。[CI36042342676](https://github.com/daraskme/Nextcloud-flare/actions/runs/36042342676)はUbuntu・browser成功、Windowsは既存S3本文タイムアウト試験1件で失敗しました。UbuntuはNode416/workerd1468、browser19。WindowsはNode415件成功・1件失敗で停止し、workerdは未実行です。
+直前commit2bb6659はmainへプッシュ済み。[CI36044950637](https://github.com/daraskme/Nextcloud-flare/actions/runs/36044950637)はUbuntu・browser成功、Windowsは既存multipart inventoryのrollback-release試験1件で失敗しました。UbuntuはNode416/workerd1525、browser19。WindowsはNode416件成功、workerd1,524件成功・1件失敗です。今回のglobal受付はまだ含まれません。
 
-Windowsの失敗は20msの試験期限が署名中に切れ、本文読取りのキャンセル検査へ届かない競合でした。本文のread開始を確認してからfake timerを20ms進め、fetchとcancel各1回を検査する方式へ修正しました。製品の10秒transport期限は変更していません。
+前回修正したS3本文タイムアウト試験はWindowsでも成功しました。今回のWindows失敗はmultipart inventoryの故障注入が発火していない点で、具体的原因は未確定です。現在のglobal接続後の関連回帰では同じ試験が成功しています。 次回失敗時に受付種別と到達段階が分かる診断表示を試験へ追加しました。製品の受付期限と検証条件は変更していません。
 
-Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
+所有者を持たないR2接続確認を共通受付へ接続しました。専用global RPCは通常操作・初回登録・所有者付きsystem更新と同じ32 active/256 waiting枠を使い、架空のownerや別枠を作りません。
 
-待機後にepoch/maintenance、正確なtokenとlease、受信側の現行credential・認可・元operationの証明を再検査します。DB-onlyの記録はexact receiptで回収しますが、今回のQueue送信には別受付と直接ACKが必要です。送信応答を失った通知はlease後に同じIDで再送でき、確定済みcompleted/failedの再配信は追加受付なしで確認します。Cron・Queue batchは共通の25秒期限を使い、未処理メッセージをretryします。
+migration0034で既存の全確定記録、受付sequence、外部キー、索引と60秒保持を維持します。globalのscopeは明示nullで、owner/system・bootstrap・namespace許可への流用を拒否します。R2確認のclaim・各GET/条件付きPUT/S3読取り予算は直接ACKと固定25秒の開始期限が必要です。段階記録・終了はDB-onlyのexact receiptで回収し、待機後のnonce/source/token・元の60秒lease・epoch/pauseを再確認します。エラー記録も同じ確定記録方式を使い、現epoch/pauseと自己nonce/source/tokenで制限します。期限切れ後のエラー記録でも容量を返しません。ControlDO内は同一instanceの受付を使います。
 
-workerd57件追加（境界51件・実ControlDO6件）。全体check成功、Node416件（25file、5.55秒）・workerd1,525件（77file、778.32秒）、計1,941件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。S3タイムアウト試験の修正後88件（261ms）も成功。schema0033/通常67table、migration・依存追加なし。 global probe・orphan/全bucket inventory・旧epoch repairの更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
+Node6件・workerd68件追加（probe境界58件・実ControlDO等9件・移行1件）。全体check成功、Node422件（25file、6.04秒）・workerd1,593件（79file、851.58秒）、計2,015件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。診断表示の追加後も関連59件（44.02秒）と型検査が成功。schema0034/通常67table、依存追加なし。 orphan/全bucket inventory・旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
 
-SystemMutationSourceはmandatory。Queueは実ownerをoperation.space_idから解決し、actor/shareのspaceを流用しない。ID-only再送はat-least-onceで、R2の一回限定dispatchへ置き換えない。ControlDO内の復旧は同じinstance受付を使う。global probe/cursor・owner未復元の台帳は共通受付へ未接続。明示的global scopeは新migrationで設計し、既存migrationを編集しない。
+SystemMutationSourceはmandatory。Queueは実ownerをoperation.space_idから解決し、actor/shareのspaceを流用しない。ID-only再送はat-least-onceで、R2の一回限定dispatchへ置き換えない。ControlDO内の復旧は同じinstance受付を使う。global probeは明示null scopeの専用受付へ接続済み。cursor・owner未復元の台帳本体は後続。既存migrationは編集せず、新0034で履歴を保持する。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0033`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0034`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -106,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。残るglobal probe・orphan/全bucket inventory・旧epoch repairとbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。残るorphan/全bucket inventory・旧epoch repairとbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

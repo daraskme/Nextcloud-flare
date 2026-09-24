@@ -23,7 +23,55 @@ export interface SystemMutationAdmission extends MutationAdmission {
   system: 1;
   maintenance: 0 | 1;
 }
-export type AnyMutationRequest = MutationRequest<string | null> | SystemMutationRequest;
+export interface GlobalMutationRequest extends MutationRequest<null> {
+  system: 1;
+  maintenance: 0 | 1;
+}
+export interface GlobalMutationAdmission extends MutationAdmission<null> {
+  system: 1;
+  maintenance: 0 | 1;
+}
+export type AnyMutationRequest =
+  | MutationRequest<string | null>
+  | SystemMutationRequest
+  | GlobalMutationRequest;
+export const GLOBAL_MUTATION_KINDS = [
+  "r2.probe-claim",
+  "r2.probe-call",
+  "r2.probe-phase",
+  "r2.probe-release",
+  "r2.probe-error",
+] as const;
+export type GlobalMutationKind = (typeof GLOBAL_MUTATION_KINDS)[number];
+export function isGlobalMutationId(id: string): boolean {
+  return (
+    typeof id === "string" &&
+    GLOBAL_MUTATION_KINDS.some(
+      (kind) =>
+        id.startsWith("global:" + kind + ":") && /^[0-9a-f-]{36}$/.test(id.slice(kind.length + 8)),
+    )
+  );
+}
+function ownerScope(admission: SystemMutationAdmission): void {
+  if (
+    !admission ||
+    typeof admission.space_id !== "string" ||
+    !isSystemMutationId(admission.permit_id) ||
+    admission.system !== 1 ||
+    ![0, 1].includes(admission.maintenance)
+  )
+    throw new Error("mutation_unavailable");
+}
+function globalScope(admission: GlobalMutationAdmission): void {
+  if (
+    !admission ||
+    admission.space_id !== null ||
+    !isGlobalMutationId(admission.permit_id) ||
+    admission.system !== 1 ||
+    ![0, 1].includes(admission.maintenance)
+  )
+    throw new Error("mutation_unavailable");
+}
 export const SYSTEM_MUTATION_KINDS = [
   "upload.observe",
   "upload.multipart-head",
@@ -106,7 +154,8 @@ export async function enqueueMutation(
   db: D1Database,
   request: MutationRequest<string | null>,
 ): Promise<MutationReceipt> {
-  if (request?.permitId?.startsWith("system:")) throw new Error("mutation_unavailable");
+  if (request?.permitId?.startsWith("system:") || request?.permitId?.startsWith("global:"))
+    throw new Error("mutation_unavailable");
   return enqueue(db, request, 0, 0);
 }
 export async function enqueueSystemMutation(
@@ -123,6 +172,20 @@ export async function enqueueSystemMutation(
     throw new Error("mutation_unavailable");
   return enqueue(db, request, 1, request.maintenance);
 }
+export async function enqueueGlobalMutation(
+  db: D1Database,
+  request: GlobalMutationRequest,
+): Promise<MutationReceipt> {
+  if (
+    !request ||
+    request.spaceId !== null ||
+    request.system !== 1 ||
+    ![0, 1].includes(request.maintenance) ||
+    !isGlobalMutationId(request.permitId)
+  )
+    throw new Error("mutation_unavailable");
+  return enqueue(db, request, 1, request.maintenance);
+}
 async function enqueue(
   db: D1Database,
   request: MutationRequest<string | null>,
@@ -135,7 +198,9 @@ async function enqueue(
     !request.permitId ||
     request.permitId.length > 128 ||
     (request.spaceId === null
-      ? !/^bootstrap:[0-9a-f-]{36}$/.test(request.permitId)
+      ? system === 1
+        ? !isGlobalMutationId(request.permitId)
+        : !/^bootstrap:[0-9a-f-]{36}$/.test(request.permitId)
       : typeof request.spaceId !== "string" || !request.spaceId || request.spaceId.length > 128) ||
     !Number.isSafeInteger(request.epoch) ||
     request.epoch < 1 ||
@@ -202,6 +267,11 @@ export function assertMutationAdmission(admission: MutationAdmission<string | nu
   return assertion(admission, 0, 0);
 }
 export function assertSystemMutationAdmission(admission: SystemMutationAdmission): SqlStatement {
+  ownerScope(admission);
+  return assertion(admission, 1, admission.maintenance);
+}
+export function assertGlobalMutationAdmission(admission: GlobalMutationAdmission): SqlStatement {
+  globalScope(admission);
   return assertion(admission, 1, admission.maintenance);
 }
 function assertion(
@@ -234,6 +304,13 @@ export function commitMutationAdmission(
 export function commitSystemMutationAdmission(
   admission: SystemMutationAdmission,
 ): readonly SqlStatement[] {
+  ownerScope(admission);
+  return commit(admission, 1, admission.maintenance);
+}
+export function commitGlobalMutationAdmission(
+  admission: GlobalMutationAdmission,
+): readonly SqlStatement[] {
+  globalScope(admission);
   return commit(admission, 1, admission.maintenance);
 }
 function commit(
@@ -273,6 +350,14 @@ export async function hasCommittedSystemMutation(
   db: D1Database,
   admission: SystemMutationAdmission,
 ): Promise<boolean> {
+  ownerScope(admission);
+  return hasCommitted(db, admission, 1, admission.maintenance);
+}
+export async function hasCommittedGlobalMutation(
+  db: D1Database,
+  admission: GlobalMutationAdmission,
+): Promise<boolean> {
+  globalScope(admission);
   return hasCommitted(db, admission, 1, admission.maintenance);
 }
 async function hasCommitted(
