@@ -1,6 +1,6 @@
 # 通常稼働中のごみ箱復元とGC
 
-更新: 2026-09-24。ローカル実装の契約。実Cloudflareでの移行・配備・復旧訓練は未実施。
+更新: 2026-09-25。ローカル実装の契約。実Cloudflareでの移行・配備・復旧訓練は未実施。
 
 ## 一時停止の所有者
 
@@ -38,3 +38,13 @@ R2へ既に出たdeleteは取り消せないため、対象keyは不可逆な削
 - 現在の復元は最大1,000ノードの同期処理。account単位のadmission、管理者画面、大量データと実R2での負荷・障害試験は残る。
 - 災害復旧、Time Travel/logical export、未知multipartの閉鎖証明・予約精算は別の未完了範囲。
 - migrationは受付停止中に適用し、Worker/DOの対応版と揃える。旧Workerはholdを理解しないため、そのままの混在運用や稼働中rollbackは行わない。実環境の切替手順はstaging gateで確認する。
+
+## blob回収の共通受付
+
+台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
+
+ControlDOのmaintenance RPC・acquireRestorePause・alarmから同じinstanceのsystem受付へ接続する。停止中はmaintenance=1、復元中はmaintenance=0と同じrestore token/operation/固定期限が必要。新規candidateは通常GCだけで扱い、停止/復元中は既存deletingのみを回収する。エラー注記に失敗してもphysical保留と不可逆状態は維持する。maxBlobsは受付できなかったclaimも含む候補検査上限。進行中R2呼出しの強制中断は保証しない。
+
+共通受付の対象は所有blob。orphan回収は既存fenceを維持し、共通受付への接続は後続。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。

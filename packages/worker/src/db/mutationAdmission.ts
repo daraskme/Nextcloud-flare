@@ -39,6 +39,10 @@ export const SYSTEM_MUTATION_KINDS = [
   "upload.cleanup-close",
   "upload.cleanup-settle",
   "upload.cleanup-error",
+  "gc.claim",
+  "gc.call",
+  "gc.finalize",
+  "gc.error",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

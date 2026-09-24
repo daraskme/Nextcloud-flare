@@ -173,7 +173,7 @@ it("waits for existing delete leases, drains only irreversible objects, and pres
     paused = await control().acquireRestorePause(epoch, id);
   expect(paused.ready).toBe(false);
   expect(await env.BLOBS.head(active.key)).not.toBeNull();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, epoch)).toMatchObject({ claimed: 0 });
+  expect(await runGarbageCollection(env, env.BLOBS, epoch)).toMatchObject({ claimed: 0 });
   await env.DB.prepare("UPDATE gc_candidates SET claim_expires_at=0 WHERE blob_id=?")
     .bind(active.ids.blob)
     .run();
@@ -412,7 +412,7 @@ it("waits for an old in-flight delete and settles its immutable key only once af
     release = deferred();
   const head = vi.fn(env.BLOBS.head.bind(env.BLOBS));
   const old = runGarbageCollection(
-    env.DB,
+    env,
     bucketWith({
       head,
       delete: async (key) => {
@@ -542,11 +542,11 @@ it("pause-bound GC refuses a stale capability after release even if another rest
       () => {},
     ).acquireRestorePause(epoch, op());
   });
-  expect(await drainRestoreBlobGarbageCollection(env.DB, env.BLOBS, held)).toMatchObject({
+  expect(await drainRestoreBlobGarbageCollection(env, env.BLOBS, held)).toMatchObject({
     claimed: 0,
   });
   expect(await env.BLOBS.head(pending.key)).not.toBeNull();
-  expect(await drainRestoreBlobGarbageCollection(env.DB, env.BLOBS, next)).toMatchObject({
+  expect(await drainRestoreBlobGarbageCollection(env, env.BLOBS, next)).toMatchObject({
     deleted: 1,
   });
   await control().releaseRestorePause(epoch, next.token);

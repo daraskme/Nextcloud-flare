@@ -97,7 +97,7 @@ it("accounts an unrecorded successful PUT, hands it to GC, and clears cleanup on
   expect(await counters(f)).toMatchObject({ used_bytes: 3, reserved_bytes: 0, physical_bytes: 3 });
   expect(await env.BLOBS.head(f.key)).not.toBeNull();
   expect(await repairSingleUploads(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await upload(f)).toMatchObject({ cleanup_pending: 0 });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 0 });
   expect(await env.BLOBS.head(f.key)).toBeNull();
@@ -312,7 +312,7 @@ it("fences an epoch change during HEAD and repairs revoked old-epoch uploads und
     queued: 1,
   });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 2)).toMatchObject({ deleted: 0 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 2)).toMatchObject({ deleted: 0 });
 });
 
 it("preserves a pin added after claim and before settlement", async () => {
@@ -343,7 +343,7 @@ it("charges unexpected objects and quarantines them without deletion or reservat
     cleanup_error: "upload_object_mismatch",
     cleanup_pending: 1,
   });
-  await runGarbageCollection(env.DB, env.BLOBS, 1);
+  await runGarbageCollection(mutationEnv(), env.BLOBS, 1);
   expect(await env.BLOBS.head(f.key)).not.toBeNull();
   expect(
     await env.DB.prepare("SELECT COUNT(*) AS n FROM gc_candidates WHERE blob_id=?")
@@ -357,7 +357,7 @@ it("accounts the actual size of an owned malformed write before deleting it", as
   await store(f, "ab");
   expect(await repairSingleUploads(mutationEnv(), env.BLOBS, 1)).toMatchObject({ queued: 1 });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 2 });
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await counters(f)).toMatchObject({ physical_bytes: 0 });
 });
 

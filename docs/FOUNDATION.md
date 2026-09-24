@@ -286,4 +286,8 @@ native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd
 
 ## 停止中GCの収束
 
+台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
+
 [GC_RECOVERY](GC_RECOVERY.md)を参照。migration `0024`のclaim epoch/counterと各dispatch・final batchのcurrent fenceを通常GC/停止中drainで共有する。ControlDOのblob/orphan別RPCは既存deletingだけを回収し、candidate/quarantineの猶予を短縮しない。回収前後の監査初期化、応答喪失と旧Workerの拒否、physical会計、回収後の全監査をローカル検証する。admission再開は別gate。

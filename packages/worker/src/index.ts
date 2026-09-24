@@ -134,7 +134,7 @@ export default {
       .bind(epoch)
       .first<number>("ok");
     if (enabled === 1) {
-      await runGarbageCollection(env.DB, env.BLOBS, epoch);
+      await runGarbageCollection(env, env.BLOBS, epoch);
       await collectOrphanObjects(env.DB, env.BLOBS, epoch);
     }
   },

@@ -33,3 +33,13 @@ HEADで別version/ETag/size/uploadedを見つけた場合は、新しい実容�
 実workerd D1/R2/ControlDOで、旧epoch回収、有効lease・pin・新候補の保持、claim/counter/final batch/R2応答喪失、同時回収、遅延削除、停止変更、容量の一度だけの精算を試験する。専用fixtureでblob・orphan双方の回収後に全復旧監査が完了し、maintenance/GC pauseは維持されることを確認する。
 
 未知multipartの全体閉鎖・予約精算、Queueの完全なdrain、実環境のControlDO再開、実Time Travel/logical restore drillは残る。空のmultipart一覧や日数だけでこれらの完了を推測しない。特に[S3 AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)には進行中partとの競合時に再確認が必要な場合がある。R2での保証と実サービスの検証はfixtureだけで代替しない。
+
+## blob回収の共通受付
+
+台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
+
+ControlDOのmaintenance RPC・acquireRestorePause・alarmから同じinstanceのsystem受付へ接続する。停止中はmaintenance=1、復元中はmaintenance=0と同じrestore token/operation/固定期限が必要。新規candidateは通常GCだけで扱い、停止/復元中は既存deletingのみを回収する。エラー注記に失敗してもphysical保留と不可逆状態は維持する。maxBlobsは受付できなかったclaimも含む候補検査上限。進行中R2呼出しの強制中断は保証しない。
+
+共通受付の対象は所有blob。orphan回収は既存fenceを維持し、共通受付への接続は後続。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。

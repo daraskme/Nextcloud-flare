@@ -151,9 +151,10 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | 物理観測・既知R2 ID記録・初期化停止/緊急abort予算 | 接続済み。後述のsystem受付、通常と同じ枠 |
 | UploadDO台帳初期化/反映/喪失時停止 | 接続済み。初期化と通常反映はaccount、停止/喪失はsystem。直接ACK契約は後述 |
 | 単一/分割upload自動回収 | 接続済み。停止claim・外部予算・観測・閉鎖・精算・エラーが共通system受付 |
-| GC・残るinventory更新 | 既存制御を維持。共通受付は未接続 |
+| blob GC（通常/停止中/復元中） | 接続済み。claim・delete/HEAD予算・完了精算・エラーが共通system受付 |
+| 残るorphan/multipart inventory更新 | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
-| Queue consumer・Cron・repairの非namespace更新 | 未接続 |
+| 残るQueue consumer・inventory・repair更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
@@ -216,3 +217,22 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 CronはCONTROL binding、ControlDO内のmaintenanceは同一instanceのstatus/acquireSystemMutationを必須引数で供給する。DBだけのfallbackはない。回収前後の復旧監査・quiesceは維持する。disabled owner/失効credential/旧source epochでも現在のsystem受付で回収できるが、元のcontrol epoch/mode、cleanup lease、未公開・pin・GC・閉鎖条件はbatchで再検査する。
 
 unknown-ID inventoryは共有する停止claimだけがこの段階の接続対象。残るscan/cursor/page・全bucket/GC・Queue・backupは後続。migration0033/67tableを維持し、global scopeや偽のowner-spaceを追加しない。
+
+## 所有blobのGC
+
+台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
+
+| system kind | 同一batchの処理 | ACK喪失後 |
+|---|---|---|
+| gc.claim | candidateの不可逆deleting化、または既存deletingのclaim更新。owner/key・ref/pin・未精算upload・quarantine・modeの再検査 | exact receiptと自分のclaim tokenを照合。外部送信には別受付が必要 |
+| gc.call | deleteまたはHEADのr2_calls加算、dispatch fence | 直接ACK必須。混雑/失敗/期限超過では送信しない |
+| gc.finalize | blob/candidateのdeleted化、physical解除、upload cleanup終了 | exact receiptまたは完全な終端tuple。別処理のtupleで自分の枠は返さない |
+| gc.error | 現在epoch/mode・自分のclaim token/epochに対するエラー | best effort。記録失敗でもdeleting・physical保留を維持 |
+
+通常実行はmaintenance=0/gc_paused=0。停止中は1/1で既存deletingだけ。復元中は0/1に加え、同じrestore operation/token/固定期限を必須とする。ControlDOはacquireRestorePauseの永続化・mirror反映後に同一instanceのsystem受付を使い、alarmとmaintenance RPCも同じqueueへ接続する。復旧監査/quiesceや復元windowの管理は自分の受付枠に依存させない。
+
+claimの60秒leaseとremoved_atは待機後のSQL時計を使う。removed_atはobserved_atを下回らない。1回のmaxBlobsは失敗したclaimも含む候補検査数の上限とし、同じ失敗を無制限に再試行しない。既定50件（停止/復元20件）、25秒の外部dispatch開始期限を維持する。進行中R2呼出しの強制終了は保証しない。
+
+owner未復元のorphan、global cursor/lease、残るmultipart inventory/Queue、backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。schema0033/67tableを維持し、migration・依存追加なし。

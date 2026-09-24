@@ -9,12 +9,13 @@ import {
   drainStoppedOrphanGarbageCollection,
   ORPHAN_GRACE_MS,
 } from "../../src/jobs/orphanInventory";
-import { foundationFixture } from "../fixtures/foundation";
+import { gcFixture as fixture } from "../fixtures/gc";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
 const drain = (db = env.DB, bucket = env.BLOBS) =>
-  drainStoppedBlobGarbageCollection(db, bucket, 2, { maxBlobs: 1 });
+  drainStoppedBlobGarbageCollection(mutationEnv(db), bucket, 2, { maxBlobs: 1 });
 const orphans = (bucket = env.BLOBS) =>
   drainStoppedOrphanGarbageCollection(env.DB, bucket, 2, { limit: 1 });
 const bucketWith = (overrides: Partial<R2Bucket>): R2Bucket =>
@@ -44,33 +45,6 @@ beforeEach(async () => {
   await env.DB.prepare("UPDATE orphan_objects SET next_check_at=9999999999999").run();
 });
 
-async function fixture(state: "candidate" | "deleting" = "deleting") {
-  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
-  await atomicBatch(env.DB, f.statements);
-  const key = `u/${f.ids.user}/b/${f.ids.blob}`;
-  const object = (await env.BLOBS.put(key, "abc"))!;
-  await atomicBatch(env.DB, [
-    {
-      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,1)",
-      values: [f.ids.blob, object.etag],
-    },
-    { sql: "UPDATE nodes SET current_blob_id=NULL WHERE id=?", values: [f.ids.file] },
-    {
-      sql: "UPDATE blobs SET state=? WHERE id=?",
-      values: [state === "deleting" ? "deleting" : "gc_candidate", f.ids.blob],
-    },
-    {
-      sql: "INSERT INTO gc_candidates(blob_id,state,not_before,claim_token,claim_expires_at) VALUES(?,?,0,?,?)",
-      values: [
-        f.ids.blob,
-        state,
-        state === "deleting" ? crypto.randomUUID() : null,
-        state === "deleting" ? 0 : null,
-      ],
-    },
-  ]);
-  return { ...f, key };
-}
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const row = (f: Fixture) =>
   env.DB.prepare("SELECT * FROM gc_candidates WHERE blob_id=?")
@@ -116,7 +90,7 @@ async function orphan(
 it("drains an old deletion, releases physical bytes once and leaves new candidates paused", async () => {
   const waiting = await fixture("candidate");
   const f = await fixture();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 2)).toMatchObject({ claimed: 0 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 2)).toMatchObject({ claimed: 0 });
   expect(await drain()).toEqual({ claimed: 1, deleted: 1, retried: 0, r2Calls: 2 });
   expect(await physical(f)).toBe(0);
   expect(await row(f)).toMatchObject({
@@ -191,7 +165,7 @@ it("requires both stopped flags and the current epoch for either drain", async (
     expect(await orphans()).toMatchObject({ claimed: 0 });
   }
   await env.DB.prepare("UPDATE control SET maintenance=1,gc_paused=1").run();
-  expect(await drainStoppedBlobGarbageCollection(env.DB, env.BLOBS, 1)).toMatchObject({
+  expect(await drainStoppedBlobGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
     claimed: 0,
   });
   expect(await drainStoppedOrphanGarbageCollection(env.DB, env.BLOBS, 1)).toMatchObject({
@@ -218,7 +192,7 @@ it("does not dispatch HEAD or settle after an epoch change during deletion", asy
   expect(await physical(f)).toBe(3);
   await expire(f);
   expect(
-    await drainStoppedBlobGarbageCollection(env.DB, env.BLOBS, 3, { maxBlobs: 1 }),
+    await drainStoppedBlobGarbageCollection(mutationEnv(), env.BLOBS, 3, { maxBlobs: 1 }),
   ).toMatchObject({ deleted: 1 });
   expect(await physical(f)).toBe(0);
 });
@@ -366,7 +340,7 @@ it("keeps the active GC stopped if maintenance begins after its claim", async ()
     },
     true,
   );
-  expect(await runGarbageCollection(db, env.BLOBS, 2, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(db), env.BLOBS, 2, { maxBlobs: 1 })).toMatchObject({
     claimed: 1,
     deleted: 0,
     r2Calls: 0,
@@ -419,7 +393,7 @@ it("checks the stopped orphan gate before deletion and keeps capacity on a stale
 it("validates drain limits before touching R2", async () => {
   for (const limit of [0, -1, 21, 1.5, Number.NaN]) {
     await expect(
-      drainStoppedBlobGarbageCollection(env.DB, env.BLOBS, 2, { maxBlobs: limit }),
+      drainStoppedBlobGarbageCollection(mutationEnv(), env.BLOBS, 2, { maxBlobs: limit }),
     ).rejects.toThrow("invalid_gc_limit");
     await expect(
       drainStoppedOrphanGarbageCollection(env.DB, env.BLOBS, 2, { limit }),

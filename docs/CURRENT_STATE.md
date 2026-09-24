@@ -2,7 +2,7 @@
 
 更新日: 2026-09-25
 
-直近の到達点は[PROGRESS](PROGRESS.md)。直前commit8892b4fはmainへプッシュ済み。[CI36034974068](https://github.com/daraskme/Nextcloud-flare/actions/runs/36034974068)はUbuntu・Windows・browser全成功。Node416/workerd1260/browser19、計1,695件。 単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 workerd62件追加（回収境界56件・実ControlDO共有枠6件）。最終対象100件が成功。全体pnpm checkも成功し、Node416/25files（5.32秒）・workerd1322/71files（672.25秒）、計1,738件、lint・型・契約・設定・Web build・Worker dry-runが通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+直近の到達点は[PROGRESS](PROGRESS.md)。直前commit90c4593はmainへプッシュ済み。[CI36037522754](https://github.com/daraskme/Nextcloud-flare/actions/runs/36037522754)はUbuntu・Windows・browser全成功。Node416/workerd1322/browser19、計1,757件。 台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -22,12 +22,13 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| upload自動回収の全体受付 | claim・外部予算・観測・閉鎖・精算・エラー、ControlDO直接受付 | workerd62件追加（回収境界56件・実ControlDO共有枠6件）。最終対象100件が成功。全体pnpm checkも成功し、Node416/25files（5.32秒）・workerd1322/71files（672.25秒）、計1,738件、lint・型・契約・設定・Web build・Worker dry-runが通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 | GC・残るinventory/Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、共有枠と直接ACK | workerd33件追加。8892b4fのローカル全check成功、Node416/workerd1260、計1,676件。CIは冒頭参照。 | GC/残るinventory・Queue/backupと実環境は後続 |
-| 復旧用更新の全体受付 | migration0033、通常と同じ枠、物理観測・既知ID・初期化停止・外部claim | Node8件/workerd41件追加。f9dffcbのCI全成功、Node416/workerd1227/browser19、計1,662件。 | GC/残るinventory・Queue等の残る更新受付、backup barrier、未知KDF/multipartの収束、共有/メディア/実環境検証は後続です。 |
-| upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receiptと返却 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 | GC/残るinventory/Queue/backupは後続 |
-| upload転送の全体受付 | 単一start/recover/verify、multipart start/completeの5経路、直接ACKによる外部送信とDB-only receipt回収を分離 | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 | GC/残るinventory/Queue/backupは後続 |
-| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | GC/残るinventory/Queue/backupと実環境は後続 |
+| blob GCの全体受付 | 通常/停止中/復元中、claim・外部予算・精算・エラー、同一ControlDO受付 | workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 | 残るorphan/multipart inventory・Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
+| upload自動回収の全体受付 | claim・外部予算・観測・閉鎖・精算・エラー、ControlDO直接受付 | workerd62件追加。90c4593のローカル全check成功、Node416/workerd1322、計1,738件。CIは冒頭参照。 | 残るinventory/Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
+| UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、共有枠と直接ACK | workerd33件追加。8892b4fのローカル全check成功、Node416/workerd1260、計1,676件。CIは冒頭参照。 | 残るinventory・Queue/backupと実環境は後続 |
+| 復旧用更新の全体受付 | migration0033、通常と同じ枠、物理観測・既知ID・初期化停止・外部claim | Node8件/workerd41件追加。f9dffcbのCI全成功、Node416/workerd1227/browser19、計1,662件。 | 残るinventory・Queue等の残る更新受付、backup barrier、未知KDF/multipartの収束、共有/メディア/実環境検証は後続です。 |
+| upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receiptと返却 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 | 残るinventory/Queue/backupは後続 |
+| upload転送の全体受付 | 単一start/recover/verify、multipart start/completeの5経路、直接ACKによる外部送信とDB-only receipt回収を分離 | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 | 残るinventory/Queue/backupは後続 |
+| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
 | schema・契約 | migration `0001`〜`0033`、67通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
@@ -60,7 +61,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-直前47160c4のCIは1,568件成功。今回のupload中止/検証受付の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
+今回のblob GC受付の全体checkは1,818件成功。直前90c4593のCIはbrowserを含む1,757件成功。詳しい検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
 ## 実装済みだがstaging未検証・未公開
 

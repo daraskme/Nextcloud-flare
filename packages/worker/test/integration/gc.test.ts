@@ -7,7 +7,7 @@ import worker from "../../src/index";
 import { runGarbageCollection } from "../../src/jobs/gc";
 import { observePhysicalObject } from "../../src/services/physical";
 import { foundationFixture } from "../fixtures/foundation";
-import { mutationEnv } from "../fixtures/mutationAdmission";
+import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -36,7 +36,7 @@ async function candidate() {
 
 it("deletes an unreferenced object and finalizes physical accounting", async () => {
   const f = await candidate();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toEqual({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toEqual({
     claimed: 1,
     deleted: 1,
     retried: 0,
@@ -73,22 +73,22 @@ it("honors every pin, the materialized fence, and the GC pause", async () => {
       values: [f.ids.blob],
     },
   ]);
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 0,
   });
   await env.DB.prepare("DELETE FROM blob_pins WHERE blob_id=?").bind(f.ids.blob).run();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 0,
   });
   await env.DB.prepare("UPDATE gc_candidates SET pinned_by=NULL WHERE blob_id=?")
     .bind(f.ids.blob)
     .run();
   await env.DB.prepare("UPDATE control SET gc_paused=1").run();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 0,
   });
   await env.DB.prepare("UPDATE control SET gc_paused=0").run();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
     deleted: 1,
   });
 });
@@ -102,7 +102,7 @@ it("resolves a lost delete response through R2 head", async () => {
     },
     head: env.BLOBS.head.bind(env.BLOBS),
   } as unknown as R2Bucket;
-  expect(await runGarbageCollection(env.DB, bucket, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), bucket, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 1,
     deleted: 1,
     retried: 0,
@@ -117,7 +117,7 @@ it("retakes an expired failed claim and preserves irreversible state", async () 
     },
     head: env.BLOBS.head.bind(env.BLOBS),
   } as unknown as R2Bucket;
-  expect(await runGarbageCollection(env.DB, unavailable, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), unavailable, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 1,
     deleted: 0,
     retried: 1,
@@ -135,7 +135,7 @@ it("retakes an expired failed claim and preserves irreversible state", async () 
   await env.DB.prepare("UPDATE gc_candidates SET claim_expires_at=0 WHERE blob_id=?")
     .bind(f.ids.blob)
     .run();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 1,
     deleted: 1,
     retried: 0,
@@ -153,7 +153,10 @@ it("runs from Cron only after ControlDO and D1 admit GC", async () => {
     ...env,
     CONTROL: {
       idFromName: () => "singleton",
-      get: () => ({ status: async () => ({ epoch: 1, maintenance: false, gcPaused: false }) }),
+      get: () => ({
+        acquireSystemMutation,
+        status: async () => ({ epoch: 1, maintenance: false, gcPaused: false }),
+      }),
     },
   } as unknown as Env;
   await worker.scheduled({} as ScheduledController, runtime);

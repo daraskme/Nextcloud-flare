@@ -308,7 +308,11 @@ export class ControlDO extends DurableObject<Env> {
     operationId: string,
   ): Promise<RestorePause & { ready: boolean }> {
     const pause = await this.#admission.acquireRestorePause(expectedEpoch, operationId);
-    await drainRestoreBlobGarbageCollection(this.env.DB, this.env.BLOBS, pause);
+    await drainRestoreBlobGarbageCollection(
+      { DB: this.env.DB, systemControl: this },
+      this.env.BLOBS,
+      pause,
+    );
     const condition = restorePauseCondition(pause);
     const ready = await primary(this.env.DB)
       .prepare(`SELECT 1 FROM control c WHERE c.singleton=1
@@ -333,7 +337,11 @@ export class ControlDO extends DurableObject<Env> {
         return;
       }
       await this.ctx.storage.setAlarm(Date.now() + 5_000);
-      await drainRestoreBlobGarbageCollection(this.env.DB, this.env.BLOBS, pause);
+      await drainRestoreBlobGarbageCollection(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        pause,
+      );
       this.#admission.restoreAlarmSucceeded(transition);
     } catch {
       // Unknown D1/R2 outcomes retain the durable intent; never infer a released window.
@@ -453,9 +461,14 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ cleanup: GcResult; audit: RecoveryAuditStatus }> {
     const cleanup = await this.#maintenance(expectedEpoch, () =>
-      drainStoppedBlobGarbageCollection(this.env.DB, this.env.BLOBS, expectedEpoch, {
-        maxBlobs: limit,
-      }),
+      drainStoppedBlobGarbageCollection(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        expectedEpoch,
+        {
+          maxBlobs: limit,
+        },
+      ),
     );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }

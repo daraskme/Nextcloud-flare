@@ -35,7 +35,7 @@ it("does not let an unclosed upload bypass its reservation through a GC candidat
   )
     .bind(f.blob)
     .run();
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 0,
     r2Calls: 0,
   });
@@ -48,7 +48,7 @@ it("does not let an unclosed upload bypass its reservation through a GC candidat
     { sql: "UPDATE control SET maintenance=1,gc_paused=1" },
   ]);
   expect(
-    await drainStoppedBlobGarbageCollection(env.DB, env.BLOBS, 1, { maxBlobs: 1 }),
+    await drainStoppedBlobGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 }),
   ).toMatchObject({ claimed: 0, r2Calls: 0 });
   expect(await env.BLOBS.head(f.key)).not.toBeNull();
   expect(
@@ -259,7 +259,7 @@ it("accounts a completed object when abort cannot find its old handle, then hand
     cleanup_pending: 1,
     multipart_cleanup_closed: "completed",
   });
-  expect(await runGarbageCollection(env.DB, env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await counters(f)).toMatchObject({ physical_bytes: 0 });
   expect(await row(f)).toMatchObject({ cleanup_pending: 0 });
 });
