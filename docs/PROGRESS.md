@@ -5,28 +5,22 @@
 ## 確定した到達点
 
 - Filesの基本操作、単一/分割upload、確認付き上書き・再開、trash/restore/purge、名前検索、所有フォルダーの件数・容量集計まで接続済み。
-- 既存uploadの未知multipart ID修復は、毎回freshなBLOBS/S3対応検証付きで走査・中止まで接続済み。
-- 直前commit `98115609562818498f3c13d530ec6fa2bbf00380`はpush済み。[CI run35954162544](https://github.com/daraskme/Nextcloud-flare/actions/runs/35954162544)のUbuntu・Windows・browser全job成功。Node389 + workerd811、別途browser19件、計1,219件を検証済み。
+- 既存uploadの未知multipart IDは、毎回freshなBLOBS/S3対応検証付きで走査・中止まで接続済み。upload行喪失時の全bucket走査・part容量保留も接続済み。
+- 直前commit `284a202930cb95c00c5eea5de7f07706daa52138`はpush済み。[CI run35966922855](https://github.com/daraskme/Nextcloud-flare/actions/runs/35966922855)のUbuntu・Windows・browser全job成功。Node389 + workerd838 + browser19、計1,246件。既存Windows検索/配信lease fixtureのtimeoutも解消済み。
 
 ## 今回の変更
 
-D1のupload行が失われた未完了multipartを、保存先の`u/`全体から発見・記録する内部RPCを追加。part一覧をページ単位で保存し、各partの最大観測容量を所有者のphysical会計へ保留する。縮小・消失・404・応答喪失で減算せず、所有者が後日復元された場合も一度だけ計上する。
+発見済みの未追跡multipartを正確なkey/IDで中止し、結果を不変のattempt台帳へ保存する内部RPCを追加。migration `0028`で合計65通常table。稼働中uploadや未満了leaseがあれば送信せず、停止中・一覧走査完了・fresh proofを同じD1確定境界で検査する。
 
-毎回freshなBLOBS/S3対応検証と同一batchのfenceを使い、競合するdispatch・二重計上・古いcursorの再利用を防ぐ。0 bytesの隔離handleも復旧再開を止める。migration `0027`で3tableを追加し、合計64通常table。既存migrationと依存は変更していない。
+中止要求を送る前にattemptを確定し、同じIDの再送は保存結果だけを返す。保存応答が失われてもR2への二重送信をしない。64件の生涯予算、10秒の待機上限を設け、NoSuchUpload・通信失敗・遅い応答でも容量保留と隔離を維持する。中止の成功履歴だけで容量を戻したり復旧を再開したりしない。契約は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
 
-新機能27件とschema5件の関連検証に加え、最終`pnpm check`も成功。Node389 + workerd838 = **1,227件**（23+55 files）、workerd395.26秒。lint・型・契約・設定・schema・Web build・Wrangler dry-run成功。browser19件もCI成功し、計1,246件。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
-
-commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後のCIは最新SHAで確認する。
-
-commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 修正後の結果は最新SHAで確認する。
-
-ここでの走査完了・容量保留は、回収完了ではない。記録を失ったhandleの中止、未知create/part/completeの遅延、全handleの閉鎖証明と予約・保留容量の精算は未完了。実S3のstaging検証も残る。
+新機能19件とschema検証に加え、最終`pnpm check`も成功。Node389 + workerd857 = **1,246件**（23+56 files）、workerd411.79秒。lint・型・契約・設定・Web build・Wrangler dry-runも成功。今回のbrowser/Windows試験はpush後のCIで確認する。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。既存migration・依存・本番期限は変更していない。
 
 ## 後続の主要項目
 
-- multipart全体閉鎖・容量精算、upload行喪失時の中止・修復。
+- 未知create/part/completeの遅延と完成物を含むmultipart全体閉鎖・容量精算、実S3/lifecycle検証。
 - account全体のmutation/KDF制限、残るQueue/repair。
 - 共有・公開link、media metadata、Gallery/Bookshelf/Audio、AVIF/AV1/Opusの実配信・再生。
 - backup/restore、実Cloudflare環境の設定・負荷・障害試験、公開。
 
-分野別の詳細は[CURRENT_STATE](CURRENT_STATE.md)、実装と検証履歴は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、再開手順は[HANDOFF](HANDOFF.md)を参照。
+分野別の詳細は[CURRENT_STATE](CURRENT_STATE.md)、実装と検証履歴は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、再開手順は[HANDOFF](HANDOFF.md)を参照。全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9に従い、この中止機能だけで完成扱いにしない。

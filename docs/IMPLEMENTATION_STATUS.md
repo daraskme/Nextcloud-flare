@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 4 upload行喪失時のmultipart容量保留 | migration `0027`の3table（計64通常table）、全`u/`走査、正確なkey/ID対応、partページと最大観測bytesのowner physical計上、ControlDOと復旧fence | 新規27件でページ上限/競合/応答喪失/所有者復元/整数上限/0-byte再開拒否を検証。中止・全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
+| 4 upload行喪失時のmultipart中止 | migration `0028`の不変attempt台帳（計65通常table）、正確なhandleの1回dispatch、fresh proof、同一ID再送、64件予算、10秒待機、ControlDO接続 | 新規19件でhold維持、稼働upload/lease、claim/receipt応答喪失、proof期限、遅い応答と上限を検証。全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
+| 4 upload行喪失時のmultipart容量保留 | migration `0027`の3table、全`u/`走査、正確なkey/ID対応、partページと最大観測bytesのowner physical計上、ControlDOと復旧fence | 27件でページ上限/競合/応答喪失/所有者復元/整数上限/0-byte再開拒否を検証。全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
 | 4 multipart修復の対応検証接続 | 毎回fresh nonceでBLOBS/S3を照合し、claim・page・abort・physical観測・lease解放を同一batchのproof fenceで保護。停止/GC pause必須、保存済み成功を再利用しない | 誤bucket・旧nonce・失効・応答喪失の境界を追加。全体閉鎖・容量精算・実S3は未完了。[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
 | 5 要求時のフォルダー集計 | Access account stats、所有folderの再帰件数/現在のlogical bytes、同一batch認可と1万件上限、Files情報dialog | D1追加12件、既存検索9件の回帰。最終全check/browser結果は実行記録。[FOLDER_STATS](FOLDER_STATS.md) |
 | 5 フォルダー配下検索 | Access API、正規化/部分一致、scope10,000/page200、現行認可と検索専用cursor、Files検索/元保存先保持。子一覧更新後のrename/move索引修正 | query/cursor、実D1境界、browser検索/201件pagination/更新競合。最終結果は実行記録。[SEARCH](SEARCH.md) |
@@ -113,6 +114,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、upload行喪失時の発見済みmultipart中止・不変attempt台帳を追加。新規19件成功（10.83秒）、Node schema71件とworkerd schema5件も成功。migration `0028`、65通常table、依存追加なし。最終`pnpm check`成功、Node389 + workerd857 = **1,246 tests**（23+56 files）、workerd411.79秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。今回のbrowser/Windowsはpush後のCIで確認する。全体閉鎖・容量精算・実S3は未完了。
+
+- 2026-09-24、commit `284a202`の[CI run35966922855](https://github.com/daraskme/Nextcloud-flare/actions/runs/35966922855)はUbuntu2分39秒・Windows8分55秒・browser2分11秒で全成功。Node389 + workerd838 + browser19 = **1,246 tests**。Windows検索9件26.338秒、content-lease5件46.715秒。以下の2件のfixture timeoutは解消済み。
 
 - 2026-09-24、commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 修正後の配信期限5件は成功（48.00秒）、lint/typecheckも成功。最新SHAでCI全checkを確認する。
 

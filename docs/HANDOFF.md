@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。64通常テーブル、migration `0001`〜`0027`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。65通常テーブル、migration `0001`〜`0028`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -34,7 +34,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 | ファイル | 実装内容 |
 |---|---|
-| `jobs/multipartBucketInventory.ts` / `ControlDO.inventoryMultipartBucket`・`observeMultipartBucketParts` | migration `0027`、upload行不要の全bucket走査・永続part cursor・最大観測容量保留。fresh proofと復旧最終fence、所有者後日復元、中止/精算は後続 |
+| `jobs/multipartBucketInventory.ts` / `jobs/multipartBucketAbort.ts` / ControlDO内部RPC | migration `0027`/`0028`、upload行不要の全bucket走査・part容量保留・発見handleの中止・不変receipt。fresh proofと復旧fence、所有者後日復元。全体閉鎖/精算は後続 |
 | `do/controlAdmission.ts` / `ControlDO.resumeAdmission`・`resumeGarbageCollection` | migration `0025`、永続intentとD1 revision/token、最終batch fence、repair hold、停止と応答喪失の競合、初回bootstrapと実LockDO mutation |
 | `jobs/gc.ts` / `jobs/orphanInventory.ts` / `ControlDO.drainBlobGarbageCollection`・`drainOrphanGarbageCollection` | migration `0024`、旧deletingのみの停止中回収、dispatch/final fence・counter・physical精算、全復旧監査fixture |
 | `jobs/r2BindingVerification.ts` / `ControlDO.verifyInventoryBinding` | migration `0023`、固定64-byte system objectのfresh nonce/CASによるBLOBS/S3検証。scope内のみ有効なD1 fence、復旧監査・容量保持。全体閉鎖への接続は次段階 |
@@ -92,7 +92,13 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-最新CI補足: commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 最終結果は最新SHAと照合する。
+最新の追加は発見済み未追跡handleの中止と不変attempt台帳（migration `0028`）。毎回fresh proofを取り、bucket/part走査完了・稼働upload/lease不在を検査する。claim応答確認後のみ正確なkey/IDへ1回dispatch、同一attemptは再送しない。64件の生涯上限・10秒待機、遅い応答でもhold/隔離は維持する。新規19件とschema検証は成功。全check結果はIMPLEMENTATION_STATUSへ記録する。中止receiptを全体閉鎖と解釈して精算しない。次はprovider保証・実S3の閉鎖条件を詰め、独立に進められるaccount/KDF admission、Queue、共有・mediaも続ける。
+
+直前commit `284a202`の[CI run35966922855](https://github.com/daraskme/Nextcloud-flare/actions/runs/35966922855)は全成功。Ubuntu2分39秒・Windows8分55秒・browser2分11秒、Node389 + workerd838 + browser19 = 1,246件。以下の2件のWindows fixture失敗は解消済み。
+
+以下は以前のcheckpoint時点の記録（当時の未完了項目を含む）。現在の状態は上記とCURRENT_STATEを優先する。
+
+CI補足: commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 最終結果は最新SHAと照合する。
 
 CI補足: commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後の結果は最新SHAと照合する。
 

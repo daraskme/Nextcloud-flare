@@ -9,6 +9,10 @@ import {
   type GcResult,
 } from "../jobs/gc";
 import {
+  abortMultipartBucketHandle,
+  type MultipartBucketAbortResult,
+} from "../jobs/multipartBucketAbort";
+import {
   type MultipartBucketScanResult,
   type MultipartPartObservationResult,
   observeMultipartBucketParts,
@@ -440,6 +444,26 @@ export class ControlDO extends DurableObject<Env> {
       ),
     );
     return { observation, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** One idempotent abort attempt; its acknowledgement never releases quarantine or bytes. */
+  async abortMultipartBucketHandle(
+    expectedEpoch: number,
+    handleId: string,
+    attemptId: string,
+  ): Promise<{ abort: MultipartBucketAbortResult; audit: RecoveryAuditStatus }> {
+    const client = new R2S3Inventory(this.env);
+    const abort = await this.#maintenance(expectedEpoch, () =>
+      abortMultipartBucketHandle(
+        this.env.DB,
+        this.env.BLOBS,
+        client,
+        expectedEpoch,
+        handleId,
+        attemptId,
+      ),
+    );
+    return { abort, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */

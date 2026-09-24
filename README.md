@@ -6,8 +6,8 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 **別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 実装済み・未実装・検証済み・未検証の一覧は [現在状態](docs/CURRENT_STATE.md) にまとめています。
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 の一部**を実装済み。
-64通常テーブル、migration `0001`〜`0027`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
-アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)も接続しました。完全な閉鎖証明と予約・保留容量の精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
+65通常テーブル、migration `0001`〜`0028`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
+アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査・中止とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)も接続しました。完全な閉鎖証明と予約・保留容量の精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 
 | 資料 | 用途 |

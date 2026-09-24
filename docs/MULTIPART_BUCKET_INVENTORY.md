@@ -1,6 +1,6 @@
-# upload行が失われたmultipartの観測と容量保留
+# upload行が失われたmultipartの観測・中止・容量保留
 
-更新: 2026-09-24。migration `0027`と`jobs/multipartBucketInventory.ts`で、D1のupload行がない未完了multipartも保存先の`u/`全体から発見し、各partの観測済み容量を保留する。回収完了・全体不在の証明と容量精算は未実装。実S3試験・remote migration・deployは行っていない。
+更新: 2026-09-24。migration `0027`と`jobs/multipartBucketInventory.ts`で、D1のupload行がない未完了multipartも保存先の`u/`全体から発見し、各partの観測済み容量を保留する。migration `0028`と`jobs/multipartBucketAbort.ts`で発見済みhandleの中止と不変receiptを追加した。全体不在の証明と容量精算は未実装。実S3試験・remote migration・deployは行っていない。
 
 ## 呼出しと範囲
 
@@ -9,6 +9,7 @@
 ```ts
 await control.inventoryMultipartBucket(epoch, 20);
 await control.observeMultipartBucketParts(epoch, handleId, 20);
+await control.abortMultipartBucketHandle(epoch, handleId, attemptId);
 ```
 
 最初のRPCは`{ inventory: { examined, completed, handles }, audit }`、次は`{ observation: { observed, heldBytes, completed }, audit }`を返す。`handles`はD1のUUIDと`tracked`/`quarantined`の組で、R2 upload IDは返さない。`completed`はその一覧走査の最終ページに達したことだけを表す。handleの閉鎖やbytesの不存在を意味しない。
@@ -24,6 +25,7 @@ await control.observeMultipartBucketParts(epoch, handleId, 20);
 | `multipart_bucket_scan` | source/epoch/round、KeyMarkerとUploadIdMarker、ページ数、完了時刻、累積dispatch counter |
 | `multipart_bucket_handles` | source/key/upload IDごとの不変identity、Initiated、所有者、隔離状態、観測round、保留容量、part cursor/round/counter |
 | `multipart_bucket_parts` | handle/part番号ごとの最大観測bytes、直近のbytes/ETag/更新日時/round |
+| `multipart_bucket_abort_attempts` | callerのattempt UUID、handle/ordinal、epoch/proof/scan/part snapshot、開始時刻、結果と終了時刻。1 handleで生涯64件まで |
 
 一覧は既知handleも記録する。D1に**keyとR2 upload IDが両方一致するupload**がある場合だけ`tracked`にする。同じkeyの別IDは`quarantined`。一度隔離したhandleは、遅れて元のIDがD1へ反映されても自動でtrackedへ戻さない。trackedは今回のpart観測対象外であり、既存uploadの会計を使用する。
 
@@ -38,7 +40,7 @@ source・epoch変更や走査完了後の次呼出しは新roundを先頭から�
 - `u/{owner}/b/{blob}`だけを所有者へ対応させる。user行が失われていれば未帰属で保持し、後日userが復元された時に一度だけ計上する。不正形のkeyは未帰属のまま隔離する。
 - handle/partの削除、容量減算、identity変更、隔離解除をDB triggerで拒否する。整数上限を超えるページは全体rollbackする。
 - 隔離keyでのblob新規作成・stagingからのcommit、derivative/archive/target manifestの新規登録・key変更を拒否する。
-- namespace公開、R2 abort/delete、reservation解除は行わない。完成済みobjectの観測・回収は既存のobject inventory/GCが担当する。
+- 観測RPCはnamespace公開、R2 abort/delete、reservation解除を行わない。別の中止RPCもhold・reservation・quarantineを維持する。完成済みobjectの観測・回収は既存のobject inventory/GCが担当する。
 
 復旧の最終D1 fenceは未完了scan、旧epoch/source、隔離handle、元のuploadとの対応が失われたtracked handleを拒否する。**0 bytesの隔離handleも再開を止める**。走査を開始していないDBに全bucket走査を強制するgateはまだなく、本機能だけで全体の不在を保証しない。
 
@@ -46,8 +48,23 @@ source・epoch変更や走査完了後の次呼出しは新roundを先頭から�
 
 dispatch counterの確認が失われた呼出しはS3へ進まない。ページ保存の応答が失われた場合、D1には既にcursor/容量が残っている可能性がある。proof lease満了後、新しいnonceで検証して永続cursorから再開する。partのUPSERTと差分triggerにより二重計上しない。失敗時にlease/counter/holdを手動で戻さない。
 
+## 発見済みhandleの中止
+
+`abortMultipartBucketHandle(epoch, handleId, attemptId)`はcallerが保存したUUIDで1回の中止を識別し、`{ abort: { attemptId, outcome, replayed, heldBytes }, audit }`を返す。`outcome`は`confirmed`か`unconfirmed`。前者は指定したkey/IDのR2 abortが応答したという履歴だけを表し、全体閉鎖や現在の不在を表さない。
+
+- 新しい試行には同じsource/current epochのbucket走査と対象part走査の最終ページが必要。未完了のper-upload一覧、同keyで稼働中のapplication upload、未満了のinit/part/complete/cleanup leaseがあればdispatch前に拒否する。tracked handleは対象外。
+- fresh proofの下で`started`行を先に確定し、保存応答の確認とproof再検査後だけ、正確なkey/IDへ1回abortする。D1 claimの応答喪失では送信しない。claim自体が保存済みなら64件の予算は消費したままにする。
+- 同じattempt IDの再送はfresh proof後に保存結果を読むだけ。`started`は結果不明として返し、R2へ再送しない。別handleでのID再使用も拒否する。receipt保存後の応答喪失はこの経路で回収できる。
+- 最大10秒で待機を打ち切り、エラー・NoSuchUpload・timeoutは`unconfirmed`。遅いcallback、失効済みproofやepochはreceiptを書き換えない。終端receiptの更新・削除はDB triggerでも禁止する。
+- 再中止には別のattempt UUIDを明示する。1 handleにつき未知応答も含め64件まで。timeout後の外部I/Oが残っている場合もあり、自動retryや予算のリセットはしない。
+- 中止後もpartの最大観測bytes、owner physical、予約、quarantine、復旧停止を維持する。空一覧、NoSuchUpload、中止成功、lifecycleの経過だけを理由に精算しない。
+
+[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)は指定uploadの中止と完成objectの可視性を定義する。[S3 AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)は進行中partとの競合と再中止・part確認の必要性を記載する。これらから、記録のない遅延create/completeを含む全体閉鎖までは保証できないと判断している。AWSの記述をR2固有の閉鎖保証として扱わない。
+
 ## 検証と残作業
 
 `test/integration/multipart-bucket-inventory.test.ts`で実D1/R2/ControlDOとS3応答fixtureを使用する。upload行喪失、同keyの別ID、2種類のpagination、旧ページcycle、100件ページ/part番号10000、並行呼出し、所有者復元、容量増減、integer overflow、counter/page応答喪失、proof失効、source変更、0-byte再開拒否を検証する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
-次は、記録を失ったhandleの中止・進行中part/create/completeとの競合、完成物との照合、全handleの閉鎖証明を定義し、保留容量の精算と復旧再開へ接続する。既存uploadの[未知ID中止](MULTIPART_INVENTORY.md)のreceiptだけで、この台帳のholdを削除してはいけない。実CloudflareのS3/probe更新頻度・lifecycle・大規模D1負荷も未検証。
+`test/integration/multipart-bucket-abort.test.ts`の19件は実D1/R2/ControlDOで、中止とhold保持、一覧未完了、稼働upload/lease、claim/receipt応答喪失、proof期限切れ、NoSuchUpload、遅い応答、64回上限、同一ID再送と実ControlDO監査再初期化を検証する。
+
+次は、未知の進行中part/create/completeと完成物の照合、全handleの閉鎖証明を定義し、保留容量の精算と復旧再開へ接続する。どちらの中止receiptも、単独ではこの台帳のholdを削除する根拠にしない。実CloudflareのS3/probe更新頻度・lifecycle・大規模D1負荷も未検証。
