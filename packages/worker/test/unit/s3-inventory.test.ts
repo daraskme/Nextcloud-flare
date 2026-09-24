@@ -450,24 +450,59 @@ describe("signed bounded S3 reads", () => {
   });
 
   it("cancels stalled bodies within the transport deadline", async () => {
-    const cancel = vi.fn();
-    const fetch = async () => new Response(new ReadableStream({ cancel }));
-    await expect(
-      new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).listMultipartUploads(),
-    ).rejects.toThrow("s3_inventory_timeout");
-    expect(cancel).toHaveBeenCalledTimes(1);
+    // Signing latency is not the condition under test: first establish a pending body read.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const cancel = vi.fn();
+      let reading!: () => void;
+      const pendingRead = new Promise<void>((resolve) => {
+        reading = resolve;
+      });
+      const fetch = vi.fn(
+        async () =>
+          new Response(new ReadableStream({ pull: reading, cancel }, { highWaterMark: 0 })),
+      );
+      const rejected = expect(
+        new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).listMultipartUploads(),
+      ).rejects.toThrow("s3_inventory_timeout");
+      await pendingRead;
+      await vi.advanceTimersByTimeAsync(19);
+      expect(cancel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("aborts a fetch that never responds", async () => {
-    let signal: AbortSignal | undefined;
-    const fetch = (request: Request) => {
-      signal = request.signal;
-      return new Promise<Response>(() => {});
-    };
-    await expect(
-      new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).listMultipartUploads(),
-    ).rejects.toThrow("s3_inventory_timeout");
-    expect(signal?.aborted).toBe(true);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let signal: AbortSignal | undefined;
+      let dispatched!: () => void;
+      const pendingFetch = new Promise<void>((resolve) => {
+        dispatched = resolve;
+      });
+      const fetch = vi.fn((request: Request) => {
+        signal = request.signal;
+        dispatched();
+        return new Promise<Response>(() => {});
+      });
+      const rejected = expect(
+        new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).listMultipartUploads(),
+      ).rejects.toThrow("s3_inventory_timeout");
+      await pendingFetch;
+      await vi.advanceTimersByTimeAsync(19);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects oversized declared and streamed bodies, canceling the reader", async () => {

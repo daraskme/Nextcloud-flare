@@ -7,6 +7,8 @@
 
 ## 今回の実装
 
+ae2dc58の[CI36072480898](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072480898)では、backupドリル（67table/9,599bytes、2m33s）とbrowser19件（2m4s）が成功しました。Windows 1/2は既存S3 timeout試験で463/464件成功・1件失敗。20ms内に署名が終わらずfetch未開始だったため、通信/本文読取り開始を同期してからtimerを19ms+1ms進める試験へ修正しました。製品の期限は変更していません。関連120件（9.07s）、型検査、lintが成功。修正版のCIはプッシュ後に確認します。
+
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
 | 4 バックアップ世代・オフライン復元 | pnpm backup、capture/verify/restore-offline、専用local drill、backup CI job | Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。 [BACKUP_GENERATIONS](BACKUP_GENERATIONS.md) |

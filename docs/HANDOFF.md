@@ -25,6 +25,8 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
+ae2dc58の[CI36072480898](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072480898)では、backupドリル（67table/9,599bytes、2m33s）とbrowser19件（2m4s）が成功しました。Windows 1/2は既存S3 timeout試験で463/464件成功・1件失敗。20ms内に署名が終わらずfetch未開始だったため、通信/本文読取り開始を同期してからtimerを19ms+1ms進める試験へ修正しました。製品の期限は変更していません。関連120件（9.07s）、型検査、lintが成功。修正版のCIはプッシュ後に確認します。
+
 直前commit bb6e6a6はmainへプッシュ済み。[CI36070823970](https://github.com/daraskme/Nextcloud-flare/actions/runs/36070823970)は全4ジョブ成功。Ubuntu6m25s、Windows 1/2は15m51s（47file/1,016件）、2/2は11m46s（47file/975件）、browser2m9sです。Node432・workerd1,991・browser19、重複を除く計2,442件を確認しました。今回の生成コマンドはこのCIには含まれません。
 
 バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。

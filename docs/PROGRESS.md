@@ -18,6 +18,8 @@ Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・�
 
 詳細は[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md)と[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
+ae2dc58の[CI36072480898](https://github.com/daraskme/Nextcloud-flare/actions/runs/36072480898)では、backupドリル（67table/9,599bytes、2m33s）とbrowser19件（2m4s）が成功しました。Windows 1/2は既存S3 timeout試験で463/464件成功・1件失敗。20ms内に署名が終わらずfetch未開始だったため、通信/本文読取り開始を同期してからtimerを19ms+1ms進める試験へ修正しました。製品の期限は変更していません。関連120件（9.07s）、型検査、lintが成功。修正版のCIはプッシュ後に確認します。
+
 ## 後続の主要項目
 
 ControlDOの運用呼出し経路、R2への世代公開・日次実行/保持管理、旧version・全データ形式の互換性、Time Travelとlive restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続です。旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
