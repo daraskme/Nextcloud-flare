@@ -42,7 +42,9 @@ async function fixture() {
     epoch: 1,
   };
   const targets = [{ spaceId: f.ids.space, nodeId: f.ids.file }];
-  const boundary = Date.now() + 5000;
+  // Two tickets, DO priming and HTTP authorization must fit before this boundary.
+  // Windows CI can spend more than 5 seconds preparing the read.
+  const boundary = Date.now() + 15_000;
   const first = await issueContentTicket(
     env.DB,
     env.BLOBS,
@@ -75,6 +77,10 @@ async function fixture() {
     async reserve(request: BudgetReserveRequest) {
       const lease = await invoke((budget) => budget.reserve(request));
       grants.push(lease);
+      // An expired fixture would correctly renew to the two-minute ticket below,
+      // then leave the deliberately blocked GET waiting past the runner timeout.
+      if (grants.length === 2 && lease.expiresAt !== boundary)
+        throw new Error("fixture_budget_window_expired_before_read");
       return lease;
     },
     settle: (request: BudgetSettleRequest) => invoke((budget) => budget.settle(request)),
@@ -243,10 +249,10 @@ it("cancels a late R2 GET body after returning the deadline error", async () => 
     }),
   );
   const response = await f.http(bucket(f, { get: () => pending }));
-  expect(response.status).toBe(503);
   release(object);
-  await expect.poll(() => cancelled).toBe(true);
   expect(f.grants[1]!.expiresAt).toBe(f.boundary);
+  expect(response.status).toBe(503);
+  await expect.poll(() => cancelled).toBe(true);
 });
 
 it("explicitly cancels and fully charges an aborted partially delivered response", async () => {

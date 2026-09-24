@@ -114,6 +114,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-24、commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 修正後の配信期限5件は成功（48.00秒）、lint/typecheckも成功。最新SHAでCI全checkを確認する。
+
 - 2026-09-24、commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後の検索9件は成功（6.07秒）、lint/typecheckも成功。新しいSHAでCI全checkを確認する。
 
 - 2026-09-24、upload行喪失時の全bucket multipart走査とpart容量保留を追加。新機能27件成功（10.42秒）、schema5件成功。新規migration `0027`、64通常table、依存追加なし。最終`pnpm check`成功、Node389 + workerd838 = **1,227 tests**（23+55 files）、workerd395.26秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-runも成功。browser19件も同commitのCIで成功（計1,246件）。Windowsの検索fixture timeoutは別記録。実S3・全体閉鎖・中止・容量精算は未完了。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。

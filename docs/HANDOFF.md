@@ -92,6 +92,8 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
+最新CI補足: commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 最終結果は最新SHAと照合する。
+
 CI補足: commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後の結果は最新SHAと照合する。
 
 最新はupload行喪失時の未完了multipart走査とpart容量保留。migration `0027`、64通常table。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)が契約。各RPCでfresh proofを取得し、100件以下のページをD1へ原子的保存する。keyとR2 IDの完全一致だけtracked、その他は隔離する。partの最大観測bytesをowner physicalへ差分加算し、縮小・空一覧・404・遅延IDで解除しない。隔離handleは0 bytesでも復旧を止める。次は中止・遅延create/part/complete・完成物の照合・全体閉鎖と精算。元台帳のdelete guardやholdを外すだけで完成扱いにしない。直前commit `9811560`のUbuntu/Windows/browser CIは全成功（run35954162544）。今回の結果はIMPLEMENTATION_STATUSを参照。

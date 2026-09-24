@@ -48,7 +48,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account/KDF admission |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-今回の全checkはNode389 + workerd838 = **1,227件**、workerd395.26秒で成功。新機能27件を追加し、migration `0027`をローカルD1/SQLiteへ適用済み。lint・型・契約・設定・schema・Web build・Wrangler dry-runも成功。browser19件も今回のCIで成功（計1,246件）。初回CIのWindowsでは既存1万件検索fixtureが60秒timeoutとなったため個別予算を90秒へ揃える。Ubuntuは成功。修正後CIは最新SHAで確認する。
+今回の全checkはNode389 + workerd838 = **1,227件**、workerd395.26秒で成功。新機能27件を追加し、migration `0027`をローカルD1/SQLiteへ適用済み。lint・型・契約・設定・schema・Web build・Wrangler dry-runも成功。browser19件も今回のCIで成功（計1,246件）。初回CIのWindowsでは既存1万件検索fixtureが60秒timeoutとなったため個別予算を90秒へ揃える。Ubuntuは成功。検索修正後のCIでは同テストは成功し、別のcontent-lease fixtureがtimeout。準備中の期限切れで2分へ更新されないようfixture期限を15秒にし、元のgrant期限を保持する検査を追加。最終CIは最新SHAで確認する。
 
 ## 実装済みだがstaging未検証・未公開
 

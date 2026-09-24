@@ -18,6 +18,8 @@ D1のupload行が失われた未完了multipartを、保存先の`u/`全体か�
 
 commit `dfd2468`の[CI run35964611990](https://github.com/daraskme/Nextcloud-flare/actions/runs/35964611990)はUbuntu（6分23秒）・browser（19件、2分7秒）成功。Windowsは新機能27件を含む837/838件が成功し、既存の1万件検索fixtureだけ個別60秒でtimeout。個別指定を既存Windows runner予算と同じ90秒へ揃える。検索の1万件上限・アサーション・本番期限は変更しない。 修正後のCIは最新SHAで確認する。
 
+commit `5544432`の[CI run35965874860](https://github.com/daraskme/Nextcloud-flare/actions/runs/35965874860)はUbuntu（3分7秒）・browser（2分17秒）成功。Windowsの検索9件は成功したが、既存content-leaseのlate GETテストだけ90秒timeout（837/838件成功）。fixtureの初期期限5秒を準備中に超えると、BudgetDOが仕様どおり更新済みticketの2分期限へrenewするため、短い期限の試験にならない。準備を含むfixture期限を15秒にし、2回目のgrantが元の期限を保持することを直ちに検査する。本番コード・期限は変更しない。 修正後の結果は最新SHAで確認する。
+
 ここでの走査完了・容量保留は、回収完了ではない。記録を失ったhandleの中止、未知create/part/completeの遅延、全handleの閉鎖証明と予約・保留容量の精算は未完了。実S3のstaging検証も残る。
 
 ## 後続の主要項目
