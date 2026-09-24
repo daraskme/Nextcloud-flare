@@ -11,6 +11,7 @@ import { BudgetDO } from "../../src/do/BudgetDO";
 import type { Env } from "../../src/env";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 
@@ -99,7 +100,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   };
   const ticket = await tokens.issueTicket(claims);
   expect(await tokens.verifyTicket(ticket)).toEqual(claims);
-  const accepted = await acceptContentTicket(env.DB, tokens, ticket);
+  const accepted = await acceptContentTicket(mutationEnv(), tokens, ticket);
   expect(accepted.budgetId).toBe(ids.budget);
   expect(accepted.setCookie).toMatch(
     /^__Host-ncf_cs=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}; Secure; HttpOnly; SameSite=None; Path=\/; Max-Age=/,
@@ -150,7 +151,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
     byteLimit: 9,
   });
   const contentEnv: Env = {
-    ...env,
+    ...mutationEnv(),
     APP_ORIGIN: "https://app.invalid",
     CONTENT_ORIGIN: "https://content.invalid",
   };
@@ -281,7 +282,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
     ),
   ]);
   await env.DB.prepare("UPDATE control SET maintenance=1 WHERE singleton=1").run();
-  await expect(acceptContentTicket(env.DB, tokens, ticket)).rejects.toThrow();
+  await expect(acceptContentTicket(mutationEnv(), tokens, ticket)).rejects.toThrow();
   await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
   await expect(tokens.verifyCookie(`${cookie}; ${cookie}`)).rejects.toThrow(
     /content_cookie_rejected/,
@@ -307,7 +308,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
     ),
   ).rejects.toThrow(/content_ticket_rejected/);
   await env.DB.prepare("UPDATE tickets SET cancelled_at=? WHERE id=?").bind(now, ids.ticket).run();
-  await expect(acceptContentTicket(env.DB, tokens, ticket)).rejects.toThrow();
+  await expect(acceptContentTicket(mutationEnv(), tokens, ticket)).rejects.toThrow();
   await expect(
     prepareCookieBlobRead(env.DB, env.BLOBS, tokens, cookie, f.ids.space, f.ids.file, "content"),
   ).rejects.toThrow();
@@ -400,7 +401,7 @@ it("redeems an anonymous share ticket and rejects a changed share version", asyn
     iat: issued,
     exp: expires,
   });
-  const accepted = await acceptContentTicket(env.DB, tokens, ticket);
+  const accepted = await acceptContentTicket(mutationEnv(), tokens, ticket);
   const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
   expect(
     (

@@ -1,6 +1,11 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "./accountMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_LIFETIME_MS = 600_000;
@@ -12,11 +17,12 @@ export interface ContentBudget {
 
 /** Reuse the identity budget across tabs; the D1 batch fences the chosen node and credential. */
 export async function ensureContentBudget(
-  db: D1Database,
+  env: AccountMutationEnv,
   authorized: AuthorizedNode,
   expiresAt: number,
   share?: { readonly id: string; readonly version: number },
 ): Promise<ContentBudget> {
+  const db = env.DB;
   const principal = authorized.principal;
   const now = Date.now();
   if (
@@ -114,7 +120,8 @@ export async function ensureContentBudget(
       ],
     );
   }
-  await atomicBatch(db, [
+  const guards = [
+    assertExists("SELECT 1 WHERE ?>strftime('%s','now')*1000", [expiresAt]),
     authorizationAssertion(authorized),
     assertExists("SELECT 1 FROM nodes WHERE id=? AND space_id=? AND owner_id=?", [
       authorized.node.id,
@@ -131,8 +138,19 @@ export async function ensureContentBudget(
         ]
       : []),
     authority,
-    {
-      sql: `INSERT INTO budgets(id,owner_id,user_id,share_id,unlock_session_id,epoch,expires_at,state)
+  ];
+  await atomicBatch(db, guards);
+  const admission = await acquireAccountMutation(
+    env,
+    authorized.node.owner_id,
+    principal.epoch,
+    "content.budget",
+  );
+  try {
+    await commitAccountMutation(db, admission, authorized.node.owner_id, [
+      ...guards,
+      {
+        sql: `INSERT INTO budgets(id,owner_id,user_id,share_id,unlock_session_id,epoch,expires_at,state)
         VALUES(?,?,?,?,?,?,?,'active')
         ON CONFLICT(id) DO UPDATE SET epoch=excluded.epoch,
           expires_at=MAX(budgets.expires_at,excluded.expires_at),state='active'
@@ -141,9 +159,20 @@ export async function ensureContentBudget(
           AND budgets.unlock_session_id IS excluded.unlock_session_id
           AND budgets.epoch<=excluded.epoch AND budgets.state<>'revoked'
           AND (budgets.state='active' OR budgets.expires_at<=strftime('%s','now')*1000)`,
-      values: [id, authorized.node.owner_id, userId, shareId, unlockId, principal.epoch, expiresAt],
-    },
-    assertOneChange,
-  ]);
+        values: [
+          id,
+          authorized.node.owner_id,
+          userId,
+          shareId,
+          unlockId,
+          principal.epoch,
+          expiresAt,
+        ],
+      },
+      assertOneChange,
+    ]);
+  } catch (cause) {
+    throw new Error("content_budget_commit_unknown", { cause });
+  }
   return Object.freeze({ id, expiresAt });
 }

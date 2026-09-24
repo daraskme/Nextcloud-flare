@@ -3,6 +3,7 @@ import type { Principal } from "../auth/authorize";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import { type ContentTicketTarget, issueContentTicket } from "../services/contentTicket";
 import { cancelContentTicket } from "../services/contentTicketCancel";
 import { hasEmptyBody } from "./emptyBody";
@@ -121,9 +122,14 @@ export async function handlePrivateContentTicketHttp(
   if (cancel) {
     if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
     try {
-      await cancelContentTicket(env.DB, principal, cancel[1] ?? "");
+      await cancelContentTicket(env, principal, cancel[1] ?? "");
       return new Response(null, { status: 204, headers: { "Cache-Control": "private, no-store" } });
     } catch (error) {
+      if (error instanceof MutationUnavailableError) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (error instanceof Error && error.message === "ticket_cancel_commit_unknown")
         return problem(503, "not_ready");
       return problem(404, "not_found");
@@ -137,7 +143,7 @@ export async function handlePrivateContentTicketHttp(
   }
   try {
     const issued = await issueContentTicket(
-      env.DB,
+      env,
       env.BLOBS,
       tokens,
       principal,
@@ -151,7 +157,15 @@ export async function handlePrivateContentTicketHttp(
       headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
     });
   } catch (error) {
-    if (error instanceof Error && error.message === "content_ticket_commit_unknown")
+    if (error instanceof MutationUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
+    if (
+      error instanceof Error &&
+      ["content_ticket_commit_unknown", "content_budget_commit_unknown"].includes(error.message)
+    )
       return problem(503, "not_ready");
     return problem(404, "not_found");
   }

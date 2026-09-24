@@ -1,6 +1,6 @@
 # 更新の全体受付
 
-更新日: 2026-09-24。migration `0030` / `0031` / `0032`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
+更新日: 2026-09-25。migration `0030` / `0031` / `0032`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
 
 ## 接続した範囲
 
@@ -63,6 +63,20 @@ bootstrapのuser・space・root・controlと確定記録・枠解放も同じbat
 
 新規session/初回ownerを必要とするAPI・private HTML、logout APIの受付不可は503・Retry-After: 1を返す。sessionが既に有効なら、更新枠が混雑しても読取りを続けられる。
 
+## 配信budget・ticket・Cookie交換・取消し
+
+budget確保/更新、ticket発行、Cookie交換、ticket取消しの4経路はmandatoryなCONTROL bindingを使う。現在の認可を先に確認し、共有先ユーザー・app password・匿名共有でもコンテンツ所有者のspaceで同じ32枠へ入る。返された許可の内部ID・space・epochも照合する。待機後の最終batchはexact ticket・所有者の有効性・current authority・SQL時計での期限を再検査し、変更と確定記録・closed化を一括保存する。
+
+budgetは既存のidentity単位を維持し、複数タブやCookie交換ごとに新しい予算を作らない。匿名budgetのunlock sessionも資格情報と一致させる。配信中のBudgetDO reserve/settle・byte/request/並列カウンターは既存制御を維持し、このDB更新受付へ置き換えない。
+
+ticket発行のR2 HEAD、manifestのPUT・読戻し、署名は公開用の更新枠取得前に完了する。budgetの更新は先に独立した受付とbatchで確定し、その枠を返す。manifestの公開は現在の全target認可をもう一度検査する。Cookieはsessionの確定後だけ返し、取消しはticketと全派生content sessionを一括失効する。
+
+batch応答喪失からの成功照合はexact receiptだけを使う。他処理の取消しや、現在のtarget行だけを自分の成功証明と扱わず、自動再実行しない。発行失敗時のmanifest削除には別の取消しbatchを使い、対象target/ticketが存在しないことと、そのexact admissionをclosedにして遅延公開を拒否したことを原子的に確認する。これは成功の確定記録ではない。取消しbatchの応答まで確認できた場合だけ、既にPUTが完了しているmanifestを削除する。対象行がある場合、取消し失敗、またはその応答喪失ではmanifestを保持して結果不明を返す。公開batchが一度も送られていない場合は準備済みmanifestを削除できる。
+
+APIは受付不可を503・Retry-After: 1で返す。Cookie交換はCORSを維持し、失敗時にSet-Cookieを返さない。private HTTPは従来どおりAccess/CSRFを検査する。共有serviceの検証は公開link管理UIの完成を意味しない。
+
+追加70件で4 principal、混雑、停止/失効、待機中の実時計による期限切れ、全rollback、exact receiptとreadback喪失、遅延公開対取消し、HTTP503/CORSを検証する。実ControlDOでも32枠満杯から待機・確定・返却し、namespace操作へ枠を渡す4経路を確認する。migration・依存追加なし。
+
 ## 応答喪失・失効・復旧
 
 - active ticketのRPC応答が失われても枠を解放しない。同じintentの再送で再照合できる。DOのevictionやローカルの受付期限超過も解放根拠にしない。
@@ -85,7 +99,7 @@ bootstrapのuser・space・root・controlと確定記録・枠解放も同じbat
 | 上記8種類のnamespace permit / upload公開 | 接続済み |
 | app password発行・失効・pepper更新 | 接続済み。KDF後に取得、current authorityと変更/確定記録/解放を同一batch |
 | session/bootstrap/logout | 接続済み。既存sessionはcurrent primary読取りのみ |
-| content ticket/budget | 未接続 |
+| content budget / ticket発行・交換・取消し | 接続済み。コンテンツ所有spaceで受付し、current authorityと変更/確定記録/解放を同一batch |
 | CSRF helperの発行/検証 | DBはcurrent credentialの読取りのみ、tokenは署名。入口のsession登録も上記の共有受付へ接続済み |
 | upload予約・R2 create/part/completeの外部I/O・abort/cleanup | 既存upload制御を維持。namespace公開以外は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
@@ -94,4 +108,4 @@ bootstrapのuser・space・root・controlと確定記録・枠解放も同じbat
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
 
-検証記録: 直前app password commit a9ab676はCI全成功（Node404/workerd962/browser19、計1,385件）。今回のsession/bootstrap/logout接続はNode4・workerd22件追加。全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
+検証記録: 直前session/bootstrap/logout commit 8e7243eはCI全成功（Node408/workerd984/browser19、計1,411件）。今回のcontent接続はworkerd70件追加。全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。

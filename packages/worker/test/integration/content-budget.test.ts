@@ -5,6 +5,7 @@ import { authorizeNode } from "../../src/auth/authorize";
 import { atomicBatch } from "../../src/db/primary";
 import { ensureContentBudget } from "../../src/services/contentBudget";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 
@@ -30,8 +31,8 @@ it("reuses a private identity budget and rejects maintenance, revocation and exp
       nodeId: f.ids.file,
       spaceId: f.ids.space,
     });
-  const first = await ensureContentBudget(env.DB, await authorize(), now + 300_000);
-  const second = await ensureContentBudget(env.DB, await authorize(), now + 400_000);
+  const first = await ensureContentBudget(mutationEnv(), await authorize(), now + 300_000);
+  const second = await ensureContentBudget(mutationEnv(), await authorize(), now + 400_000);
   expect(first.id).toBe(`u:${f.ids.user}`);
   expect(second.id).toBe(first.id);
   expect(
@@ -63,14 +64,20 @@ it("reuses a private identity budget and rejects maintenance, revocation and exp
     { kind: "app_password", user_id: f.ids.user, credential_id: appCredential, epoch: 1 },
     { operation: "node.read", nodeId: f.ids.file, spaceId: f.ids.space },
   );
-  expect((await ensureContentBudget(env.DB, appAuthorized, now + 300_000)).id).toBe(first.id);
+  expect((await ensureContentBudget(mutationEnv(), appAuthorized, now + 300_000)).id).toBe(
+    first.id,
+  );
   await env.DB.prepare("UPDATE app_passwords SET revoked_at=? WHERE id=?").bind(now, appId).run();
-  await expect(ensureContentBudget(env.DB, appAuthorized, now + 300_000)).rejects.toThrow();
+  await expect(ensureContentBudget(mutationEnv(), appAuthorized, now + 300_000)).rejects.toThrow();
   await env.DB.prepare("UPDATE control SET maintenance=1 WHERE singleton=1").run();
-  await expect(ensureContentBudget(env.DB, await authorize(), now + 300_000)).rejects.toThrow();
+  await expect(
+    ensureContentBudget(mutationEnv(), await authorize(), now + 300_000),
+  ).rejects.toThrow();
   await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
   await env.DB.prepare("UPDATE budgets SET state='revoked' WHERE id=?").bind(first.id).run();
-  await expect(ensureContentBudget(env.DB, await authorize(), now + 300_000)).rejects.toThrow();
+  await expect(
+    ensureContentBudget(mutationEnv(), await authorize(), now + 300_000),
+  ).rejects.toThrow();
   await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
     .bind(now, f.ids.session)
     .run();
@@ -103,7 +110,7 @@ it("binds an internal-share budget to the selected share root", async () => {
       nodeId: f.ids.file,
       spaceId: f.ids.space,
     });
-  const budget = await ensureContentBudget(env.DB, await authorize(), now + 300_000, {
+  const budget = await ensureContentBudget(mutationEnv(), await authorize(), now + 300_000, {
     id: shareId,
     version: 1,
   });
@@ -112,7 +119,7 @@ it("binds an internal-share budget to the selected share root", async () => {
     .bind(f.ids.root, f.ids.file)
     .run();
   await expect(
-    ensureContentBudget(env.DB, await authorize(), now + 300_000, {
+    ensureContentBudget(mutationEnv(), await authorize(), now + 300_000, {
       id: shareId,
       version: 1,
     }),
@@ -158,14 +165,16 @@ it("uses the anonymous unlock session as the budget identity and expiry fence", 
       nodeId: f.ids.file,
       spaceId: f.ids.space,
     });
-  const budget = await ensureContentBudget(env.DB, await authorize(), now + 300_000);
+  const budget = await ensureContentBudget(mutationEnv(), await authorize(), now + 300_000);
   expect(budget.id).toBe(`s:${shareId}:c:${unlockId}`);
   expect(
     await env.DB.prepare("SELECT unlock_session_id FROM budgets WHERE id=?")
       .bind(budget.id)
       .first("unlock_session_id"),
   ).toBe(unlockId);
-  await expect(ensureContentBudget(env.DB, await authorize(), now + 315_000)).rejects.toThrow();
+  await expect(
+    ensureContentBudget(mutationEnv(), await authorize(), now + 315_000),
+  ).rejects.toThrow();
   await env.DB.prepare("UPDATE share_sessions SET revoked_at=? WHERE id=?")
     .bind(now, unlockId)
     .run();

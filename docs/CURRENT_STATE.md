@@ -1,8 +1,8 @@
 # 現在の実装・検証状態
 
-更新日: 2026-09-24
+更新日: 2026-09-25
 
-直近の到達点と進行中の作業は[PROGRESS](PROGRESS.md)へ記録する。直前commit `a9ab676`はNode404 + workerd962 + browser19 = **1,385件**、CI全成功。今回のsession/bootstrap/logout接続はNode408/workerd984の計1,392件と全検証項目を確認済み。初回fixture失敗を修正し、関連57件を再検証。CIで全check/browserを確認する。確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
+直近の到達点と進行中の作業は[PROGRESS](PROGRESS.md)へ記録する。直前commit `8e7243e`はNode408 + workerd984 + browser19 = **1,411件**、CI全成功。今回はcontent budget・ticket発行/交換/取消しを共有更新受付へ接続。workerd70件追加、対象101件と全check1,462件（Node408/workerd1054）が成功。今回のbrowser/CIはpush後に確認する。確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
 
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
@@ -22,7 +22,8 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機 | content ticket等の残る更新と実環境は未接続 |
+| 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload準備/Queue/backup統合、実環境未検証 |
+| Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
 | schema・契約 | migration `0001`〜`0032`、67通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
@@ -53,7 +54,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-直前a9ab676のCIは1,385件成功。今回のsession/bootstrap/logout接続の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
+直前8e7243eのCIは1,411件成功。今回のcontent更新受付の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -88,7 +89,7 @@
 
 ### 制御・運用
 
-- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logoutは同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
+- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticketは同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限、backup専用barrier。KDFの全体rate/枠とisolate内制限は接続済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。

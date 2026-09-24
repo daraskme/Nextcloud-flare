@@ -3,6 +3,7 @@ import { acceptContentTicket } from "../auth/contentAccept";
 import type { ContentTokens } from "../auth/contentTokens";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import { streamBudgetedContentBlob } from "../services/blobRead";
 
 const NODE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -86,7 +87,7 @@ export async function handleContentHttp(
     }
     try {
       const ticket = await ticketBody(request);
-      const accepted = await acceptContentTicket(env.DB, tokens, ticket);
+      const accepted = await acceptContentTicket(env, tokens, ticket);
       return cors(
         Response.json(
           { expiresAt: accepted.expiresAt },
@@ -101,7 +102,15 @@ export async function handleContentHttp(
         ),
         env.APP_ORIGIN,
       );
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof MutationUnavailableError ||
+        (error instanceof Error && error.message === "content_session_commit_unknown")
+      ) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return cors(response, env.APP_ORIGIN);
+      }
       return cors(problem(400, "bad_request"), env.APP_ORIGIN);
     }
   }

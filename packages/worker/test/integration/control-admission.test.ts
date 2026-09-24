@@ -3,6 +3,9 @@ import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { appPasswordPepperRing, authenticateAppPassword } from "../../src/auth/appPassword";
+import { authorizeNode } from "../../src/auth/authorize";
+import { acceptContentTicket } from "../../src/auth/contentAccept";
+import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { globalKdf } from "../../src/auth/globalKdf";
 import { advanceMutations } from "../../src/db/mutationAdmission";
 import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
@@ -11,6 +14,9 @@ import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import type { Env } from "../../src/env";
 import { createAppPassword, revokeAppPassword } from "../../src/services/appPasswords";
+import { ensureContentBudget } from "../../src/services/contentBudget";
+import { issueContentTicket } from "../../src/services/contentTicket";
+import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { createFolder } from "../../src/services/createFolder";
 import { foundationFixture } from "../fixtures/foundation";
 import { grantPermit } from "../fixtures/mutationAdmission";
@@ -328,6 +334,136 @@ it.each(["dav", "create", "revoke", "rotate"] as const)(
       )
         .bind(Date.now(), f.ids.user)
         .run();
+    }
+  },
+);
+
+it.each(["budget", "issue", "accept", "cancel"] as const)(
+  "queues content %s behind actual ControlDO capacity and returns its slot",
+  async (action) => {
+    await audited();
+    await control().resumeAdmission(epoch);
+    const ring = await contentKeyRing("test", {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    });
+    const tokens = new ContentTokens(ring, ring, "https://content.invalid");
+    const principal = {
+      kind: "user" as const,
+      user_id: f.ids.user,
+      credential_id: f.ids.credential,
+      epoch,
+    };
+    const target = { spaceId: f.ids.space, nodeId: f.ids.file };
+    const expiresAt = Date.now() + 120000;
+    const issued = await issueContentTicket(
+      env,
+      env.BLOBS,
+      tokens,
+      principal,
+      [target],
+      "content",
+      expiresAt,
+    );
+    await acceptContentTicket(env, tokens, issued.ticket);
+    const proof = await authorizeNode(env.DB, principal, { operation: "node.read", ...target });
+    const baseline = await env.DB.prepare(
+      "SELECT MAX(seq) AS n FROM mutation_admissions",
+    ).first<number>("n");
+    const snapshot = () =>
+      env.DB.prepare(
+        "SELECT (SELECT COUNT(*) FROM tickets t JOIN target_sets ts ON ts.id=t.target_set_id WHERE ts.owner_id=?) AS tickets," +
+          "(SELECT COUNT(*) FROM content_sessions WHERE issued_by_credential_id=?) AS sessions," +
+          "(SELECT cancelled_at FROM tickets WHERE id=?) AS cancelled," +
+          "(SELECT expires_at FROM budgets WHERE id=?) AS expiry",
+      )
+        .bind(f.ids.user, f.ids.credential, issued.ticketId, issued.budgetId)
+        .first();
+    const before = await snapshot();
+    const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+    await atomicBatch(
+      env.DB,
+      seeds.map((id) => ({
+        sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+        values: [id, id, f.ids.space, epoch],
+      })),
+    );
+    expect((await advanceMutations(env.DB)).filter((row) => row.state === "active")).toHaveLength(
+      32,
+    );
+    const pending =
+      action === "budget"
+        ? ensureContentBudget(env, proof, expiresAt + 1000)
+        : action === "issue"
+          ? issueContentTicket(env, env.BLOBS, tokens, principal, [target], "content", expiresAt)
+          : action === "accept"
+            ? acceptContentTicket(env, tokens, issued.ticket)
+            : cancelContentTicket(env, principal, issued.ticketId);
+    const outcome = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      // Issuing first admits the budget refresh; publication subsequently uses the same returned slot.
+      const firstKind = action === "issue" ? "budget" : action;
+      await expect
+        .poll(
+          () =>
+            env.DB.prepare(
+              "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND permit_id LIKE ?",
+            )
+              .bind("content." + firstKind + ":%")
+              .first("n"),
+          { timeout: 4000, interval: 25 },
+        )
+        .toBe(1);
+      expect(await snapshot()).toEqual(before);
+      await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+        .bind(seeds[0])
+        .run();
+      const result = await outcome;
+      if ("error" in result) throw result.error;
+      expect(
+        await env.DB.prepare(
+          "SELECT state,committed_at FROM mutation_admissions WHERE seq>? AND permit_id LIKE ?",
+        )
+          .bind(baseline, "content." + action + ":%")
+          .first(),
+      ).toEqual({ state: "closed", committed_at: expect.any(Number) });
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+        ).first("n"),
+      ).toBe(31);
+      const replacement = await control().acquireMutation({
+        permitId: crypto.randomUUID(),
+        spaceId: f.ids.space,
+        epoch,
+        deadline: Date.now() + 5000,
+      });
+      expect(
+        await grantAdmittedPermit(env.DB, replacement.permit_id, f.ids.space, epoch, replacement),
+      ).toMatchObject({ permit_id: replacement.permit_id });
+    } finally {
+      await control().quiesce(epoch);
+      await outcome;
+      const sets = (
+        await env.DB.prepare("SELECT manifest_ref FROM target_sets WHERE owner_id=?")
+          .bind(f.ids.user)
+          .all<{ manifest_ref: string }>()
+      ).results;
+      await atomicBatch(env.DB, [
+        {
+          sql: "DELETE FROM content_sessions WHERE target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)",
+          values: [f.ids.user],
+        },
+        {
+          sql: "DELETE FROM tickets WHERE target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)",
+          values: [f.ids.user],
+        },
+        { sql: "DELETE FROM target_sets WHERE owner_id=?", values: [f.ids.user] },
+        { sql: "DELETE FROM budgets WHERE owner_id=?", values: [f.ids.user] },
+      ]);
+      if (sets.length) await env.BLOBS.delete(sets.map((set) => set.manifest_ref));
     }
   },
 );

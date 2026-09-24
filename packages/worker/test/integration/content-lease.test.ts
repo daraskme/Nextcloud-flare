@@ -16,6 +16,7 @@ import type { Env } from "../../src/env";
 import { streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 
@@ -46,7 +47,7 @@ async function fixture() {
   // Windows CI can spend more than 5 seconds preparing the read.
   const boundary = Date.now() + 15_000;
   const first = await issueContentTicket(
-    env.DB,
+    mutationEnv(),
     env.BLOBS,
     tokens,
     principal,
@@ -54,7 +55,7 @@ async function fixture() {
     "content",
     boundary,
   );
-  const acceptedFirst = await acceptContentTicket(env.DB, tokens, first.ticket);
+  const acceptedFirst = await acceptContentTicket(mutationEnv(), tokens, first.ticket);
   const stub = env.BUDGETS.get(env.BUDGETS.idFromName(first.budgetId));
   const grants: BudgetLease[] = [];
   const invoke = async <T>(callback: (budget: BudgetDO) => Promise<T>) => {
@@ -95,7 +96,7 @@ async function fixture() {
   });
   await budget.settle({ budgetId: first.budgetId, requestId: seedId, deliveredBytes: 0 });
   const renewed = await issueContentTicket(
-    env.DB,
+    mutationEnv(),
     env.BLOBS,
     tokens,
     principal,
@@ -104,7 +105,7 @@ async function fixture() {
     Date.now() + 120_000,
   );
   expect(renewed.budgetId).toBe(first.budgetId);
-  const accepted = await acceptContentTicket(env.DB, tokens, renewed.ticket);
+  const accepted = await acceptContentTicket(mutationEnv(), tokens, renewed.ticket);
   const budgets = {
     idFromName: env.BUDGETS.idFromName.bind(env.BUDGETS),
     get: () => budget,
@@ -132,7 +133,7 @@ async function fixture() {
     handleContentHttp(
       request(),
       {
-        ...env,
+        ...mutationEnv(),
         BLOBS: bucket,
         BUDGETS: budgets,
         APP_ORIGIN: "https://app.invalid",

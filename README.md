@@ -8,7 +8,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 の一部**を実装済み。
 67通常テーブル、migration `0001`〜`0032`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
 アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査・中止とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)も接続しました。完全な閉鎖証明と予約・保留容量の精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
-[共通の更新受付](docs/MUTATION_ADMISSION.md)は、namespace・DAVロック・app password更新・session登録/初回owner/logoutを同時32件・待機256件で制御します。資格情報の変更も確定記録・枠解放と一括保存します。content ticketやupload準備など残る経路への接続は続けて開発しています。
+[共通の更新受付](docs/MUTATION_ADMISSION.md)は、namespace・DAVロック・app password更新・session登録/初回owner/logout・配信budgetとticketの発行/交換/取消しを同時32件・待機256件で制御します。更新と確定記録・枠解放を一括保存し、共有配信もコンテンツ所有者のspaceで受付します。upload準備・Queue・backupなど残る経路への接続は続けて開発しています。
 詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
 
 | 資料 | 用途 |

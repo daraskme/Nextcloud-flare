@@ -7,6 +7,7 @@ import { BudgetDO } from "../../src/do/BudgetDO";
 import { ensureContentBudget } from "../../src/services/contentBudget";
 import { stageTargetManifest, type TargetEntry } from "../../src/services/targetManifest";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 
@@ -626,7 +627,7 @@ it("retains an outstanding content lease across an earlier budget lifetime bound
       nodeId: f.f.ids.file,
     });
     const extendedExpiry = Date.now() + 120_000;
-    const renewed = await ensureContentBudget(env.DB, authority, extendedExpiry);
+    const renewed = await ensureContentBudget(mutationEnv(), authority, extendedExpiry);
     const next = await anotherSession(f, [target(f, 100)]);
     await atomicBatch(env.DB, [
       {

@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-24。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-25。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-session登録・初回owner・logoutを共通mutation枠へ接続した。既存JWTはread-only照合。0032でbootstrap専用null scopeを追加し、namespace permitから分離。既存receiptとFIFO sequenceを保持する。追加Node4/workerd22件。Node408/workerd984の計1,392件と全検証項目を確認済み。初回fixture失敗を修正し、関連57件を再検証。CIで全check/browserを確認する。直前a9ab676のCIは全成功、Node404/workerd962/browser19。詳細と残るcontent ticket・upload準備・Queue/backup統合は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。全体完成扱いにしない。
+content budget・ticket発行/交換/取消しを共通mutation枠へ接続した。共有もコンテンツ所有者のspaceを使い、待機後のcurrent authority/SQL時計とexact receiptで確定する。manifestは公開前にR2へ準備し、発行失敗時はDBで遅延公開を原子的に取り消した証明がある場合だけ削除する。応答喪失では保持する。追加workerd70件、対象101件と全check1,462件（Node408/workerd1054）、静的検査・契約・設定・Web build・Worker dry-run成功。今回のbrowser/CIはpush後に確認する。直前8e7243eのCIは全成功、Node408/workerd984/browser19、計1,411件。schema0032/67table・依存変更なし。詳細と残るupload準備・Queue/backup統合は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。全体完成扱いにしない。
 
 ## 現在動いている範囲
 
@@ -96,7 +96,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password更新の共通受付を接続済み。session/bootstrap/logout・content ticket・upload準備・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticketの共通受付を接続済み。upload準備・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

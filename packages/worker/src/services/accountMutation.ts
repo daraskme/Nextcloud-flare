@@ -16,32 +16,44 @@ export class MutationUnavailableError extends Error {
   }
 }
 
-/** Only call after the operation's authentication/preflight and expensive KDF work. */
+/** Call after current authentication/preflight and expensive work. Shared content uses its owner, not the viewer. */
 export async function acquireAccountMutation(
   env: AccountMutationEnv,
-  userId: string,
+  ownerId: string,
   epoch: number,
   kind:
     | "app-password.create"
     | "app-password.revoke"
     | "app-password.rotate"
     | "session.register"
-    | "session.revoke",
+    | "session.revoke"
+    | "content.budget"
+    | "content.issue"
+    | "content.accept"
+    | "content.cancel",
 ): Promise<MutationAdmission> {
   const spaceId = await primary(env.DB)
     .prepare(
       "SELECT s.id FROM spaces s JOIN users u ON u.id=s.owner_id WHERE u.id=? AND (u.disabled_at IS NULL OR ?=1)",
     )
-    .bind(userId, kind === "session.revoke" ? 1 : 0)
+    .bind(ownerId, kind === "session.revoke" ? 1 : 0)
     .first<string>("id");
   if (!spaceId) throw new MutationUnavailableError();
+  const permitId = `${kind}:${crypto.randomUUID()}`;
   try {
-    return await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).acquireMutation({
-      permitId: `${kind}:${crypto.randomUUID()}`,
+    const admission = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).acquireMutation({
+      permitId,
       spaceId,
       epoch,
       deadline: Date.now() + 5000,
     });
+    if (
+      admission.permit_id !== permitId ||
+      admission.space_id !== spaceId ||
+      admission.epoch !== epoch
+    )
+      throw new MutationUnavailableError();
+    return admission;
   } catch {
     throw new MutationUnavailableError();
   }
@@ -51,7 +63,7 @@ export async function acquireAccountMutation(
 export async function commitAccountMutation(
   db: D1Database,
   admission: MutationAdmission,
-  userId: string,
+  ownerId: string,
   statements: readonly SqlStatement[],
   options: { allowDisabled?: boolean } = {},
 ): Promise<void> {
@@ -60,7 +72,7 @@ export async function commitAccountMutation(
       assertMutationAdmission(admission),
       assertExists(
         "SELECT 1 FROM spaces s JOIN users u ON u.id=s.owner_id WHERE s.id=? AND u.id=? AND (u.disabled_at IS NULL OR ?=1)",
-        [admission.space_id, userId, options.allowDisabled ? 1 : 0],
+        [admission.space_id, ownerId, options.allowDisabled ? 1 : 0],
       ),
       ...statements,
       ...commitMutationAdmission(admission),

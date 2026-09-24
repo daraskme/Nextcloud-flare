@@ -7,7 +7,13 @@ import {
 import { type ContentPurpose } from "../auth/contentSession";
 import { type ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion, shareCoverageBatchAssertions } from "../auth/shareCoverage";
-import { assertExists, atomicBatch, primary } from "../db/primary";
+import type { MutationAdmission } from "../db/mutationAdmission";
+import { assertExists, atomicBatch } from "../db/primary";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "./accountMutation";
 import { prepareAuthorizedNodeBlobRead } from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
 import { stageTargetManifest, type TargetEntry, type TargetManifestRecord } from "./targetManifest";
@@ -107,7 +113,7 @@ function budgetAndShareAssertion(
 
 /** Issue a purpose-bound ticket only after every target is current and its manifest is readable. */
 export async function issueContentTicket(
-  db: D1Database,
+  env: AccountMutationEnv,
   bucket: R2Bucket,
   tokens: ContentTokens,
   principal: Principal,
@@ -116,6 +122,7 @@ export async function issueContentTicket(
   expiresAt: number,
   share?: { readonly id: string; readonly version: number },
 ): Promise<IssuedContentTicket> {
+  const db = env.DB;
   const now = Date.now();
   const iat = Math.floor(now / 1000);
   const exp = Math.floor(expiresAt / 1000);
@@ -169,7 +176,7 @@ export async function issueContentTicket(
   }
   const first = proofs[0];
   if (!first || !ownerId) throw new Error("invalid_content_ticket_request");
-  const budget = await ensureContentBudget(db, first, expiresAt, share);
+  const budget = await ensureContentBudget(env, first, expiresAt, share);
   const record = await stageTargetManifest(bucket, entries);
   const ticketId = crypto.randomUUID();
   const claims = {
@@ -193,9 +200,11 @@ export async function issueContentTicket(
     expiresAt: exp * 1000,
   });
   let signed: string | undefined;
+  let admission: MutationAdmission | undefined;
   try {
     signed = await tokens.issueTicket(claims);
-    await atomicBatch(db, [
+    const guards = [
+      assertExists("SELECT 1 WHERE ?>strftime('%s','now')*1000", [result.expiresAt]),
       ...authorizationBatchAssertions(proofs),
       ...(selectedShare
         ? shareCoverageBatchAssertions(
@@ -204,6 +213,11 @@ export async function issueContentTicket(
           )
         : []),
       budgetAndShareAssertion(principal, ownerId, budget.id, result.expiresAt, share),
+    ];
+    await atomicBatch(db, guards);
+    admission = await acquireAccountMutation(env, ownerId, principal.epoch, "content.issue");
+    await commitAccountMutation(db, admission, ownerId, [
+      ...guards,
       {
         sql: `INSERT INTO target_sets
           (id,owner_id,credential_id,manifest_hash,manifest_ref,total_bytes,expires_at,epoch)
@@ -236,38 +250,49 @@ export async function issueContentTicket(
       },
     ]);
   } catch (error) {
-    if (await reconcileTicketIssue(db, bucket, record, ticketId, error)) {
-      if (!signed) throw new Error("content_ticket_commit_unknown", { cause: error });
-      return Object.freeze({ ...result, ticket: signed });
-    }
+    await discardUnpublishedManifest(db, bucket, record, ticketId, admission, error);
     throw error;
   }
   return Object.freeze({ ...result, ticket: signed });
 }
 
-async function reconcileTicketIssue(
+/** A primary absence read alone cannot fence an in-flight publication. */
+async function discardUnpublishedManifest(
   db: D1Database,
   bucket: R2Bucket,
   record: TargetManifestRecord,
   ticketId: string,
+  admission: MutationAdmission | undefined,
   cause: unknown,
-): Promise<boolean> {
-  let row: { hash: string; ref: string; ticketId: string | null } | null;
-  try {
-    row = await primary(db)
-      .prepare(`SELECT ts.manifest_hash AS hash,ts.manifest_ref AS ref,t.id AS ticketId
-        FROM target_sets ts LEFT JOIN tickets t ON t.target_set_id=ts.id AND t.id=?
-        WHERE ts.id=?`)
-      .bind(ticketId, record.id)
-      .first();
-  } catch {
-    throw new Error("content_ticket_commit_unknown", { cause });
+): Promise<void> {
+  if (admission) {
+    try {
+      await atomicBatch(db, [
+        // This is the exact attempt's cancellation fence, never a successful publication receipt.
+        assertExists(
+          "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM target_sets WHERE id=?) AND NOT EXISTS(SELECT 1 FROM tickets WHERE id=? OR target_set_id=?)",
+          [record.id, ticketId, record.id],
+        ),
+        {
+          sql: "UPDATE mutation_admissions SET state='closed' WHERE id=? AND permit_id=? AND space_id=? AND epoch=? AND expires_at=? AND state='active' AND committed_at IS NULL",
+          values: [
+            admission.id,
+            admission.permit_id,
+            admission.space_id,
+            admission.epoch,
+            admission.expires_at,
+          ],
+        },
+        assertExists(
+          "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE id=? AND (state<>'closed' OR committed_at IS NOT NULL))",
+          [admission.id],
+        ),
+      ]);
+    } catch {
+      throw new Error("content_ticket_commit_unknown", { cause });
+    }
   }
-  if (!row) {
-    await bucket.delete(record.ref).catch(() => undefined);
-    return false;
-  }
-  if (row.hash !== record.hash || row.ref !== record.ref || row.ticketId !== ticketId)
-    throw new Error("content_ticket_commit_unknown", { cause });
-  return true;
+  // The staged PUT was awaited before admission. No publication was dispatched without a ticket.
+  // If the fencing batch or its acknowledgement is lost, keep the manifest.
+  await bucket.delete(record.ref).catch(() => undefined);
 }

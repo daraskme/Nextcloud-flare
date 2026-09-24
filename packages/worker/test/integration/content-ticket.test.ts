@@ -19,6 +19,7 @@ import { accessFixture } from "../fixtures/access";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
+import { injectBatch } from "../fixtures/uploadEnv";
 
 it("keeps private app routes closed without remote identity and signing configuration", async () => {
   await expect(privateAppDependencies(env, 1)).rejects.toThrow("private_app_config_unavailable");
@@ -196,7 +197,7 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
       dependencies,
     );
     expect(cancelled.status).toBe(204);
-    await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+    await expect(acceptContentTicket(mutationEnv(), tokens, issued.ticket)).rejects.toThrow();
     const noCsrfLogout = await handlePrivateAppHttp(
       new Request("https://app.invalid/api/v1/auth/logout", {
         method: "POST",
@@ -259,7 +260,7 @@ it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
   const key = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const ring = await csrfKeyRing("test", { test: key });
   const csrf = new CsrfTokens(ring, ring, "https://app.invalid");
-  const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
+  const appEnv = { ...mutationEnv(), APP_ORIGIN: "https://app.invalid" };
   const session = { kind: "access" as const, credentialId: principal.credential_id, epoch: 1 };
   const issuedCsrf = await csrf.issue(
     env.DB,
@@ -346,7 +347,7 @@ it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
       );
       expect(rejected.status).toBe(400);
     }
-    await acceptContentTicket(env.DB, tokens, issued.ticket);
+    await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     const cancelled = await handlePrivateContentTicketHttp(
       new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
         method: "DELETE",
@@ -359,7 +360,7 @@ it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
       tokens,
     );
     expect(cancelled.status).toBe(204);
-    await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+    await expect(acceptContentTicket(mutationEnv(), tokens, issued.ticket)).rejects.toThrow();
   } finally {
     await env.BLOBS.delete(firstKey);
     if (targetSetId) await env.BLOBS.delete(`target-sets/${targetSetId}`);
@@ -373,7 +374,7 @@ it("cancels the ticket and its redeemed sessions while preserving the shared bud
   let issued;
   try {
     issued = await issueContentTicket(
-      env.DB,
+      mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
@@ -381,9 +382,9 @@ it("cancels the ticket and its redeemed sessions while preserving the shared bud
       "content",
       now + 300_000,
     );
-    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
-    await cancelContentTicket(env.DB, principal, issued.ticketId);
-    await cancelContentTicket(env.DB, principal, issued.ticketId);
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    await cancelContentTicket(mutationEnv(), principal, issued.ticketId);
+    await cancelContentTicket(mutationEnv(), principal, issued.ticketId);
     const ticket = await env.DB.prepare("SELECT cancelled_at FROM tickets WHERE id=?")
       .bind(issued.ticketId)
       .first<{ cancelled_at: number | null }>();
@@ -396,7 +397,7 @@ it("cancels the ticket and its redeemed sessions while preserving the shared bud
     expect(ticket?.cancelled_at).not.toBeNull();
     expect(session?.revoked_at).not.toBeNull();
     expect(budget?.state).toBe("active");
-    await expect(acceptContentTicket(env.DB, tokens, issued.ticket)).rejects.toThrow();
+    await expect(acceptContentTicket(mutationEnv(), tokens, issued.ticket)).rejects.toThrow();
     await expect(
       prepareCookieBlobRead(
         env.DB,
@@ -419,7 +420,7 @@ it("rejects cancellation by a different credential or a revoked session", async 
   let issued;
   try {
     issued = await issueContentTicket(
-      env.DB,
+      mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
@@ -428,12 +429,16 @@ it("rejects cancellation by a different credential or a revoked session", async 
       now + 300_000,
     );
     await expect(
-      cancelContentTicket(env.DB, { ...principal, credential_id: "as:other" }, issued.ticketId),
+      cancelContentTicket(
+        mutationEnv(),
+        { ...principal, credential_id: "as:other" },
+        issued.ticketId,
+      ),
     ).rejects.toThrow();
     await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
       .bind(now, f.ids.session)
       .run();
-    await expect(cancelContentTicket(env.DB, principal, issued.ticketId)).rejects.toThrow();
+    await expect(cancelContentTicket(mutationEnv(), principal, issued.ticketId)).rejects.toThrow();
     const row = await env.DB.prepare("SELECT cancelled_at FROM tickets WHERE id=?")
       .bind(issued.ticketId)
       .first<{ cancelled_at: number | null }>();
@@ -449,7 +454,7 @@ it("reconciles cancellation when D1 commits but loses its response", async () =>
   let issued;
   try {
     issued = await issueContentTicket(
-      env.DB,
+      mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
@@ -457,7 +462,7 @@ it("reconciles cancellation when D1 commits but loses its response", async () =>
       "content",
       now + 300_000,
     );
-    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     const db = {
       prepare: env.DB.prepare.bind(env.DB),
       async batch(statements: D1PreparedStatement[]) {
@@ -465,7 +470,7 @@ it("reconciles cancellation when D1 commits but loses its response", async () =>
         throw new Error("response_lost");
       },
     } as unknown as D1Database;
-    await cancelContentTicket(db, principal, issued.ticketId);
+    await cancelContentTicket(mutationEnv(db), principal, issued.ticketId);
     const row = await env.DB.prepare("SELECT revoked_at FROM content_sessions WHERE id=?")
       .bind(accepted.sessionId)
       .first<{ revoked_at: number | null }>();
@@ -529,7 +534,7 @@ it("issues a two-target ticket and serves both files under one budget", async ()
   let issued;
   try {
     issued = await issueContentTicket(
-      env.DB,
+      mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
@@ -550,7 +555,7 @@ it("issues a two-target ticket and serves both files under one budget", async ()
     expect(record?.totalBytes).toBe(5);
     if (!record) throw new Error("missing_target_set");
     expect((await loadTargetManifest(env.BLOBS, record)).targets).toHaveLength(2);
-    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
     expect(
       (
@@ -593,19 +598,18 @@ it("issues a two-target ticket and serves both files under one budget", async ()
 it("recovers a ticket whose D1 batch committed before its response was lost", async () => {
   const { f, now, tokens, principal, firstKey } = await fixture();
   let batches = 0;
-  const db = {
-    prepare: env.DB.prepare.bind(env.DB),
-    async batch(statements: D1PreparedStatement[]) {
+  const db = injectBatch(
+    (sql) => sql.includes("INSERT INTO tickets"),
+    async () => {
       batches++;
-      const result = await env.DB.batch(statements);
-      if (batches === 3) throw new Error("response_lost");
-      return result;
+      throw new Error("response_lost");
     },
-  } as unknown as D1Database;
+    true,
+  );
   let issued;
   try {
     issued = await issueContentTicket(
-      db,
+      mutationEnv(db),
       env.BLOBS,
       tokens,
       principal,
@@ -613,13 +617,13 @@ it("recovers a ticket whose D1 batch committed before its response was lost", as
       "content",
       now + 300_000,
     );
-    expect(batches).toBe(3);
+    expect(batches).toBe(1);
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM tickets WHERE id=?")
         .bind(issued.ticketId)
         .first("n"),
     ).toBe(1);
-    expect((await acceptContentTicket(env.DB, tokens, issued.ticket)).budgetId).toBe(
+    expect((await acceptContentTicket(mutationEnv(), tokens, issued.ticket)).budgetId).toBe(
       issued.budgetId,
     );
   } finally {
@@ -634,21 +638,20 @@ it("removes the staged manifest when the issuer credential is revoked at final c
     (object) => object.key,
   );
   let batches = 0;
-  const db = {
-    prepare: env.DB.prepare.bind(env.DB),
-    async batch(statements: D1PreparedStatement[]) {
+  const db = injectBatch(
+    (sql) => sql.includes("INSERT INTO tickets"),
+    async () => {
       batches++;
-      if (batches === 3)
-        await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
-          .bind(Date.now(), f.ids.session)
-          .run();
-      return env.DB.batch(statements);
+      await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+        .bind(Date.now(), f.ids.session)
+        .run();
     },
-  } as unknown as D1Database;
+    false,
+  );
   try {
     await expect(
       issueContentTicket(
-        db,
+        mutationEnv(db),
         env.BLOBS,
         tokens,
         principal,
@@ -657,7 +660,7 @@ it("removes the staged manifest when the issuer credential is revoked at final c
         now + 300_000,
       ),
     ).rejects.toThrow();
-    expect(batches).toBe(3);
+    expect(batches).toBe(1);
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM target_sets WHERE owner_id=?")
         .bind(f.ids.user)
@@ -688,7 +691,7 @@ it("issues an internal-share ticket only for the selected share root", async () 
   let issued;
   try {
     issued = await issueContentTicket(
-      env.DB,
+      mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
@@ -698,7 +701,7 @@ it("issues an internal-share ticket only for the selected share root", async () 
       { id: shareId, version: 1 },
     );
     expect(issued.budgetId).toBe(`u:${f.ids.user}:s:${shareId}`);
-    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     expect(
       (
         await prepareCookieBlobRead(
@@ -749,7 +752,7 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
   let issued;
   try {
     issued = await issueContentTicket(
-      env.DB,
+      mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
@@ -758,7 +761,7 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
       now + 300_000,
     );
     expect(issued.budgetId).toBe(`s:${shareId}:c:${unlockId}`);
-    const accepted = await acceptContentTicket(env.DB, tokens, issued.ticket);
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     expect(
       (
         await prepareCookieBlobRead(
