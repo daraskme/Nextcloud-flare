@@ -1,6 +1,7 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { advanceMutations } from "../../src/db/mutationAdmission";
 import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
@@ -168,6 +169,85 @@ it("runs a real namespace mutation through real LockDO and ControlDO after resum
     }),
   ).rejects.toThrow();
   await audited();
+});
+
+it("queues DAV behind the shared 32 grants and returns its slot after commit", async () => {
+  await audited();
+  await control().resumeAdmission(epoch);
+  const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+  await atomicBatch(
+    env.DB,
+    seeds.map((id) => ({
+      sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+      values: [id, id, f.ids.space, epoch],
+    })),
+  );
+  expect((await advanceMutations(env.DB)).filter((row) => row.state === "active")).toHaveLength(32);
+  const pending = env.LOCKS.get(env.LOCKS.idFromName(f.ids.space)).createDavLock({
+    requestId: crypto.randomUUID(),
+    spaceId: f.ids.space,
+    nodeId: f.ids.file,
+    principal: { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch },
+    displayHref: "/dav/File",
+    depth: "0",
+    ownerText: "owner",
+    timeoutSeconds: 60,
+  });
+  // Attach a rejection handler immediately while waiting for observable D1 admission.
+  const outcome = pending.then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  try {
+    await expect
+      .poll(
+        async () =>
+          env.DB.prepare(
+            "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND permit_id LIKE 'dav:create:%'",
+          ).first("n"),
+        { timeout: 4000, interval: 25 },
+      )
+      .toBe(1);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM locks WHERE space_id=?")
+        .bind(f.ids.space)
+        .first("n"),
+    ).toBe(0);
+    await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+      .bind(seeds[0])
+      .run();
+    const result = await outcome;
+    if ("error" in result) throw result.error;
+    expect(result.value.token).toMatch(/^opaquelocktoken:/);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+      ).first("n"),
+    ).toBe(31);
+    expect(
+      await env.DB.prepare(
+        "SELECT state,committed_at FROM mutation_admissions WHERE permit_id LIKE 'dav:create:%' ORDER BY seq DESC LIMIT 1",
+      ).first(),
+    ).toMatchObject({ state: "closed", committed_at: expect.any(Number) });
+    const next = await control().acquireMutation({
+      permitId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      epoch,
+      deadline: Date.now() + 5000,
+    });
+    expect(
+      await grantAdmittedPermit(env.DB, next.permit_id, f.ids.space, epoch, next),
+    ).toMatchObject({ permit_id: next.permit_id });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+      ).first("n"),
+    ).toBe(32);
+  } finally {
+    await control().quiesce(epoch);
+    await outcome;
+    await env.DB.prepare("DELETE FROM locks WHERE space_id=?").bind(f.ids.space).run();
+  }
 });
 
 for (const operation of [

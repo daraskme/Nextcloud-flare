@@ -8,6 +8,12 @@ import {
   hasBlockingTrashLocks,
   lockTokenHashes,
 } from "../auth/locks";
+import {
+  assertMutationAdmission,
+  commitMutationAdmission,
+  hasCommittedMutation,
+  type MutationAdmission,
+} from "../db/mutationAdmission";
 import { grantPermit, type Permit, releasePermit, revokeSpacePermits } from "../db/permits";
 import {
   assertExists,
@@ -153,12 +159,19 @@ export class LockDO extends DurableObject<Env> {
     leaseMs: number | undefined,
     guards: readonly SqlStatement[],
   ): Promise<Permit> {
-    let admission;
+    const admission = await this.#acquireMutation(requestId, spaceId, epoch);
+    // Authorization and DAV locks are rechecked after the global wait, in the permit transaction.
+    return grantPermit(this.env.DB, requestId, spaceId, epoch, admission, leaseMs, guards);
+  }
+
+  async #acquireMutation(
+    permitId: string,
+    spaceId: string,
+    epoch: number,
+  ): Promise<MutationAdmission> {
     try {
-      admission = await this.env.CONTROL.get(
-        this.env.CONTROL.idFromName(CONTROL_NAME),
-      ).acquireMutation({
-        permitId: requestId,
+      return await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).acquireMutation({
+        permitId,
         spaceId,
         epoch,
         deadline: Date.now() + 5000,
@@ -166,8 +179,6 @@ export class LockDO extends DurableObject<Env> {
     } catch {
       throw new Error("mutation_unavailable");
     }
-    // Authorization and DAV locks are rechecked after the global wait, in the permit transaction.
-    return grantPermit(this.env.DB, requestId, spaceId, epoch, admission, leaseMs, guards);
   }
 
   async #davLockConflict(
@@ -840,6 +851,11 @@ export class LockDO extends DurableObject<Env> {
     const token = `opaquelocktoken:${crypto.randomUUID()}`;
     const [hash] = await lockTokenHashes([token]);
     const id = `lock_${crypto.randomUUID()}`;
+    const admission = await this.#acquireMutation(
+      `dav:create:${crypto.randomUUID()}`,
+      request.spaceId,
+      status.epoch,
+    );
     const conflict = assertExists(
       `WITH RECURSIVE
         ancestors(id,parent_id,depth) AS (
@@ -859,6 +875,7 @@ export class LockDO extends DurableObject<Env> {
     );
     try {
       await atomicBatch(this.env.DB, [
+        assertMutationAdmission(admission),
         {
           sql: "UPDATE permits SET state='revoked' WHERE space_id=? AND state='open' AND expires_at<=strftime('%s','now')*1000",
           values: [request.spaceId],
@@ -893,14 +910,10 @@ export class LockDO extends DurableObject<Env> {
           ],
         },
         assertOneChange,
+        ...commitMutationAdmission(admission),
       ]);
     } catch (error) {
-      const committed = await primary(this.env.DB)
-        .prepare(
-          "SELECT 1 FROM locks WHERE id=? AND node_id=? AND space_id=? AND token_hash=? AND epoch=?",
-        )
-        .bind(id, request.nodeId, request.spaceId, hash!, request.principal.epoch)
-        .first();
+      const committed = await hasCommittedMutation(this.env.DB, admission);
       if (!committed) {
         if (
           await this.#davLockConflict(
@@ -953,7 +966,6 @@ export class LockDO extends DurableObject<Env> {
     if (authorized.operation !== "node.props.write") throw new Error("authorization_denied");
     const [hash] = await lockTokenHashes([request.token]);
     const creator = request.principal.kind === "app_password" ? request.principal.user_id : null;
-    const expiresAt = action === "refresh" ? Date.now() + request.timeoutSeconds! * 1000 : null;
     const current = await primary(this.env.DB)
       .prepare(
         `SELECT l.depth,l.owner_text FROM locks l JOIN credentials c ON c.id=l.creator_credential_id
@@ -964,8 +976,15 @@ export class LockDO extends DurableObject<Env> {
       .bind(request.nodeId, request.spaceId, hash!, request.principal.epoch, creator)
       .first<{ depth: "0" | "infinity"; owner_text: string }>();
     if (!current) throw new Error("dav_lock_token_mismatch");
+    const admission = await this.#acquireMutation(
+      `dav:${action}:${crypto.randomUUID()}`,
+      request.spaceId,
+      status.epoch,
+    );
+    const expiresAt = action === "refresh" ? Date.now() + request.timeoutSeconds! * 1000 : null;
     try {
       await atomicBatch(this.env.DB, [
+        assertMutationAdmission(admission),
         authorizationAssertion(authorized),
         action === "refresh"
           ? {
@@ -990,16 +1009,10 @@ export class LockDO extends DurableObject<Env> {
               values: [request.nodeId, request.spaceId, hash!, request.principal.epoch, creator],
             },
         assertOneChange,
+        ...commitMutationAdmission(admission),
       ]);
     } catch (error) {
-      const after = await primary(this.env.DB)
-        .prepare("SELECT expires_at FROM locks WHERE node_id=? AND space_id=? AND token_hash=?")
-        .bind(request.nodeId, request.spaceId, hash!)
-        .first<number>("expires_at");
-      if (
-        !((action === "unlock" && after === null) || (action === "refresh" && after === expiresAt))
-      )
-        throw error;
+      if (!(await hasCommittedMutation(this.env.DB, admission))) throw error;
     }
     return Object.freeze({
       token: request.token,

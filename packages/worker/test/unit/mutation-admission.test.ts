@@ -2,14 +2,19 @@ import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { URL } from "node:url";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { advanceMutations } from "../../src/db/mutationAdmission";
+import {
+  advanceMutations,
+  commitMutationAdmission,
+  type MutationAdmission,
+} from "../../src/db/mutationAdmission";
 import { foundationFixture } from "../fixtures/foundation";
 
 const directory = new URL("../../migrations/", import.meta.url);
-const migrations = readdirSync(directory)
+const migrationNames = readdirSync(directory)
   .sort()
-  .filter((name) => name.endsWith(".sql"))
-  .map((name) => readFileSync(new URL(name, directory), "utf8"));
+  .filter((name) => name.endsWith(".sql"));
+const migrations = migrationNames.map((name) => readFileSync(new URL(name, directory), "utf8"));
+const creationIndex = migrationNames.indexOf("0030_mutation_admission.sql");
 let db: DatabaseSync, now: number;
 beforeEach(() => {
   db = new DatabaseSync(":memory:");
@@ -141,18 +146,122 @@ it("retains closed receipts until the original wait deadline and rejects extende
 it("requires closed and drained admission when upgrading an existing database", () => {
   const legacy = new DatabaseSync(":memory:");
   try {
-    for (const sql of migrations.slice(0, -1)) legacy.exec(sql);
+    for (const sql of migrations.slice(0, creationIndex)) legacy.exec(sql);
     legacy.exec("UPDATE control SET maintenance=0");
-    expect(() => legacy.exec(migrations.at(-1)!)).toThrow();
+    expect(() => legacy.exec(migrations[creationIndex]!)).toThrow();
     expect(
       legacy.prepare("SELECT name FROM sqlite_master WHERE name='mutation_admissions'").get(),
     ).toBeUndefined();
     legacy.exec("UPDATE control SET maintenance=1");
-    legacy.exec(migrations.at(-1)!);
+    legacy.exec(migrations[creationIndex]!);
     expect(
       legacy.prepare("SELECT name FROM sqlite_master WHERE name='mutation_admissions'").get(),
     ).toBeDefined();
   } finally {
     legacy.close();
   }
+});
+
+function commitTicket(a: ReturnType<typeof ticket>) {
+  const admission: MutationAdmission = {
+    id: a.id,
+    permit_id: a.permit,
+    space_id: "f-s",
+    epoch: 1,
+    expires_at: now + 30000,
+  };
+  for (const s of commitMutationAdmission(admission))
+    db.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+}
+
+it("upgrades drained existing tickets without turning a stop into a commit receipt", () => {
+  const legacy = new DatabaseSync(":memory:");
+  const receiptIndex = migrationNames.indexOf("0031_mutation_commit_receipts.sql");
+  try {
+    legacy.function("strftime", { varargs: true }, () => String(Math.floor(now / 1000)));
+    for (const sql of migrations.slice(0, receiptIndex)) legacy.exec(sql);
+    for (const s of foundationFixture().statements)
+      legacy.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+    legacy.exec("UPDATE control SET maintenance=0");
+    legacy
+      .prepare(
+        "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,'old','f-s',1,?,?)",
+      )
+      .run(crypto.randomUUID(), now, now + 5000);
+    legacy
+      .prepare("UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=?")
+      .run(now, now + 30000);
+    expect(() => legacy.exec(migrations[receiptIndex]!)).toThrow();
+    expect(
+      legacy
+        .prepare("PRAGMA table_info(mutation_admissions)")
+        .all()
+        .some((row) => row.name === "committed_at"),
+    ).toBe(false);
+    legacy.exec("UPDATE control SET maintenance=1");
+    legacy.exec(migrations[receiptIndex]!);
+    expect(legacy.prepare("SELECT state,committed_at FROM mutation_admissions").get()).toEqual({
+      state: "closed",
+      committed_at: null,
+    });
+  } finally {
+    legacy.close();
+  }
+});
+
+it("retains committed receipts for 60 seconds through cleanup and clock rollback", async () => {
+  const a = ticket();
+  commitTicket(a);
+  now += 59000;
+  await advanceMutations(clockDatabase());
+  expect(
+    db.prepare("SELECT committed_at FROM mutation_admissions WHERE id=?").get(a.id)!.committed_at,
+  ).toBe(1000000);
+  expect(() => db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(a.id)).toThrow(
+    "mutation_receipt_required",
+  );
+  now -= 60000;
+  await advanceMutations(clockDatabase());
+  expect(db.prepare("SELECT id FROM mutation_admissions WHERE id=?").get(a.id)).toBeDefined();
+  now = 1060000;
+  await advanceMutations(clockDatabase());
+  expect(db.prepare("SELECT id FROM mutation_admissions WHERE id=?").get(a.id)).toBeUndefined();
+});
+
+it("cannot forge commit proof from a stopped or expired ticket, mutate proof, or close a namespace permit as a commit", () => {
+  const stopped = ticket();
+  close(stopped.id);
+  expect(() =>
+    db.prepare("UPDATE mutation_admissions SET committed_at=? WHERE id=?").run(now, stopped.id),
+  ).toThrow();
+  const expired = ticket();
+  now += 30000;
+  expect(() =>
+    db
+      .prepare("UPDATE mutation_admissions SET state='closed',committed_at=? WHERE id=?")
+      .run(now, expired.id),
+  ).toThrow();
+  const bound = ticket();
+  insertPermit(bound.permit);
+  expect(() => commitTicket(bound)).toThrow();
+  const committed = ticket();
+  commitTicket(committed);
+  expect(() =>
+    db.prepare("UPDATE mutation_admissions SET committed_at=NULL WHERE id=?").run(committed.id),
+  ).toThrow();
+  expect(() =>
+    db
+      .prepare("UPDATE mutation_admissions SET committed_at=committed_at+1 WHERE id=?")
+      .run(committed.id),
+  ).toThrow();
+});
+
+it("uses the retention expression index to bound cleanup without scanning recent commit history", () => {
+  const plan = db
+    .prepare(
+      "EXPLAIN QUERY PLAN SELECT seq FROM mutation_admissions WHERE state='closed' AND MAX(wait_until,COALESCE(committed_at+60000,0))<=? ORDER BY MAX(wait_until,COALESCE(committed_at+60000,0)),seq LIMIT 256",
+    )
+    .all(now);
+  expect(JSON.stringify(plan)).toContain("mutation_admissions_cleanup");
+  expect(JSON.stringify(plan)).not.toContain("TEMP B-TREE");
 });

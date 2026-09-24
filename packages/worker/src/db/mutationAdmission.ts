@@ -1,4 +1,4 @@
-import { assertExists, atomicBatch, type SqlStatement } from "./primary";
+import { assertExists, assertOneChange, atomicBatch, primary, type SqlStatement } from "./primary";
 
 export const MUTATION_WAIT_MS = 5000;
 export const MUTATION_QUEUE_LIMIT = 256;
@@ -21,6 +21,8 @@ export interface MutationReceipt extends Omit<MutationAdmission, "expires_at"> {
 }
 const clock = "strftime('%s','now')*1000";
 const columns = "id,permit_id,space_id,epoch,expires_at,state";
+// Keep this exact expression aligned with the migration's expression index.
+const cleanupAfter = "MAX(wait_until,COALESCE(committed_at+60000,0))";
 
 function cleanup(): SqlStatement[] {
   return [
@@ -31,7 +33,7 @@ function cleanup(): SqlStatement[] {
     },
     {
       sql: `DELETE FROM mutation_admissions WHERE seq IN (SELECT seq FROM mutation_admissions
-        WHERE state='closed' AND wait_until<=${clock} ORDER BY wait_until,seq LIMIT 256)`,
+        WHERE state='closed' AND ${cleanupAfter}<=${clock} ORDER BY ${cleanupAfter},seq LIMIT 256)`,
     },
   ];
 }
@@ -108,5 +110,46 @@ export function assertMutationAdmission(admission: MutationAdmission): SqlStatem
     WHERE a.id=? AND a.permit_id=? AND a.space_id=? AND a.epoch=? AND a.expires_at=? AND a.state='active'
       AND a.expires_at>${clock} AND c.epoch=a.epoch AND c.maintenance=0`,
     [admission.id, admission.permit_id, admission.space_id, admission.epoch, admission.expires_at],
+  );
+}
+
+/** Append to the same batch as a non-permit mutation. Closing alone never proves a commit. */
+export function commitMutationAdmission(admission: MutationAdmission): readonly SqlStatement[] {
+  return [
+    {
+      sql: `UPDATE mutation_admissions SET state='closed',committed_at=${clock}
+      WHERE id=? AND permit_id=? AND space_id=? AND epoch=? AND expires_at=? AND state='active'
+      AND expires_at>${clock} AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
+      AND NOT EXISTS(SELECT 1 FROM permits WHERE permit_id=mutation_admissions.permit_id)`,
+      values: [
+        admission.id,
+        admission.permit_id,
+        admission.space_id,
+        admission.epoch,
+        admission.expires_at,
+        admission.epoch,
+      ],
+    },
+    assertOneChange,
+  ];
+}
+
+/** Exact dispatch receipt, retained for 60s after commit; no inference from current resource state. */
+export async function hasCommittedMutation(
+  db: D1Database,
+  admission: MutationAdmission,
+): Promise<boolean> {
+  return (
+    (await primary(db)
+      .prepare(`SELECT 1 FROM mutation_admissions WHERE id=? AND permit_id=?
+    AND space_id=? AND epoch=? AND expires_at=? AND state='closed' AND committed_at IS NOT NULL`)
+      .bind(
+        admission.id,
+        admission.permit_id,
+        admission.space_id,
+        admission.epoch,
+        admission.expires_at,
+      )
+      .first()) !== null
   );
 }

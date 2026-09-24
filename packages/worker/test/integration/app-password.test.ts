@@ -25,13 +25,17 @@ beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0"
 const emptyBody = () =>
   new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
 
-function admittedDavEnv(): Env {
+function admittedDavEnv(overloaded = false): Env {
   const doEnv = {
     ...env,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
-        acquireMutation,
+        acquireMutation: overloaded
+          ? async () => {
+              throw new Error("queue_full");
+            }
+          : acquireMutation,
         status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
       }),
     } as unknown as Env["CONTROL"],
@@ -836,6 +840,54 @@ it("atomically writes DAV dead properties and rejects protected live properties"
     ring,
   );
   expect(stale.status).toBe(412);
+});
+
+it("returns retryable 503 for overloaded DAV lock creation, refresh and unlock", async () => {
+  const { f, id, ring, request } = await fixture("N");
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write')")
+    .bind(`ap:${id}`)
+    .run();
+  const headers = Object.fromEntries(request().headers);
+  const body =
+    '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>';
+  const create = () =>
+    new Request("https://app.invalid/dav/File", {
+      method: "LOCK",
+      headers: { ...headers, "Content-Type": "application/xml", Depth: "0" },
+      body,
+    });
+  const rejected = await handleDavHttp(create(), admittedDavEnv(true), 1, ring);
+  expect(rejected.status).toBe(503);
+  expect(rejected.headers.get("Retry-After")).toBe("1");
+  const locks = () =>
+    env.DB.prepare("SELECT id,token_hash,expires_at FROM locks WHERE space_id=?")
+      .bind(f.ids.space)
+      .all();
+  expect((await locks()).results).toEqual([]);
+  const created = await handleDavHttp(create(), admittedDavEnv(), 1, ring);
+  expect(created.status).toBe(200);
+  const lockToken = created.headers.get("Lock-Token")!;
+  const before = (await locks()).results;
+  for (const method of ["LOCK", "UNLOCK"]) {
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: {
+          ...headers,
+          ...(method === "LOCK"
+            ? { If: `(${lockToken})`, Timeout: "Second-120" }
+            : { "Lock-Token": lockToken }),
+        },
+        body: emptyBody(),
+      }),
+      admittedDavEnv(true),
+      1,
+      ring,
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect((await locks()).results).toEqual(before);
+  }
 });
 
 it("creates, refreshes and removes an existing-resource DAV lock", async () => {

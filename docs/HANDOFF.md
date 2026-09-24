@@ -25,11 +25,11 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-namespace更新の全体受付を追加した。migration0030、active32/waiting256、LockDOの8許可経路、期限・停止時の不可逆失効と復旧fenceを接続。適用には先にmaintenanceとpermit/claimのdrainが必要。[MUTATION_ADMISSION](MUTATION_ADMISSION.md)の未接続経路（認証情報・upload準備・DAV lock・Queue等）とbackup barrierを続ける。全体完成扱いにしない。今回の全checkはNode400/workerd908成功（追加21件）、型・契約・設定・build/dry-run成功。今回のbrowser/CIはpush後に照合する。直前6b65a47のCIは全成功、Node396/workerd891/browser19。
+DAV LOCK・refresh・UNLOCKをnamespaceと同じactive32/waiting256へ接続した。migration0031はlock変更・確定記録・枠解放を一括保存し、60秒保持する。closedやlock不在だけを成功扱いにしない。生tokenの永続化・別HTTP要求への結果再生は未実装。適用はmaintenance、waiting/active ticket・open permit・claimed operationなしが必要。[MUTATION_ADMISSION](MUTATION_ADMISSION.md)の未接続経路（認証情報・upload準備・Queue等）とbackup barrierを続ける。全体完成扱いにしない。追加Node4/workerd22件、対象Node8/workerd72件成功。全check1,334件（Node404/workerd930）とlint・型・契約・設定・build/dry-run成功。browser/CIはpush後に照合する。直前89cc9b7のCIは全成功、Node400/workerd908/browser19。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0030`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0031`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -96,7 +96,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace更新の全体受付を接続済み。認証情報・upload準備・DAV lock・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック更新の全体受付を接続済み。認証情報・upload準備・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 
