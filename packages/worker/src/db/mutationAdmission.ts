@@ -33,6 +33,12 @@ export const SYSTEM_MUTATION_KINDS = [
   "upload.multipart-abort",
   "upload.multipart-journal-stop",
   "upload.multipart-journal-lost",
+  "upload.cleanup-claim",
+  "upload.cleanup-call",
+  "upload.cleanup-observe",
+  "upload.cleanup-close",
+  "upload.cleanup-settle",
+  "upload.cleanup-error",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

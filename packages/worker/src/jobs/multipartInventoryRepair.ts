@@ -6,6 +6,7 @@ import {
   type SqlStatement,
 } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
+import type { SystemMutationSource } from "../services/systemMutation";
 import {
   claimMultipartCleanup,
   MULTIPART_INVENTORY_ELIGIBLE,
@@ -69,7 +70,7 @@ function scanFence(scan: Scan): SqlStatement {
 
 /** Verify the binding afresh, discover stopped handles, and retain unresolved reservations. */
 export async function repairUnidentifiedMultipartUploads(
-  db: D1Database,
+  env: SystemMutationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -79,6 +80,7 @@ export async function repairUnidentifiedMultipartUploads(
     maxWallMs?: number;
   } = {},
 ): Promise<MultipartInventoryRepairResult> {
+  const { DB: db } = env;
   const limit = options.maxUploads ?? 5;
   const maxHandles = options.maxHandles ?? 10;
   const wall = options.maxWallMs ?? 20_000;
@@ -97,16 +99,17 @@ export async function repairUnidentifiedMultipartUploads(
   )
     throw new Error("invalid_multipart_inventory_limit");
   return withVerifiedR2Inventory(db, bucket, inventory, epoch, (verified) =>
-    repairVerified(db, verified, epoch, { limit, maxHandles, wall }),
+    repairVerified(env, verified, epoch, { limit, maxHandles, wall }),
   );
 }
 
 async function repairVerified(
-  db: D1Database,
+  env: SystemMutationSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   { limit, maxHandles, wall }: { limit: number; maxHandles: number; wall: number },
 ): Promise<MultipartInventoryRepairResult> {
+  const { DB: db } = env;
   const { bucket, inventory } = verified;
   const maintenance = true;
   const source = JSON.stringify(verified.observation.source);
@@ -129,7 +132,7 @@ async function repairVerified(
   for (const { id } of rows.results) {
     if (Date.now() - started >= wall) break;
     const token = crypto.randomUUID();
-    const row = await claimMultipartCleanup(db, id, epoch, maintenance, token, {
+    const row = await claimMultipartCleanup(env, id, epoch, maintenance, token, started + wall, {
       source,
       fence: verified.fence,
     });

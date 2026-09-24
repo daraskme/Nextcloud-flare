@@ -25,11 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit f9dffcbはmainへプッシュ済み。[CI36032527567](https://github.com/daraskme/Nextcloud-flare/actions/runs/36032527567)はUbuntu・Windows・browser全成功。Node416/workerd1227/browser19、計1,662件。
+直前commit8892b4fはmainへプッシュ済み。[CI36034974068](https://github.com/daraskme/Nextcloud-flare/actions/runs/36034974068)はUbuntu・Windows・browser全成功。Node416/workerd1260/browser19、計1,695件。
 
-UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳喪失時の停止を共通受付へ接続しました。初期化と通常反映は現在の利用者認可、停止反映と喪失処理は復旧用system受付を使い、すべて同じ32 active/256 waiting枠を共有します。 初期化markerや部品送信につながる台帳反映は、D1 batchの直接ACKがなければローカル台帳を確定せず、送信許可も返しません。混雑・rollback・応答喪失でもdirty行、アラーム、予約容量を保持します。台帳全喪失では停止記録を回収できても再初期化しません。
+単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
 
-workerd33件追加。新規台帳境界29件と実ControlDO12件が成功。全体checkはNode416/workerd1260、計1,676件が成功し、lint・型・契約・設定・Web build・Worker dry-runも通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 自動回収/GC・Queue・backup barrier、未知KDF/multipartの収束、共有/メディア/実環境検証は後続。全体完成扱いにしない。
+停止claimは正確なcleanup tokenで回収できますが、外部HEAD/abortは予算batchの直接ACKが必要です。確定済みDB記録はexact receiptで照合し、他の回収処理の終端記録で自分の未確定枠を返しません。待機・遅いACKで実行時間を超えた場合は外部送信を止め、予約・leaseを保持します。ControlDO内の復旧は同じinstanceの受付を直接使い、自己RPCや別枠を作りません。
+
+workerd62件追加（回収境界56件・実ControlDO共有枠6件）。最終対象100件が成功。全体pnpm checkも成功し、Node416/25files（5.32秒）・workerd1322/71files（672.25秒）、計1,738件、lint・型・契約・設定・Web build・Worker dry-runが通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 GC・残るinventory/Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
+
+unknown-ID inventoryで共有している停止claimもmandatory受付へ接続済み。ただしinventoryの残るscan/page/abort等や全bucketのglobal制御は未接続。owner-spaceを偽装せず、global job/barrierの設計を確認してから進める。適用済み0033は変更しない。
 
 ## 現在動いている範囲
 
@@ -100,7 +104,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証の共通受付を接続済み。upload自動回収/GC・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収の共通受付を接続済み。GC・残るinventory/Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

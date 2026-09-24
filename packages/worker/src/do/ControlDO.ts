@@ -420,7 +420,7 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ cleanup: UploadCleanupResult; audit: RecoveryAuditStatus }> {
     const cleanup = await this.#maintenance(expectedEpoch, () =>
-      repairSingleUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
+      repairSingleUploads({ DB: this.env.DB, systemControl: this }, this.env.BLOBS, expectedEpoch, {
         maxUploads: limit,
         maintenance: true,
       }),
@@ -434,10 +434,15 @@ export class ControlDO extends DurableObject<Env> {
     limit = 20,
   ): Promise<{ cleanup: UploadCleanupResult; audit: RecoveryAuditStatus }> {
     const cleanup = await this.#maintenance(expectedEpoch, () =>
-      repairMultipartUploads(this.env.DB, this.env.BLOBS, expectedEpoch, {
-        maxUploads: limit,
-        maintenance: true,
-      }),
+      repairMultipartUploads(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        expectedEpoch,
+        {
+          maxUploads: limit,
+          maintenance: true,
+        },
+      ),
     );
     return { cleanup, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
@@ -513,9 +518,15 @@ export class ControlDO extends DurableObject<Env> {
   ): Promise<{ repair: MultipartInventoryRepairResult; audit: RecoveryAuditStatus }> {
     const inventory = new R2S3Inventory(this.env);
     const repair = await this.#maintenance(expectedEpoch, () =>
-      repairUnidentifiedMultipartUploads(this.env.DB, this.env.BLOBS, inventory, expectedEpoch, {
-        maxUploads: limit,
-      }),
+      repairUnidentifiedMultipartUploads(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        inventory,
+        expectedEpoch,
+        {
+          maxUploads: limit,
+        },
+      ),
     );
     return { repair, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }

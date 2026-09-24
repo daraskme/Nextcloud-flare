@@ -6,18 +6,26 @@ import {
   type SystemMutationKind,
 } from "../db/mutationAdmission";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import type { ControlDO } from "../do/ControlDO";
 import { CONTROL_NAME } from "../do/controlName";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "./accountMutation";
 
 export type SystemMutationEnv = Pick<Env, "DB" | "CONTROL">;
+/** Recovery inside ControlDO calls the same coordinator directly, without an RPC to itself. */
+export type SystemMutationSource =
+  | SystemMutationEnv
+  | { DB: D1Database; systemControl: Pick<ControlDO, "status" | "acquireSystemMutation"> };
 
 /** External storage facts remain necessary after revocation/disable/stop. Domain proofs stay local. */
 export async function acquireSystemMutation(
-  env: SystemMutationEnv,
+  env: SystemMutationSource,
   ownerId: string,
   kind: SystemMutationKind,
+  deadline = Date.now() + 5000,
 ): Promise<SystemMutationAdmission> {
+  if (!Number.isSafeInteger(deadline) || deadline <= Date.now())
+    throw new MutationUnavailableError();
   const spaceId = await primary(env.DB)
     .prepare("SELECT s.id FROM spaces s JOIN users u ON u.id=s.owner_id WHERE u.id=?")
     .bind(ownerId)
@@ -25,13 +33,16 @@ export async function acquireSystemMutation(
   if (!spaceId) throw new MutationUnavailableError();
   const permitId = "system:" + kind + ":" + crypto.randomUUID();
   try {
-    const control = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
+    const control =
+      "systemControl" in env
+        ? env.systemControl
+        : env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
     const { epoch } = await control.status();
     const admission = await control.acquireSystemMutation({
       permitId,
       spaceId,
       epoch,
-      deadline: Date.now() + 5000,
+      deadline: Math.min(deadline, Date.now() + 5000),
     });
     if (
       admission.permit_id !== permitId ||

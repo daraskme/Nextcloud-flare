@@ -1,15 +1,16 @@
+import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import {
-  assertExists,
-  assertOneChange,
-  atomicBatch,
-  primary,
-  type SqlStatement,
-} from "../db/primary";
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationSource,
+} from "../services/systemMutation";
 import {
   COMPLETION,
+  chargeUploadCleanup,
   controlFence,
   matches,
   observedObject,
+  recordUploadCleanupError,
   settleUploadCleanup,
   UNPUBLISHED,
   type UploadCleanupCandidate,
@@ -66,20 +67,28 @@ export function multipartCleanupFence(row: Candidate, token: string, closed = fa
 const cleanupFence = multipartCleanupFence;
 
 export async function claimMultipartCleanup(
-  db: D1Database,
+  env: SystemMutationSource,
   id: string,
   epoch: number,
   maintenance: boolean,
   token: string,
+  deadline: number,
   inventory?: { source: string; fence(): SqlStatement },
 ): Promise<Candidate | null> {
+  const { DB: db } = env;
+  const ownerId = await primary(db)
+    .prepare("SELECT owner_id FROM uploads WHERE id=?")
+    .bind(id)
+    .first<string>("owner_id");
+  if (!ownerId) return null;
   try {
-    await atomicBatch(db, [
+    const admission = await acquireSystemMutation(env, ownerId, "upload.cleanup-claim", deadline);
+    await commitSystemMutation(db, admission, ownerId, [
       controlFence(epoch, maintenance),
       ...(inventory ? [inventory.fence()] : []),
       assertExists(
-        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.epoch<=? AND ${inventory === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
-        [id, epoch, epoch],
+        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.owner_id=? AND u.epoch<=? AND ${inventory === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
+        [id, ownerId, epoch, epoch],
       ),
       {
         sql: `UPDATE operations SET state='failed',error_code='upload_expired',updated_at=MAX(updated_at,${CLOCK})
@@ -132,11 +141,12 @@ export async function claimMultipartCleanup(
 
 /** Internal, bounded repair. A reservation survives until the multipart handle is proven closed. */
 export async function repairMultipartUploads(
-  db: D1Database,
+  env: SystemMutationSource,
   bucket: R2Bucket,
   epoch: number,
   options: { maxUploads?: number; maxWallMs?: number; maintenance?: boolean } = {},
 ): Promise<UploadCleanupResult> {
+  const { DB: db } = env;
   const limit = options.maxUploads ?? 20;
   const wall = options.maxWallMs ?? 20_000;
   const maintenance = options.maintenance ?? false;
@@ -163,19 +173,19 @@ export async function repairMultipartUploads(
   for (const { id } of rows.results) {
     if (Date.now() - started >= wall) break;
     const token = crypto.randomUUID();
-    const row = await claimMultipartCleanup(db, id, epoch, maintenance, token);
+    const row = await claimMultipartCleanup(env, id, epoch, maintenance, token, started + wall);
     if (!row) continue;
     result.claimed++;
     const charge = async () => {
-      await atomicBatch(db, [
-        controlFence(epoch, maintenance),
+      await chargeUploadCleanup(
+        env,
+        row,
+        epoch,
+        maintenance,
+        token,
+        started + wall,
         cleanupFence(row, token),
-        {
-          sql: "UPDATE uploads SET cleanup_calls=cleanup_calls+1 WHERE id=? AND cleanup_token=?",
-          values: [id, token],
-        },
-        assertOneChange,
-      ]);
+      );
       result.r2Calls++;
     };
     try {
@@ -189,7 +199,8 @@ export async function repairMultipartUploads(
           // NoSuchUpload/transport errors alone do not prove that a completed object is absent.
         }
         if (aborted) {
-          await atomicBatch(db, [
+          const admission = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-close");
+          await commitSystemMutation(db, admission, row.owner_id, [
             controlFence(epoch, maintenance),
             cleanupFence(row, token),
             {
@@ -205,14 +216,16 @@ export async function repairMultipartUploads(
       const object = await bucket.head(row.r2_key);
       if (object) {
         // Physical facts remain chargeable even when metadata or the multipart ID is unknown.
-        await atomicBatch(db, [
+        const admission = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-observe");
+        await commitSystemMutation(db, admission, row.owner_id, [
           controlFence(epoch, maintenance),
           cleanupFence(row, token),
           ...observedObject(row, object),
         ]);
         if (!matches(row, object)) throw new Error("upload_object_mismatch");
         if (!row.multipart_cleanup_closed && row.r2_upload_id && row.multipart_complete_attempt) {
-          await atomicBatch(db, [
+          const closed = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-close");
+          await commitSystemMutation(db, closed, row.owner_id, [
             controlFence(epoch, maintenance),
             cleanupFence(row, token),
             ...observedObject(row, object),
@@ -228,7 +241,7 @@ export async function repairMultipartUploads(
       if (!row.multipart_cleanup_closed) throw new Error("multipart_cleanup_unconfirmed");
       result[
         await settleUploadCleanup(
-          db,
+          env,
           row,
           epoch,
           maintenance,
@@ -245,10 +258,7 @@ export async function repairMultipartUploads(
         ["upload_object_mismatch", "multipart_cleanup_unconfirmed"].includes(error.message)
           ? error.message
           : "cleanup_unconfirmed";
-      await primary(db)
-        .prepare("UPDATE uploads SET cleanup_error=? WHERE id=? AND cleanup_token=?")
-        .bind(code, id, token)
-        .run();
+      await recordUploadCleanupError(env, row, epoch, maintenance, token, code);
     }
   }
   return result;

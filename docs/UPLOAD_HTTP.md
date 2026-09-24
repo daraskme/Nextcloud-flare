@@ -47,6 +47,10 @@ multipart receiptには`revision`、`parts`、`nextAfter`を含む。part行は`
 
 ## 中止と回収
 
+単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+停止claimは正確なcleanup tokenで回収できますが、外部HEAD/abortは予算batchの直接ACKが必要です。確定済みDB記録はexact receiptで照合し、他の回収処理の終端記録で自分の未確定枠を返しません。待機・遅いACKで実行時間を超えた場合は外部送信を止め、予約・leaseを保持します。ControlDO内の復旧は同じinstanceの受付を直接使い、自己RPCや別枠を作りません。
+
 単一/分割の利用者による中止は共通受付を通り、現在の認可・状態と中止記録・確定記録・枠返却を一括保存する。混雑は503/Retry-After: 1。単一は既存のtransfer期限、multipartは期限後も読めるreceiptの制約を維持する。保存済みの中止結果は追加受付なし。単一の予約返却は、batch内でまだwrite attemptがないと確認できた場合だけ行う。
 
 multipart DELETEはD1に`aborting`と送信停止を原子的に保存する。初期化中・既知R2 ID未保存でも中止でき、遅れた初期化結果は回収用の事実としてのみ保存される。すでにcompletingなら409を返し、確定結果を照会する。

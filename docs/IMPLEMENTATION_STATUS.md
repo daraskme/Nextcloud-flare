@@ -7,7 +7,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 1/3 UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、dirty/alarm/容量保持 | workerd33件追加。新規台帳境界29件と実ControlDO12件が成功。全体checkはNode416/workerd1260、計1,676件が成功し、lint・型・契約・設定・Web build・Worker dry-runも通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 upload自動回収の全体受付 | claim・外部予算・観測・閉鎖・精算・エラー、ControlDO直接受付 | workerd62件追加（回収境界56件・実ControlDO共有枠6件）。最終対象100件が成功。全体pnpm checkも成功し、Node416/25files（5.32秒）・workerd1322/71files（672.25秒）、計1,738件、lint・型・契約・設定・Web build・Worker dry-runが通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
+| 1/3 UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、dirty/alarm/容量保持 | workerd33件追加。8892b4fのローカル全check成功、Node416/workerd1260、計1,676件。CIは以下の実行記録参照。 |
 | 1/3 復旧用更新の全体受付 | migration0033、system/mode不変、共有32/256、物理観測・既知ID・初期化停止・直接ACK claim | Node8件/workerd41件追加。f9dffcbのCI全成功、Node416/workerd1227/browser19、計1,662件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receipt/返却、遅延PUTの容量保持 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1/3 upload転送の全体受付 | 単一start/recover/verify・multipart start/complete、current authority/claim/receipt/返却、直接ACKのみdispatch | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 [MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
@@ -126,6 +127,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 workerd62件追加（回収境界56件・実ControlDO共有枠6件）。最終対象100件が成功。全体pnpm checkも成功し、Node416/25files（5.32秒）・workerd1322/71files（672.25秒）、計1,738件、lint・型・契約・設定・Web build・Worker dry-runが通過。今回のCIはpush後に確認する。schema0033/通常67table、migration・依存追加なし。 初期回帰168件のうち164件成功、3件はDB-only ACK回収導入後の期待値、1件はfixture抽出後のimport漏れだった。修正後の境界54件と分割回収36件、計90件（27.92秒）が成功。追加の期限境界と実ControlDOを含む最終対象100件（37.97秒）が成功。
+
+- 2026-09-25、直前commit8892b4fはmainへプッシュ済み。[CI36034974068](https://github.com/daraskme/Nextcloud-flare/actions/runs/36034974068)はUbuntu・Windows・browser全成功。Node416/workerd1260/browser19、計1,695件。 Ubuntu7分34秒、Windows16分52秒、browser2分17秒。workerdはUbuntu412.26秒/Windows927.33秒。
 
 - 2026-09-25、commit47160c422f76d82eb11fcbb7ecd57f0a15d712d3の[CI36027205940](https://github.com/daraskme/Nextcloud-flare/actions/runs/36027205940)全成功。Ubuntu4分39秒、Windows12分42秒、browser2分19秒。両OSでNode408/25files、workerd1141/67files（Ubuntu237.23秒/Windows587.72秒）、browser19（1.5分）、計1,568件。
 

@@ -122,8 +122,8 @@ export default {
     const epoch = await admittedEpoch(env);
     if (epoch === null) return;
     await dispatchPendingOutbox(env.DB, env.JOBS, epoch);
-    await repairSingleUploads(env.DB, env.BLOBS, epoch);
-    await repairMultipartUploads(env.DB, env.BLOBS, epoch);
+    await repairSingleUploads(env, env.BLOBS, epoch);
+    await repairMultipartUploads(env, env.BLOBS, epoch);
     await scanOrphanObjects(env.DB, env.BLOBS, epoch);
     const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
     if (status.epoch !== epoch || status.maintenance || status.gcPaused) return;

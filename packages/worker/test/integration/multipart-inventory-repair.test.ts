@@ -10,6 +10,7 @@ import { repairUnidentifiedMultipartUploads } from "../../src/jobs/multipartInve
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { inventoryEnv, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -119,7 +120,7 @@ async function readProbe() {
   return object ? new Response(object.body) : new Response(null, { status: 404 });
 }
 const repair = (client: R2S3Inventory, options = {}, bucket = env.BLOBS, db = env.DB, epoch = 1) =>
-  repairUnidentifiedMultipartUploads(db, bucket, client, epoch, options);
+  repairUnidentifiedMultipartUploads(mutationEnv(db), bucket, client, epoch, options);
 const bucket = (overrides: Partial<R2Bucket>) =>
   ({
     get: env.BLOBS.get.bind(env.BLOBS),
@@ -542,7 +543,9 @@ it("fences a late initialization ID out of ordinary cleanup after inventory has 
     .bind(f.handle.uploadId, f.id)
     .run();
   await due(f);
-  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1, { maintenance: true })).toMatchObject({
+  expect(
+    await repairMultipartUploads(mutationEnv(), env.BLOBS, 1, { maintenance: true }),
+  ).toMatchObject({
     claimed: 0,
   });
   expect(await repair(s3.client)).toMatchObject({ pages: 0, aborted: 1, retried: 0 });

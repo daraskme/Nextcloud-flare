@@ -14,7 +14,8 @@ import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
 import { uploadRow } from "../../src/services/uploads/access";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { foundationFixture } from "../fixtures/foundation";
-import { grantPermit } from "../fixtures/mutationAdmission";
+import { acquireSystemMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
+import { multipartCleanupFixture as fixture } from "../fixtures/uploadCleanup";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -57,68 +58,6 @@ it("does not let an unclosed upload bypass its reservation through a GC candidat
   ).toBe("reserved");
 });
 
-async function fixture(
-  options: {
-    state?: string;
-    idle?: boolean;
-    known?: boolean;
-    completeLease?: number;
-    initLease?: number;
-  } = {},
-) {
-  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
-  await atomicBatch(env.DB, f.statements);
-  const id = `up_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
-  const blob = `${id}_blob`;
-  const reservation = `${id}_reservation`;
-  const key = `u/${f.ids.user}/b/${blob}`;
-  const attempt = crypto.randomUUID();
-  const metadata = { upload_id: id, blob_id: blob, epoch: "1", attempt_id: attempt };
-  const multipart =
-    options.known === false
-      ? null
-      : await env.BLOBS.createMultipartUpload(key, { customMetadata: metadata });
-  const state = options.state ?? "uploading";
-  const created = Date.now() - (options.idle === false ? 1000 : 25 * 3600000);
-  const expires = created + 6 * 86400000;
-  await atomicBatch(env.DB, [
-    {
-      sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES(?,?,3,'reserved',?,1)",
-      values: [reservation, f.ids.user, expires],
-    },
-    {
-      sql: "INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) VALUES(?,?,?,3,?,'staging',?)",
-      values: [blob, f.ids.user, key, `"b-${blob}"`, created],
-    },
-    {
-      sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,blob_id,credential_id,reservation_id,
-        mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,
-        upload_name,request_digest,capability_kid,write_attempt_id,write_lease_expires_at,
-        r2_upload_id,part_bytes,part_count,cleanup_pending,multipart_complete_attempt,multipart_complete_lease)
-        VALUES(?,?,?,?,?,?,?,'multipart',?,3,'fixture',1,?,?,?,'cleanup.bin','fixture','fixture',?,?,?,67108864,1,?,?,?)`,
-      values: [
-        id,
-        f.ids.user,
-        f.ids.space,
-        f.ids.folder,
-        blob,
-        f.ids.credential,
-        reservation,
-        state,
-        created,
-        expires,
-        created,
-        attempt,
-        options.initLease ?? 0,
-        multipart?.uploadId ?? null,
-        ["aborting", "failed", "expired", "aborted"].includes(state) ? 1 : 0,
-        state === "completing" ? crypto.randomUUID() : null,
-        state === "completing" ? (options.completeLease ?? 0) : null,
-      ],
-    },
-  ]);
-  return { ...f, id, blob, reservation, key, metadata, multipart };
-}
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const counters = (f: Fixture) =>
   env.DB.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users WHERE id=?")
@@ -126,7 +65,7 @@ const counters = (f: Fixture) =>
     .first();
 const row = (f: Fixture) => uploadRow(env.DB, f.id);
 const repair = (bucket = env.BLOBS, db = env.DB, epoch = 1, maintenance = false) =>
-  repairMultipartUploads(db, bucket, epoch, { maintenance });
+  repairMultipartUploads(mutationEnv(db), bucket, epoch, { maintenance });
 async function due(f: { id: string }) {
   await env.DB.prepare(
     "UPDATE uploads SET cleanup_next_at=0,cleanup_lease_expires_at=CASE WHEN cleanup_token IS NULL THEN NULL ELSE 0 END WHERE id=?",
@@ -294,7 +233,7 @@ it.each([
 ])("recovers D1 reply loss at %s", async (point) => {
   const f = await fixture();
   const result = await repair(env.BLOBS, lost(point));
-  if (point.includes("cleanup_calls") || point.includes("closed='aborted'")) {
+  if (point.includes("cleanup_calls")) {
     expect(result).toMatchObject({ retried: 1 });
     expect(await counters(f)).toMatchObject({ reserved_bytes: 3 });
     if (point.includes("cleanup_calls")) expect(result.r2Calls).toBe(0);
@@ -547,7 +486,10 @@ it("runs from Cron while admission is open, with full objects waiting for unpaus
     ...env,
     CONTROL: {
       idFromName: () => "singleton",
-      get: () => ({ status: async () => ({ epoch: 1, maintenance, gcPaused }) }),
+      get: () => ({
+        acquireSystemMutation,
+        status: async () => ({ epoch: 1, maintenance, gcPaused }),
+      }),
     },
   } as unknown as Env;
   await worker.scheduled({} as ScheduledController, runtime);
@@ -607,10 +549,9 @@ it.each(["INSERT INTO blob_storage", "multipart_cleanup_closed='completed'"])(
     const closed = aborting(async () => {
       throw new Error("NoSuchUpload");
     });
-    expect(await repair(closed, lost(point))).toMatchObject({ retried: 1, queued: 0 });
-    expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 3 });
-    await due(f);
-    expect(await repair(closed)).toMatchObject({ queued: 1 });
+    expect(await repair(closed, lost(point))).toMatchObject({ retried: 0, queued: 1 });
+    expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
+    expect(await repair(closed)).toMatchObject({ claimed: 0 });
     expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
   },
 );
@@ -641,15 +582,21 @@ it("bounds each pass and advances past quarantined uploads", async () => {
   await env.DB.prepare("UPDATE uploads SET cleanup_next_at=1 WHERE id IN (?,?)")
     .bind(second.id, third.id)
     .run();
-  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1, { maxUploads: 1 })).toMatchObject({
+  expect(
+    await repairMultipartUploads(mutationEnv(), env.BLOBS, 1, { maxUploads: 1 }),
+  ).toMatchObject({
     claimed: 1,
     retried: 1,
   });
-  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1, { maxUploads: 1 })).toMatchObject({
+  expect(
+    await repairMultipartUploads(mutationEnv(), env.BLOBS, 1, { maxUploads: 1 }),
+  ).toMatchObject({
     claimed: 1,
     absent: 1,
   });
-  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1, { maxUploads: 1 })).toMatchObject({
+  expect(
+    await repairMultipartUploads(mutationEnv(), env.BLOBS, 1, { maxUploads: 1 }),
+  ).toMatchObject({
     claimed: 1,
     absent: 1,
   });

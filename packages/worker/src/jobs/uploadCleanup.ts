@@ -5,6 +5,12 @@ import {
   primary,
   type SqlStatement,
 } from "../db/primary";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationSource,
+  systemMutationStatements,
+} from "../services/systemMutation";
 
 const CLOCK = "strftime('%s','now')*1000";
 const LEASE_MS = 60_000;
@@ -48,18 +54,26 @@ export const UNPUBLISHED = `b.owner_id=u.owner_id AND b.r2_key='u/'||u.owner_id|
     AND (o.state='committed' OR EXISTS(SELECT 1 FROM operation_steps WHERE op_id=o.op_id)))`;
 
 async function claim(
-  db: D1Database,
+  env: SystemMutationSource,
   row: Candidate,
   epoch: number,
   maintenance: boolean,
   token: string,
+  deadline: number,
 ): Promise<boolean> {
+  const { DB: db } = env;
   try {
-    await atomicBatch(db, [
+    const admission = await acquireSystemMutation(
+      env,
+      row.owner_id,
+      "upload.cleanup-claim",
+      deadline,
+    );
+    await commitSystemMutation(db, admission, row.owner_id, [
       controlFence(epoch, maintenance),
       assertExists(
         `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id
-        WHERE u.id=? AND u.mode='single' AND u.epoch<=? AND u.expires_at<=${CLOCK}
+        WHERE u.id=? AND u.owner_id=? AND u.mode='single' AND u.epoch<=? AND u.expires_at<=${CLOCK}
           AND u.cleanup_next_at<=${CLOCK}
           AND (u.cleanup_token IS NULL OR u.cleanup_lease_expires_at<=${CLOCK})
           AND (u.state IN ('created','receiving','completing') OR (u.state IN (${TERMINAL}) AND u.cleanup_pending=1))
@@ -67,7 +81,7 @@ async function claim(
           AND ${UNPUBLISHED}
           AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)
           AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)`,
-        [row.id, epoch],
+        [row.id, row.owner_id, epoch],
       ),
       {
         sql: `UPDATE operations SET state='failed',error_code='upload_expired',updated_at=MAX(updated_at,${CLOCK})
@@ -143,7 +157,7 @@ export function matches(row: Candidate, object: R2Object): boolean {
 }
 
 export async function settleUploadCleanup(
-  db: D1Database,
+  env: SystemMutationSource,
   row: Candidate,
   epoch: number,
   maintenance: boolean,
@@ -152,9 +166,11 @@ export async function settleUploadCleanup(
   fence = cleanupFence(row, token),
   terminalProof = "1",
 ): Promise<"absent" | "queued"> {
+  const { DB: db } = env;
   if (object && !matches(row, object)) {
     // Unexpected objects consume storage too. Quarantine without deleting or refunding.
-    await atomicBatch(db, [
+    const admission = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-observe");
+    await commitSystemMutation(db, admission, row.owner_id, [
       controlFence(epoch, maintenance),
       fence,
       ...observedObject(row, object),
@@ -194,7 +210,8 @@ export async function settleUploadCleanup(
     assertOneChange,
   );
   try {
-    await atomicBatch(db, statements);
+    const admission = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-settle");
+    await commitSystemMutation(db, admission, row.owner_id, statements);
   } catch (error) {
     // Inspect the full terminal/handoff tuple before accepting a lost acknowledgement.
     const saved = await primary(db)
@@ -213,13 +230,65 @@ export async function settleUploadCleanup(
   return object ? "queued" : "absent";
 }
 
+/** Error reporting is best effort; an unavailable gate never releases the cleanup hold. */
+export async function recordUploadCleanupError(
+  env: SystemMutationSource,
+  row: Candidate,
+  epoch: number,
+  maintenance: boolean,
+  token: string,
+  code: string,
+): Promise<void> {
+  try {
+    const admission = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-error");
+    await commitSystemMutation(env.DB, admission, row.owner_id, [
+      controlFence(epoch, maintenance),
+      {
+        sql: "UPDATE uploads SET cleanup_error=? WHERE id=? AND owner_id=? AND cleanup_token=?",
+        values: [code, row.id, row.owner_id, token],
+      },
+      assertOneChange,
+    ]);
+  } catch {
+    // Preserve the durable stop/lease and retry time even if the annotation cannot be saved.
+  }
+}
+
+/** A direct budget ACK and an unexpired run budget are both required before external I/O. */
+export async function chargeUploadCleanup(
+  env: SystemMutationSource,
+  row: Candidate,
+  epoch: number,
+  maintenance: boolean,
+  token: string,
+  deadline: number,
+  fence: SqlStatement,
+): Promise<void> {
+  const admission = await acquireSystemMutation(env, row.owner_id, "upload.cleanup-call", deadline);
+  if (Date.now() >= deadline) throw new Error("upload_cleanup_budget");
+  await atomicBatch(
+    env.DB,
+    systemMutationStatements(admission, row.owner_id, [
+      controlFence(epoch, maintenance),
+      fence,
+      {
+        sql: "UPDATE uploads SET cleanup_calls=cleanup_calls+1 WHERE id=? AND cleanup_token=?",
+        values: [row.id, token],
+      },
+      assertOneChange,
+    ]),
+  );
+  if (Date.now() >= deadline) throw new Error("upload_cleanup_budget");
+}
+
 /** The internal caller supplies the authoritative ControlDO epoch/mode. No public repair route. */
 export async function repairSingleUploads(
-  db: D1Database,
+  env: SystemMutationSource,
   bucket: R2Bucket,
   epoch: number,
   options: { maxUploads?: number; maxWallMs?: number; maintenance?: boolean } = {},
 ): Promise<UploadCleanupResult> {
+  const { DB: db } = env;
   const limit = options.maxUploads ?? 20;
   const wall = options.maxWallMs ?? 20_000;
   const maintenance = options.maintenance ?? false;
@@ -254,33 +323,33 @@ export async function repairSingleUploads(
   for (const row of rows.results) {
     if (Date.now() - started >= wall) break;
     const token = crypto.randomUUID();
-    if (!(await claim(db, row, epoch, maintenance, token))) continue;
+    if (!(await claim(env, row, epoch, maintenance, token, started + wall))) continue;
     result.claimed++;
     try {
-      await atomicBatch(db, [
-        controlFence(epoch, maintenance),
+      await chargeUploadCleanup(
+        env,
+        row,
+        epoch,
+        maintenance,
+        token,
+        started + wall,
         cleanupFence(row, token),
-        {
-          sql: "UPDATE uploads SET cleanup_calls=cleanup_calls+1 WHERE id=? AND cleanup_token=?",
-          values: [row.id, token],
-        },
-        assertOneChange,
-      ]);
+      );
       result.r2Calls++;
       const object = await bucket.head(row.r2_key);
-      result[await settleUploadCleanup(db, row, epoch, maintenance, token, object)]++;
+      result[await settleUploadCleanup(env, row, epoch, maintenance, token, object)]++;
     } catch (error) {
       result.retried++;
-      await primary(db)
-        .prepare("UPDATE uploads SET cleanup_error=? WHERE id=? AND cleanup_token=?")
-        .bind(
-          error instanceof Error && error.message === "upload_object_mismatch"
-            ? "upload_object_mismatch"
-            : "cleanup_unconfirmed",
-          row.id,
-          token,
-        )
-        .run();
+      await recordUploadCleanupError(
+        env,
+        row,
+        epoch,
+        maintenance,
+        token,
+        error instanceof Error && error.message === "upload_object_mismatch"
+          ? "upload_object_mismatch"
+          : "cleanup_unconfirmed",
+      );
     }
   }
   return result;

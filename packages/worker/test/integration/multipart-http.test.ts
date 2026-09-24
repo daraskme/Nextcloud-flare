@@ -16,6 +16,7 @@ import { uploadRow } from "../../src/services/uploads/access";
 import type { UploadPartReceipt } from "../../src/services/uploads/read";
 import { accessFixture } from "../fixtures/access";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -535,7 +536,7 @@ it("stops an upload through HTTP, refuses late parts, and keeps its receipt afte
     cleanup_pending: 1,
     data_calls: 0,
   });
-  await repairMultipartUploads(env.DB, env.BLOBS, 1);
+  await repairMultipartUploads(mutationEnv(), env.BLOBS, 1);
   expect(await (await f.send(path(r), "GET", undefined, cap(r))).json()).toMatchObject({
     state: "aborted",
     cleanupPending: false,
@@ -873,7 +874,7 @@ it("retains the reservation when HTTP abort races a late R2 part reply", async (
     data_calls: 1,
     cleanup_pending: 1,
   });
-  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await repairMultipartUploads(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
   expect(
     await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
       .bind(f.ids.user)

@@ -6,7 +6,10 @@ import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
+import { repairSingleUploads } from "../../src/jobs/uploadCleanup";
 import { foundationFixture } from "../fixtures/foundation";
+import { multipartCleanupFixture, singleCleanupFixture } from "../fixtures/uploadCleanup";
 import { journalFixture, journalStages } from "../fixtures/uploadJournal";
 import {
   actions,
@@ -226,3 +229,114 @@ it.each(journalStages)(
     }
   },
 );
+
+it.each([
+  { mode: "single", stage: "claim" },
+  { mode: "single", stage: "call" },
+  { mode: "single", stage: "settle" },
+  { mode: "multipart", stage: "claim" },
+  { mode: "multipart", stage: "call" },
+  { mode: "multipart", stage: "settle" },
+])("queues automatic $mode cleanup $stage in the actual shared pool", async ({ mode, stage }) => {
+  await env.DB.prepare("UPDATE uploads SET cleanup_next_at=9999999999999").run();
+  const f = mode === "single" ? await singleCleanupFixture() : await multipartCleanupFixture();
+  const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+  const prefix = "system:upload.cleanup-" + stage + ":";
+  let filled = false,
+    calls = 0;
+  const source = {
+    DB: env.DB,
+    systemControl: {
+      status: () => control().status(),
+      acquireSystemMutation: async (
+        request: Parameters<ReturnType<typeof control>["acquireSystemMutation"]>[0],
+      ) => {
+        if (!filled && request.permitId.startsWith(prefix)) {
+          filled = true;
+          await atomicBatch(
+            env.DB,
+            seeds.map((id) => ({
+              sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+              values: [id, id, f.ids.space, epoch],
+            })),
+          );
+          expect((await advanceMutations(env.DB)).filter((r) => r.state === "active")).toHaveLength(
+            32,
+          );
+        }
+        return control().acquireSystemMutation(request);
+      },
+    },
+  };
+  const bucket = {
+    head: (key: string) => {
+      calls++;
+      return env.BLOBS.head(key);
+    },
+    resumeMultipartUpload: (key: string, uploadId: string) => ({
+      abort: () => {
+        calls++;
+        return env.BLOBS.resumeMultipartUpload(key, uploadId).abort();
+      },
+    }),
+  } as R2Bucket;
+  const outcome = (mode === "single" ? repairSingleUploads : repairMultipartUploads)(
+    source,
+    bucket,
+    epoch,
+  );
+  try {
+    await expect
+      .poll(
+        () =>
+          env.DB.prepare(
+            "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='waiting' AND space_id=? AND permit_id LIKE ?",
+          )
+            .bind(f.ids.space, prefix + "%")
+            .first("n"),
+        { timeout: 4000, interval: 25 },
+      )
+      .toBe(1);
+    expect(calls).toBe(stage === "settle" ? (mode === "single" ? 1 : 2) : 0);
+    expect(
+      await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
+        .bind(f.ids.user)
+        .first("reserved_bytes"),
+    ).toBe(3);
+    await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+      .bind(seeds[0])
+      .run();
+    expect(await outcome).toMatchObject({ absent: 1, retried: 0 });
+    const receipts = await env.DB.prepare(
+      "SELECT state,committed_at FROM mutation_admissions WHERE space_id=? AND permit_id LIKE ?",
+    )
+      .bind(f.ids.space, prefix + "%")
+      .all();
+    for (const r of receipts.results)
+      expect(r).toEqual({ state: "closed", committed_at: expect.any(Number) });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",
+      ).first("n"),
+    ).toBe(31);
+    const grant = await control().acquireMutation({
+      permitId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      epoch,
+      deadline: Date.now() + 5000,
+    });
+    expect(await grantPermit(env.DB, grant.permit_id, f.ids.space, epoch, grant)).toMatchObject({
+      permit_id: grant.permit_id,
+    });
+  } finally {
+    await env.DB.prepare(
+      "UPDATE mutation_admissions SET state='closed' WHERE space_id=? AND state<>'closed'",
+    )
+      .bind(f.ids.space)
+      .run();
+    await outcome;
+    await env.DB.prepare("UPDATE permits SET state='revoked' WHERE space_id=? AND state='open'")
+      .bind(f.ids.space)
+      .run();
+  }
+});

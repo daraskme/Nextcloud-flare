@@ -150,7 +150,8 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | 利用者によるsingle/multipart中止、multipart検証済み情報 | 接続済み。DB-onlyのexact receipt回収。容量返却は既存の安全条件を維持 |
 | 物理観測・既知R2 ID記録・初期化停止/緊急abort予算 | 接続済み。後述のsystem受付、通常と同じ枠 |
 | UploadDO台帳初期化/反映/喪失時停止 | 接続済み。初期化と通常反映はaccount、停止/喪失はsystem。直接ACK契約は後述 |
-| 自動回収/GC | 既存制御を維持。共通受付は未接続 |
+| 単一/分割upload自動回収 | 接続済み。停止claim・外部予算・観測・閉鎖・精算・エラーが共通system受付 |
+| GC・残るinventory更新 | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
@@ -195,4 +196,23 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 同じUploadDO内の既存直列化を維持し、R2やstreamをDOへ渡さない。待機後もSQL時計・現行認可・予約・正確なjournal binding/revisionを検査する。dirty partsは最大200、追加envelopeを含めてもD1の1,000 statement上限内。終端公開証明の読取りとローカルのcompleted照合は新たなD1 mutation受付を増やさない。
 
-停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。自動回収/GC・Queue・backupの受付接続は後続。
+停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。GC・残るinventory/Queue・backupの受付接続は後続。
+
+## 単一・分割アップロードの自動回収
+
+単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+停止claimは正確なcleanup tokenで回収できますが、外部HEAD/abortは予算batchの直接ACKが必要です。確定済みDB記録はexact receiptで照合し、他の回収処理の終端記録で自分の未確定枠を返しません。待機・遅いACKで実行時間を超えた場合は外部送信を止め、予約・leaseを保持します。ControlDO内の復旧は同じinstanceの受付を直接使い、自己RPCや別枠を作りません。
+
+| system kind | 同一batchの処理 | ACK喪失後 |
+|---|---|---|
+| upload.cleanup-claim | 停止・cleanup lease・孤立化、共有inventoryのscan作成 | exact receiptと自分のcleanup tokenを照合。外部送信は別の予算受付が必要 |
+| upload.cleanup-call | cleanup_calls加算・control/source/lease fence | 直接ACK必須。待機前のrun期限を取得後とACK後に検査 |
+| upload.cleanup-observe | metadata不一致も含む実physical bytes | exact DB receiptで回収。予約は別の閉鎖証明まで保持 |
+| upload.cleanup-close | 既知handleのabort成功、または既知complete attemptのobject確認 | exact DB receiptで回収。NoSuchUpload/不在だけでは閉鎖しない |
+| upload.cleanup-settle | 閉鎖条件・予約解放・physical/GC引渡し・cleanup token解放 | exact DB receipt、または完全な終端tuple。別処理のtupleで自分の枠は返さない |
+| upload.cleanup-error | 現在epoch/modeと自分のcleanup tokenに対するエラー | best effort。混雑・記録失敗でも保留・再試行時刻を保持 |
+
+CronはCONTROL binding、ControlDO内のmaintenanceは同一instanceのstatus/acquireSystemMutationを必須引数で供給する。DBだけのfallbackはない。回収前後の復旧監査・quiesceは維持する。disabled owner/失効credential/旧source epochでも現在のsystem受付で回収できるが、元のcontrol epoch/mode、cleanup lease、未公開・pin・GC・閉鎖条件はbatchで再検査する。
+
+unknown-ID inventoryは共有する停止claimだけがこの段階の接続対象。残るscan/cursor/page・全bucket/GC・Queue・backupは後続。migration0033/67tableを維持し、global scopeや偽のowner-spaceを追加しない。
