@@ -1,3 +1,4 @@
+import type { SystemMutationSource } from "../services/systemMutation";
 import { consumeOutbox } from "./consumeOutbox";
 
 export interface OutboxDelivery {
@@ -20,15 +21,16 @@ function outboxId(body: unknown): string | null {
 
 /** Call only after ControlDO admission. Cloudflare moves exhausted retries to the configured DLQ. */
 export async function handleOutboxBatch(
-  db: D1Database,
+  env: SystemMutationSource,
   batch: OutboxBatch,
 ): Promise<{ acked: number; retried: number }> {
   let acked = 0;
   let retried = 0;
+  const deadline = Date.now() + 25_000;
   for (const message of batch.messages) {
     try {
       const id = outboxId(message.body);
-      const result = id ? await consumeOutbox(db, id) : "retry";
+      const result = id && Date.now() < deadline ? await consumeOutbox(env, id, deadline) : "retry";
       if (result === "completed" || result === "failed") {
         message.ack();
         acked++;

@@ -1,5 +1,10 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertOneChange, primary } from "../db/primary";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationSource,
+} from "../services/systemMutation";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
@@ -17,6 +22,7 @@ interface EventRow {
   credential_id: string | null;
   credential_version: number | null;
   space_id: string;
+  owner_id: string;
   operands_json: string;
   result_json: string | null;
 }
@@ -25,7 +31,8 @@ async function eventRow(db: D1Database, id: string): Promise<EventRow | null> {
   return primary(db)
     .prepare(`SELECT b.state,b.kind,b.payload_ref,b.epoch,o.op_id,o.kind AS op_kind,
       o.state AS op_state,o.principal_kind,o.principal_id,o.credential_id,
-      o.credential_version,o.space_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      o.credential_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      JOIN spaces s ON s.id=o.space_id
       WHERE b.outbox_id=?`)
     .bind(id)
     .first<EventRow>();
@@ -54,7 +61,14 @@ function savedPrincipal(row: EventRow): Principal | null {
 }
 
 /** Complete a node event only after a fenced D1 claim and current authorization. */
-export async function consumeOutbox(db: D1Database, outboxId: string): Promise<ConsumeResult> {
+export async function consumeOutbox(
+  env: SystemMutationSource,
+  outboxId: string,
+  deadline = Date.now() + 25_000,
+): Promise<ConsumeResult> {
+  const { DB: db } = env;
+  if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 25_000)
+    return "retry";
   if (!outboxId || outboxId.length > 128) return "retry";
   const row = await eventRow(db, outboxId);
   if (row?.state === "completed") return "completed";
@@ -166,7 +180,9 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
   const token = crypto.randomUUID();
   const clock = "strftime('%s','now')*1000";
   try {
-    await atomicBatch(db, [
+    const claim = await acquireSystemMutation(env, row.owner_id, "outbox.consume-claim", deadline);
+    if (Date.now() >= deadline) throw new Error("outbox_budget");
+    await commitSystemMutation(db, claim, row.owner_id, [
       authorizationAssertion(authorized),
       {
         sql: `UPDATE outbox SET claim_token=?,claim_expires_at=${clock}+?,updated_at=MAX(updated_at,${clock})
@@ -191,7 +207,9 @@ export async function consumeOutbox(db: D1Database, outboxId: string): Promise<C
       },
       assertOneChange,
     ]);
-    await atomicBatch(db, [
+    const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
+    if (Date.now() >= deadline) throw new Error("outbox_budget");
+    await commitSystemMutation(db, completion, row.owner_id, [
       authorizationAssertion(authorized),
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})

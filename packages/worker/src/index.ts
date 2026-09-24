@@ -116,12 +116,12 @@ export default {
       batch.retryAll();
       return;
     }
-    await handleOutboxBatch(env.DB, batch);
+    await handleOutboxBatch(env, batch);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const epoch = await admittedEpoch(env);
     if (epoch === null) return;
-    await dispatchPendingOutbox(env.DB, env.JOBS, epoch);
+    await dispatchPendingOutbox(env, env.JOBS, epoch);
     await repairSingleUploads(env, env.BLOBS, epoch);
     await repairMultipartUploads(env, env.BLOBS, epoch);
     await scanOrphanObjects(env.DB, env.BLOBS, epoch);

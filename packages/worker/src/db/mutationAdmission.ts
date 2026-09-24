@@ -51,6 +51,11 @@ export const SYSTEM_MUTATION_KINDS = [
   "upload.inventory-abort",
   "upload.inventory-release",
   "upload.inventory-error",
+  "outbox.dispatch-claim",
+  "outbox.send",
+  "outbox.sent",
+  "outbox.consume-claim",
+  "outbox.complete",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

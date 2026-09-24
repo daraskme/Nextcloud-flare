@@ -72,12 +72,29 @@ describe("fixed S3 binding probe read", () => {
   });
 
   it("applies the same transport deadline while reading a probe body", async () => {
-    const cancel = vi.fn();
-    const fetch = async () => new Response(new ReadableStream({ cancel }));
-    await expect(
-      new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).readBindingProbe(),
-    ).rejects.toThrow("s3_inventory_timeout");
-    expect(cancel).toHaveBeenCalledTimes(1);
+    // Real signing can exceed 20ms on CI. Advance the transport timer only once read() is pending.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const cancel = vi.fn();
+      let reading!: () => void;
+      const pendingRead = new Promise<void>((resolve) => {
+        reading = resolve;
+      });
+      const fetch = vi.fn(
+        async () =>
+          new Response(new ReadableStream({ pull: reading, cancel }, { highWaterMark: 0 })),
+      );
+      const rejected = expect(
+        new R2S3Inventory(inventoryEnv, { fetch, timeoutMs: 20 }).readBindingProbe(),
+      ).rejects.toThrow("s3_inventory_timeout");
+      await pendingRead;
+      await vi.advanceTimersByTimeAsync(20);
+      await rejected;
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -155,7 +155,8 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | 既存uploadの未知multipart ID調査・回収 | 接続済み。claimに加えて走査・予算・観測・中止receipt・lease返却・エラーが共通system受付 |
 | global probe・orphan/全bucket inventory更新 | 既存制御を維持。共通受付は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
-| 残るQueue consumer・inventory・repair更新 | 未接続 |
+| 通常Outbox送信・node event consumer | 接続済み。送信claim/send/sent・受信claim/complete、所有space、同じ32/256枠 |
+| global inventory・旧epoch repair更新 | 未接続 |
 | backup専用barrier・全更新経路の統合 | 未実装 |
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
@@ -258,3 +259,19 @@ owner未復元のorphan、global cursor/lease、全bucket multipart inventory/Qu
 受付はmandatoryなSystemMutationSourceを使い、ControlDO内部は同じinstanceへ直接接続する。待機時間は1回最大5秒、外部操作開始はfresh検証後から既定20秒/最大25秒。R2/S3対応証明の60秒leaseを延長しない。既存のmaxUploads20/maxHandles20、1 uploadにつき1ページ20件、全ページ完了後だけabortする制限を維持する。
 
 別の処理が残した機能上のreceiptは、自分の未確定共通枠を返す証拠にはしない。probeそのもののglobal更新は所有spaceへ流用せず、別途明示的なscopeを設計する。全bucket走査や未知ID全体の閉鎖・予約精算の完成を意味しない。
+
+## Queueの送信・受信
+
+Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
+
+待機後にepoch/maintenance、正確なtokenとlease、受信側の現行credential・認可・元operationの証明を再検査します。DB-onlyの記録はexact receiptで回収しますが、今回のQueue送信には別受付と直接ACKが必要です。送信応答を失った通知はlease後に同じIDで再送でき、確定済みcompleted/failedの再配信は追加受付なしで確認します。Cron・Queue batchは共通の25秒期限を使い、未処理メッセージをretryします。
+
+| system kind | 同一batchの処理 | 応答喪失後 |
+|---|---|---|
+| outbox.dispatch-claim | pending/期限切れからdispatching、SQL時計による30秒lease | exact receiptまたは自分のdispatch tokenを照合。送信前に別受付と現行条件が必要 |
+| outbox.send | 正確なdispatch token/lease、committed operation、current epoch/maintenanceの再確認と自分のreceipt確定 | 直接ACKなしでは今回のsendを実行しない。期限後の同一ID再送は可能 |
+| outbox.sent | 自分のdispatchingをsentへ変更 | exact receiptまたは正確なsent tokenを照合。速いconsumerのcompletedは戻さない |
+| outbox.consume-claim | 現在の認可と保存済みoperand/result/node stepを検査し30秒claim | exact receipt回収。後続の完了も別受付と現行認可が必要 |
+| outbox.complete | 自分のclaim/leaseと現行認可を検査してcompleted | exact receiptまたはdurable terminalだけをackの根拠にする |
+
+completed/failedの照会は枠を取らない。他のconsumerが完成させたterminalはQueue応答の判断に使えるが、自分の未確定枠を返す証拠にはならない。既存のID-only/at-least-onceを維持し、R2初期化や転送の一回限定dispatchとは区別する。公開Workerのqueue/scheduledからmandatory SystemMutationSourceを渡す。global inventory・旧epoch repairとbackup barrierは後続。詳しい制限と試験は[OUTBOX](OUTBOX.md)。

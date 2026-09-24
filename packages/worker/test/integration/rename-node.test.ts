@@ -26,7 +26,7 @@ import {
 import { restoreTrash } from "../../src/services/restoreTrash";
 import { trashNode } from "../../src/services/trashNode";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireMutation, grantPermit } from "../fixtures/mutationAdmission";
+import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -329,7 +329,7 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(copyOperation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${copyOperation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${copyOperation.id}_event`)).toBe("completed");
   expect(await (await send(copyPath, "POST", copyBody, copyKey)).json()).toMatchObject({
     id: copyOperation.id,
   });
@@ -354,7 +354,7 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(moveOperation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${moveOperation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${moveOperation.id}_event`)).toBe("completed");
   expect(await (await send(movePath, "POST", moveBody, moveKey)).json()).toMatchObject({
     id: moveOperation.id,
   });
@@ -375,7 +375,7 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(trashOperation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${trashOperation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${trashOperation.id}_event`)).toBe("completed");
   expect((await send(trashPath, "DELETE", base, trashKey)).status).toBe(200);
   await env.DB.prepare(
     `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
@@ -420,7 +420,7 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(restoreOperation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${restoreOperation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${restoreOperation.id}_event`)).toBe("completed");
   expect(
     await (
       await send(restorePath, "POST", { ...base, destinationParentId: f.ids.root }, restoreKey)
@@ -449,7 +449,7 @@ it("copies, moves, and trashes through the private REST bridge", async () => {
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(purgeOperation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${purgeOperation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${purgeOperation.id}_event`)).toBe("completed");
   expect(await (await send(purgePath, "POST", purgeBody, purgeKey)).json()).toMatchObject({
     id: purgeOperation.id,
     state: "committed",
@@ -675,7 +675,7 @@ it("copies a fixed folder manifest with COW blobs and dead properties", async ()
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(copied.operation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${copied.operation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${copied.operation.id}_event`)).toBe("completed");
   expect(await copyNode(admitted(), request)).toMatchObject({
     kind: "terminal",
     operation: { state: "committed" },
@@ -799,7 +799,7 @@ it("moves a bounded subtree between folders and publishes one atomic operation",
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE outbox_id=?")
     .bind(outboxId)
     .run();
-  expect(await consumeOutbox(env.DB, outboxId)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), outboxId)).toBe("completed");
   expect(await moveNode(admitted(), request)).toMatchObject({
     kind: "terminal",
     operation: { state: "committed" },
@@ -982,7 +982,7 @@ it("atomically renames a node and replaces its search terms, with one terminal r
   await env.DB.prepare("UPDATE outbox SET state='dispatching' WHERE op_id=?")
     .bind(plan.claim.intent.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${plan.claim.intent.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${plan.claim.intent.id}_event`)).toBe("completed");
   expect(await commitMutationStatements(env.DB, plan.claim, statements)).toMatchObject({
     kind: "terminal",
     operation: { state: "committed" },

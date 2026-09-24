@@ -269,10 +269,14 @@ folder は blob を持たず容量 counter を変えない。FTS と outbox が�
 
 ### outbox producer / consumer
 
+Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
+
+待機後にepoch/maintenance、正確なtokenとlease、受信側の現行credential・認可・元operationの証明を再検査します。DB-onlyの記録はexact receiptで回収しますが、今回のQueue送信には別受付と直接ACKが必要です。送信応答を失った通知はlease後に同じIDで再送でき、確定済みcompleted/failedの再配信は追加受付なしで確認します。Cron・Queue batchは共通の25秒期限を使い、未処理メッセージをretryします。 詳細は[OUTBOX](OUTBOX.md)。
+
 `jobs/outbox.ts` は D1 の current epoch/maintenance解除/committed operation を条件に30秒 dispatch lease を取得し、Queue へ `{outboxId}` だけ送る。
 送信後の sent 更新は同じ token/lease で CAS し、先に completed となった行や新しい sender の token を上書きしない。
-送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査し、有効な consumer claim がある行を再送しない。
-`jobs/consumeOutbox.ts` は `node.created` と `node.renamed` を処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の認可で再検査し、30秒の claim token/lease を取得する。rename では対象 node と元の parent の一致も確認する。元 operation の node step、保存済み operand/result、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。後続の node mutation で `last_op_id` が変わっても元 event の検証は維持される。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
+送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査し、有効な consumer claim がある行を再送しない。1 passは固定25秒の受付/送信開始期限を共有する。
+`jobs/consumeOutbox.ts` は `node.created/updated/renamed/trashed/restored/purged` を処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の認可で再検査し、30秒の claim token/lease を取得する。rename では対象 node と元の parent の一致も確認する。元 operation の node step、保存済み operand/result、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。後続の node mutation で `last_op_id` が変わっても元 event の検証は維持される。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
 `jobs/queue.ts` は ID-only メッセージを逐次処理し、completed/failed の終端行だけを ack、それ以外を retry する。ack 喪失後の再配信は同じ terminal を確認して収束する。`index.ts` の Queue handler は ControlDO status と D1 epoch/maintenance mirror が揃う場合だけ consumer を呼び、閉鎖中や状態不明では batch 全件を retry する。scheduled handler も同じ admission 条件で `dispatchPendingOutbox` を最大50件呼び、ローカル設定は毎分 Cron を指定する。ControlDOは監査後の段階再開を実装済みだが、実Queue/Cron環境は未配備。ローカル Queue 設定は最大10回の再試行後 DLQ へ送るが、実 Queue/Cron/DLQ の end-to-end 試験、他のevent kindと実復旧drillは未完了。
 
 ### 実サービス gate
@@ -298,4 +302,4 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
 
-global probe・orphan/全bucket inventory・Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。
+global probe・orphan/全bucket inventory・旧epoch repairの更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。

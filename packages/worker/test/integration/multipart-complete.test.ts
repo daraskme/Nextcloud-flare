@@ -13,6 +13,7 @@ import { publishMultipartUpload } from "../../src/services/uploads/complete";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -142,7 +143,7 @@ it("completes R2, atomically publishes a file, and reconciles the DO without a w
   )
     .bind(Date.now() + 60000, result.operation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${result.operation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${result.operation.id}_event`)).toBe("completed");
 });
 
 it("recovers an R2 complete acknowledgement loss with HEAD and never completes twice", async () => {

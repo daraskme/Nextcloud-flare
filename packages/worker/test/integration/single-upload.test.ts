@@ -191,7 +191,7 @@ it("reserves before storing and publishes all metadata only at complete", async 
   )
     .bind(Date.now() + 60000, result.operation.id)
     .run();
-  expect(await consumeOutbox(env.DB, `${result.operation.id}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${result.operation.id}_event`)).toBe("completed");
 });
 
 it("supports zero-byte single uploads through complete", async () => {

@@ -1259,7 +1259,7 @@ it("streams DAV PUT creates and conditional overwrites into immutable versioned 
   )
     .bind(Date.now() + 30_000, Date.now(), first!.opId)
     .run();
-  expect(await consumeOutbox(env.DB, `${first!.opId}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${first!.opId}_event`)).toBe("completed");
 
   const unconditioned = await handleDavHttp(
     new Request("https://app.invalid/dav/Put.txt", {
@@ -1327,7 +1327,7 @@ it("streams DAV PUT creates and conditional overwrites into immutable versioned 
   )
     .bind(Date.now() + 30_000, Date.now(), current!.opId)
     .run();
-  expect(await consumeOutbox(env.DB, `${current!.opId}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${current!.opId}_event`)).toBe("completed");
   await env.DB.prepare("UPDATE users SET quota_bytes=used_bytes WHERE id=?").bind(f.ids.user).run();
   const beforeQuotaFailure = await env.BLOBS.list({ prefix: `u/${f.ids.user}/b/` });
   const quotaFailure = await handleDavHttp(
@@ -1545,13 +1545,13 @@ it("atomically trashes a bounded DAV subtree and revokes its locks and shares", 
     contentRevoked: 1,
     ticketCancelled: 1,
   });
-  expect(await consumeOutbox(env.DB, `${operation!.opId}_event`)).toBe("retry");
+  expect(await consumeOutbox(mutationEnv(), `${operation!.opId}_event`)).toBe("retry");
   await env.DB.prepare(
     "UPDATE outbox SET state='dispatching',dispatch_token='trash',dispatch_expires_at=?,updated_at=? WHERE op_id=?",
   )
     .bind(Date.now() + 30_000, Date.now(), operation!.opId)
     .run();
-  expect(await consumeOutbox(env.DB, `${operation!.opId}_event`)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), `${operation!.opId}_event`)).toBe("completed");
   expect(
     (
       await handleDavHttp(

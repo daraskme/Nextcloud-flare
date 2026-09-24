@@ -1,4 +1,10 @@
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import {
+  acquireSystemMutation,
+  commitSystemMutation,
+  type SystemMutationSource,
+  systemMutationStatements,
+} from "../services/systemMutation";
 
 export const OUTBOX_DISPATCH_LEASE_MS = 30_000;
 export interface OutboxMessage {
@@ -11,35 +17,59 @@ interface DispatchRow {
   outbox_id: string;
   state: string;
   dispatch_token: string | null;
+  space_id: string;
+  owner_id: string;
 }
 async function row(db: D1Database, id: string): Promise<DispatchRow | null> {
   return primary(db)
-    .prepare("SELECT outbox_id,state,dispatch_token FROM outbox WHERE outbox_id=?")
+    .prepare(`SELECT b.outbox_id,b.state,b.dispatch_token,o.space_id,s.owner_id FROM outbox b
+      JOIN operations o ON o.op_id=b.op_id JOIN spaces s ON s.id=o.space_id WHERE b.outbox_id=?`)
     .bind(id)
     .first<DispatchRow>();
 }
 
-function dispatchAssertion(id: string, token: string, epoch: number) {
+function dispatchAssertion(id: string, token: string, epoch: number, spaceId: string) {
   return assertExists(
     `SELECT 1 FROM outbox b JOIN operations o ON o.op_id=b.op_id JOIN control c ON c.singleton=1
     WHERE b.outbox_id=? AND b.dispatch_token=? AND b.state='dispatching' AND b.dispatch_expires_at>strftime('%s','now')*1000
-      AND b.epoch=? AND c.epoch=b.epoch AND c.maintenance=0 AND o.state='committed' AND o.epoch=b.epoch`,
-    [id, token, epoch],
+      AND b.epoch=? AND c.epoch=b.epoch AND c.maintenance=0 AND o.state='committed' AND o.epoch=b.epoch AND o.space_id=?`,
+    [id, token, epoch, spaceId],
   );
 }
 
 /** Queue payloads contain only a durable ID. Lost send acknowledgements retain a lease for retry. */
 export async function dispatchOutbox(
-  db: D1Database,
+  env: SystemMutationSource,
   queue: OutboxSender,
   outboxId: string,
   epoch: number,
 ): Promise<DispatchResult> {
+  return dispatch(env, queue, outboxId, epoch, Date.now() + 25_000);
+}
+
+async function dispatch(
+  env: SystemMutationSource,
+  queue: OutboxSender,
+  outboxId: string,
+  epoch: number,
+  deadline: number,
+): Promise<DispatchResult> {
+  const { DB: db } = env;
   if (!outboxId || outboxId.length > 128 || !Number.isSafeInteger(epoch) || epoch < 1)
     throw new Error("invalid_outbox_dispatch");
+  const current = await row(db, outboxId);
+  if (current?.state === "completed") return "completed";
+  if (!current || current.state === "failed") return "busy";
   const token = crypto.randomUUID();
   try {
-    await atomicBatch(db, [
+    const admission = await acquireSystemMutation(
+      env,
+      current.owner_id,
+      "outbox.dispatch-claim",
+      deadline,
+    );
+    if (Date.now() >= deadline) throw new Error("outbox_budget");
+    await commitSystemMutation(db, admission, current.owner_id, [
       {
         sql: `UPDATE outbox SET state='dispatching',dispatch_token=?,dispatch_expires_at=strftime('%s','now')*1000+?,updated_at=MAX(updated_at,strftime('%s','now')*1000)
         WHERE outbox_id=? AND epoch=? AND (state='pending' OR (state IN ('dispatching','sent') AND dispatch_expires_at<=strftime('%s','now')*1000))
@@ -48,7 +78,7 @@ export async function dispatchOutbox(
         AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch)`,
         values: [token, OUTBOX_DISPATCH_LEASE_MS, outboxId, epoch, epoch],
       },
-      dispatchAssertion(outboxId, token, epoch),
+      dispatchAssertion(outboxId, token, epoch, current.space_id),
     ]);
   } catch {
     // Check the exact persisted token after an ambiguous claim response.
@@ -58,9 +88,20 @@ export async function dispatchOutbox(
   }
   try {
     // A claim response alone cannot authorize a send after maintenance/epoch changed.
-    await atomicBatch(db, [dispatchAssertion(outboxId, token, epoch)]);
+    const send = await acquireSystemMutation(env, current.owner_id, "outbox.send", deadline);
+    if (Date.now() >= deadline) throw new Error("outbox_budget");
+    await atomicBatch(
+      db,
+      systemMutationStatements(send, current.owner_id, [
+        dispatchAssertion(outboxId, token, epoch, current.space_id),
+      ]),
+    );
+    // This invocation needs direct ACK. A later leased retry may resend the same durable ID.
+    if (Date.now() >= deadline) throw new Error("outbox_budget");
     await queue.send({ outboxId }, { contentType: "json" });
-    await atomicBatch(db, [
+    const sent = await acquireSystemMutation(env, current.owner_id, "outbox.sent");
+    await commitSystemMutation(db, sent, current.owner_id, [
+      dispatchAssertion(outboxId, token, epoch, current.space_id),
       {
         sql: `UPDATE outbox SET state='sent',updated_at=MAX(updated_at,strftime('%s','now')*1000)
         WHERE outbox_id=? AND state='dispatching' AND dispatch_token=? AND epoch=? AND dispatch_expires_at>strftime('%s','now')*1000
@@ -79,11 +120,13 @@ export async function dispatchOutbox(
 
 /** Bounded Cron/repair entry point. A sent lease is retried until a consumer has persisted completion. */
 export async function dispatchPendingOutbox(
-  db: D1Database,
+  env: SystemMutationSource,
   queue: OutboxSender,
   epoch: number,
   limit = 50,
 ): Promise<{ inspected: number; sent: number }> {
+  const { DB: db } = env;
+  const deadline = Date.now() + 25_000;
   if (
     !Number.isSafeInteger(epoch) ||
     epoch < 1 ||
@@ -100,9 +143,12 @@ export async function dispatchPendingOutbox(
     ORDER BY b.updated_at,b.outbox_id LIMIT ?`)
     .bind(epoch, limit)
     .all<{ outbox_id: string }>();
-  let sent = 0;
+  let sent = 0,
+    inspected = 0;
   for (const candidate of candidates.results) {
-    if ((await dispatchOutbox(db, queue, candidate.outbox_id, epoch)) === "sent") sent++;
+    if (Date.now() >= deadline) break;
+    inspected++;
+    if ((await dispatch(env, queue, candidate.outbox_id, epoch, deadline)) === "sent") sent++;
   }
-  return { inspected: candidates.results.length, sent };
+  return { inspected, sent };
 }

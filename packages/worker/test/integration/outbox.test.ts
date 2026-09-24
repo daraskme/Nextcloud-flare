@@ -12,8 +12,8 @@ import {
   type OutboxSender,
 } from "../../src/jobs/outbox";
 import { handleOutboxBatch, type OutboxDelivery } from "../../src/jobs/queue";
-import { foundationFixture } from "../fixtures/foundation";
-import { grantPermit } from "../fixtures/mutationAdmission";
+import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { outboxFixture as fixture } from "../fixtures/outbox";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -21,39 +21,6 @@ beforeAll(async () => {
 beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
-
-async function fixture(result?: { status: number; nodeId?: string }) {
-  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
-  await atomicBatch(env.DB, f.statements);
-  const permit = await grantPermit(env.DB, crypto.randomUUID(), f.ids.space, 1);
-  const id = crypto.randomUUID();
-  await atomicBatch(env.DB, [
-    {
-      sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
-      VALUES(?,'user',?,?,?,'node.create','committed','digest',1,?,?,?,0,1,1,?,?)`,
-      values: [
-        id,
-        f.ids.user,
-        f.ids.credential,
-        f.ids.space,
-        permit.permit_id,
-        permit.expires_at,
-        permit.expires_at,
-        JSON.stringify({ parentId: f.ids.root }),
-        JSON.stringify({ status: result?.status ?? 201, nodeId: result?.nodeId ?? f.ids.folder }),
-      ],
-    },
-    {
-      sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,'node.created',?,'pending',1,1,1)",
-      values: [id, id, f.ids.folder],
-    },
-    {
-      sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
-      values: [id, f.ids.folder],
-    },
-  ]);
-  return { ...f, id };
-}
 
 function sender(callback?: () => Promise<void>) {
   const messages: OutboxMessage[] = [];
@@ -74,6 +41,7 @@ function admittedEnv(queue: OutboxSender = env.JOBS, maintenance = false): Env {
     CONTROL: {
       idFromName: () => "singleton",
       get: () => ({
+        acquireSystemMutation,
         status: async () => ({ epoch: 1, maintenance, gcPaused: maintenance }),
       }),
     },
@@ -84,9 +52,9 @@ function admittedEnv(queue: OutboxSender = env.JOBS, maintenance = false): Env {
 it("sends only the outbox ID and keeps an active sent lease from duplicate dispatch", async () => {
   const f = await fixture();
   const s = sender();
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("sent");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("sent");
   expect(s.messages).toEqual([{ outboxId: f.id }]);
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("busy");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("busy");
   expect(s.messages).toHaveLength(1);
 });
 
@@ -95,8 +63,8 @@ it("never downgrades completed when a fast consumer finishes before the producer
   const s = sender(async () => {
     await env.DB.prepare("UPDATE outbox SET state='completed' WHERE outbox_id=?").bind(f.id).run();
   });
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("completed");
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("completed");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("completed");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("completed");
   expect(s.messages).toHaveLength(1);
 });
 
@@ -105,13 +73,13 @@ it("resends the same ID after a send acknowledgement is lost and its lease expir
   const s = sender(async () => {
     throw new Error("send_ack_lost");
   });
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("retry");
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("busy");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("retry");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("busy");
   await env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
     .bind(f.id)
     .run();
   const retry = sender();
-  expect(await dispatchOutbox(env.DB, retry.queue, f.id, 1)).toBe("sent");
+  expect(await dispatchOutbox(mutationEnv(), retry.queue, f.id, 1)).toBe("sent");
   expect(s.messages).toEqual(retry.messages);
 });
 
@@ -127,7 +95,7 @@ it.each([1, 3])("reconciles a lost D1 response on dispatch batch %s", async (los
       return result;
     },
   } as unknown as D1Database;
-  expect(await dispatchOutbox(db, s.queue, f.id, 1)).toBe("sent");
+  expect(await dispatchOutbox(mutationEnv(db), s.queue, f.id, 1)).toBe("sent");
   expect(s.messages).toHaveLength(1);
 });
 
@@ -139,12 +107,12 @@ it("fences a slow producer after another producer takes the expired lease", asyn
     await env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
       .bind(f.id)
       .run();
-    expect(await dispatchOutbox(env.DB, next.queue, f.id, 1)).toBe("sent");
+    expect(await dispatchOutbox(mutationEnv(), next.queue, f.id, 1)).toBe("sent");
     winner = await env.DB.prepare("SELECT dispatch_token FROM outbox WHERE outbox_id=?")
       .bind(f.id)
       .first<string>("dispatch_token");
   });
-  expect(await dispatchOutbox(env.DB, slow.queue, f.id, 1)).toBe("retry");
+  expect(await dispatchOutbox(mutationEnv(), slow.queue, f.id, 1)).toBe("retry");
   expect(
     await env.DB.prepare("SELECT dispatch_token FROM outbox WHERE outbox_id=?")
       .bind(f.id)
@@ -175,7 +143,7 @@ it.each(["maintenance", "epoch", "uncommitted"])(
     }
     expect(
       await dispatchOutbox(
-        env.DB,
+        mutationEnv(),
         s.queue,
         condition === "uncommitted" ? `${f.id}-claimed` : f.id,
         1,
@@ -202,14 +170,14 @@ it("keeps the durable event identity immutable", async () => {
 
 async function dispatchedEvent() {
   const f = await fixture();
-  expect(await dispatchOutbox(env.DB, sender().queue, f.id, 1)).toBe("sent");
+  expect(await dispatchOutbox(mutationEnv(), sender().queue, f.id, 1)).toBe("sent");
   return f;
 }
 
 it("claims and completes a current event, then accepts duplicate delivery", async () => {
   const f = await dispatchedEvent();
-  expect(await consumeOutbox(env.DB, f.id)).toBe("completed");
-  expect(await consumeOutbox(env.DB, f.id)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), f.id)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), f.id)).toBe("completed");
   expect(
     await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
   ).toBe("completed");
@@ -219,8 +187,8 @@ it.each([{ status: 200 }, { status: 201, nodeId: "wrong" }])(
   "does not complete an event with a mismatched saved result %j",
   async (result) => {
     const f = await fixture(result);
-    expect(await dispatchOutbox(env.DB, sender().queue, f.id, 1)).toBe("sent");
-    expect(await consumeOutbox(env.DB, f.id)).toBe("retry");
+    expect(await dispatchOutbox(mutationEnv(), sender().queue, f.id, 1)).toBe("sent");
+    expect(await consumeOutbox(mutationEnv(), f.id)).toBe("retry");
     expect(
       await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
     ).toBe("sent");
@@ -232,7 +200,7 @@ it("keeps the original event valid after a later node mutation", async () => {
   await env.DB.prepare("UPDATE nodes SET last_op_id=? WHERE id=?")
     .bind(`${f.id}-later`, f.ids.folder)
     .run();
-  expect(await consumeOutbox(env.DB, f.id)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(), f.id)).toBe("completed");
 });
 
 function delivery(body: unknown, loseAck = false) {
@@ -257,7 +225,9 @@ it("acks only completed IDs and retries invalid or unavailable deliveries", asyn
   const invalid = delivery({ outboxId: f.id, payload: "unexpected" });
   const absent = delivery({ outboxId: crypto.randomUUID() });
   expect(
-    await handleOutboxBatch(env.DB, { messages: [valid.message, invalid.message, absent.message] }),
+    await handleOutboxBatch(mutationEnv(), {
+      messages: [valid.message, invalid.message, absent.message],
+    }),
   ).toEqual({ acked: 1, retried: 2 });
   expect(valid.counts()).toEqual({ acked: 1, retried: 0 });
   expect(invalid.counts()).toEqual({ acked: 0, retried: 1 });
@@ -267,9 +237,9 @@ it("acks only completed IDs and retries invalid or unavailable deliveries", asyn
 it("acks a durable failed event after recovery without replaying it", async () => {
   const f = await fixture();
   await env.DB.prepare("UPDATE outbox SET state='failed' WHERE outbox_id=?").bind(f.id).run();
-  expect(await consumeOutbox(env.DB, f.id)).toBe("failed");
+  expect(await consumeOutbox(mutationEnv(), f.id)).toBe("failed");
   const stale = delivery({ outboxId: f.id });
-  expect(await handleOutboxBatch(env.DB, { messages: [stale.message] })).toEqual({
+  expect(await handleOutboxBatch(mutationEnv(), { messages: [stale.message] })).toEqual({
     acked: 1,
     retried: 0,
   });
@@ -322,7 +292,7 @@ it("runs bounded Cron outbox repair only after admission and resends expired lea
 it("converges after a lost Queue ack without repeating the D1 result", async () => {
   const f = await dispatchedEvent();
   const lost = delivery({ outboxId: f.id }, true);
-  expect(await handleOutboxBatch(env.DB, { messages: [lost.message] })).toEqual({
+  expect(await handleOutboxBatch(mutationEnv(), { messages: [lost.message] })).toEqual({
     acked: 0,
     retried: 1,
   });
@@ -330,7 +300,7 @@ it("converges after a lost Queue ack without repeating the D1 result", async () 
     .bind(f.id)
     .first("claim_token");
   const duplicate = delivery({ outboxId: f.id });
-  expect(await handleOutboxBatch(env.DB, { messages: [duplicate.message] })).toEqual({
+  expect(await handleOutboxBatch(mutationEnv(), { messages: [duplicate.message] })).toEqual({
     acked: 1,
     retried: 0,
   });
@@ -392,8 +362,8 @@ it("uses the saved create scope for a share that has no read action", async () =
     },
     { sql: "UPDATE nodes SET last_op_id=? WHERE id=?", values: [eventId, f.ids.folder] },
   ]);
-  expect(await dispatchOutbox(env.DB, sender().queue, eventId, 1)).toBe("sent");
-  expect(await consumeOutbox(env.DB, eventId)).toBe("completed");
+  expect(await dispatchOutbox(mutationEnv(), sender().queue, eventId, 1)).toBe("sent");
+  expect(await consumeOutbox(mutationEnv(), eventId)).toBe("completed");
 });
 
 it("rejects stale event credentials and an old epoch before claim", async () => {
@@ -401,7 +371,7 @@ it("rejects stale event credentials and an old epoch before claim", async () => 
   await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
     .bind(Date.now(), revoked.ids.session)
     .run();
-  expect(await consumeOutbox(env.DB, revoked.id)).toBe("retry");
+  expect(await consumeOutbox(mutationEnv(), revoked.id)).toBe("retry");
   expect(
     await env.DB.prepare("SELECT claim_token FROM outbox WHERE outbox_id=?")
       .bind(revoked.id)
@@ -410,7 +380,7 @@ it("rejects stale event credentials and an old epoch before claim", async () => 
 
   const old = await dispatchedEvent();
   await env.DB.prepare("UPDATE control SET epoch=2").run();
-  expect(await consumeOutbox(env.DB, old.id)).toBe("retry");
+  expect(await consumeOutbox(mutationEnv(), old.id)).toBe("retry");
 });
 
 it("reconciles a lost completion acknowledgement from the terminal row", async () => {
@@ -424,7 +394,7 @@ it("reconciles a lost completion acknowledgement from the terminal row", async (
       return result;
     },
   } as unknown as D1Database;
-  expect(await consumeOutbox(db, f.id)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(db), f.id)).toBe("completed");
 });
 
 it("does not complete when the credential is revoked after claim", async () => {
@@ -442,7 +412,7 @@ it("does not complete when the credential is revoked after claim", async () => {
       return result;
     },
   } as unknown as D1Database;
-  expect(await consumeOutbox(db, f.id)).toBe("retry");
+  expect(await consumeOutbox(mutationEnv(db), f.id)).toBe("retry");
   expect(
     await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
   ).toBe("sent");
@@ -459,12 +429,12 @@ it("fences a worker whose claim lease was taken over", async () => {
         await env.DB.prepare("UPDATE outbox SET claim_expires_at=0 WHERE outbox_id=?")
           .bind(f.id)
           .run();
-        expect(await consumeOutbox(env.DB, f.id)).toBe("completed");
+        expect(await consumeOutbox(mutationEnv(), f.id)).toBe("completed");
       }
       return result;
     },
   } as unknown as D1Database;
-  expect(await consumeOutbox(db, f.id)).toBe("completed");
+  expect(await consumeOutbox(mutationEnv(db), f.id)).toBe("completed");
   expect(
     await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
   ).toBe("completed");
@@ -478,10 +448,10 @@ it("does not redispatch while a consumer claim is live", async () => {
     .bind(crypto.randomUUID(), Date.now() + 60_000, f.id)
     .run();
   const s = sender();
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("busy");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("busy");
   expect(s.messages).toEqual([]);
   await env.DB.prepare("UPDATE outbox SET claim_expires_at=0 WHERE outbox_id=?").bind(f.id).run();
-  expect(await dispatchOutbox(env.DB, s.queue, f.id, 1)).toBe("sent");
+  expect(await dispatchOutbox(mutationEnv(), s.queue, f.id, 1)).toBe("sent");
 });
 
 it("bounds repair dispatch and reclaims sent work whose consumer result is still absent", async () => {
@@ -494,15 +464,24 @@ it("bounds repair dispatch and reclaims sent work whose consumer result is still
   )
     .bind(Date.now() + 60000, first.id, second.id)
     .run();
-  expect(await dispatchPendingOutbox(env.DB, s.queue, 1, 1)).toEqual({ inspected: 1, sent: 1 });
-  expect(await dispatchPendingOutbox(env.DB, s.queue, 1, 1)).toEqual({ inspected: 1, sent: 1 });
+  expect(await dispatchPendingOutbox(mutationEnv(), s.queue, 1, 1)).toEqual({
+    inspected: 1,
+    sent: 1,
+  });
+  expect(await dispatchPendingOutbox(mutationEnv(), s.queue, 1, 1)).toEqual({
+    inspected: 1,
+    sent: 1,
+  });
   expect(s.messages).toHaveLength(2);
   await env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
     .bind(first.id)
     .run();
-  expect(await dispatchPendingOutbox(env.DB, s.queue, 1, 1)).toEqual({ inspected: 1, sent: 1 });
+  expect(await dispatchPendingOutbox(mutationEnv(), s.queue, 1, 1)).toEqual({
+    inspected: 1,
+    sent: 1,
+  });
   expect(s.messages[2]).toEqual({ outboxId: first.id });
-  await expect(dispatchPendingOutbox(env.DB, s.queue, 1, 101)).rejects.toThrow(
+  await expect(dispatchPendingOutbox(mutationEnv(), s.queue, 1, 101)).rejects.toThrow(
     "invalid_outbox_dispatch",
   );
 });
