@@ -21,7 +21,9 @@
     "verify:contracts": "node scripts/verify-contracts.mjs",
     "verify:config": "node scripts/verify-config.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm verify:contracts && pnpm verify:config && pnpm test && pnpm build",
-    "test:browser": "pnpm build:web && playwright test"
+    "test:browser": "pnpm build:web && playwright test",
+    "backup": "node scripts/backup.mjs",
+    "backup:drill": "node scripts/backup-drill.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",

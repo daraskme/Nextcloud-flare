@@ -365,3 +365,13 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
 
 開始は通常owner受付dav.put-start、保存事実と既知公開失敗の精算は既存system受付を使う。原子的な自己receipt確定後は本文に共通枠を持ち越さない。未結合の台帳も旧epoch汎用予約回収の対象外で、24h後のR2-aware cleanupが担当する。Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+
+## バックアップ世代の検証
+
+バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。
+
+pnpm backupのcapture/verify/restore-offlineを接続しました。実Wranglerのdata-only抽出、全migrationのhash、schemaと各tableの行数/hash、SQL checksumを束縛し、隔離先の同一schema・FK・FTSと容量を検証します。入力SQLは既知のINSERTとliteralだけを解析してbound parameterで取り込み、既存世代・既存DBを上書きしません。成功・失敗とも元のbarrierを保持し、R2公開や稼働再開の成功とは扱いません。
+
+Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。
+
+運用の接続境界・形式・失敗時の扱いは[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md)。

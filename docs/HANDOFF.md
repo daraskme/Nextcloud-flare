@@ -25,19 +25,21 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。
+直前commit bb6e6a6はmainへプッシュ済み。[CI36070823970](https://github.com/daraskme/Nextcloud-flare/actions/runs/36070823970)は全4ジョブ成功。Ubuntu6m25s、Windows 1/2は15m51s（47file/1,016件）、2/2は11m46s（47file/975件）、browser2m9sです。Node432・workerd1,991・browser19、重複を除く計2,442件を確認しました。今回の生成コマンドはこのCIには含まれません。
 
-バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
+バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。
 
-migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
+pnpm backupのcapture/verify/restore-offlineを接続しました。実Wranglerのdata-only抽出、全migrationのhash、schemaと各tableの行数/hash、SQL checksumを束縛し、隔離先の同一schema・FK・FTSと容量を検証します。入力SQLは既知のINSERTとliteralだけを解析してbound parameterで取り込み、既存世代・既存DBを上書きしません。成功・失敗とも元のbarrierを保持し、R2公開や稼働再開の成功とは扱いません。
 
-Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。
 
-内部RPCはbeginBackup/releaseBackup/cancelBackup。開始がfrozenのときだけsnapshotを取得でき、releasedの再照会を新しい許可にしない。解除時にbackup_runsをcompletedにしない。全tableのexportが同じsnapshotと実証できるまで、barrierを全抽出期間保持する。通常maintenance中のsystem/global更新もD1 guardで止める。詳細は[BACKUP_BARRIER](BACKUP_BARRIER.md)。
+コマンドと信頼境界は[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md)。captureは既にfrozenの内部ControlDO要求が前提で、開始/解除を代行しません。運用の認証経路を接続する前に公開endpointを追加して回避しないこと。出力はローカル世代で、backup_runsのcompletedやR2 manifest公開を主張しません。restore-offlineは新規ファイル専用で凍結を保持します。
 
-ControlDO全storage喪失時はD1のbackup tokenを確認し、epochのR2履歴を変更する前に拒否する。元の受付状態を推測で復元する回避策は追加していない。logical restore時の凍結状態解除・epoch更新・全監査も後続である。0037は新規migration。以後は前方migrationを追加する。
+Wranglerのschemaコメント除去を正規化しました。literalの意味は残します。改行と文字列\n/\rを混ぜたdumpで内容が変わる場合はsource digest不一致として拒否します。現在は同一versionの復元を要求し、旧versionの変換やprovider形式の差を推測で許可しません。schema初期化はtransactionでまとめ、初回のDDLごとのディスク同期による遅延を解消しました。
 
-logical export・checksum/manifest公開・FTSを含むrestore drill、backup停止中のControlDO全喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 全体完成扱いにしない。旧DAVは終了期限を保存していないため24h期限やHEADだけでwrite leaseの証明を代用しない。[RECOVERY_REPAIR](RECOVERY_REPAIR.md)を参照する。
+直前の[専用barrier](BACKUP_BARRIER.md)はbeginBackup/releaseBackup/cancelBackupの永続intent、ACK喪失・eviction・遅延競合・元policyの原子的復帰を実装済みです。全ControlDO storage喪失時にはD1 tokenを検査してR2 epoch公開を拒否します。migration0037はコミット済みで、次は0038以後の前方migrationを使います。
+
+ControlDOの運用呼出し経路、R2への世代公開・日次実行/保持管理、旧version・全データ形式の互換性、Time Travelとlive restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続です。旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。 全体完成扱いにしません。次はR2世代公開と検証済みgenerationの運用接続を進めます。
 
 ## 現在動いている範囲
 

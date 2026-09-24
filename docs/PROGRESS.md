@@ -1,23 +1,25 @@
 # 開発進捗
 
-更新日: 2026-09-25。製品全体は開発中。
+更新: 2026-09-25
 
 ## 確定した到達点
 
-Files基本操作、単一/分割upload、確認付き上書き・再開、trash/restore/purge、検索、フォルダー集計を接続済み。認証・会計・復旧・共通更新受付とKDF全体制限、WebDAVの転送と公開の分離を実装しています。
+Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAVの転送と公開、認証・会計・復旧・共通受付とKDF制限、バックアップ専用の書込み停止をローカル実装済みです。
 
-直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。
+直前commit bb6e6a6はmainへプッシュ済み。[CI36070823970](https://github.com/daraskme/Nextcloud-flare/actions/runs/36070823970)は全4ジョブ成功。Ubuntu6m25s、Windows 1/2は15m51s（47file/1,016件）、2/2は11m46s（47file/975件）、browser2m9sです。Node432・workerd1,991・browser19、重複を除く計2,442件を確認しました。今回の生成コマンドはこのCIには含まれません。
 
 ## 今回の変更
 
-バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
+バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。
 
-migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
+pnpm backupのcapture/verify/restore-offlineを接続しました。実Wranglerのdata-only抽出、全migrationのhash、schemaと各tableの行数/hash、SQL checksumを束縛し、隔離先の同一schema・FK・FTSと容量を検証します。入力SQLは既知のINSERTとliteralだけを解析してbound parameterで取り込み、既存世代・既存DBを上書きしません。成功・失敗とも元のbarrierを保持し、R2公開や稼働再開の成功とは扱いません。
 
-Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)と[BACKUP_BARRIER](BACKUP_BARRIER.md)。
+Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。
+
+詳細は[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md)と[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 ## 後続の主要項目
 
-logical export・checksum/manifest公開・FTSを含むrestore drill、backup停止中のControlDO全喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。
+ControlDOの運用呼出し経路、R2への世代公開・日次実行/保持管理、旧version・全データ形式の互換性、Time Travelとlive restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続です。旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9を維持する。remote migration・deployは未実施。
+全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。remote migration・deployは未実施です。

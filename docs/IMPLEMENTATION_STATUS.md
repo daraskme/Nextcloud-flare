@@ -3,12 +3,13 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前検証: 直前commit 303d620はmainへプッシュ済み。[CI36067451016](https://github.com/daraskme/Nextcloud-flare/actions/runs/36067451016)は全4ジョブ成功。Ubuntu7m27s、Windows 1/2は13m4s（47file/1,068件）、2/2は10m35s（46file/902件）、browser4m17sです。Node427・workerd1,970・browser19、重複を除く計2,416件を確認しました。今回のバックアップ変更はこのCIには含まれません。
+直前検証: 直前commit bb6e6a6はmainへプッシュ済み。[CI36070823970](https://github.com/daraskme/Nextcloud-flare/actions/runs/36070823970)は全4ジョブ成功。Ubuntu6m25s、Windows 1/2は15m51s（47file/1,016件）、2/2は11m46s（47file/975件）、browser2m9sです。Node432・workerd1,991・browser19、重複を除く計2,442件を確認しました。今回の生成コマンドはこのCIには含まれません。
 
 ## 今回の実装
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 バックアップ世代・オフライン復元 | pnpm backup、capture/verify/restore-offline、専用local drill、backup CI job | Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。 [BACKUP_GENERATIONS](BACKUP_GENERATIONS.md) |
 | 1/4 バックアップ書込み停止 | migration0037、ControlDOの永続barrier、watermark、全通常table guard、前のpolicyへ原子的復帰 | Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 [BACKUP_BARRIER](BACKUP_BARRIER.md) |
 | 1/3/7 DAV長時間転送 | migration0036、本文後のpermit、未結合操作IDの原子的公開・回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 [DAV_UPLOAD](DAV_UPLOAD.md) |
 | 1/3/7 DAV PUTの保存台帳 | migration0035、直接ACK/条件付きPUT、所有spaceの保存事実/失敗精算、24h回収/GC | Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。 [DAV_UPLOAD](DAV_UPLOAD.md) |

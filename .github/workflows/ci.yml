@@ -54,6 +54,28 @@ jobs:
       - if: matrix.shard != ''
         run: pnpm build
 
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@12.4.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm backup:drill
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: backup-failure
+          path: .wrangler/backup-drill-*/*.log
+          include-hidden-files: true
+          retention-days: 3
+
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15
