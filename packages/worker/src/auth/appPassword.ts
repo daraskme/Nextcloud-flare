@@ -1,21 +1,23 @@
 import { base64url } from "jose";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Principal } from "./authorize";
+import type { KdfDeriver } from "./globalKdf";
 import { KdfUnavailableError, runKdf } from "./kdf";
 
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const ID = /^ap_[0-9A-HJKMNP-TV-Z]{26}$/;
-const ITERATIONS = 100_000;
 const MAX_BASIC_BYTES = 512;
 
 export interface AppPasswordPepperRing {
   readonly activeKid: string;
   readonly keys: ReadonlyMap<string, CryptoKey>;
+  readonly derive: KdfDeriver;
 }
 
 export async function appPasswordPepperRing(
   activeKid: string,
   keys: Readonly<Record<string, string>>,
+  derive: KdfDeriver,
 ): Promise<AppPasswordPepperRing> {
   if (
     Object.keys(keys).length < 1 ||
@@ -37,7 +39,8 @@ export async function appPasswordPepperRing(
       ]),
     );
   }
-  return { activeKid, keys: imported };
+  if (typeof derive !== "function") throw new Error("kdf_backend_required");
+  return { activeKid, keys: imported, derive };
 }
 
 function secretBytes(secret: string): Uint8Array {
@@ -52,6 +55,7 @@ async function digest(
   secret: string,
   salt: Uint8Array,
   pepper: CryptoKey,
+  derive: KdfDeriver,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   secretBytes(secret);
@@ -59,14 +63,7 @@ async function digest(
   return runKdf(async () => {
     const peppered = await crypto.subtle.sign("HMAC", pepper, new TextEncoder().encode(secret));
     try {
-      const key = await crypto.subtle.importKey("raw", peppered, "PBKDF2", false, ["deriveBits"]);
-      return new Uint8Array(
-        await crypto.subtle.deriveBits(
-          { name: "PBKDF2", salt, iterations: ITERATIONS, hash: "SHA-256" },
-          key,
-          256,
-        ),
-      );
+      return new Uint8Array(await derive(peppered, salt, signal));
     } finally {
       new Uint8Array(peppered).fill(0);
     }
@@ -88,7 +85,7 @@ export async function hashAppPassword(
   if (!pepper) throw new Error("invalid_app_password_peppers");
   const salt = crypto.getRandomValues(new Uint8Array(16));
   return {
-    secretDigest: base64url.encode(await digest(secret, salt, pepper, signal)),
+    secretDigest: base64url.encode(await digest(secret, salt, pepper, ring.derive, signal)),
     salt: base64url.encode(salt),
     kdf: "PBKDF2-SHA256",
     kdfParams: '{"iterations":100000}',
@@ -186,7 +183,7 @@ async function matchesSecret(
     return (
       base64url.encode(salt) === row.salt &&
       base64url.encode(expected) === row.secret_digest &&
-      equalBytes(await digest(secret, salt, pepper, signal), expected)
+      equalBytes(await digest(secret, salt, pepper, ring.derive, signal), expected)
     );
   } catch (error) {
     if (error instanceof KdfUnavailableError) throw error;

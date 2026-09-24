@@ -6,6 +6,7 @@ import { privateAppDependencies } from "./api/privateAppConfig";
 import { privateAssetRoute, servePrivateApp } from "./assets/privateApp";
 import { appPasswordPepperRing } from "./auth/appPassword";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
+import { globalKdf } from "./auth/globalKdf";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
@@ -67,7 +68,7 @@ export default {
       try {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
-        return handlePrivateAppHttp(request, env, epoch, await privateAppDependencies(env));
+        return handlePrivateAppHttp(request, env, epoch, await privateAppDependencies(env, epoch));
       } catch {
         return problem(503, "not_ready");
       }
@@ -81,6 +82,7 @@ export default {
             ? await appPasswordPepperRing(
                 env.APP_PASSWORD_ACTIVE_KID,
                 JSON.parse(env.APP_PASSWORD_PEPPERS),
+                globalKdf(env.CONTROL, epoch),
               )
             : undefined;
         return handleDavHttp(request, env, epoch, pepper);

@@ -3,6 +3,7 @@ import { appPasswordPepperRing } from "../auth/appPassword";
 import type { BootstrapPolicy } from "../auth/bootstrap";
 import { ContentTokens, contentKeyRing } from "../auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
+import { globalKdf } from "../auth/globalKdf";
 import { AccessJwks } from "../auth/jwks";
 import { ListCursorTokens } from "../auth/listCursor";
 import { NodeCursorTokens } from "../auth/nodeCursor";
@@ -43,7 +44,10 @@ function bootstrapPolicy(env: Env): BootstrapPolicy {
 }
 
 /** Remote identity and signing material are mandatory; local bindings intentionally omit them. */
-export async function privateAppDependencies(env: Env): Promise<PrivateAppDependencies> {
+export async function privateAppDependencies(
+  env: Env,
+  epoch: number,
+): Promise<PrivateAppDependencies> {
   if (
     !env.ACCESS_ISSUER ||
     !env.ACCESS_USER_AUDIENCE ||
@@ -75,6 +79,7 @@ export async function privateAppDependencies(env: Env): Promise<PrivateAppDepend
       ? await appPasswordPepperRing(
           env.APP_PASSWORD_ACTIVE_KID,
           JSON.parse(env.APP_PASSWORD_PEPPERS),
+          globalKdf(env.CONTROL, epoch),
         )
       : undefined;
   const uploadCapabilities =

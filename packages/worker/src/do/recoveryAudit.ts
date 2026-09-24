@@ -138,6 +138,7 @@ async function assertQuiesced(db: D1Database, epoch: number): Promise<void> {
     .prepare(`SELECT 1 FROM control WHERE singleton=1
     AND epoch=? AND maintenance=1 AND gc_paused=1
     AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+    AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
     AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
     AND NOT EXISTS(SELECT 1 FROM job_leases WHERE expires_at>strftime('%s','now')*1000)
     AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
@@ -230,6 +231,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=h.source)
         OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id))
       AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+      AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
         AND claim_expires_at>strftime('%s','now')*1000)

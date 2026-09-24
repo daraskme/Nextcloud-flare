@@ -10,6 +10,7 @@ import type { AccessSession } from "../../src/auth/sessions";
 import { atomicBatch } from "../../src/db/primary";
 import { createAppPassword } from "../../src/services/appPasswords";
 import { foundationFixture } from "../fixtures/foundation";
+import { localKdf } from "../fixtures/kdf";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -29,9 +30,13 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
   const privateKey = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const csrfRing = await csrfKeyRing("v1", { v1: privateKey });
   const csrf = new CsrfTokens(csrfRing, csrfRing, appEnv.APP_ORIGIN);
-  const pepper = await appPasswordPepperRing("v1", {
-    v1: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
-  });
+  const pepper = await appPasswordPepperRing(
+    "v1",
+    {
+      v1: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    },
+    localKdf,
+  );
   const issued = await csrf.issue(
     env.DB,
     new Request("https://app.invalid/api/v1/csrf", {
@@ -191,9 +196,13 @@ it("rejects privilege scopes and roots outside the Access user's space", async (
     epoch: 1,
     expires_at: Date.now() + 600000,
   };
-  const pepper = await appPasswordPepperRing("v1", {
-    v1: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
-  });
+  const pepper = await appPasswordPepperRing(
+    "v1",
+    {
+      v1: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    },
+    localKdf,
+  );
   await expect(
     createAppPassword(env.DB, session, { name: "admin", scopes: ["admin:user"] }, pepper),
   ).rejects.toThrow("invalid_app_password_request");

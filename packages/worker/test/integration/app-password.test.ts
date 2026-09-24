@@ -16,6 +16,7 @@ import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { foundationFixture } from "../fixtures/foundation";
+import { localKdf } from "../fixtures/kdf";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -88,7 +89,7 @@ async function fixture(suffix: string) {
   const id = `ap_${"0".repeat(25)}${suffix}`;
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const pepper = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
-  const ring = await appPasswordPepperRing("v1", { v1: pepper });
+  const ring = await appPasswordPepperRing("v1", { v1: pepper }, localKdf);
   const record = await hashAppPassword(secret, ring);
   await atomicBatch(env.DB, [
     {
@@ -162,9 +163,13 @@ it("rejects maintenance, old epoch, revoked records and unknown pepper kids", as
     authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, ring),
   ).rejects.toThrow("app_password_denied");
   await env.DB.prepare("UPDATE control SET maintenance=0").run();
-  const other = await appPasswordPepperRing("v2", {
-    v2: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
-  });
+  const other = await appPasswordPepperRing(
+    "v2",
+    {
+      v2: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    },
+    localKdf,
+  );
   await expect(
     authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, other),
   ).rejects.toThrow("app_password_denied");
@@ -205,7 +210,7 @@ it("rechecks revocation after the password KDF completes", async () => {
 it("rotates an old pepper kid after successful authentication", async () => {
   const { id, pepper, request } = await fixture("4");
   const next = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
-  const ring = await appPasswordPepperRing("v2", { v1: pepper, v2: next });
+  const ring = await appPasswordPepperRing("v2", { v1: pepper, v2: next }, localKdf);
   const before = await env.DB.prepare("SELECT secret_digest,salt FROM app_passwords WHERE id=?")
     .bind(id)
     .first<{ secret_digest: string; salt: string }>();
@@ -216,7 +221,7 @@ it("rotates an old pepper kid after successful authentication", async () => {
   expect(after?.kid).toBe("v2");
   expect(after?.secret_digest).not.toBe(before?.secret_digest);
   expect(after?.salt).not.toBe(before?.salt);
-  const currentOnly = await appPasswordPepperRing("v2", { v2: next });
+  const currentOnly = await appPasswordPepperRing("v2", { v2: next }, localKdf);
   await expect(
     authenticateAppPassword(env.DB, request(), "https://app.invalid", 1, currentOnly),
   ).resolves.toMatchObject({ kind: "app_password" });
@@ -224,10 +229,14 @@ it("rotates an old pepper kid after successful authentication", async () => {
 
 it("accepts a committed rotation when the D1 acknowledgement is lost", async () => {
   const { id, pepper, request } = await fixture("5");
-  const ring = await appPasswordPepperRing("v2", {
-    v1: pepper,
-    v2: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
-  });
+  const ring = await appPasswordPepperRing(
+    "v2",
+    {
+      v1: pepper,
+      v2: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    },
+    localKdf,
+  );
   const db = {
     prepare: env.DB.prepare.bind(env.DB),
     async batch(statements: D1PreparedStatement[]) {

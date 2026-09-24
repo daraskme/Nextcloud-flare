@@ -65,6 +65,8 @@ async function initialize(bindings: Env) {
   if (!completed) throw new Error("browser_audit_incomplete");
   await control.resumeAdmission(epoch);
   await control.resumeGarbageCollection(epoch);
+  // This isolated HTTP fixture starts after the post-recovery KDF cooldown.
+  await env.DB.prepare("UPDATE control SET kdf_not_before=0").run();
   const response = await worker.fetch(
     new Request(`${env.APP_ORIGIN}/api/v1/me`, { headers: { "Cf-Access-Jwt-Assertion": token } }),
     env,

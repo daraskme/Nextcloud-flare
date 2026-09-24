@@ -14,7 +14,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows passed in 13m57s before the global KDF coverage was added.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 15 }}
     env:
       CI: "true"
       WRANGLER_SEND_METRICS: "false"

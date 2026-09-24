@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。65通常テーブル、migration `0001`〜`0028`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。66通常テーブル、migration `0001`〜`0029`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -92,6 +92,10 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
+最新はアプリパスワードKDFのControlDO/D1全体制限。migration `0029`、通常66table。WorkerのHMAC中間値から固定100k PBKDF2を実行し、D1で600受付/65秒・未精算20枠を保留。通常は単一ControlDO内1件ずつで、20並列の処理能力を主張しない。同じattemptを再送せず、claim応答喪失では未送信を自身のtokenでのみ精算する。nativeの実終了後だけ枠を返し、DB精算不明は保持して復旧再開を止める。epoch変更後65秒cooldown。発行/認証/鍵更新とHTTP503を接続済み。新規Node7件とworkerd20件、既存認証34件成功。全checkはNode396 + workerd877、browser19も成功して合計1,292件。詳細はIMPLEMENTATION_STATUS。今回のCIはpush後に確認する。契約と残るrepair/実環境gateは[KDF_ADMISSION](KDF_ADMISSION.md)。次はKDF未精算repair、account mutation admission、Queue・backupと製品の後続phaseを進める。
+
+直前commit `026f534`の[CI run35993638387](https://github.com/daraskme/Nextcloud-flare/actions/runs/35993638387)は全成功。Ubuntu2分42秒・Windows13分57秒・browser1分32秒、Node389 + workerd857 + browser19 = 1,265件。Windowsの新規中止19件も成功。以下は以前のcheckpoint時点の記録。
+
 最新の追加は発見済み未追跡handleの中止と不変attempt台帳（migration `0028`）。毎回fresh proofを取り、bucket/part走査完了・稼働upload/lease不在を検査する。claim応答確認後のみ正確なkey/IDへ1回dispatch、同一attemptは再送しない。64件の生涯上限・10秒待機、遅い応答でもhold/隔離は維持する。新規19件とschema検証は成功。全check結果はIMPLEMENTATION_STATUSへ記録する。中止receiptを全体閉鎖と解釈して精算しない。次はprovider保証・実S3の閉鎖条件を詰め、独立に進められるaccount/KDF admission、Queue、共有・mediaも続ける。
 
 直前commit `284a202`の[CI run35966922855](https://github.com/daraskme/Nextcloud-flare/actions/runs/35966922855)は全成功。Ubuntu2分39秒・Windows8分55秒・browser2分11秒、Node389 + workerd838 + browser19 = 1,246件。以下の2件のWindows fixture失敗は解消済み。
@@ -145,7 +149,7 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 以下の全体gateも引き続き必要:
 
 1. **outbox Queue 実サービス / repair**: `node.created` と `node.renamed` のローカル handler を基に実 Queue/DLQ/requeue を検証し、残る kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
-2. **ControlDOの残る制御**: account単位のmutation同時数と待ちqueue、ControlDOのKDF全体rate/同時数、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
+2. **ControlDOの残る制御**: account単位のmutation同時数と待ちqueue、KDF未精算repair・共有password/IP制限、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
 

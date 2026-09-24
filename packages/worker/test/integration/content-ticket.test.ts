@@ -17,9 +17,10 @@ import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { loadTargetManifest } from "../../src/services/targetManifest";
 import { accessFixture } from "../fixtures/access";
 import { foundationFixture } from "../fixtures/foundation";
+import { localKdf } from "../fixtures/kdf";
 
 it("keeps private app routes closed without remote identity and signing configuration", async () => {
-  await expect(privateAppDependencies(env)).rejects.toThrow("private_app_config_unavailable");
+  await expect(privateAppDependencies(env, 1)).rejects.toThrow("private_app_config_unavailable");
 });
 
 it("registers Access, issues CSRF, then issues and cancels a private ticket", async () => {
@@ -32,9 +33,13 @@ it("registers Access, issues CSRF, then issues and cancels a private ticket", as
     cursor: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
   });
   const appEnv = { ...env, APP_ORIGIN: "https://app.invalid" };
-  const appPasswordPepper = await appPasswordPepperRing("test", {
-    test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
-  });
+  const appPasswordPepper = await appPasswordPepperRing(
+    "test",
+    {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    },
+    localKdf,
+  );
   const access = await accessFixture();
   const assertion = await access.sign({
     sub: f.ids.user,

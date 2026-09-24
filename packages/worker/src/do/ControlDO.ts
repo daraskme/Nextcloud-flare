@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
+import type { KdfRequest } from "../auth/globalKdf";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import { type RestorePause, restorePauseCondition } from "../db/restorePause";
 import type { Env } from "../env";
@@ -38,6 +39,7 @@ import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2Bin
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
+import { ControlKdf } from "./controlKdf";
 import {
   type EpochReason,
   epochNumber,
@@ -102,6 +104,7 @@ export interface RecoveryAuditStatus {
 
 export class ControlDO extends DurableObject<Env> {
   readonly #admission: ControlAdmission;
+  readonly #kdf: ControlKdf;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -125,6 +128,14 @@ export class ControlDO extends DurableObject<Env> {
       if (row.phase !== "ready") throw new Error("control_not_ready");
       return epochNumber(row.epoch);
     });
+    this.#kdf = new ControlKdf(
+      env.DB,
+      async (epoch) => {
+        const status = await this.status();
+        if (status.maintenance || status.epoch !== epoch) throw new Error("kdf_unavailable");
+      },
+      (epoch) => this.#admission.assertKdfOpen(epoch),
+    );
   }
 
   fetch(): Response {
@@ -142,6 +153,11 @@ export class ControlDO extends DurableObject<Env> {
 
   async status(): Promise<ControlStatus> {
     return this.#admission.status();
+  }
+
+  /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */
+  async deriveKdf(request: KdfRequest): Promise<ArrayBuffer> {
+    return this.#kdf.derive(request);
   }
 
   /** Operator/maintenance RPC only. HTTP remains closed; no public recovery endpoint. */

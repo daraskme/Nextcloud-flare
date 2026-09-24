@@ -193,6 +193,11 @@ export class ControlAdmission {
     return { epoch: row.epoch, maintenance: false, gcPaused: row.gc_paused === 1 };
   }
 
+  /** Synchronous local fence immediately before native crypto dispatch. */
+  assertKdfOpen(epoch: number): void {
+    if (this.#row(epoch).phase !== "open") throw new Error("kdf_unavailable");
+  }
+
   async close(epoch: number): Promise<ControlStatus & { activeJobLease: boolean }> {
     epochNumber(epoch);
     const row = this.#row(epoch);

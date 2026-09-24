@@ -23,7 +23,7 @@ export async function servePrivateApp(
   if (url.origin !== env.APP_ORIGIN || !privateAssetRoute(request))
     return problem(404, "not_found");
   try {
-    const { verifier, bootstrap } = await privateAppDependencies(env);
+    const { verifier, bootstrap } = await privateAppDependencies(env, epoch);
     await loginAccessUser(env.DB, verifier, request, epoch, bootstrap);
   } catch (error) {
     return problem(error instanceof AccessAuthenticationError ? 401 : 403, "unauthorized");

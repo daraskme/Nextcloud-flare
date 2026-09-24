@@ -16,6 +16,7 @@ import type { AccessSession } from "../../src/auth/sessions";
 import { atomicBatch } from "../../src/db/primary";
 import { createAppPassword } from "../../src/services/appPasswords";
 import { foundationFixture } from "../fixtures/foundation";
+import { localKdf } from "../fixtures/kdf";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(() => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -38,7 +39,7 @@ async function fixture() {
     epoch: 1,
     expires_at: Date.now() + 600_000,
   };
-  const ring = await appPasswordPepperRing("v1", { v1: key() });
+  const ring = await appPasswordPepperRing("v1", { v1: key() }, localKdf);
   const credential = await createAppPassword(
     env.DB,
     session,
@@ -289,8 +290,12 @@ it("does not write a credential when creation is cancelled in the queue", async 
 
 it("shares capacity across pepper verification, rotation and re-verification", async () => {
   const f = await fixture();
-  const fresh = await appPasswordPepperRing("v2", { v2: key() });
-  const ring = { activeKid: "v2", keys: new Map([...f.ring.keys, ...fresh.keys]) };
+  const fresh = await appPasswordPepperRing("v2", { v2: key() }, localKdf);
+  const ring = {
+    activeKid: "v2",
+    keys: new Map([...f.ring.keys, ...fresh.keys]),
+    derive: localKdf,
+  };
   const native = crypto.subtle.deriveBits.bind(crypto.subtle);
   let active = 0,
     peak = 0;
