@@ -1,6 +1,6 @@
 # 未完了multipartのS3診断
 
-`r2/s3Inventory.ts`、`r2/s3InventoryPages.ts`、`r2/s3Xml.ts`は、Workers bindingでは列挙できない未完了multipartをS3 APIから読み取る。`jobs/multipartInventory.ts`と`ControlDO.inspectIncompleteMultipart`はmaintenance中の診断へ接続する。migration `0022`と`jobs/multipartInventoryRepair.ts`は、D1にupload行が残っている未知IDを永続走査し、実BLOBS bindingから中止する。migration `0023`と`jobs/r2BindingVerification.ts`は、fresh nonceによるBLOBS/S3対応検証を追加する。完全な不在証明・予約解放は未接続。
+`r2/s3Inventory.ts`、`r2/s3InventoryPages.ts`、`r2/s3Xml.ts`は、Workers bindingでは列挙できない未完了multipartをS3 APIから読み取る。`jobs/multipartInventory.ts`と`ControlDO.inspectIncompleteMultipart`はmaintenance中の診断へ接続する。migration `0022`と`jobs/multipartInventoryRepair.ts`は、D1にupload行が残っている未知IDを永続走査し、実BLOBS bindingから中止する。migration `0023`と`jobs/r2BindingVerification.ts`は、fresh nonceによるBLOBS/S3対応検証を追加する。migration `0027`でupload行喪失時の[全bucket走査・part容量保留](MULTIPART_BUCKET_INVENTORY.md)も追加した。完全な不在証明・予約解放は未接続。
 
 ## サーバー設定
 
@@ -88,7 +88,7 @@ scan登録後は、後から元のR2 IDが判明しても通常cleanupへ戻さ�
 ## 次の修復段階
 
 1. BLOBS/S3対応検証は未知IDの走査・中止へ接続済み。次は全体閉鎖証明を定義して同じcurrent D1 fenceへ接続する。既存scan/pageは閉鎖証明へ昇格させない。実S3でのstaging試験も必要。
-2. D1のupload行自体が失われたhandleのbucket全体inventory・所有者/容量会計を実装する。既存uploadの複数ID走査・中止は接続済み。
+2. D1のupload行自体が失われたhandleの全`u/` inventory・part最大観測容量の保留は接続済み（[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)）。次は中止・全体閉鎖・精算。既存uploadの複数ID走査・中止は接続済み。
 3. 発見IDの中止receiptに加え、全handleの閉鎖と不在証明を確立し、予約精算・GCへ接続する。
 4. lifecycle経過だけで閉鎖とせず、未知create/completeの遅延完了も含めた不在証明を定義・検証する。
 

@@ -224,6 +224,11 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)
       AND NOT EXISTS(SELECT 1 FROM r2_binding_probe WHERE phase<>'idle' OR lease_token IS NOT NULL OR epoch>c.epoch)
       AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans)
+      AND NOT EXISTS(SELECT 1 FROM multipart_bucket_scan s WHERE s.completed_at IS NULL OR s.epoch<>c.epoch
+        OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=s.source AND p.epoch=c.epoch AND p.phase='idle'))
+      AND NOT EXISTS(SELECT 1 FROM multipart_bucket_handles h WHERE h.state='quarantined'
+        OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=h.source)
+        OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id))
       AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
       AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')

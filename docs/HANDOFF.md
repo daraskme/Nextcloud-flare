@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。61通常テーブル、migration `0001`〜`0026`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。64通常テーブル、migration `0001`〜`0027`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -34,6 +34,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 | ファイル | 実装内容 |
 |---|---|
+| `jobs/multipartBucketInventory.ts` / `ControlDO.inventoryMultipartBucket`・`observeMultipartBucketParts` | migration `0027`、upload行不要の全bucket走査・永続part cursor・最大観測容量保留。fresh proofと復旧最終fence、所有者後日復元、中止/精算は後続 |
 | `do/controlAdmission.ts` / `ControlDO.resumeAdmission`・`resumeGarbageCollection` | migration `0025`、永続intentとD1 revision/token、最終batch fence、repair hold、停止と応答喪失の競合、初回bootstrapと実LockDO mutation |
 | `jobs/gc.ts` / `jobs/orphanInventory.ts` / `ControlDO.drainBlobGarbageCollection`・`drainOrphanGarbageCollection` | migration `0024`、旧deletingのみの停止中回収、dispatch/final fence・counter・physical精算、全復旧監査fixture |
 | `jobs/r2BindingVerification.ts` / `ControlDO.verifyInventoryBinding` | migration `0023`、固定64-byte system objectのfresh nonce/CASによるBLOBS/S3検証。scope内のみ有効なD1 fence、復旧監査・容量保持。全体閉鎖への接続は次段階 |
@@ -91,7 +92,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-未知multipart IDの修復に毎回freshなBLOBS/S3対応検証を接続した。maintenance/GC pauseを必須とし、claim・round reset・dispatch counter・page/receipt・physical観測・lease解放をcurrent proof fenceと同一batchで確定する。過去の成功や保存済みpageだけでは次のdispatchを許可しない。複数修復はprobe leaseで直列化する。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)、試験結果はIMPLEMENTATION_STATUS。全体閉鎖・容量精算・upload行喪失・実S3は引き続き未完了。scanの完了を閉鎖証明として使わず、reservation holdを外さない。
+最新はupload行喪失時の未完了multipart走査とpart容量保留。migration `0027`、64通常table。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)が契約。各RPCでfresh proofを取得し、100件以下のページをD1へ原子的保存する。keyとR2 IDの完全一致だけtracked、その他は隔離する。partの最大観測bytesをowner physicalへ差分加算し、縮小・空一覧・404・遅延IDで解除しない。隔離handleは0 bytesでも復旧を止める。次は中止・遅延create/part/complete・完成物の照合・全体閉鎖と精算。元台帳のdelete guardやholdを外すだけで完成扱いにしない。直前commit `9811560`のUbuntu/Windows/browser CIは全成功（run35954162544）。今回の結果はIMPLEMENTATION_STATUSを参照。
+
+未知multipart IDの修復に毎回freshなBLOBS/S3対応検証を接続した。maintenance/GC pauseを必須とし、claim・round reset・dispatch counter・page/receipt・physical観測・lease解放をcurrent proof fenceと同一batchで確定する。過去の成功や保存済みpageだけでは次のdispatchを許可しない。複数修復はprobe leaseで直列化する。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)、試験結果はIMPLEMENTATION_STATUS。全体閉鎖・容量精算・upload行喪失時の中止・実S3は引き続き未完了。scanの完了を閉鎖証明として使わず、reservation holdを外さない。
 
 進捗は[PROGRESS](PROGRESS.md)へ記録する。commit `26c4d07`はpush済み。直前のCI run35919687576はWindowsのmigration hook10秒、run35919870356はWindowsのcontrol-admission3件30秒でtimeout。Windowsのworkerdテストに限りtest90秒/hook60秒へ調整し、他OSとアプリ内部期限は維持した。同commitの[CI run35926517271](https://github.com/daraskme/Nextcloud-flare/actions/runs/35926517271)はUbuntu・Windows・browser全job成功を確認済み。
 

@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 upload行喪失時のmultipart容量保留 | migration `0027`の3table（計64通常table）、全`u/`走査、正確なkey/ID対応、partページと最大観測bytesのowner physical計上、ControlDOと復旧fence | 新規27件でページ上限/競合/応答喪失/所有者復元/整数上限/0-byte再開拒否を検証。中止・全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
 | 4 multipart修復の対応検証接続 | 毎回fresh nonceでBLOBS/S3を照合し、claim・page・abort・physical観測・lease解放を同一batchのproof fenceで保護。停止/GC pause必須、保存済み成功を再利用しない | 誤bucket・旧nonce・失効・応答喪失の境界を追加。全体閉鎖・容量精算・実S3は未完了。[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
 | 5 要求時のフォルダー集計 | Access account stats、所有folderの再帰件数/現在のlogical bytes、同一batch認可と1万件上限、Files情報dialog | D1追加12件、既存検索9件の回帰。最終全check/browser結果は実行記録。[FOLDER_STATS](FOLDER_STATS.md) |
 | 5 フォルダー配下検索 | Access API、正規化/部分一致、scope10,000/page200、現行認可と検索専用cursor、Files検索/元保存先保持。子一覧更新後のrename/move索引修正 | query/cursor、実D1境界、browser検索/201件pagination/更新競合。最終結果は実行記録。[SEARCH](SEARCH.md) |
@@ -20,7 +21,7 @@
 | 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account/KDF admissionは未完了 |
 | 4 停止中GC drain | migration `0024`のclaim epoch/counter、blob/orphanの既存deleting回収、ControlDO内部RPCと監査再初期化 | 新規25件を含む全check1,022件が成功。全復旧監査fixtureは成功、実環境・完全restore・admission再開は未完了 |
 | 4 R2/S3対応検証 | migration `0023`、固定64-byte system probe、fresh nonce/CAS PUT、scope内D1 fence、ControlDO検証と復旧監査 | 全check997件（Node330/workerd667）が成功。遅延PUT・応答喪失・誤bucket・scope/epoch/leaseと監査を検証。全体閉鎖/予約精算への接続と実S3試験は未完了 |
-| 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。毎回freshな対応検証との接続は追加済み。全体不在証明・予約精算・upload行ごと失われたID・実S3は未完了 |
+| 4 multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの未知複数ID走査・実BLOBS abort、immutable receipt、予約hold、physical観測、ControlDO停止中repair | 実D1/R2/DOで複数ID/ページ・応答喪失・遅延ID・epoch/token/pin/lease・S3障害会計を検証。毎回freshな対応検証との接続は追加済み。全体不在証明・予約精算・upload行ごと失われたIDの中止・実S3は未完了 |
 | 4 multipart S3診断 | 署名付きListMultipartUploads/ListParts/lifecycle取得、1 GET・最大100件・1 MiB・10秒、厳密XML/echo/markerと停止中ControlDO診断 | Node/workerdで署名・失敗境界、D1 maintenance/epoch fence、監査再初期化と予約保持を検証。対応検証と既存uploadの未知ID中止は別serviceへ接続済み。全体閉鎖・実S3接続は未完了 |
 | 3 private multipart HTTP | 既存routeのcreate/part/status/page/complete/abort、Upload-Attempt-Id、D1 receipt snapshot、期限切れ後照会、中止CAS、初期化結果不明receipt | 実Access JWT/CSRF/D1/R2/DOで再送・上書き・page・失効・中止/確定・遅延part・初期化応答喪失・入力境界を検証。基本Files UIとローカル実admissionは接続済み。公開共有・実環境は未実装 |
 | 4 未知完成物inventory | migration `0021`の2table、bounded R2 list/HEAD、D1 cursor/lease、35日grace、owner physical会計、独立GCとキー再利用拒否、Cron/停止中ControlDO inventory/復旧監査 | 応答喪失、並行処理、置換・再出現、owner復元、pause/epochを実D1/R2で検証。incomplete multipart、他prefix、実環境は未完了。停止中の既存deleting回収は追加済み |
@@ -113,7 +114,9 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
-- 2026-09-24、未知multipart IDの修復にfreshなBLOBS/S3対応検証を接続。maintenance/GC pauseとcurrent proofをclaim・round reset・各dispatch・page/abort receipt・physical観測・lease解放の同一D1 batchで検査する。誤bucket、旧nonce、停止解除、期限切れ、page応答喪失後のdispatch、再開時のfresh検証など12境界を追加し、旧epoch試験を実ControlDO復旧へ統合（net +11件）。関連100件成功（27.79秒）に加え追加2境界成功（2.99秒）。最終`pnpm check`はNode389 + workerd811 = **1,200 tests**（23+54 files）、workerd380.36秒。lint/typecheck/contracts/config/schema、Web build、Wrangler dry-run成功。browserは今回のCIで確認する。D1 migration・依存追加なし。全体閉鎖・容量精算・upload行喪失・実S3/stagingは未完了。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)。
+- 2026-09-24、upload行喪失時の全bucket multipart走査とpart容量保留を追加。新機能27件成功（10.42秒）、schema5件成功。新規migration `0027`、64通常table、依存追加なし。最終`pnpm check`成功、Node389 + workerd838 = **1,227 tests**（23+55 files）、workerd395.26秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-runも成功。今回のbrowser試験はpush後のCIで確認する。実S3・全体閉鎖・中止・容量精算は未完了。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
+
+- 2026-09-24、未知multipart IDの修復にfreshなBLOBS/S3対応検証を接続。maintenance/GC pauseとcurrent proofをclaim・round reset・各dispatch・page/abort receipt・physical観測・lease解放の同一D1 batchで検査する。誤bucket、旧nonce、停止解除、期限切れ、page応答喪失後のdispatch、再開時のfresh検証など12境界を追加し、旧epoch試験を実ControlDO復旧へ統合（net +11件）。関連100件成功（27.79秒）に加え追加2境界成功（2.99秒）。最終`pnpm check`はNode389 + workerd811 = **1,200 tests**（23+54 files）、workerd380.36秒。lint/typecheck/contracts/config/schema、Web build、Wrangler dry-run成功。同commit `9811560`の[CI run35954162544](https://github.com/daraskme/Nextcloud-flare/actions/runs/35954162544)はUbuntu・Windows・browser全job成功、browser19件。D1 migration・依存追加なし。全体閉鎖・容量精算・upload行喪失・実S3/stagingは未完了。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)。
 
 - 2026-09-24、フォルダー集計commit `26c4d07c4877c3f4493f579467b70dd38c2b0e28`を`origin/main`へpushし、[CI run35926517271](https://github.com/daraskme/Nextcloud-flare/actions/runs/35926517271)のbrowser・Ubuntu・Windows全job成功を確認。Windows runnerの期限調整後も全assertionが成功した。進捗の入口を[PROGRESS](PROGRESS.md)へ追加。
 

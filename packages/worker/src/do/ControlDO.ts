@@ -8,6 +8,12 @@ import {
   drainStoppedBlobGarbageCollection,
   type GcResult,
 } from "../jobs/gc";
+import {
+  type MultipartBucketScanResult,
+  type MultipartPartObservationResult,
+  observeMultipartBucketParts,
+  scanMultipartBucket,
+} from "../jobs/multipartBucketInventory";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
 import {
   inspectMultipartInventory,
@@ -402,6 +408,38 @@ export class ControlDO extends DurableObject<Env> {
       }),
     );
     return { repair, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Persist one verified bucket page, including handles whose application rows were lost. */
+  async inventoryMultipartBucket(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ inventory: MultipartBucketScanResult; audit: RecoveryAuditStatus }> {
+    const client = new R2S3Inventory(this.env);
+    const inventory = await this.#maintenance(expectedEpoch, () =>
+      scanMultipartBucket(this.env.DB, this.env.BLOBS, client, expectedEpoch, limit),
+    );
+    return { inventory, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Charge one part page conservatively; never infer that missing parts were reclaimed. */
+  async observeMultipartBucketParts(
+    expectedEpoch: number,
+    handleId: string,
+    limit = 20,
+  ): Promise<{ observation: MultipartPartObservationResult; audit: RecoveryAuditStatus }> {
+    const client = new R2S3Inventory(this.env);
+    const observation = await this.#maintenance(expectedEpoch, () =>
+      observeMultipartBucketParts(
+        this.env.DB,
+        this.env.BLOBS,
+        client,
+        expectedEpoch,
+        handleId,
+        limit,
+      ),
+    );
+    return { observation, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */
