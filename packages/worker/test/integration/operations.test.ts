@@ -2,7 +2,6 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
-import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import {
   assertOperationClaim,
@@ -13,6 +12,7 @@ import {
   operationRow,
 } from "../../src/jobs/operations";
 import { foundationFixture } from "../fixtures/foundation";
+import { grantPermit } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);

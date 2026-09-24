@@ -1,11 +1,11 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX, persistEpoch, recoverEpochFloor } from "../../src/do/epochHistory";
 import { foundationFixture } from "../fixtures/foundation";
+import { grantPermit } from "../fixtures/mutationAdmission";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
 beforeAll(async () => {

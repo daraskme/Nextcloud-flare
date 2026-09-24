@@ -1,12 +1,14 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import type { Env } from "../../src/env";
 import { createFolder } from "../../src/services/createFolder";
 import { foundationFixture } from "../fixtures/foundation";
+import { grantPermit } from "../fixtures/mutationAdmission";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
 const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -54,6 +56,31 @@ async function audited(
     if ((await instance.nextRecoveryAuditPage(epoch, 20)).completed) return;
   throw new Error("audit_fixture_incomplete");
 }
+
+it("persists exact mutation grants across eviction and invalidates old grants before reopening", async () => {
+  await env.LOCKS.get(env.LOCKS.idFromName(f.ids.space)).recover(f.ids.space, epoch);
+  await audited();
+  await control().resumeAdmission(epoch);
+  const permitId = crypto.randomUUID();
+  const request = () => ({ permitId, spaceId: f.ids.space, epoch, deadline: Date.now() + 5000 });
+  const first = await control().acquireMutation(request());
+  await evictDurableObject(control());
+  expect(await control().acquireMutation(request())).toEqual(first);
+  await control().quiesce(epoch);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state<>'closed'",
+    ).first("n"),
+  ).toBe(0);
+  await audited();
+  await control().resumeAdmission(epoch);
+  const second = await control().acquireMutation(request());
+  expect(second.id).not.toBe(first.id);
+  await expect(grantAdmittedPermit(env.DB, permitId, f.ids.space, epoch, first)).rejects.toThrow();
+  expect(await grantAdmittedPermit(env.DB, permitId, f.ids.space, epoch, second)).toMatchObject({
+    permit_id: permitId,
+  });
+});
 
 function withBatch(batch: (statements: D1PreparedStatement[]) => Promise<D1Result[]>): Env {
   return { ...env, DB: { prepare: env.DB.prepare.bind(env.DB), batch } as D1Database };
@@ -320,9 +347,7 @@ it("a delayed old stop cannot revoke new permits or overwrite a later successful
     await audited(instance);
     await instance.resumeAdmission(epoch);
     const id = crypto.randomUUID();
-    await env.DB.prepare("INSERT INTO permits VALUES(?,?,?,?,'open')")
-      .bind(id, f.ids.space, epoch, Date.now() + 60000)
-      .run();
+    await grantPermit(env.DB, id, f.ids.space, epoch);
     release.resolve();
     expect(await result).toBe("rejected");
     expect(await instance.status()).toMatchObject({ maintenance: false });

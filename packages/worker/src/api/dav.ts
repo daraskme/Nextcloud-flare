@@ -227,6 +227,11 @@ export async function handleDavHttp(
         },
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (
         error instanceof Error &&
         ["invalid_idempotency_key", "invalid_name", "name_too_long", "reserved_name"].includes(
@@ -314,6 +319,11 @@ export async function handleDavHttp(
         },
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (
         error instanceof Error &&
         [
@@ -390,6 +400,11 @@ export async function handleDavHttp(
         },
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (
         error instanceof Error &&
         [
@@ -451,6 +466,11 @@ export async function handleDavHttp(
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (error instanceof Error && error.message === "dav_delete_too_large")
         return problem(403, "forbidden");
       if (error instanceof Error && error.message === "dav_precondition_failed")
@@ -507,6 +527,11 @@ export async function handleDavHttp(
         },
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (
         error instanceof Error &&
         [
@@ -576,6 +601,11 @@ export async function handleDavHttp(
     try {
       return await propfindResponse(env.DB, resolved, path, Number(depth) as 0 | 1, propfind);
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       return error instanceof Error && error.message === "dav_children_limit"
         ? problem(507, "insufficient_storage")
         : problem(503, "not_ready");
@@ -627,6 +657,11 @@ export async function handleDavHttp(
       if (outcome.operation.state === "failed") return problem(409, "conflict");
       return proppatchResponse(href, changes);
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (error instanceof Error && error.message === "idempotency_conflict")
         return problem(409, "conflict");
       if (error instanceof Error && error.message === "dav_precondition_failed")
@@ -717,6 +752,11 @@ export async function handleDavHttp(
         }),
       );
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (
         error instanceof Error &&
         [
@@ -755,6 +795,11 @@ export async function handleDavHttp(
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "mutation_unavailable") {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
       if (error instanceof Error && error.message === "invalid_dav_lock_token")
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "dav_lock_token_mismatch")

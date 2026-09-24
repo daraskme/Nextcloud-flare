@@ -290,6 +290,11 @@ export async function handleUploadHttp(
     const result = await createSingleUpload(env.DB, input, capabilities);
     return Response.json(result, { status: 201, headers: HEADERS });
   } catch (error) {
+    if (error instanceof Error && error.message === "mutation_unavailable") {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     const message = error instanceof Error ? error.message : "";
     if (/capability|authorization_denied/.test(message)) return problem(403, "forbidden");
     if (message === "upload_not_found") return problem(404, "not_found");

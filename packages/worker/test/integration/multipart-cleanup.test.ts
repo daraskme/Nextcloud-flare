@@ -14,6 +14,7 @@ import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
 import { uploadRow } from "../../src/services/uploads/access";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { foundationFixture } from "../fixtures/foundation";
+import { grantPermit } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -167,11 +168,8 @@ async function completion(f: Fixture, bound: boolean, state = "claimed") {
   const op = crypto.randomUUID();
   const permit = crypto.randomUUID();
   const now = Date.now();
+  const { expires_at: expiresAt } = await grantPermit(env.DB, permit, f.ids.space, 1);
   await atomicBatch(env.DB, [
-    {
-      sql: "INSERT INTO permits(permit_id,space_id,epoch,expires_at,state) VALUES(?,?,1,?,'open')",
-      values: [permit, f.ids.space, now + 30000],
-    },
     {
       sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,
       permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,created_at,updated_at)
@@ -183,8 +181,8 @@ async function completion(f: Fixture, bound: boolean, state = "claimed") {
         f.ids.space,
         state,
         permit,
-        now + 30000,
-        now + 30000,
+        expiresAt,
+        expiresAt,
         JSON.stringify({ uploadId: f.id, parentId: f.ids.folder }),
         now,
         now,

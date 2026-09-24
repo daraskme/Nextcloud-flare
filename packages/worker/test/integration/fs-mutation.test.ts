@@ -6,7 +6,6 @@ import { handleNodeMutationHttp } from "../../src/api/nodeMutations";
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { lockTokenHashes } from "../../src/auth/locks";
-import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
@@ -19,6 +18,7 @@ import {
 } from "../../src/services/createFolder";
 import { fsMutation, type MutationPlan } from "../../src/services/fsMutation";
 import { foundationFixture } from "../fixtures/foundation";
+import { acquireMutation, grantPermit } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -139,7 +139,10 @@ function admitted(): Pick<Env, "DB" | "LOCKS"> {
     ...env,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }) }),
+      get: () => ({
+        acquireMutation,
+        status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
+      }),
     } as unknown as Env["CONTROL"],
   };
   return {

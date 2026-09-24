@@ -1,3 +1,4 @@
+import { assertMutationAdmission, type MutationAdmission } from "./mutationAdmission";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "./primary";
 
 export const PERMIT_LEASE_MS = 30_000;
@@ -17,7 +18,9 @@ export function assertOpenPermit(permit: Permit): SqlStatement {
   return assertExists(
     `SELECT 1 FROM permits p JOIN control c ON c.singleton=1
     WHERE p.permit_id=? AND p.space_id=? AND p.epoch=? AND p.expires_at=? AND p.state='open'
-      AND p.expires_at>strftime('%s','now')*1000 AND c.epoch=p.epoch AND c.maintenance=0`,
+      AND p.expires_at>strftime('%s','now')*1000 AND c.epoch=p.epoch AND c.maintenance=0
+      AND EXISTS(SELECT 1 FROM mutation_admissions a WHERE a.permit_id=p.permit_id AND a.space_id=p.space_id
+        AND a.epoch=p.epoch AND a.state='active' AND a.expires_at>=p.expires_at)`,
     [permit.permit_id, permit.space_id, permit.epoch, permit.expires_at],
   );
 }
@@ -30,12 +33,21 @@ function failClosedClaims(spaceId: string, code: string): SqlStatement {
   };
 }
 
-async function readOpen(db: D1Database, permitId: string, spaceId: string, epoch: number) {
+async function readOpen(
+  db: D1Database,
+  permitId: string,
+  spaceId: string,
+  epoch: number,
+  admissionId: string,
+  admissionExpiry: number,
+) {
   return primary(db)
     .prepare(`SELECT p.permit_id,p.space_id,p.epoch,p.expires_at FROM permits p JOIN control c ON c.singleton=1
     WHERE p.permit_id=? AND p.space_id=? AND p.epoch=? AND p.state='open'
-      AND p.expires_at>strftime('%s','now')*1000 AND c.epoch=p.epoch AND c.maintenance=0`)
-    .bind(permitId, spaceId, epoch)
+      AND p.expires_at>strftime('%s','now')*1000 AND c.epoch=p.epoch AND c.maintenance=0
+      AND EXISTS(SELECT 1 FROM mutation_admissions a WHERE a.permit_id=p.permit_id AND a.space_id=p.space_id
+        AND a.epoch=p.epoch AND a.state='active' AND a.expires_at>=p.expires_at AND a.id=? AND a.expires_at=?)`)
+    .bind(permitId, spaceId, epoch, admissionId, admissionExpiry)
     .first<Permit>();
 }
 
@@ -48,11 +60,19 @@ export async function grantPermit(
   requestId: string,
   spaceId: string,
   epoch: number,
+  admission: MutationAdmission,
   leaseMs = PERMIT_LEASE_MS,
   guards: readonly SqlStatement[] = [],
 ): Promise<Permit> {
   valid(requestId, epoch);
   valid(spaceId, epoch);
+  if (
+    !admission ||
+    admission.permit_id !== requestId ||
+    admission.space_id !== spaceId ||
+    admission.epoch !== epoch
+  )
+    throw new Error("mutation_unavailable");
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > PERMIT_LEASE_MS)
     throw new Error("invalid_permit_lease");
   try {
@@ -60,6 +80,7 @@ export async function grantPermit(
       assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
         epoch,
       ]),
+      assertMutationAdmission(admission),
       ...guards,
       {
         sql: "UPDATE permits SET state='revoked' WHERE space_id=? AND state='open' AND expires_at<=strftime('%s','now')*1000",
@@ -68,9 +89,9 @@ export async function grantPermit(
       failClosedClaims(spaceId, "permit_expired"),
       {
         sql: `INSERT INTO permits(permit_id,space_id,epoch,expires_at,state)
-          SELECT ?,?,?,strftime('%s','now')*1000+?,'open' WHERE NOT EXISTS(SELECT 1 FROM permits WHERE space_id=? AND state='open')
+          SELECT ?,?,?,MIN(strftime('%s','now')*1000+?,?),'open' WHERE NOT EXISTS(SELECT 1 FROM permits WHERE space_id=? AND state='open')
           ON CONFLICT(permit_id) DO NOTHING`,
-        values: [requestId, spaceId, epoch, leaseMs, spaceId],
+        values: [requestId, spaceId, epoch, leaseMs, admission.expires_at, spaceId],
       },
       assertExists(
         `SELECT 1 FROM permits WHERE permit_id=? AND space_id=? AND epoch=? AND state='open'
@@ -80,14 +101,26 @@ export async function grantPermit(
     ]);
   } catch (error) {
     // A response may be lost after commit. Only this exact durable intent can be returned.
-    const permit = await readOpen(db, requestId, spaceId, epoch);
+    const permit = await readOpen(
+      db,
+      requestId,
+      spaceId,
+      epoch,
+      admission.id,
+      admission.expires_at,
+    );
     if (permit) {
-      if (guards.length) await atomicBatch(db, [...guards, assertOpenPermit(permit)]);
+      if (guards.length)
+        await atomicBatch(db, [
+          assertMutationAdmission(admission),
+          ...guards,
+          assertOpenPermit(permit),
+        ]);
       return Object.freeze(permit);
     }
     throw error;
   }
-  const permit = await readOpen(db, requestId, spaceId, epoch);
+  const permit = await readOpen(db, requestId, spaceId, epoch, admission.id, admission.expires_at);
   if (!permit) throw new Error("permit_no_longer_open");
   return Object.freeze(permit);
 }

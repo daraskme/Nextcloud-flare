@@ -1,7 +1,6 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
-import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
@@ -14,6 +13,7 @@ import {
 } from "../../src/jobs/outbox";
 import { handleOutboxBatch, type OutboxDelivery } from "../../src/jobs/queue";
 import { foundationFixture } from "../fixtures/foundation";
+import { grantPermit } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);

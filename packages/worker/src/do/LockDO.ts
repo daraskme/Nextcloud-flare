@@ -9,7 +9,13 @@ import {
   lockTokenHashes,
 } from "../auth/locks";
 import { grantPermit, type Permit, releasePermit, revokeSpacePermits } from "../db/permits";
-import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import {
+  assertExists,
+  assertOneChange,
+  atomicBatch,
+  primary,
+  type SqlStatement,
+} from "../db/primary";
 import { assertRestorePause, type RestorePause } from "../db/restorePause";
 import type { Env } from "../env";
 import { CONTROL_NAME } from "./ControlDO";
@@ -140,6 +146,30 @@ export class LockDO extends DurableObject<Env> {
     );
   }
 
+  async #grantPermit(
+    requestId: string,
+    spaceId: string,
+    epoch: number,
+    leaseMs: number | undefined,
+    guards: readonly SqlStatement[],
+  ): Promise<Permit> {
+    let admission;
+    try {
+      admission = await this.env.CONTROL.get(
+        this.env.CONTROL.idFromName(CONTROL_NAME),
+      ).acquireMutation({
+        permitId: requestId,
+        spaceId,
+        epoch,
+        deadline: Date.now() + 5000,
+      });
+    } catch {
+      throw new Error("mutation_unavailable");
+    }
+    // Authorization and DAV locks are rechecked after the global wait, in the permit transaction.
+    return grantPermit(this.env.DB, requestId, spaceId, epoch, admission, leaseMs, guards);
+  }
+
   async #davLockConflict(
     nodeId: string,
     spaceId: string,
@@ -221,8 +251,7 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    const permit = await grantPermit(
-      this.env.DB,
+    const permit = await this.#grantPermit(
       `p:${request.requestId}`,
       request.spaceId,
       status.epoch,
@@ -299,8 +328,7 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    const permit = await grantPermit(
-      this.env.DB,
+    const permit = await this.#grantPermit(
       `p:${request.requestId}`,
       request.spaceId,
       status.epoch,
@@ -405,30 +433,16 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    return grantPermit(
-      this.env.DB,
-      `p:${request.requestId}`,
-      request.spaceId,
-      status.epoch,
-      undefined,
-      [
-        authorizationAssertion(source),
-        authorizationAssertion(destination),
-        ...(overwrite ? [authorizationAssertion(overwrite)] : []),
-        assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
-        assertCreateLocks(request.destinationParentId, request.spaceId, request.principal, hashes),
-        ...(request.overwriteTargetId
-          ? [
-              assertTrashLocks(
-                request.overwriteTargetId,
-                request.spaceId,
-                request.principal,
-                hashes,
-              ),
-            ]
-          : []),
-      ],
-    );
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(source),
+      authorizationAssertion(destination),
+      ...(overwrite ? [authorizationAssertion(overwrite)] : []),
+      assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
+      assertCreateLocks(request.destinationParentId, request.spaceId, request.principal, hashes),
+      ...(request.overwriteTargetId
+        ? [assertTrashLocks(request.overwriteTargetId, request.spaceId, request.principal, hashes)]
+        : []),
+    ]);
   }
 
   async acquireCopy(request: CopyPermitRequest): Promise<Permit> {
@@ -510,29 +524,15 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    return grantPermit(
-      this.env.DB,
-      `p:${request.requestId}`,
-      request.spaceId,
-      status.epoch,
-      undefined,
-      [
-        authorizationAssertion(source),
-        authorizationAssertion(destination),
-        ...(overwrite ? [authorizationAssertion(overwrite)] : []),
-        assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
-        ...(request.overwriteTargetId
-          ? [
-              assertTrashLocks(
-                request.overwriteTargetId,
-                request.spaceId,
-                request.principal,
-                hashes,
-              ),
-            ]
-          : []),
-      ],
-    );
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(source),
+      authorizationAssertion(destination),
+      ...(overwrite ? [authorizationAssertion(overwrite)] : []),
+      assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+      ...(request.overwriteTargetId
+        ? [assertTrashLocks(request.overwriteTargetId, request.spaceId, request.principal, hashes)]
+        : []),
+    ]);
   }
 
   async acquireNodeWrite(request: NodeWritePermitRequest): Promise<Permit> {
@@ -587,8 +587,7 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    const permit = await grantPermit(
-      this.env.DB,
+    const permit = await this.#grantPermit(
       `p:${request.requestId}`,
       request.spaceId,
       status.epoch,
@@ -653,17 +652,10 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    return grantPermit(
-      this.env.DB,
-      `p:${request.requestId}`,
-      request.spaceId,
-      status.epoch,
-      undefined,
-      [
-        authorizationAssertion(authorized),
-        assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
-      ],
-    );
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(authorized),
+      assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
+    ]);
   }
 
   async acquireRestore(request: RestorePermitRequest): Promise<Permit> {
@@ -742,19 +734,12 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    return grantPermit(
-      this.env.DB,
-      `p:${request.requestId}`,
-      request.spaceId,
-      status.epoch,
-      undefined,
-      [
-        authorizationAssertion(destination),
-        assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
-        restoreGuard,
-        assertRestorePause(request.gcPause, request.requestId),
-      ],
-    );
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(destination),
+      assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+      restoreGuard,
+      assertRestorePause(request.gcPause, request.requestId),
+    ]);
   }
 
   async acquirePurge(request: PurgePermitRequest): Promise<Permit> {
@@ -814,14 +799,10 @@ export class LockDO extends DurableObject<Env> {
       .one();
     if (intent.digest !== digest || intent.epoch !== status.epoch)
       throw new Error("lock_intent_conflict");
-    return grantPermit(
-      this.env.DB,
-      `p:${request.requestId}`,
-      request.spaceId,
-      status.epoch,
-      undefined,
-      [authorizationAssertion(authority), purgeGuard],
-    );
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(authority),
+      purgeGuard,
+    ]);
   }
 
   async createDavLock(request: DavLockRequest): Promise<DavLockResult> {

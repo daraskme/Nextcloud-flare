@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { KdfRequest } from "../auth/globalKdf";
+import type { MutationAdmission, MutationRequest } from "../db/mutationAdmission";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import { type RestorePause, restorePauseCondition } from "../db/restorePause";
 import type { Env } from "../env";
@@ -40,6 +41,7 @@ import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCle
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
 import { ControlKdf } from "./controlKdf";
+import { ControlMutations } from "./controlMutations";
 import {
   type EpochReason,
   epochNumber,
@@ -107,6 +109,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #admission: ControlAdmission;
   readonly #kdf: ControlKdf;
   readonly #kdfSettlements: KdfSettlements;
+  readonly #mutations: ControlMutations;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -145,6 +148,14 @@ export class ControlDO extends DurableObject<Env> {
       (epoch) => this.#admission.assertKdfOpen(epoch),
       this.#kdfSettlements,
     );
+    this.#mutations = new ControlMutations(
+      env.DB,
+      async (epoch) => {
+        const status = await this.status();
+        if (status.maintenance || status.epoch !== epoch) throw new Error("mutation_unavailable");
+      },
+      (epoch) => this.#admission.assertMutationOpen(epoch),
+    );
   }
 
   fetch(): Response {
@@ -162,6 +173,11 @@ export class ControlDO extends DurableObject<Env> {
 
   async status(): Promise<ControlStatus> {
     return this.#admission.status();
+  }
+
+  /** Internal namespace admission; current authorization remains in LockDO's atomic grant. */
+  async acquireMutation(request: MutationRequest): Promise<MutationAdmission> {
+    return this.#mutations.acquire(request);
   }
 
   /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */

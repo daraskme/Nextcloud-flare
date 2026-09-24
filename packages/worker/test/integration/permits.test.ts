@@ -3,13 +3,13 @@ import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import {
   assertOpenPermit,
-  grantPermit,
   type Permit,
   releasePermit,
   revokeSpacePermits,
 } from "../../src/db/permits";
 import { assertExists, atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "../fixtures/foundation";
+import { grantPermit } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);

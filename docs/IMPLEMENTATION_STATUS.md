@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1 namespace全体受付 | migration0030、ControlDO/D1 active32・waiting256・5秒、LockDO全8許可経路、失効と復旧fence、HTTP 503 | 追加21件と全check1,308件成功。全account経路・backup barrier・実環境は後続。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 KDF終了記録repair | ControlDO SQLite最大20件の送信前記録と終端proof、D1精算の再照合、停止中内部RPC、ローカル未解決も復旧再開fence | 追加14件で応答喪失/eviction/遅延/重複/未知保持を検証済み。終了証明を失った試行は保持。実環境未検証 |
 | 1 KDF全体制限 | migration `0029`、D1 rate/未精算台帳、ControlDO固定PBKDF2、600受付/65秒・20未精算枠、通常instance内1件、epoch cooldown、発行/認証/鍵更新 | 新規Node7件・workerd20件と既存認証34件成功。応答喪失/取消し/601回目/HTTP503/実RPCとstorage喪失を検証。終了証明を失った試行の運用収束・共有/IP制限・実環境は未完了。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 upload行喪失時のmultipart中止 | migration `0028`の不変attempt台帳、正確なhandleの1回dispatch、fresh proof、同一ID再送、64件予算、10秒待機、ControlDO接続 | 新規19件でhold維持、稼働upload/lease、claim/receipt応答喪失、proof期限、遅い応答と上限を検証。全体閉鎖・精算・実S3は未完了。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
@@ -116,6 +117,10 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-24、namespace更新の全体受付を追加。新規Node4件・workerd17件。最終 `pnpm check` 成功: Node400 + workerd908 = **1,308 tests**（25+59 files）、workerd436.48秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。D1 migration0030・通常67table、依存変更なし。待機後の認可/lock/停止、FIFOと32/256上限、応答喪失、実ControlDO再起動、clock rollback、HTTP 503を検証。先行試験のfixture初期化順・HTTP path・制約エラー判定を修正し、productionの期限・拒否条件は維持した。今回のbrowser/Windowsはpush後のCIで確認する。
+
+- 2026-09-24、直前KDF終了記録repairのcommit6b65a47はpush済み。CI36001142967はUbuntu2分53秒・Windows8分38秒・browser2分8秒で全成功。Node396 + workerd891 + browser19 = **1,306件**。
 
 - 2026-09-24、KDF終了記録の永続化・修復を追加。関連4file/89件成功（89.48秒）、追加の最終14件成功（11.54秒）。最終`pnpm check`成功: Node396 + workerd891 = **1,287 tests**（24+58 files）、workerd425.30秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。新規D1 migration・依存なし、DO SQLiteに最大20件の記録。取消しfixtureはAbortControllerの作成と取消しを同じDO contextへまとめ、productionの取消し条件を維持した。今回のbrowser/Windowsはpush後のCIで照合する。
 

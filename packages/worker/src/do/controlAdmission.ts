@@ -27,6 +27,7 @@ export interface AdmissionTransition {
 
 const clock = "strftime('%s','now')*1000";
 const closedWork = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+  AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
   AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')`;
 
 /** Local intent is durable before external I/O. D1 accepts only that transition identity. */
@@ -198,6 +199,10 @@ export class ControlAdmission {
   /** Synchronous local fence immediately before native crypto dispatch. */
   assertKdfOpen(epoch: number): void {
     if (this.#row(epoch).phase !== "open") throw new Error("kdf_unavailable");
+  }
+
+  assertMutationOpen(epoch: number): void {
+    if (this.#row(epoch).phase !== "open") throw new Error("mutation_unavailable");
   }
 
   async close(epoch: number): Promise<ControlStatus & { activeJobLease: boolean }> {

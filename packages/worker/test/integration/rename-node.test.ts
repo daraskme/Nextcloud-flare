@@ -7,7 +7,6 @@ import { handleNodeMutationHttp, nodeMutationRoute } from "../../src/api/nodeMut
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { lockTokenHashes } from "../../src/auth/locks";
-import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
@@ -27,6 +26,7 @@ import {
 import { restoreTrash } from "../../src/services/restoreTrash";
 import { trashNode } from "../../src/services/trashNode";
 import { foundationFixture } from "../fixtures/foundation";
+import { acquireMutation, grantPermit } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -84,12 +84,17 @@ async function planned() {
   return { f, plan: renameMutationPlan(claimed.claim, authorized, parentRevision, name, []) };
 }
 
-function admitted(): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
+function admitted(overloaded = false): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
   const doEnv = {
     ...env,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
+        acquireMutation: overloaded
+          ? async () => {
+              throw new Error("mutation_unavailable");
+            }
+          : acquireMutation,
         status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
         // Namespace-only fixture. Real pause/dispatch/alarm races are tested separately.
         acquireRestorePause: async (epoch: number, operationId: string) => {
@@ -160,6 +165,43 @@ function admitted(): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
     } as unknown as Env["LOCKS"],
   };
 }
+
+it("returns a retryable HTTP 503 without modifying the node when mutation admission is full", async () => {
+  const { f, principal } = await seeded();
+  const appEnv = { ...env, ...admitted(true), APP_ORIGIN: "https://app.invalid" };
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: secret });
+  const csrf = new CsrfTokens(ring, ring, appEnv.APP_ORIGIN);
+  const issued = await csrf.issue(
+    env.DB,
+    new Request("https://app.invalid/api/v1/csrf", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+    { kind: "access", credentialId: principal.credential_id, epoch: 1 },
+  );
+  const response = await handleNodeMutationHttp(
+    new Request(`https://app.invalid/api/v1/nodes/${f.ids.folder}`, {
+      method: "PATCH",
+      headers: {
+        Origin: appEnv.APP_ORIGIN,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": issued.token,
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ spaceId: f.ids.space, name: "overloaded", lockTokens: [] }),
+    }),
+    appEnv,
+    principal,
+    csrf,
+  );
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("1");
+  expect(
+    await env.DB.prepare("SELECT name FROM nodes WHERE id=?").bind(f.ids.folder).first("name"),
+  ).toBe("元の名前");
+});
 
 it("renames through the private HTTP bridge and replays its operation", async () => {
   const { f, principal } = await seeded();

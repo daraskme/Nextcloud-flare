@@ -23,9 +23,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 `reviews/` と REVIEW_LOG は判断経緯。通常の再開時に全レビューを読み直す必要はない。
 
+## 今回の再開点
+
+namespace更新の全体受付を追加した。migration0030、active32/waiting256、LockDOの8許可経路、期限・停止時の不可逆失効と復旧fenceを接続。適用には先にmaintenanceとpermit/claimのdrainが必要。[MUTATION_ADMISSION](MUTATION_ADMISSION.md)の未接続経路（認証情報・upload準備・DAV lock・Queue等）とbackup barrierを続ける。全体完成扱いにしない。今回の全checkはNode400/workerd908成功（追加21件）、型・契約・設定・build/dry-run成功。今回のbrowser/CIはpush後に照合する。直前6b65a47のCIは全成功、Node396/workerd891/browser19。
+
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。66通常テーブル、migration `0001`〜`0029`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0030`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -92,6 +96,10 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
+現在はnamespace更新の全体受付を接続済み。認証情報・upload準備・DAV lock・Queueの更新とbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+
+以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
+
 最新はKDF終了記録の修復。ControlDO SQLiteに送信前reserved/実終了finished/未送信確定not_startedを最大20件保存し、D1精算を確認してから削除する。次回受付前と内部`repairKdfSettlements`で再照合する。後者はmaintenanceと監査初期化を伴う。未知reservedは時間で削除せず、復旧監査と再開にもローカル記録のfenceを追加。D1に行がない終端proofはwrite barrierとDB側期限の照合後だけ掃除し、計算成功とはしない。新規14件と全check Node396+workerd891=1,287件成功。今回のCI/browserはpush後に確認する。詳細はKDF_ADMISSION、検証結果はIMPLEMENTATION_STATUS。D1 migrationは追加せず0029/66tableを維持。次はaccount mutation admission、残るQueue/backupと製品の後続phaseを進める。未知KDF・未知multipartの保留を勝手に解除しない。
 
 直前commit `4dbafdd`の[CI run35997960544](https://github.com/daraskme/Nextcloud-flare/actions/runs/35997960544)は全成功、Node396+workerd877+browser19=1,292件。以下は以前のcheckpoint記録。
@@ -153,7 +161,7 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 以下の全体gateも引き続き必要:
 
 1. **outbox Queue 実サービス / repair**: `node.created` と `node.renamed` のローカル handler を基に実 Queue/DLQ/requeue を検証し、残る kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
-2. **ControlDOの残る制御**: account単位のmutation同時数と待ちqueue、終了証明を失ったKDFの運用収束・共有password/IP制限、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
+2. **ControlDOの残る制御**: namespace以外のaccount mutation受付とbackup統合、終了証明を失ったKDFの運用収束・共有password/IP制限、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
 4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
 

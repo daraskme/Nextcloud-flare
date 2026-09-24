@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { LockDO } from "../../src/do/LockDO";
 import { UploadDO } from "../../src/do/UploadDO";
 import type { Env } from "../../src/env";
+import { acquireMutation } from "./mutationAdmission";
 
 /** Explicit test-only admission with real DO storage/D1. Production ControlDO stays closed. */
 export function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
@@ -11,7 +12,10 @@ export function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
     DB: db,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ status: async () => ({ epoch, maintenance, gcPaused: true }) }),
+      get: () => ({
+        acquireMutation,
+        status: async () => ({ epoch, maintenance, gcPaused: true }),
+      }),
     } as unknown as Env["CONTROL"],
   };
   app.UPLOADS = {

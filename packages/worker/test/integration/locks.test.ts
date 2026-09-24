@@ -4,10 +4,12 @@ import { beforeAll, beforeEach, expect, it } from "vitest";
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
 import { lockTokenHashes } from "../../src/auth/locks";
 import { registerAccessSession } from "../../src/auth/sessions";
+import type { MutationRequest } from "../../src/db/mutationAdmission";
 import { atomicBatch } from "../../src/db/primary";
 import { type CreatePermitRequest, LockDO, type RenamePermitRequest } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { foundationFixture } from "../fixtures/foundation";
+import { acquireMutation } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -41,7 +43,10 @@ function admitted(maintenance = false, epoch = 1, db = env.DB): Env {
     DB: db,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ status: async () => ({ epoch, maintenance, gcPaused: true }) }),
+      get: () => ({
+        acquireMutation,
+        status: async () => ({ epoch, maintenance, gcPaused: true }),
+      }),
     } as unknown as Env["CONTROL"],
   };
 }
@@ -54,6 +59,54 @@ async function initialize(f: Awaited<ReturnType<typeof fixture>>) {
     await instance.release(request.requestId, permit);
   });
 }
+
+it.each(["credential", "lock", "stop"])(
+  "rechecks %s changes after waiting for global admission",
+  async (change) => {
+    const f = await fixture();
+    await runInDurableObject(f.stub, async (_, state) => {
+      const base = admitted();
+      const configured = {
+        ...base,
+        CONTROL: {
+          idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
+          get: () => ({
+            status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
+            acquireMutation: async (request: MutationRequest) => {
+              const grant = await acquireMutation(request);
+              if (change === "credential")
+                await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+                  .bind(Date.now(), f.ids.session)
+                  .run();
+              else if (change === "stop")
+                await env.DB.prepare("UPDATE control SET maintenance=1").run();
+              else
+                await env.DB.prepare(
+                  "INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at) VALUES(?,?,?,?,?,'/dav/Folder/','0','owner',1,?)",
+                )
+                  .bind(
+                    crypto.randomUUID(),
+                    f.ids.folder,
+                    f.ids.space,
+                    f.ids.credential,
+                    crypto.randomUUID(),
+                    Date.now() + 60000,
+                  )
+                  .run();
+              return grant;
+            },
+          }),
+        } as unknown as Env["CONTROL"],
+      };
+      await expect(new LockDO(state, configured).acquireCreate(f.request)).rejects.toThrow();
+    });
+    expect(
+      await env.DB.prepare("SELECT 1 FROM permits WHERE permit_id=?")
+        .bind(`p:${f.request.requestId}`)
+        .first(),
+    ).toBeNull();
+  },
+);
 
 it("persists create intent through eviction and refuses changed or terminal intents", async () => {
   const f = await fixture();

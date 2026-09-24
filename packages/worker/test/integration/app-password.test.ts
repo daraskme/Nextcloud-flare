@@ -17,6 +17,7 @@ import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
+import { acquireMutation, grantPermit } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -29,7 +30,10 @@ function admittedDavEnv(): Env {
     ...env,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }) }),
+      get: () => ({
+        acquireMutation,
+        status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
+      }),
     } as unknown as Env["CONTROL"],
   };
   return {
@@ -876,9 +880,7 @@ it("creates, refreshes and removes an existing-resource DAV lock", async () => {
   const initializePermit = await lockStub.acquireNodeWrite(initializeRequest);
   await lockStub.release(initializeRequest.requestId, initializePermit);
   const permitId = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO permits VALUES(?,?,1,?,'open')")
-    .bind(permitId, f.ids.space, Date.now() + 60_000)
-    .run();
+  await grantPermit(env.DB, permitId, f.ids.space, 1);
   expect((await createLock()).status).toBe(423);
   await env.DB.prepare("UPDATE permits SET state='released' WHERE permit_id=?")
     .bind(permitId)
