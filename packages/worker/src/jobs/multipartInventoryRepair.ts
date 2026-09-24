@@ -12,6 +12,7 @@ import {
   type MultipartCleanupCandidate,
   multipartCleanupFence,
 } from "./multipartCleanup";
+import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 import { controlFence, observedObject } from "./uploadCleanup";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -66,7 +67,7 @@ function scanFence(scan: Scan): SqlStatement {
   );
 }
 
-/** Discover every handle for a stopped key, persist its abort receipt, and retain its reservation. */
+/** Verify the binding afresh, discover stopped handles, and retain unresolved reservations. */
 export async function repairUnidentifiedMultipartUploads(
   db: D1Database,
   bucket: R2Bucket,
@@ -76,13 +77,11 @@ export async function repairUnidentifiedMultipartUploads(
     maxUploads?: number;
     maxHandles?: number;
     maxWallMs?: number;
-    maintenance?: boolean;
   } = {},
 ): Promise<MultipartInventoryRepairResult> {
   const limit = options.maxUploads ?? 5;
   const maxHandles = options.maxHandles ?? 10;
   const wall = options.maxWallMs ?? 20_000;
-  const maintenance = options.maintenance ?? false;
   if (
     !Number.isSafeInteger(epoch) ||
     epoch < 1 ||
@@ -97,7 +96,20 @@ export async function repairUnidentifiedMultipartUploads(
     wall > 25_000
   )
     throw new Error("invalid_multipart_inventory_limit");
-  const source = JSON.stringify(inventory.source);
+  return withVerifiedR2Inventory(db, bucket, inventory, epoch, (verified) =>
+    repairVerified(db, verified, epoch, { limit, maxHandles, wall }),
+  );
+}
+
+async function repairVerified(
+  db: D1Database,
+  verified: VerifiedR2Inventory,
+  epoch: number,
+  { limit, maxHandles, wall }: { limit: number; maxHandles: number; wall: number },
+): Promise<MultipartInventoryRepairResult> {
+  const { bucket, inventory } = verified;
+  const maintenance = true;
+  const source = JSON.stringify(verified.observation.source);
   const started = Date.now();
   const result: MultipartInventoryRepairResult = {
     claimed: 0,
@@ -117,7 +129,10 @@ export async function repairUnidentifiedMultipartUploads(
   for (const { id } of rows.results) {
     if (Date.now() - started >= wall) break;
     const token = crypto.randomUUID();
-    const row = await claimMultipartCleanup(db, id, epoch, maintenance, token, source);
+    const row = await claimMultipartCleanup(db, id, epoch, maintenance, token, {
+      source,
+      fence: verified.fence,
+    });
     if (!row) continue;
     result.claimed++;
     try {
@@ -131,6 +146,7 @@ export async function repairUnidentifiedMultipartUploads(
         const round = crypto.randomUUID();
         try {
           await atomicBatch(db, [
+            verified.fence(),
             controlFence(epoch, maintenance),
             multipartCleanupFence(row, token),
             scanFence(scan),
@@ -155,6 +171,7 @@ export async function repairUnidentifiedMultipartUploads(
         scan = (await scanRow(db, id))!;
       }
       const fences = () => [
+        verified.fence(),
         controlFence(epoch, maintenance),
         multipartCleanupFence(row, token),
         scanFence(scan!),
@@ -331,12 +348,14 @@ export async function repairUnidentifiedMultipartUploads(
     } catch {
       result.retried++;
       // Keep the lease after unknown I/O. Every partial page and every confirmed abort is durable.
-      await primary(db)
-        .prepare(
-          "UPDATE uploads SET cleanup_error='multipart_inventory_unconfirmed' WHERE id=? AND cleanup_token=?",
-        )
-        .bind(id, token)
-        .run();
+      await atomicBatch(db, [
+        verified.fence(),
+        controlFence(epoch, maintenance),
+        {
+          sql: "UPDATE uploads SET cleanup_error='multipart_inventory_unconfirmed' WHERE id=? AND cleanup_token=?",
+          values: [id, token],
+        },
+      ]).catch(() => {});
     }
   }
   return result;

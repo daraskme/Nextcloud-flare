@@ -47,7 +47,11 @@ ControlDOは前後でquiesceと監査再初期化を行う。S3取得前後でD1
 
 ## 発見したIDの中止修復
 
-内部RPC `ControlDO.repairUnidentifiedMultipartUploads(expectedEpoch, limit=5)`は、S3設定からclientを作り、前後で停止・監査再初期化を行う。公開HTTP/Cronへはまだ接続しない。
+内部RPC `ControlDO.repairUnidentifiedMultipartUploads(expectedEpoch, limit=5)`は、S3設定からclientを作り、前後で停止・監査再初期化を行う。service自体もmaintenanceとGC pauseを必須とし、毎回`withVerifiedR2Inventory`で実BLOBS/S3の対応を新しいnonceで検証する。公開HTTP/Cronへはまだ接続しない。
+
+検証に成功した同じcallbackからのみ回収を実行する。claim/永久停止/scan登録、round再初期化、各dispatch counter、page/handle/abort receipt、HEADのphysical観測、cleanup lease解放と診断更新は、current proof fenceと同一D1 batchで確定する。誤bucket・古いnonce・確認不能なprobeでは対象uploadのclaim・一覧・abortを開始しない。epoch/pause/lease/検証世代が変われば保存と後続dispatchを拒否する。pageの保存応答を失いreadbackで確認できても、次のdispatchは再度current proofを必要とする。完了済みpageからの再開にも新しいnonceが必要。
+
+probeの60秒leaseで同時検証/修復を直列化する。期限切れ時はRPC全体を成功扱いにせず、保存済みのpage/receiptと未解決uploadのlease・容量予約を保持する。次回はfresh検証をやり直す。`repair.r2Calls`は従来どおりupload回収の呼出し数で、先行するprobeのBLOBS GET/PUT/S3 GETの3回は`r2_binding_probe.calls`へ別計上する。回収の20秒予算は検証後から計測するが、probeの60秒期限を延長しない。migration・依存追加なし。
 
 `repairUnidentifiedMultipartUploads`は最大20 upload、1 uploadあたり1 S3ページ/20件、既定10・最大20 handleのabort、20秒既定/25秒最大の実行予算を使う。S3 transportは既存の10秒上限。R2 bindingの実行結果が遅れた場合も60秒cleanup leaseとcurrent epoch/tokenで保存・後続dispatchを拒否する。
 
@@ -58,7 +62,7 @@ ControlDOは前後でquiesceと監査再初期化を行う。S3取得前後でD1
 - keyの全ページを保存してからabortを始める。途中でmarkerのhandleを中止してS3ページングを壊さない。未処理handleは次の呼出しで一覧を取り直さず続行する。
 - 各R2/S3呼出しの前にcleanup counterとcurrent fenceを確定する。counterの応答が不明ならその呼出しをdispatchしない。scan/page/abort receipt保存の応答喪失は正確なround/token/tupleまたは不変receiptで照合する。
 - 実BLOBS bindingのabort成功だけを`state='aborted'`にする。NoSuchUpload・404・timeout・応答喪失ではobservedのまま保持する。確認済み中止receiptを再送で消したり、成功済みhandleを無用に再中止しない。
-- S3取得前と処理後にHEADし、完成objectがあればmetadataの不一致でも実physical bytesを計上する。S3障害で完成物の容量計上を止めない。objectのdelete、namespaceの公開、予約精算は行わない。
+- 対応検証に成功した後、S3一覧取得前と処理後にHEADし、完成objectがあればmetadataの不一致でも実physical bytesを計上する。一覧取得の障害で完成物の容量計上を止めない。対応検証自体の失敗・失効ではHEAD/保存も拒否し、容量予約を保持して再検証を待つ。objectのdelete、namespaceの公開、予約精算は行わない。
 - 途中失敗ではclaim leaseを保持し、成功ページはカーソル・観測・全IDを原子的に保存する。走査と中止が一巡したら1時間後に再走査し、予約は保持する。
 
 scan登録後は、後から元のR2 IDが判明しても通常cleanupへ戻さず、既存IDを追加handleとして中止する。D1 triggerは予約のreserved以外への遷移、cleanup完了flag、閉鎖marker、scan/handle削除を拒否する。復旧最終fenceもscanの存在を拒否する。これらの解除には、検証済み閉鎖証明を導入するforward migrationが必要。
@@ -76,19 +80,21 @@ scan登録後は、後から元のR2 IDが判明しても通常cleanupへ戻さ�
 - D1にはepoch、世代、source、nonce、状態、期待ETag、R2実観測tuple、検証時刻、60秒lease、呼出しcounterを保存する。BLOBS GET/PUT/S3 GETの各dispatch前にcounterの確定応答を要求する。D1やR2の応答が不明なら後続dispatch・proof使用を停止し、lease期限後の新nonce・条件付き更新で再検証する。PUTの無条件再送は行わない。
 - S3 GETは固定keyだけを許し、応答上限64 bytes・既存の10秒transport deadlineを使う。404・403・redirect・壊れたbodyを不在証明に変換しない。
 - 検証後の内部callbackは同じbucket/clientとcurrent proof fenceを受け取る。権限を使うD1変更は`verified.fence()`と同一batchで実行する。scope終了、epoch/pause変更、lease失効、世代交代後は保存したSQL fenceも失敗する。最終保存前にもfenceを再確認する。
-- RPCの`bindingVerified:true`はその呼出し時点の診断結果であり、後のcleanupに渡す許可証ではない。nonce・署名・資格情報を返さない。cleanupは内部helperで毎回新しい検証を取得する必要がある。
+- RPCの`bindingVerified:true`はその呼出し時点の診断結果であり、後のcleanupに渡す許可証ではない。nonce・署名・資格情報を返さない。未知ID回収serviceは内部helperで毎回新しい検証を取得する。
 - 復旧R2監査はsettled objectのsize/ETag/version/uploadedを照合し、最初のページでHEADして消失も検出する。未解決phase/leaseは最終fenceで拒否する。成功済み検証の存在だけではmultipart scanの予約holdを解除しない。
 
 [Workers APIの条件付きPUT](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)と[R2の整合性モデル](https://developers.cloudflare.com/r2/reference/consistency/)を根拠にする。ローカルworkerdで条件付きPUT・競合・遅延初回create/更新を実行して検証した。S3応答はfixtureであり、実R2 S3でのbinding対応・権限・lifecycle検証はstagingに残る。
 
 ## 次の修復段階
 
-1. 実装したBLOBS/S3対応検証を、全体閉鎖証明の同じ呼出しとD1 fenceへ接続する。過去の成功booleanだけで一致扱いにしない。実S3でのstaging試験も必要。
+1. BLOBS/S3対応検証は未知IDの走査・中止へ接続済み。次は全体閉鎖証明を定義して同じcurrent D1 fenceへ接続する。既存scan/pageは閉鎖証明へ昇格させない。実S3でのstaging試験も必要。
 2. D1のupload行自体が失われたhandleのbucket全体inventory・所有者/容量会計を実装する。既存uploadの複数ID走査・中止は接続済み。
 3. 発見IDの中止receiptに加え、全handleの閉鎖と不在証明を確立し、予約精算・GCへ接続する。
 4. lifecycle経過だけで閉鎖とせず、未知create/completeの遅延完了も含めた不在証明を定義・検証する。
 
 DB snapshotにID/partがないことは、R2に未完了bytesがない証拠にならない。未知IDを最初の1件だけuploadsへ結びつけると、別handleを残して予約を解放するため禁止する。
+
+2026-09-24に[Cloudflare Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)と[AWS AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)を再確認した。AWSは中止と進行中partの競合、および容量回収確認のための追加確認を説明している。これをR2の未知create/completeまで閉鎖済みとする保証には使わない。今回の対応検証の接続でも予約holdと復旧最終fenceは維持する。
 
 ## 参照と検証
 

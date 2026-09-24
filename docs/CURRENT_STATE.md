@@ -2,6 +2,8 @@
 
 更新日: 2026-09-24
 
+直近の到達点と進行中の作業は[PROGRESS](PROGRESS.md)へ記録する。フォルダー集計のcommit `26c4d07`はpush済みで、[CI](https://github.com/daraskme/Nextcloud-flare/actions/runs/35926517271)のUbuntu・Windows・browser全jobが成功した。
+
 この文書は、実装済み・未実装・検証済み・未検証をセッション間で共有するための入口である。実際の作業ツリー、最新commit、CI結果は必ずコマンドで再確認する。詳細な実行履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、次回作業の注意事項は [HANDOFF](HANDOFF.md)、製品全体の完了条件は [DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) を正とする。
 
 ## 状態の意味
@@ -33,9 +35,9 @@
 | 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
 | GC | 7日猶予candidate、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | unknown multipart ID、既知keyの不正置換、実Cron運用 |
 | 未追跡object | D1のページcursor/lease、HEAD照合、隔離台帳、35日猶予、実physical会計、再利用拒否、Cronと停止中inventory | 応答喪失、同時走査/回収、置換・再出現、owner後日復元、pause/epoch、復旧監査 | incomplete multipart、他prefix、実R2運用 |
-| multipart S3診断 | 署名付きListMultipartUploads/ListParts/GetBucketLifecycleConfiguration、1 GET/最大100件/1 MiB/10秒、停止中ControlDO診断 | XML/設定/署名/timeout/ページ失敗、実D1 fenceとControlDO監査再初期化、予約保持 | 対応検証との接続、全体不在証明・予約精算、実S3/lifecycle試験 |
+| multipart S3診断 | 署名付きListMultipartUploads/ListParts/GetBucketLifecycleConfiguration、1 GET/最大100件/1 MiB/10秒、停止中ControlDO診断 | XML/設定/署名/timeout/ページ失敗、実D1 fenceとControlDO監査再初期化、予約保持 | 全体不在証明・予約精算、実S3/lifecycle試験 |
 | R2/S3対応検証 | migration `0023`、固定64-byte system probeのfresh nonce/CAS更新、scope付きD1 fence、ControlDO検証と復旧監査 | 実R2条件付きPUT、遅延create/更新、誤bucketの古い値、応答喪失、epoch/pause/lease、system容量保持 | multipart全体閉鎖・予約精算への接続、実S3試験 |
-| multipart ID修復 | migration `0022`のscan/handle台帳、既存uploadの全ID走査・実BLOBS abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計 | 対応検証との接続と全体不在証明・予約精算、upload行ごと失われたhandle、実S3、Cron |
+| multipart ID修復 | migration `0022`のscan/handle台帳、毎回freshなBLOBS/S3対応検証、既存uploadの全ID走査・abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計。対応検証と同一batchの失効境界 | 全体不在証明・予約精算、upload行ごと失われたhandle、実S3、Cron |
 | private単一upload | HMAC capability、D1予約、1回だけのR2 PUT、SHA-256、GETによる応答喪失回収、原子的新規作成/上書き、status/abort HTTP、24時間後のCron回収・GC接続 | 実D1/R2/LockDO、0 byte、同時送信、10 step rollback、失効、DB/R2応答喪失、CSRF/Origin、回収lease競合、旧epoch、実ControlDO停止中repair | 公開共有、未知object修復、stagingは未完了 |
 | private multipart upload | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、R2一度限りcomplete/HEAD、原子的新規/上書き公開、terminal照合、既知R2 IDのabort/期限切れ回収・GC接続、HTTP create/part/status/page/complete/abort | D1/R2/DO/LockDO、64 MiB+末尾の公開、同時確定、応答喪失、storage全喪失、失効、10 step rollback、complete/abort排他 | 未知ID回収後の予約精算は未接続 |
 | WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation、実HTTPの空本文操作。詳細は[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) | 実OS client gate、共有DAV、残るmethod/profile |
@@ -45,7 +47,7 @@
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account/KDF admission |
 | media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
 
-最新の全検証記録は Node 389件 + workerd 800件 = 1,189件。別途browser19件成功、合計1,208件。全checkは、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0026`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
+最新の全検証記録は Node 389件 + workerd 811件 = 1,200件。browser19件は直前のフォルダー集計commitでlocal/CI成功済み。今回の修復変更のbrowser試験はpush後のCIで確認する。全checkは、lint、typecheck、contracts、config、schema整合性テスト、Web build、Wrangler dry-runを含む。migration `0026`をローカルD1/SQLiteへ適用済み。件数は追加実装で変わるため、次回は再実行結果で更新する。
 
 ## 実装済みだがstaging未検証・未公開
 
@@ -128,7 +130,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. unknown multipart IDのS3/BLOBS対応証明・全体不在証明・予約精算を実装。S3診断と完成済み`u/` objectの隔離・35日回収は接続済み。
+1. unknown multipart IDの全体不在証明・予約精算を実装。毎回freshなS3/BLOBS対応検証は走査・中止へ接続済み。S3診断と完成済み`u/` objectの隔離・35日回収も接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
 4. account mutation / KDF全体admission、backup barrier、実環境のrestore/再開drill。内部RPCの段階再開は実装済み。

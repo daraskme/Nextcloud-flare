@@ -1,4 +1,10 @@
-import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import {
+  assertExists,
+  assertOneChange,
+  atomicBatch,
+  primary,
+  type SqlStatement,
+} from "../db/primary";
 import {
   COMPLETION,
   controlFence,
@@ -65,13 +71,14 @@ export async function claimMultipartCleanup(
   epoch: number,
   maintenance: boolean,
   token: string,
-  inventorySource?: string,
+  inventory?: { source: string; fence(): SqlStatement },
 ): Promise<Candidate | null> {
   try {
     await atomicBatch(db, [
       controlFence(epoch, maintenance),
+      ...(inventory ? [inventory.fence()] : []),
       assertExists(
-        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.epoch<=? AND ${inventorySource === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
+        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.epoch<=? AND ${inventory === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
         [id, epoch, epoch],
       ),
       {
@@ -99,14 +106,14 @@ export async function claimMultipartCleanup(
         values: [id],
       },
       assertOneChange,
-      ...(inventorySource === undefined
+      ...(inventory === undefined
         ? []
         : [
             {
               sql: `INSERT INTO multipart_inventory_scans(upload_id,r2_key,source,epoch,round_id)
           SELECT u.id,b.r2_key,?,?,? FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=?
           ON CONFLICT(upload_id) DO NOTHING`,
-              values: [inventorySource, epoch, crypto.randomUUID(), id],
+              values: [inventory.source, epoch, crypto.randomUUID(), id],
             },
           ]),
     ]);

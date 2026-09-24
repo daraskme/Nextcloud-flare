@@ -7,6 +7,7 @@ import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { inspectRecoveryFinalFence } from "../../src/do/recoveryAudit";
 import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
 import { repairUnidentifiedMultipartUploads } from "../../src/jobs/multipartInventoryRepair";
+import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { foundationFixture } from "../fixtures/foundation";
 import { inventoryEnv, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
@@ -14,7 +15,10 @@ import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
-  await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_paused=0").run();
+  await env.DB.prepare("UPDATE control SET epoch=1,maintenance=1,gc_paused=1").run();
+  await env.DB.prepare(
+    "UPDATE r2_binding_probe SET lease_expires_at=1 WHERE lease_token IS NOT NULL",
+  ).run();
   await env.DB.prepare(
     "UPDATE uploads SET cleanup_next_at=9999999999999 WHERE mode='multipart'",
   ).run();
@@ -99,12 +103,27 @@ function inventory(
           : uploadsXml({ prefix: f.key, uploads: ids.map((id) => uploadXml(f.key, id)).join("") }),
       ),
   );
-  return { client: new R2S3Inventory(inventoryEnv, { fetch }), fetch };
+  const probe = vi.fn(readProbe);
+  return {
+    client: new R2S3Inventory(inventoryEnv, {
+      fetch: (request) => (isProbe(request) ? probe() : fetch(request)),
+    }),
+    fetch,
+    probe,
+  };
+}
+const isProbe = (request: Request) =>
+  new URL(request.url).pathname.endsWith(`/${BINDING_PROBE_KEY}`);
+async function readProbe() {
+  const object = await env.BLOBS.get(BINDING_PROBE_KEY);
+  return object ? new Response(object.body) : new Response(null, { status: 404 });
 }
 const repair = (client: R2S3Inventory, options = {}, bucket = env.BLOBS, db = env.DB, epoch = 1) =>
   repairUnidentifiedMultipartUploads(db, bucket, client, epoch, options);
 const bucket = (overrides: Partial<R2Bucket>) =>
   ({
+    get: env.BLOBS.get.bind(env.BLOBS),
+    put: env.BLOBS.put.bind(env.BLOBS),
     head: env.BLOBS.head.bind(env.BLOBS),
     resumeMultipartUpload: env.BLOBS.resumeMultipartUpload.bind(env.BLOBS),
     ...overrides,
@@ -117,6 +136,175 @@ const lost = (point: string) =>
     },
     true,
   );
+
+it("rejects a mismatched bucket before claiming, listing or aborting an upload", async () => {
+  const f = await fixture();
+  const s3 = inventory(f);
+  s3.probe.mockImplementation(async () => new Response("0".repeat(64)));
+  const head = vi.fn(env.BLOBS.head.bind(env.BLOBS));
+  const resumeMultipartUpload = vi.fn(env.BLOBS.resumeMultipartUpload.bind(env.BLOBS));
+  await expect(repair(s3.client, {}, bucket({ head, resumeMultipartUpload }))).rejects.toThrow(
+    "r2_binding_mismatch",
+  );
+  expect(s3.fetch).not.toHaveBeenCalled();
+  expect(head).not.toHaveBeenCalled();
+  expect(resumeMultipartUpload).not.toHaveBeenCalled();
+  expect(await scan(f)).toBeNull();
+  expect(await row(f)).toMatchObject({ state: "uploading", multipart_cleanup_started_at: null });
+  expect(await reservation(f)).toBe("reserved");
+});
+
+it("requires a new nonce when resuming a saved inventory and rejects an old successful probe", async () => {
+  const f = await fixture();
+  const s3 = inventory(f, []);
+  await repair(s3.client);
+  const previous = await (await env.BLOBS.get(BINDING_PROBE_KEY))!.text();
+  const saved = await scan(f);
+  await due(f);
+  s3.fetch.mockClear();
+  s3.probe.mockImplementation(async () => new Response(previous));
+  await expect(repair(s3.client)).rejects.toThrow("r2_binding_mismatch");
+  expect(await (await env.BLOBS.get(BINDING_PROBE_KEY))!.text()).not.toBe(previous);
+  expect(s3.fetch).not.toHaveBeenCalled();
+  expect(await scan(f)).toEqual(saved);
+  expect(await handles(f)).toHaveLength(0);
+  expect(await reservation(f)).toBe("reserved");
+});
+
+it.each(["maintenance", "gc_paused"])(
+  "requires %s before starting verified repair",
+  async (flag) => {
+    const f = await fixture();
+    await env.DB.prepare(`UPDATE control SET ${flag}=0`).run();
+    const s3 = inventory(f);
+    await expect(repair(s3.client)).rejects.toThrow("r2_binding_verification_failed");
+    expect(s3.probe).not.toHaveBeenCalled();
+    expect(s3.fetch).not.toHaveBeenCalled();
+    expect(await scan(f)).toBeNull();
+    expect(await reservation(f)).toBe("reserved");
+  },
+);
+
+it.each([
+  ["claim", "INSERT INTO multipart_inventory_scans", 0, 0, 0],
+  ["page", "UPDATE multipart_inventory_scans SET cursor_key=", 0, 0, 0],
+  ["abort dispatch", "SET attempts=attempts+1", 1, 0, 0],
+  ["abort receipt", "SET state='aborted',aborted_at=", 1, 1, 0],
+  ["cleanup release", "cleanup_error='multipart_inventory_closure_required'", 1, 1, 1],
+] as const)(
+  "fences expired binding proof at %s in the same D1 batch",
+  async (stage, point, count, attempts, aborted) => {
+    const f = await fixture();
+    const s3 = inventory(f);
+    const db = injectBatch(
+      (sql) => sql.includes(point),
+      async () => {
+        await env.DB.prepare("UPDATE r2_binding_probe SET lease_expires_at=1").run();
+      },
+      false,
+    );
+    await expect(repair(s3.client, {}, env.BLOBS, db)).rejects.toThrow(
+      "r2_binding_verification_failed",
+    );
+    const found = await handles(f);
+    expect(found).toHaveLength(count);
+    if (count)
+      expect(found[0]).toMatchObject({ attempts, state: aborted ? "aborted" : "observed" });
+    if (stage === "claim") {
+      expect(await scan(f)).toBeNull();
+      expect(await row(f)).toMatchObject({
+        state: "uploading",
+        multipart_cleanup_started_at: null,
+      });
+      expect(s3.fetch).not.toHaveBeenCalled();
+    } else {
+      expect(await scan(f)).toMatchObject({ pages: count });
+      expect((await row(f))!.cleanup_token).not.toBeNull();
+    }
+    if (attempts === 0)
+      await expect(f.handle.uploadPart(1, new TextEncoder().encode("abc"))).resolves.toMatchObject({
+        partNumber: 1,
+      });
+    else await expect(f.handle.uploadPart(1, new TextEncoder().encode("abc"))).rejects.toThrow();
+    expect(await reservation(f)).toBe("reserved");
+  },
+);
+
+it("does not dispatch after a saved page loses its reply and the binding proof expires", async () => {
+  const f = await fixture();
+  const db = injectBatch(
+    (sql) => sql.includes("UPDATE multipart_inventory_scans SET cursor_key="),
+    async () => {
+      await env.DB.prepare("UPDATE r2_binding_probe SET lease_expires_at=1").run();
+      throw new Error("lost_ack");
+    },
+    true,
+  );
+  await expect(repair(inventory(f).client, {}, env.BLOBS, db)).rejects.toThrow(
+    "r2_binding_verification_failed",
+  );
+  expect(await scan(f)).toMatchObject({ pages: 1 });
+  expect(await handles(f)).toMatchObject([{ attempts: 0, state: "observed" }]);
+  await due(f);
+  const s3 = inventory(f);
+  expect(await repair(s3.client)).toMatchObject({ pages: 0, aborted: 1 });
+  expect(s3.probe).toHaveBeenCalledOnce();
+  expect(s3.fetch).not.toHaveBeenCalled();
+  expect(await reservation(f)).toBe("reserved");
+});
+
+it("preserves the previous scan round when binding proof expires before its reset", async () => {
+  const f = await fixture();
+  const s3 = inventory(f, []);
+  await repair(s3.client);
+  await env.DB.prepare("UPDATE multipart_inventory_scans SET next_scan_at=0 WHERE upload_id=?")
+    .bind(f.id)
+    .run();
+  const previous = await scan(f);
+  await due(f);
+  s3.fetch.mockClear();
+  const db = injectBatch(
+    (sql) => sql.includes("SET source=?,epoch=?,round_id=?"),
+    async () => {
+      await env.DB.prepare("UPDATE r2_binding_probe SET lease_expires_at=1").run();
+    },
+    false,
+  );
+  await expect(repair(s3.client, {}, env.BLOBS, db)).rejects.toThrow(
+    "r2_binding_verification_failed",
+  );
+  expect(s3.fetch).not.toHaveBeenCalled();
+  expect(await scan(f)).toEqual(previous);
+  expect(await reservation(f)).toBe("reserved");
+});
+
+it("rejects a late completed-object observation after binding proof expires", async () => {
+  const f = await fixture();
+  await env.BLOBS.put(f.key, "untracked-completion");
+  const s3 = inventory(f);
+  const head = vi.fn(async (key: string) => {
+    const object = await env.BLOBS.head(key);
+    await env.DB.prepare("UPDATE r2_binding_probe SET lease_expires_at=1").run();
+    return object;
+  });
+  await expect(repair(s3.client, {}, bucket({ head }))).rejects.toThrow(
+    "r2_binding_verification_failed",
+  );
+  expect(head).toHaveBeenCalledOnce();
+  expect(s3.fetch).not.toHaveBeenCalled();
+  expect(
+    await env.DB.prepare("SELECT * FROM blob_storage WHERE blob_id=?").bind(f.blob).first(),
+  ).toBeNull();
+  expect(await reservation(f)).toBe("reserved");
+  await due(f);
+  expect(await repair(s3.client)).toMatchObject({ aborted: 1, retried: 0 });
+  expect(
+    await env.DB.prepare("SELECT bytes FROM blob_storage WHERE blob_id=?")
+      .bind(f.blob)
+      .first("bytes"),
+  ).toBe(20);
+  expect(await reservation(f)).toBe("reserved");
+});
 
 it("recovers multiple lost IDs, aborts their real R2 parts and retains an unresolved reservation", async () => {
   const f = await fixture();
@@ -330,7 +518,7 @@ it("retains an unknown abort outcome and does not convert NoSuchUpload to a rece
   expect(await reservation(f)).toBe("reserved");
 });
 
-it("does not mistake an empty or wrong-bucket listing for closure", async () => {
+it("does not mistake an empty verified listing for closure", async () => {
   const f = await fixture();
   expect(await repair(inventory(f, []).client)).toMatchObject({
     observed: 0,
@@ -354,7 +542,9 @@ it("fences a late initialization ID out of ordinary cleanup after inventory has 
     .bind(f.handle.uploadId, f.id)
     .run();
   await due(f);
-  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await repairMultipartUploads(env.DB, env.BLOBS, 1, { maintenance: true })).toMatchObject({
+    claimed: 0,
+  });
   expect(await repair(s3.client)).toMatchObject({ pages: 0, aborted: 1, retried: 0 });
   expect(await handles(f)).toMatchObject([{ state: "aborted", initiated_at: null }]);
   expect(await reservation(f)).toBe("reserved");
@@ -371,30 +561,36 @@ it.each(["epoch", "token", "pause"])("rejects %s changes during the listing", as
   const f = await fixture();
   const s3 = inventory(f, [], async () => {
     if (kind === "epoch") await env.DB.prepare("UPDATE control SET epoch=2").run();
-    if (kind === "pause")
-      await env.DB.prepare("UPDATE control SET maintenance=1,gc_paused=1").run();
+    if (kind === "pause") await env.DB.prepare("UPDATE control SET gc_paused=0").run();
     if (kind === "token")
       await env.DB.prepare("UPDATE uploads SET cleanup_token='replacement' WHERE id=?")
         .bind(f.id)
         .run();
     return uploadsXml({ prefix: f.key, uploads: uploadXml(f.key, f.handle.uploadId) });
   });
-  expect(await repair(s3.client)).toMatchObject({ pages: 0, observed: 0, aborted: 0, retried: 1 });
+  if (kind === "token")
+    expect(await repair(s3.client)).toMatchObject({
+      pages: 0,
+      observed: 0,
+      aborted: 0,
+      retried: 1,
+    });
+  else await expect(repair(s3.client)).rejects.toThrow("r2_binding_verification_failed");
   expect(await handles(f)).toHaveLength(0);
   expect(await scan(f)).toMatchObject({ pages: 0 });
   if (kind === "token")
     expect(await row(f)).toMatchObject({ cleanup_token: "replacement", cleanup_error: null });
 });
 
-it("serializes concurrent repair callers with the existing cleanup claim", async () => {
+it("serializes concurrent repair callers with the binding probe lease", async () => {
   const f = await fixture();
   let concurrent: unknown;
   const s3 = inventory(f, [], async () => {
-    concurrent = await repair(inventory(f).client);
+    concurrent = await repair(inventory(f).client).catch((error: Error) => error.message);
     return uploadsXml({ prefix: f.key, uploads: uploadXml(f.key, f.handle.uploadId) });
   });
   expect(await repair(s3.client)).toMatchObject({ aborted: 1, retried: 0 });
-  expect(concurrent).toMatchObject({ claimed: 0, r2Calls: 0 });
+  expect(concurrent).toBe("r2_binding_verification_failed");
 });
 
 it("charges completed objects without deleting them or refunding reservations", async () => {
@@ -459,6 +655,7 @@ it("restarts cursors for a changed source and recovers a lost reset acknowledgem
   const original = await scan(f);
   const fetch = vi.fn(async (request: Request) => {
     expect(new URL(request.url).hostname).toContain(".eu.r2.");
+    if (isProbe(request)) return readProbe();
     expect(new URL(request.url).searchParams.has("key-marker")).toBe(false);
     return new Response(
       uploadsXml({ prefix: f.key, uploads: uploadXml(f.key, f.handle.uploadId) }),
@@ -470,26 +667,6 @@ it("restarts cursors for a changed source and recovers a lost reset acknowledgem
   ).toMatchObject({ pages: 1, observed: 1, aborted: 1, retried: 0 });
   expect((await scan(f))!.round_id).not.toBe(original!.round_id);
   expect(JSON.parse(String((await handles(f))[0]!.first_source)).jurisdiction).toBe("default");
-});
-
-it("restarts an old-epoch page under maintenance while preserving all handles", async () => {
-  const f = await fixture();
-  const first = inventory(f, [], async () =>
-    uploadsXml({
-      prefix: f.key,
-      uploads: uploadXml(f.key, f.handle.uploadId),
-      truncated: true,
-      nextKey: f.key,
-      nextId: f.handle.uploadId,
-    }),
-  );
-  await repair(first.client);
-  await env.DB.prepare("UPDATE control SET epoch=2,maintenance=1,gc_paused=1").run();
-  expect(
-    await repair(inventory(f).client, { maintenance: true }, env.BLOBS, env.DB, 2),
-  ).toMatchObject({ pages: 1, aborted: 1, retried: 0 });
-  expect(await scan(f)).toMatchObject({ epoch: 2, pages: 1 });
-  expect(await handles(f)).toHaveLength(1);
 });
 
 it("rejects a repeated handle from an earlier page without advancing the cursor", async () => {
@@ -614,18 +791,31 @@ it("accounts for completed bytes even when S3 inventory is unavailable", async (
   expect(await reservation(f)).toBe("reserved");
 });
 
-it("runs through real ControlDO maintenance and keeps the final recovery fence closed", async () => {
+it("restarts old-epoch pages through real ControlDO while preserving handles and the recovery hold", async () => {
   const f = await fixture();
+  const first = inventory(f, [], async () =>
+    uploadsXml({
+      prefix: f.key,
+      uploads: uploadXml(f.key, f.handle.uploadId),
+      truncated: true,
+      nextKey: f.key,
+      nextId: f.handle.uploadId,
+    }),
+  );
+  expect(await repair(first.client)).toMatchObject({ pages: 1, aborted: 0 });
+  const original = await scan(f);
   const stub = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
   await env.BACKUPS.put(
     `${EPOCH_PREFIX}1.json`,
     JSON.stringify({ epoch: 1, at: 1, reason: "operator" }),
   );
   expect(await stub.recover()).toMatchObject({ epoch: 2 });
-  vi.spyOn(globalThis, "fetch").mockImplementation(
-    async () =>
-      new Response(uploadsXml({ prefix: f.key, uploads: uploadXml(f.key, f.handle.uploadId) })),
-  );
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
+    if (request instanceof Request && isProbe(request)) return readProbe();
+    return new Response(
+      uploadsXml({ prefix: f.key, uploads: uploadXml(f.key, f.handle.uploadId) }),
+    );
+  });
   await runInDurableObject(stub, async (_instance, state) => {
     const configured = new ControlDO(state, { ...env, ...inventoryEnv });
     expect(await configured.repairUnidentifiedMultipartUploads(2, 1)).toMatchObject({
@@ -635,6 +825,9 @@ it("runs through real ControlDO maintenance and keeps the final recovery fence c
     expect(await configured.status()).toMatchObject({ maintenance: true, gcPaused: true });
     await expect(configured.repairUnidentifiedMultipartUploads(1, 1)).rejects.toThrow();
   });
+  expect(await scan(f)).toMatchObject({ epoch: 2, pages: 1 });
+  expect((await scan(f))!.round_id).not.toBe(original!.round_id);
+  expect(await handles(f)).toMatchObject([{ state: "aborted" }]);
   expect(await reservation(f)).toBe("reserved");
   await expect(inspectRecoveryFinalFence(env.DB, 2)).rejects.toThrow();
 });

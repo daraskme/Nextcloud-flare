@@ -390,7 +390,7 @@ export class ControlDO extends DurableObject<Env> {
     return { verification, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
-  /** Persist discovered handles and abort them through BLOBS, retaining unresolved reservations. */
+  /** Verify BLOBS/S3 afresh, persist/abort discovered handles, and retain unresolved reservations. */
   async repairUnidentifiedMultipartUploads(
     expectedEpoch: number,
     limit = 5,
@@ -399,7 +399,6 @@ export class ControlDO extends DurableObject<Env> {
     const repair = await this.#maintenance(expectedEpoch, () =>
       repairUnidentifiedMultipartUploads(this.env.DB, this.env.BLOBS, inventory, expectedEpoch, {
         maxUploads: limit,
-        maintenance: true,
       }),
     );
     return { repair, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };

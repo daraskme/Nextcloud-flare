@@ -91,7 +91,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-直前のCI run35919687576はWindowsのmigration hook10秒、run35919870356はWindowsのcontrol-admission3件30秒でtimeout。Windowsのworkerdテストに限りtest90秒/hook60秒へ調整し、他OSとアプリ内部期限は維持する。新しいHEADのCIで結果を確認する。
+未知multipart IDの修復に毎回freshなBLOBS/S3対応検証を接続した。maintenance/GC pauseを必須とし、claim・round reset・dispatch counter・page/receipt・physical観測・lease解放をcurrent proof fenceと同一batchで確定する。過去の成功や保存済みpageだけでは次のdispatchを許可しない。複数修復はprobe leaseで直列化する。詳細は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)、試験結果はIMPLEMENTATION_STATUS。全体閉鎖・容量精算・upload行喪失・実S3は引き続き未完了。scanの完了を閉鎖証明として使わず、reservation holdを外さない。
+
+進捗は[PROGRESS](PROGRESS.md)へ記録する。commit `26c4d07`はpush済み。直前のCI run35919687576はWindowsのmigration hook10秒、run35919870356はWindowsのcontrol-admission3件30秒でtimeout。Windowsのworkerdテストに限りtest90秒/hook60秒へ調整し、他OSとアプリ内部期限は維持した。同commitの[CI run35926517271](https://github.com/daraskme/Nextcloud-flare/actions/runs/35926517271)はUbuntu・Windows・browser全job成功を確認済み。
 
 所有folderの要求時集計APIとFiles情報dialogを追加。現在のファイル数・サブフォルダー数・logical bytesを、Access認可/epoch/maintenance/世代と同一batchで取得する。検索と共通の索引付きsuccessor walkでscope込み1万ノード・深さ64、部分結果とcontent不足を明示。再集計中/拒否後は古い数値を隠す。migration・依存変更なし。詳細は[FOLDER_STATS](FOLDER_STATS.md)。共有/media別集計、実D1予算、以下の製品要件は未完了。
 
