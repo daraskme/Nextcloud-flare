@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1/3 upload公開失敗後の精算受付 | 所有space・DB-only補償・厳密な保存証明と再照会 | workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md) |
 | 1/4 旧epoch修復の全体受付 | 所有spaceの予約/通知・global FTS、原子的な停止条件、同一ControlDO | workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。 [RECOVERY_REPAIR](RECOVERY_REPAIR.md) |
 | 1/4 全bucket multipartの全体受付 | scan/parts/abortの8経路、所有者なし、直接ACK、固定期限、同一ControlDO | workerd82件を追加（境界73件・実ControlDO9件）。関連109件（97.66s）と全体checkが成功。Node422件（25file、5.68s）・workerd1,780件（83file、971.26s）、計2,202件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
 | 1 未追跡object調査・回収の全体受付 | scan/GCの10経路、所有者なし、直接ACK、固定期限、同一ControlDO | workerd105件追加（境界93件・実ControlDO12件）。全体check成功、Node422件（25file、6.01s）・workerd1,698件（81file、888.73s）、計2,120件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [ORPHAN_INVENTORY](ORPHAN_INVENTORY.md) |
@@ -134,6 +135,9 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。 workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。
+- 2026-09-25、直前commit9cbc24cはmainへプッシュ済み。[CI36057631001](https://github.com/daraskme/Nextcloud-flare/actions/runs/36057631001)はUbuntu（6m27s）・Windows（21m41s）・browser（2m9s）の全job成功。両OSでNode422/workerd1,847、browser19件、計2,288件を確認しました。WindowsのKDF統合20件（6.861s）も成功。今回の公開失敗後の精算受付はまだ含まれません。
 
 - 2026-09-25、旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。 workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。
 - 2026-09-25、直前commit357de9fはmainへプッシュ済み。[CI36054612441](https://github.com/daraskme/Nextcloud-flare/actions/runs/36054612441)はUbuntu（6m19s、Node422/workerd1,780）・browser（2m22s、19件）成功。Windowsは20分のjob上限で中断し、既存KDF並行試験にも1件の失敗が記録されました。追加したbucket関連82件はWindowsでも成功。Windows jobを30分にし、KDF試験は2件ずつ3組で同時1件・全6件の確定記録を検査するよう調整しました。製品の5秒期限・制限は維持し、Windowsの結果は次のCIで確認します。今回の旧epoch修復受付はこの直前CIに含まれません。

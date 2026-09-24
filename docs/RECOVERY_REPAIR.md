@@ -38,4 +38,4 @@ workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s
 
 境界試験は受付不能、rollback、ACK/照合喪失、他のwaiting/active、epoch/mode/pause/bootstrap変更、固定期限、実owner/disabled owner/space未復元、uploadへの結合、行の置換、通知の由来とclaim、他処理の終端を検査する。実ControlDO試験は全32枠との共有、1枠だけ空いても拒否、全終了後だけ確定、応答喪失後のevictionとread-only再照会を検査する。
 
-backupは停止modeだけでは凍結されない。これらの修復は停止中にも更新できる。書込み経路の追加調査で、`services/uploads/complete.ts`の`settleFailedCompletion`が共通受付を通らずupload/blob/reservationを更新することを確認した。`services/putFile.ts`にも、DAV PUT失敗後に予約を解放する2箇所の共通受付外batchが残る。R2 PUT/削除やoperation結果が不明な場合の保留条件も確認する必要がある。次はこれらの失敗後の精算受付を接続してから、明示的なbackup barrierとlogical export/restore drillへ進む。未知KDF/multipartの閉鎖証明や容量精算はこの修復の対象に含めない。
+backupは停止modeだけでは凍結されない。これらの修復は停止中にも更新できる。upload公開失敗後の精算は[共通受付へ接続済み](UPLOAD_FAILED_COMPLETION.md)。`services/putFile.ts`にはDAV PUT失敗後の共通受付外の予約解放が残り、不明なR2保存・削除結果の保留条件も整備する必要がある。次はその経路を整備してから、明示的なbackup barrierとlogical export/restore drillへ進む。未知KDF/multipartの閉鎖証明や容量精算はこの修復の対象に含めない。

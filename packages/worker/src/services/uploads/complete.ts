@@ -21,6 +21,7 @@ import {
   mutationStatements,
 } from "../fsMutation";
 import { accessUpload, type UploadRow, uploadFence } from "./access";
+import { settleFailedCompletion } from "./failedCompletion";
 import { multipartHeadCharge, multipartObjectProof, multipartPartsProof } from "./multipartProof";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -177,31 +178,8 @@ function steps(
   ];
 }
 
-async function settleFailedCompletion(db: D1Database, row: UploadRow, operationId: string) {
-  await atomicBatch(db, [
-    ...(row.mode === "multipart" ? [multipartObjectProof(row)] : []),
-    assertExists("SELECT 1 FROM operations WHERE op_id=? AND state='failed'", [operationId]),
-    assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=?", [row.epoch]),
-    {
-      sql: "UPDATE uploads SET state='failed',cleanup_pending=1,error_code='complete_failed' WHERE id=? AND state IN ('completing','failed') AND completion_op_id=?",
-      values: [row.id, operationId],
-    },
-    assertOneChange,
-    {
-      sql: "UPDATE blobs SET state='orphan' WHERE id=? AND state IN ('staging','orphan') AND ref_count=0",
-      values: [row.blob_id],
-    },
-    assertOneChange,
-    {
-      sql: "UPDATE reservations SET state='released' WHERE id=? AND state IN ('reserved','released')",
-      values: [row.reservation_id],
-    },
-    assertOneChange,
-  ]);
-}
-
 export async function completeSingleUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   principal: Principal,
   id: string,
   capability: string,
@@ -223,7 +201,7 @@ export async function completeSingleUpload(
 
 /** Internal publication after R2 multipart completion and an independently observed object proof. */
 export async function publishMultipartUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   principal: Principal,
   id: string,
   capability: string,
@@ -244,7 +222,7 @@ export async function publishMultipartUpload(
 }
 
 async function completeUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   principal: Principal,
   id: string,
   capability: string,
@@ -266,7 +244,7 @@ async function completeUpload(
   if (row.completion_op_id) {
     const saved = await lookupOperation(env.DB, principal, row.completion_op_id);
     if (saved && saved.state !== "claimed") {
-      if (saved.state === "failed") await settleFailedCompletion(env.DB, row, saved.id);
+      if (saved.state === "failed") await settleFailedCompletion(env, row, saved.id);
       return { kind: "terminal", operation: saved };
     }
   }
@@ -406,7 +384,7 @@ async function completeUpload(
     terminal = outcome.kind === "terminal";
     if (outcome.kind === "terminal" && outcome.operation.state === "failed") {
       // A known failed operation may release its reservation; unknown commits never compensate.
-      await settleFailedCompletion(env.DB, row, intent.id);
+      await settleFailedCompletion(env, row, intent.id);
     }
     return outcome;
   } finally {

@@ -331,3 +331,11 @@ owner不在でもscopeは明示nullで、架空のspaceを作りません。待�
 修復の前後は従来どおり全更新の停止を要求します。更新batch内だけは自分の有効な受付IDを除外し、他のactive/waiting、permit・claim・job・GC・uploadとbootstrap管理者の条件を待機後に原子的に再検査します。自分の枠が空いても他の更新が残れば修復しません。DB-onlyの確定記録と厳密な終端・索引照合で応答喪失を扱い、他の処理の完了では自分の未確定枠を返しません。uploadへ結び付いた予約は保持し、元の行・所有者・通知のoperation由来を再検査します。予約・通知は1回最大20件、次の更新開始には固定25秒の期限を使い、ControlDO内部は同じinstanceで受け付けます。
 
 停止確認のSQLは診断と修復で共有する。修復batchに前置された共通assertが自分のID・scope・epoch・mode・有効期限を証明し、そのIDだけを停止条件から除外する。bootstrap条件も同じbatch内で照合する。診断RPCとcoordinatorの停止・audit更新は再帰的に自分の受付へ入れない。契約は[RECOVERY_REPAIR](RECOVERY_REPAIR.md)。
+
+## upload公開失敗後の精算受付
+
+単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。
+
+待機後に元のupload/owner/space/credential/epoch/予約と失敗operationのoperand・step不在を再検査します。最初の予約解放には一致するblob_storageの物理計上を必須とし、singleは検証済みhash、multipartは独立した完成object proofを要求します。公開結果不明・転送中・参照済みblob・証拠不足では解放しません。精算済み結果は追加受付なしで読み、GC後も再照会できます。応答喪失は自分の確定記録または厳密な終端を照合し、他の精算で自分の未確定枠を返しません。混雑はHTTP503/Retry-Afterで予約とphysicalを保留し、再試行でR2送信・削除を繰り返しません。
+
+kindはsystem:upload.complete-failed。CONTROLまたは同一coordinator providerは必須で、DB-only fallbackはない。精算自体はR2を呼ばず、physicalを減算しない。詳細は[UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md)。

@@ -572,6 +572,91 @@ it("retries failed-operation reservation settlement after its write or response 
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
 });
 
+it("returns retryable HTTP 503 for deferred failed-publication settlement and replays without storage I/O", async () => {
+  const f = await fixture();
+  await write(f);
+  await env.DB.prepare(
+    "INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at) VALUES(?,?,?,?,'upload.txt','upload.txt','folder',1,1)",
+  )
+    .bind(crypto.randomUUID(), f.ids.space, f.ids.user, f.ids.folder)
+    .run();
+  const ring = await csrfKeyRing("test", {
+    test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  });
+  const csrf = new CsrfTokens(ring, ring, f.app.APP_ORIGIN);
+  const token = await csrf.issue(
+    env.DB,
+    new Request(`${f.app.APP_ORIGIN}/api/v1/csrf`, {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+    { kind: "access", credentialId: f.principal.credential_id, epoch: 1 },
+  );
+  let attempts = 0;
+  const unavailable: Env["CONTROL"] = {
+    idFromName: f.app.CONTROL.idFromName.bind(f.app.CONTROL),
+    get: () => ({
+      status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
+      acquireSystemMutation: async () => {
+        attempts++;
+        throw new Error("queue_full");
+      },
+    }),
+  } as unknown as Env["CONTROL"];
+  const send = (app: Env) =>
+    handleUploadHttp(
+      new Request(`${app.APP_ORIGIN}/api/v1/uploads/${f.created.id}/complete`, {
+        method: "POST",
+        body: "{}",
+        headers: {
+          Origin: app.APP_ORIGIN,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "complete",
+          "Upload-Capability": f.created.capability,
+          "X-CSRF-Token": token.token,
+        },
+      }),
+      app,
+      f.principal,
+      csrf,
+      f.capabilities,
+    );
+  const response = await send({ ...f.app, CONTROL: unavailable });
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("1");
+  expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 3 });
+  const op = (await uploadRow(env.DB, f.created.id))!.completion_op_id!;
+  expect(
+    await env.DB.prepare("SELECT state FROM operations WHERE op_id=?").bind(op).first("state"),
+  ).toBe("failed");
+  expect(
+    await env.DB.prepare(
+      "SELECT p.state FROM permits p JOIN operations o ON o.permit_id=p.permit_id WHERE o.op_id=?",
+    )
+      .bind(op)
+      .first("state"),
+  ).toBe("released");
+  let storageCalls = 0;
+  const noStorage = new Proxy(f.app.BLOBS, {
+    get(target, key) {
+      if (["put", "head", "delete"].includes(String(key)))
+        return () => {
+          storageCalls++;
+          throw new Error("unexpected_storage_io");
+        };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  expect((await send({ ...f.app, BLOBS: noStorage })).status).toBe(409);
+  expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
+  expect((await send({ ...f.app, BLOBS: noStorage, CONTROL: unavailable })).status).toBe(409);
+  expect(attempts).toBe(1);
+  expect(storageCalls).toBe(0);
+  expect((await uploadRow(env.DB, f.created.id))!.completion_op_id).toBe(op);
+});
+
 it("connects private HTTP create/content/status/complete with CSRF and binary Origin checks", async () => {
   const f = await fixture();
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));

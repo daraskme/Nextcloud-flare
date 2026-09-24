@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit357de9fはmainへプッシュ済み。[CI36054612441](https://github.com/daraskme/Nextcloud-flare/actions/runs/36054612441)はUbuntu（6m19s、Node422/workerd1,780）・browser（2m22s、19件）成功。Windowsは20分のjob上限で中断し、既存KDF並行試験にも1件の失敗が記録されました。追加したbucket関連82件はWindowsでも成功。Windows jobを30分にし、KDF試験は2件ずつ3組で同時1件・全6件の確定記録を検査するよう調整しました。製品の5秒期限・制限は維持し、Windowsの結果は次のCIで確認します。今回の旧epoch修復受付はこの直前CIに含まれません。
+直前commit9cbc24cはmainへプッシュ済み。[CI36057631001](https://github.com/daraskme/Nextcloud-flare/actions/runs/36057631001)はUbuntu（6m27s）・Windows（21m41s）・browser（2m9s）の全job成功。両OSでNode422/workerd1,847、browser19件、計2,288件を確認しました。WindowsのKDF統合20件（6.861s）も成功。今回の公開失敗後の精算受付はまだ含まれません。
 
-旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。
+単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。
 
-修復の前後は従来どおり全更新の停止を要求します。更新batch内だけは自分の有効な受付IDを除外し、他のactive/waiting、permit・claim・job・GC・uploadとbootstrap管理者の条件を待機後に原子的に再検査します。自分の枠が空いても他の更新が残れば修復しません。DB-onlyの確定記録と厳密な終端・索引照合で応答喪失を扱い、他の処理の完了では自分の未確定枠を返しません。uploadへ結び付いた予約は保持し、元の行・所有者・通知のoperation由来を再検査します。予約・通知は1回最大20件、次の更新開始には固定25秒の期限を使い、ControlDO内部は同じinstanceで受け付けます。
+待機後に元のupload/owner/space/credential/epoch/予約と失敗operationのoperand・step不在を再検査します。最初の予約解放には一致するblob_storageの物理計上を必須とし、singleは検証済みhash、multipartは独立した完成object proofを要求します。公開結果不明・転送中・参照済みblob・証拠不足では解放しません。精算済み結果は追加受付なしで読み、GC後も再照会できます。応答喪失は自分の確定記録または厳密な終端を照合し、他の精算で自分の未確定枠を返しません。混雑はHTTP503/Retry-Afterで予約とphysicalを保留し、再試行でR2送信・削除を繰り返しません。
 
-workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。 upload公開失敗・DAV PUT失敗後の精算受付、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
+workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 DAV PUT失敗後の精算・不明な保存結果の保留、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
 
-GlobalMutationSourceはmandatory。probe・orphan・全bucket multipart台帳は明示null scopeの共通受付へ接続済み。通常のnamespaceと復旧処理は同じ32/256枠を共有し、ControlDO内部は同じinstanceを使う。既存migrationを編集しない。
+completeSingleUpload/publishMultipartUploadはCONTROL必須。内部settleFailedCompletionはmandatory SystemMutationSourceを使う。APIの現在認可は維持する。精算済み読取りを新しいR2 dispatchの許可にしない。詳細は[UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md)。既存migrationを編集しない。
 
 ## 現在動いている範囲
 
@@ -104,7 +104,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。R2 probe・orphan・全bucket multipartも共通global受付へ接続済み。旧epoch repairも共通受付へ接続済み。upload公開失敗・DAV PUT失敗後の精算受付を接続してから、backup barrierとlogical export/restore drillへ進む。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。R2 probe・orphan・全bucket multipartも共通global受付へ接続済み。旧epoch repairも共通受付へ接続済み。upload公開失敗後の精算受付は接続済み。DAV PUT失敗後の精算と保存結果不明時の保留を整備してから、backup barrierとlogical export/restore drillへ進む。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

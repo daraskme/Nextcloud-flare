@@ -27,7 +27,7 @@ JSON mutationはexact Origin、`Sec-Fetch-Site: same-origin`、`Content-Type: ap
 
 同じkey/bodyの保存済み予約の再取得は追加の枠を取らず、現在の認可を検査する読取りとして扱う。batch応答喪失はexactな確定記録で照合する。並行する別要求の保存済みreceiptへ合流することもできるが、それを自分のbatchの成功証明にせず、自分の未確定枠は解放しない。照合が全部失敗した場合も予約・容量を保持し、同じkeyで再照会できる。予約の再取得だけでR2送信を許可せず、後続の初期化/転送は既存の独立したclaim・current authorityを必要とする。
 
-転送の単一PUT開始・読戻し・検証済み情報と、multipart初期化/completeの送信claimも共通受付を通る。外部送信にはclaim batchの直接ACKが必要で、確定記録の読戻しだけでは送信しない。単一PUT後の検証済み情報の受付が混雑した場合は物理容量/予約を保持し、503/Retry-Afterで再試行する。再試行はGET照合でありPUTを再送しない。multipart検証済み情報の保存も共通受付を通り、混雑時は物理容量/予約を保持し、再試行でcompleteを再送しない。physical観測と既知R2 ID・初期化停止・緊急abort予算はsystem受付へ接続済み。UploadDO台帳の初期化/反映/喪失時停止も共通受付へ接続済み。自動回収の受付統合は後続。
+転送の単一PUT開始・読戻し・検証済み情報と、multipart初期化/completeの送信claimも共通受付を通る。外部送信にはclaim batchの直接ACKが必要で、確定記録の読戻しだけでは送信しない。単一PUT後の検証済み情報の受付が混雑した場合は物理容量/予約を保持し、503/Retry-Afterで再試行する。再試行はGET照合でありPUTを再送しない。multipart検証済み情報の保存も共通受付を通り、混雑時は物理容量/予約を保持し、再試行でcompleteを再送しない。physical観測と既知R2 ID・初期化停止・緊急abort予算はsystem受付へ接続済み。UploadDO台帳の初期化/反映/喪失時停止も共通受付へ接続済み。自動回収と公開失敗後の精算も共通受付へ接続済み。
 
 createの同じkey/bodyへの再送は、上書き対象のrevisionが変わった場合も元のreceipt/capabilityを返す。現在の認証・node権限とowner/parent/epochを最終D1 batchで確認し、予約を追加しない。multipartの初期化がrevision変更で停止した場合は202となる。これは状態確認・中止のための回収であり、新規予約、R2初期化、本文送信、確定での旧revision検査を緩めない。対象の移動・失効・期限切れの制限は継続する。
 
@@ -44,6 +44,8 @@ GETは確認済みD1のuploadとpartを、同じ権限確認付きbatchで返す
 multipart receiptには`revision`、`parts`、`nextAfter`を含む。part行は`partNumber,attempts,attemptId,state,expectedBytes,leaseExpiresAt,etag,sha256`。`state`は`pending|in_flight|completed|unknown`で、pendingはR2未開始の結果。GETの既定は`after=0&limit=200`、afterは0〜10,000、limitは1〜200。`nextAfter=null`でその照会時点の末尾。未知query、重複query、不正数値、singleへのpage指定は400、mutationへのqueryは404。ページ間でrevisionやupload状態が変わった場合は先頭から確認し直す。part一覧は公開や再送の許可そのものではない。
 
 期限/idle切れ・中止・回収後も、同じ有効credential・capability・現在のnode権限・epochの下でreceiptを読める。照会は送信期限を延ばさず、失効credential、削除した親、別credential、旧epoch、maintenanceを許可しない。completeの確定済みoperationは同じ現在権限で再照会でき、新しいR2 completeは発行しない。
+
+公開operationがfailedでも精算未完なら、所有spaceの共通system受付で予約を解放する。混雑は503 not_readyとRetry-After: 1で返し、予約と物理容量を保持する。後続の再試行は同じ失敗operationを照合して精算し、R2を再送・削除しない。精算済みなら追加枠なしで409 conflictを返す。namespaceの既知終端では精算保留時も元のLockDO permitを解放する。GC完了後の精算済み照会も可能だが、現在のcredential/capability/node権限の条件は変わらない。詳細は[UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md)。
 
 ## 中止と回収
 
