@@ -383,7 +383,7 @@ export async function failStaleRecoveryOutbox(
   return failed;
 }
 
-/** Upload reservations require R2-aware cleanup, including terminal uploads with unknown writes. */
+/** Storage holds need R2-aware cleanup, including legacy DAV writes without an upload ledger. */
 export async function releaseStaleRecoveryReservations(
   env: SystemMutationSource,
   epoch: number,
@@ -396,8 +396,9 @@ export async function releaseStaleRecoveryReservations(
     throw new Error("invalid_recovery_limit");
   await assertQuiesced(db, epoch);
   const rows = await primary(db)
-    .prepare(`SELECT r.id,r.owner_id,r.epoch,r.bytes,r.expires_at,r.share_id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
+    .prepare(`SELECT r.id,r.owner_id,r.epoch,r.bytes,r.expires_at,r.share_id,r.op_id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id)
+      AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.op_id=r.op_id AND o.kind='dav.put')
       ORDER BY r.id LIMIT ?`)
     .bind(epoch, limit)
     .all<{
@@ -407,9 +408,18 @@ export async function releaseStaleRecoveryReservations(
       bytes: number;
       expires_at: number;
       share_id: string | null;
+      op_id: string | null;
     }>();
   let released = 0;
-  for (const { id, owner_id, epoch: sourceEpoch, bytes, expires_at, share_id } of rows.results) {
+  for (const {
+    id,
+    owner_id,
+    epoch: sourceEpoch,
+    bytes,
+    expires_at,
+    share_id,
+    op_id,
+  } of rows.results) {
     if (Date.now() >= deadline) break;
     const admission = await acquireSystemMutation(
       env,
@@ -423,19 +433,20 @@ export async function releaseStaleRecoveryReservations(
         repairFence(epoch, admission),
         {
           sql: `UPDATE reservations SET state='released' WHERE id=? AND owner_id=? AND epoch=? AND bytes=?
-            AND expires_at=? AND share_id IS ? AND state='reserved' AND epoch<?
+            AND expires_at=? AND share_id IS ? AND op_id IS ? AND state='reserved' AND epoch<?
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1)
-            AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id)`,
-          values: [id, owner_id, sourceEpoch, bytes, expires_at, share_id, epoch, epoch],
+            AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id)
+            AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.op_id=reservations.op_id AND o.kind='dav.put')`,
+          values: [id, owner_id, sourceEpoch, bytes, expires_at, share_id, op_id, epoch, epoch],
         },
         assertOneChange,
       ]);
     } catch (error) {
       const terminal = await primary(db)
         .prepare(
-          "SELECT 1 FROM reservations WHERE id=? AND owner_id=? AND epoch=? AND bytes=? AND expires_at=? AND share_id IS ? AND state='released'",
+          "SELECT 1 FROM reservations WHERE id=? AND owner_id=? AND epoch=? AND bytes=? AND expires_at=? AND share_id IS ? AND op_id IS ? AND state='released'",
         )
-        .bind(id, owner_id, sourceEpoch, bytes, expires_at, share_id)
+        .bind(id, owner_id, sourceEpoch, bytes, expires_at, share_id, op_id)
         .first<number>();
       if (terminal === null) throw error;
     }

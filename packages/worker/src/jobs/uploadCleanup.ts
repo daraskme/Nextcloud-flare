@@ -41,9 +41,13 @@ export function controlFence(epoch: number, maintenance: boolean): SqlStatement 
 }
 
 // Include the gap between operation claim and recording completion_op_id.
-export const COMPLETION = `o.kind='upload.complete' AND o.credential_id=u.credential_id
+export const COMPLETION = `((u.source='private' AND o.kind='upload.complete'
+    AND json_extract(o.operands_json,'$.uploadId')=u.id)
+  OR (u.source='dav' AND o.kind='dav.put' AND o.principal_kind='app_password'
+    AND o.op_id=u.completion_op_id AND u.id='dav_'||o.op_id AND o.request_digest=u.request_digest
+    AND EXISTS(SELECT 1 FROM reservations r WHERE r.id=u.reservation_id AND r.op_id=o.op_id)))
+  AND o.credential_id=u.credential_id
   AND o.epoch=u.epoch AND o.space_id=u.space_id
-  AND json_extract(o.operands_json,'$.uploadId')=u.id
   AND json_extract(o.operands_json,'$.parentId')=u.parent_id
   AND json_extract(o.operands_json,'$.nodeId') IS u.target_id`;
 

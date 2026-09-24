@@ -41,7 +41,7 @@ function admittedDavEnv(overloaded = false): Env {
     } as unknown as Env["CONTROL"],
   };
   return {
-    ...env,
+    ...mutationEnv(),
     APP_ORIGIN: "https://app.invalid",
     EDGE_LIMITER: {
       async limit() {

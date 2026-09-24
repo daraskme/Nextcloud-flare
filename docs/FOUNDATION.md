@@ -339,3 +339,11 @@ owner不在でもscopeは明示nullで、架空のspaceを作りません。待�
 待機後に元のupload/owner/space/credential/epoch/予約と失敗operationのoperand・step不在を再検査します。最初の予約解放には一致するblob_storageの物理計上を必須とし、singleは検証済みhash、multipartは独立した完成object proofを要求します。公開結果不明・転送中・参照済みblob・証拠不足では解放しません。精算済み結果は追加受付なしで読み、GC後も再照会できます。応答喪失は自分の確定記録または厳密な終端を照合し、他の精算で自分の未確定枠を返しません。混雑はHTTP503/Retry-Afterで予約とphysicalを保留し、再試行でR2送信・削除を繰り返しません。
 
 kindはsystem:upload.complete-failed。CONTROLまたは同一coordinator providerは必須で、DB-only fallbackはない。精算自体はR2を呼ばず、physicalを減算しない。詳細は[UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md)。
+
+## DAV PUTの保存台帳と精算受付
+
+WebDAV PUTの保存前に予約・staging blob・転送台帳を原子的に保存し、保存結果が不明でも容量を保持する処理を実装しました。保存事実と公開失敗後の精算は、実ownerの共通32 active/256 waiting枠を通ります。
+
+migration0035でprivate/DAVの台帳種別を固定しました。開始batchの直接ACK後だけ、attempt metadata付きの条件付きPUTを1回送信します。同じoperationへの再送は追加PUTを発行せず、ストリーム障害時もnative処理の終了を待ちます。成功時は物理計上・hashを保存してからファイルと転送完了を同時確定します。既知の公開失敗はphysicalを保持してGCへ渡し、未知の保存結果は予約を24時間保持してHEAD確認・既存回収へ引き継ぎます。旧DAVの追跡不能な予約も汎用復旧では解放しません。
+
+kindはsystem:dav.put-storedとsystem:dav.put-failed。転送開始は既存namespace permitの原子的なguard、外部送信は開始batchの直接ACKを必須とする。DB-onlyの確定記録を再送許可にしない。private capability認可をapp_passwordへ拡張しない。詳細と長時間転送の残作業は[DAV_UPLOAD](DAV_UPLOAD.md)。

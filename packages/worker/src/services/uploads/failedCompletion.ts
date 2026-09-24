@@ -20,7 +20,7 @@ function source(row: UploadRow, operationId: string): SqlStatement {
       JOIN blobs b ON b.id=u.blob_id JOIN operations o ON o.op_id=u.completion_op_id
       JOIN spaces space ON space.id=u.space_id AND space.owner_id=u.owner_id
       JOIN control c ON c.singleton=1
-      WHERE (u.id=? AND u.owner_id=? AND u.space_id=? AND u.parent_id=? AND u.target_id IS ?
+      WHERE (u.id=? AND u.source='private' AND u.owner_id=? AND u.space_id=? AND u.parent_id=? AND u.target_id IS ?
         AND u.blob_id=? AND u.reservation_id=? AND u.credential_id=? AND u.epoch=? AND u.mode=?
         AND u.declared_size=? AND u.request_digest=? AND u.write_attempt_id IS ?
         AND u.expires_at=? AND u.target_revision IS ? AND u.completion_op_id=?)

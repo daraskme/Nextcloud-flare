@@ -6,6 +6,7 @@ import {
   rebuildRecoverySearchFts,
   releaseStaleRecoveryReservations,
 } from "../../src/do/recoveryAudit";
+import { davUploadHistory } from "../fixtures/davUploadHistory";
 import { foundationFixture } from "../fixtures/foundation";
 import { acquireGlobalMutation, mutationEnv } from "../fixtures/mutationAdmission";
 import {
@@ -23,6 +24,38 @@ beforeAll(async () => {
 });
 beforeEach(() => resetRecoveryRepairs(admin));
 afterEach(() => vi.restoreAllMocks());
+it("keeps untracked legacy DAV storage held while releasing an ordinary old-epoch reservation", async () => {
+  const f = await davUploadHistory({ operationState: "failed" });
+  await env.DB.prepare("DELETE FROM uploads WHERE id=?").bind(f.id).run();
+  await env.DB.prepare(
+    "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES(?,?,2,'reserved',1,1)",
+  )
+    .bind("plain-" + f.id, f.ids.user)
+    .run();
+  expect(await releaseStaleRecoveryReservations(mutationEnv(), 2)).toBe(1);
+  expect(await f.counters()).toEqual({ reserved_bytes: 3, physical_bytes: 0 });
+  expect(
+    await env.DB.prepare("SELECT state FROM reservations WHERE id=?")
+      .bind(f.reservation)
+      .first("state"),
+  ).toBe("reserved");
+});
+it("rechecks an operation added to a reservation while generic recovery waits", async () => {
+  const dav = await davUploadHistory({ operationState: "failed" });
+  await env.DB.prepare("DELETE FROM uploads WHERE id=?").bind(dav.id).run();
+  const f = await recoveryRepairFixture("reservation-release", admin);
+  await expect(
+    f.run(
+      f.configure(async () => {
+        await env.DB.prepare("UPDATE reservations SET op_id=? WHERE id=?")
+          .bind(dav.operationId, f.id)
+          .run();
+      }),
+    ),
+  ).rejects.toThrow();
+  expect(await f.read()).toBe("reserved");
+  expect(await f.receipt()).toMatchObject({ committed_at: null });
+});
 it("rebuilds an empty restored database with an explicit ownerless scope", async () => {
   const db = env.TEST_BOOTSTRAP_RACE;
   await applyD1Migrations(db, env.TEST_MIGRATIONS);

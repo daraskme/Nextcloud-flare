@@ -1,6 +1,6 @@
 # upload公開失敗後の精算
 
-更新: 2026-09-25。private single/multipartのcompleteに接続。公開共有・DAV PUTの補償は別経路。
+更新: 2026-09-25。private single/multipartのcompleteに接続。公開共有は後続。DAV PUTは[別の内部経路](DAV_UPLOAD.md)へ接続済み。
 
 単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。
 
@@ -30,4 +30,4 @@ workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109
 
 境界試験は受付不能、ACK/rollback/receipt喪失、両証拠喪失、owner無効化、epoch/mode/受付失効、object/physicalの不一致、転送中・参照・operation step、未知/確定済みoperation、counter drift、GC後・他処理完了後の再照会を検査する。実ControlDOは共有枠満杯とevictionを検査し、HTTPは503/Retry-After、namespace permit返却、同じoperationへの再試行、追加R2 I/Oなしを検査する。
 
-DAV PUT失敗後の精算・不明な保存結果の保留、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。
+DAVの長い転送と短い公開用permitの分離、旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。

@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1/3/7 DAV PUTの保存台帳 | migration0035、直接ACK/条件付きPUT、所有spaceの保存事実/失敗精算、24h回収/GC | Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。 [DAV_UPLOAD](DAV_UPLOAD.md) |
 | 1/3 upload公開失敗後の精算受付 | 所有space・DB-only補償・厳密な保存証明と再照会 | workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md) |
 | 1/4 旧epoch修復の全体受付 | 所有spaceの予約/通知・global FTS、原子的な停止条件、同一ControlDO | workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。 [RECOVERY_REPAIR](RECOVERY_REPAIR.md) |
 | 1/4 全bucket multipartの全体受付 | scan/parts/abortの8経路、所有者なし、直接ACK、固定期限、同一ControlDO | workerd82件を追加（境界73件・実ControlDO9件）。関連109件（97.66s）と全体checkが成功。Node422件（25file、5.68s）・workerd1,780件（83file、971.26s）、計2,202件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 [MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
@@ -135,6 +136,9 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、WebDAV PUTの保存前に予約・staging blob・転送台帳を原子的に保存し、保存結果が不明でも容量を保持する処理を実装しました。保存事実と公開失敗後の精算は、実ownerの共通32 active/256 waiting枠を通ります。 Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。
+- 2026-09-25、直前commit101a7bbはmainへプッシュ済み。[CI36060684164](https://github.com/daraskme/Nextcloud-flare/actions/runs/36060684164)はUbuntu（5m）・browser（1m50s）成功。WindowsもNode422件・workerd1,898件（1,705.00s）とbuild/dry-runを通過しましたが、終了処理中にジョブの30分上限でcancelledになりました。今回、Windowsの統合テストを2 shardへ分割し、各shardのlint/型/契約/設定/Node/build検証とUbuntu・browserを維持しています。分割後のWindows成功は次のCIで確認します。
 
 - 2026-09-25、単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。 workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。
 - 2026-09-25、直前commit9cbc24cはmainへプッシュ済み。[CI36057631001](https://github.com/daraskme/Nextcloud-flare/actions/runs/36057631001)はUbuntu（6m27s）・Windows（21m41s）・browser（2m9s）の全job成功。両OSでNode422/workerd1,847、browser19件、計2,288件を確認しました。WindowsのKDF統合20件（6.861s）も成功。今回の公開失敗後の精算受付はまだ含まれません。

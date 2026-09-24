@@ -126,6 +126,8 @@ export const SYSTEM_MUTATION_KINDS = [
   "recovery.reservation-release",
   "recovery.outbox-fail",
   "upload.complete-failed",
+  "dav.put-stored",
+  "dav.put-failed",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

@@ -17,14 +17,26 @@ import {
   type OperationClaim,
   operationIntent,
 } from "../jobs/operations";
+import { consumeKnownLength } from "../platform/stream";
+import {
+  type DavUploadRow,
+  davPublicationFence,
+  davUploadMetadata,
+  davUploadRow,
+  matchesDavObject,
+  recordStoredDavUpload,
+  type StoredDavBody as StoredBody,
+  settleFailedDavUpload,
+  startDavUpload,
+} from "./davUpload";
 import {
   commitMutationStatements,
-  fsMutation,
   type MutationOutcome,
   type MutationPlan,
   type MutationStep,
+  mutationStatements,
 } from "./fsMutation";
-import { finishReservationStatements, reservationStatements } from "./quota";
+import { observePhysicalObject } from "./physical";
 
 export const DAV_PUT_MAX_BYTES = 95_000_000;
 export const DAV_PUT_CREATE_STEPS = 10;
@@ -45,55 +57,28 @@ export interface PutFileRequest {
   readonly lockTokens: readonly string[];
 }
 
-interface StoredBody {
-  readonly object: R2Object;
-  readonly sha256: string;
-}
-
 /** Hash and write the request concurrently without buffering the body in Worker memory. */
 async function storeBody(
   bucket: R2Bucket,
-  key: string,
+  row: DavUploadRow,
   body: ReadableStream<Uint8Array>,
-  size: number,
 ): Promise<StoredBody> {
-  const DigestStream = (
-    crypto as unknown as {
-      DigestStream: new (
-        algorithm: "SHA-256",
-      ) => WritableStream<Uint8Array> & {
-        readonly digest: Promise<ArrayBuffer>;
-      };
-    }
-  ).DigestStream;
-  if (!DigestStream) throw new Error("digest_stream_unavailable");
-  const fixed = new FixedLengthStream(size);
-  const digest = new DigestStream("SHA-256");
-  const objectPromise = bucket.put(key, fixed.readable);
-  const source = body.getReader();
-  const objectWriter = fixed.writable.getWriter();
-  const digestWriter = digest.getWriter();
-  try {
-    for (;;) {
-      const chunk = await source.read();
-      if (chunk.done) break;
-      await Promise.all([objectWriter.write(chunk.value), digestWriter.write(chunk.value)]);
-    }
-    await Promise.all([objectWriter.close(), digestWriter.close()]);
-  } catch (error) {
-    await Promise.allSettled([
-      objectWriter.abort(error),
-      digestWriter.abort(error),
-      source.cancel(error),
-    ]);
-    throw error;
-  }
-  const [object, hash] = await Promise.all([objectPromise, digest.digest]);
-  if (!object || object.size !== size || !object.etag) throw new Error("dav_put_write_failed");
-  const sha256 = Array.from(new Uint8Array(hash), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return { object, sha256 };
+  const remaining = row.write_lease_expires_at - Date.now();
+  if (remaining <= 0) throw new Error("dav_put_write_expired");
+  const stored = await consumeKnownLength(
+    body,
+    row.declared_size,
+    async (stream) => {
+      const object = await bucket.put(`u/${row.owner_id}/b/${row.blob_id}`, stream, {
+        onlyIf: { etagDoesNotMatch: "*" },
+        customMetadata: davUploadMetadata(row),
+      });
+      if (!object || !matchesDavObject(row, object)) throw new Error("dav_put_write_failed");
+      return object;
+    },
+    AbortSignal.timeout(remaining),
+  );
+  return { object: stored.value, sha256: stored.sha256 };
 }
 
 function blobSteps(
@@ -111,27 +96,18 @@ function blobSteps(
       kind: "blob",
       affectedId: blob,
       statement: {
-        sql: `INSERT INTO blobs(id,owner_id,r2_key,size,sha256_verified,content_etag,r2_etag,mime_sniffed,state,created_at,last_op_id)
-          VALUES(?,?,?,?,?,?,?,?,'committed',${clock},?)`,
-        values: [
-          blob,
-          ownerId,
-          key,
-          size,
-          stored.sha256,
-          `"b-${blob}"`,
-          stored.object.etag,
-          mime,
-          op,
-        ],
+        sql: `UPDATE blobs SET state='committed',mime_sniffed=?,last_op_id=?
+          WHERE id=? AND owner_id=? AND r2_key=? AND size=? AND sha256_verified=? AND r2_etag=? AND state='staging' AND ref_count=0`,
+        values: [mime, op, blob, ownerId, key, size, stored.sha256, stored.object.etag],
       },
     },
     {
-      kind: "blob_storage",
-      affectedId: blob,
+      kind: "upload",
+      affectedId: "dav_" + op,
       statement: {
-        sql: `INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,${clock})`,
-        values: [blob, size, stored.object.etag],
+        sql: `UPDATE uploads SET state='completed',cleanup_pending=0,last_progress_at=MAX(last_progress_at,${clock})
+          WHERE id=? AND source='dav' AND completion_op_id=? AND state='completing' AND in_flight=0`,
+        values: ["dav_" + op, op],
       },
     },
   ];
@@ -336,7 +312,7 @@ function overwriteStatements(
 }
 
 export async function putFile(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   request: PutFileRequest,
 ): Promise<MutationOutcome> {
   if (
@@ -368,7 +344,17 @@ export async function putFile(
   if (existing && existing.state !== "claimed") {
     const operation = await lookupOperation(env.DB, request.principal, intent.id);
     if (!operation) throw new Error("authorization_denied");
+    const upload = await davUploadRow(env.DB, intent.id);
+    if (operation.state === "failed" && upload) await settleFailedDavUpload(env, upload);
+    await request.body.cancel();
     return { kind: "terminal", operation };
+  }
+  if (existing && (await davUploadRow(env.DB, intent.id))) {
+    // A protocol retry uses a new request ID; the old immutable attempt never dispatches twice.
+    if (!(await lookupOperation(env.DB, request.principal, intent.id)))
+      throw new Error("authorization_denied");
+    await request.body.cancel();
+    return { kind: "commit_unknown", operationId: intent.id };
   }
   const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
   const permit = create
@@ -388,9 +374,6 @@ export async function putFile(
         operation: "node.content.write",
       });
   let terminal = false;
-  let reserved = false;
-  let ownerId: string | undefined;
-  let key: string | undefined;
   try {
     const authorized = create
       ? await authorizeNode(env.DB, request.principal, {
@@ -411,33 +394,29 @@ export async function putFile(
           authorized.node.name !== name.name))
     )
       throw new Error("authorization_denied");
-    ownerId =
+    const ownerId =
       authorized.operation === "node.create"
         ? authorized.parent.owner_id
         : authorized.node.owner_id;
-    key = `u/${ownerId}/b/${intent.id}_blob`;
     const claimed = await claimOperation(env.DB, intent, permit, authorized, steps);
     if (claimed.kind === "terminal") {
       const operation = await lookupOperation(env.DB, request.principal, intent.id);
       if (!operation) throw new Error("authorization_denied");
       terminal = true;
+      const upload = await davUploadRow(env.DB, intent.id);
+      if (operation.state === "failed" && upload) await settleFailedDavUpload(env, upload);
+      await request.body.cancel();
       return { kind: "terminal", operation };
     }
-    const reservationId = `${intent.id}_reservation`;
+    let upload: DavUploadRow;
     try {
-      await atomicBatch(env.DB, [
-        assertOpenPermit(claimed.claim.permit),
-        assertOperationClaim(claimed.claim),
-        authorizationAssertion(authorized),
-        ...reservationStatements({
-          id: reservationId,
-          ownerId,
-          bytes: request.size,
-          expiresAt: Date.now() + 86_400_000,
-          epoch: request.principal.epoch,
-          operationId: intent.id,
-        }),
-      ]);
+      upload = await startDavUpload(
+        env.DB,
+        claimed.claim,
+        authorized,
+        { ...request, name: name.name },
+        ownerId,
+      );
     } catch (error) {
       if (error instanceof Error && error.message.includes("quota_exceeded")) {
         try {
@@ -458,59 +437,40 @@ export async function putFile(
       }
       throw error;
     }
-    reserved = true;
-    const stored = await storeBody(env.BLOBS, key, request.body, request.size);
+    let stored: StoredBody;
+    try {
+      stored = await storeBody(env.BLOBS, upload, request.body);
+      await recordStoredDavUpload(env, upload, stored);
+      upload.state = "completing";
+    } catch (error) {
+      // A response/stream failure cannot prove absence. Keep the durable hold until expiry cleanup.
+      try {
+        await observePhysicalObject(env, env.BLOBS, upload.blob_id, upload.epoch);
+      } catch {
+        /* The reservation covers unobserved storage. */
+      }
+      throw error;
+    }
     const hashes = await lockTokenHashes(request.lockTokens);
     let outcome: MutationOutcome;
     if (authorized.operation === "node.create") {
-      outcome = await fsMutation(
-        env.DB,
-        createPlan(claimed.claim, authorized, request, stored, hashes),
-      );
+      outcome = await commitMutationStatements(env.DB, claimed.claim, [
+        davPublicationFence(upload, stored),
+        ...mutationStatements(createPlan(claimed.claim, authorized, request, stored, hashes)),
+      ]);
     } else if (authorized.operation === "node.content.write") {
-      outcome = await commitMutationStatements(
-        env.DB,
-        claimed.claim,
-        overwriteStatements(claimed.claim, authorized, request, stored, hashes),
-      );
+      outcome = await commitMutationStatements(env.DB, claimed.claim, [
+        davPublicationFence(upload, stored),
+        ...overwriteStatements(claimed.claim, authorized, request, stored, hashes),
+      ]);
     } else {
       throw new Error("authorization_denied");
     }
     terminal = outcome.kind === "terminal";
     if (outcome.kind === "terminal" && outcome.operation.state !== "committed") {
-      await env.BLOBS.delete(key);
-      try {
-        await atomicBatch(
-          env.DB,
-          finishReservationStatements(reservationId, ownerId, request.principal.epoch, "released"),
-        );
-        reserved = false;
-      } catch {
-        /* Expiry cleanup releases a reservation when this response is lost. */
-      }
+      await settleFailedDavUpload(env, upload);
     }
     return outcome;
-  } catch (error) {
-    try {
-      if (key) await env.BLOBS.delete(key);
-    } catch {
-      /* orphan audit handles an ambiguous R2 delete. */
-    }
-    if (reserved && ownerId)
-      try {
-        await atomicBatch(
-          env.DB,
-          finishReservationStatements(
-            `${intent.id}_reservation`,
-            ownerId,
-            request.principal.epoch,
-            "released",
-          ),
-        );
-      } catch {
-        /* Expiry cleanup releases a reservation when this response is lost. */
-      }
-    throw error;
   } finally {
     if (terminal)
       try {

@@ -38,4 +38,4 @@ workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s
 
 境界試験は受付不能、rollback、ACK/照合喪失、他のwaiting/active、epoch/mode/pause/bootstrap変更、固定期限、実owner/disabled owner/space未復元、uploadへの結合、行の置換、通知の由来とclaim、他処理の終端を検査する。実ControlDO試験は全32枠との共有、1枠だけ空いても拒否、全終了後だけ確定、応答喪失後のevictionとread-only再照会を検査する。
 
-backupは停止modeだけでは凍結されない。これらの修復は停止中にも更新できる。upload公開失敗後の精算は[共通受付へ接続済み](UPLOAD_FAILED_COMPLETION.md)。`services/putFile.ts`にはDAV PUT失敗後の共通受付外の予約解放が残り、不明なR2保存・削除結果の保留条件も整備する必要がある。次はその経路を整備してから、明示的なbackup barrierとlogical export/restore drillへ進む。未知KDF/multipartの閉鎖証明や容量精算はこの修復の対象に含めない。
+backupは停止modeだけでは凍結されない。これらの修復は停止中にも更新できる。upload公開失敗後と[DAV PUTの保存事実・失敗精算](DAV_UPLOAD.md)は共通受付へ接続済み。汎用予約回収はupload参照のある予約に加え、台帳のない旧dav.put予約も除外し、op_idを選択時・待機後・終端照合で束縛する。旧DAVの保存事実はfailed operationだけで証明できないため、明示的なR2-aware repairが必要。DAVの長時間転送と短い公開用permitの分離を進め、その後backup barrierとlogical export/restore drillへ進む。未知KDF/multipartの閉鎖証明や容量精算はこの修復の対象に含めない。

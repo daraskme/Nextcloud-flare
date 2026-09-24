@@ -72,6 +72,49 @@ it("migrates all 67 normal tables with strict types, explicit PK nullability and
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
+it("upgrades existing uploads to the private source without changing their storage holds", () => {
+  const legacy = new DatabaseSync(":memory:");
+  try {
+    legacy.exec("PRAGMA foreign_keys=ON");
+    for (const file of readdirSync(migrationDir)
+      .filter((f) => f.endsWith(".sql") && f < "0035_")
+      .sort())
+      legacy.exec(readFileSync(new URL(file, migrationDir), "utf8"));
+    for (const s of fixture.statements)
+      legacy.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+    legacy.exec(
+      "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES('legacy-res','f-u',3,'reserved',10000,1)",
+    );
+    legacy.exec(`INSERT INTO uploads(id,owner_id,space_id,parent_id,blob_id,credential_id,reservation_id,mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at)
+      VALUES('legacy','f-u','f-s','f-d','f-b','as:f-session','legacy-res','single','receiving',3,'hash',1,1,10000,1)`);
+    const before = legacy.prepare("SELECT * FROM uploads WHERE id='legacy'").get();
+    legacy.exec(readFileSync(new URL("0035_dav_upload_source.sql", migrationDir), "utf8"));
+    expect(legacy.prepare("SELECT * FROM uploads WHERE id='legacy'").get()).toEqual({
+      ...before,
+      source: "private",
+    });
+    expect(legacy.prepare("SELECT reserved_bytes FROM users WHERE id='f-u'").get()).toEqual({
+      reserved_bytes: 3,
+    });
+    expect(() => legacy.exec("UPDATE uploads SET source='dav' WHERE id='legacy'")).toThrow(
+      "immutable_upload_source",
+    );
+  } finally {
+    legacy.close();
+  }
+});
+
+it("rejects a DAV ledger without a bound app-password operation", () => {
+  db.exec(
+    "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES('res','f-u',3,'reserved',10000,1)",
+  );
+  expect(() =>
+    db.exec(`INSERT INTO uploads(id,source,owner_id,space_id,parent_id,blob_id,credential_id,reservation_id,mode,state,declared_size,
+      capability_hash,epoch,created_at,expires_at,last_progress_at,upload_name,write_attempt_id,write_lease_expires_at)
+      VALUES('dav_missing','dav','f-u','f-s','f-d','f-b','as:f-session','res','single','receiving',3,'internal:dav',1,1,10000,1,'file','attempt',9000)`),
+  ).toThrow("invalid_dav_upload_source");
+});
+
 it("limits each owner to 64 unexpired active budgets across insert and reactivation", () => {
   const future = Date.now() + 600_000;
   const past = Date.now() - 2_000;

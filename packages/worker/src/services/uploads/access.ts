@@ -51,7 +51,7 @@ export async function uploadRow(db: D1Database, id: string): Promise<UploadRow |
   if (!/^up_[a-f0-9]{64}$/.test(id)) throw new Error("invalid_upload_id");
   return primary(db)
     .prepare(
-      "SELECT * FROM uploads WHERE id=? AND upload_name IS NOT NULL AND capability_kid IS NOT NULL",
+      "SELECT * FROM uploads WHERE id=? AND source='private' AND upload_name IS NOT NULL AND capability_kid IS NOT NULL",
     )
     .bind(id)
     .first<UploadRow>();
@@ -64,7 +64,7 @@ export function uploadFence(
 ): SqlStatement {
   return assertExists(
     `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
-      WHERE u.id=? AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
+      WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
         AND u.state IN (SELECT value FROM json_each(?))
         AND u.expires_at>strftime('%s','now')*1000
         AND u.last_progress_at>strftime('%s','now')*1000-86400000
@@ -146,7 +146,7 @@ export async function accessUpload(
 export function uploadReceiptFence(row: UploadRow): SqlStatement {
   return assertExists(
     `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
-      WHERE u.id=? AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0`,
+      WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0`,
     [row.id, row.credential_id, row.epoch],
   );
 }

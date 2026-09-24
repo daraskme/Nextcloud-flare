@@ -47,6 +47,8 @@ multipart receiptには`revision`、`parts`、`nextAfter`を含む。part行は`
 
 公開operationがfailedでも精算未完なら、所有spaceの共通system受付で予約を解放する。混雑は503 not_readyとRetry-After: 1で返し、予約と物理容量を保持する。後続の再試行は同じ失敗operationを照合して精算し、R2を再送・削除しない。精算済みなら追加枠なしで409 conflictを返す。namespaceの既知終端では精算保留時も元のLockDO permitを解放する。GC完了後の精算済み照会も可能だが、現在のcredential/capability/node権限の条件は変わらない。詳細は[UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md)。
 
+migration0035以後、private capability APIはsource=privateの台帳だけを読み、DAV内部台帳を受け付けない。DAVは[専用の保存開始・精算経路](DAV_UPLOAD.md)から同じ期限切れ回収・GCへ接続する。
+
 ## 中止と回収
 
 単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
