@@ -2,20 +2,20 @@ import { assertExists, assertOneChange, atomicBatch, primary, type SqlStatement 
 
 export const MUTATION_WAIT_MS = 5000;
 export const MUTATION_QUEUE_LIMIT = 256;
-export interface MutationRequest {
+export interface MutationRequest<Space extends string | null = string> {
   permitId: string;
-  spaceId: string;
+  spaceId: Space;
   epoch: number;
   deadline: number;
 }
-export interface MutationAdmission {
+export interface MutationAdmission<Space extends string | null = string> {
   id: string;
   permit_id: string;
-  space_id: string;
+  space_id: Space;
   epoch: number;
   expires_at: number;
 }
-export interface MutationReceipt extends Omit<MutationAdmission, "expires_at"> {
+export interface MutationReceipt extends Omit<MutationAdmission<string | null>, "expires_at"> {
   expires_at: number | null;
   state: "waiting" | "active" | "closed";
 }
@@ -52,16 +52,16 @@ function promote(): SqlStatement {
 /** A fresh attempt ID cannot revive an expired/released deterministic permit. */
 export async function enqueueMutation(
   db: D1Database,
-  request: MutationRequest,
+  request: MutationRequest<string | null>,
 ): Promise<MutationReceipt> {
   if (
     !request ||
     typeof request.permitId !== "string" ||
     !request.permitId ||
     request.permitId.length > 128 ||
-    typeof request.spaceId !== "string" ||
-    !request.spaceId ||
-    request.spaceId.length > 128 ||
+    (request.spaceId === null
+      ? !/^bootstrap:[0-9a-f-]{36}$/.test(request.permitId)
+      : typeof request.spaceId !== "string" || !request.spaceId || request.spaceId.length > 128) ||
     !Number.isSafeInteger(request.epoch) ||
     request.epoch < 1 ||
     !Number.isSafeInteger(request.deadline) ||
@@ -70,7 +70,7 @@ export async function enqueueMutation(
   )
     throw new Error("mutation_unavailable");
   const { permitId, spaceId, epoch, deadline } = request;
-  const identity = "permit_id=? AND space_id=? AND epoch=? AND state<>'closed'";
+  const identity = "permit_id=? AND space_id IS ? AND epoch=? AND state<>'closed'";
   const rows = await atomicBatch(db, [
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND maintenance=0 AND epoch=?", [epoch]),
     ...cleanup(),
@@ -104,21 +104,23 @@ export async function advanceMutations(db: D1Database): Promise<MutationReceipt[
   return rows.at(-1)!.results as unknown as MutationReceipt[];
 }
 
-export function assertMutationAdmission(admission: MutationAdmission): SqlStatement {
+export function assertMutationAdmission(admission: MutationAdmission<string | null>): SqlStatement {
   return assertExists(
     `SELECT 1 FROM mutation_admissions a JOIN control c ON c.singleton=1
-    WHERE a.id=? AND a.permit_id=? AND a.space_id=? AND a.epoch=? AND a.expires_at=? AND a.state='active'
+    WHERE a.id=? AND a.permit_id=? AND a.space_id IS ? AND a.epoch=? AND a.expires_at=? AND a.state='active'
       AND a.expires_at>${clock} AND c.epoch=a.epoch AND c.maintenance=0`,
     [admission.id, admission.permit_id, admission.space_id, admission.epoch, admission.expires_at],
   );
 }
 
 /** Append to the same batch as a non-permit mutation. Closing alone never proves a commit. */
-export function commitMutationAdmission(admission: MutationAdmission): readonly SqlStatement[] {
+export function commitMutationAdmission(
+  admission: MutationAdmission<string | null>,
+): readonly SqlStatement[] {
   return [
     {
       sql: `UPDATE mutation_admissions SET state='closed',committed_at=${clock}
-      WHERE id=? AND permit_id=? AND space_id=? AND epoch=? AND expires_at=? AND state='active'
+      WHERE id=? AND permit_id=? AND space_id IS ? AND epoch=? AND expires_at=? AND state='active'
       AND expires_at>${clock} AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)
       AND NOT EXISTS(SELECT 1 FROM permits WHERE permit_id=mutation_admissions.permit_id)`,
       values: [
@@ -137,12 +139,12 @@ export function commitMutationAdmission(admission: MutationAdmission): readonly 
 /** Exact dispatch receipt, retained for 60s after commit; no inference from current resource state. */
 export async function hasCommittedMutation(
   db: D1Database,
-  admission: MutationAdmission,
+  admission: MutationAdmission<string | null>,
 ): Promise<boolean> {
   return (
     (await primary(db)
       .prepare(`SELECT 1 FROM mutation_admissions WHERE id=? AND permit_id=?
-    AND space_id=? AND epoch=? AND expires_at=? AND state='closed' AND committed_at IS NOT NULL`)
+    AND space_id IS ? AND epoch=? AND expires_at=? AND state='closed' AND committed_at IS NOT NULL`)
       .bind(
         admission.id,
         admission.permit_id,

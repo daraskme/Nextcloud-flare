@@ -10,6 +10,7 @@ import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { SearchCursorTokens } from "../auth/searchCursor";
 import type { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
@@ -101,13 +102,18 @@ export async function handlePrivateAppHttp(
   let session;
   try {
     session = await loginAccessUser(
-      env.DB,
+      env,
       dependencies.verifier,
       request,
       epoch,
       dependencies.bootstrap,
     );
   } catch (error) {
+    if (error instanceof MutationUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     return error instanceof AccessAuthenticationError
       ? problem(401, "unauthorized")
       : problem(403, "forbidden");

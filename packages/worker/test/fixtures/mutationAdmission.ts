@@ -9,20 +9,32 @@ import type { SqlStatement } from "../../src/db/primary";
 import type { Env } from "../../src/env";
 
 /** Explicit immediate admission fixture; actual ControlDO FIFO/stop/restart is tested separately. */
-export async function acquireMutation(request: MutationRequest): Promise<MutationAdmission> {
-  const receipt = await enqueueMutation(env.DB, request);
-  if (receipt.state !== "active" || receipt.expires_at === null)
+export async function acquireMutation<Space extends string | null = string>(
+  request: MutationRequest<Space>,
+  db = env.DB,
+): Promise<MutationAdmission<Space>> {
+  const receipt = await enqueueMutation(db, request);
+  if (
+    receipt.state !== "active" ||
+    receipt.expires_at === null ||
+    receipt.space_id !== request.spaceId
+  )
     throw new Error("fixture_mutation_waiting");
-  return { ...receipt, expires_at: receipt.expires_at };
+  return { ...receipt, space_id: request.spaceId, expires_at: receipt.expires_at };
 }
 
-export function mutationEnv(db = env.DB): Env {
+/** Domain-batch fault injection is independent of the admission backend. */
+export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
   return {
     ...env,
     DB: db,
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ acquireMutation }),
+      get: () => ({
+        acquireMutation: (request: MutationRequest) => acquireMutation(request, admissionDb),
+        acquireBootstrapMutation: (request: Omit<MutationRequest, "spaceId">) =>
+          acquireMutation({ ...request, spaceId: null }, admissionDb),
+      }),
     } as unknown as Env["CONTROL"],
   };
 }

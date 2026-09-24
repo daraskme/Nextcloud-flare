@@ -25,11 +25,11 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-app password発行・失効・pepper更新を共通mutation枠へ接続した。KDF前には枠を取らず、待機後のowner/current authority/root/20件上限/CASを最終batchで確認。変更・0031確定記録・解放を一括保存する。並行pepper更新後の認証成功を自分のcommitや枠解放の証明にしない。secretの別要求への再表示は追加しない。追加workerd32件。既存認証55件と最終境界60件成功。全体試験の旧content-ticket fixture失敗1件をfixtureのみ修正し、同file11件を再検証。計Node404/workerd962=1,366件とlint・型・契約・設定・build/dry-runを確認済み。CIで全check/browserを確認する。直前64ed237のCIは全成功、Node404/workerd930/browser19。[MUTATION_ADMISSION](MUTATION_ADMISSION.md)の残るsession/bootstrap/logout・content ticket・upload準備・Queue/backup統合を続ける。全体完成扱いにしない。
+session登録・初回owner・logoutを共通mutation枠へ接続した。既存JWTはread-only照合。0032でbootstrap専用null scopeを追加し、namespace permitから分離。既存receiptとFIFO sequenceを保持する。追加Node4/workerd22件。Node408/workerd984の計1,392件と全検証項目を確認済み。初回fixture失敗を修正し、関連57件を再検証。CIで全check/browserを確認する。直前a9ab676のCIは全成功、Node404/workerd962/browser19。詳細と残るcontent ticket・upload準備・Queue/backup統合は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。全体完成扱いにしない。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0031`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0032`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

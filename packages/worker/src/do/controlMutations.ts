@@ -17,7 +17,9 @@ export class ControlMutations {
     private readonly current: (epoch: number) => void,
   ) {}
 
-  async acquire(request: MutationRequest): Promise<MutationAdmission> {
+  async acquire(
+    request: MutationRequest<string | null>,
+  ): Promise<MutationAdmission<string | null>> {
     if (
       !request ||
       this.#pending >= MUTATION_QUEUE_LIMIT ||
@@ -48,7 +50,9 @@ export class ControlMutations {
     }
   }
 
-  async #acquire(request: MutationRequest): Promise<MutationAdmission> {
+  async #acquire(
+    request: MutationRequest<string | null>,
+  ): Promise<MutationAdmission<string | null>> {
     await this.admit(request.epoch);
     this.current(request.epoch);
     let receipt = await enqueueMutation(this.db, request);

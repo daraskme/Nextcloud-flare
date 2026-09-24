@@ -9,6 +9,7 @@ import {
 } from "../../src/auth/sessions";
 import { atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "../fixtures/foundation";
+import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -30,8 +31,8 @@ async function fixture() {
 it("registers one durable session under racing logins for the same JWT", async () => {
   const { claims } = await fixture();
   const sessions = await Promise.all([
-    registerAccessSession(env.DB, claims, 1),
-    registerAccessSession(env.DB, claims, 1),
+    registerAccessSession(mutationEnv(), claims, 1),
+    registerAccessSession(mutationEnv(), claims, 1),
   ]);
   expect(sessions[0]?.credential_id).toBe(sessions[1]?.credential_id);
   expect(sessions[0]?.credential_id).toMatch(/^as:/);
@@ -40,26 +41,26 @@ it("registers one durable session under racing logins for the same JWT", async (
 it("does not merge different issuer/sub identities by email", async () => {
   const { claims } = await fixture();
   await expect(
-    registerAccessSession(env.DB, { ...claims, sub: "unregistered" }, 1),
+    registerAccessSession(mutationEnv(), { ...claims, sub: "unregistered" }, 1),
   ).rejects.toThrow();
   await expect(
-    registerAccessSession(env.DB, { ...claims, iss: "https://other.invalid" }, 1),
+    registerAccessSession(mutationEnv(), { ...claims, iss: "https://other.invalid" }, 1),
   ).rejects.toThrow();
 });
 
 it("keeps a logout tombstone and refuses to recreate the same JWT session", async () => {
   const { claims } = await fixture();
-  const session = await registerAccessSession(env.DB, claims, 1);
-  await revokeAccessSession(env.DB, session.credential_id, 1);
-  await revokeAccessSession(env.DB, session.credential_id, 1);
+  const session = await registerAccessSession(mutationEnv(), claims, 1);
+  await revokeAccessSession(mutationEnv(), session.credential_id, 1);
+  await revokeAccessSession(mutationEnv(), session.credential_id, 1);
   expect(await readAccessSession(env.DB, session.credential_id, 1)).toBeNull();
-  await expect(registerAccessSession(env.DB, claims, 1)).rejects.toThrow();
+  await expect(registerAccessSession(mutationEnv(), claims, 1)).rejects.toThrow();
 });
 
 it("revokes content sessions derived by the user across access sessions", async () => {
   const { ids, claims } = await fixture();
-  const one = await registerAccessSession(env.DB, claims, 1);
-  const two = await registerAccessSession(env.DB, { ...claims, iat: claims.iat - 1 }, 1);
+  const one = await registerAccessSession(mutationEnv(), claims, 1);
+  const two = await registerAccessSession(mutationEnv(), { ...claims, iat: claims.iat - 1 }, 1);
   const now = Date.now();
   const budget = `u:${ids.user}`;
   await atomicBatch(env.DB, [
@@ -98,7 +99,7 @@ it("revokes content sessions derived by the user across access sessions", async 
       ];
     }),
   ]);
-  await revokeAccessSession(env.DB, one.credential_id, 1);
+  await revokeAccessSession(mutationEnv(), one.credential_id, 1);
   expect(
     (
       await env.DB.prepare("SELECT revoked_at FROM content_sessions WHERE user_id=?")
@@ -111,8 +112,8 @@ it("revokes content sessions derived by the user across access sessions", async 
 
 it("a job chunk cannot commit after its initiating session logs out", async () => {
   const { ids, claims } = await fixture();
-  const session = await registerAccessSession(env.DB, claims, 1);
-  await revokeAccessSession(env.DB, session.credential_id, 1);
+  const session = await registerAccessSession(mutationEnv(), claims, 1);
+  await revokeAccessSession(mutationEnv(), session.credential_id, 1);
   await expect(
     atomicBatch(env.DB, [
       { sql: "UPDATE users SET used_bytes=123 WHERE id=?", values: [ids.user] },
@@ -130,7 +131,7 @@ it.each(["disabled", "expired", "epoch"])(
   "rejects a currently %s credential",
   async (condition) => {
     const { ids, claims } = await fixture();
-    const session = await registerAccessSession(env.DB, claims, 1);
+    const session = await registerAccessSession(mutationEnv(), claims, 1);
     if (condition === "disabled") {
       await env.DB.prepare("UPDATE users SET role='member' WHERE id=?").bind(ids.user).run();
       await env.DB.prepare("UPDATE users SET disabled_at=1 WHERE id=?").bind(ids.user).run();

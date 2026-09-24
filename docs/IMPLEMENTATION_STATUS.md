@@ -7,6 +7,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 1 session・初回owner・logout受付 | migration0032、space作成前も共有32枠、既存JWTのread-only照合、変更/確定記録/解放を一括保存 | Node4/workerd22件追加。Node408/workerd984の計1,392件を確認。旧fixture修正後の関連57件と残る検証も成功。CI確認はpush後。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 app password更新受付 | 発行・失効・pepper更新を共通32枠へ接続、KDF後取得、変更/確定記録/解放を一括保存、混雑503 | workerd32件追加。既存認証55件と最終境界60件、計1,366件を検証。旧fixture1件修正後の再検証・残るgateも成功。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 DAVロックの全体受付 | migration0031、LOCK/refresh/UNLOCK共有枠、lock変更・確定記録・枠解放の一括確定、60秒保持と索引cleanup | Node4/workerd22件追加、対象Node8/workerd72件成功。全check1,334件（Node404/workerd930）成功。HTTP token再取得・別RPC結果再生は未実装。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | 1 namespace全体受付 | migration0030、ControlDO/D1 active32・waiting256・5秒、LockDO全8許可経路、失効と復旧fence、HTTP 503 | 追加21件と全check1,308件成功。全account経路・backup barrier・実環境は後続。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
@@ -120,6 +121,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 
 ## 実行記録
 
+- 2026-09-24、session/初回owner/logoutの共通受付を追加。Node4/workerd22件追加。型検査成功。対象Node83件、認証更新21件と既存29件・受付12件、bootstrap/実ControlDO5件成功。初期の旧エラー文字列期待とRPC拒否を試験内で捕捉するfixtureを修正した。初回全checkでNode用fingerprint試験にCloudflare runtimeが混入するimport依存を検出し、canonical ControlDO名をruntime非依存moduleへ分離。再実行はNode408/25files成功、workerd983成功/1失敗（984件・63files、464.31秒）。app-passwordの応答喪失fixtureが受付側にも同じ故障を注入していたため、fixtureの受付DBを独立させた。関連3files全57件（23.68秒）とlint/typecheck/Web build/Wrangler dry-runを再検証し成功。productionコードは全体試験から変更なし。契約・設定も成功。合計Node408/workerd984=1,392件を確認。CIで全check/browserを新規実行する。migration0032/通常67table・依存変更なし。
+- 2026-09-24、直前commit `a9ab6767c26efdb201bdab847e1177f7aa6c6bd2`の[CI36012173188](https://github.com/daraskme/Nextcloud-flare/actions/runs/36012173188)全成功。Ubuntu3分51秒、Windows11分23秒、browser3分55秒。Node404/workerd962/browser19、合計1,385件。
 - 2026-09-24、app password発行・失効・pepper更新の共通mutation受付を追加。workerd32件追加。既存認証55件と最終境界60件成功。初回 `pnpm check` はNode404/25files成功、workerd961成功/1失敗（962件・61files、454.01秒）。content-ticketの旧fixtureが停止中ControlDOを参照し、発行201に対して503となったため、fixtureのみ明示受付へ修正。対象file全11件（3.95秒）、lint/typecheck/Web build/Wrangler dry-runを再確認して成功。productionコードは全体試験から変更なし。契約・設定を含む全検証項目、計Node404 + workerd962 = **1,366 tests**を確認。CIで全checkとbrowserを新規実行する。owner/current authority、root/20件上限、停止/epoch、ACK/readback喪失、並行rotation、全rollback、HTTP503・Basic再認証不要、実ControlDOのKDF/32枠を検証。migration0031/通常67table・依存変更なし。
 - 2026-09-24、直前DAV commit `64ed2375ebf58da6d2a18383262ff96befdf83e6`の[CI36008397681](https://github.com/daraskme/Nextcloud-flare/actions/runs/36008397681)全成功。Ubuntu4分27秒、Windows10分40秒、browser2分46秒。Windows Node404/workerd930（558.21秒）、browser19（1.8分）。合計1,353件。
 - 2026-09-24、DAVロックの共通受付と確定記録を追加。Node4/workerd22件追加、対象Node8件・workerd72件成功。最終 `pnpm check` はNode404/25files + workerd930/60files = **1,334 tests**、workerd440.79秒。lint/typecheck/contracts/config/schema・Web build・Wrangler dry-run成功。今回のbrowser/CIはpush後に確認する。migration0031・通常67table・依存変更なし。認可fixtureのID組立てを修正し、productionの拒否条件は維持。実ControlDOの32枠待機/返却、HTTP503、停止/epoch/失効、batchとreadbackの応答喪失、別unlockとの混同防止、全rollback、旧DB移行、60秒保持・clock rollback・cleanup query planを検証する。

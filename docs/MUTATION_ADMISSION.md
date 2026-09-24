@@ -1,6 +1,6 @@
 # 更新の全体受付
 
-更新日: 2026-09-24。migration `0030` / `0031`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
+更新日: 2026-09-24。migration `0030` / `0031` / `0032`。単一deploymentのcanonical ControlDOとD1に対する制御であり、別deploymentや別Cloudflareアカウントの枠とは共有しない。
 
 ## 接続した範囲
 
@@ -49,7 +49,19 @@ batch応答を失った場合は、正確なticket ID・内部ID・space・epoch
 - pepper更新は旧digest/salt/kidのCAS、current credential/user・期限・epochを最終batchで確認する。自分のbatchが失敗しても他のloginが鍵更新した場合は、現在のrecordとsecretを再検証して認証できる。ただし、それを自分のcommit証明と扱わず、自分の未確定枠は保持する。
 - 発行・失効のAPIと鍵更新が必要なDAV認証は、受付不可を503・`Retry-After: 1`で返す。DAVの受付混雑ではBasic再認証を要求しない。
 
-serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。migration追加なし（0031、通常67table）、依存変更なし。
+serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受ける。productionの省略可能な受付やlocal fallbackは設けない。独立試験は明示的なfixture受付を使い、別途実ControlDOのKDF・共有32枠・FIFO待機・返却まで検証する。このapp password接続自体にはmigration追加なし。最新schemaは0032、通常67table、依存変更なし。
+
+## Access session・初回owner・logout
+
+session登録とlogoutも所有spaceの共有枠を取得する。新しいJWTは待機後にiss/sub・同一user・発行/失効時刻・epoch・user有効性を検査し、session/credentialと確定記録・枠の解放を同じbatchに保存する。logoutはsessionと同userの全派生content sessionを一括失効し、既存の冪等性を維持する。内部serviceのdisabled userに対する取消しは許可するが、HTTPでは従来どおりlogin/CSRFを検査する。
+
+既存fingerprintはprimary読取りだけで照合し、正常なGETごとにINSERTや受付を行わない。maintenance・epoch・現在のuser・JWT時刻・失効を毎回検査する。logout済み、期限切れ、credential欠損のfingerprintを再発行・補修しない。新規登録の競合でも、別処理が作ったsessionの欠損credentialを追加しない。
+
+初回ownerはspace作成前なので、専用の内部RPC ControlDO.acquireBootstrapMutationを使う。0032でnullableになったspace_idを明示nullとし、bootstrap接頭辞の内部IDだけに限定する。別の枠や架空spaceは作らず、同じ32/256枠とFIFOを共有する。通常のacquireMutationはnullを拒否し、namespace permitのSQLもspace完全一致を要求する。nullから別spaceへの変更・反対の変更をtriggerで禁止する。
+
+bootstrapのuser・space・root・controlと確定記録・枠解放も同じbatchに保存する。応答喪失はnull scopeを含むexact receiptで照合する。別処理が先に同一iss/subを初期化した場合は、その現行accountへ合流できるが、それを自分のreceiptと扱わず不明な枠は解放しない。JWTやsecretは受付台帳へ保存しない。
+
+新規session/初回ownerを必要とするAPI・private HTML、logout APIの受付不可は503・Retry-After: 1を返す。sessionが既に有効なら、更新枠が混雑しても読取りを続けられる。
 
 ## 応答喪失・失効・復旧
 
@@ -64,14 +76,17 @@ serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受け�
 
 ## migrationと残作業
 
-`0030`はmaintenance中、open permitなし、claimed operationなしでのみ適用できる。`0031`ではさらにwaiting/active ticketなしが必要。先に旧実装のquiesceを完了させる。適用済みmigrationは変更しない。通常table数67、依存変更なし。旧binaryと新binaryを混在させて受付を開く運用は未検証。remote migration・deployは未実施。
+0032は新tableへのcopy・旧tableのdrop・renameでnullable scopeを追加し、関連trigger/indexを再作成する。既存closed receiptの全列と、削除済み行を含むAUTOINCREMENT最大sequenceを保持する。FKを無効化しない。現schemaでこのtableを参照するFKはない。SQLiteの[table再構築手順](https://www.sqlite.org/lang_altertable.html#otheralter)と[sqlite_sequence](https://www.sqlite.org/autoinc.html)を根拠に実装し、SQLiteの空/既存tableとworkerd D1の既存receipt移行で検証する。
+
+`0030`はmaintenance中、open permitなし、claimed operationなしでのみ適用できる。`0031`と`0032`ではさらにwaiting/active ticketなしが必要。先に旧実装のquiesceを完了させる。適用済みmigrationは変更しない。通常table数67、依存変更なし。旧binaryと新binaryを混在させて受付を開く運用は未検証。remote migration・deployは未実施。
 
 | 更新経路 | この受付への接続 |
 |---|---|
 | 上記8種類のnamespace permit / upload公開 | 接続済み |
 | app password発行・失効・pepper更新 | 接続済み。KDF後に取得、current authorityと変更/確定記録/解放を同一batch |
-| session/bootstrap/logout、content ticket/budget | 未接続 |
-| CSRF helperの発行/検証 | DBはcurrent credentialの読取りのみ、tokenは署名。入口のsession登録は上記の未接続経路 |
+| session/bootstrap/logout | 接続済み。既存sessionはcurrent primary読取りのみ |
+| content ticket/budget | 未接続 |
+| CSRF helperの発行/検証 | DBはcurrent credentialの読取りのみ、tokenは署名。入口のsession登録も上記の共有受付へ接続済み |
 | upload予約・R2 create/part/completeの外部I/O・abort/cleanup | 既存upload制御を維持。namespace公開以外は未接続 |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | Queue consumer・Cron・repairの非namespace更新 | 未接続 |
@@ -79,4 +94,4 @@ serviceと認証helperはDBだけでなくmandatoryなCONTROL bindingを受け�
 
 全account mutation制御の完成ではない。追加経路への接続とbackup barrier、実Cloudflareの負荷・時計・通信断・複数region・restore drillが残る。製品全体のPhase 0〜9の完了条件は変更しない。
 
-検証記録: 直前のDAV受付commit64ed237はCI全成功（Node404/workerd930/browser19）。今回のapp password接続はworkerd32件追加。全検証項目（Node404/workerd962）は成功。初回の旧fixture失敗と再検証、今回のbrowser/CI結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)で照合する。
+検証記録: 直前app password commit a9ab676はCI全成功（Node404/workerd962/browser19、計1,385件）。今回のsession/bootstrap/logout接続はNode4・workerd22件追加。全check・CIの確定結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。

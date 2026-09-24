@@ -3,6 +3,7 @@ import type { CsrfTokens } from "../auth/csrf";
 import { type AccessSession, revokeAccessSession } from "../auth/sessions";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import { hasEmptyBody } from "./emptyBody";
 
 interface MeRow {
@@ -55,7 +56,16 @@ export async function handleAccountHttp(
       return problem(403, "forbidden");
     }
     if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
-    await revokeAccessSession(env.DB, session.credential_id, session.epoch);
+    try {
+      await revokeAccessSession(env, session.credential_id, session.epoch);
+    } catch (error) {
+      if (error instanceof MutationUnavailableError) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      throw error;
+    }
     return new Response(null, {
       status: 303,
       headers: {

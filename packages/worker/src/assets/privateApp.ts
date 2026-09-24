@@ -3,6 +3,7 @@ import { privateAppDependencies } from "../api/privateAppConfig";
 import { AccessAuthenticationError } from "../auth/access";
 import { loginAccessUser } from "../auth/login";
 import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import { privateAssets } from "./privateManifest";
 
 const assets = new Set<string>(privateAssets);
@@ -24,8 +25,13 @@ export async function servePrivateApp(
     return problem(404, "not_found");
   try {
     const { verifier, bootstrap } = await privateAppDependencies(env, epoch);
-    await loginAccessUser(env.DB, verifier, request, epoch, bootstrap);
+    await loginAccessUser(env, verifier, request, epoch, bootstrap);
   } catch (error) {
+    if (error instanceof MutationUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     return problem(error instanceof AccessAuthenticationError ? 401 : 403, "unauthorized");
   }
   const page = pages.test(url.pathname);

@@ -1,7 +1,9 @@
-import { applyD1Migrations } from "cloudflare:test";
+import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { expect, it } from "vitest";
+import { advanceMutations } from "../../src/db/mutationAdmission";
+import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import type { Env } from "../../src/env";
@@ -79,7 +81,54 @@ it("audits a pristine installation, admits only authenticated bootstrap, then st
   await control.resumeAdmission(epoch);
   expect((await me()).status).toBe(401);
   expect((await me(await token("unlisted@example.invalid"))).status).toBe(403);
-  const registered = await me(owner);
+  // Bootstrap/API and HTML entry points report admission overload as retryable, not bad identity.
+  const overloaded: Env = {
+    ...appEnv,
+    CONTROL: {
+      idFromName: appEnv.CONTROL.idFromName.bind(appEnv.CONTROL),
+      get: () => ({
+        status: () => control.status(),
+        acquireBootstrapMutation: async () => {
+          throw new Error("full");
+        },
+      }),
+    } as unknown as Env["CONTROL"],
+  };
+  for (const path of ["/api/v1/me", "/files"]) {
+    const response = await worker.fetch(
+      new Request(appEnv.APP_ORIGIN + path, { headers: { "Cf-Access-Jwt-Assertion": owner } }),
+      overloaded,
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+  }
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM spaces").first("n")).toBe(0);
+  // All 32 slots can be occupied before any space exists. Actual bootstrap then joins the same FIFO.
+  const held = Array.from({ length: 32 }, () => crypto.randomUUID());
+  await atomicBatch(
+    env.DB,
+    held.map((id) => ({
+      sql: "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,NULL,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)",
+      values: [id, "bootstrap:" + crypto.randomUUID(), epoch],
+    })),
+  );
+  await advanceMutations(env.DB);
+  const pending = me(owner);
+  const deadline = Date.now() + 4000;
+  let waiting = false;
+  while (Date.now() < deadline) {
+    waiting =
+      (await env.DB.prepare("SELECT 1 FROM mutation_admissions WHERE state='waiting'").first()) !==
+      null;
+    if (waiting) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  // Release before asserting so a failed observation cannot leave a pending RPC behind.
+  await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+    .bind(held[0])
+    .run();
+  const registered = await pending;
+  expect(waiting).toBe(true);
   expect(registered.status).toBe(200);
   const account = await registered.json<{ id: string; rootNodeId: string; role: string }>();
   expect(account.role).toBe("app_admin");
@@ -91,6 +140,35 @@ it("audits a pristine installation, admits only authenticated bootstrap, then st
       .bind(account.rootNodeId)
       .first("owner_id"),
   ).toBe(account.id);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM mutation_admissions WHERE space_id IS NULL AND committed_at IS NOT NULL",
+    ).first("n"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM mutation_admissions WHERE space_id IS NOT NULL AND committed_at IS NOT NULL",
+    ).first("n"),
+  ).toBe(1);
+  const before = await env.DB.prepare(
+    "SELECT seq FROM sqlite_sequence WHERE name='mutation_admissions'",
+  ).first("seq");
+  expect((await me(owner)).status).toBe(200);
+  expect(
+    await env.DB.prepare("SELECT seq FROM sqlite_sequence WHERE name='mutation_admissions'").first(
+      "seq",
+    ),
+  ).toBe(before);
+  await runInDurableObject(control, async (instance) => {
+    await expect(
+      instance.acquireMutation({
+        permitId: "bootstrap:" + crypto.randomUUID(),
+        spaceId: null,
+        epoch,
+        deadline: Date.now() + 5000,
+      } as never),
+    ).rejects.toThrow("mutation_unavailable");
+  });
   await control.quiesce(epoch);
   expect((await me(owner)).status).toBe(503);
   await audit();

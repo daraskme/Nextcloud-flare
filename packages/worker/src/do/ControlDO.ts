@@ -42,6 +42,7 @@ import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
+import { CONTROL_NAME } from "./controlName";
 import {
   type EpochReason,
   epochNumber,
@@ -59,7 +60,8 @@ import {
   releaseStaleRecoveryReservations,
 } from "./recoveryAudit";
 
-export const CONTROL_NAME = "singleton";
+export { CONTROL_NAME } from "./controlName";
+
 interface ControlRow extends Record<string, SqlStorageValue> {
   phase: "uninitialized" | "pending" | "ready";
   epoch: number;
@@ -175,9 +177,21 @@ export class ControlDO extends DurableObject<Env> {
     return this.#admission.status();
   }
 
-  /** Internal namespace admission; current authorization remains in LockDO's atomic grant. */
+  /** Space-scoped admission; current authorization remains in the service transaction. */
   async acquireMutation(request: MutationRequest): Promise<MutationAdmission> {
-    return this.#mutations.acquire(request);
+    if (typeof request.spaceId !== "string") throw new Error("mutation_unavailable");
+    const admission = await this.#mutations.acquire(request);
+    if (admission.space_id !== request.spaceId) throw new Error("mutation_unavailable");
+    return { ...admission, space_id: request.spaceId };
+  }
+
+  /** Bootstrap shares capacity before any personal space exists. No namespace authority. */
+  async acquireBootstrapMutation(
+    request: Omit<MutationRequest, "spaceId">,
+  ): Promise<MutationAdmission<null>> {
+    const admission = await this.#mutations.acquire({ ...request, spaceId: null });
+    if (admission.space_id !== null) throw new Error("mutation_unavailable");
+    return { ...admission, space_id: null };
   }
 
   /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */

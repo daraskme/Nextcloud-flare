@@ -44,8 +44,9 @@ const service = (db = env.DB, current = (_epoch: number) => {}) =>
   new ControlMutations(db, admit, current);
 async function ticket(r = request()): Promise<MutationAdmission> {
   const row = await enqueueMutation(env.DB, r);
-  if (row.state !== "active" || row.expires_at === null) throw new Error("missing_ticket");
-  return { ...row, expires_at: row.expires_at };
+  if (row.state !== "active" || row.expires_at === null || row.space_id !== r.spaceId)
+    throw new Error("missing_ticket");
+  return { ...row, space_id: r.spaceId, expires_at: row.expires_at };
 }
 async function seed(n: number, active = false) {
   const ids = Array.from({ length: n }, () => crypto.randomUUID());

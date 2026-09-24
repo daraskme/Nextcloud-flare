@@ -9,7 +9,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { type CreatePermitRequest, LockDO, type RenamePermitRequest } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireMutation } from "../fixtures/mutationAdmission";
+import { acquireMutation, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -257,7 +257,7 @@ it("requires a new ControlDO epoch after complete local storage loss", async () 
     await env.DB.prepare("UPDATE control SET maintenance=0").run();
     const now = Math.floor(Date.now() / 1000);
     const session = await registerAccessSession(
-      env.DB,
+      mutationEnv(),
       { iss: "https://access.invalid", sub: f.ids.user, iat: now, exp: now + 3600 },
       2,
     );
