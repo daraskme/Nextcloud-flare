@@ -1,7 +1,12 @@
 import { env } from "cloudflare:workers";
 
 /** Inject only the domain envelope, leaving coordinator admission and unrelated batches intact. */
-export function systemMutationFault(prefix: string, mode: "ack" | "rollback" | "reads", nth = 1) {
+export function systemMutationFault(
+  prefix: string,
+  mode: "ack" | "rollback" | "reads",
+  nth = 1,
+  base = env.DB,
+) {
   const parameters = new WeakMap<object, unknown[]>();
   let hits = 0,
     fired = false,
@@ -29,7 +34,7 @@ export function systemMutationFault(prefix: string, mode: "ack" | "rollback" | "
             return typeof value === "function" ? value.bind(target) : value;
           },
         });
-      return wrap(env.DB.prepare(sql));
+      return wrap(base.prepare(sql));
     },
     async batch(statements: D1PreparedStatement[]) {
       const matches = statements.some((s) =>
@@ -37,9 +42,9 @@ export function systemMutationFault(prefix: string, mode: "ack" | "rollback" | "
       );
       const hit = matches && ++hits === nth;
       if (hit) fired = true;
-      const result = await env.DB.batch(
+      const result = await base.batch(
         hit && mode === "rollback"
-          ? [...statements, env.DB.prepare("INSERT INTO _assert(v) VALUES(1)")]
+          ? [...statements, base.prepare("INSERT INTO _assert(v) VALUES(1)")]
           : statements,
       );
       if (hit) throw new Error("domain_ack_lost");

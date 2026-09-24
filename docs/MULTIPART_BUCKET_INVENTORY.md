@@ -1,6 +1,6 @@
 # upload行が失われたmultipartの観測・中止・容量保留
 
-更新: 2026-09-24。migration `0027`と`jobs/multipartBucketInventory.ts`で、D1のupload行がない未完了multipartも保存先の`u/`全体から発見し、各partの観測済み容量を保留する。migration `0028`と`jobs/multipartBucketAbort.ts`で発見済みhandleの中止と不変receiptを追加した。全体不在の証明と容量精算は未実装。実S3試験・remote migration・deployは行っていない。
+更新: 2026-09-25。migration `0027`と`jobs/multipartBucketInventory.ts`で、D1のupload行がない未完了multipartも保存先の`u/`全体から発見し、各partの観測済み容量を保留する。migration `0028`と`jobs/multipartBucketAbort.ts`で発見済みhandleの中止と不変receiptを追加した。全体不在の証明と容量精算は未実装。実S3試験・remote migration・deployは行っていない。
 
 ## 呼出しと範囲
 
@@ -17,6 +17,16 @@ await control.abortMultipartBucketHandle(epoch, handleId, attemptId);
 各呼出しはmaintenance・GC pause・current epochを要求し、[fresh nonceによるBLOBS/S3対応検証](MULTIPART_INVENTORY.md)を毎回行う。既存の60秒probe leaseで直列化し、counter更新の確認後だけS3へdispatchする。保存とcursor更新は同じproof/scan snapshot fence付きD1 batchで確定する。ControlDOは処理の前後に復旧監査を初期化する。
 
 1回に1ページ、既定20・最大100件。既存S3 clientのXML・echo・marker検査、1 MiB・10秒上限、redirect/retry禁止を使用する。probe検証のGETはこの一覧GETとは別。設定と資格情報は[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)と同じ。
+
+## 共通global受付
+
+全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。
+
+所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
+
+初回scan作成と完了後のresetも受付対象。所有者不在でも架空のspaceを作らず、通常のowner付きsystem更新と同じpoolで待つ。新しい中止は待機後に完了したscan/part走査を再検査する。結果保存は元のattempt/proofの記録であり、scan/partの新しいroundへ付け替えない。
+
+workerd82件を追加（境界73件・実ControlDO9件）。関連109件（97.66s）と全体checkが成功。Node422件（25file、5.68s）・workerd1,780件（83file、971.26s）、計2,202件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。
 
 ## 永続台帳
 
@@ -62,6 +72,8 @@ dispatch counterの確認が失われた呼出しはS3へ進まない。ペー�
 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)は指定uploadの中止と完成objectの可視性を定義する。[S3 AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)は進行中partとの競合と再中止・part確認の必要性を記載する。これらから、記録のない遅延create/completeを含む全体閉鎖までは保証できないと判断している。AWSの記述をR2固有の閉鎖保証として扱わない。
 
 ## 検証と残作業
+
+`multipart-bucket-admission.test.ts`は8経路の受付拒否・rollback・ACK喪失・確定記録の読取り不能、初回作成、待機後のproof/round変更、固定期限と返却値・容量保持を検査する。`multipart-bucket-control-admission.test.ts`は実ControlDOの同じ32枠を全8経路で埋めて待機させ、owner不在と中止ACK喪失後の再起動・再送禁止を検査する。
 
 `test/integration/multipart-bucket-inventory.test.ts`で実D1/R2/ControlDOとS3応答fixtureを使用する。upload行喪失、同keyの別ID、2種類のpagination、旧ページcycle、100件ページ/part番号10000、並行呼出し、所有者復元、容量増減、integer overflow、counter/page応答喪失、proof失効、source変更、0-byte再開拒否を検証する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 

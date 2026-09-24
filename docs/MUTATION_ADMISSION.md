@@ -154,7 +154,7 @@ DB-onlyの確定はexact receiptでACK喪失を回収できる。別要求の中
 | blob GC（通常/停止中/復元中） | 接続済み。claim・delete/HEAD予算・完了精算・エラーが共通system受付 |
 | 既存uploadの未知multipart ID調査・回収 | 接続済み。claimに加えて走査・予算・観測・中止receipt・lease返却・エラーが共通system受付 |
 | global R2接続確認 | 専用global scopeで接続済み。後述の同一32/256枠 |
-| orphanの台帳更新 | scan/GCを明示null scopeへ接続済み。全bucket multipartは後続 |
+| orphanの台帳更新 | scan/GCを明示null scopeへ接続済み。全bucket multipartも後述の受付へ接続済み |
 | DAV LOCK/refresh/UNLOCK | 接続済み。同一batchの確定記録と解放 |
 | 通常Outbox送信・node event consumer | 接続済み。送信claim/send/sent・受信claim/complete、所有space、同じ32/256枠 |
 | global inventory・旧epoch repair更新 | 未接続 |
@@ -183,7 +183,7 @@ migration0033でsystem/modeを不変にし、通常操作・namespace permitへ�
 
 systemとmaintenanceの2列は0033で既存台帳へ追加する。旧rowは0/0、receiptとAUTOINCREMENT high-water markは保持する。適用前にmaintenance・全ticket/permit/claimed operationのdrainを必須とする。閉鎖状態のsystem mirror照合は稼働中system ticketを許すが、復旧監査と再開の全体fenceは維持する。
 
-物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。Cron/Queue・GC・orphanの受付は後述の経路へ接続済み。全bucket multipart・旧epoch repair・backup barrierの接続は後続。
+物理観測のsource epoch検査は維持する。既知R2 IDは遅延応答でも自分のinit attemptに限り、現在epochのsystem枠で記録できる。system受付は再送や容量返却を許可する証明ではない。Cron/Queue・GC・orphanの受付は後述の経路へ接続済み。全bucket multipartは後述。旧epoch repair・backup barrierの接続は後続。
 
 ## UploadDO台帳の初期化・反映・喪失
 
@@ -200,7 +200,7 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 同じUploadDO内の既存直列化を維持し、R2やstreamをDOへ渡さない。待機後もSQL時計・現行認可・予約・正確なjournal binding/revisionを検査する。dirty partsは最大200、追加envelopeを含めてもD1の1,000 statement上限内。終端公開証明の読取りとローカルのcompleted照合は新たなD1 mutation受付を増やさない。
 
-停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。GC・所有upload inventory・Queue・orphanの受付は後述。全bucket multipart・旧epoch repair・backup barrierは後続。
+停止アラームはcredential/owner無効化や旧source epochでも制限方向の記録を続ける。ただしControlDOが示す現在epochとD1が一致する必要があり、mirror不整合ではアラーム/予約を保持して再試行する。全台帳喪失・応答喪失で予算をリセットせず、同じpart attemptを再送しない。GC・所有upload inventory・Queue・orphanの受付は後述。全bucket multipartは後述。旧epoch repair・backup barrierは後続。
 
 ## 単一・分割アップロードの自動回収
 
@@ -219,7 +219,7 @@ UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳
 
 CronはCONTROL binding、ControlDO内のmaintenanceは同一instanceのstatus/acquireSystemMutationを必須引数で供給する。DBだけのfallbackはない。回収前後の復旧監査・quiesceは維持する。disabled owner/失効credential/旧source epochでも現在のsystem受付で回収できるが、元のcontrol epoch/mode、cleanup lease、未公開・pin・GC・閉鎖条件はbatchで再検査する。
 
-unknown-ID inventoryの停止claimに加え、既存upload行の走査・観測・中止は後述の受付へ接続済み。Queue・global probe・orphanは後述の共通受付へ接続済み。全bucket multipart・旧epoch repair・backupは後続。この所有uploadの更新は既存owner-spaceのsystem受付を維持する。
+unknown-ID inventoryの停止claimに加え、既存upload行の走査・観測・中止は後述の受付へ接続済み。Queue・global probe・orphanは後述の共通受付へ接続済み。全bucket multipartは後述。旧epoch repair・backupは後続。この所有uploadの更新は既存owner-spaceのsystem受付を維持する。
 
 ## 所有blobのGC
 
@@ -238,7 +238,7 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 claimの60秒leaseとremoved_atは待機後のSQL時計を使う。removed_atはobserved_atを下回らない。1回のmaxBlobsは失敗したclaimも含む候補検査数の上限とし、同じ失敗を無制限に再試行しない。既定50件（停止/復元20件）、25秒の外部dispatch開始期限を維持する。進行中R2呼出しの強制終了は保証しない。
 
-owner未復元のorphan・そのcursor/leaseは後述のglobal受付、Queueは所有spaceの受付へ接続済み。全bucket multipart inventory・旧epoch repair・backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。
+owner未復元のorphan・そのcursor/leaseは後述のglobal受付、Queueは所有spaceの受付へ接続済み。全bucket multipart inventoryは後述。旧epoch repair・backup barrierは後続。既知blobのGC完了を未知multipartの閉鎖証明に流用しない。
 
 ## 所有uploadの未知multipart調査・回収
 
@@ -275,7 +275,7 @@ Queueの送信・受信処理を共通system受付へ接続しました。送信
 | outbox.consume-claim | 現在の認可と保存済みoperand/result/node stepを検査し30秒claim | exact receipt回収。後続の完了も別受付と現行認可が必要 |
 | outbox.complete | 自分のclaim/leaseと現行認可を検査してcompleted | exact receiptまたはdurable terminalだけをackの根拠にする |
 
-completed/failedの照会は枠を取らない。他のconsumerが完成させたterminalはQueue応答の判断に使えるが、自分の未確定枠を返す証拠にはならない。既存のID-only/at-least-onceを維持し、R2初期化や転送の一回限定dispatchとは区別する。公開Workerのqueue/scheduledからmandatory SystemMutationSourceを渡す。全bucket multipart inventory・旧epoch repairとbackup barrierは後続。詳しい制限と試験は[OUTBOX](OUTBOX.md)。
+completed/failedの照会は枠を取らない。他のconsumerが完成させたterminalはQueue応答の判断に使えるが、自分の未確定枠を返す証拠にはならない。既存のID-only/at-least-onceを維持し、R2初期化や転送の一回限定dispatchとは区別する。公開Workerのqueue/scheduledからmandatory SystemMutationSourceを渡す。全bucket multipart inventoryは後述。旧epoch repairとbackup barrierは後続。詳しい制限と試験は[OUTBOX](OUTBOX.md)。
 
 
 ## 所有者を持たない内部更新とR2接続確認
@@ -305,7 +305,7 @@ ControlDO.acquireGlobalMutationはscopeを明示nullに固定し、呼出し側�
 
 外部確認の開始は1回の25秒期限を共有し、受付後と直接ACK後も期限を確認する。既に実行中のI/Oを強制停止する保証ではない。最終DB記録は別途5秒の受付を使うが、元の60秒proofを延長しない。固定64-byte probeは削除せず、遅れた初回PUTの再生成を防ぐ。callback終了後はscoped fenceを無効化し、返却したbindingVerified booleanを後続の削除・精算権限にしない。
 
-GlobalMutationSourceは必須で、ControlDO内の確認・bucket走査・部品観測・中止は同じinstanceのproviderを渡す。owner側のmultipart修復は両scopeを要求する。DBだけのfallbackはない。probeの受付に加え、orphanの台帳更新は次節へ接続済み。全bucket multipart走査の台帳本体・保留容量精算・backup barrierは後続。
+GlobalMutationSourceは必須で、ControlDO内の確認・bucket走査・部品観測・中止は同じinstanceのproviderを渡す。owner側のmultipart修復は両scopeを要求する。DBだけのfallbackはない。probeの受付に加え、orphan・全bucket multipartの台帳更新は後述の共通受付へ接続済み。保留容量精算・backup barrierは後続。
 
 
 ## 未追跡objectの調査・回収
@@ -313,3 +313,13 @@ GlobalMutationSourceは必須で、ControlDO内の確認・bucket走査・部品
 未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
 
 owner不在でもscopeは明示nullで、架空のspaceを作りません。待機後にepoch/mode/pause、元のtoken・60秒lease、object世代・全catalogueからの独立を再検査します。LIST・HEAD・deleteは各回の直接ACKが必要で、既定20秒/最大25秒の開始期限を受付後とACK後に確認します。DB-onlyの確定記録と既存の厳密なtoken/終端照合を維持し、他の処理の完了で自分の未確定枠を返しません。35日猶予・後日owner復元・不在確認後だけのphysical精算を維持し、ControlDO内部は同じinstanceの受付を使います。 全10kindと応答喪失後の条件は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md#共通global受付)を参照。rawの結果付き観測batchには共通assertを前置し、changesのindexを調整する。終了時のlease返却と失敗注記も共通受付を経由し、受付不能時は自然失効まで保留する。
+
+## 全bucket multipartの調査・中止
+
+全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。
+
+所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
+
+8kindはbucket.scan-init/scan-call/scan-page、bucket.parts-init/parts-call/parts-page、bucket.abort-start/abort-finish。DB-onlyのinit/finishはcommitGlobalMutationで確定記録を照合する。call/abort-startは外部I/Oの許可なのでraw batchの直接ACKが必須。結果付きpage batchもrawで保存し、共通assert/receiptを返却値から除外する。受付不能や確定不明でcapacity・probe・保留容量を手動返却しない。
+
+新しい中止は待機後に完了した一覧と競合upload/leaseをtriggerで検査する。既存attemptの照会は新しい中止枠を取らず、fresh proof後に保存結果を返すだけである。詳しい試験と制約は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。

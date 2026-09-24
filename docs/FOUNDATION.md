@@ -302,7 +302,7 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
 
-global probeとorphanの更新受付は後述。全bucket multipart inventory・旧epoch repairの更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。
+global probe・orphan・全bucket multipartの更新受付は後述。旧epoch repairの更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。
 
 
 ## 所有者なし更新の共通受付
@@ -315,3 +315,11 @@ global probeとorphanの更新受付は後述。全bucket multipart inventory・
 未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
 
 owner不在でもscopeは明示nullで、架空のspaceを作りません。待機後にepoch/mode/pause、元のtoken・60秒lease、object世代・全catalogueからの独立を再検査します。LIST・HEAD・deleteは各回の直接ACKが必要で、既定20秒/最大25秒の開始期限を受付後とACK後に確認します。DB-onlyの確定記録と既存の厳密なtoken/終端照合を維持し、他の処理の完了で自分の未確定枠を返しません。35日猶予・後日owner復元・不在確認後だけのphysical精算を維持し、ControlDO内部は同じinstanceの受付を使います。 詳細は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)。scanの観測件数は元のbatchのchangesから返し、応答喪失時にreceiptだけで件数を捏造しない。scan finallyとGCエラーも別受付でbest effortに記録する。schema0034/67tableを維持する。
+
+## 全bucket multipart台帳の共通受付
+
+全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。
+
+所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
+
+一覧結果のD1 batchには共通assertが1件前置される。scanのhandle結果だけを正確な範囲で切り出し、partのheld_bytes SELECTも同じoffsetを使う。共通receiptの行を結果へ混ぜない。中止の結果保存は元のattempt/proofへ束縛し、現在のscan roundへの置換を要求しない。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。

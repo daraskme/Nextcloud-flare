@@ -14,6 +14,10 @@ import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { foundationFixture } from "../fixtures/foundation";
+import {
+  multipartBucketClient as client,
+  multipartBucketFixture as fixture,
+} from "../fixtures/multipartBucket";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 import { inventoryEnv, partsXml, partXml, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { injectBatch } from "../fixtures/uploadEnv";
@@ -34,14 +38,6 @@ beforeEach(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture(createOwner = true, keyOverride?: string) {
-  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
-  if (createOwner) await atomicBatch(env.DB, f.statements);
-  const key = keyOverride ?? `u/${f.ids.user}/b/lost-${crypto.randomUUID()}`;
-  const handle = await env.BLOBS.createMultipartUpload(key);
-  await handle.uploadPart(1, new TextEncoder().encode("abc"));
-  return { ...f, key, handle };
-}
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const currentScan = () => env.DB.prepare("SELECT * FROM multipart_bucket_scan").first();
 const stored = (id: string) =>
@@ -51,32 +47,6 @@ const physical = (f: Fixture) =>
     .bind(f.ids.user)
     .first("physical_bytes");
 const probe = async () => new Response((await env.BLOBS.get(BINDING_PROBE_KEY))!.body);
-function client(f: Fixture, jurisdiction: "default" | "eu" = "default") {
-  const uploads = vi.fn(
-    async (_request: Request) =>
-      new Response(uploadsXml({ uploads: uploadXml(f.key, f.handle.uploadId) })),
-  );
-  const parts = vi.fn(
-    async (_request: Request) =>
-      new Response(partsXml({ key: f.key, uploadId: f.handle.uploadId, parts: partXml(1, 3) })),
-  );
-  const binding = vi.fn(probe);
-  const fetch = (request: Request) => {
-    const url = new URL(request.url);
-    if (url.pathname.endsWith(`/${BINDING_PROBE_KEY}`)) return binding();
-    return url.searchParams.has("uploads") ? uploads(request) : parts(request);
-  };
-  return {
-    inventory: new R2S3Inventory(
-      { ...inventoryEnv, R2_INVENTORY_JURISDICTION: jurisdiction },
-      { fetch },
-    ),
-    uploads,
-    parts,
-    binding,
-    fetch,
-  };
-}
 const scan = (s3: ReturnType<typeof client>, db = env.DB) =>
   scanMultipartBucket(mutationEnv(db), env.BLOBS, s3.inventory, 1);
 const observe = (s3: ReturnType<typeof client>, id: string, db = env.DB) =>

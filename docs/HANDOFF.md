@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commitb971f01はmainへプッシュ済み。[CI36048664003](https://github.com/daraskme/Nextcloud-flare/actions/runs/36048664003)はUbuntu・Windows・browserすべて成功しました。Node422/workerd1593/browser19、計2,034件を確認済みです。Ubuntu5分43秒、Windows17分17秒、browser2分20秒。以前Windowsで失敗したmultipart試験も今回は成功しました。今回のorphan受付はまだ含まれません。
+直前commit943712fはmainへプッシュ済み。[CI36051299505](https://github.com/daraskme/Nextcloud-flare/actions/runs/36051299505)はUbuntu・Windows・browserすべて成功しました。Node422/workerd1698/browser19、計2,139件を確認済みです。Ubuntu7分37秒、Windows16分47秒、browser2分18秒。今回の全bucket受付はまだ含まれません。
 
-未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。
 
-owner不在でもscopeは明示nullで、架空のspaceを作りません。待機後にepoch/mode/pause、元のtoken・60秒lease、object世代・全catalogueからの独立を再検査します。LIST・HEAD・deleteは各回の直接ACKが必要で、既定20秒/最大25秒の開始期限を受付後とACK後に確認します。DB-onlyの確定記録と既存の厳密なtoken/終端照合を維持し、他の処理の完了で自分の未確定枠を返しません。35日猶予・後日owner復元・不在確認後だけのphysical精算を維持し、ControlDO内部は同じinstanceの受付を使います。
+所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
 
-workerd105件追加（境界93件・実ControlDO12件）。全体check成功、Node422件（25file、6.01s）・workerd1,698件（81file、888.73s）、計2,120件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全bucket multipart inventory・旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
+workerd82件を追加（境界73件・実ControlDO9件）。関連109件（97.66s）と全体checkが成功。Node422件（25file、5.68s）・workerd1,780件（83file、971.26s）、計2,202件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 全体完成扱いにしない。
 
-GlobalMutationSourceはmandatory。probeとorphanは明示null scopeの共通受付へ接続済み。全bucket multipart台帳本体は後続。通常のnamespaceと復旧処理は同じ32/256枠を共有し、ControlDO内部は同じinstanceを使う。既存migrationを編集しない。
+GlobalMutationSourceはmandatory。probe・orphan・全bucket multipart台帳は明示null scopeの共通受付へ接続済み。通常のnamespaceと復旧処理は同じ32/256枠を共有し、ControlDO内部は同じinstanceを使う。既存migrationを編集しない。
 
 ## 現在動いている範囲
 
@@ -104,7 +104,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。R2 probe・orphanも共通global受付へ接続済み。残る全bucket multipart inventory・旧epoch repairとbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。R2 probe・orphan・全bucket multipartも共通global受付へ接続済み。旧epoch repairとbackup barrierへの接続を続ける。検証状態は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

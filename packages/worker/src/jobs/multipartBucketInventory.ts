@@ -7,10 +7,18 @@ import {
 } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
 import type { MultipartInventoryPage } from "../r2/s3InventoryPages";
-import type { GlobalMutationSource } from "../services/globalMutation";
+import {
+  acquireGlobalMutation,
+  commitGlobalMutation,
+  type GlobalMutationSource,
+  globalMutationStatements,
+} from "../services/globalMutation";
 import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
+function withinBudget(deadline: number): void {
+  if (Date.now() >= deadline) throw new Error("multipart_bucket_budget");
+}
 interface Scan {
   source: string;
   epoch: number;
@@ -142,58 +150,71 @@ export async function scanMultipartBucket(
   epoch: number,
   limit = 20,
 ): Promise<MultipartBucketScanResult> {
-  const { DB: db } = env;
+  const deadline = Date.now() + 25_000;
   limits(epoch, limit);
   return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    scanPage(db, verified, epoch, limit),
+    scanPage(env, verified, epoch, limit, deadline),
   );
 }
 
 async function scanPage(
-  db: D1Database,
+  env: GlobalMutationSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   limit: number,
+  deadline: number,
 ): Promise<MultipartBucketScanResult> {
+  const { DB: db } = env;
   const source = JSON.stringify(verified.observation.source);
   let row = await scanRow(db);
   if (!row) {
-    await atomicBatch(db, [
+    const round = crypto.randomUUID();
+    const admission = await acquireGlobalMutation(env, "bucket.scan-init");
+    await commitGlobalMutation(db, admission, [
       verified.fence(),
       {
         sql: "INSERT INTO multipart_bucket_scan(singleton,source,epoch,round_id) VALUES(1,?,?,?)",
-        values: [source, epoch, crypto.randomUUID()],
+        values: [source, epoch, round],
       },
       assertOneChange,
     ]);
   } else if (row.source !== source || row.epoch !== epoch || row.completed_at !== null) {
-    await atomicBatch(db, [
+    const round = crypto.randomUUID();
+    const admission = await acquireGlobalMutation(env, "bucket.scan-init");
+    await commitGlobalMutation(db, admission, [
       verified.fence(),
       scanFence(row),
       {
         sql: `UPDATE multipart_bucket_scan SET source=?,epoch=?,round_id=?,cursor_key=NULL,cursor_upload_id=NULL,
         pages=0,completed_at=NULL WHERE singleton=1`,
-        values: [source, epoch, crypto.randomUUID()],
+        values: [source, epoch, round],
       },
       assertOneChange,
     ]);
   }
   row = (await scanRow(db))!;
   // Unknown counter acknowledgement stops this invocation before S3 dispatch.
-  await atomicBatch(db, [
-    verified.fence(),
-    scanFence(row),
-    {
-      sql: "UPDATE multipart_bucket_scan SET calls=calls+1 WHERE singleton=1",
-    },
-    assertOneChange,
-  ]);
+  const call = await acquireGlobalMutation(env, "bucket.scan-call", deadline);
+  withinBudget(deadline);
+  await atomicBatch(
+    db,
+    globalMutationStatements(call, [
+      verified.fence(),
+      scanFence(row),
+      {
+        sql: "UPDATE multipart_bucket_scan SET calls=calls+1 WHERE singleton=1",
+      },
+      assertOneChange,
+    ]),
+  );
+  withinBudget(deadline);
   const page = await verified.inventory.listMultipartUploads({
     prefix: "u/",
     limit,
     marker:
       row.cursor_key === null ? null : { key: row.cursor_key, uploadId: row.cursor_upload_id! },
   });
+  const admission = await acquireGlobalMutation(env, "bucket.scan-page");
   const statements: SqlStatement[] = [verified.fence(), scanFence(row)];
   for (const upload of page.uploads) {
     statements.push(observation(source, epoch, row.round_id, upload), assertOneChange);
@@ -213,12 +234,12 @@ async function scanPage(
       sql: "SELECT id,state FROM multipart_bucket_handles WHERE source=? AND r2_key=? AND r2_upload_id=?",
       values: [source, upload.key, upload.uploadId],
     });
-  const saved = await atomicBatch(db, statements);
+  const saved = await atomicBatch(db, globalMutationStatements(admission, statements));
   return {
     examined: page.uploads.length,
     completed: page.next === null,
     handles: saved
-      .slice(resultStart)
+      .slice(resultStart + 1, resultStart + 1 + page.uploads.length)
       .map((result) => result.results[0] as MultipartBucketScanResult["handles"][number]),
   };
 }
@@ -232,22 +253,24 @@ export async function observeMultipartBucketParts(
   handleId: string,
   limit = 20,
 ): Promise<MultipartPartObservationResult> {
-  const { DB: db } = env;
+  const deadline = Date.now() + 25_000;
   limits(epoch, limit);
   if (typeof handleId !== "string" || !/^[a-f\d-]{36}$/.test(handleId))
     throw new Error("invalid_multipart_bucket_handle");
   return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    observeParts(db, verified, epoch, handleId, limit),
+    observeParts(env, verified, epoch, handleId, limit, deadline),
   );
 }
 
 async function observeParts(
-  db: D1Database,
+  env: GlobalMutationSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   id: string,
   limit: number,
+  deadline: number,
 ): Promise<MultipartPartObservationResult> {
+  const { DB: db } = env;
   let row = await handleRow(db, id);
   if (
     !row ||
@@ -256,33 +279,42 @@ async function observeParts(
   )
     throw new Error("multipart_bucket_handle_unavailable");
   if (row.part_epoch !== epoch || row.parts_completed_at !== null) {
-    await atomicBatch(db, [
+    const round = crypto.randomUUID();
+    const admission = await acquireGlobalMutation(env, "bucket.parts-init");
+    await commitGlobalMutation(db, admission, [
       verified.fence(),
       partFence(row),
       {
         sql: `UPDATE multipart_bucket_handles SET part_epoch=?,part_round_id=?,part_marker=0,
         part_pages=0,parts_completed_at=NULL WHERE id=?`,
-        values: [epoch, crypto.randomUUID(), id],
+        values: [epoch, round, id],
       },
       assertOneChange,
     ]);
   }
   row = (await handleRow(db, id))!;
-  await atomicBatch(db, [
-    verified.fence(),
-    partFence(row),
-    {
-      sql: "UPDATE multipart_bucket_handles SET part_calls=part_calls+1 WHERE id=?",
-      values: [id],
-    },
-    assertOneChange,
-  ]);
+  const call = await acquireGlobalMutation(env, "bucket.parts-call", deadline);
+  withinBudget(deadline);
+  await atomicBatch(
+    db,
+    globalMutationStatements(call, [
+      verified.fence(),
+      partFence(row),
+      {
+        sql: "UPDATE multipart_bucket_handles SET part_calls=part_calls+1 WHERE id=?",
+        values: [id],
+      },
+      assertOneChange,
+    ]),
+  );
+  withinBudget(deadline);
   const page = await verified.inventory.listParts({
     key: row.r2_key,
     uploadId: row.r2_upload_id,
     marker: row.part_marker,
     limit,
   });
+  const admission = await acquireGlobalMutation(env, "bucket.parts-page");
   const statements: SqlStatement[] = [verified.fence(), partFence(row)];
   for (const part of page.parts)
     statements.push(
@@ -321,10 +353,11 @@ async function observeParts(
       values: [id],
     },
   );
-  const saved = await atomicBatch(db, statements);
+  const resultIndex = statements.length - 1;
+  const saved = await atomicBatch(db, globalMutationStatements(admission, statements));
   return {
     observed: page.parts.length,
-    heldBytes: (saved.at(-1)!.results[0] as { held_bytes: number }).held_bytes,
+    heldBytes: (saved[resultIndex + 1]!.results[0] as { held_bytes: number }).held_bytes,
     completed: page.next === null,
   };
 }

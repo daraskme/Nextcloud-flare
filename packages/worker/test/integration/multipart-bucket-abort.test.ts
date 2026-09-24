@@ -231,7 +231,11 @@ it("recovers an acknowledged abort receipt after losing the database reply", asy
     },
     true,
   );
-  await expect(run(f, id, db)).rejects.toThrow();
+  await expect(run(f, id, db)).resolves.toMatchObject({
+    outcome: "confirmed",
+    replayed: false,
+    heldBytes: 3,
+  });
   expect(await attempt(id)).toMatchObject({ outcome: "confirmed" });
   await expire();
   expect(await run(f, id)).toMatchObject({ outcome: "confirmed", replayed: true, heldBytes: 3 });

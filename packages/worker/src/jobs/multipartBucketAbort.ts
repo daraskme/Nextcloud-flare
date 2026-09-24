@@ -1,6 +1,11 @@
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
-import type { GlobalMutationSource } from "../services/globalMutation";
+import {
+  acquireGlobalMutation,
+  commitGlobalMutation,
+  type GlobalMutationSource,
+  globalMutationStatements,
+} from "../services/globalMutation";
 import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -35,7 +40,7 @@ export async function abortMultipartBucketHandle(
   attemptId: string,
   options: { maxWaitMs?: number } = {},
 ): Promise<MultipartBucketAbortResult> {
-  const { DB: db } = env;
+  const deadline = Date.now() + 25_000;
   const wait = options.maxWaitMs ?? 10_000;
   if (
     !Number.isSafeInteger(epoch) ||
@@ -50,18 +55,23 @@ export async function abortMultipartBucketHandle(
   )
     throw new Error("invalid_multipart_bucket_abort");
   return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    abortVerified(db, verified, epoch, handleId, attemptId, wait),
+    abortVerified(env, verified, epoch, handleId, attemptId, wait, deadline),
   );
 }
 
 async function abortVerified(
-  db: D1Database,
+  env: GlobalMutationSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   handleId: string,
   attemptId: string,
   wait: number,
+  deadline: number,
 ): Promise<MultipartBucketAbortResult> {
+  const { DB: db } = env;
+  const withinBudget = () => {
+    if (Date.now() >= deadline) throw new Error("multipart_bucket_abort_budget");
+  };
   const source = JSON.stringify(verified.observation.source);
   const handle = await primary(db)
     .prepare(
@@ -88,28 +98,38 @@ async function abortVerified(
 
   // The trigger checks completed bucket/part walks, current proof and competing uploads.
   // Its immutable ordinal is also the lifetime budget; unknown ACKs consume a slot.
-  await atomicBatch(db, [
-    verified.fence(),
-    {
-      sql: `INSERT INTO multipart_bucket_abort_attempts(
+  const admission = await acquireGlobalMutation(env, "bucket.abort-start", deadline);
+  withinBudget();
+  await atomicBatch(
+    db,
+    globalMutationStatements(admission, [
+      verified.fence(),
+      {
+        sql: `INSERT INTO multipart_bucket_abort_attempts(
         id,handle_id,ordinal,epoch,proof_generation,scan_round_id,part_round_id,held_bytes,started_at)
       SELECT ?,h.id,(SELECT COALESCE(MAX(ordinal),0)+1 FROM multipart_bucket_abort_attempts WHERE handle_id=h.id),
         ?,p.generation,s.round_id,h.part_round_id,h.held_bytes,${CLOCK}
       FROM multipart_bucket_handles h JOIN multipart_bucket_scan s ON s.singleton=1
         JOIN r2_binding_probe p ON p.singleton=1
       WHERE h.id=? AND h.source=? AND h.r2_key=? AND h.r2_upload_id=? AND h.state='quarantined'`,
-      values: [attemptId, epoch, handleId, source, handle.r2_key, handle.r2_upload_id],
-    },
-    assertOneChange,
-  ]);
+        values: [attemptId, epoch, handleId, source, handle.r2_key, handle.r2_upload_id],
+      },
+      assertOneChange,
+    ]),
+  );
+  withinBudget();
 
   // Only the confirmed insert dispatches. A lost insert reply must exit without R2 I/O.
   await verified.assertCurrent();
+  withinBudget();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let error: "abort_unconfirmed" | "abort_timeout" | null;
   try {
     const abort = Promise.resolve()
-      .then(() => verified.bucket.resumeMultipartUpload(handle.r2_key, handle.r2_upload_id).abort())
+      .then(() => {
+        withinBudget();
+        return verified.bucket.resumeMultipartUpload(handle.r2_key, handle.r2_upload_id).abort();
+      })
       .then(
         () => null,
         () => "abort_unconfirmed" as const,
@@ -125,7 +145,8 @@ async function abortVerified(
   }
 
   // Late or ambiguous results never release held bytes or reopen recovery.
-  await atomicBatch(db, [
+  const finish = await acquireGlobalMutation(env, "bucket.abort-finish");
+  await commitGlobalMutation(db, finish, [
     verified.fence(),
     assertExists(
       "SELECT 1 FROM multipart_bucket_abort_attempts WHERE id=? AND handle_id=? AND epoch=? AND outcome='started'",
