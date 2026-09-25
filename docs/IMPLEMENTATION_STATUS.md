@@ -3,7 +3,7 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前検証: 35日の元ファイル保護`7939e6c`と、過去schemaの検証・未知tableの取りこぼし防止`5fccb55`を統合しました。直前の`bc33e7c`に対する[CI36080273377](https://github.com/daraskme/Nextcloud-flare/actions/runs/36080273377)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しています。今回の統合版のCIはプッシュ後に確認します。
+直前検証: GC保護・過去世代対応は`2563731`までmainへプッシュ済みです。[CI36082097219](https://github.com/daraskme/Nextcloud-flare/actions/runs/36082097219)は確認中です。今回の値を保持する出力修正`3a6e46d`のCIはプッシュ後に確認します。
 
 ## 今回の実装
 
@@ -11,6 +11,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 値を保持するデータ出力 | typed query・BLOB hex・NUL TEXT・bounded writer、旧世代互換 | Node16件を追加し、統合後の全600件（36file、18.58s）が成功しました。schema0039の3ドリルも成功し、通常CLIは67table/SQL9,755bytes、専用bindingは9,582bytes、実CLI run→receipt→download→restore-offlineは9,079bytesでした。実D1でUnicode・引用符・CR/LF・literal backslash・NUL・BOM、BLOBと似たTEXT、NULL・小数の保持を確認しています。保存済み0037/0038/0039世代の実CLI検証も成功。lint348file・契約/設定検査も成功しました。 [BACKUP_EXPORT](BACKUP_EXPORT.md) |
 | 4 過去schemaと全table照合 | 信頼済みprefix、保存当時のschema、未知table/view/virtual・抽出中schema変更の拒否 | 過去世代の検証と抽出漏れ防止にNode19件を追加し、GC保護との統合後は全584件（35file、19.17s）が成功しました。保存済み0037/0038世代を実CLIで検証・復元し、当時のschema・凍結・FKを維持しています。実D1で全table一覧の前後照合を含む3ドリルも成功し、従来CLIは67table/SQL9,599bytes、専用bindingは9,613bytes、実CLI run→receipt→download→restore-offlineは9,110bytesでした。lint346fileも成功。Worker本体とmigrationはGC検証後に変更していません。詳細は[BACKUP_HISTORY](BACKUP_HISTORY.md)。 |
 | 4 バックアップ用GC保護 | migration0039、35日猶予、最終参照trigger、再参照競合、WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 [BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md) |
 | 4 バックアップ運用コマンド | BackupOperator、run/receipt/cancel、実service binding・CLIドリル、local R2保存先修正 | Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。 運用コマンドは専用service bindingを持つ信頼されたSQL検証者向けです。最新の元BLOBS削除猶予は[BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md)を参照。remote認証・日次/保持管理・live復旧は後続です。 [BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
