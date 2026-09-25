@@ -1,6 +1,6 @@
 # バックアップ運用コマンド
 
-更新: 2026-09-25。`pnpm backup run`が、明示した同じ世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。日次スケジュール・保持管理・BLOBS保護・live restoreは別工程。
+更新: 2026-09-25。`pnpm backup run`が、明示した同じ世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。日次スケジュール・保持管理・live restoreは別工程。
 
 ## 呼出し権限
 

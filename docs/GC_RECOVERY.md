@@ -20,7 +20,7 @@ migration `0024`で`gc_candidates.claim_epoch`と単調増加`r2_calls`を追加
 - final batchの応答喪失はblob/GC両方のdeleted、key一致、claim解除、未精算physical・cleanup_pendingがないことを照合する。rollbackなら容量を保持し、lease失効後に再試行する。
 - 遅れた旧Workerは新しいtokenやepochを使えず、HEADのdispatch・最終精算を行えない。すでにdispatch済みのdelete自体を取り消すものではないため、deleting状態とkey再利用禁止は維持する。
 
-通常稼働時も、claim取得後にGC pause/maintenance/epochが変われば後続dispatch・精算を止める。停止中drainは`candidate→deleting`を新たに進めず、7日猶予を短縮しない。受付を維持する復元用drainも同じ回収本体を使うが、管理者停止とは異なるoperation/token/epoch/期限のSQL条件を各claim・dispatch・精算に追加する。詳細は[RESTORE_GC](RESTORE_GC.md)。
+通常稼働時も、claim取得後にGC pause/maintenance/epochが変われば後続dispatch・精算を止める。停止中drainは`candidate→deleting`を新たに進めず、35日猶予を短縮しない（[元ファイル保護](BACKUP_GC_PROTECTION.md)）。受付を維持する復元用drainも同じ回収本体を使うが、管理者停止とは異なるoperation/token/epoch/期限のSQL条件を各claim・dispatch・精算に追加する。詳細は[RESTORE_GC](RESTORE_GC.md)。
 
 ## 未追跡object
 

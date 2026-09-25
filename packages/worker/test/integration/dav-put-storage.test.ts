@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, expect, it } from "vitest";
 import { runGarbageCollection } from "../../src/jobs/gc";
 import { davUploadMetadata } from "../../src/services/davUpload";
 import { davBucket, davPutFixture as fixture } from "../fixtures/davPut";
+import { expireGcGrace } from "../fixtures/gc";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 import { injectBatch } from "../fixtures/uploadEnv";
@@ -287,6 +288,7 @@ it("waits for the native storage result after a request stream fails", async () 
 });
 
 it("turns a known failed publication into a charged orphan and replays without storage calls", async () => {
+  const queuedAfter = Date.now();
   const f = await fixture();
   let deletes = 0;
   const outcome = await f.run({
@@ -323,8 +325,14 @@ it("turns a known failed publication into a charged orphan and replays without s
   });
   expect(replay).toEqual(outcome);
   expect(deletes).toBe(0);
-  // A proven completed write can enter GC immediately; unknown bodies must wait for expiry.
+  // A known failed write is settled immediately, but physical GC waits for backup grace.
   await env.DB.prepare("UPDATE control SET gc_paused=0").run();
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  expect(await f.counters()).toEqual({ reserved_bytes: 0, physical_bytes: 3 });
+  await expireGcGrace(row.blob_id, queuedAfter);
   expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await f.counters()).toEqual({ reserved_bytes: 0, physical_bytes: 0 });
   expect(await f.run()).toEqual(outcome);

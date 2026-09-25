@@ -1,5 +1,6 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { assertCreateLocks } from "../auth/locks";
+import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import {
   assertExists,
   assertOneChange,
@@ -309,7 +310,7 @@ export async function settleFailedDavUpload(env: SystemMutationSource, row: DavU
       },
       assertOneChange,
       {
-        sql: `INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'candidate',${CLOCK}) ON CONFLICT(blob_id) DO NOTHING`,
+        sql: `INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'candidate',${GC_NOT_BEFORE_SQL}) ON CONFLICT(blob_id) DO NOTHING`,
         values: [row.blob_id],
       },
       assertExists("SELECT 1 FROM gc_candidates WHERE blob_id=? AND state='candidate'", [

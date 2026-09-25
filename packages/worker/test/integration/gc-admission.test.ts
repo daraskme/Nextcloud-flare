@@ -2,6 +2,7 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { MutationRequest, SystemMutationAdmission } from "../../src/db/mutationAdmission";
+import { atomicBatch } from "../../src/db/primary";
 import type { RestorePause } from "../../src/db/restorePause";
 import {
   drainRestoreBlobGarbageCollection,
@@ -355,6 +356,40 @@ it("rechecks a postponed quarantine after claim admission", async () => {
   );
   expect(f.calls).toEqual({ delete: 0, head: 0 });
   expect(await f.row()).toMatchObject({ state: "candidate" });
+  expect(await f.physical()).toBe(3);
+});
+
+it("rolls back a GC claim when the blob was referenced and detached during admission", async () => {
+  const f = await fixture("normal", "claim");
+  const detachedAfter = Date.now();
+  let reused = false;
+  await f.run(
+    f.configure(async (r) => {
+      const admission = await acquireSystemMutation(r);
+      if (!reused && r.permitId.startsWith(prefix("claim"))) {
+        reused = true;
+        await atomicBatch(env.DB, [
+          {
+            sql: "UPDATE nodes SET current_blob_id=? WHERE id=?",
+            values: [f.ids.blob, f.ids.file],
+          },
+          { sql: "UPDATE nodes SET current_blob_id=NULL WHERE id=?", values: [f.ids.file] },
+        ]);
+      }
+      return admission;
+    }),
+  );
+  expect(reused).toBe(true);
+  expect(f.calls).toEqual({ delete: 0, head: 0 });
+  expect(await f.row()).toMatchObject({ state: "candidate" });
+  expect(
+    await env.DB.prepare("SELECT state,ref_count FROM blobs WHERE id=?").bind(f.ids.blob).first(),
+  ).toEqual({ state: "gc_candidate", ref_count: 0 });
+  expect(
+    await env.DB.prepare("SELECT not_before FROM gc_candidates WHERE blob_id=?")
+      .bind(f.ids.blob)
+      .first<number>("not_before"),
+  ).toBeGreaterThanOrEqual(detachedAfter + 35 * 86_400_000);
   expect(await f.physical()).toBe(3);
 });
 

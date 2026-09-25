@@ -1,6 +1,21 @@
 import { env } from "cloudflare:workers";
+import { expect } from "vitest";
 import { atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "./foundation";
+
+/** Assert production quarantine, then simulate its expiry without changing production clocks. */
+export async function expireGcGrace(blobId: string, queuedAfter: number) {
+  const row = await env.DB.prepare("SELECT state,not_before FROM gc_candidates WHERE blob_id=?")
+    .bind(blobId)
+    .first<{ state: string; not_before: number }>();
+  expect(row?.state).toBe("candidate");
+  expect(row?.not_before).toBeGreaterThanOrEqual(queuedAfter + 35 * 86_400_000);
+  await env.DB.prepare(
+    "UPDATE gc_candidates SET not_before=0 WHERE blob_id=? AND state='candidate'",
+  )
+    .bind(blobId)
+    .run();
+}
 
 export async function gcFixture(state: "candidate" | "deleting" = "deleting") {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);

@@ -14,7 +14,7 @@
 
 ## 回収と競合
 
-通常blobの7日GCとは独立した`collectOrphanObjects`が35日後に回収する。current epoch、maintenance解除、GC pause解除、全catalogueからの独立を確認し、60秒claimを取得する。HEADで保存済みversion等を再検査し、一致した場合だけdeleteする。置換を発見した場合は新しい実サイズを計上し、35日の猶予を更新する。
+通常blobの[35日GC](BACKUP_GC_PROTECTION.md)とは独立した`collectOrphanObjects`が35日後に回収する。current epoch、maintenance解除、GC pause解除、全catalogueからの独立を確認し、60秒claimを取得する。HEADで保存済みversion等を再検査し、一致した場合だけdeleteする。置換を発見した場合は新しい実サイズを計上し、35日の猶予を更新する。
 
 各R2 callの直前に、epoch/pause、claim token/lease、object identityを再検査してcounterを確定する。counter応答が不明なら新しいI/Oを発行しない。delete応答喪失でもHEAD不在を確認できれば収束し、HEAD不明やDB精算失敗なら物理容量を保持する。削除済み状態と物理容量の減算は同じD1 batchで確定し、失われた確定応答は保存済みの全object tupleで照合する。
 

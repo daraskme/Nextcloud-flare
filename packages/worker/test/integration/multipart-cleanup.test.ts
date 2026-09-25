@@ -14,6 +14,7 @@ import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
 import { uploadRow } from "../../src/services/uploads/access";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { foundationFixture } from "../fixtures/foundation";
+import { expireGcGrace } from "../fixtures/gc";
 import { acquireSystemMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 import { multipartCleanupFixture as fixture } from "../fixtures/uploadCleanup";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
@@ -244,6 +245,7 @@ it.each([
 });
 
 it("accounts a completed object when abort cannot find its old handle, then hands it to GC", async () => {
+  const queuedAfter = Date.now();
   const f = await fixture({ state: "completing" });
   await complete(f);
   expect(
@@ -259,6 +261,11 @@ it("accounts a completed object when abort cannot find its old handle, then hand
     cleanup_pending: 1,
     multipart_cleanup_closed: "completed",
   });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  await expireGcGrace(f.blob, queuedAfter);
   expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await counters(f)).toMatchObject({ physical_bytes: 0 });
   expect(await row(f)).toMatchObject({ cleanup_pending: 0 });
@@ -478,6 +485,7 @@ it("makes the cleanup stop and closure immutable in D1", async () => {
 });
 
 it("runs from Cron while admission is open, with full objects waiting for unpaused GC", async () => {
+  const queuedAfter = Date.now();
   const f = await fixture({ state: "completing" });
   await complete(f);
   let maintenance = true;
@@ -499,6 +507,9 @@ it("runs from Cron while admission is open, with full objects waiting for unpaus
   await worker.scheduled({} as ScheduledController, runtime);
   expect(await row(f)).toMatchObject({ cleanup_pending: 1 });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
+  await expireGcGrace(f.blob, queuedAfter);
+  await worker.scheduled({} as ScheduledController, runtime);
+  expect(await row(f)).toMatchObject({ cleanup_pending: 1 });
   gcPaused = false;
   await env.DB.prepare("UPDATE control SET gc_paused=0").run();
   await worker.scheduled({} as ScheduledController, runtime);

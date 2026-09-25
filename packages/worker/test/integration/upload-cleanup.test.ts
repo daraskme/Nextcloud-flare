@@ -7,6 +7,7 @@ import worker from "../../src/index";
 import { runGarbageCollection } from "../../src/jobs/gc";
 import { repairSingleUploads } from "../../src/jobs/uploadCleanup";
 import { observePhysicalObject } from "../../src/services/physical";
+import { expireGcGrace } from "../fixtures/gc";
 import { acquireSystemMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 import { singleCleanupFixture as fixture } from "../fixtures/uploadCleanup";
 
@@ -83,6 +84,7 @@ async function completion(f: Fixture, bound: boolean, state = "claimed") {
 }
 
 it("accounts an unrecorded successful PUT, hands it to GC, and clears cleanup only after deletion", async () => {
+  const queuedAfter = Date.now();
   const f = await fixture();
   await store(f);
   expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 0 });
@@ -97,6 +99,12 @@ it("accounts an unrecorded successful PUT, hands it to GC, and clears cleanup on
   expect(await counters(f)).toMatchObject({ used_bytes: 3, reserved_bytes: 0, physical_bytes: 3 });
   expect(await env.BLOBS.head(f.key)).not.toBeNull();
   expect(await repairSingleUploads(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  expect(await counters(f)).toMatchObject({ physical_bytes: 3 });
+  await expireGcGrace(f.blob, queuedAfter);
   expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await upload(f)).toMatchObject({ cleanup_pending: 0 });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 0 });
@@ -353,10 +361,16 @@ it("charges unexpected objects and quarantines them without deletion or reservat
 });
 
 it("accounts the actual size of an owned malformed write before deleting it", async () => {
+  const queuedAfter = Date.now();
   const f = await fixture();
   await store(f, "ab");
   expect(await repairSingleUploads(mutationEnv(), env.BLOBS, 1)).toMatchObject({ queued: 1 });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 2 });
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  await expireGcGrace(f.blob, queuedAfter);
   expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
   expect(await counters(f)).toMatchObject({ physical_bytes: 0 });
 });
@@ -406,6 +420,7 @@ it("bounds each pass and advances past a failed candidate on the next invocation
 });
 
 it("runs from Cron under ControlDO admission and respects the GC pause", async () => {
+  const queuedAfter = Date.now();
   const f = await fixture();
   await store(f);
   let maintenance = true;
@@ -427,6 +442,9 @@ it("runs from Cron under ControlDO admission and respects the GC pause", async (
   await worker.scheduled({} as ScheduledController, runtime);
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
   expect(await upload(f)).toMatchObject({ cleanup_pending: 1 });
+  await expireGcGrace(f.blob, queuedAfter);
+  await worker.scheduled({} as ScheduledController, runtime);
+  expect(await counters(f)).toMatchObject({ physical_bytes: 3 });
   gcPaused = false;
   await env.DB.prepare("UPDATE control SET gc_paused=0").run();
   await worker.scheduled({} as ScheduledController, runtime);

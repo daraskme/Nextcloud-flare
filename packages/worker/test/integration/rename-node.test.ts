@@ -582,6 +582,7 @@ it("restores only the fixed trash membership after GC deletion leases drain", as
   )
     .bind(f.ids.space)
     .first<number>("tree_generation");
+  const purgeStarted = Date.now();
   const purged = await purgeTrash(admitted(), {
     principal,
     requestId: crypto.randomUUID(),
@@ -602,8 +603,8 @@ it("restores only the fixed trash membership after GC deletion leases drain", as
   ).toEqual({ parent_id: null, deleted_op_id: foreignOp });
   expect(
     await env.DB.prepare(`SELECT state,trash_op_id,
-      not_before>strftime('%s','now')*1000 AS delayed FROM gc_candidates WHERE blob_id=?`)
-      .bind(f.ids.blob)
+      not_before>=?+3024000000 AS delayed FROM gc_candidates WHERE blob_id=?`)
+      .bind(purgeStarted, f.ids.blob)
       .first(),
   ).toEqual({ state: "candidate", trash_op_id: secondTrash.operation.id, delayed: 1 });
   expect(

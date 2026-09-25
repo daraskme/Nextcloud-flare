@@ -3,12 +3,7 @@ import { authorizeNode, type Principal } from "../auth/authorize";
 import { lockTokenHashes } from "../auth/locks";
 import type { DavLockResult } from "../do/LockDO";
 import type { Env } from "../env";
-import {
-  claimOperation,
-  findOperationIntent,
-  lookupOperation,
-  operationIntent,
-} from "../jobs/operations";
+import { claimOperation, findOperationIntent, operationIntent } from "../jobs/operations";
 import { fsMutation, type MutationOutcome, type MutationPlan } from "./fsMutation";
 
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -253,7 +248,8 @@ export async function createLockedEmptyFile(
     );
     if (outcome.kind === "commit_unknown") return { kind: "commit_unknown", outcome };
     if (outcome.operation.state !== "committed") {
-      await env.BLOBS.delete(key).catch(() => undefined);
+      // Unpublished empty objects enter the 35-day orphan inventory. A concurrent
+      // invocation can have published this deterministic key; never eagerly delete it.
       return {
         kind: "locked",
         outcome,
@@ -277,7 +273,8 @@ export async function createLockedEmptyFile(
     };
   } catch (error) {
     if (!claimed) {
-      await env.BLOBS.delete(key).catch(() => undefined);
+      // An unclaimed/unknown result does not prove that another invocation never
+      // published this key. Catalogue-aware orphan collection owns physical deletion.
       await lockDo.release(intent.id, permit).catch(() => undefined);
     }
     throw error;

@@ -7,6 +7,7 @@ import { repairSingleUploads } from "../../src/jobs/uploadCleanup";
 import { settleFailedDavUpload } from "../../src/services/davUpload";
 import { type UploadRow, uploadFence, uploadRow } from "../../src/services/uploads/access";
 import { davUploadHistory as history } from "../fixtures/davUploadHistory";
+import { expireGcGrace } from "../fixtures/gc";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -15,6 +16,7 @@ beforeEach(() => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_pau
 it.each([false, true])(
   "recovers expired unknown DAV storage (present=%s) through the shared cleanup and GC",
   async (present) => {
+    const queuedAfter = Date.now();
     const f = await history({ present });
     expect(await f.counters()).toEqual({ reserved_bytes: 3, physical_bytes: 0 });
     const result = await repairSingleUploads(mutationEnv(), env.BLOBS, 1);
@@ -31,6 +33,11 @@ it.each([false, true])(
         .first("state"),
     ).toBe("failed");
     if (present) {
+      expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+        claimed: 0,
+        r2Calls: 0,
+      });
+      await expireGcGrace(f.blob, queuedAfter);
       expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
       expect(await env.BLOBS.head(f.key)).toBeNull();
       expect(await f.counters()).toEqual({ reserved_bytes: 0, physical_bytes: 0 });
@@ -90,9 +97,15 @@ it("keeps the internal DAV ledger out of private capability access and freezes i
   ).rejects.toThrow("immutable_upload_completion");
 });
 it("replays known failed settlement after GC without acquiring another slot", async () => {
+  const queuedAfter = Date.now();
   const f = await history({ state: "completing", present: true });
   await settleFailedDavUpload(mutationEnv(), f.row);
   await repairSingleUploads(mutationEnv(), env.BLOBS, 1);
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  await expireGcGrace(f.blob, queuedAfter);
   await runGarbageCollection(mutationEnv(), env.BLOBS, 1);
   const unavailable = {
     DB: env.DB,

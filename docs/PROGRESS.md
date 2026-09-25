@@ -6,22 +6,22 @@
 
 Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV、認証・会計・復旧・共通受付、バックアップの停止・生成・R2保存/取得・完了記録と専用運用コマンドをローカル実装済みです。
 
-直前commit `6711235`の[CI36076928005](https://github.com/daraskme/Nextcloud-flare/actions/runs/36076928005)は全5ジョブ成功。Node527・workerd2,009（Windowsは1,034+975）・browser19、重複を除く計2,555件と実CLI復元ドリルが成功しました。Ubuntu7m33s、Windows1/2は13m59s・2/2は10m39s、backup2m33s、browser2m12sです。今回の運用コマンドはこのCIに含まれません。
+運用コマンドのcommit `21cc605`とWindows試験期限の修正`bc33e7c`をmainへプッシュ済みです。運用コマンドのローカル全体checkはNode552＋workerd2,009の計2,561件とビルドが成功。21cc605のWindows CIで9MiBのSQL検証試験1件が既定5秒を超過したため、この試験だけ上限20秒へ修正しました。修正後の[CI36080273377](https://github.com/daraskme/Nextcloud-flare/actions/runs/36080273377)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しています。今回のGC保護はこのCIに含みません。
 
 ## 今回の変更
 
-専用BackupOperator service bindingと、run/receipt/cancelの運用コマンドを追加しました。runは同じUUID/epochで停止→抽出→全SQL検証→R2保存→完了記録を呼び出し、失敗時は自動中止せず同じ世代から継続します。
+バックアップの最大年齢35日に合わせ、元ファイルのGC猶予を35日以上へ統一しました。purge・upload cleanup・失敗DAV PUTを対象に、再利用した候補も最後のnode/version参照が外れたtransactionで期限を延ばします。
 
-専用capability、target側の明示的な有効化、bindingの用途・環境を全操作で検査します。通常の利用者HTTP routeは増やしていません。D1の完了応答を失った再実行もControlDOのintentを収束させます。実CLIの接続で見つかったlocal R2のcwd/config間の保存先相違も修正しました。schema0038・通常67table・依存は維持しています。
+migration0039は既存candidateも移行時刻から保護し、既にdeleting/deletedの対象は変更しません。GC受付待機中の再参照競合では、最新期限を再照合してR2削除を止めます。WebDAV空ファイルの競合再送で作成済みobjectが削除される不具合を実D1/R2/DOで再現し、直接削除を除去しました。通常tableは67のままです。
 
-Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。
+Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。
 
-専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。日次実行・保持管理、元BLOBS保護、live復旧、全storage喪失からの運用復旧は未完了です。
+35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。remote認証・権限・実resourceへの適用は未実施です。日次実行・世代保持管理、旧schema/全形式、Time Travel・live復旧・全storage喪失からの運用復旧は未完了です。
 
-詳細は[BACKUP_OPERATOR](BACKUP_OPERATOR.md)、[BACKUP_COMPLETION](BACKUP_COMPLETION.md)、[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md)、[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+詳細は[BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md)、[BACKUP_OPERATOR](BACKUP_OPERATOR.md)、[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
 ## 後続の主要項目
 
-次は日次実行・最大35日/最少5世代の保持管理とバックアップ対象BLOBSの保護を進めます。旧version/全データ形式、Time Travel・新epoch・全復旧監査、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は過去schema世代の検証互換性と、未知tableの抽出漏れを防ぐ照合を統合・実D1検証します。その後に全データ形式、日次実行・最大35日/最少5世代の保持管理を進めます。Time Travel・新epoch・全復旧監査、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
 全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。remote migration・deployは未実施です。

@@ -25,25 +25,23 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit `6711235`の[CI36076928005](https://github.com/daraskme/Nextcloud-flare/actions/runs/36076928005)は全5ジョブ成功。Node527・workerd2,009（Windowsは1,034+975）・browser19、重複を除く計2,555件と実CLI復元ドリルが成功しました。Ubuntu7m33s、Windows1/2は13m59s・2/2は10m39s、backup2m33s、browser2m12sです。今回の運用コマンドはこのCIに含まれません。
+運用コマンドのcommit `21cc605`とWindows試験期限の修正`bc33e7c`をmainへプッシュ済みです。運用コマンドのローカル全体checkはNode552＋workerd2,009の計2,561件とビルドが成功。21cc605のWindows CIで9MiBのSQL検証試験1件が既定5秒を超過したため、この試験だけ上限20秒へ修正しました。修正後の[CI36080273377](https://github.com/daraskme/Nextcloud-flare/actions/runs/36080273377)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しています。今回のGC保護はこのCIに含みません。
 
-専用BackupOperator service bindingと、run/receipt/cancelの運用コマンドを追加しました。runは同じUUID/epochで停止→抽出→全SQL検証→R2保存→完了記録を呼び出し、失敗時は自動中止せず同じ世代から継続します。
+バックアップの最大年齢35日に合わせ、元ファイルのGC猶予を35日以上へ統一しました。purge・upload cleanup・失敗DAV PUTを対象に、再利用した候補も最後のnode/version参照が外れたtransactionで期限を延ばします。
 
-専用capability、target側の明示的な有効化、bindingの用途・環境を全操作で検査します。通常の利用者HTTP routeは増やしていません。D1の完了応答を失った再実行もControlDOのintentを収束させます。実CLIの接続で見つかったlocal R2のcwd/config間の保存先相違も修正しました。schema0038・通常67table・依存は維持しています。
+migration0039は既存candidateも移行時刻から保護し、既にdeleting/deletedの対象は変更しません。GC受付待機中の再参照競合では、最新期限を再照合してR2削除を止めます。WebDAV空ファイルの競合再送で作成済みobjectが削除される不具合を実D1/R2/DOで再現し、直接削除を除去しました。通常tableは67のままです。
 
-Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。
+Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。
 
-専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。日次実行・保持管理、元BLOBS保護、live復旧、全storage喪失からの運用復旧は未完了です。
+35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。remote認証・権限・実resourceへの適用は未実施です。日次実行・世代保持管理、旧schema/全形式、Time Travel・live復旧・全storage喪失からの運用復旧は未完了です。
 
-[BACKUP_OPERATOR](BACKUP_OPERATOR.md)と[BACKUP_COMPLETION](BACKUP_COMPLETION.md)を先に読み、運用者のSQL検証とControlDOのR2検証の役割を保つこと。completeは1回1part、同じID/epoch/hashで継続する。completing intent後の通常release/cancelは拒否し、同じcomplete要求で収束させる。getPlatformProxyはこのconfigの内部DO RPCを直接呼べると仮定しない。認証を迂回する公開endpointを追加しないこと。
+[BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md)の保護条件と[BACKUP_OPERATOR](BACKUP_OPERATOR.md)の専用capabilityを維持します。GC保護のschema0039はローカルで検証済み。次のschema変更は0040以後を使い、既存migrationを編集しません。バックアップtokenを残したControlDO全storage喪失時の起動拒否、completingの同じUUID/epoch/hashによる収束を維持します。
 
-0038まで確定済み。今回migrationは追加していません。既存migrationを編集せず、次のschema変更は0039以後を使います。D1のbackup tokenが残った全ControlDO storage喪失時はepoch公開を拒否する動作を維持します。
-
-次は日次実行・最大35日/最少5世代の保持管理とバックアップ対象BLOBSの保護を進めます。旧version/全データ形式、Time Travel・新epoch・全復旧監査、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は過去schema世代の検証互換性と、未知tableの抽出漏れを防ぐ照合を統合・実D1検証します。その後に全データ形式、日次実行・最大35日/最少5世代の保持管理を進めます。Time Travel・新epoch・全復旧監査、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0038`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0039`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

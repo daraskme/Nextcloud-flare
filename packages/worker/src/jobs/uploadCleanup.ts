@@ -1,3 +1,4 @@
+import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import {
   assertExists,
   assertOneChange,
@@ -210,7 +211,7 @@ export async function settleUploadCleanup(
     },
     assertOneChange,
     {
-      sql: `INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,?,${CLOCK})`,
+      sql: `INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,?,${object ? GC_NOT_BEFORE_SQL : CLOCK})`,
       values: [row.blob_id, object ? "candidate" : "deleted"],
     },
     assertOneChange,
