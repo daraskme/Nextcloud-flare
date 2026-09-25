@@ -365,11 +365,25 @@ try {
   assert.equal(verifiedRestore.bytes, result.bytes);
   assert.equal(verifiedRestore.tables, 67);
   assert.equal(verifiedRestore.source.manifestSha256, result.manifestSha256);
+  const d1Args = ["verify-d1", ...restoreArgs, "--config", config];
+  const verifiedD1 = decode(await run(restoreCli, d1Args)).result;
+  assert.equal(verifiedD1.state, "d1_verified");
+  assert.equal(verifiedD1.target.mode, "local");
+  assert.equal(verifiedD1.target.databaseId, "00000000-0000-0000-0000-000000000000");
+  assert.equal("token" in verifiedD1, false);
+  const refreshedD1 = decode(await run(restoreCli, d1Args)).result;
+  assert.ok(refreshedD1.revision > verifiedD1.revision);
+  assert.notEqual(refreshedD1.challengeId, verifiedD1.challengeId);
   assert.equal(
     decode(await run(restoreCli, ["inspect", ...restoreArgs])).result.state,
     "preparing",
   );
   assert.equal(decode(await run(restoreCli, ["cancel", ...restoreArgs])).result.state, "cancelled");
+  await run(restoreCli, d1Args, 1);
+  assert.match(
+    await readFile(join(directory, String(command) + ".log"), "utf8"),
+    /database_restore_not_preparing:/,
+  );
   await run(restoreCli, ["verify", ...restoreArgs, "--config", config], 1);
   assert.match(
     await readFile(join(directory, String(command) + ".log"), "utf8"),
@@ -394,7 +408,7 @@ try {
     id,
     bytes: result.bytes,
     proof:
-      "Actual backup daily/maintain/monitor/sweep CLI plus database:restore prepare/replay/verify/inspect/cancel; private restore service binding, full isolated SQL verification and server attestation; cancellation keeps the original epoch and writes/GC closed.",
+      "Actual backup daily/maintain/monitor/sweep CLI plus database:restore prepare/replay/verify/verify-d1/inspect/cancel; private restore service binding, full isolated SQL verification, fresh external D1 query and server attestation; cancellation keeps the original epoch and writes/GC closed.",
     limits:
       "Local dev registry and resources. No remote authentication/deployment, scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

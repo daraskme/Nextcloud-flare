@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
 import { restoreErrorCode, restoreOperatorControl } from "./restore/control.mjs";
+import { restoreD1Reader, verifyRestoreD1 } from "./restore/target.mjs";
 import {
   logicalSelection,
   restoreIdentity,
@@ -13,11 +14,13 @@ const usage = `Usage:
   pnpm database:restore inspect|cancel --operator-config JSON --local|--remote --epoch N --id UUID
   pnpm database:restore verify --operator-config JSON --local --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore verify --operator-config JSON --remote --epoch N --id UUID
+  pnpm database:restore verify-d1 --operator-config JSON --local|--remote --config PATH [--environment NAME] --epoch N --id UUID
 
 prepare pins the logical source and closes writes/GC. Keep the same request ID after an uncertain response.
 verify checks up to 100 server-owned parts, then downloads and validates SQL/schema/all tables/FK/FTS in an isolated local database, and records the trusted verification in ControlDO.
 Exit 2 means verification is incomplete; re-run the same request. Remote downloads use R2_BACKUP_* credentials.
 cancel cancels preparation but keeps admission and GC closed. Failures never automatically cancel or reopen.
+verify-d1 pins the configured DB target, renews the stop token and independently reads it with Wrangler before recording a five-minute D1 observation. Every retry uses a fresh challenge.
 The target must explicitly enable RESTORE_OPERATOR_ENABLED=true and grant the private database-restore-v1 capability.
 These commands do not overwrite D1, reserve a new epoch, certify BLOBS bindings or resume service. Time Travel is not connected.
 `;
@@ -47,6 +50,7 @@ try {
         inspect: [],
         cancel: [],
         verify: ["config", "environment"],
+        "verify-d1": ["config", "environment"],
       }[command];
     if (
       positionals.length !== 1 ||
@@ -55,6 +59,7 @@ try {
       Object.keys(values).some((key) => ![...common, ...extra].includes(key)) ||
       !!values.local === !!values.remote ||
       !/^\d+$/.test(values.epoch ?? "") ||
+      (command === "verify-d1" && !values.config) ||
       (command === "verify" &&
         ((values.local && !values.config) ||
           (values.remote && (values.config || values.environment))))
@@ -72,45 +77,62 @@ try {
         values["manifest-sha256"],
       );
     }
-    const control = await restoreOperatorControl(
-      values["operator-config"],
-      values.local ? "local" : "remote",
-    );
-    let store;
+    // Resolve and validate target configuration before making any private RPC.
+    const reader =
+      command === "verify-d1"
+        ? await restoreD1Reader({
+            config: values.config,
+            environment: values.environment,
+            operatorConfig: values["operator-config"],
+            mode: values.local ? "local" : "remote",
+          })
+        : undefined;
+    let control;
     try {
-      let result;
-      if (command === "verify") {
-        store = values.local
-          ? await localBackupStore(values.config, values.environment)
-          : new S3BackupStore(process.env);
-        result = await verifyRestoreSelection({
-          epoch,
-          id,
-          control,
-          store,
-          progress: (event) => console.log(JSON.stringify(event)),
-        });
-        if (!result.complete) process.exitCode = 2;
-      } else {
-        result = restoreStatus(
-          await (command === "prepare"
-            ? control.prepare(epoch, id, source)
-            : control[command](epoch, id)),
-          epoch,
-          id,
-        );
-        if (command === "prepare" && JSON.stringify(result.source) !== JSON.stringify(source))
-          throw new Error("database_restore_source_conflict");
-        if (command === "cancel" && result.state !== "cancelled")
-          throw new Error("database_restore_invalid_status");
-      }
-      console.log(JSON.stringify({ command, result }));
-    } finally {
+      control = await restoreOperatorControl(
+        values["operator-config"],
+        values.local ? "local" : "remote",
+      );
+      let store;
       try {
-        await store?.dispose();
+        let result;
+        if (command === "verify-d1") {
+          result = await verifyRestoreD1({ epoch, id, control, reader });
+        } else if (command === "verify") {
+          store = values.local
+            ? await localBackupStore(values.config, values.environment)
+            : new S3BackupStore(process.env);
+          result = await verifyRestoreSelection({
+            epoch,
+            id,
+            control,
+            store,
+            progress: (event) => console.log(JSON.stringify(event)),
+          });
+          if (!result.complete) process.exitCode = 2;
+        } else {
+          result = restoreStatus(
+            await (command === "prepare"
+              ? control.prepare(epoch, id, source)
+              : control[command](epoch, id)),
+            epoch,
+            id,
+          );
+          if (command === "prepare" && JSON.stringify(result.source) !== JSON.stringify(source))
+            throw new Error("database_restore_source_conflict");
+          if (command === "cancel" && result.state !== "cancelled")
+            throw new Error("database_restore_invalid_status");
+        }
+        console.log(JSON.stringify({ command, result }));
       } finally {
-        await control.dispose();
+        try {
+          await store?.dispose();
+        } finally {
+          await control.dispose();
+        }
       }
+    } finally {
+      await reader?.dispose();
     }
   }
 } catch (error) {

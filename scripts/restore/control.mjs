@@ -49,27 +49,29 @@ export function restoreControlCalls(binding, timeoutMs = 60000) {
   if (!binding || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000)
     throw new Error("database_restore_operator_unconfigured");
   return Object.fromEntries(
-    ["prepare", "inspect", "verify", "attest", "cancel"].map((method) => [
-      method,
-      async (...args) => {
-        let timer;
-        try {
-          return await Promise.race([
-            Promise.resolve().then(() => binding[method](...args)),
-            new Promise((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error("database_restore_operator_timeout")),
-                timeoutMs,
-              );
-            }),
-          ]);
-        } catch (error) {
-          throw new Error(restoreErrorCode(error));
-        } finally {
-          clearTimeout(timer);
-        }
-      },
-    ]),
+    ["prepare", "inspect", "verify", "attest", "challengeD1", "attestD1", "cancel"].map(
+      (method) => [
+        method,
+        async (...args) => {
+          let timer;
+          try {
+            return await Promise.race([
+              Promise.resolve().then(() => binding[method](...args)),
+              new Promise((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error("database_restore_operator_timeout")),
+                  timeoutMs,
+                );
+              }),
+            ]);
+          } catch (error) {
+            throw new Error(restoreErrorCode(error));
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+      ],
+    ),
   );
 }
 

@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-25。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-26。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-復旧専用のDatabaseRestoreOperatorと`pnpm database:restore prepare/verify/inspect/cancel`を追加しました。保存したlogical世代の全SQLを隔離SQLiteへ復元し、保存時schema・全table・hash・FK・FTS・凍結状態を検証してから、同じ要求/hashの証言をControlDOに保存します。停止mirror・期限・取消しを保存前に再確認し、再実行でもSQL検証を省略しません。詳細は[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md)。
+復旧先D1を照合する`pnpm database:restore verify-d1`を追加しました。対象mode・DB UUID・remote accountをControlDOへ固定し、新しい停止tokenをCLIの独立queryとWorker側の再読取りで照合します。観測は5分以内に限定し、別DB・古いtoken・取消し・期限・時計逆行・保存失敗を拒否します。再実行でも新しいchallengeとqueryを使います。詳細は[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md)。既存の隔離SQL検証は[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md)を参照してください。
 
-全体checkが成功しました。Node762件（42file、47.52s）＋workerd2,180件（103file、1,479.63s）の計2,942件、lint380file・型・契約/設定・Web build・Worker dry-runを確認しました。実service bindingドリルは67table・SQL11,322bytes、実CLIドリルは67table・SQL9,079bytesで成功し、権限拒否、SQL検証・証言保存・再実行・取消し後の停止維持を確認しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+今回の全Node801件と復旧/受付の関連workerd120件（重複を除く）が成功しました。Node39件・workerd23件を追加しています。実named service bindingで全7操作の権限拒否・D1照合・再起動後の再実行を確認し、既存の隔離local fixtureを使った実CLIでも照合・再実行・誤DB拒否・取消し後拒否を確認しました。型・lint385file・契約/設定・Web build・Worker dry-runも成功。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次は対象binding・Time Travel bookmarkの検証、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。sql_verifiedはSQL検証工程の完了で、D1上書き許可ではありません。Time Travel・live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
+次はR2 binding・Time Travel bookmarkの検証、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。d1_verifiedとsql_verifiedは各工程の観測/検証で、D1上書き許可ではありません。Time Travel・live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
 
-作業ブランチcodex/database-restoreは1ac31bfまで通常push済みで、[CI36131132194](https://github.com/daraskme/Nextcloud-flare/actions/runs/36131132194)の全5ジョブが成功しました。今回のCLI追加も検証後に同じ専用ブランチへpushします。共有mainは自動承認レビューの拒否により更新していません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
+先行1285adfは専用codex/database-restoreへpush済みで、[CI36134958172](https://github.com/daraskme/Nextcloud-flare/actions/runs/36134958172)の全5ジョブが成功しました。今回のD1照合を区切りとして同じ専用ブランチへcommit/pushします。共有main・remote migration・deployは更新していません。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 

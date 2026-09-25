@@ -1,17 +1,26 @@
 # 実装進捗
 
-更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-09-26。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
 前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
 
+- 復旧先D1の照合を追加。Node39件、workerd23件を追加し、全Node801件（43file、39.33s）が成功。/tmp/ncf-restore-d1-unit-final.log。
+- 復旧先/復旧準備/復旧元/受付停止の回帰118件（4file、109.70s）と、保存時のRETURNING確認・追加2境界を含む最終D1照合23件（8.89s）が成功。重複を除くworkerd120件。/tmp/ncf-restore-d1-regression.log と /tmp/ncf-restore-d1-target-final.log。
+- named service bindingドリルが成功。67table・SQL11,322bytesの世代検証に加え、復旧全7操作の権限拒否、新しいD1停止tokenの独立照合、eviction後の再検証、取消し後拒否を確認。/tmp/ncf-restore-d1-operator-drill.log、.wrangler/operator-drill-7WSuJO/report.json。
+- 前回の隔離local fixtureを再利用したD1対象の実CLIドリルも成功。prepare→verify-d1→新challengeでの再実行→別DB設定拒否→cancel→再検証拒否を確認。source自体は未検証の選択であり、このドリルをSQL検証やR2照合の証明に使わない。/tmp/ncf-restore-d1-cli-drill.log、.wrangler/backup-run-drill-mNzlxg/d1-target-report.json。継続的なCLI検証はbackup:run-drillにも追加したが、今回その全行程はローカル再実行していない。
+- lint385file・型・契約/設定・Web build・Worker dry-runが成功。buildは/tmp/ncf-restore-d1-build.log。今回のworkerd検証は上記関連範囲で、全体checkの再実行はpush後のCIで確認する。
+- 先行1285adfの[CI36134958172](https://github.com/daraskme/Nextcloud-flare/actions/runs/36134958172)はUbuntu・Windows両分割・backup・browserの全5ジョブ成功。今回のcommitのCIとは分けて扱う。
+
+### 先行する復旧専用CLIとSQL検証の記録
+
 - 復旧専用CLIとSQL検証証言を追加。Node34件、DO/RPC10件を追加し、全Node762件（42file、47.52s）と関連DO/RPC24件（11.06s）が成功。型・lint380file・契約/設定検査も成功。
 - 実named service bindingドリルが67table・SQL11,322bytesで成功。復旧全5操作について、異なる環境・backup用purpose・権限設定なし・backupだけ有効の4種を拒否。実SQL世代の検証・証言保存、eviction後の再実行、取消し後の停止保持を確認。/tmp/ncf-restore-operator-drill-final.log。
 - 実CLIドリルも67table・SQL9,079bytesで成功。Wrangler dev/getPlatformProxyでprepare再送→verify→inspect→cancelを確認し、取消し後のverify拒否と元epoch・書込み/GC停止保持も確認。/tmp/ncf-restore-cli-drill.log。
 - 全体checkが成功。Node762件（42file、47.52s）＋workerd2,180件（103file、1,479.63s）、計2,942件。lint380file・型・契約/設定検査、Web build・Worker dry-runも成功。/tmp/ncf-restore-operator-check.log。今回追加した34件＋10件を含む。
-- 先行1ac31bfの[CI36131132194](https://github.com/daraskme/Nextcloud-flare/actions/runs/36131132194)は全5ジョブ成功。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)も全5ジョブ成功。今回のCLI追加のCIはpush後に別実行で確認する。
+- 先行1ac31bfの[CI36131132194](https://github.com/daraskme/Nextcloud-flare/actions/runs/36131132194)は全5ジョブ成功。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)も全5ジョブ成功。CLI追加1285adfのCI成功は冒頭の記録を参照。
 
 ### 先行する復旧元照合の記録
 
@@ -30,6 +39,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 復旧先D1の照合 | 対象固定・fresh停止token・独立Wrangler query・DOへの5分の観測 | Node39件/workerd23件追加。全Node801件・関連workerd120件と実binding/CLI成功。実上書き・R2照合は後続。[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md) |
 | 4 復旧準備CLIとSQL証言 | 独立capability、prepare/verify/inspect/cancel、全SQL再検証とDOへのhash証言 | Node34件・DO10件追加。全checkの2,942件と実binding/CLI両ドリルが成功。[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md) |
 | 4 logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・実ControlDO RPC | 新規42件。関連115件。追加修正と先行版の検証範囲は冒頭参照。SQL/schema再検証は専用CLIへ追加済み。最終停止・実D1上書きへの接続は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | 4 D1復旧準備 | DO外部I/O前の要求保存・世代選択固定・停止維持・照会/取消し・遅延処理の排他 | workerd28件成功。全体の最終検証は冒頭。準備はD1上書き許可ではなく、最終停止・新epoch採用・実復旧は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |

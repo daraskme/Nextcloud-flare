@@ -18,6 +18,8 @@ const { pruneBackup } = await moduleAt("scripts/backup/prune.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
 const { restoreControlCalls } = await moduleAt("scripts/restore/control.mjs");
 const { verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
+const { verifyRestoreD1 } = await moduleAt("scripts/restore/target.mjs");
+const { RESTORE_D1_QUERY } = await moduleAt("packages/shared/src/restoreTarget.ts");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
 await mkdir(join(repo, ".wrangler"), { recursive: true });
@@ -348,6 +350,11 @@ try {
       ["inspect", [2, restoreId]],
       ["verify", [2, restoreId]],
       ["attest", [2, restoreId, download.sha256]],
+      [
+        "challengeD1",
+        [2, restoreId, { mode: "local", databaseId: "00000000-0000-0000-0000-000000000000" }],
+      ],
+      ["attestD1", [2, restoreId, {}]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -367,7 +374,27 @@ try {
   assert.equal(sqlVerified.state, "sql_verified");
   assert.equal(sqlVerified.bytes, download.manifest.data.bytes);
   assert.equal(sqlVerified.tables, 67);
+  const d1Reader = {
+    target: { mode: "local", databaseId: "00000000-0000-0000-0000-000000000000" },
+    readMirror: () => query(RESTORE_D1_QUERY),
+  };
+  const verifiedD1 = await verifyRestoreD1({
+    epoch: 2,
+    id: restoreId,
+    control: restoreControl,
+    reader: d1Reader,
+  });
+  assert.equal(verifiedD1.state, "d1_verified");
+  assert.equal("token" in verifiedD1, false);
   await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  const nextD1 = await verifyRestoreD1({
+    epoch: 2,
+    id: restoreId,
+    control: restoreControl,
+    reader: d1Reader,
+  });
+  assert.ok(nextD1.revision > verifiedD1.revision);
+  assert.notEqual(nextD1.challengeId, verifiedD1.challengeId);
   assert.deepEqual((await restoreControl.inspect(2, restoreId)).source, selection);
   assert.equal(
     (await verifyRestoreSelection({ epoch: 2, id: restoreId, control: restoreControl, store }))
@@ -375,6 +402,10 @@ try {
     "sql_verified",
   );
   assert.equal((await restoreControl.cancel(2, restoreId)).state, "cancelled");
+  await assert.rejects(
+    verifyRestoreD1({ epoch: 2, id: restoreId, control: restoreControl, reader: d1Reader }),
+    /database_restore_not_preparing/,
+  );
   await assert.rejects(
     verifyRestoreSelection({ epoch: 2, id: restoreId, control: restoreControl, store }),
     /database_restore_not_preparing/,
@@ -390,7 +421,7 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, eviction replay and cancellation retaining closed admission.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, fresh independent D1 mirror observation, eviction replay and cancellation retaining closed admission.",
     limits:
       "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

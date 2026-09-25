@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
+import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type { KdfRequest } from "../auth/globalKdf";
 import {
   type GlobalMutationAdmission,
@@ -59,6 +60,7 @@ import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
 import { ControlRestoreSource } from "./controlRestoreSource";
+import { ControlRestoreTarget } from "./controlRestoreTarget";
 import {
   type EpochReason,
   epochNumber,
@@ -131,6 +133,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #backup: ControlBackup;
   readonly #databaseRestore: ControlDatabaseRestore;
   readonly #restoreSource: ControlRestoreSource;
+  readonly #restoreTarget: ControlRestoreTarget;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -169,6 +172,13 @@ export class ControlDO extends DurableObject<Env> {
       env.BACKUPS,
       this.#databaseRestore,
       (epoch) => this.#admission.captureDatabaseRestore(epoch),
+    );
+    this.#restoreTarget = new ControlRestoreTarget(
+      ctx.storage.sql,
+      env.DB,
+      this.#databaseRestore,
+      (epoch) => this.#admission.captureDatabaseRestore(epoch),
+      (epoch) => this.quiesce(epoch),
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -269,6 +279,21 @@ export class ControlDO extends DurableObject<Env> {
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");
     return this.#restoreSource.attest(expectedEpoch, id, manifestSha256);
+  }
+
+  /** Refresh closed admission to correlate the operator's target with our D1 binding. */
+  async challengeDatabaseRestoreD1(expectedEpoch: number, id: string, target: RestoreD1Target) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreTarget.challenge(expectedEpoch, id, target);
+  }
+
+  async attestDatabaseRestoreD1(expectedEpoch: number, id: string, challenge: RestoreD1Challenge) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreTarget.attest(expectedEpoch, id, challenge);
   }
 
   /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */
