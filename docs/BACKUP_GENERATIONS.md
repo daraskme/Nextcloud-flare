@@ -13,7 +13,7 @@ pnpm backup restore-offline --directory GENERATIONS/UUID --target NEW_FILE.sqlit
 pnpm backup:drill
 ```
 
-captureは[ControlDO.beginBackup](BACKUP_BARRIER.md)が`frozen`を返した世代を前提にする。D1 flagsを直接変更して開始する運用コマンドではない。`--local`か`--remote`の一方を必須とし、必要なら`--environment NAME`を指定する。remoteはCLIの実装経路のみで、この変更では実行・検証していない。各呼出しでconfigの内容が変わっていないことを確認する。exportは`--persist-to`非対応のため、localは指定config配下の既定`.wrangler/state`を使う。
+captureは[ControlDO.beginBackup](BACKUP_BARRIER.md)が`frozen`を返した世代を前提にする。D1 flagsを直接変更して開始する運用コマンドではない。`--local`か`--remote`の一方を必須とし、必要なら`--environment NAME`を指定する。remoteはCLIの実装経路のみで、この変更では実行・検証していない。各呼出しでconfigの内容が変わっていないことを確認する。localは指定config配下の既定`.wrangler/state`を使う。データはWranglerのD1 queryで読み取り、凍結済みの値からdata-only SQLを生成する。
 
 captureは開始・解除のRPCを代行せず、成功時も失敗時もbarrierを保持する。全source fingerprint取得とexportの前後で同じ凍結世代・epoch・token・watermarkを確認する。途中で解除・世代変更が起きた出力は採用しない。exportのsnapshot開始点が確認できていないため、抽出前のACKだけで解除しない。
 
@@ -27,13 +27,13 @@ sourceのschemaはversioned migrationから作ったschemaと一致させる。W
 
 全tableをprimary key順に4行ずつkeyset走査し、型とcolumn順を固定した行のdigestを作る。唯一primary keyを持たない`_assert`はrowid順で値を検査する。OFFSETによる全件再走査を避け、SQLファイルはstreamで読み、一文を8MiB以下に制限する。安全な整数で表現できない値や対応していない形式は採用しない。
 
-checksumだけが合っていても、元DBとの全行一致を示したことにはならない。exportの内容変化・欠落は、隔離復元後の全table digestをsourceと比較して検出する。現在のMiniflareのCR/LFエスケープ方式では、実改行と文字列`\\n`/`\\r`が混ざる値の変化を検出するケースを試験している。一致しないSQLを成功扱いにしたり、値を推測して修正したりしない。全データ形式・remoteでの互換性は引き続き検証が必要である。
+checksumだけが合っていても、元DBとの全行一致を示したことにはならない。exportの内容変化・欠落は、隔離復元後の全table digestをsourceと比較して検出する。Miniflareのdumpで実改行と文字列`\\n`/`\\r`が混ざると値が変化する問題があるため、現在のCLIは凍結したquery値からSQLを生成する。引用符・Unicode・実CR/LF・literal backslash・NULを保持し、既存の壊れたdumpを推測して修正しない。形式と上限は[BACKUP_EXPORT](BACKUP_EXPORT.md)、remoteでの互換性・実運用性能は引き続き未検証である。
 
 ## SQL読込みと復元
 
 過去世代は保存時のmigration列がローカルの信頼済みSQLの完全な先頭列と一致する場合だけ、当時のschemaで検証する。最小schemaは0037で、復元時に後続migrationを自動適用しない。captureは現在の全migrationを必須とし、抽出前後の全table/view/virtual一覧も照合して未知のtableの取りこぼしを防ぐ。詳細は[BACKUP_HISTORY](BACKUP_HISTORY.md)。
 
-入力SQLを`exec()`へ渡さない。data-only INSERTの既知table・全column順・literalだけを解析し、bound parameterとして挿入する。NULL・有限number・文字列・hex BLOBと、Wranglerの限定されたCR/LF `replace(...,char(...))`を扱う。ATTACH、任意PRAGMA、DDL、UPDATE、関数・式・追加statement・重複columnは拒否する。UTF-8不正、途中切れ、文の上限超過も拒否する。
+入力SQLを`exec()`へ渡さない。data-only INSERTの既知table・全column順・literalだけを解析し、bound parameterとして挿入する。NULL・有限number・文字列・hex BLOB、NULを含むTEXT用の限定した`CAST(X'hex' AS TEXT)`と、旧Wranglerの限定されたCR/LF `replace(...,char(...))`を扱う。CASTのhexはUTF-8として厳密に検証する。ATTACH、任意PRAGMA、DDL、UPDATE、その他の関数・式・追加statement・重複columnは拒否する。UTF-8不正、途中切れ、文の上限超過も拒否する。
 
 復元先は新規ファイルだけに限定する。versioned migrationを一つのtransactionで適用し、隔離先のtriggerだけを一時除去する。生成済みpurgeOrderでseed行を削除し、FKをdeferした同じtransactionでdataをimport、同一triggerを再作成、FK検査・FTS rebuild/integrity-checkを行う。稼働D1のtriggerは外さない。quota/ref/physical等をtriggerで二重加算せず、元の値を保存する。committed/failedのterminal履歴も書き換えない。
 

@@ -1,4 +1,13 @@
 // Parse data-only exports as values. Never execute SQL supplied by a backup file.
+export function textLiteral(value) {
+  const bytes = Buffer.from(value, "utf8");
+  if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) !== value)
+    throw new Error("backup_unsupported_value");
+  // A NUL must be represented as data: it cannot occur in SQLite SQL text.
+  if (value.includes("\0")) return `CAST(X'${bytes.toString("hex")}' AS TEXT)`;
+  return "'" + value.replaceAll("'", "''") + "'";
+}
+
 export async function* statements(chunks, maxBytes = 8 * 1024 * 1024) {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let text = "",
@@ -66,6 +75,20 @@ export function parseInsert(sql) {
       const hex = quoted("'");
       if (!/^(?:[a-f0-9]{2})*$/i.test(hex)) fail();
       return Buffer.from(hex, "hex");
+    }
+    if (/^CAST\b/i.test(sql.slice(index))) {
+      take("CAST");
+      take("(");
+      whitespace();
+      if (!/^X'/i.test(sql.slice(index))) fail();
+      const bytes = value(depth + 1);
+      take("AS TEXT");
+      take(")");
+      try {
+        return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      } catch {
+        return fail();
+      }
     }
     // Wrangler escapes CR/LF using these exact deterministic functions.
     if (/^REPLACE\b/i.test(sql.slice(index))) {

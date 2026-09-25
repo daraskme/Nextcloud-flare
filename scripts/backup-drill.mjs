@@ -8,7 +8,10 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { foundationFixture } from "../packages/worker/test/fixtures/foundation.ts";
+import { exportData } from "./backup/export.mjs";
 import { digest, localBackupStore } from "./backup/objectStore.mjs";
+import { parseInsert, statements } from "./backup/sql.mjs";
+import { wranglerSource } from "./backup/wrangler.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 await mkdir(join(root, ".wrangler"), { recursive: true });
@@ -57,6 +60,7 @@ const local = (args) => run(wrangler, [...args, "--local", "--config", config]);
 await local(["d1", "migrations", "apply", "DB"]);
 const now = Date.now(),
   fixture = foundationFixture("drill", now - 1000);
+const exactText = "\ufeff引用'😀;\r\n文字\\n\\r\0end";
 const literal = (value) =>
   value === null
     ? "NULL"
@@ -70,6 +74,11 @@ const bound = ({ sql, values = [] }) => {
   return text + ";";
 };
 const seed = fixture.statements.map(bound);
+// A raw TEXT scalar exercises transport fidelity even for values that an app
+// parser would reject. Backup must not silently normalize stored database bytes.
+seed.push(
+  `INSERT INTO node_props(node_id,namespace,name,value_xml) VALUES('${fixture.ids.file}','urn:drill','exact',CAST(X'${Buffer.from(exactText).toString("hex")}' AS TEXT));`,
+);
 seed.push(
   bound({
     sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'local-fixture',?)",
@@ -98,6 +107,32 @@ seed.push(
 seed.push(bound({ sql: "UPDATE control SET backup_token=?,backup_frozen=1", values: [token] }));
 await writeFile(join(directory, "seed.sql"), seed.join("\n"));
 await local(["d1", "execute", "DB", "--file", join(directory, "seed.sql")]);
+// The CLI's JSON display turns BLOB arrays into strings. Exercise the real
+// transport with explicit storage types, including a lookalike TEXT value.
+const scalarSource = await wranglerSource({ config, database: "DB", mode: "local" });
+const scalarSpec = {
+  name: "scalar_probe",
+  columns: ["id", "text", "bytes", "lookalike", "absent", "number"],
+  keys: ["id"],
+};
+const scalarFile = join(directory, "scalars.sql");
+await exportData(scalarFile, [scalarSpec], (sql) =>
+  scalarSource.query(
+    `WITH scalar_probe AS (SELECT 1 AS id,CAST(X'${Buffer.from(exactText).toString("hex")}' AS TEXT) AS text,X'00ff0080' AS bytes,'[0, 255, 0, 128]' AS lookalike,NULL AS absent,-1250.125 AS number) ${sql}`,
+  ),
+);
+const scalarRows = [];
+for await (const statement of statements([await readFile(scalarFile)]))
+  scalarRows.push(parseInsert(statement));
+assert.equal(scalarRows.length, 1);
+assert.deepEqual(scalarRows[0].values, [
+  1,
+  exactText,
+  Buffer.from([0, 255, 0, 128]),
+  "[0, 255, 0, 128]",
+  null,
+  -1250.125,
+]);
 console.log(JSON.stringify({ stage: "capture", directory }));
 const cli = join(root, "scripts/backup.mjs"),
   generations = join(directory, "generations"),
@@ -177,6 +212,10 @@ try {
     1,
   );
   assert.throws(() => restored.exec("UPDATE control SET maintenance=0"), /backup_frozen/);
+  assert.equal(
+    restored.prepare("SELECT value_xml FROM node_props WHERE name='exact'").get().value_xml,
+    exactText,
+  );
 } finally {
   restored.close();
 }
@@ -200,7 +239,7 @@ const report = {
   tables: manifest.tables.length,
   bytes: manifest.data.bytes,
   proof:
-    "Real local Wrangler capture, source fingerprints, verify CLI, local BACKUPS publication/readback/conditional-conflict/download, offline restore, FTS/accounting/FK/schema and source freeze retained.",
+    "Real local Wrangler query export including Unicode/CR/LF/literal backslash/NUL, source fingerprints, verify CLI, local BACKUPS publication/readback/conditional-conflict/download, offline restore, FTS/accounting/FK/schema and source freeze retained.",
   limits:
     "Fixture freeze; no ControlDO operator channel, original BLOBS content recovery, backup_runs completion, live restore, epoch recovery or remote commands.",
 };

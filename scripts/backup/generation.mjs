@@ -144,10 +144,7 @@ export async function captureGeneration({
       "backup_barrier_changed",
     );
     progress("wrangler_export");
-    await source.export(
-      join(temporary, "data.sql"),
-      tableSpecs.map((s) => s.name),
-    );
+    await source.export(join(temporary, "data.sql"), tableSpecs);
     await sourceSchema(source, versions, expectedSchema, expectedCatalogue);
     assert.deepEqual(
       barrier(await source.query(barrierQuery), id, epoch),

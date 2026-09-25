@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { exportTables } from "../../packages/worker/src/db/schemaContract.ts";
 import { foundationFixture } from "../../packages/worker/test/fixtures/foundation.ts";
+import { exportData } from "../backup/export.mjs";
 import { captureGeneration, restoreGeneration, verifyGeneration } from "../backup/generation.mjs";
 import { initialize, migrations, quote, schemaDigest, schemaQuery } from "../backup/snapshot.mjs";
 import { parseInsert, statements } from "../backup/sql.mjs";
@@ -82,7 +83,7 @@ beforeEach(async () => {
         ? versions.map((v) => ({ name: v.name }))
         : db.prepare(sql).all(),
     export: async (path, tables) => {
-      expect(tables).toEqual(exportTables);
+      expect(tables.map((table) => table.name)).toEqual(exportTables);
       await writeFile(path, dump(db));
     },
   };
@@ -252,6 +253,24 @@ it("preserves quoted semicolons, Unicode, CR/LF and literal backslashes in a los
   db.exec("UPDATE control SET backup_frozen=1");
   const { directory: artifact } = await capture();
   await expect(verifyGeneration(artifact)).resolves.toBeDefined();
+});
+it("captures and restores exact query values including NUL through the production exporter", async () => {
+  const value = "\ufeff引用'😀;\r\n文字\\n\\r\0end";
+  db.exec("UPDATE control SET backup_frozen=0");
+  db.prepare("UPDATE users SET email=?").run(value);
+  db.exec("UPDATE control SET backup_frozen=1");
+  source.export = (path, tables) => exportData(path, tables, source.query);
+  const { directory: artifact } = await capture(),
+    target = join(directory, "exact.sqlite");
+  await restoreGeneration({ directory: artifact, target });
+  const restored = new DatabaseSync(target);
+  try {
+    expect(restored.prepare("SELECT email FROM users").get().email).toBe(value);
+    expect(restored.prepare("SELECT backup_frozen FROM control").get().backup_frozen).toBe(1);
+    expect(db.prepare("SELECT backup_frozen FROM control").get().backup_frozen).toBe(1);
+  } finally {
+    restored.close();
+  }
 });
 it("never replaces an existing generation or an existing restore destination", async () => {
   const { directory: artifact } = await capture();

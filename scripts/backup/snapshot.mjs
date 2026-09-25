@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { exportTables, purgeOrder } from "../../packages/worker/src/db/schemaContract.ts";
-import { parseInsert, statements } from "./sql.mjs";
+import { parseInsert, statements, textLiteral } from "./sql.mjs";
 
 export const migrationsDirectory = new URL("../../packages/worker/migrations/", import.meta.url);
 const INTERNAL_TABLES = new Set(["_cf_KV", "_cf_METADATA", "d1_migrations"]);
@@ -130,35 +130,68 @@ export function rowValues(spec, row) {
   });
 }
 const literal = (value) => {
-  if (typeof value === "string") return "'" + value.replaceAll("'", "''") + "'";
+  if (typeof value === "string") return textLiteral(value);
   if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
   throw new Error("backup_unsupported_primary_key");
 };
+export async function* tableRows(spec, query) {
+  let last = null;
+  while (true) {
+    const tuple = "(" + spec.keys.map(quote).join(",") + ")";
+    const after = last ? ` WHERE ${tuple}>(${last.map(literal).join(",")})` : "";
+    // Four maximum-size D1 rows fit a bounded command response. Keyset pagination avoids OFFSET scans.
+    const selected = [...new Set([...spec.columns, ...spec.keys])];
+    // Wrangler's JSON display converts a BLOB array to a string. Ask SQLite for
+    // the storage type and hex ourselves so BLOB and lookalike TEXT stay distinct.
+    const projection = selected.flatMap((name, i) => {
+      const column = quote(name);
+      return [
+        `typeof(${column}) AS ${quote(`__ncf_type_${i}`)}`,
+        `CASE WHEN typeof(${column})='blob' THEN hex(${column}) ELSE ${column} END AS ${quote(`__ncf_value_${i}`)}`,
+      ];
+    });
+    const rows = await query(
+      `SELECT ${projection.join(",")} FROM ${quote(spec.name)}${after} ORDER BY ${spec.keys.map(quote).join(",")} LIMIT 4`,
+    );
+    if (!Array.isArray(rows) || rows.length > 4) throw new Error("backup_invalid_page");
+    for (const record of rows) {
+      const row = Object.fromEntries(
+        selected.map((name, i) => {
+          const type = record[`__ncf_type_${i}`];
+          let value = record[`__ncf_value_${i}`];
+          if (type === "blob" && typeof value === "string" && /^(?:[a-f0-9]{2})*$/i.test(value))
+            value = Buffer.from(value, "hex");
+          else if (
+            !(
+              (type === "null" && value === null) ||
+              (type === "text" && typeof value === "string") ||
+              (type === "integer" && Number.isSafeInteger(value)) ||
+              (type === "real" && typeof value === "number" && Number.isFinite(value))
+            )
+          )
+            throw new Error("backup_unsupported_value");
+          return [name, value];
+        }),
+      );
+      const values = rowValues(spec, row);
+      const next = spec.keys.map((key) => row[key]);
+      next.forEach(literal);
+      if (last && JSON.stringify(next) === JSON.stringify(last))
+        throw new Error("backup_nonadvancing_page");
+      last = next;
+      yield values;
+    }
+    if (rows.length < 4) break;
+  }
+}
 export async function tableDigests(tableSpecs, query) {
   const result = [];
   for (const spec of tableSpecs) {
     const hash = createHash("sha256");
-    let count = 0,
-      last = null;
-    while (true) {
-      const tuple = "(" + spec.keys.map(quote).join(",") + ")";
-      const after = last ? ` WHERE ${tuple}>(${last.map(literal).join(",")})` : "";
-      // Four maximum-size D1 rows fit a bounded command response. Keyset pagination avoids OFFSET scans.
-      const selected = [...new Set([...spec.columns, ...spec.keys])];
-      const rows = await query(
-        `SELECT ${selected.map(quote).join(",")} FROM ${quote(spec.name)}${after} ORDER BY ${spec.keys.map(quote).join(",")} LIMIT 4`,
-      );
-      if (!Array.isArray(rows) || rows.length > 4) throw new Error("backup_invalid_page");
-      for (const row of rows) {
-        hash.update(JSON.stringify(rowValues(spec, row)) + "\n");
-        count++;
-        const next = spec.keys.map((key) => row[key]);
-        next.forEach(literal);
-        if (last && JSON.stringify(next) === JSON.stringify(last))
-          throw new Error("backup_nonadvancing_page");
-        last = next;
-      }
-      if (rows.length < 4) break;
+    let count = 0;
+    for await (const values of tableRows(spec, query)) {
+      hash.update(JSON.stringify(values) + "\n");
+      count++;
     }
     result.push({ name: spec.name, rows: count, sha256: hash.digest("hex") });
   }

@@ -14,6 +14,7 @@ const { restoreGeneration } = await moduleAt("scripts/backup/generation.mjs");
 const { downloadGeneration } = await moduleAt("scripts/backup/publication.mjs");
 const { runBackup } = await moduleAt("scripts/backup/operator.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
+const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
 await mkdir(join(repo, ".wrangler"), { recursive: true });
 const directory = await mkdtemp(join(repo, ".wrangler/operator-drill-"));
@@ -155,12 +156,7 @@ try {
   const control = controlCalls(clientEnv.BACKUP_CONTROL);
   const dataSource = {
     query,
-    export: async (output, tables) => {
-      const dump = await env.DB.prepare("PRAGMA miniflare_d1_export(?,?,?);")
-        .bind(true, false, ...tables)
-        .raw();
-      await writeFile(output, dump[0].join("\n"));
-    },
+    export: (output, tableSpecs) => exportData(output, tableSpecs, query),
   };
   const store = {
     async get(key, limit) {
@@ -237,7 +233,7 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private named BackupOperator capability, environment/grant denial, runBackup orchestration, real ControlDO begin/completion and eviction replay, local D1 engine export, trusted SQL verification, R2 publication/download and offline restore.",
+      "Private named BackupOperator capability, environment/grant denial, runBackup orchestration, real ControlDO begin/completion and eviction replay, local D1 query export, trusted SQL verification, R2 publication/download and offline restore.",
     limits:
       "Local service-binding capability only; remote Cloudflare credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No BLOBS protection, retention or live restore.",
   };
