@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   BACKUP_CHUNK_BYTES,
@@ -183,7 +183,8 @@ export async function localBackupStore(configPath, environment) {
   const proxy = await getPlatformProxy({
     configPath: resolve(configPath),
     ...(environment ? { environment } : {}),
-    persist: true,
+    // getPlatformProxy's default resolves against cwd; Wrangler dev/export use the config directory.
+    persist: { path: join(dirname(resolve(configPath)), ".wrangler/state/v3") },
     remoteBindings: false,
     envFiles: [],
   });

@@ -46,6 +46,7 @@ export interface Env {
   R2_INVENTORY_SECRET_ACCESS_KEY?: string;
   PBKDF2_ITERATIONS: string;
   EPOCH_FLOOR?: string;
+  BACKUP_OPERATOR_ENABLED?: string;
 }
 
 export const REQUIRED_BINDINGS = [

@@ -68,11 +68,16 @@ jobs:
       - run: npm install --global pnpm@12.4.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm backup:drill
+      - run: pnpm backup:operator-drill
+      - run: pnpm backup:run-drill
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: backup-failure
-          path: .wrangler/backup-drill-*/*.log
+          path: |
+            .wrangler/backup-drill-*/*.log
+            .wrangler/backup-run-drill-*/*.log
+            .wrangler/operator-drill-*/report.json
           include-hidden-files: true
           retention-days: 3
 

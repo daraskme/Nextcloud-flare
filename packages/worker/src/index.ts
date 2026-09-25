@@ -28,6 +28,7 @@ async function admittedEpoch(env: Env): Promise<number | null> {
   return mirror === null ? null : status.epoch;
 }
 
+export { BackupOperator } from "./backup/operator";
 export { BudgetDO } from "./do/BudgetDO";
 export { ControlDO } from "./do/ControlDO";
 export { LockDO } from "./do/LockDO";

@@ -25,21 +25,21 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前commit `8f0454b`の[CI36074335530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36074335530)は全5ジョブ成功。Ubuntu7m36s、Windows 1/2は17m11s・2/2は13m24s、backup2m36s、browser2m35sです。Node505・workerd1,991（Windowsは1,016+975）・browser19、重複を除く計2,515件と実local R2復元ドリル（67table・SQL9,599bytes）を確認しました。今回の完了記録はこのCIには含まれません。
+直前commit `6711235`の[CI36076928005](https://github.com/daraskme/Nextcloud-flare/actions/runs/36076928005)は全5ジョブ成功。Node527・workerd2,009（Windowsは1,034+975）・browser19、重複を除く計2,555件と実CLI復元ドリルが成功しました。Ubuntu7m33s、Windows1/2は13m59s・2/2は10m39s、backup2m33s、browser2m12sです。今回の運用コマンドはこのCIに含まれません。
 
-R2保存済みバックアップの完了記録をControlDOへ接続しました。信頼されたSQL検証者のmanifest hashを固定し、実BACKUPSの世代・各partを照合します。全partの検証後、D1のcompleted記録と元の受付/GC設定への復帰を同じbatchで確定します。
+専用BackupOperator service bindingと、run/receipt/cancelの運用コマンドを追加しました。runは同じUUID/epochで停止→抽出→全SQL検証→R2保存→完了記録を呼び出し、失敗時は自動中止せず同じ世代から継続します。
 
-完了までのcursor/hashをDO SQLiteへ保存し、evictionや途中失敗から同じ世代を継続できます。commitとprimary照合の両応答を失ってもintentを保持します。遅延R2/DB要求、同時検証、cancel/次世代との競合を検査し、元がclosedならclosedへ戻して保留uploadの容量も維持します。migration0038はterminal receiptの必須形状と不変性を追加します。通常67tableは維持しています。
+専用capability、target側の明示的な有効化、bindingの用途・環境を全操作で検査します。通常の利用者HTTP routeは増やしていません。D1の完了応答を失った再実行もControlDOのintentを収束させます。実CLIの接続で見つかったlocal R2のcwd/config間の保存先相違も修正しました。schema0038・通常67table・依存は維持しています。
 
-Node22件・workerd18件を追加し、全体checkが成功しました。Node527件（32file、14.22s）・workerd2,009件（95file、1,085.53s）、計2,536件を検証しています。lint335file・型・契約/設定検査・Web build・Worker dry-runも成功。schema0038で実CLIのcapture→verify→local R2 publish→download→restore-offlineが67table・SQL9,599bytesで成功しました。今回commitのCI/browserはプッシュ後に確認します。
+Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。
 
-completeBackupは内部RPCです。SQL/source/schema/FK/FTSの全検証は信頼された生成コマンドが担い、ControlDOはそのhashでR2実体を再検査します。利用者が指定したhashを転送する公開APIは追加していません。CLIからの認証付き運用接続、元BLOBSの保護、live復旧、全storage喪失からの運用復旧は未完了です。
+専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。日次実行・保持管理、元BLOBS保護、live復旧、全storage喪失からの運用復旧は未完了です。
 
-[BACKUP_COMPLETION](BACKUP_COMPLETION.md)を先に読み、運用者のSQL検証とControlDOのR2検証の役割を保つこと。completeは1回1part、同じID/epoch/hashで継続する。completing intent後の通常release/cancelは拒否し、同じcomplete要求で収束させる。getPlatformProxyはこのconfigの内部DO RPCを直接呼べると仮定しない。認証を迂回する公開endpointを追加しないこと。
+[BACKUP_OPERATOR](BACKUP_OPERATOR.md)と[BACKUP_COMPLETION](BACKUP_COMPLETION.md)を先に読み、運用者のSQL検証とControlDOのR2検証の役割を保つこと。completeは1回1part、同じID/epoch/hashで継続する。completing intent後の通常release/cancelは拒否し、同じcomplete要求で収束させる。getPlatformProxyはこのconfigの内部DO RPCを直接呼べると仮定しない。認証を迂回する公開endpointを追加しないこと。
 
-0037は確定済み、0038の完了receipt migrationを追加しました。既存migrationを編集せず、次のschema変更は0039以後を使います。D1のbackup tokenが残った全ControlDO storage喪失時はepoch公開を拒否する動作を維持します。
+0038まで確定済み。今回migrationは追加していません。既存migrationを編集せず、次のschema変更は0039以後を使います。D1のbackup tokenが残った全ControlDO storage喪失時はepoch公開を拒否する動作を維持します。
 
-次は認証付き運用処理でbegin→capture→verify→publish→completeを接続し、一連の復元ドリルを実行します。日次実行・最大35日/最少5世代の保持管理、旧version/全データ形式、Time Travel・新epoch・全復旧監査も後続です。旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は日次実行・最大35日/最少5世代の保持管理とバックアップ対象BLOBSの保護を進めます。旧version/全データ形式、Time Travel・新epoch・全復旧監査、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
 ## 現在動いている範囲
 

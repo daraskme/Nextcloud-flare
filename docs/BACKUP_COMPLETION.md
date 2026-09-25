@@ -1,6 +1,6 @@
 # バックアップの完了記録
 
-更新: 2026-09-25。`ControlDO.completeBackup(epoch, id, manifestSha256)`は、凍結中の世代に対応するR2 manifestと全partを検証し、D1の完了記録と書込み停止の解除を同じbatchで確定する内部RPCである。認証付き運用コマンド・日次実行・保持管理・live復旧は後続。
+更新: 2026-09-25。`ControlDO.completeBackup(epoch, id, manifestSha256)`は、凍結中の世代に対応するR2 manifestと全partを検証し、D1の完了記録と書込み停止の解除を同じbatchで確定する内部RPCである。[専用bindingの運用コマンド](BACKUP_OPERATOR.md)を接続済み。日次実行・保持管理・live復旧は後続。
 
 ## 呼出し元と信頼境界
 
@@ -29,10 +29,10 @@ commitの応答を失った場合は、epoch/token/revision・復元先policy・
 
 migration `0038_backup_completion.sql`は完成済み行の必須receipt形状と、completed/failedのmanifest key/hash/完了時刻の変更禁止を追加する。0037の世代identity、状態遷移と凍結guardを維持する。新しい通常tableは増えない。
 
-`releaseBackup`単独は従来どおり`exporting`を残す。明示的に未検証解除した世代を後からcompleteへ昇格させない。完了済み要求の再照会は現在の保存済み世代だけが対象で、新しい世代開始後の古いcomplete要求は拒否する。履歴照会用の運用APIは別途接続する。
+`releaseBackup`単独は従来どおり`exporting`を残す。明示的に未検証解除した世代を後からcompleteへ昇格させない。完了済み要求の再照会は現在の保存済み世代だけが対象で、新しい世代開始後の古いcomplete要求は拒否する。履歴は専用bindingの`receipt`で読み取る。
 
 ## 検証範囲
 
 実ControlDO/D1/R2で、単一part・8MiB超の複数part、eviction、closed/open policy、予約保持、R2欠落/改変/世代不一致、同時検証、途中rollback、commit/primary両応答喪失、遅延R2/DB要求と次世代の競合を検査する。形式・本文上限・期限・schema移行とterminal receiptの不変性も試験する。最新の実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-RPC試験のSQL payloadはtransport用fixtureであり、運用のSQL検証を省略できる証拠ではない。実SQLのsource fingerprint→抽出→隔離検証→R2保存→取得→復元は別の`backup:drill`で検証する。両者を認証付き運用経路でつなぐ一連のドリル、remote環境、全storage喪失からの運用復旧は未完了。
+RPC試験のSQL payloadはtransport用fixtureであり、運用のSQL検証を省略できる証拠ではない。実SQLのsource fingerprint→抽出→隔離検証→R2保存→取得→復元は`backup:drill`で検証する。専用capabilityとCLIをつなぐドリルは[BACKUP_OPERATOR](BACKUP_OPERATOR.md)を参照。remote環境、全storage喪失からの運用復旧は未完了。

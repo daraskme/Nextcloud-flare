@@ -1,6 +1,6 @@
 # バックアップ書込み停止
 
-更新: 2026-09-25。内部ControlDO RPCとD1 barrierをローカル実装。[世代生成・R2保存・オフライン復元](BACKUP_GENERATIONS.md)と[完了記録](BACKUP_COMPLETION.md)を追加。認証付き運用呼出し・live restore・remote配備は後続。
+更新: 2026-09-25。内部ControlDO RPCとD1 barrierをローカル実装。[世代生成・R2保存・オフライン復元](BACKUP_GENERATIONS.md)、[完了記録](BACKUP_COMPLETION.md)、[専用bindingの運用コマンド](BACKUP_OPERATOR.md)を接続。live restore・remote認証/配備の検証は後続。
 
 バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
 
