@@ -58,6 +58,7 @@ import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDat
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
+import { ControlRestoreSource } from "./controlRestoreSource";
 import {
   type EpochReason,
   epochNumber,
@@ -129,6 +130,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #mutations: ControlMutations;
   readonly #backup: ControlBackup;
   readonly #databaseRestore: ControlDatabaseRestore;
+  readonly #restoreSource: ControlRestoreSource;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -160,6 +162,13 @@ export class ControlDO extends DurableObject<Env> {
       () => this.#kdfSettlements.assertEmpty(),
       () => this.#databaseRestore.assertInactive(),
       () => this.#databaseRestore.active(),
+    );
+    this.#restoreSource = new ControlRestoreSource(
+      ctx.storage.sql,
+      env.DB,
+      env.BACKUPS,
+      this.#databaseRestore,
+      (epoch) => this.#admission.captureDatabaseRestore(epoch),
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -244,6 +253,14 @@ export class ControlDO extends DurableObject<Env> {
   async inspectDatabaseRestore(expectedEpoch: number, id: string) {
     this.#row();
     return this.#databaseRestore.inspect(expectedEpoch, id);
+  }
+
+  /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */
+  async verifyDatabaseRestoreSource(expectedEpoch: number, id: string) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreSource.verify(expectedEpoch, id);
   }
 
   /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */

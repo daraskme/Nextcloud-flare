@@ -1,6 +1,6 @@
 # D1復旧要求の準備と停止保持
 
-更新: 2026-09-25。Time Travel / logical exportからの稼働系復旧に向けた、ControlDO内部の準備段階を実装した。D1の上書き、新epochへの採用、運用者用CLIはまだ接続していない。`preparing`を上書き許可やR2処理の全終了証明として扱わない。
+更新: 2026-09-25。Time Travel / logical exportからの稼働系復旧に向けた、ControlDO内部の準備段階とlogical世代の照合を実装した。D1の上書き、新epochへの採用、運用者用CLIはまだ接続していない。`preparing`を上書き許可やR2処理の全終了証明として扱わない。
 
 ## 内部RPC
 
@@ -8,6 +8,7 @@
 |---|---|
 | `prepareDatabaseRestore(epoch, id, source)` | 現行epochのDO内に要求を保存し、通常受付を閉じてD1をquiesceする |
 | `inspectDatabaseRestore(epoch, id)` | D1へアクセスせず保存済み要求を照会する |
+| `verifyDatabaseRestoreSource(epoch, id)` | logicalの完了記録・manifest・SQL部品を少量ずつ照合し、検証位置を保存する。[詳細](DATABASE_RESTORE_SOURCE.md) |
 | `cancelDatabaseRestore(epoch, id)` | 正確な要求の準備だけを取り消す。D1を再度quiesceし、受付とGCは停止を維持する |
 
 いずれもsingletonの内部RPCである。HTTP endpoint、既存BackupOperatorの権限追加、remote設定はない。
@@ -47,11 +48,11 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 
 稼働系復旧の完成には以下が必要で、今回の準備RPCは代替しない。
 
-1. 信頼できる世代・bookmark・対象bindingの検証。logicalの保存時schema/全table/hash/FK照合。
+1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録とR2部品照合は接続済み。保存時schema/全table/hash/FKの再検証と運用経路への接続を続ける。
 2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集め、停止中repairも禁止する永続的な最終段階へ移す。
 3. D1上書き前に新epochをDO/R2履歴へ予約する。応答不明時に重複発行・再使用しない。
 4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。
 5. 復元されたbackup freeze/tokenを正確な要求に結び付けて解消し、新epochをD1へ採用する。snapshotのcommitted/failed operationは保持する。
 6. FTS再構築、D1/R2の全監査、段階再開、再開後CRUD、実Cloudflareでの復旧ドリル。
 
-現時点のテストは停止保持・競合・取消しのローカルDO/D1試験。control行だけを戻す試験を実Time Travel成功と呼ばない。ControlDO自体の全storage喪失、別account、D1の全schema喪失からの要求復元も未実装。準備要求があるだけではD1の手動上書きを開始しない。
+現時点のテストは停止保持・競合・取消し・R2世代照合のローカルDO/D1/R2試験。control行だけを戻す試験を実Time Travel成功と呼ばない。ControlDO自体の全storage喪失、別account、D1の全schema喪失からの要求復元も未実装。準備要求があるだけではD1の手動上書きを開始しない。

@@ -2,13 +2,13 @@
 
 更新: 2026-09-25。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-D1復旧要求の準備・照会・取消しをControlDO内部RPCへ追加しました。選択したlogical世代/hashまたはTime Travel bookmarkをD1の外へ保存し、D1障害・DO再起動・D1のepoch巻き戻りでも停止を保ちます。準備中は受付再開・GC変更・通常backup・別epoch発行を拒否し、D1が閉じた状態のrepairだけを継続できます。取消し後も新しい全監査が必要です。詳細は[DATABASE_RESTORE](DATABASE_RESTORE.md)。
+復旧準備にControlDO.verifyDatabaseRestoreSourceを接続しました。保存したlogical世代をD1完了記録・R2 manifest・SQL部品のhashへ照合し、1回1部品の検証位置をDOへ保存します。再起動後も続行でき、取消し・古い結果の競合・35日超・検証中の期限超過・時計逆行を拒否します。詳細は[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md)。
 
-復旧準備28件が成功しました（34.64s）。遅いprimary照会・再開batch・backup開始・epoch発行・重複取消し、未知KDF保留、singleton境界、同epochの古いD1 mirror拒否と未確定停止の再試行を含みます。全体checkも成功し、Node728件（41file、40.16s）とworkerd2,128件（101file、1,300.64s）の計2,856件、lint371file・型・契約/設定・Web build・Worker dry-runを確認しました。結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。schema0039・通常67table・依存は維持しています。
+新規41件（部品/receipt28件・DO/RPC13件）を検証しました。既存の復旧準備と受付再開を含む関連113件（4file、117.56s）が成功し、時計逆行の追加・修正後のDO/RPC13件も成功（8.27s）。lint375file・型・契約/設定・Web build・Worker dry-runも成功しています。直前の復旧準備commit 3b96ea2は全体checkのNode728件＋workerd2,128件、計2,856件が成功済みです。今回の全体CIはpush後に確認します。schema0039・通常67table・依存は維持しています。
 
-次は世代/対象bindingの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回のpreparingはD1上書き許可ではありません。運用CLI・実Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は対象bindingとSQL/schemaの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。parts_verifiedはSQL検証完了やD1上書き許可ではありません。運用CLI・Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-監視commit ab05fc5のmainへのpushは自動承認レビューに拒否され、個別承認の回答待ちです。mainへのpushを再試行せず、専用のcodex/database-restoreブランチで開発を継続します。専用ブランチへのpushは別途自動承認レビューへ申請します。remote migration・deployは未実施です。
+作業ブランチはcodex/database-restoreです。検証済みcommitをこの専用ブランチへ通常pushし、CIを確認します。共有mainへの更新は自動承認レビューに拒否され、ab05fc5の個別承認待ちを維持しています。remote migration・deployは未実施です。
 
 ## 状態の意味
 
@@ -26,6 +26,7 @@ D1復旧要求の準備・照会・取消しをControlDO内部RPCへ追加しま
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規41件、関連114件。再起動・取消し・古い結果・期限・時計逆行・遅い応答 | SQL/schema・対象binding・最終停止・実復旧は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | D1復旧準備 | DO内の要求・世代選択固定、停止保持、照会/取消し、通常操作との排他 | primary/ACK喪失、eviction、巻き戻り、遅延処理、未知KDF、同epoch巻き戻りと未確定停止の28件が成功。全体結果は検証記録 | 最終停止・新epoch採用・実D1復元・運用CLIは後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | バックアップ実行監視・通知 | host SQLite・失敗/長時間/成功欠落・HTTPS状態変化通知・永続未ACK・別timer例 | 監視32件、実CLI設定失敗、loopback受信fixture、ACK喪失・並行送信・復旧 | 実通知先・host監視・設置は後続。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer/通知先の実設置・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |

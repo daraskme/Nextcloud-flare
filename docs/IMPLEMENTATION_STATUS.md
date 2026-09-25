@@ -7,10 +7,11 @@
 
 ## 今回の検証記録
 
-- 復旧準備の最終workerd28件が成功（1file、34.64s）。primary/ACK喪失、eviction、D1巻き戻り、遅いstatus/backup/epoch/reopen/cancel、未知KDF保留、既存世代ID、singleton境界を含む。
-- 同epochの古いD1 tokenを誤って上書きするケースと、再開/停止の両方が失敗した後の再試行不能を修正前にそれぞれ再現し、最終28件で両方の修正を確認した。
-- `.local-toolchain/run pnpm check`が成功。Node728件（41file、40.16s）とworkerd2,128件（101file、1,300.64s）の計2,856件。lint371file・型・契約/設定・Web build・Worker dry-runも成功。全体ログはローカル `/tmp/ncf-restore-check-final.log`。
-- 前checkpoint ab05fc5の監視付き実CLIドリル（SQL9,079bytes）は成功済み。pushは個別承認待ちで、今回の変更のCIも未実行。
+- 復旧元の部品/receipt/期限/遅延応答の28件、DO/RPC/cursor/再起動/取消し/時計逆行の13件を追加。転送fixtureを実SQL復元の証明として扱わない。
+- 世代照合・復旧準備・既存受付再開の関連113件（4file、117.56s）が成功。さらに時計逆行を修正前に再現し、追加・修正後のDO/RPC全13件も成功（1file、8.27s）。重複を除く関連114件を確認。ログはローカル /tmp/ncf-restore-source-final.log と /tmp/ncf-restore-source-controller-final.log。
+- lint375file・型・契約/設定・Web build・Worker dry-runが成功。ビルドは /tmp/ncf-restore-source-build.log。現在の変更に対する全体CIはpush後に確認する。
+- 直前の復旧準備commit 3b96ea2は全体checkが成功。Node728件（41file、40.16s）とworkerd2,128件（101file、1,300.64s）、計2,856件。全体ログは /tmp/ncf-restore-check-final.log。
+- ab05fc5の監視付き実CLIドリル（SQL9,079bytes）は成功済み。共有mainへのpushは個別承認待ち。専用codex/database-restoreブランチのCI結果と混同しない。
 - schema0039・通常67table・依存を維持。remote migration・deploy・実通知送信・D1復元は実行していない。
 
 ## 今回の実装
@@ -19,6 +20,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・実ControlDO RPC | 新規41件。関連114件とlint/型/契約/ビルドを検証。SQL/schema再検証・最終停止・実D1上書きへの接続は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | 4 D1復旧準備 | DO外部I/O前の要求保存・世代選択固定・停止維持・照会/取消し・遅延処理の排他 | workerd28件成功。全体の最終検証は冒頭。準備はD1上書き許可ではなく、最終停止・新epoch採用・実復旧は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | 4/9 バックアップ実行監視 | monitor-directory・host SQLite・独立watchdog・HTTPS通知・同じIDで再送・短時間の失敗保持・復旧通知・service/timer例 | Node32件追加。秘密非出力、時計、並行送信とACK喪失、loopback受信fixture、実CLIを検証。最終Node728件と監視付き実CLIドリルが成功。結果は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |

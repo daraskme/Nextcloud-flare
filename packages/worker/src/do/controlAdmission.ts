@@ -128,6 +128,14 @@ export class ControlAdmission {
     if (this.#row(epoch).phase !== "closed") throw new Error("recovery_admission_not_closed");
   }
 
+  /** Read-only source verification may run during a restore hold, under this exact mirror. */
+  captureDatabaseRestore(epoch: number): { epoch: number; revision: number; token: string } {
+    const row = this.#row(epoch);
+    if (row.phase !== "closed" || row.token === null)
+      throw new Error("recovery_admission_not_closed");
+    return { epoch: row.epoch, revision: row.revision, token: row.token };
+  }
+
   /** Called in the same local transaction that publishes the new ready epoch. */
   resetEpoch(epoch: number, token: string): void {
     this.storage.sql.exec(
