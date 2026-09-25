@@ -13,6 +13,7 @@ const moduleAt = (path) => import(pathToFileURL(join(repo, path)).href);
 const { restoreGeneration } = await moduleAt("scripts/backup/generation.mjs");
 const { downloadGeneration } = await moduleAt("scripts/backup/publication.mjs");
 const { runBackup } = await moduleAt("scripts/backup/operator.mjs");
+const { maintainBackups } = await moduleAt("scripts/backup/maintenance.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
@@ -141,10 +142,18 @@ try {
     .run();
   await env.DB.prepare("INSERT INTO search_fts(search_fts) VALUES('rebuild')").run();
   const before = (await query("SELECT maintenance,gc_paused,gc_operator_paused FROM control"))[0];
-  const id = crypto.randomUUID();
+  let id = crypto.randomUUID();
   const clientEnv = await harness.getWorker("operator-client").getEnv();
   for (const binding of ["WRONG_ENV", "NO_GRANT", "DISABLED"]) {
-    for (const method of ["begin", "complete", "cancel", "receipt", "daily", "inventory"]) {
+    for (const method of [
+      "begin",
+      "complete",
+      "cancel",
+      "receipt",
+      "daily",
+      "inventory",
+      "replenish",
+    ]) {
       await assert.rejects(
         controlCalls(clientEnv[binding])[method](2, id, "0".repeat(64)),
         /backup_operator_forbidden/,
@@ -183,9 +192,27 @@ try {
       store,
       control,
     });
+  const maintain = () =>
+    maintainBackups({
+      directory: join(directory, "generations"),
+      epoch: 2,
+      source: dataSource,
+      store,
+      control,
+    });
+  const maintenance = await maintain();
+  assert.equal(maintenance.healthy, true);
+  assert.equal(maintenance.initial.missing, 4);
+  assert.equal(maintenance.health.eligible, 5);
+  assert.equal(maintenance.completed.length, 5);
+  id = maintenance.completed.at(-1);
   const result = await run();
   assert.equal(result.state, "completed");
   await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  const replay = await maintain();
+  assert.equal(replay.healthy, true);
+  assert.deepEqual(replay.completed, []);
+  assert.equal((await query("SELECT COUNT(*) n FROM backup_runs WHERE state='completed'"))[0].n, 5);
   assert.equal((await run()).state, "completed");
   assert.deepEqual(
     (await query("SELECT maintenance,gc_paused,gc_operator_paused FROM control"))[0],
@@ -233,9 +260,9 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private named BackupOperator capability, environment/grant denial, runBackup orchestration, real ControlDO begin/completion and eviction replay, local D1 query export, trusted SQL verification, R2 publication/download and offline restore.",
+      "Private named BackupOperator capability and denial for all seven methods; real daily capture plus four replenishments to five verified generations; eviction replay without extra capture; typed D1 query export, R2 publication, health, download and offline restore.",
     limits:
-      "Local service-binding capability only; remote Cloudflare credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No BLOBS protection, retention or live restore.",
+      "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, object pruning, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

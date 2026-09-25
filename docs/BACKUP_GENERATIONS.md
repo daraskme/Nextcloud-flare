@@ -1,6 +1,6 @@
 # 論理バックアップ世代とオフライン復元
 
-更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)で確定し、[専用bindingのrunコマンド](BACKUP_OPERATOR.md)で開始から一連に呼び出す。日次実行は[運用コマンド](BACKUP_OPERATOR.md)、保持判定は[health](BACKUP_RETENTION.md)へ接続済み。定時起動・自動補充/削除、live D1 restore・epoch更新・全復旧監査は後続である。
+更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)で確定し、[専用bindingのrunコマンド](BACKUP_OPERATOR.md)で開始から一連に呼び出す。日次実行は[運用コマンド](BACKUP_OPERATOR.md)、保持判定は[health](BACKUP_RETENTION.md)へ接続済み。定時起動・期限切れ削除、live D1 restore・epoch更新・全復旧監査は後続である。
 
 ## コマンド
 
@@ -65,7 +65,7 @@ APIの根拠はCloudflareの[R2 S3互換性](https://developers.cloudflare.com/r
 
 途中失敗のpartは残し、再実行で照合する。delete/list、保存期限、世代の自動回収はまだ実装しない。遅延したPUTがあり得るため、経過時間だけで未完了partを消さない。このCLIによる上書き拒否はbucket全体のObject Lock保証ではない。保存先の真正性はprivate bucketと運用資格情報の管理に依存する。
 
-保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。publish単独では元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。runは[completeBackup](BACKUP_COMPLETION.md)で実BACKUPS bindingの世代とpartを照合し、完了receiptと解除を原子的に確定する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。保持判定は[health](BACKUP_RETENTION.md)へ接続済み。自動補充/削除、元BLOBSの独立保管、live復元は後続。
+保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。publish単独では元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。runは[completeBackup](BACKUP_COMPLETION.md)で実BACKUPS bindingの世代とpartを照合し、完了receiptと解除を原子的に確定する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。保持判定は[health](BACKUP_RETENTION.md)へ接続済み。期限切れ削除、元BLOBSの独立保管、live復元は後続。
 
 local R2の永続先は指定configの親ディレクトリから`.wrangler/state/v3`へ固定する。getPlatformProxyの既定値は呼出しcwdを基準にするため、configを別ディレクトリに置くとWrangler devと異なる保存先になっていた。runの完了照合でこの相違を検出し修正した。従来の別cwdへのlocal保存物を自動移動せず、必要なら検証済み世代を正しいconfigで再publishする。remote保存先は変更しない。
 

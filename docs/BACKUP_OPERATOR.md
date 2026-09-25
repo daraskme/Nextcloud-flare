@@ -1,10 +1,10 @@
 # バックアップ運用コマンド
 
-更新: 2026-09-25。`pnpm backup daily`がサーバーで管理する日次世代、`pnpm backup run`が明示した世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。`health`は[保持判定と健全性検査](BACKUP_RETENTION.md)を実行する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。定時起動の設置・自動補充/削除・live restoreは別工程。
+更新: 2026-09-25。`pnpm backup daily`がサーバーで管理する日次世代、`pnpm backup run`が明示した世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。`health`は[保持判定と健全性検査](BACKUP_RETENTION.md)を実行する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。定時起動の設置・期限切れ削除・live restoreは別工程。
 
 ## 呼出し権限
 
-`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt/inventory`を公開する。inventoryは読取り専用である。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
+`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt/inventory/replenish`を公開する。inventoryは読取り専用である。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
 
 呼出し元が持つ専用service bindingをcapabilityとして扱う。[Cloudflare RPCの権限モデル](https://developers.cloudflare.com/workers/runtime-apis/rpc/visibility/)と[named entrypoint](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/#named-entrypoints)に従い、bindingの付与を運用者に限定する。target側は`BACKUP_OPERATOR_ENABLED=true`を明示した場合だけ受け付け、bindingの`ctx.props.purpose=logical-backup-v1`と`ctx.props.environment=ENVIRONMENT`を全操作で検査する。propsは秘密鍵ではなく、環境inventoryに含むbinding設定である。このcapabilityを未信頼Workerへ渡したり、利用者入力をそのまま転送するHTTP窓口を作ったりしてはならない。
 
@@ -43,6 +43,8 @@ manifest hashの証言とControlDOの完了判定は[BACKUP_COMPLETION](BACKUP_C
 
 ## 日次実行
 
+定時運用には、日次処理と検査・補充を一連に行う[maintainコマンド](BACKUP_MAINTENANCE.md)も利用できる。
+
 ```sh
 pnpm backup daily --local \
   --operator-config scripts/backup/operator.local.example.json \
@@ -56,7 +58,7 @@ pnpm backup daily --local \
 
 明示的にcancelしてfailed/releasedが確定した場合は新しいIDで再試行できる。単独releaseによる未完了行や、D1に未完了行があるのにDOの権威がない場合は自動的に置換しない。epoch変更後は開始前の古い計画を置換できるが、旧epochの開始要求は拒否する。
 
-コマンドは1回の実行で終了する。定時起動のschedulerはまだ設置していない。運用時は同じ設定で定期起動し、失敗を通知して原因解消後に再実行する必要がある。最大35日・最少5世代・最新24時間の判定は[health](BACKUP_RETENTION.md)で行う。不足はJSONと終了コード2で報告する。外部通知先、自動補充と期限切れR2 object削除は未接続である。schema0039・通常67tableは変わらない。
+コマンドは1回の実行で終了する。定時起動のschedulerはまだ設置していない。運用時は同じ設定で定期起動し、失敗を通知して原因解消後に再実行する必要がある。最大35日・最少5世代・最新24時間の判定は[health](BACKUP_RETENTION.md)で行う。不足はJSONと終了コード2で報告する。不足と鮮度の自動補充は[maintain](BACKUP_MAINTENANCE.md)へ接続した。外部通知先と期限切れR2 object削除は未接続である。schema0039・通常67tableは変わらない。
 
 ## 検証
 

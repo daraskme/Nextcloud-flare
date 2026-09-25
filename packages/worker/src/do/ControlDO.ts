@@ -222,8 +222,8 @@ export class ControlDO extends DurableObject<Env> {
     return this.#backup.begin(expectedEpoch, id);
   }
 
-  async planDailyBackup(expectedEpoch: number) {
-    return this.#backup.daily(expectedEpoch);
+  async planDailyBackup(expectedEpoch: number, replaceCompletedId?: string) {
+    return this.#backup.daily(expectedEpoch, replaceCompletedId);
   }
 
   async inspectBackupInventory(expectedEpoch: number, cursor?: BackupInventoryCursor) {

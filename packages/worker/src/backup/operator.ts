@@ -43,6 +43,9 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
     this.#authorize(epoch);
     return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).planDailyBackup(epoch);
   }
+  replenish(epoch: number, completedId: string) {
+    return this.#control(epoch, completedId).planDailyBackup(epoch, completedId);
+  }
   inventory(epoch: number, cursor?: BackupInventoryCursor) {
     this.#authorize(epoch);
     return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).inspectBackupInventory(

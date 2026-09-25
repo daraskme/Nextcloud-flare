@@ -146,8 +146,9 @@ export class ControlBackup {
   }
 
   /** Persist identity before returning it, including across lost ACKs and UTC midnight. */
-  async daily(epoch: number): Promise<BackupDailyPlan> {
+  async daily(epoch: number, replaceCompletedId?: string): Promise<BackupDailyPlan> {
     epochNumber(epoch);
+    if (replaceCompletedId !== undefined) backupManifestKey(replaceCompletedId);
     if (this.currentEpoch() !== epoch) throw new Error("invalid_backup_request");
     const previous = this.storage.sql
       .exec<DailyRow>("SELECT * FROM control_backup_daily WHERE singleton=1")
@@ -225,6 +226,7 @@ export class ControlBackup {
           throw new Error("backup_clock_conflict");
         if (
           previous.epoch === epoch &&
+          previous.id !== replaceCompletedId &&
           Math.floor(observedAt / 86400000) === Math.floor(receipt.createdAt / 86400000)
         )
           return {

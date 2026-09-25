@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -192,6 +192,15 @@ try {
   assert.deepEqual(health.alerts, ["backup_generations_insufficient"]);
   assert.equal(health.generations[0].id, id);
   assert.equal(health.generations[0].status, "eligible");
+  // Exercise the real maintain CLI dispatch/transport without five additional
+  // slow Wrangler exports; the operator drill proves successful replenishment.
+  const stale = ["maintain", ...args.slice(1)];
+  stale[stale.indexOf("--epoch") + 1] = "1";
+  await run(cli, stale, 1);
+  assert.match(
+    await readFile(join(directory, String(command) + ".log"), "utf8"),
+    /invalid_backup_request:/,
+  );
   const status = JSON.parse(
     await local([
       "d1",
@@ -235,9 +244,9 @@ try {
     id,
     bytes: result.bytes,
     proof:
-      "Actual backup daily/run/receipt/health/download/restore-offline CLI, private named capability, typed D1 query export and R2 publication, durable daily replay, server inventory and stored SQL verification, minimum-five shortage alert with exit code 2.",
+      "Actual daily/run/receipt/health/download/restore-offline CLI, private capability, typed D1 export and R2 publication, durable replay, verified shortage/exit 2; actual maintain CLI rejects stale epoch before mutation. Successful five-generation replenishment is covered by the separate operator drill.",
     limits:
-      "Local dev registry and resources; no remote authentication/deployment, scheduler installation, automatic replenishment/pruning, independent BLOBS copy or live restore.",
+      "Local dev registry and resources; successful replenishment is exercised by the separate operator drill. No remote authentication/deployment, scheduler installation, object pruning, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

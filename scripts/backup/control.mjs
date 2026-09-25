@@ -40,7 +40,7 @@ export function controlCalls(binding, timeoutMs = 60000) {
   if (!binding || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000)
     throw new Error("backup_operator_unconfigured");
   return Object.fromEntries(
-    ["begin", "complete", "cancel", "receipt", "daily", "inventory"].map((method) => [
+    ["begin", "complete", "cancel", "receipt", "daily", "inventory", "replenish"].map((method) => [
       method,
       async (...args) => {
         let timer;

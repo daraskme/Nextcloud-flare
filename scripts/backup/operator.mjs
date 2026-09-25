@@ -45,10 +45,7 @@ export async function verifyStoredBackup({
   }
 }
 
-/** The durable server plan, rather than the runner's clock/disk, owns the daily identity. */
-export async function runDailyBackup({ epoch, control, store, progress = () => {}, ...options }) {
-  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
-  const plan = await control.daily(epoch);
+export function validateDailyPlan(plan, epoch) {
   operatorIdentity(plan?.epoch, plan?.id);
   if (
     plan.epoch !== epoch ||
@@ -59,20 +56,30 @@ export async function runDailyBackup({ epoch, control, store, progress = () => {
     plan.observedAt < plan.scheduledAt
   )
     throw new Error("backup_invalid_daily_plan");
-  if (plan.state === "completed") {
-    const saved = await control.receipt(epoch, plan.id);
-    const receipt = completed(saved, epoch, plan.id);
-    if (
-      receipt.manifestSha256 !== plan.manifestSha256 ||
-      saved.completedAt !== plan.completedAt ||
+  if (
+    plan.state === "completed" &&
+    (typeof plan.manifestSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(plan.manifestSha256) ||
       !Number.isSafeInteger(plan.createdAt) ||
       plan.createdAt < 0 ||
       plan.createdAt > plan.observedAt ||
       !Number.isSafeInteger(plan.completedAt) ||
       plan.completedAt < plan.createdAt ||
       plan.completedAt > plan.observedAt ||
-      Math.floor(plan.createdAt / 86400000) !== Math.floor(plan.observedAt / 86400000)
-    )
+      Math.floor(plan.createdAt / 86400000) !== Math.floor(plan.observedAt / 86400000))
+  )
+    throw new Error("backup_invalid_daily_plan");
+  return plan;
+}
+
+/** The durable server plan, rather than the runner's clock/disk, owns the daily identity. */
+export async function runDailyBackup({ epoch, control, store, progress = () => {}, ...options }) {
+  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
+  const plan = validateDailyPlan(await control.daily(epoch), epoch);
+  if (plan.state === "completed") {
+    const saved = await control.receipt(epoch, plan.id);
+    const receipt = completed(saved, epoch, plan.id);
+    if (receipt.manifestSha256 !== plan.manifestSha256 || saved.completedAt !== plan.completedAt)
       throw new Error("backup_invalid_daily_plan");
     const verified = await verifyStoredBackup({ ...plan, store, progress });
     return { ...receipt, bytes: verified.bytes, daily: true, skipped: true };

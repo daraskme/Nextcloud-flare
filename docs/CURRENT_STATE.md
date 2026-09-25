@@ -2,19 +2,19 @@
 
 更新: 2026-09-25。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-日次バックアップは`221952f`までmainへプッシュ済みです。[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)はUbuntu・Windows 2/2・backup・browserが成功し、Windows 1/2は確認中です。今回の保持判定もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
+保持判定は`3609dae`までmainへプッシュ済みです。[CI36085658959](https://github.com/daraskme/Nextcloud-flare/actions/runs/36085658959)はUbuntu・backup・browserが成功しましたが、Windowsの両ジョブでNodeテスト/fixture準備の時間上限に達しました。今回、Windowsの単体試験を2並列・テスト30秒・準備60秒へ調整しました。製品の期限は変更していません。直前の日次実行`221952f`の[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)は全5ジョブ成功です。
 
-「pnpm backup health」を追加しました。D1の完了記録とR2の全データ・SQLを照合し、35日以内の有効世代が5個以上、最新取得が24時間以内であるかを判定します。取得時刻を基準にし、5世代不足でも期限切れを数えません。検証後のサーバー時刻で再判定し、途中でepochやバックアップ状態が変わった検査は無効にします。
+「pnpm backup maintain」を追加しました。日次世代を再開・取得し、保持判定の不足分を最大5世代まで追加して再検査します。世代数が足りていても最新取得が24時間を超えていれば1世代を追加します。初回は通常1+4世代を作り、現在のsnapshotを確保します。過去日の状態を取得したことにはしません。
 
-結果は世代別状態・不足数・エラーコードを含むJSONです。正常は終了コード0、不足・破損・検査未完了は2、判定不能は1を返します。監視に渡せる形式まで実装し、外部への通知送信は行っていません。一覧は100行ずつ読み、全体10,000行・データ検証100世代の上限を超えた場合も正常とは報告しません。
+追加取得では直前の完了IDを照合し、再送・応答喪失・同時要求で次の世代を重複して割り当てないようにしました。未完了の同じ世代を引き継ぎ、手動の別世代は奪いません。破損した同日世代を残したまま新しい世代を補充でき、破損警告は最終結果にも残します。検査未完了なら補充を始めません。
 
-Node27件・workerd23件を追加しました。全Node644件（37file、34.40s）と、バックアップ関連workerd79件（4file、43.54s）が成功。実際に保存した5世代の全SQL検証と、1世代の破損によって有効数が4へ減ることを確認しました。35日の前後1ms、24時間、検査中の期限超過、同時開始、eviction、205行のページング、破損/不正receipt、検査上限と秘密情報の非出力を含みます。lint354file・型・契約/設定検査・Web build・Worker dry-runも成功しました。
+Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。
 
-専用bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、inventoryを含む6操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→再実行→receipt→health→download→restore-offlineもSQL9,079bytesで成功しました。healthは保存済み1世代を検証し、不足4世代と終了コード2を返し、元の停止状態を変更しませんでした。
+実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。
 
-schema0039・通常67tableと依存は変更していません。healthは読取り専用で、現在のD1が利用可能な場合の論理世代の検査です。source BLOBSの実在性・独立複製やlive復元の証明ではありません。運用方法と制限は[BACKUP_RETENTION](BACKUP_RETENTION.md)。
+Linux用service/timerと空欄の環境変数例を追加し、systemd 261で構文とUTC時刻式を確認しました。設定例の設置・enable・起動や外部通知は行っていません。schema0039・通常67tableと依存は維持しています。詳細は[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md)。
 
-次は定時実行・外部通知の接続、5世代の自動補充、期限切れR2 objectの回収を進めます。Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択と運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は期限切れR2 objectの回収と、定期起動・外部通知の実運用接続を進めます。Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択と運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 ## 状態の意味
 
@@ -32,14 +32,15 @@ schema0039・通常67tableと依存は変更していません。healthは読取
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| バックアップ保持判定 | inventory/health、実R2/SQL検証・35日/最少5世代/最新24時間・終了コード通知 | Node27/workerd23追加、全Node644件・関連79件成功 | 外部通知・自動補充/削除・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |
-| 日次バックアップ | サーバー所有ID・同日実データ検証・R2からの再開 | Node17/workerd17追加、関連56件・全Node617件成功 | 定時起動の設置・外部通知・自動補充/削除・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
+| 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer設置・外部通知・期限切れ削除・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
+| バックアップ保持判定 | inventory/health、実R2/SQL検証・35日/最少5世代/最新24時間・終了コード通知 | Node27/workerd23追加、全Node644件・関連79件成功 | 外部通知・期限切れ削除・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |
+| 日次バックアップ | サーバー所有ID・同日実データ検証・R2からの再開 | Node17/workerd17追加、関連56件・全Node617件成功 | 定時起動の設置・外部通知・期限切れ削除・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
 | 値を保持するデータ出力 | 型情報・BLOB hex・NUL TEXT・bounded SQL writer | Node16件追加、統合600件と実D1/CLIの3ドリルが成功 | remote・大規模運用は未検証。[BACKUP_EXPORT](BACKUP_EXPORT.md) |
 | 過去schemaと全table照合 | 信頼済みprefix、保存時schema、未知tableの拒否 | Node19件追加、統合584件と実D1の3ドリルが成功 | 全データ形式・live復旧は後続。[BACKUP_HISTORY](BACKUP_HISTORY.md) |
-| バックアップ用GC保護 | migration0039・35日猶予・最後の参照による延長・WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 | 35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。過去schemaは0037以降の信頼済みmigration列だけを受け付けます。追加データ形式、定時起動・自動補充/削除、Time Travel・live復旧・全storage喪失からの運用復旧とremote検証は未完了です。 |
-| バックアップ運用コマンド | 専用capability、run/receipt/cancel、再実行と失敗時の停止維持 | Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。 | 専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。定時起動・自動補充/削除、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
+| バックアップ用GC保護 | migration0039・35日猶予・最後の参照による延長・WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 | 35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。過去schemaは0037以降の信頼済みmigration列だけを受け付けます。追加データ形式、定時起動・期限切れ削除、Time Travel・live復旧・全storage喪失からの運用復旧とremote検証は未完了です。 |
+| バックアップ運用コマンド | 専用capability、run/receipt/cancel、再実行と失敗時の停止維持 | Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。 | 専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。定時起動・期限切れ削除、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
 | バックアップ完了記録 | 内部completeBackup、R2実体/cursor照合、D1 receiptと元policyへの原子的復帰、migration0038 | Node22件・workerd18件を追加し、全体checkが成功しました。Node527件（32file、14.22s）・workerd2,009件（95file、1,085.53s）、計2,536件を検証しています。lint335file・型・契約/設定検査・Web build・Worker dry-runも成功。schema0038で実CLIのcapture→verify→local R2 publish→download→restore-offlineが67table・SQL9,599bytesで成功しました。今回commitのCI/browserはプッシュ後に確認します。 | completeBackupは内部RPCです。SQL/source/schema/FK/FTSの全検証は信頼された生成コマンドが担い、ControlDOはそのhashでR2実体を再検査します。利用者が指定したhashを転送する公開APIは追加していません。remote運用の認証・権限検証、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
-| バックアップR2保存・取得 | 条件付きpart保存、manifest最終確定、応答喪失照合、download後の全検証 | 実CLI/local R2の保存・取得・隔離復元。8MiB超の複数part、再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験 | 保存対象はD1の論理SQL。remoteの運用接続検証、BLOBS本体の独立保管、定時起動・自動補充/削除・live復旧は後続。remote S3は実装済み・実環境未検証。 |
+| バックアップR2保存・取得 | 条件付きpart保存、manifest最終確定、応答喪失照合、download後の全検証 | 実CLI/local R2の保存・取得・隔離復元。8MiB超の複数part、再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験 | 保存対象はD1の論理SQL。remoteの運用接続検証、BLOBS本体の独立保管、定時起動・期限切れ削除・live復旧は後続。remote S3は実装済み・実環境未検証。 |
 | バックアップ世代・オフライン復元 | 実Wrangler抽出、全行/hash/schema/FK/FTS照合、ローカル世代保存、新規DB復元 | schema0038・全67tableの実CLIドリルで元DBの凍結保持、容量、FTS検索を確認。欠落/内容変化、不正SQL、checksum不一致、既存出力保護、UTF-8/文上限を試験 | 旧version/全データ形式の互換性、Time Travel・live restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続。 |
 | バックアップ書込み停止 | 専用永続intent、全通常table凍結、watermark、元policyへの原子的復帰 | 全table guard、旧schema移行、確定順序、ACK/primary喪失、遅延開始/解除、全storage喪失、rollback。実ControlDOの完了記録は上記の通り検証 | 内部RPCとCLIを認証付き運用処理で接続する一連のドリル、停止中の全ControlDO喪失からの運用復旧は後続。 |
 | DAVの転送と公開の分離 | 本文後のfresh30秒permit、開始受付、未結合記録の回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
@@ -112,7 +113,7 @@ schema0039・通常67tableと依存は変更していません。healthは読取
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
 - 共有作成・編集・解除、内部共有、公開link、password/unlock、upload-only共有の完全なHTTP surface。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
-- バックアップの定時起動の設置・外部通知・自動補充/削除、Time Travel手順、live restore automation。専用bindingによるrun/daily/health・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
+- バックアップの定時起動の設置・外部通知・期限切れ削除、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
 ### UI
@@ -175,7 +176,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 1. unknown multipart IDの全体不在証明・予約精算を実装。毎回freshなS3/BLOBS対応検証は走査・中止へ接続済み。upload行喪失時の全bucket走査・容量保留、S3診断と完成済み`u/` objectの隔離・35日回収も接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
-4. account mutation / 終了証明を失ったKDFの運用収束、backup定時運用・自動補充/削除、実環境のrestore/再開drill。内部RPCの段階再開とbackup barrierはローカル実装済み。
+4. account mutation / 終了証明を失ったKDFの運用収束、backup定時運用・期限切れ削除、実環境のrestore/再開drill。内部RPCの段階再開とbackup barrierはローカル実装済み。
 5. Files UIの残り（共有・media・metadata検索）。
 6. share、media metadata検索、ZIP/reader/media配信。
 7. 定時バックアップの設置、Time Travel/live restore drill。

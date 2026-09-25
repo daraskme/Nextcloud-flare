@@ -239,6 +239,80 @@ it("rechecks manual backup ownership after the inventory read yields", async () 
     expect(state.storage.sql.exec("SELECT * FROM control_backup_daily").toArray()).toEqual([]);
   });
 });
+it("advances a completed daily generation once and replays the successor across eviction and completion", async () => {
+  const first = await control().planDailyBackup(epoch);
+  await finish(first.id);
+  const next = await control().planDailyBackup(epoch, first.id);
+  expect(next.state).toBe("run");
+  expect(next.id).not.toBe(first.id);
+  await evictDurableObject(control());
+  expect((await control().planDailyBackup(epoch, first.id)).id).toBe(next.id);
+  await finish(next.id);
+  expect(await control().planDailyBackup(epoch, first.id)).toMatchObject({
+    id: next.id,
+    state: "completed",
+  });
+  expect((await control().planDailyBackup(epoch)).id).toBe(next.id);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) n FROM backup_runs WHERE id IN (?,?) AND state='completed'",
+    )
+      .bind(first.id, next.id)
+      .first("n"),
+  ).toBe(2);
+});
+it("keeps the unstarted or frozen identity when replenishment is requested", async () => {
+  const first = await control().planDailyBackup(epoch);
+  expect((await control().planDailyBackup(epoch, first.id)).id).toBe(first.id);
+  await control().beginBackup(epoch, first.id);
+  expect((await control().planDailyBackup(epoch, first.id)).id).toBe(first.id);
+  expect(await env.DB.prepare("SELECT backup_frozen FROM control").first("backup_frozen")).toBe(1);
+});
+it("does not take over a manual backup when replenishing an older completed daily generation", async () => {
+  const first = await control().planDailyBackup(epoch);
+  await finish(first.id);
+  await control().beginBackup(epoch, crypto.randomUUID());
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.planDailyBackup(epoch, first.id)).rejects.toThrow("backup_active");
+  });
+});
+it("cannot assign two successors when concurrent replenishment reads the same completed receipt", async () => {
+  const first = await control().planDailyBackup(epoch);
+  await finish(first.id);
+  const entered = gate(),
+    resume = gate();
+  await runInDurableObject(control(), async (instance, state) => {
+    const delayed = new ControlDO(state, {
+      ...env,
+      DB: injectBatch(
+        (sql) => sql.includes("FROM backup_runs WHERE id=?"),
+        async () => {
+          entered.resolve();
+          await resume.promise;
+        },
+        true,
+      ),
+    });
+    const pending = delayed.planDailyBackup(epoch, first.id).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await entered.promise;
+    let winner;
+    try {
+      winner = await instance.planDailyBackup(epoch, first.id);
+    } finally {
+      resume.resolve();
+    }
+    expect(await pending).toHaveProperty("error");
+    expect((await instance.planDailyBackup(epoch, first.id)).id).toBe(winner!.id);
+  });
+});
+it.each(["", "bad-id", 42, null])("rejects invalid replenishment predecessor %s", async (value) => {
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.planDailyBackup(epoch, value as string)).rejects.toThrow();
+  });
+});
 it.each([0, 1, 3, 1.5, NaN])("rejects an invalid/stale daily epoch %s", async (value) => {
   await runInDurableObject(control(), async (instance, state) => {
     await expect(instance.planDailyBackup(value)).rejects.toThrow();

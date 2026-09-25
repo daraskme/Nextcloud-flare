@@ -4,16 +4,16 @@
 
 Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV、認証・会計・復旧・共通受付、バックアップの停止・生成・R2保存/取得・完了記録と専用運用コマンドをローカル実装済みです。製品全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。
 
-日次バックアップは`221952f`までmainへプッシュ済みです。[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)はUbuntu・Windows 2/2・backup・browserが成功し、Windows 1/2は確認中です。今回の保持判定もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
+保持判定は`3609dae`までmainへプッシュ済みです。[CI36085658959](https://github.com/daraskme/Nextcloud-flare/actions/runs/36085658959)はUbuntu・backup・browserが成功しましたが、Windowsの両ジョブでNodeテスト/fixture準備の時間上限に達しました。今回、Windowsの単体試験を2並列・テスト30秒・準備60秒へ調整しました。製品の期限は変更していません。直前の日次実行`221952f`の[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)は全5ジョブ成功です。
 
-「pnpm backup health」を追加しました。D1の完了記録とR2の全データ・SQLを照合し、35日以内の有効世代が5個以上、最新取得が24時間以内であるかを判定します。取得時刻を基準にし、5世代不足でも期限切れを数えません。検証後のサーバー時刻で再判定し、途中でepochやバックアップ状態が変わった検査は無効にします。
+「pnpm backup maintain」を追加しました。日次世代を再開・取得し、保持判定の不足分を最大5世代まで追加して再検査します。世代数が足りていても最新取得が24時間を超えていれば1世代を追加します。初回は通常1+4世代を作り、現在のsnapshotを確保します。過去日の状態を取得したことにはしません。
 
-結果は世代別状態・不足数・エラーコードを含むJSONです。正常は終了コード0、不足・破損・検査未完了は2、判定不能は1を返します。監視に渡せる形式まで実装し、外部への通知送信は行っていません。一覧は100行ずつ読み、全体10,000行・データ検証100世代の上限を超えた場合も正常とは報告しません。
+追加取得では直前の完了IDを照合し、再送・応答喪失・同時要求で次の世代を重複して割り当てないようにしました。未完了の同じ世代を引き継ぎ、手動の別世代は奪いません。破損した同日世代を残したまま新しい世代を補充でき、破損警告は最終結果にも残します。検査未完了なら補充を始めません。
 
-Node27件・workerd23件を追加しました。全Node644件（37file、34.40s）と、バックアップ関連workerd79件（4file、43.54s）が成功。実際に保存した5世代の全SQL検証と、1世代の破損によって有効数が4へ減ることを確認しました。35日の前後1ms、24時間、検査中の期限超過、同時開始、eviction、205行のページング、破損/不正receipt、検査上限と秘密情報の非出力を含みます。lint354file・型・契約/設定検査・Web build・Worker dry-runも成功しました。
+Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。
 
-専用bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、inventoryを含む6操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→再実行→receipt→health→download→restore-offlineもSQL9,079bytesで成功しました。healthは保存済み1世代を検証し、不足4世代と終了コード2を返し、元の停止状態を変更しませんでした。
+実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。
 
-schema0039・通常67tableと依存は変更していません。healthは読取り専用で、現在のD1が利用可能な場合の論理世代の検査です。source BLOBSの実在性・独立複製やlive復元の証明ではありません。運用方法と制限は[BACKUP_RETENTION](BACKUP_RETENTION.md)。
+Linux用service/timerと空欄の環境変数例を追加し、systemd 261で構文とUTC時刻式を確認しました。設定例の設置・enable・起動や外部通知は行っていません。schema0039・通常67tableと依存は維持しています。詳細は[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md)。
 
-次は定時実行・外部通知の接続、5世代の自動補充、期限切れR2 objectの回収を進めます。Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択と運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は期限切れR2 objectの回収と、定期起動・外部通知の実運用接続を進めます。Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択と運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
