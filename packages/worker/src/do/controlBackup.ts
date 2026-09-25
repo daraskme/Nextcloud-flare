@@ -1,3 +1,5 @@
+import { backupManifestKey } from "../../../shared/src/backupPublication";
+import { verifyPublicationPart } from "../backup/publication";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { epochNumber } from "./epochHistory";
 
@@ -27,6 +29,22 @@ export interface BackupBarrierStatus {
   state: BackupRow["phase"];
   watermark: string | null;
 }
+interface PublicationRow extends Record<string, SqlStorageValue> {
+  id: string;
+  epoch: number;
+  hash: string;
+  cursor: number;
+  total: number;
+  phase: "verifying" | "verified" | "completing" | "completed";
+}
+export interface BackupCompletionStatus {
+  id: string;
+  epoch: number;
+  state: "verifying" | "completed";
+  manifestSha256: string;
+  partsVerified: number;
+  partsTotal: number;
+}
 const clock = "strftime('%s','now')*1000";
 const drained = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
   AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
@@ -39,6 +57,11 @@ export function initializeBackupState(sql: SqlStorage): void {
     token TEXT NOT NULL,release_token TEXT NOT NULL,cancelled INTEGER NOT NULL CHECK(cancelled IN (0,1)),
     prior_json TEXT NOT NULL,created_at INTEGER NOT NULL,watermark TEXT
   )`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS control_backup_publication(
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL, epoch INTEGER NOT NULL,
+    hash TEXT NOT NULL, cursor INTEGER NOT NULL CHECK(cursor>=0), total INTEGER NOT NULL CHECK(total>=0),
+    phase TEXT NOT NULL CHECK(phase IN ('verifying','verified','completing','completed'))
+  )`);
 }
 export function backupActive(sql: SqlStorage): boolean {
   return sql.exec("SELECT 1 FROM control_backup WHERE phase<>'released'").toArray().length > 0;
@@ -49,18 +72,129 @@ export function assertNoBackup(sql: SqlStorage): void {
 
 /** Internal RPC only. Exporters retain this barrier through every table until a durable snapshot exists. */
 export class ControlBackup {
+  #completionInFlight = false;
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly db: D1Database,
     private readonly currentEpoch: () => number,
     private readonly capture: () => BackupAdmissionSnapshot,
     private readonly restore: (snapshot: BackupAdmissionSnapshot, token: string) => void,
+    private readonly backups: R2Bucket,
   ) {}
 
   #row(): BackupRow | undefined {
     return this.storage.sql
       .exec<BackupRow>("SELECT * FROM control_backup WHERE singleton=1")
       .toArray()[0];
+  }
+  #publication(): PublicationRow | undefined {
+    return this.storage.sql
+      .exec<PublicationRow>("SELECT * FROM control_backup_publication WHERE singleton=1")
+      .toArray()[0];
+  }
+  #completionStatus(row: PublicationRow): BackupCompletionStatus {
+    return {
+      id: row.id,
+      epoch: row.epoch,
+      state: row.phase === "completed" ? "completed" : "verifying",
+      manifestSha256: row.hash,
+      partsVerified: row.cursor,
+      partsTotal: row.total,
+    };
+  }
+
+  /** Only a trusted exporter may attest the manifest hash after full offline SQL verification. */
+  async complete(epoch: number, id: string, hash: string): Promise<BackupCompletionStatus> {
+    if (this.#completionInFlight) throw new Error("backup_verification_busy");
+    this.#completionInFlight = true;
+    try {
+      return await this.#complete(epoch, id, hash);
+    } finally {
+      this.#completionInFlight = false;
+    }
+  }
+
+  async #complete(epoch: number, id: string, hash: string): Promise<BackupCompletionStatus> {
+    this.#identity(epoch, id);
+    if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))
+      throw new Error("backup_invalid_manifest_hash");
+    const row = this.#row();
+    if (!row || row.id !== id || row.epoch !== epoch) throw new Error("backup_conflict");
+    let publication = this.#publication();
+    if (publication?.id === id && (publication.hash !== hash || publication.epoch !== epoch))
+      throw new Error("backup_publication_conflict");
+    if (row.phase === "released") {
+      if (publication?.id !== id || publication.phase !== "completed")
+        throw new Error("backup_not_frozen");
+      const receipt = await primary(this.db)
+        .prepare(
+          "SELECT 1 FROM backup_runs WHERE id=? AND epoch=? AND state='completed' AND manifest_key=? AND manifest_sha256=? AND released_at IS NOT NULL AND completed_at IS NOT NULL",
+        )
+        .bind(id, epoch, backupManifestKey(id), hash)
+        .first();
+      this.#current(row);
+      if (!receipt) throw new Error("backup_receipt_missing");
+      return this.#completionStatus(publication);
+    }
+    if (row.phase === "releasing") {
+      if (publication?.id !== id || publication.phase !== "completing")
+        throw new Error("backup_conflict");
+      await this.release(epoch, id, false, hash);
+      return this.#completionStatus(this.#publication()!);
+    }
+    if (row.phase !== "frozen" || !(await this.#prepared(row, true)))
+      throw new Error("backup_not_frozen");
+    this.#current(row);
+    // The D1 read yielded: another verifier may already have pinned this generation's hash.
+    publication = this.#publication();
+    if (publication?.id === id && (publication.hash !== hash || publication.epoch !== epoch))
+      throw new Error("backup_publication_conflict");
+    if (!publication || publication.id !== id) {
+      this.storage.sql.exec(
+        `INSERT INTO control_backup_publication VALUES(1,?,?,?,0,0,'verifying')
+        ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,epoch=excluded.epoch,hash=excluded.hash,cursor=0,total=0,phase='verifying'`,
+        id,
+        epoch,
+        hash,
+      );
+      publication = this.#publication()!;
+    }
+    if (publication.phase === "verifying") {
+      const page = await verifyPublicationPart(
+        this.backups,
+        {
+          id,
+          epoch,
+          token: row.token,
+          createdAt: row.created_at,
+          watermark: row.watermark,
+        },
+        hash,
+        publication.cursor,
+      );
+      this.#current(row);
+      if (!(await this.#prepared(row, true))) throw new Error("backup_not_frozen");
+      this.#current(row);
+      this.storage.sql.exec(
+        `UPDATE control_backup_publication SET cursor=?,total=?,phase=?
+        WHERE singleton=1 AND id=? AND epoch=? AND hash=? AND cursor=? AND phase='verifying'`,
+        page.next,
+        page.parts,
+        page.next === page.parts ? "verified" : "verifying",
+        id,
+        epoch,
+        hash,
+        publication.cursor,
+      );
+      publication = this.#publication()!;
+      if (publication.id !== id || publication.hash !== hash)
+        throw new Error("backup_publication_conflict");
+    }
+    if (publication.phase === "verified") {
+      await this.release(epoch, id, false, hash);
+      publication = this.#publication()!;
+    }
+    return this.#completionStatus(publication);
   }
   #current(row: BackupRow): void {
     const current = this.#row();
@@ -221,23 +355,51 @@ export class ControlBackup {
   }
 
   /** Release is explicit, never lease-driven. It does not claim that a backup manifest was published. */
-  async release(epoch: number, id: string, cancelled = false): Promise<BackupBarrierStatus> {
+  async release(
+    epoch: number,
+    id: string,
+    cancelled = false,
+    completionHash?: string,
+  ): Promise<BackupBarrierStatus> {
     this.#identity(epoch, id);
     let row = this.#row();
     if (!row || row.id !== id || row.epoch !== epoch) throw new Error("backup_conflict");
+    const publication = this.#publication();
+    if (
+      completionHash !== undefined &&
+      (cancelled ||
+        publication?.id !== id ||
+        publication.hash !== completionHash ||
+        !["verified", "completing", "completed"].includes(publication.phase) ||
+        publication.cursor !== publication.total ||
+        publication.total < 1)
+    )
+      throw new Error("backup_publication_conflict");
+    if (
+      completionHash === undefined &&
+      publication?.id === id &&
+      publication.phase === "completing"
+    )
+      throw new Error("backup_completion_in_progress");
     if (row.phase === "released") return this.#status(row);
     if (row.phase === "releasing") {
       if (row.cancelled !== Number(cancelled)) throw new Error("backup_conflict");
     } else {
       if (row.phase !== "frozen" && !cancelled) throw new Error("backup_not_frozen");
-      this.storage.sql.exec(
-        "UPDATE control_backup SET phase='releasing',cancelled=? WHERE singleton=1",
-        Number(cancelled),
-      );
+      this.storage.transactionSync(() => {
+        this.storage.sql.exec(
+          "UPDATE control_backup SET phase='releasing',cancelled=? WHERE singleton=1",
+          Number(cancelled),
+        );
+        if (completionHash !== undefined)
+          this.storage.sql.exec(
+            "UPDATE control_backup_publication SET phase='completing' WHERE singleton=1",
+          );
+      });
       row = this.#row()!;
     }
     const prior: BackupAdmissionSnapshot = JSON.parse(row.prior_json);
-    if (!(await this.#released(row, prior))) {
+    if (!(await this.#released(row, prior, completionHash))) {
       this.#current(row);
       try {
         await atomicBatch(this.db, [
@@ -277,32 +439,55 @@ export class ControlBackup {
               ]
             : []),
           {
-            sql: `UPDATE backup_runs SET released_at=MAX(created_at,${clock}),state=CASE WHEN ?=1 THEN 'failed' ELSE state END,
-            completed_at=CASE WHEN ?=1 THEN MAX(created_at,${clock}) ELSE completed_at END
+            sql: `UPDATE backup_runs SET released_at=MAX(created_at,${clock}),state=CASE WHEN ?=1 THEN 'failed' WHEN ? IS NOT NULL THEN 'completed' ELSE state END,
+            completed_at=CASE WHEN ?=1 OR ? IS NOT NULL THEN MAX(created_at,${clock}) ELSE completed_at END,
+            manifest_key=CASE WHEN ? IS NOT NULL THEN ? ELSE manifest_key END,
+            manifest_sha256=CASE WHEN ? IS NOT NULL THEN ? ELSE manifest_sha256 END
             WHERE id=? AND epoch=? AND barrier_token=? AND released_at IS NULL AND state IN ('pending','exporting')`,
-            values: [row.cancelled, row.cancelled, id, epoch, row.token],
+            values: [
+              row.cancelled,
+              completionHash ?? null,
+              row.cancelled,
+              completionHash ?? null,
+              completionHash ?? null,
+              backupManifestKey(id),
+              completionHash ?? null,
+              completionHash ?? null,
+              id,
+              epoch,
+              row.token,
+            ],
           },
           assertOneChange,
         ]);
       } catch (error) {
-        if (!(await this.#released(row, prior))) throw error;
+        if (!(await this.#released(row, prior, completionHash))) throw error;
       }
     }
     this.#current(row);
     this.storage.transactionSync(() => {
       this.restore(prior, row.release_token);
       this.storage.sql.exec("UPDATE control_backup SET phase='released' WHERE singleton=1");
+      if (completionHash !== undefined)
+        this.storage.sql.exec(
+          "UPDATE control_backup_publication SET phase='completed' WHERE singleton=1",
+        );
     });
     return this.#status(this.#row()!);
   }
-  async #released(row: BackupRow, prior: BackupAdmissionSnapshot): Promise<boolean> {
+  async #released(
+    row: BackupRow,
+    prior: BackupAdmissionSnapshot,
+    completionHash?: string,
+  ): Promise<boolean> {
     return (
       (await primary(this.db)
         .prepare(`SELECT 1 FROM control c JOIN backup_runs b ON b.id=?
       WHERE c.singleton=1 AND c.epoch=? AND c.backup_token IS NULL AND c.backup_frozen=0
       AND c.admission_revision=? AND c.admission_token=? AND c.maintenance=? AND c.gc_paused=? AND c.gc_operator_paused=?
       AND c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
-      AND b.epoch=c.epoch AND b.barrier_token=? AND b.created_at=? AND b.released_at IS NOT NULL AND b.state=?`)
+      AND b.epoch=c.epoch AND b.barrier_token=? AND b.created_at=? AND b.released_at IS NOT NULL AND b.state=?
+      AND (? IS NULL OR (b.manifest_key=? AND b.manifest_sha256=? AND b.completed_at IS NOT NULL))`)
         .bind(
           row.id,
           row.epoch,
@@ -313,7 +498,10 @@ export class ControlBackup {
           prior.operator_paused,
           row.token,
           row.created_at,
-          row.cancelled ? "failed" : "exporting",
+          row.cancelled ? "failed" : completionHash ? "completed" : "exporting",
+          completionHash ?? null,
+          backupManifestKey(row.id),
+          completionHash ?? null,
         )
         .first()) !== null
     );

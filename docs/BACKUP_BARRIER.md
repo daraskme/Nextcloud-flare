@@ -1,6 +1,6 @@
 # バックアップ書込み停止
 
-更新: 2026-09-25。内部ControlDO RPCとD1 barrierをローカル実装。[ローカル世代生成とオフライン復元](BACKUP_GENERATIONS.md)を追加。運用呼出し・R2 manifest公開・live restore・remote配備は後続。
+更新: 2026-09-25。内部ControlDO RPCとD1 barrierをローカル実装。[世代生成・R2保存・オフライン復元](BACKUP_GENERATIONS.md)と[完了記録](BACKUP_COMPLETION.md)を追加。認証付き運用呼出し・live restore・remote配備は後続。
 
 バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
 
@@ -20,7 +20,7 @@ active job leaseがなくなってから、確定済み操作のwatermarkをback
 
 releaseBackupは凍結確認済みの要求だけを解除する。flagだけのthaw、元の受付/GC policyの復元、released_at保存を同じD1 batchで確定する。途中失敗なら全体がrollbackし、凍結を維持する。元がclosedなら再開せず、元がopenなら保留uploadを消費・解放せず復帰する。通常の復旧完了条件でpending uploadの24h満了を待たせる方式ではない。cancelBackupは準備中または凍結中の同じ要求をfailedとして解除できる。
 
-開始の返却がfrozenのときだけexportできる。過去のIDのreleased応答は新しいsnapshot許可ではない。全tableに共通のsnapshot開始点が実証されるまでは全抽出期間barrierを保持する。releaseはexport完了やmanifest公開の証明ではなく、backup_runsはexportingのまま残る。公開jobがchecksum/manifestの実体を確認してcompletedへ進める処理は未実装。
+開始の返却がfrozenのときだけexportできる。過去のIDのreleased応答は新しいsnapshot許可ではない。全tableに共通のsnapshot開始点が実証されるまでは全抽出期間barrierを保持する。release単独はexport完了やmanifest公開の証明ではなく、backup_runsはexportingのまま残る。[completeBackup](BACKUP_COMPLETION.md)は信頼されたSQL検証者のmanifest hashを固定してR2実体を検証し、completedへの更新と解除を同時に確定する。
 
 ControlDOの通常evictionではSQLite intentから続行する。全storage喪失時はD1のbackup tokenを確認してrecoverを拒否し、R2へのepoch公開も実行しない。元のpolicyを推測して再開しない。全喪失からの運用復旧、およびlogical restoreされた凍結行の検証付き解除は後続。quiesce・復旧・epoch更新・GC設定変更はactive backup中に明示的に拒否する。
 

@@ -2,28 +2,27 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
+import {
+  BACKUP_CHUNK_BYTES,
+  BACKUP_MANIFEST_BYTES,
+  BACKUP_MAX_PARTS,
+  backupManifestKey,
+  backupPartKey,
+} from "../../packages/shared/src/backupPublication.ts";
+
 const require = createRequire(new URL("../../packages/worker/package.json", import.meta.url));
 const { AwsClient } = require("aws4fetch");
-export const CHUNK_BYTES = 8 * 1024 * 1024;
-export const MAX_PARTS = 131072; // 1 TiB of exported SQL; independent of multipart-upload limits.
-export const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+export const CHUNK_BYTES = BACKUP_CHUNK_BYTES;
+export const MAX_PARTS = BACKUP_MAX_PARTS;
+export const MAX_MANIFEST_BYTES = BACKUP_MANIFEST_BYTES;
 export const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 export function generationId(id) {
   if (typeof id !== "string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id))
     throw new Error("backup_invalid_generation");
   return id;
 }
-export const manifestKey = (id) => `sys/backups/v1/${generationId(id)}/manifest.json`;
-export function partKey(id, index, sha256) {
-  if (
-    !Number.isSafeInteger(index) ||
-    index < 0 ||
-    index >= MAX_PARTS ||
-    !/^[a-f0-9]{64}$/.test(sha256)
-  )
-    throw new Error("backup_invalid_part");
-  return `sys/backups/v1/${generationId(id)}/parts/${String(index).padStart(6, "0")}-${sha256}.bin`;
-}
+export const manifestKey = backupManifestKey;
+export const partKey = backupPartKey;
 export function validateKey(key) {
   if (
     typeof key !== "string" ||

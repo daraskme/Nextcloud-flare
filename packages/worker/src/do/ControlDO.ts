@@ -174,6 +174,7 @@ export class ControlDO extends DurableObject<Env> {
       },
       () => this.#admission.captureBackup(),
       (snapshot, token) => this.#admission.restoreBackup(snapshot, token),
+      env.BACKUPS,
     );
     this.#mutations = new ControlMutations(
       env.DB,
@@ -226,6 +227,11 @@ export class ControlDO extends DurableObject<Env> {
 
   async cancelBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {
     return this.#backup.release(expectedEpoch, id, true);
+  }
+
+  /** Internal exporter RPC; a manifest hash is accepted only from the trusted SQL verifier. */
+  async completeBackup(expectedEpoch: number, id: string, manifestSha256: string) {
+    return this.#backup.complete(expectedEpoch, id, manifestSha256);
   }
 
   async #assertNoBackup(): Promise<void> {

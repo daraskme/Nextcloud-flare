@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { parseBackupPublication } from "../../packages/shared/src/backupPublication.ts";
 import { verifyGeneration } from "./generation.mjs";
 import {
   CHUNK_BYTES,
@@ -120,53 +121,14 @@ export async function publishGeneration({ directory, store, progress = () => {} 
     };
     const bytes = encode(publication);
     if (bytes.length > MAX_MANIFEST_BYTES) throw new Error("backup_manifest_size");
+    readPublication(bytes, id);
     await ensureObject(store, key, bytes);
     return { id, manifest, key, sha256: digest(bytes), bytes: bytes.length, parts: parts.length };
   } finally {
     await handle.close();
   }
 }
-function readPublication(bytes, id) {
-  let result;
-  try {
-    result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch {
-    throw new Error("backup_invalid_publication");
-  }
-  if (
-    result?.format !== "nextcloud-flare.r2-backup" ||
-    result.version !== 1 ||
-    result.chunkBytes !== CHUNK_BYTES ||
-    result.manifest?.generation?.id !== id ||
-    !Array.isArray(result.parts) ||
-    result.parts.length < 1 ||
-    result.parts.length > MAX_PARTS
-  )
-    throw new Error("backup_invalid_publication");
-  assert.deepEqual(
-    Object.keys(result).sort(),
-    ["chunkBytes", "format", "manifest", "parts", "version"],
-    "backup_invalid_publication",
-  );
-  manifestShape(result.manifest);
-  let total = 0;
-  for (const [index, part] of result.parts.entries()) {
-    if (
-      part === null ||
-      typeof part !== "object" ||
-      Object.keys(part).sort().join(",") !== "bytes,sha256" ||
-      !Number.isSafeInteger(part.bytes) ||
-      part.bytes < 1 ||
-      part.bytes > CHUNK_BYTES ||
-      (index < result.parts.length - 1 && part.bytes !== CHUNK_BYTES) ||
-      !/^[a-f0-9]{64}$/.test(part.sha256)
-    )
-      throw new Error("backup_invalid_part");
-    total += part.bytes;
-  }
-  if (total !== result.manifest.data.bytes) throw new Error("backup_export_size");
-  return result;
-}
+const readPublication = parseBackupPublication;
 async function absent(path) {
   try {
     await lstat(path);

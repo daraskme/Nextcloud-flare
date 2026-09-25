@@ -1,6 +1,6 @@
 # 論理バックアップ世代とオフライン復元
 
-更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。ControlDOの運用呼出し経路、D1の完了記録、日次実行・保持管理、live D1 restore・epoch更新・全復旧監査は後続である。
+更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)へ追加した。CLIからの認証付き運用呼出し、日次実行・保持管理、live D1 restore・epoch更新・全復旧監査は後続である。
 
 ## コマンド
 
@@ -63,7 +63,7 @@ APIの根拠はCloudflareの[R2 S3互換性](https://developers.cloudflare.com/r
 
 途中失敗のpartは残し、再実行で照合する。delete/list、保存期限、世代の自動回収はまだ実装しない。遅延したPUTがあり得るため、経過時間だけで未完了partを消さない。このCLIによる上書き拒否はbucket全体のObject Lock保証ではない。保存先の真正性はprivate bucketと運用資格情報の管理に依存する。
 
-保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。R2保存に成功しても元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。ControlDOでの世代・bucket対応の確認と完了receipt、保持管理、元BLOBSの保護、live復元を別途接続する。
+保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。CLIのR2保存だけでは元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。ControlDOは[completeBackup](BACKUP_COMPLETION.md)で実BACKUPS bindingの世代とpartを照合し、完了receiptと解除を原子的に確定できる。認証付き運用経路、保持管理、元BLOBSの保護、live復元を別途接続する。
 
 ## 失敗・再実行・信頼の境界
 

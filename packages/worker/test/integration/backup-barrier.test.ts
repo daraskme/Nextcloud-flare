@@ -1,7 +1,13 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import {
+  type BackupGeneration,
+  backupManifestKey,
+  backupPartKey,
+} from "../../../shared/src/backupPublication";
 import { authorizeNode } from "../../src/auth/authorize";
+import { sha256 } from "../../src/backup/publication";
 import {
   assertSystemMutationAdmission,
   enqueueGlobalMutation,
@@ -13,6 +19,7 @@ import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import type { Env } from "../../src/env";
 import { claimOperation, operationIntent } from "../../src/jobs/operations";
 import { createFolder } from "../../src/services/createFolder";
+import { publicationFixture } from "../fixtures/backupPublication";
 import { foundationFixture } from "../fixtures/foundation";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -68,7 +75,7 @@ afterEach(async () => {
     if (row) await instance.cancelBackup(epoch, row.id);
   });
   await env.DB.prepare(
-    "UPDATE reservations SET state='released' WHERE id='pending-backup' AND state='reserved'",
+    "UPDATE reservations SET state='released' WHERE id IN ('pending-backup','pending-completion') AND state='reserved'",
   ).run();
 });
 const normal = () => ({
@@ -82,6 +89,33 @@ const global = () => ({
   permitId: "global:r2.probe-phase:" + crypto.randomUUID(),
   epoch,
   deadline: Date.now() + 5000,
+});
+it("completes an R2 publication and restores the prior open policy without consuming pending upload capacity", async () => {
+  const id = crypto.randomUUID(),
+    payload = new TextEncoder().encode("SQL fixture");
+  await env.DB.prepare(
+    "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES('pending-completion',?,5,'reserved',?,?)",
+  )
+    .bind(f.ids.user, Date.now() + 86400000, epoch)
+    .run();
+  await control().beginBackup(epoch, id);
+  const generation = (await env.DB.prepare(
+    "SELECT id,epoch,barrier_token AS token,created_at AS createdAt,watermark FROM backup_runs WHERE id=?",
+  )
+    .bind(id)
+    .first<BackupGeneration>())!;
+  const publication = await publicationFixture(generation, [payload]),
+    bytes = new TextEncoder().encode(JSON.stringify(publication)),
+    hash = await sha256(bytes);
+  await env.BACKUPS.put(backupPartKey(id, 0, publication.parts[0]!.sha256), payload);
+  await env.BACKUPS.put(backupManifestKey(id), bytes);
+  expect((await control().completeBackup(epoch, id, hash)).state).toBe("completed");
+  expect(await control().status()).toEqual({ epoch, maintenance: false, gcPaused: false });
+  expect(
+    await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
+      .bind(f.ids.user)
+      .first("reserved_bytes"),
+  ).toBe(5);
 });
 async function snapshot() {
   const result = await env.DB.batch(
