@@ -7,7 +7,7 @@
 Cloudflare 上のファイル管理アプリを設計の完了条件まで実装する。Foundation のみを完成扱いにしない。
 継続目標は「完成まで続けて」。完成した範囲は検証後にコミット・プッシュし、引き継ぎ資料も更新する。この checkpoint は全体完成ではない。
 
-- 切りのよい単位で検証後に commit / push する。`origin/main` への通常 push はユーザー承認済み。force push はしない。
+- 切りのよい単位で検証後に commit / push する。ユーザーは通常pushを承認済みだが、共有mainの更新は自動承認レビューに拒否された。専用`codex/database-restore`への通常pushは承認・実行済み。force pushはしない。
 - ユーザーが事前に **画像 AVIF・動画 AV1・音声 Opus** にエンコードする。保存・配信・Gallery/player を必須対応にする。具体的なコンテナと試験条件は [MEDIA_FORMATS](MEDIA_FORMATS.md)。
 - リモート Cloudflare の resource 作成・migration・配備は実行していない。GitHub push の許可を production 配備の許可とみなさない。
 - 許可済みの可逆な実装・検証は継続し、必要な情報が足りる作業で確認を挟まない。
@@ -27,11 +27,11 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 復旧準備にControlDO.verifyDatabaseRestoreSourceを接続しました。保存したlogical世代をD1完了記録・R2 manifest・SQL部品のhashへ照合し、1回1部品の検証位置をDOへ保存します。再起動後も続行でき、取消し・古い結果の競合・35日超・検証中の期限超過・時計逆行を拒否します。詳細は[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md)。
 
-新規41件（部品/receipt28件・DO/RPC13件）を検証しました。既存の復旧準備と受付再開を含む関連113件（4file、117.56s）が成功し、時計逆行の追加・修正後のDO/RPC13件も成功（8.27s）。lint375file・型・契約/設定・Web build・Worker dry-runも成功しています。直前の復旧準備commit 3b96ea2は全体checkのNode728件＋workerd2,128件、計2,856件が成功済みです。今回の全体CIはpush後に確認します。schema0039・通常67table・依存は維持しています。
+復旧元照合は新規42件（部品/receipt28件・DO/RPC14件）を検証しました。da90db7までの関連114件に加え、完了後の再照会が競合すると新しい検証時刻を上書きできる不具合を再現・修正し、DO/RPC全14件（9.02s）とlint375file・型検査が成功しました。先行版の契約/設定・Web build・Worker dry-run、3b96ea2の全体check（Node728件＋workerd2,128件）も成功済みです。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)はbrowser成功・残り実行中で、追加修正の全体CIは別実行で確認します。schema0039・通常67table・依存は維持しています。
 
 次は対象bindingとSQL/schemaの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。parts_verifiedはSQL検証完了やD1上書き許可ではありません。運用CLI・Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-作業ブランチはcodex/database-restoreです。検証済みcommitをこの専用ブランチへ通常pushし、CIを確認します。共有mainへの更新は自動承認レビューに拒否され、ab05fc5の個別承認待ちを維持しています。remote migration・deployは未実施です。
+作業ブランチcodex/database-restoreを公開し、ab05fc5・3b96ea2・da90db7の3commitを通常pushしました。追加修正も同じ専用ブランチへpushします。共有mainへの更新は自動承認レビューに拒否されたため行っていません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
@@ -178,7 +178,7 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 
 ## 再開コマンド
 
-作業場所は実環境で確認する。現在の NixOS workspace は `/home/hiroshi/ドキュメント/Nextcloud-flare`（2026-09-23にユーザー指定で移動）。`/tmp/Nextcloud-flare`は移動前の保管用コピーで、開発先として使わない。Windows workspace は `C:\Users\micro\Documents\Nextcloud-flare`。remote: `https://github.com/daraskme/Nextcloud-flare.git`、branch: `main`。
+作業場所は実環境で確認する。現在の NixOS workspace は `/home/hiroshi/ドキュメント/Nextcloud-flare`（2026-09-23にユーザー指定で移動）。`/tmp/Nextcloud-flare`は移動前の保管用コピーで、開発先として使わない。Windows workspace は `C:\Users\micro\Documents\Nextcloud-flare`。remote: `https://github.com/daraskme/Nextcloud-flare.git`、branch: `codex/database-restore`。
 
 ```powershell
 git status --short

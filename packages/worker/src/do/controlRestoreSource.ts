@@ -119,7 +119,7 @@ export class ControlRestoreSource {
     const updated = this.sql.exec(
       `UPDATE control_database_restore_source SET cursor=?,total=?,
       generation_json=?,observed_at=?,expires_at=? WHERE id=? AND epoch=? AND hash=?
-      AND cursor=? AND total=? AND generation_json IS ?`,
+      AND cursor=? AND total=? AND generation_json IS ? AND observed_at IS ? AND expires_at IS ?`,
       page.next,
       page.parts,
       generation,
@@ -131,6 +131,8 @@ export class ControlRestoreSource {
       row.cursor,
       row.total,
       row.generation_json,
+      row.observed_at,
+      row.expires_at,
     );
     if (updated.rowsWritten !== 1) throw new Error("database_restore_source_conflict");
     return this.#status(this.#row(id));

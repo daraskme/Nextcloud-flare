@@ -269,6 +269,32 @@ it("does not move a saved verification timestamp backwards after eviction", asyn
   });
 });
 
+it("preserves a newer observation when a stale completed refresh races with clock rollback", async () => {
+  const f = await fixture(),
+    now = Date.now();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await verifier(state).verify(epoch, f.id);
+      const delayed = verifier(
+        state,
+        bucketAfterRead(async () => {
+          clock.mockReturnValue(now + 1);
+          expect(await verifier(state).verify(epoch, f.id)).toMatchObject({
+            state: "parts_verified",
+            observedAt: now + 1,
+          });
+          clock.mockReturnValue(now);
+        }),
+      );
+      await expect(delayed.verify(epoch, f.id)).rejects.toThrow(/database_restore_source_conflict/);
+      expect(progress(state, f.id)).toEqual({ cursor: 1, total: 1, observed_at: now + 1 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
 it("keeps the cursor before a storage failure and can repeat the read", async () => {
   const f = await fixture();
   await runInDurableObject(control(), async (_instance, state) => {

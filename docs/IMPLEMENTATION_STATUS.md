@@ -7,6 +7,8 @@
 
 ## 今回の検証記録
 
+- 専用codex/database-restoreへab05fc5・3b96ea2・da90db7をpush済み。[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)はbrowser成功・残り実行中。共有mainは更新していない。
+- 追加修正: 完了後の再照会の競合と時計逆行により保存済み観測時刻を上書きできる問題を修正前に再現。CASへ観測時刻・期限も含め、DO/RPC14件（9.02s）、lint375file・型検査が成功。/tmp/ncf-restore-source-refresh-repro.log と /tmp/ncf-restore-source-refresh-final.log。復旧元照合の新規試験は計42件、関連は重複を除き115件。追加修正の全体CIはpush後に別実行で確認する。
 - 復旧元の部品/receipt/期限/遅延応答の28件、DO/RPC/cursor/再起動/取消し/時計逆行の13件を追加。転送fixtureを実SQL復元の証明として扱わない。
 - 世代照合・復旧準備・既存受付再開の関連113件（4file、117.56s）が成功。さらに時計逆行を修正前に再現し、追加・修正後のDO/RPC全13件も成功（1file、8.27s）。重複を除く関連114件を確認。ログはローカル /tmp/ncf-restore-source-final.log と /tmp/ncf-restore-source-controller-final.log。
 - lint375file・型・契約/設定・Web build・Worker dry-runが成功。ビルドは /tmp/ncf-restore-source-build.log。現在の変更に対する全体CIはpush後に確認する。
@@ -20,7 +22,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 4 logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・実ControlDO RPC | 新規41件。関連114件とlint/型/契約/ビルドを検証。SQL/schema再検証・最終停止・実D1上書きへの接続は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
+| 4 logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・実ControlDO RPC | 新規42件。関連115件。追加修正と先行版の検証範囲は冒頭参照。SQL/schema再検証・最終停止・実D1上書きへの接続は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | 4 D1復旧準備 | DO外部I/O前の要求保存・世代選択固定・停止維持・照会/取消し・遅延処理の排他 | workerd28件成功。全体の最終検証は冒頭。準備はD1上書き許可ではなく、最終停止・新epoch採用・実復旧は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | 4/9 バックアップ実行監視 | monitor-directory・host SQLite・独立watchdog・HTTPS通知・同じIDで再送・短時間の失敗保持・復旧通知・service/timer例 | Node32件追加。秘密非出力、時計、並行送信とACK喪失、loopback受信fixture、実CLIを検証。最終Node728件と監視付き実CLIドリルが成功。結果は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |

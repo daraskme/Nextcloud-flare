@@ -4,11 +4,11 @@
 
 復旧準備にControlDO.verifyDatabaseRestoreSourceを接続しました。保存したlogical世代をD1完了記録・R2 manifest・SQL部品のhashへ照合し、1回1部品の検証位置をDOへ保存します。再起動後も続行でき、取消し・古い結果の競合・35日超・検証中の期限超過・時計逆行を拒否します。詳細は[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md)。
 
-新規41件（部品/receipt28件・DO/RPC13件）を検証しました。既存の復旧準備と受付再開を含む関連113件（4file、117.56s）が成功し、時計逆行の追加・修正後のDO/RPC13件も成功（8.27s）。lint375file・型・契約/設定・Web build・Worker dry-runも成功しています。直前の復旧準備commit 3b96ea2は全体checkのNode728件＋workerd2,128件、計2,856件が成功済みです。今回の全体CIはpush後に確認します。schema0039・通常67table・依存は維持しています。
+復旧元照合は新規42件（部品/receipt28件・DO/RPC14件）を検証しました。da90db7までの関連114件に加え、完了後の再照会が競合すると新しい検証時刻を上書きできる不具合を再現・修正し、DO/RPC全14件（9.02s）とlint375file・型検査が成功しました。先行版の契約/設定・Web build・Worker dry-run、3b96ea2の全体check（Node728件＋workerd2,128件）も成功済みです。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)はbrowser成功・残り実行中で、追加修正の全体CIは別実行で確認します。schema0039・通常67table・依存は維持しています。
 
 次は対象bindingとSQL/schemaの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。parts_verifiedはSQL検証完了やD1上書き許可ではありません。運用CLI・Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-作業ブランチはcodex/database-restoreです。検証済みcommitをこの専用ブランチへ通常pushし、CIを確認します。共有mainへの更新は自動承認レビューに拒否され、ab05fc5の個別承認待ちを維持しています。remote migration・deployは未実施です。
+作業ブランチcodex/database-restoreを公開し、ab05fc5・3b96ea2・da90db7の3commitを通常pushしました。追加修正も同じ専用ブランチへpushします。共有mainへの更新は自動承認レビューに拒否されたため行っていません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,7 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規41件、関連114件。再起動・取消し・古い結果・期限・時計逆行・遅い応答 | SQL/schema・対象binding・最終停止・実復旧は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
+| logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規42件、関連115件。再起動・取消し・古い結果・期限・時計逆行・完了後の競合・遅い応答 | SQL/schema・対象binding・最終停止・実復旧は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | D1復旧準備 | DO内の要求・世代選択固定、停止保持、照会/取消し、通常操作との排他 | primary/ACK喪失、eviction、巻き戻り、遅延処理、未知KDF、同epoch巻き戻りと未確定停止の28件が成功。全体結果は検証記録 | 最終停止・新epoch採用・実D1復元・運用CLIは後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | バックアップ実行監視・通知 | host SQLite・失敗/長時間/成功欠落・HTTPS状態変化通知・永続未ACK・別timer例 | 監視32件、実CLI設定失敗、loopback受信fixture、ACK喪失・並行送信・復旧 | 実通知先・host監視・設置は後続。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer/通知先の実設置・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
