@@ -13,7 +13,11 @@ export const sha256 = async (bytes: Uint8Array): Promise<string> =>
     .join("");
 
 /** One bounded request, including a body deadline. Late reads cannot grant completion. */
-async function readObject(bucket: R2Bucket, key: string, limit: number): Promise<Uint8Array> {
+export async function readBackupObject(
+  bucket: R2Bucket,
+  key: string,
+  limit: number,
+): Promise<Uint8Array | null> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let expired = false,
     timer: ReturnType<typeof setTimeout> | undefined;
@@ -29,6 +33,7 @@ async function readObject(bucket: R2Bucket, key: string, limit: number): Promise
       timeout,
       (async () => {
         const object = await bucket.get(key);
+        if (!expired && object === null) return null;
         if (expired || !object || object.size < 1 || object.size > limit) {
           void object?.body.cancel().catch(() => {});
           throw new Error("backup_object_missing_or_invalid");
@@ -66,7 +71,12 @@ export async function verifyPublicationPart(
   cursor: number,
 ): Promise<{ parts: number; next: number }> {
   if (!/^[a-f0-9]{64}$/.test(expectedHash)) throw new Error("backup_invalid_manifest_hash");
-  const bytes = await readObject(bucket, backupManifestKey(generation.id), BACKUP_MANIFEST_BYTES);
+  const bytes = await readBackupObject(
+    bucket,
+    backupManifestKey(generation.id),
+    BACKUP_MANIFEST_BYTES,
+  );
+  if (bytes === null) throw new Error("backup_publication_unavailable");
   if ((await sha256(bytes)) !== expectedHash) throw new Error("backup_publication_hash_mismatch");
   const publication = parseBackupPublication(bytes, generation.id),
     found = publication.manifest.generation;
@@ -83,12 +93,12 @@ export async function verifyPublicationPart(
   if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor >= publication.parts.length)
     throw new Error("backup_invalid_cursor");
   const part = publication.parts[cursor]!;
-  const data = await readObject(
+  const data = await readBackupObject(
     bucket,
     backupPartKey(generation.id, cursor, part.sha256),
     part.bytes,
   );
-  if (data.byteLength !== part.bytes || (await sha256(data)) !== part.sha256)
+  if (data === null || data.byteLength !== part.bytes || (await sha256(data)) !== part.sha256)
     throw new Error("backup_part_mismatch");
   return { parts: publication.parts.length, next: cursor + 1 };
 }

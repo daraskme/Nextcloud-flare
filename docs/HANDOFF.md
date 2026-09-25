@@ -25,19 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-保持判定は`3609dae`までmainへプッシュ済みです。[CI36085658959](https://github.com/daraskme/Nextcloud-flare/actions/runs/36085658959)はUbuntu・backup・browserが成功しましたが、Windowsの両ジョブでNodeテスト/fixture準備の時間上限に達しました。今回、Windowsの単体試験を2並列・テスト30秒・準備60秒へ調整しました。製品の期限は変更していません。直前の日次実行`221952f`の[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)は全5ジョブ成功です。
+前回の世代補充`7a1378e`は[CI36087130182](https://github.com/daraskme/Nextcloud-flare/actions/runs/36087130182)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
-「pnpm backup maintain」を追加しました。日次世代を再開・取得し、保持判定の不足分を最大5世代まで追加して再検査します。世代数が足りていても最新取得が24時間を超えていれば1世代を追加します。初回は通常1+4世代を作り、現在のsnapshotを確保します。過去日の状態を取得したことにはしません。
+「pnpm backup prune」を追加しました。指定したcompleted世代について、サーバーの開始時刻から35日を厳密に超えること、D1の不変receiptとR2 manifestの実hash・世代情報が一致することを確認し、1回最大20部品を回収します。manifestは他のobjectがなくなってから最後に削除し、prefixの不在まで確認します。D1 receipt・元BLOBS・ローカル世代は維持します。
 
-追加取得では直前の完了IDを照合し、再送・応答喪失・同時要求で次の世代を重複して割り当てないようにしました。未完了の同じ世代を引き継ぎ、手動の別世代は奪いません。破損した同日世代を残したまま新しい世代を補充でき、破損警告は最終結果にも残します。検査未完了なら補充を始めません。
+削除前にepoch・バックアップ停止状態・receiptを再確認し、同じControlDO instanceでは同時1件、外部要求は各10秒・開始から固定25秒の期限で制限します。進捗はR2に残るkeyから再取得するため、応答喪失・eviction後も同じUUIDから再開できます。manifest欠落時に部品が残る場合や未知key、未完了/失敗世代は推測で回収しません。CLIは最大100 RPC、完了0・継続必要2・失敗1を返します。旧epochの世代でも、引数は現在のControlDO epochを使います。
 
-Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。
+Node12件・workerd26件を追加しました。Node全674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全8操作の権限拒否、期限切れfixtureの回収・eviction後再送、新しい世代の削除拒否も成功しました。実CLIドリルもSQL9,079bytesで成功し、pruneの新しい世代の拒否・期限切れfixture回収・再実行・receipt保持を確認しました。全checkが成功し、Node674件・workerd2,087件（99file、1,143.07s）、計2,761件を確認しました。型・契約/設定検査、Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査も再確認しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。詳細は[BACKUP_PRUNING](BACKUP_PRUNING.md)。
 
-実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。
-
-Linux用service/timerと空欄の環境変数例を追加し、systemd 261で構文とUTC時刻式を確認しました。設定例の設置・enable・起動や外部通知は行っていません。schema0039・通常67tableと依存は維持しています。詳細は[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md)。
-
-次は期限切れR2 objectの回収と、定期起動・外部通知の実運用接続を進めます。Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択と運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は期限切れ世代の自動走査・定期起動と外部通知の運用接続です。maintain/timerへの削除接続、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 次のschema変更は0040以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
 
@@ -110,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-現在はnamespace・DAVロック・app password・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証・物理観測・UploadDO台帳・自動回収・blob GC・既存uploadの未知multipart調査・Queue送受信の共通受付を接続済み。R2 probe・orphan・全bucket multipartも共通global受付へ接続済み。旧epoch repairも共通受付へ接続済み。upload公開失敗後の精算受付は接続済み。DAV PUT失敗後の精算と保存結果不明時の保留を整備してから、backup barrierとlogical export/restore drillへ進む。検証状態は冒頭の再開点とCURRENT_STATEを参照。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収まで接続済み。次は期限切れ世代の自動走査を既存の保持判定・定期実行へ接続する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

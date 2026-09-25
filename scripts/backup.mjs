@@ -6,6 +6,7 @@ import { inspectBackupHealth } from "./backup/health.mjs";
 import { maintainBackups } from "./backup/maintenance.mjs";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
 import { operatorIdentity, runBackup, runDailyBackup } from "./backup/operator.mjs";
+import { pruneBackup } from "./backup/prune.mjs";
 import { downloadGeneration, publishGeneration } from "./backup/publication.mjs";
 import { wranglerSource } from "./backup/wrangler.mjs";
 
@@ -15,7 +16,7 @@ const usage = `Usage:
   pnpm backup health --operator-config JSON --remote --epoch N
   pnpm backup daily --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME]
   pnpm backup run --operator-config JSON --config PATH --database DB --local|--remote --id UUID --epoch N --directory GENERATIONS [--environment NAME]
-  pnpm backup receipt|cancel --operator-config JSON --local|--remote --id UUID --epoch N
+  pnpm backup receipt|cancel|prune --operator-config JSON --local|--remote --id UUID --epoch N
   pnpm backup capture --config PATH --database DB --local|--remote --id UUID --epoch N --directory PATH [--environment NAME]
   pnpm backup verify --directory GENERATION_PATH
   pnpm backup restore-offline --directory GENERATION_PATH --target NEW_SQLITE_FILE
@@ -28,6 +29,7 @@ run begins, captures, verifies, publishes and completes the same explicit genera
 daily uses a durable server-owned identity and UTC capture day; re-run after failure with the same configuration. A completed day re-verifies stored data.
 health verifies stored SQL generations and the 35-day / minimum-five / daily policy against server time. Exit 0: healthy; 2: unhealthy or incomplete; 1: inspection failed.
 maintain resumes the daily generation, checks health, adds up to five current generations when needed, and checks health again. Re-run the same arguments after failure.
+prune deletes only the specified completed generation older than 35 days through the target BACKUPS binding. Up to 100 batches; exit 2 means re-run to continue. The immutable D1 receipt is retained.
 The private BackupOperator service binding requires an enabled target and an explicit matching environment capability.
 restore-offline creates a new frozen inspection database; it does not restore a live D1 or resume service.
 `;
@@ -92,10 +94,13 @@ try {
       ],
       receipt: ["local", "remote", "id", "epoch", "operator-config"],
       cancel: ["local", "remote", "id", "epoch", "operator-config"],
+      prune: ["local", "remote", "id", "epoch", "operator-config"],
     }[positionals[0]];
     if (!allowed || Object.keys(values).some((key) => !allowed.includes(key)))
       throw new Error("invalid_backup_arguments");
-    if (["run", "daily", "health", "maintain", "receipt", "cancel"].includes(positionals[0])) {
+    if (
+      ["run", "daily", "health", "maintain", "receipt", "cancel", "prune"].includes(positionals[0])
+    ) {
       if (
         !values["operator-config"] ||
         !!values.local === !!values.remote ||
@@ -158,6 +163,14 @@ try {
             });
             if (positionals[0] === "maintain" && !result.healthy) process.exitCode = 2;
           }
+        } else if (positionals[0] === "prune") {
+          result = await pruneBackup({
+            epoch,
+            id,
+            control,
+            progress: (event) => console.log(JSON.stringify(event)),
+          });
+          if (!result.complete) process.exitCode = 2;
         } else result = await control[positionals[0]](epoch, id);
         console.log(JSON.stringify({ command: positionals[0], result }));
       } finally {

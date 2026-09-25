@@ -20,7 +20,7 @@ WebDAV LOCKで作る未公開の0-byte objectも、エラー直後には直接�
 - 実環境への適用は未実施。maintenance/GC pauseを伴う環境別の移行手順で適用し、既存候補の件数・容量を確認する。physical容量は実削除確認まで計上されるため、失敗uploadやpurge済み内容も猶予中は容量を消費する。
 - 適用前に削除済みのobjectは復元しない。古いバックアップのファイル実在性を、この移行だけで証明したことにはならない。復旧時のinventory・会計・不可逆なdeletingの監査は引き続き必要。
 - 世代の最大年齢はサーバー側の開始時刻を基準に35日以内で判定する必要がある。完了時刻や利用者指定の時刻からさらに35日延長して復旧対象にする運用は、このGC保護の根拠に含まれない。最少5世代に足りなくても期限切れ世代を有効扱いしない。
-- 日次コマンドと[保持判定/不足レポート](BACKUP_RETENTION.md)は接続済み。定時起動・外部通知・期限切れ削除、Time Travel・live restore、bucket/account喪失に備えた複製は別工程である。
+- 日次コマンドと[保持判定/不足レポート](BACKUP_RETENTION.md)は接続済み。定時起動・外部通知・期限切れ世代の自動回収、Time Travel・live restore、bucket/account喪失に備えた複製は別工程である。
 
 過去schemaのオフライン検証は[BACKUP_HISTORY](BACKUP_HISTORY.md)を参照。
 

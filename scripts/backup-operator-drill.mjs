@@ -14,6 +14,7 @@ const { restoreGeneration } = await moduleAt("scripts/backup/generation.mjs");
 const { downloadGeneration } = await moduleAt("scripts/backup/publication.mjs");
 const { runBackup } = await moduleAt("scripts/backup/operator.mjs");
 const { maintainBackups } = await moduleAt("scripts/backup/maintenance.mjs");
+const { pruneBackup } = await moduleAt("scripts/backup/prune.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
@@ -153,6 +154,7 @@ try {
       "daily",
       "inventory",
       "replenish",
+      "prune",
     ]) {
       await assert.rejects(
         controlCalls(clientEnv[binding])[method](2, id, "0".repeat(64)),
@@ -248,6 +250,27 @@ try {
   } finally {
     restored.close();
   }
+  // Create an explicitly old, transport-only fixture in the isolated binding.
+  // The fresh real SQL generations must survive pruning and reject deletion themselves.
+  await assert.rejects(pruneBackup({ epoch: 2, id, control }), /backup_not_expired/);
+  const { expiredBackupFixture } = await moduleAt("scripts/test/fixtures/expired-backup.mjs");
+  const expired = expiredBackupFixture(),
+    expiredId = expired.id;
+  await env.BACKUPS.put(expired.partKey, expired.part);
+  await env.BACKUPS.put(expired.key, expired.bytes);
+  await env.DB.prepare(`INSERT INTO backup_runs(id,epoch,state,created_at,completed_at,released_at,barrier_token,manifest_key,manifest_sha256)
+    VALUES(?,1,'completed',1,2,2,?,?,?)`)
+    .bind(expiredId, expired.token, expired.key, expired.hash)
+    .run();
+  assert.equal((await pruneBackup({ epoch: 2, id: expiredId, control })).complete, true);
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.equal((await pruneBackup({ epoch: 2, id: expiredId, control })).state, "absent");
+  assert.equal(
+    (await env.BACKUPS.list({ prefix: `sys/backups/v1/${expiredId}/` })).objects.length,
+    0,
+  );
+  assert.equal((await control.receipt(1, expiredId)).state, "completed");
+  assert.notEqual(await env.BACKUPS.head(download.key), null);
   const cancelled = crypto.randomUUID();
   assert.equal((await control.begin(2, cancelled)).state, "frozen");
   assert.equal((await control.cancel(2, cancelled)).state, "released");
@@ -260,9 +283,9 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private named BackupOperator capability and denial for all seven methods; real daily capture plus four replenishments to five verified generations; eviction replay without extra capture; typed D1 query export, R2 publication, health, download and offline restore.",
+      "Private named BackupOperator capability and denial for all eight methods; real daily capture plus four replenishments to five verified generations; eviction replay without extra capture; typed D1 query export, R2 publication, health, download and offline restore; explicit expired fixture pruning with receipt retention and eviction replay, fresh generation rejection.",
     limits:
-      "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, object pruning, independent BLOBS copy or live restore.",
+      "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, automatic expiry sweep, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

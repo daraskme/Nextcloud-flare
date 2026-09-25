@@ -6,7 +6,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 **別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 実装済み・未実装・検証済み・未検証の一覧は [現在状態](docs/CURRENT_STATE.md) にまとめています。
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 の一部**を実装済み。
-67通常テーブル、migration `0001`〜`0037`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
+67通常テーブル、migration `0001`〜`0039`、147経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
 アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査・中止とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)も接続しました。完全な閉鎖証明と予約・保留容量の精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
 [共通の更新受付](docs/MUTATION_ADMISSION.md)は、namespace・DAVロック・app password更新・session登録/初回owner/logout・配信budgetとticketの発行/交換/取消し・upload新規予約・単一送信開始/読戻し/検証済み情報・multipart初期化/complete送信claim/検証済み情報・利用者によるupload中止を同時32件・待機256件で制御します。更新と確定記録・枠解放を一括保存します。同じ要求IDのupload予約再取得は枠を増やさず、混雑中も利用できます。以下の復旧処理とQueueも同じ枠を使います。旧epoch repairも接続済みで、[backup barrier](docs/BACKUP_BARRIER.md)をローカル実装し、logical export/restore drillは開発中です。
 物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。 migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。
@@ -25,6 +25,8 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。 詳細は[バックアップ書込み停止](docs/BACKUP_BARRIER.md)。
 
 バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。 手順と残る運用範囲は[バックアップ世代](docs/BACKUP_GENERATIONS.md)。
+
+日次バックアップの不足・鮮度補充は[maintain](docs/BACKUP_MAINTENANCE.md)、35日を超えた指定世代のR2回収は[prune](docs/BACKUP_PRUNING.md)へ接続済みです。pruneはD1完了記録とmanifestを照合し、少量ずつ削除して中断後も同じ世代から再開します。定時回収の設置とremote運用は未実施です。
 
 単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。 詳細は[公開失敗後の精算](docs/UPLOAD_FAILED_COMPLETION.md)。
 

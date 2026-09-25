@@ -59,6 +59,9 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
   cancel(epoch: number, id: string) {
     return this.#control(epoch, id).cancelBackup(epoch, id);
   }
+  prune(epoch: number, id: string) {
+    return this.#control(epoch, id).pruneBackup(epoch, id);
+  }
   receipt(epoch: number, id: string): Promise<BackupRunReceipt | null> {
     this.#authorize(epoch);
     backupManifestKey(id);

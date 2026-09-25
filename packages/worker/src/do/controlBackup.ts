@@ -1,6 +1,7 @@
 import { backupManifestKey } from "../../../shared/src/backupPublication";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
 import { inspectBackupInventory } from "../backup/inventory";
+import { pruneBackupGeneration } from "../backup/prune";
 import { verifyPublicationPart } from "../backup/publication";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { epochNumber } from "./epochHistory";
@@ -95,6 +96,7 @@ export function assertNoBackup(sql: SqlStorage): void {
 /** Internal RPC only. Exporters retain this barrier through every table until a durable snapshot exists. */
 export class ControlBackup {
   #completionInFlight = false;
+  #pruneInFlight = false;
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly db: D1Database,
@@ -143,6 +145,29 @@ export class ControlBackup {
       },
       cursor,
     );
+  }
+
+  async prune(epoch: number, id: string) {
+    if (this.#pruneInFlight) throw new Error("backup_prune_busy");
+    this.#pruneInFlight = true;
+    try {
+      return await pruneBackupGeneration({
+        db: this.db,
+        bucket: this.backups,
+        epoch,
+        id,
+        authority: () => {
+          const row = this.#row();
+          return {
+            epoch: this.currentEpoch(),
+            token: row?.token ?? null,
+            phase: row?.phase ?? null,
+          };
+        },
+      });
+    } finally {
+      this.#pruneInFlight = false;
+    }
   }
 
   /** Persist identity before returning it, including across lost ACKs and UTC midnight. */

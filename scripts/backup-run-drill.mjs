@@ -238,15 +238,64 @@ try {
   } finally {
     db.close();
   }
+  const pruneArgs = [
+    "prune",
+    "--operator-config",
+    descriptor,
+    "--local",
+    "--epoch",
+    "2",
+    "--id",
+    id,
+  ];
+  await run(cli, pruneArgs, 1);
+  assert.match(
+    await readFile(join(directory, String(command) + ".log"), "utf8"),
+    /backup_not_expired:/,
+  );
+  const { expiredBackupFixture } = await import("./test/fixtures/expired-backup.mjs");
+  const { localBackupStore } = await import("./backup/objectStore.mjs");
+  const expired = expiredBackupFixture(),
+    store = await localBackupStore(config);
+  try {
+    await store.put(expired.partKey, expired.part);
+    await store.put(expired.key, expired.bytes);
+  } finally {
+    await store.dispose();
+  }
+  await local([
+    "d1",
+    "execute",
+    "DB",
+    "--command",
+    `INSERT INTO backup_runs(id,epoch,state,created_at,completed_at,released_at,barrier_token,manifest_key,manifest_sha256)
+    VALUES('${expired.id}',1,'completed',1,2,2,'${expired.token}','${expired.key}','${expired.hash}')`,
+  ]);
+  pruneArgs[pruneArgs.length - 1] = expired.id;
+  assert.equal(decode(await run(cli, pruneArgs)).result.complete, true);
+  assert.equal(decode(await run(cli, pruneArgs)).result.state, "absent");
+  const oldReceipt = decode(
+    await run(cli, [
+      "receipt",
+      "--operator-config",
+      descriptor,
+      "--local",
+      "--epoch",
+      "1",
+      "--id",
+      expired.id,
+    ]),
+  ).result;
+  assert.equal(oldReceipt.state, "completed");
   const report = {
     result: "PASS",
     directory,
     id,
     bytes: result.bytes,
     proof:
-      "Actual daily/run/receipt/health/download/restore-offline CLI, private capability, typed D1 export and R2 publication, durable replay, verified shortage/exit 2; actual maintain CLI rejects stale epoch before mutation. Successful five-generation replenishment is covered by the separate operator drill.",
+      "Actual daily/run/receipt/health/download/restore-offline CLI, private capability, typed D1 export and R2 publication, durable replay, verified shortage/exit 2; actual maintain CLI rejects stale epoch before mutation; actual prune CLI rejects a fresh generation and removes an expired transport fixture with replay and retained receipt. Successful five-generation replenishment is covered by the separate operator drill.",
     limits:
-      "Local dev registry and resources; successful replenishment is exercised by the separate operator drill. No remote authentication/deployment, scheduler installation, object pruning, independent BLOBS copy or live restore.",
+      "Local dev registry and resources; successful replenishment is exercised by the separate operator drill. No remote authentication/deployment, scheduler installation, automatic expiry sweep, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

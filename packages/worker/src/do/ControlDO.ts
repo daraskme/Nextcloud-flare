@@ -230,6 +230,10 @@ export class ControlDO extends DurableObject<Env> {
     return this.#backup.inventory(expectedEpoch, cursor);
   }
 
+  async pruneBackup(expectedEpoch: number, id: string) {
+    return this.#backup.prune(expectedEpoch, id);
+  }
+
   async releaseBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {
     return this.#backup.release(expectedEpoch, id);
   }
