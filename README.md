@@ -39,6 +39,7 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 | [CURRENT_STATE](docs/CURRENT_STATE.md) | 実装/検証の4区分、未完了一覧、セッション間の固定事項 |
 | [IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md) | 実装状況・検証記録・未完了 gate |
 | [FOUNDATION](docs/FOUNDATION.md) | 現在の内部サービスと DB の契約 |
+| [DATABASE_RESTORE](docs/DATABASE_RESTORE.md) | D1復旧要求の永続化・準備中の停止保持と、稼働系復旧への残る接続 |
 | [FILES_UI](docs/FILES_UI.md) | Files画面、再開upload、private assets、browser試験と残る制約 |
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |

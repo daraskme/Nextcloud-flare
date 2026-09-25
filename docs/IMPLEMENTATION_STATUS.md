@@ -7,13 +7,11 @@
 
 ## 今回の検証記録
 
-- 監視のNode32件が成功（4.04s）。再起動・並行開始・厳密な期限・時刻逆行・同じ終了の再送、監視周期内の失敗/復旧、保存失敗、ACK喪失・遅いACK、HTTP拒否/timeoutを含む。
-- `.local-toolchain/run pnpm test:unit`: 最終Node全728件（41file、43.29s）が成功。
-- `.local-toolchain/run pnpm backup:run-drill`: 成功。SQL9,079bytes。実CLIの4世代補充、5世代の検証、期限切れfixture回収・再送・receipt保持と、全処理完了後の監視DB成功記録を確認。
-- lint369file・型・契約/設定検査、4つのservice/timerのsystemd構文検査が成功。外部通知・hostへのinstall/enableは実行しない。
-- Worker本体に変更なし。前checkpointのローカルworkerd2,100件（100file、1,245.15s）とWeb build・Worker dry-runが成功済み。今回のCIで全体を再検証する。
-
-今回の変更のCIはpush後に確認する。前回のCI結果は冒頭を参照。remote migration・deploy・実通知送信は実行していない。
+- 復旧準備の最終workerd28件が成功（1file、34.64s）。primary/ACK喪失、eviction、D1巻き戻り、遅いstatus/backup/epoch/reopen/cancel、未知KDF保留、既存世代ID、singleton境界を含む。
+- 同epochの古いD1 tokenを誤って上書きするケースと、再開/停止の両方が失敗した後の再試行不能を修正前にそれぞれ再現し、最終28件で両方の修正を確認した。
+- `.local-toolchain/run pnpm check`が成功。Node728件（41file、40.16s）とworkerd2,128件（101file、1,300.64s）の計2,856件。lint371file・型・契約/設定・Web build・Worker dry-runも成功。全体ログはローカル `/tmp/ncf-restore-check-final.log`。
+- 前checkpoint ab05fc5の監視付き実CLIドリル（SQL9,079bytes）は成功済み。pushは個別承認待ちで、今回の変更のCIも未実行。
+- schema0039・通常67table・依存を維持。remote migration・deploy・実通知送信・D1復元は実行していない。
 
 ## 今回の実装
 
@@ -21,6 +19,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 D1復旧準備 | DO外部I/O前の要求保存・世代選択固定・停止維持・照会/取消し・遅延処理の排他 | workerd28件成功。全体の最終検証は冒頭。準備はD1上書き許可ではなく、最終停止・新epoch採用・実復旧は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | 4/9 バックアップ実行監視 | monitor-directory・host SQLite・独立watchdog・HTTPS通知・同じIDで再送・短時間の失敗保持・復旧通知・service/timer例 | Node32件追加。秘密非出力、時計、並行送信とACK喪失、loopback受信fixture、実CLIを検証。最終Node728件と監視付き実CLIドリルが成功。結果は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 4 期限切れSQL世代の明示回収 | 専用prune、D1/R2世代照合、35日超・20部品/100RPC、manifest最終削除・再実行 | Node12件・workerd26件を追加。全Node674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功。専用bindingドリルは67table・SQL11,322bytesで成功。実CLIドリルもSQL9,079bytesで成功し、期限内拒否・回収・再実行・receipt保持を確認。全check成功、Node674件＋workerd2,087件（99file、1,143.07s）の計2,761件。型・契約/設定検査・Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査を再確認しました。schema0039・67table・依存を維持。[BACKUP_PRUNING](BACKUP_PRUNING.md) |

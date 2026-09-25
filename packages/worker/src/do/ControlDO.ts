@@ -54,6 +54,7 @@ import {
   backupActive,
   ControlBackup,
 } from "./controlBackup";
+import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDatabaseRestore";
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
@@ -127,6 +128,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #kdfSettlements: KdfSettlements;
   readonly #mutations: ControlMutations;
   readonly #backup: ControlBackup;
+  readonly #databaseRestore: ControlDatabaseRestore;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -145,6 +147,7 @@ export class ControlDO extends DurableObject<Env> {
       token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','r2','outbox','shares','credentials','credential_sources','fts','fence','complete')),
       after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
     )`);
+    this.#databaseRestore = new ControlDatabaseRestore(ctx.storage.sql);
     this.#kdfSettlements = new KdfSettlements(ctx.storage.sql, env.DB);
     this.#admission = new ControlAdmission(
       ctx.storage,
@@ -155,6 +158,8 @@ export class ControlDO extends DurableObject<Env> {
         return epochNumber(row.epoch);
       },
       () => this.#kdfSettlements.assertEmpty(),
+      () => this.#databaseRestore.assertInactive(),
+      () => this.#databaseRestore.active(),
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -169,6 +174,7 @@ export class ControlDO extends DurableObject<Env> {
       ctx.storage,
       env.DB,
       () => {
+        this.#databaseRestore.assertInactive();
         const row = this.#row();
         if (row.phase !== "ready") throw new Error("control_not_ready");
         return row.epoch;
@@ -210,12 +216,48 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   async status(): Promise<ControlStatus> {
-    if (backupActive(this.ctx.storage.sql)) {
+    if (backupActive(this.ctx.storage.sql) || this.#databaseRestore.active()) {
       const row = this.#row();
       if (row.phase !== "ready") throw new Error("control_not_ready");
       return { epoch: row.epoch, maintenance: true, gcPaused: true };
     }
     return this.#admission.status();
+  }
+
+  /** Pin the selection outside D1 before any I/O. Preparation never authorizes an overwrite. */
+  async prepareDatabaseRestore(expectedEpoch: number, id: string, source: DatabaseRestoreSource) {
+    const row = this.#row();
+    const previous = this.#databaseRestore.existing(expectedEpoch, id, source);
+    if (previous?.state === "cancelled") return previous;
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    assertNoBackup(this.ctx.storage.sql);
+    this.#databaseRestore.begin(expectedEpoch, id, source);
+    await this.#assertNoBackup();
+    // Cancellation may have completed while the primary query was in flight.
+    if (this.#databaseRestore.inspect(expectedEpoch, id).state === "cancelled")
+      return this.#databaseRestore.inspect(expectedEpoch, id);
+    await this.quiesce(expectedEpoch);
+    return this.#databaseRestore.inspect(expectedEpoch, id);
+  }
+
+  async inspectDatabaseRestore(expectedEpoch: number, id: string) {
+    this.#row();
+    return this.#databaseRestore.inspect(expectedEpoch, id);
+  }
+
+  /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */
+  async cancelDatabaseRestore(expectedEpoch: number, id: string) {
+    const row = this.#row();
+    const previous = this.#databaseRestore.inspect(expectedEpoch, id);
+    if (previous.state === "cancelled") return previous;
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    await this.#assertNoBackup();
+    if (this.#databaseRestore.inspect(expectedEpoch, id).state === "cancelled")
+      return this.#databaseRestore.inspect(expectedEpoch, id);
+    await this.quiesce(expectedEpoch);
+    return this.#databaseRestore.cancel(expectedEpoch, id);
   }
 
   async beginBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {
@@ -366,6 +408,7 @@ export class ControlDO extends DurableObject<Env> {
 
   /** expectedEpoch prevents a retried request from silently issuing another epoch. */
   async bumpEpoch(expectedEpoch: number, reason: EpochReason): Promise<ControlStatus> {
+    this.#databaseRestore.assertInactive();
     epochNumber(expectedEpoch);
     if (!["restore", "credential_rotation", "operator"].includes(reason))
       throw new Error("invalid_epoch_reason");
@@ -403,6 +446,7 @@ export class ControlDO extends DurableObject<Env> {
     expectedEpoch: number,
     operationId: string,
   ): Promise<RestorePause & { ready: boolean }> {
+    this.#databaseRestore.assertInactive();
     const pause = await this.#admission.acquireRestorePause(expectedEpoch, operationId);
     await drainRestoreBlobGarbageCollection(
       { DB: this.env.DB, systemControl: this },
@@ -420,12 +464,13 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   async releaseRestorePause(expectedEpoch: number, token: string): Promise<void> {
+    this.#databaseRestore.assertInactive();
     await this.#admission.releaseRestorePause(expectedEpoch, token);
   }
 
   async alarm(): Promise<void> {
     if (this.#row().phase !== "ready") return;
-    if (backupActive(this.ctx.storage.sql)) return;
+    if (backupActive(this.ctx.storage.sql) || this.#databaseRestore.active()) return;
     const transition = this.#admission.alarmTransition();
     try {
       const pause = await this.#admission.reconcileRestorePause();
@@ -781,6 +826,7 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   #reserve(epoch: number, reason: EpochReason, phase: ControlRow["phase"], expected: number): void {
+    this.#databaseRestore.assertInactive();
     assertNoBackup(this.ctx.storage.sql);
     const result = this.ctx.storage.sql.exec(
       `UPDATE control_state SET phase='pending',pending_epoch=?,pending_at=?,

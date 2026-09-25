@@ -42,6 +42,8 @@ export class ControlAdmission {
     private readonly db: D1Database,
     private readonly currentEpoch: () => number,
     private readonly assertKdfQuiescent: () => void,
+    private readonly assertCanOpen: () => void = () => {},
+    private readonly requireCloseMirror: () => boolean = () => false,
   ) {
     initializeBackupState(storage.sql);
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_admission(
@@ -155,6 +157,7 @@ export class ControlAdmission {
   }
 
   #audit(epoch: number, token?: string | null): string {
+    this.assertCanOpen();
     this.assertKdfQuiescent();
     const busy = this.storage.sql
       .exec("SELECT 1 FROM control_maintenance_tasks WHERE epoch=? LIMIT 1", epoch)
@@ -181,6 +184,7 @@ export class ControlAdmission {
       "operator_paused" | "hold_token" | "hold_operation" | "hold_expires_at"
     > = { operator_paused: 1, hold_token: null, hold_operation: null, hold_expires_at: null },
   ) {
+    if (phase !== "closing") this.assertCanOpen();
     const revision = epochNumber(row.revision + 1);
     this.storage.transactionSync(() => {
       this.#current(row);
@@ -231,24 +235,29 @@ export class ControlAdmission {
   async status(): Promise<ControlStatus> {
     const row = this.#row();
     if (row.phase !== "open") return { epoch: row.epoch, maintenance: true, gcPaused: true };
+    this.assertCanOpen();
     const matches = await this.#receipt(row, 0);
     this.#current(row);
+    this.assertCanOpen();
     if (!matches) throw new Error("control_mirror_conflict");
     return { epoch: row.epoch, maintenance: false, gcPaused: row.gc_paused === 1 };
   }
 
   /** Synchronous local fence immediately before native crypto dispatch. */
   assertKdfOpen(epoch: number): void {
+    this.assertCanOpen();
     if (this.#row(epoch).phase !== "open") throw new Error("kdf_unavailable");
   }
 
   assertMutationOpen(epoch: number): void {
+    this.assertCanOpen();
     if (this.#row(epoch).phase !== "open") throw new Error("mutation_unavailable");
   }
 
   /** Capture locally before entering the bounded queue; all D1 work stays inside that queue. */
   captureSystemMutationMode(epoch: number): 0 | 1 {
     const phase = this.#row(epoch).phase;
+    if (phase === "open") this.assertCanOpen();
     if (phase !== "open" && phase !== "closed") throw new Error("mutation_unavailable");
     return phase === "closed" ? 1 : 0;
   }
@@ -256,6 +265,7 @@ export class ControlAdmission {
   /** Internal facts may queue in a stable closed mode; transitional or mismatched mirrors cannot. */
   async systemMutationMode(epoch: number): Promise<0 | 1> {
     const row = this.#row(epoch);
+    if (row.phase === "open") this.assertCanOpen();
     if (row.phase !== "open" && row.phase !== "closed") throw new Error("mutation_unavailable");
     const maintenance = row.phase === "closed" ? 1 : 0;
     if (!(await this.#receipt(row, maintenance, false))) throw new Error("control_mirror_conflict");
@@ -264,6 +274,7 @@ export class ControlAdmission {
   }
 
   assertSystemMutationMode(epoch: number, maintenance: 0 | 1): void {
+    if (!maintenance) this.assertCanOpen();
     if (this.#row(epoch).phase !== (maintenance ? "closed" : "open"))
       throw new Error("mutation_unavailable");
   }
@@ -271,6 +282,14 @@ export class ControlAdmission {
   async close(epoch: number): Promise<ControlStatus & { activeJobLease: boolean }> {
     epochNumber(epoch);
     const row = this.#row(epoch);
+    if (this.requireCloseMirror() && row.phase === "closed") {
+      // Once a stop is acknowledged, a retry cannot silently adopt an older same-epoch
+      // snapshot. Unfinished transitions still use their existing durable closing intent;
+      // preparation has never authorized an external restore at that boundary.
+      const matches = await this.#receipt(row, 1, false);
+      this.#current(row);
+      if (!matches) throw new Error("database_restore_mirror_conflict");
+    }
     const intent = row.phase === "closing" ? row : this.#transition(row, "closing", 1, null);
     try {
       await atomicBatch(this.db, [
@@ -307,6 +326,7 @@ export class ControlAdmission {
   }
 
   #finish(intent: AdmissionRow, phase: "closed" | "open"): void {
+    if (phase === "open") this.assertCanOpen();
     const current = this.#row(intent.epoch);
     // Concurrent identical retries may both observe the same receipt.
     if (current.phase === phase) {
@@ -322,6 +342,7 @@ export class ControlAdmission {
 
   /** Only complete audit proof can open service. GC always stays paused at this boundary. */
   async resume(epoch: number): Promise<ControlStatus> {
+    this.assertCanOpen();
     epochNumber(epoch);
     const row = this.#row(epoch);
     if (row.phase === "open") return this.status();
@@ -353,6 +374,7 @@ export class ControlAdmission {
 
   /** Operator pause remains authoritative after a temporary restore window ends. */
   async setGcPaused(epoch: number, paused: boolean): Promise<ControlStatus> {
+    this.assertCanOpen();
     epochNumber(epoch);
     const row = this.#row(epoch);
     if (row.hold_token && !paused) throw new Error("gc_restore_busy");

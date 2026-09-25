@@ -2,6 +2,8 @@
 
 `ControlDO`のsingletonが受付状態の正本で、D1 `control`はSQL mutation用のmirrorである。migration `0025`で`admission_revision`と`admission_token`を追加した。通常tableは61のまま。以下はWorker内部のoperator RPCであり、公開HTTP endpointは追加していない。
 
+D1を過去へ戻す前の要求と停止保持は[DATABASE_RESTORE](DATABASE_RESTORE.md)へ追加した。復旧準備中は監査済みでも再開できない。正確な要求の取消し後にも新しい全監査が必要で、D1の上書き・新epochへの採用はまだ接続していない。
+
 ## 順序
 
 1. `recover()`でepochを回復する。初回・DO保存領域喪失時はR2 epoch履歴/D1/operator floorより新しいepochを発行し、maintenanceとGC pauseを設定する。

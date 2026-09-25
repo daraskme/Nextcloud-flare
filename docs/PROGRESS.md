@@ -4,12 +4,10 @@
 
 Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV、認証・会計・復旧・共通受付、バックアップの停止・生成・R2保存/取得・完了記録と専用運用コマンドをローカル実装済みです。製品全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。
 
-前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+D1復旧要求の準備・照会・取消しをControlDO内部RPCへ追加しました。選択したlogical世代/hashまたはTime Travel bookmarkをD1の外へ保存し、D1障害・DO再起動・D1のepoch巻き戻りでも停止を保ちます。準備中は受付再開・GC変更・通常backup・別epoch発行を拒否し、D1が閉じた状態のrepairだけを継続できます。取消し後も新しい全監査が必要です。詳細は[DATABASE_RESTORE](DATABASE_RESTORE.md)。
 
-「maintain --monitor-directory」と「pnpm backup:monitor」を追加しました。host内SQLiteへ開始・終了と最後の成功を保存し、失敗・6時間超の実行・24時間超の成功欠落を独立したwatchdogで検知します。最初の未通知失敗を保持するため、監視周期の間に再実行が成功しても見逃しません。
+復旧準備28件が成功しました（34.64s）。遅いprimary照会・再開batch・backup開始・epoch発行・重複取消し、未知KDF保留、singleton境界、同epochの古いD1 mirror拒否と未確定停止の再試行を含みます。全体checkも成功し、Node728件（41file、40.16s）とworkerd2,128件（101file、1,300.64s）の計2,856件、lint371file・型・契約/設定・Web build・Worker dry-runを確認しました。結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。schema0039・通常67table・依存は維持しています。
 
-HTTPS通知は状態変化と復旧だけを送り、未ACKの通知ID・本文を保存して同じIDで再送します。30秒の送信claim・10秒の待機上限・古いACKの照合を設け、秘密情報やproviderの本文をログへ出しません。中断したrunは正確なUUIDでローカル記録だけを失敗へ確定でき、バックアップのcancel/thawには接続しません。backup/monitorのserviceと別timerの例を用意しました。詳細は[BACKUP_MONITORING](BACKUP_MONITORING.md)。
+次は世代/対象bindingの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回のpreparingはD1上書き許可ではありません。運用CLI・実Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-監視32件が成功（4.04s）。Node全728件（41file、43.29s）が成功しました。監視付き実CLIドリルも成功し、SQL9,079bytesの世代から4世代を補充、全5世代の検証と期限切れ回収を終えてから成功記録を保存することを確認しました。lint369file・型・契約/設定検査と4つのsystemd unitの構文検査も成功しています。今回Worker本体・migration・依存は変更せず、schema0039・通常67tableを維持しています。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
-
-次はTime Travelとlogical exportからの稼働系復旧を、停止・新epoch・全監査・段階再開へ接続します。通知先・timerの実設置とhost自体の外部監視、破損・未完了世代の回収、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+監視commit ab05fc5のmainへのpushは自動承認レビューに拒否され、個別承認の回答待ちです。mainへのpushを再試行せず、専用のcodex/database-restoreブランチで開発を継続します。専用ブランチへのpushは別途自動承認レビューへ申請します。remote migration・deployは未実施です。
