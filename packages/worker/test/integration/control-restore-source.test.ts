@@ -58,6 +58,11 @@ function progress(state: DurableObjectState, id: string) {
     )
     .one();
 }
+function sqlProof(state: DurableObjectState, id: string) {
+  return state.storage.sql
+    .exec("SELECT * FROM control_database_restore_sql WHERE id=?", id)
+    .toArray();
+}
 async function fixture(multiple = false) {
   const id = crypto.randomUUID(),
     generation = {
@@ -312,6 +317,122 @@ it("keeps the cursor before a storage failure and can repeat the read", async ()
   });
 });
 
+it("requires all server-owned parts before accepting a trusted SQL attestation", async () => {
+  const f = await fixture(true);
+  await runInDurableObject(control(), async (instance, state) => {
+    await expect(instance.attestDatabaseRestoreSql(epoch, f.id, f.hash)).rejects.toThrow(
+      /database_restore_source_unverified/,
+    );
+    await instance.verifyDatabaseRestoreSource(epoch, f.id);
+    await expect(instance.attestDatabaseRestoreSql(epoch, f.id, f.hash)).rejects.toThrow(
+      /database_restore_source_unverified/,
+    );
+    expect(progress(state, f.id).cursor).toBe(1);
+    expect(sqlProof(state, f.id)).toEqual([]);
+  });
+});
+
+it("persists the trusted hash attestation outside D1 and rechecks it after eviction", async () => {
+  // This fixture proves the attestation contract, not that these transport bytes are SQL.
+  const f = await fixture();
+  await control().verifyDatabaseRestoreSource(epoch, f.id);
+  const first = await control().attestDatabaseRestoreSql(epoch, f.id, f.hash);
+  expect(first).toMatchObject({
+    id: f.id,
+    epoch,
+    state: "sql_verified",
+    manifestSha256: f.hash,
+    validator: "logical-sql-v1",
+    expiresAt: f.generation.createdAt + BACKUP_MAX_AGE_MS,
+  });
+  await evictDurableObject(control());
+  await runInDurableObject(control(), async (instance, state) => {
+    expect(sqlProof(state, f.id)).toEqual([
+      {
+        id: f.id,
+        epoch,
+        hash: f.hash,
+        verified_at: first.verifiedAt,
+        expires_at: first.expiresAt,
+        validator: "logical-sql-v1",
+      },
+    ]);
+    const replay = await instance.attestDatabaseRestoreSql(epoch, f.id, f.hash);
+    expect(replay.verifiedAt).toBeGreaterThanOrEqual(first.verifiedAt);
+    expect((await instance.inspectDatabaseRestore(epoch, f.id)).state).toBe("preparing");
+    expect((await instance.status()).maintenance).toBe(true);
+  });
+});
+
+it.each(["hash", "cancelled", "expired", "manifest", "mirror"])(
+  "rejects a SQL attestation after %s conflict and retains the prior evidence",
+  async (kind) => {
+    const f = await fixture();
+    await control().verifyDatabaseRestoreSource(epoch, f.id);
+    await control().attestDatabaseRestoreSql(epoch, f.id, f.hash);
+    await runInDurableObject(control(), async (instance, state) => {
+      const before = sqlProof(state, f.id);
+      if (kind === "cancelled") await instance.cancelDatabaseRestore(epoch, f.id);
+      if (kind === "manifest") await env.BACKUPS.delete(backupManifestKey(f.generation.id));
+      if (kind === "mirror")
+        await env.DB.prepare("UPDATE control SET admission_revision=admission_revision+1").run();
+      const clock =
+        kind === "expired"
+          ? vi.spyOn(Date, "now").mockReturnValue(f.generation.createdAt + BACKUP_MAX_AGE_MS + 1)
+          : undefined;
+      try {
+        await expect(
+          instance.attestDatabaseRestoreSql(epoch, f.id, kind === "hash" ? "0".repeat(64) : f.hash),
+        ).rejects.toThrow();
+      } finally {
+        clock?.mockRestore();
+      }
+      expect(sqlProof(state, f.id)).toEqual(before);
+    });
+  },
+);
+
+it.each(["cancel", "repair"])(
+  "does not attest SQL after %s during the final source refresh",
+  async (kind) => {
+    const f = await fixture();
+    await control().verifyDatabaseRestoreSource(epoch, f.id);
+    await runInDurableObject(control(), async (instance, state) => {
+      const service = verifier(
+        state,
+        bucketAfterRead(async () => {
+          if (kind === "cancel") await instance.cancelDatabaseRestore(epoch, f.id);
+          else await instance.quiesce(epoch);
+        }),
+      );
+      await expect(service.attest(epoch, f.id, f.hash)).rejects.toThrow();
+      expect(sqlProof(state, f.id)).toEqual([]);
+    });
+  },
+);
+
+it("can retry a failed SQL-attestation write while keeping preparation and the verified cursor", async () => {
+  const f = await fixture();
+  await control().verifyDatabaseRestoreSource(epoch, f.id);
+  await runInDurableObject(control(), async (instance, state) => {
+    state.storage.sql.exec(
+      "CREATE TRIGGER fail_sql_proof BEFORE INSERT ON control_database_restore_sql BEGIN SELECT RAISE(ABORT,'sql_proof_storage_failed'); END",
+    );
+    try {
+      await expect(instance.attestDatabaseRestoreSql(epoch, f.id, f.hash)).rejects.toThrow(
+        /sql_proof_storage_failed/,
+      );
+    } finally {
+      state.storage.sql.exec("DROP TRIGGER fail_sql_proof");
+    }
+    expect(sqlProof(state, f.id)).toEqual([]);
+    expect(progress(state, f.id).cursor).toBe(1);
+    expect((await instance.attestDatabaseRestoreSql(epoch, f.id, f.hash)).state).toBe(
+      "sql_verified",
+    );
+  });
+});
+
 it("does not interpret a Time Travel selection as a logical publication", async () => {
   const id = crypto.randomUUID();
   await control().prepareDatabaseRestore(epoch, id, {
@@ -334,6 +455,9 @@ it("keeps the current epoch and singleton checks on the actual verification RPC"
     await expect(instance.verifyDatabaseRestoreSource(epoch + 1, f.id)).rejects.toThrow(
       /database_restore_epoch_conflict/,
     );
+    await expect(instance.attestDatabaseRestoreSql(epoch + 1, f.id, f.hash)).rejects.toThrow(
+      /database_restore_epoch_conflict/,
+    );
     await expect(instance.verifyDatabaseRestoreSource(epoch, crypto.randomUUID())).rejects.toThrow(
       /database_restore_missing/,
     );
@@ -345,6 +469,9 @@ it("keeps the current epoch and singleton checks on the actual verification RPC"
   const other = env.CONTROL.get(env.CONTROL.idFromName("another-restore-control"));
   await runInDurableObject(other, async (instance) => {
     await expect(instance.verifyDatabaseRestoreSource(epoch, f.id)).rejects.toThrow(
+      /control_singleton_required/,
+    );
+    await expect(instance.attestDatabaseRestoreSql(epoch, f.id, f.hash)).rejects.toThrow(
       /control_singleton_required/,
     );
   });

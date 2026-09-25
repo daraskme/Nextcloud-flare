@@ -22,6 +22,7 @@ await writeFile(
   `
 import {ControlDO,CONTROL_NAME} from ${JSON.stringify(join(repo, "packages/worker/src/do/ControlDO.ts"))};
 export {BackupOperator} from ${JSON.stringify(join(repo, "packages/worker/src/backup/operator.ts"))};
+export {DatabaseRestoreOperator} from ${JSON.stringify(join(repo, "packages/worker/src/backup/restoreOperator.ts"))};
 export {ControlDO};
 export default {async fetch(request,env){if(request.method!=='POST')return new Response(null,{status:404});return Response.json(await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).recover());}};
 `,
@@ -36,7 +37,12 @@ await writeFile(
     workers_dev: false,
     preview_urls: false,
     send_metrics: false,
-    vars: { ENVIRONMENT: "development", EPOCH_FLOOR: "2", BACKUP_OPERATOR_ENABLED: "true" },
+    vars: {
+      ENVIRONMENT: "development",
+      EPOCH_FLOOR: "2",
+      BACKUP_OPERATOR_ENABLED: "true",
+      RESTORE_OPERATOR_ENABLED: "true",
+    },
     d1_databases: [
       {
         binding: "DB",
@@ -332,13 +338,63 @@ try {
   assert.equal(monitored.healthy, true);
   assert.equal(monitored.run.exitCode, 0);
   assert.ok(monitored.run.lastSuccessAt > 0);
+  const restoreCli = join(repo, "scripts/database-restore.mjs"),
+    restoreId = crypto.randomUUID(),
+    restoreArgs = ["--operator-config", descriptor, "--local", "--epoch", "2", "--id", restoreId],
+    selectionArgs = [
+      "--source-id",
+      id,
+      "--source-epoch",
+      "2",
+      "--manifest-sha256",
+      result.manifestSha256,
+    ];
+  assert.equal(
+    decode(await run(restoreCli, ["prepare", ...restoreArgs, ...selectionArgs])).result.state,
+    "preparing",
+  );
+  assert.equal(
+    decode(await run(restoreCli, ["prepare", ...restoreArgs, ...selectionArgs])).result.source.id,
+    id,
+  );
+  const verifiedRestore = decode(
+    await run(restoreCli, ["verify", ...restoreArgs, "--config", config]),
+  ).result;
+  assert.equal(verifiedRestore.state, "sql_verified");
+  assert.equal(verifiedRestore.complete, true);
+  assert.equal(verifiedRestore.bytes, result.bytes);
+  assert.equal(verifiedRestore.tables, 67);
+  assert.equal(verifiedRestore.source.manifestSha256, result.manifestSha256);
+  assert.equal(
+    decode(await run(restoreCli, ["inspect", ...restoreArgs])).result.state,
+    "preparing",
+  );
+  assert.equal(decode(await run(restoreCli, ["cancel", ...restoreArgs])).result.state, "cancelled");
+  await run(restoreCli, ["verify", ...restoreArgs, "--config", config], 1);
+  assert.match(
+    await readFile(join(directory, String(command) + ".log"), "utf8"),
+    /database_restore_not_preparing:/,
+  );
+  const afterRestore = JSON.parse(
+    await local([
+      "d1",
+      "execute",
+      "DB",
+      "--command",
+      "SELECT epoch,maintenance,gc_paused,backup_frozen FROM control",
+      "--json",
+    ]),
+  );
+  assert.deepEqual(afterRestore[0].results, [
+    { epoch: 2, maintenance: 1, gc_paused: 1, backup_frozen: 0 },
+  ]);
   const report = {
     result: "PASS",
     directory,
     id,
     bytes: result.bytes,
     proof:
-      "Actual daily/run/receipt/health/download/restore-offline/prune/sweep CLI; monitored maintain --prune-expired replenishes four generations and sweeps expired fixtures after verification; local monitor confirms successful completion; retained receipts, replay, fresh-generation protection and stale-epoch rejection.",
+      "Actual backup daily/maintain/monitor/sweep CLI plus database:restore prepare/replay/verify/inspect/cancel; private restore service binding, full isolated SQL verification and server attestation; cancellation keeps the original epoch and writes/GC closed.",
     limits:
       "Local dev registry and resources. No remote authentication/deployment, scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

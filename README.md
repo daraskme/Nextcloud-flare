@@ -41,6 +41,7 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 | [FOUNDATION](docs/FOUNDATION.md) | 現在の内部サービスと DB の契約 |
 | [DATABASE_RESTORE](docs/DATABASE_RESTORE.md) | D1復旧要求の永続化・準備中の停止保持と、稼働系復旧への残る接続 |
 | [DATABASE_RESTORE_SOURCE](docs/DATABASE_RESTORE_SOURCE.md) | logical復旧元の完了記録・R2部品・保持期限照合と検証位置の再開 |
+| [DATABASE_RESTORE_OPERATOR](docs/DATABASE_RESTORE_OPERATOR.md) | 復旧専用CLI・service binding、隔離SQL復元検証とDOへの証言保存 |
 | [FILES_UI](docs/FILES_UI.md) | Files画面、再開upload、private assets、browser試験と残る制約 |
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |

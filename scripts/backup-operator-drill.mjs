@@ -16,6 +16,8 @@ const { runBackup } = await moduleAt("scripts/backup/operator.mjs");
 const { maintainBackups } = await moduleAt("scripts/backup/maintenance.mjs");
 const { pruneBackup } = await moduleAt("scripts/backup/prune.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
+const { restoreControlCalls } = await moduleAt("scripts/restore/control.mjs");
+const { verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
 await mkdir(join(repo, ".wrangler"), { recursive: true });
@@ -27,6 +29,7 @@ await writeFile(
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { ControlDO, CONTROL_NAME } from ${JSON.stringify(join(repo, "packages/worker/src/do/ControlDO.ts"))};
 export { BackupOperator } from ${JSON.stringify(join(repo, "packages/worker/src/backup/operator.ts"))};
+export { DatabaseRestoreOperator } from ${JSON.stringify(join(repo, "packages/worker/src/backup/restoreOperator.ts"))};
 export { ControlDO };
 export default class Probe extends WorkerEntrypoint {
   async recover() { return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).recover(); }
@@ -40,6 +43,7 @@ const disabled = join(directory, "disabled.ts");
 await writeFile(
   disabled,
   `export { BackupOperator } from ${JSON.stringify(join(repo, "packages/worker/src/backup/operator.ts"))};
+export { DatabaseRestoreOperator } from ${JSON.stringify(join(repo, "packages/worker/src/backup/restoreOperator.ts"))};
 export default { fetch(){ return new Response(null,{status:404}); } };`,
 );
 const harness = createTestHarness({
@@ -54,7 +58,12 @@ const harness = createTestHarness({
         workers_dev: false,
         preview_urls: false,
         send_metrics: false,
-        vars: { EPOCH_FLOOR: "2", ENVIRONMENT: "development", BACKUP_OPERATOR_ENABLED: "true" },
+        vars: {
+          EPOCH_FLOOR: "2",
+          ENVIRONMENT: "development",
+          BACKUP_OPERATOR_ENABLED: "true",
+          RESTORE_OPERATOR_ENABLED: "true",
+        },
         d1_databases: [
           {
             binding: "DB",
@@ -76,6 +85,27 @@ const harness = createTestHarness({
         workers_dev: false,
         preview_urls: false,
         services: [
+          ...[
+            ["RESTORE_CONTROL", "ncf-backup-operator-drill", "database-restore-v1", "development"],
+            ["RESTORE_WRONG_ENV", "ncf-backup-operator-drill", "database-restore-v1", "production"],
+            [
+              "RESTORE_BACKUP_GRANT",
+              "ncf-backup-operator-drill",
+              "logical-backup-v1",
+              "development",
+            ],
+            ["RESTORE_DISABLED", "restore-backup-only", "database-restore-v1", "development"],
+          ].map(([binding, service, purpose, environment]) => ({
+            binding,
+            service,
+            entrypoint: "DatabaseRestoreOperator",
+            props: { purpose, environment },
+          })),
+          {
+            binding: "RESTORE_NO_GRANT",
+            service: "ncf-backup-operator-drill",
+            entrypoint: "DatabaseRestoreOperator",
+          },
           {
             binding: "BACKUP_CONTROL",
             service: "ncf-backup-operator-drill",
@@ -108,6 +138,16 @@ const harness = createTestHarness({
         main: disabled,
         compatibility_date: "2026-08-15",
         vars: { ENVIRONMENT: "development" },
+        workers_dev: false,
+        preview_urls: false,
+      },
+    },
+    {
+      config: {
+        name: "restore-backup-only",
+        main: disabled,
+        compatibility_date: "2026-08-15",
+        vars: { ENVIRONMENT: "development", BACKUP_OPERATOR_ENABLED: "true" },
         workers_dev: false,
         preview_urls: false,
       },
@@ -295,6 +335,54 @@ try {
   assert.equal((await control.cancel(2, cancelled)).state, "released");
   assert.equal((await control.receipt(2, cancelled)).state, "failed");
   assert.equal((await control.receipt(2, id)).state, "completed");
+  const restoreId = crypto.randomUUID(),
+    selection = { kind: "logical", id, epoch: 2, manifestSha256: download.sha256 };
+  for (const binding of [
+    "RESTORE_WRONG_ENV",
+    "RESTORE_BACKUP_GRANT",
+    "RESTORE_DISABLED",
+    "RESTORE_NO_GRANT",
+  ]) {
+    for (const [method, args] of [
+      ["prepare", [2, restoreId, selection]],
+      ["inspect", [2, restoreId]],
+      ["verify", [2, restoreId]],
+      ["attest", [2, restoreId, download.sha256]],
+      ["cancel", [2, restoreId]],
+    ])
+      await assert.rejects(
+        async () => clientEnv[binding][method](...args),
+        /database_restore_operator_forbidden/,
+      );
+  }
+  assert.equal((await clientEnv.RESTORE_CONTROL.fetch("https://restore.invalid")).status, 404);
+  const restoreControl = restoreControlCalls(clientEnv.RESTORE_CONTROL);
+  assert.equal((await restoreControl.prepare(2, restoreId, selection)).state, "preparing");
+  const sqlVerified = await verifyRestoreSelection({
+    epoch: 2,
+    id: restoreId,
+    control: restoreControl,
+    store,
+  });
+  assert.equal(sqlVerified.state, "sql_verified");
+  assert.equal(sqlVerified.bytes, download.manifest.data.bytes);
+  assert.equal(sqlVerified.tables, 67);
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.deepEqual((await restoreControl.inspect(2, restoreId)).source, selection);
+  assert.equal(
+    (await verifyRestoreSelection({ epoch: 2, id: restoreId, control: restoreControl, store }))
+      .state,
+    "sql_verified",
+  );
+  assert.equal((await restoreControl.cancel(2, restoreId)).state, "cancelled");
+  await assert.rejects(
+    verifyRestoreSelection({ epoch: 2, id: restoreId, control: restoreControl, store }),
+    /database_restore_not_preparing/,
+  );
+  assert.deepEqual(
+    (await query("SELECT epoch,maintenance,gc_paused,backup_frozen FROM control"))[0],
+    { epoch: 2, maintenance: 1, gc_paused: 1, backup_frozen: 0 },
+  );
   const report = {
     result: "PASS",
     directory,
@@ -302,7 +390,7 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private named BackupOperator capability and denial for all nine methods; real daily capture plus four replenishments to five verified generations; eviction replay; typed D1 export, health and offline restore; opted-in maintenance expiry sweep, retained receipts, and persistent corruption warnings without discarding healthy backup results.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, eviction replay and cancellation retaining closed admission.",
     limits:
       "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

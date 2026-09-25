@@ -7,6 +7,14 @@
 
 ## 今回の検証記録
 
+- 復旧専用CLIとSQL検証証言を追加。Node34件、DO/RPC10件を追加し、全Node762件（42file、47.52s）と関連DO/RPC24件（11.06s）が成功。型・lint380file・契約/設定検査も成功。
+- 実named service bindingドリルが67table・SQL11,322bytesで成功。復旧全5操作について、異なる環境・backup用purpose・権限設定なし・backupだけ有効の4種を拒否。実SQL世代の検証・証言保存、eviction後の再実行、取消し後の停止保持を確認。/tmp/ncf-restore-operator-drill-final.log。
+- 実CLIドリルも67table・SQL9,079bytesで成功。Wrangler dev/getPlatformProxyでprepare再送→verify→inspect→cancelを確認し、取消し後のverify拒否と元epoch・書込み/GC停止保持も確認。/tmp/ncf-restore-cli-drill.log。
+- 全体checkが成功。Node762件（42file、47.52s）＋workerd2,180件（103file、1,479.63s）、計2,942件。lint380file・型・契約/設定検査、Web build・Worker dry-runも成功。/tmp/ncf-restore-operator-check.log。今回追加した34件＋10件を含む。
+- 先行1ac31bfの[CI36131132194](https://github.com/daraskme/Nextcloud-flare/actions/runs/36131132194)は全5ジョブ成功。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)も全5ジョブ成功。今回のCLI追加のCIはpush後に別実行で確認する。
+
+### 先行する復旧元照合の記録
+
 - 専用codex/database-restoreへab05fc5・3b96ea2・da90db7をpush済み。[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)はbrowser成功・残り実行中。共有mainは更新していない。
 - 追加修正: 完了後の再照会の競合と時計逆行により保存済み観測時刻を上書きできる問題を修正前に再現。CASへ観測時刻・期限も含め、DO/RPC14件（9.02s）、lint375file・型検査が成功。/tmp/ncf-restore-source-refresh-repro.log と /tmp/ncf-restore-source-refresh-final.log。復旧元照合の新規試験は計42件、関連は重複を除き115件。追加修正の全体CIはpush後に別実行で確認する。
 - 復旧元の部品/receipt/期限/遅延応答の28件、DO/RPC/cursor/再起動/取消し/時計逆行の13件を追加。転送fixtureを実SQL復元の証明として扱わない。
@@ -22,7 +30,8 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 4 logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・実ControlDO RPC | 新規42件。関連115件。追加修正と先行版の検証範囲は冒頭参照。SQL/schema再検証・最終停止・実D1上書きへの接続は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
+| 4 復旧準備CLIとSQL証言 | 独立capability、prepare/verify/inspect/cancel、全SQL再検証とDOへのhash証言 | Node34件・DO10件追加。全checkの2,942件と実binding/CLI両ドリルが成功。[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md) |
+| 4 logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・実ControlDO RPC | 新規42件。関連115件。追加修正と先行版の検証範囲は冒頭参照。SQL/schema再検証は専用CLIへ追加済み。最終停止・実D1上書きへの接続は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | 4 D1復旧準備 | DO外部I/O前の要求保存・世代選択固定・停止維持・照会/取消し・遅延処理の排他 | workerd28件成功。全体の最終検証は冒頭。準備はD1上書き許可ではなく、最終停止・新epoch採用・実復旧は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | 4/9 バックアップ実行監視 | monitor-directory・host SQLite・独立watchdog・HTTPS通知・同じIDで再送・短時間の失敗保持・復旧通知・service/timer例 | Node32件追加。秘密非出力、時計、並行送信とACK喪失、loopback受信fixture、実CLIを検証。最終Node728件と監視付き実CLIドリルが成功。結果は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |

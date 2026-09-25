@@ -40,4 +40,9 @@ assert.deepEqual(config.triggers.crons, ["* * * * *"]);
 assert.equal(config.ratelimits[0].name, "EDGE_LIMITER");
 assert.equal(config.ratelimits[0].simple.period, 60);
 assert.ok(!Object.hasOwn(config.vars, "DEV_BYPASS_ACCESS"));
+assert.notEqual(
+  config.vars.RESTORE_OPERATOR_ENABLED,
+  "true",
+  "restore access must be explicitly enabled in the target inventory",
+);
 console.log("Local binding configuration verified; no remote environment is configured.");

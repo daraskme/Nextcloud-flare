@@ -263,6 +263,14 @@ export class ControlDO extends DurableObject<Env> {
     return this.#restoreSource.verify(expectedEpoch, id);
   }
 
+  /** Private operator attestation after the isolated SQL/schema/FK verification gate. */
+  async attestDatabaseRestoreSql(expectedEpoch: number, id: string, manifestSha256: string) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreSource.attest(expectedEpoch, id, manifestSha256);
+  }
+
   /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */
   async cancelDatabaseRestore(expectedEpoch: number, id: string) {
     const row = this.#row();

@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-復旧準備にControlDO.verifyDatabaseRestoreSourceを接続しました。保存したlogical世代をD1完了記録・R2 manifest・SQL部品のhashへ照合し、1回1部品の検証位置をDOへ保存します。再起動後も続行でき、取消し・古い結果の競合・35日超・検証中の期限超過・時計逆行を拒否します。詳細は[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md)。
+復旧専用のDatabaseRestoreOperatorと`pnpm database:restore prepare/verify/inspect/cancel`を追加しました。保存したlogical世代の全SQLを隔離SQLiteへ復元し、保存時schema・全table・hash・FK・FTS・凍結状態を検証してから、同じ要求/hashの証言をControlDOに保存します。停止mirror・期限・取消しを保存前に再確認し、再実行でもSQL検証を省略しません。詳細は[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md)。
 
-復旧元照合は新規42件（部品/receipt28件・DO/RPC14件）を検証しました。da90db7までの関連114件に加え、完了後の再照会が競合すると新しい検証時刻を上書きできる不具合を再現・修正し、DO/RPC全14件（9.02s）とlint375file・型検査が成功しました。先行版の契約/設定・Web build・Worker dry-run、3b96ea2の全体check（Node728件＋workerd2,128件）も成功済みです。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)はbrowser成功・残り実行中で、追加修正の全体CIは別実行で確認します。schema0039・通常67table・依存は維持しています。
+全体checkが成功しました。Node762件（42file、47.52s）＋workerd2,180件（103file、1,479.63s）の計2,942件、lint380file・型・契約/設定・Web build・Worker dry-runを確認しました。実service bindingドリルは67table・SQL11,322bytes、実CLIドリルは67table・SQL9,079bytesで成功し、権限拒否、SQL検証・証言保存・再実行・取消し後の停止維持を確認しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次は対象bindingとSQL/schemaの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。parts_verifiedはSQL検証完了やD1上書き許可ではありません。運用CLI・Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は対象binding・Time Travel bookmarkの検証、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。sql_verifiedはSQL検証工程の完了で、D1上書き許可ではありません。Time Travel・live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
 
-作業ブランチcodex/database-restoreを公開し、ab05fc5・3b96ea2・da90db7の3commitを通常pushしました。追加修正も同じ専用ブランチへpushします。共有mainへの更新は自動承認レビューに拒否されたため行っていません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
+作業ブランチcodex/database-restoreは1ac31bfまで通常push済みで、[CI36131132194](https://github.com/daraskme/Nextcloud-flare/actions/runs/36131132194)の全5ジョブが成功しました。今回のCLI追加も検証後に同じ専用ブランチへpushします。共有mainは自動承認レビューの拒否により更新していません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
@@ -105,6 +105,8 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。非0終了・長時間実行・24時間超の成功欠落を扱う運用通知も接続済み。次はTime Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
 
 復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
+
+最終停止の調査結果: controlAdmission.closedWorkとcontrolBackup.drainedが確認するのはopen permit・claimed operation・未閉鎖mutation admissionで、R2/KDFの全終了証明ではない。ControlDO.#maintenanceとcontrol_maintenance_tasks、systemMutationMode/assertSystemMutationModeへの入口を調べ、既存処理の終了記録と新規dispatchの禁止を分けて接続する。recoveryAudit.RECOVERY_FINAL_QUERYはnamespace/会計の整合性まで要求する再開用の式なので、壊れたD1を上書きする前の停止証明としてそのまま代用しない。未知KDF、DAV/upload/multipart、削除・jobの結果不明を時間だけで終了扱いにしない。対象bindingのfreshな照合も最終停止前に必要。現在のSQL証言はこの許可を与えない。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

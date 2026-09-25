@@ -33,6 +33,6 @@ ControlDOの内部RPC `verifyDatabaseRestoreSource(epoch, id)`は次の状態を
 
 この照合は、稼働中D1の信頼できる完了記録が残るlogical世代を対象にする。現在のD1が全喪失した場合、別account、独立して持ち込んだSQL、Time Travel bookmarkの検証には、それぞれ別の証言・対象DB確認が必要になる。
 
-通常のbackup完了時と同じく、部品のhash一致だけからSQL/schema/FK/FTSが正しいと推定しない。ローカル復元検証を通した信頼できる運用経路、D1/BLOBS/BACKUPSのbinding照合、R2/KDF/jobの全終了、新epoch予約、復元先採用、全監査と段階再開への接続は後続である。公開HTTP endpointや既存BackupOperatorへの復旧権限追加はない。
+通常のbackup完了時と同じく、部品のhash一致だけからSQL/schema/FK/FTSが正しいと推定しない。隔離SQLiteへの全SQL復元検証を通した[専用運用CLIと証言の保存](DATABASE_RESTORE_OPERATOR.md)を接続した。D1/BLOBS/BACKUPSのbinding照合、R2/KDF/jobの全終了、新epoch予約、復元先採用、全監査と段階再開への接続は後続である。公開HTTP endpointや既存BackupOperatorへの復旧権限追加はない。
 
 テストのpublication fixtureは転送検証専用で、SQL検証済みexportと呼ばない。検証位置の再開・遅い結果・取消し・期限をローカルDO/D1/R2で検証する。実Cloudflare restoreは実行していない。

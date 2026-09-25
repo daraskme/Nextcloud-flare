@@ -29,6 +29,7 @@ async function admittedEpoch(env: Env): Promise<number | null> {
 }
 
 export { BackupOperator } from "./backup/operator";
+export { DatabaseRestoreOperator } from "./backup/restoreOperator";
 export { BudgetDO } from "./do/BudgetDO";
 export { ControlDO } from "./do/ControlDO";
 export { LockDO } from "./do/LockDO";

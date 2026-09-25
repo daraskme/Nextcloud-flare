@@ -47,6 +47,7 @@ export interface Env {
   PBKDF2_ITERATIONS: string;
   EPOCH_FLOOR?: string;
   BACKUP_OPERATOR_ENABLED?: string;
+  RESTORE_OPERATOR_ENABLED?: string;
 }
 
 export const REQUIRED_BINDINGS = [

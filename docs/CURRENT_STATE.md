@@ -2,13 +2,13 @@
 
 更新: 2026-09-25。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-復旧準備にControlDO.verifyDatabaseRestoreSourceを接続しました。保存したlogical世代をD1完了記録・R2 manifest・SQL部品のhashへ照合し、1回1部品の検証位置をDOへ保存します。再起動後も続行でき、取消し・古い結果の競合・35日超・検証中の期限超過・時計逆行を拒否します。詳細は[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md)。
+復旧専用のDatabaseRestoreOperatorと`pnpm database:restore prepare/verify/inspect/cancel`を追加しました。保存したlogical世代の全SQLを隔離SQLiteへ復元し、保存時schema・全table・hash・FK・FTS・凍結状態を検証してから、同じ要求/hashの証言をControlDOに保存します。停止mirror・期限・取消しを保存前に再確認し、再実行でもSQL検証を省略しません。詳細は[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md)。
 
-復旧元照合は新規42件（部品/receipt28件・DO/RPC14件）を検証しました。da90db7までの関連114件に加え、完了後の再照会が競合すると新しい検証時刻を上書きできる不具合を再現・修正し、DO/RPC全14件（9.02s）とlint375file・型検査が成功しました。先行版の契約/設定・Web build・Worker dry-run、3b96ea2の全体check（Node728件＋workerd2,128件）も成功済みです。da90db7の[CI36130676778](https://github.com/daraskme/Nextcloud-flare/actions/runs/36130676778)はbrowser成功・残り実行中で、追加修正の全体CIは別実行で確認します。schema0039・通常67table・依存は維持しています。
+全体checkが成功しました。Node762件（42file、47.52s）＋workerd2,180件（103file、1,479.63s）の計2,942件、lint380file・型・契約/設定・Web build・Worker dry-runを確認しました。実service bindingドリルは67table・SQL11,322bytes、実CLIドリルは67table・SQL9,079bytesで成功し、権限拒否、SQL検証・証言保存・再実行・取消し後の停止維持を確認しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次は対象bindingとSQL/schemaの信頼確認、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。parts_verifiedはSQL検証完了やD1上書き許可ではありません。運用CLI・Time Travel・live logical restoreは未接続です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は対象binding・Time Travel bookmarkの検証、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。sql_verifiedはSQL検証工程の完了で、D1上書き許可ではありません。Time Travel・live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
 
-作業ブランチcodex/database-restoreを公開し、ab05fc5・3b96ea2・da90db7の3commitを通常pushしました。追加修正も同じ専用ブランチへpushします。共有mainへの更新は自動承認レビューに拒否されたため行っていません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
+作業ブランチcodex/database-restoreは1ac31bfまで通常push済みで、[CI36131132194](https://github.com/daraskme/Nextcloud-flare/actions/runs/36131132194)の全5ジョブが成功しました。今回のCLI追加も検証後に同じ専用ブランチへpushします。共有mainは自動承認レビューの拒否により更新していません。remote migration・deployは未実施です。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,8 +26,9 @@
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規42件、関連115件。再起動・取消し・古い結果・期限・時計逆行・完了後の競合・遅い応答 | SQL/schema・対象binding・最終停止・実復旧は後続。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
-| D1復旧準備 | DO内の要求・世代選択固定、停止保持、照会/取消し、通常操作との排他 | primary/ACK喪失、eviction、巻き戻り、遅延処理、未知KDF、同epoch巻き戻りと未確定停止の28件が成功。全体結果は検証記録 | 最終停止・新epoch採用・実D1復元・運用CLIは後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
+| 復旧準備の運用CLI | 専用service binding、prepare/verify/inspect/cancel、隔離SQL検証とDOへの証言保存 | Node34件追加・DO10件追加。全check2,942件・実binding/CLI両ドリル成功 | 対象binding・最終停止・実D1上書き・新epoch採用は後続。[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md) |
+| logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規42件、関連115件。再起動・取消し・古い結果・期限・時計逆行・完了後の競合・遅い応答 | 対象binding・最終停止・実復旧は後続。SQL/schema再検証は専用CLIへ追加。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
+| D1復旧準備 | DO内の要求・世代選択固定、停止保持、照会/取消し、通常操作との排他 | primary/ACK喪失、eviction、巻き戻り、遅延処理、未知KDF、同epoch巻き戻りと未確定停止の28件が成功。全体結果は検証記録 | 最終停止・新epoch採用・実D1復元は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
 | バックアップ実行監視・通知 | host SQLite・失敗/長時間/成功欠落・HTTPS状態変化通知・永続未ACK・別timer例 | 監視32件、実CLI設定失敗、loopback受信fixture、ACK喪失・並行送信・復旧 | 実通知先・host監視・設置は後続。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer/通知先の実設置・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |

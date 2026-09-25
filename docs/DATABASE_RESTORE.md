@@ -1,6 +1,6 @@
 # D1復旧要求の準備と停止保持
 
-更新: 2026-09-25。Time Travel / logical exportからの稼働系復旧に向けた、ControlDO内部の準備段階とlogical世代の照合を実装した。D1の上書き、新epochへの採用、運用者用CLIはまだ接続していない。`preparing`を上書き許可やR2処理の全終了証明として扱わない。
+更新: 2026-09-25。Time Travel / logical exportからの稼働系復旧に向けた、準備段階・logical世代照合・信頼されたSQL検証者による証言を実装した。[運用CLI](DATABASE_RESTORE_OPERATOR.md)で準備・検証・照会・取消しを行える。D1の上書きと新epochへの採用はまだ接続していない。`preparing`や`sql_verified`を上書き許可やR2処理の全終了証明として扱わない。
 
 ## 内部RPC
 
@@ -9,9 +9,10 @@
 | `prepareDatabaseRestore(epoch, id, source)` | 現行epochのDO内に要求を保存し、通常受付を閉じてD1をquiesceする |
 | `inspectDatabaseRestore(epoch, id)` | D1へアクセスせず保存済み要求を照会する |
 | `verifyDatabaseRestoreSource(epoch, id)` | logicalの完了記録・manifest・SQL部品を少量ずつ照合し、検証位置を保存する。[詳細](DATABASE_RESTORE_SOURCE.md) |
+| `attestDatabaseRestoreSql(epoch, id, hash)` | 信頼された検証者による全SQL/schema検証の証言を、準備中の同じ世代に結び付けてDOへ保存する |
 | `cancelDatabaseRestore(epoch, id)` | 正確な要求の準備だけを取り消す。D1を再度quiesceし、受付とGCは停止を維持する |
 
-いずれもsingletonの内部RPCである。HTTP endpoint、既存BackupOperatorの権限追加、remote設定はない。
+いずれもsingletonの内部RPCで、専用DatabaseRestoreOperatorのservice bindingへ接続する。HTTP endpoint、既存BackupOperatorの権限追加、remote設定はない。
 
 `id`は運用者が一度生成して再送するUUID。`source`は次のいずれかを正規化して保存する。
 
@@ -48,7 +49,7 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 
 稼働系復旧の完成には以下が必要で、今回の準備RPCは代替しない。
 
-1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録とR2部品照合は接続済み。保存時schema/全table/hash/FKの再検証と運用経路への接続を続ける。
+1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。対象bindingとTime Travel bookmarkの検証を続ける。
 2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集め、停止中repairも禁止する永続的な最終段階へ移す。
 3. D1上書き前に新epochをDO/R2履歴へ予約する。応答不明時に重複発行・再使用しない。
 4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。

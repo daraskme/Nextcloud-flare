@@ -23,6 +23,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm verify:contracts && pnpm verify:config && pnpm test && pnpm build",
     "test:browser": "pnpm build:web && playwright test",
     "backup": "node scripts/backup.mjs",
+    "database:restore": "node scripts/database-restore.mjs",
     "backup:monitor": "node scripts/backup-monitor.mjs",
     "backup:drill": "node scripts/backup-drill.mjs",
     "backup:operator-drill": "node scripts/backup-operator-drill.mjs",
