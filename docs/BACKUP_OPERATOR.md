@@ -58,7 +58,7 @@ pnpm backup daily --local \
 
 明示的にcancelしてfailed/releasedが確定した場合は新しいIDで再試行できる。単独releaseによる未完了行や、D1に未完了行があるのにDOの権威がない場合は自動的に置換しない。epoch変更後は開始前の古い計画を置換できるが、旧epochの開始要求は拒否する。
 
-コマンドは1回の実行で終了する。定時起動のschedulerはまだ設置していない。運用時は同じ設定で定期起動し、失敗を通知して原因解消後に再実行する必要がある。最大35日・最少5世代・最新24時間の判定は[health](BACKUP_RETENTION.md)で行う。不足はJSONと終了コード2で報告する。不足と鮮度の自動補充は[maintain](BACKUP_MAINTENANCE.md)へ接続した。期限切れ世代の自動走査は[sweep](BACKUP_SWEEP.md)と`maintain --prune-expired`へ接続済みである。外部通知先は未接続である。指定UUIDの回収は[prune](BACKUP_PRUNING.md)へ接続済みである。schema0039・通常67tableは変わらない。
+コマンドは1回の実行で終了する。定時起動のschedulerはまだ設置していない。運用時は同じ設定で定期起動し、失敗を通知して原因解消後に再実行する必要がある。最大35日・最少5世代・最新24時間の判定は[health](BACKUP_RETENTION.md)で行う。不足はJSONと終了コード2で報告する。不足と鮮度の自動補充は[maintain](BACKUP_MAINTENANCE.md)へ接続した。期限切れ世代の自動走査は[sweep](BACKUP_SWEEP.md)と`maintain --prune-expired`へ接続済みである。[実行監視とHTTPS通知](BACKUP_MONITORING.md)をローカル実装済みで、実通知先は未接続である。指定UUIDの回収は[prune](BACKUP_PRUNING.md)へ接続済みである。schema0039・通常67tableは変わらない。
 
 ## 検証
 

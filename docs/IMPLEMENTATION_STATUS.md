@@ -3,19 +3,17 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
 
-- 新しいNodeの走査14件とmaintain26件、計40件が成功（341ms）。全check内のNode全696件（40file、44.23s）も成功。
-- 新しいworkerd走査13件と既存prune26件、計39件が成功（19.40s）。型検査も成功。
-- 専用bindingドリル成功。67table・SQL11,322bytes、全9操作の権限拒否、5世代の取得、期限切れ世代の自動回収、破損保留とhealthの分離を確認。
-- 実CLIドリル成功。SQL9,079bytes。sweepとmaintain --prune-expiredによる4世代補充、5世代の最終検証、期限切れfixture回収・再実行・receipt保持を確認。
-- `.local-toolchain/run pnpm check`: 成功。Node696件（40file、44.23s）・workerd2,100件（100file、1,245.15s）、計2,796件。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。
-- 最終lint365fileとgit diff --checkが成功。systemd service/timerの構文検査成功。設置・起動は未実施。
-- 前回CIのbackupは9分49秒だったため、実CLIに4世代補充を加えた今回から当該ジョブの上限を10分から30分へ延長。製品側の期限は変更しない。
+- 監視のNode32件が成功（4.04s）。再起動・並行開始・厳密な期限・時刻逆行・同じ終了の再送、監視周期内の失敗/復旧、保存失敗、ACK喪失・遅いACK、HTTP拒否/timeoutを含む。
+- `.local-toolchain/run pnpm test:unit`: 最終Node全728件（41file、43.29s）が成功。
+- `.local-toolchain/run pnpm backup:run-drill`: 成功。SQL9,079bytes。実CLIの4世代補充、5世代の検証、期限切れfixture回収・再送・receipt保持と、全処理完了後の監視DB成功記録を確認。
+- lint369file・型・契約/設定検査、4つのservice/timerのsystemd構文検査が成功。外部通知・hostへのinstall/enableは実行しない。
+- Worker本体に変更なし。前checkpointのローカルworkerd2,100件（100file、1,245.15s）とWeb build・Worker dry-runが成功済み。今回のCIで全体を再検証する。
 
-今回の変更のCIはpush後に確認する。前回のCI結果は冒頭を参照。remote migration・deploy・実R2の削除は実行していない。
+今回の変更のCIはpush後に確認する。前回のCI結果は冒頭を参照。remote migration・deploy・実通知送信は実行していない。
 
 ## 今回の実装
 
@@ -23,6 +21,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4/9 バックアップ実行監視 | monitor-directory・host SQLite・独立watchdog・HTTPS通知・同じIDで再送・短時間の失敗保持・復旧通知・service/timer例 | Node32件追加。秘密非出力、時計、並行送信とACK喪失、loopback受信fixture、実CLIを検証。最終Node728件と監視付き実CLIドリルが成功。結果は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 4 期限切れSQL世代の明示回収 | 専用prune、D1/R2世代照合、35日超・20部品/100RPC、manifest最終削除・再実行 | Node12件・workerd26件を追加。全Node674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功。専用bindingドリルは67table・SQL11,322bytesで成功。実CLIドリルもSQL9,079bytesで成功し、期限内拒否・回収・再実行・receipt保持を確認。全check成功、Node674件＋workerd2,087件（99file、1,143.07s）の計2,761件。型・契約/設定検査・Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査を再確認しました。schema0039・67table・依存を維持。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 4 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。 実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。 timer設置・外部通知・期限切れ削除・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |

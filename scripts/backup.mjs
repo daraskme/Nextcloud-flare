@@ -4,6 +4,7 @@ import { operatorControl } from "./backup/control.mjs";
 import { captureGeneration, restoreGeneration, verifyGeneration } from "./backup/generation.mjs";
 import { inspectBackupHealth } from "./backup/health.mjs";
 import { maintainBackups } from "./backup/maintenance.mjs";
+import { beginBackupMonitoring } from "./backup/monitor.mjs";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
 import { operatorIdentity, runBackup, runDailyBackup } from "./backup/operator.mjs";
 import { pruneBackup } from "./backup/prune.mjs";
@@ -12,7 +13,7 @@ import { sweepBackups } from "./backup/sweep.mjs";
 import { wranglerSource } from "./backup/wrangler.mjs";
 
 const usage = `Usage:
-  pnpm backup maintain --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME] [--prune-expired]
+  pnpm backup maintain --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME] [--prune-expired] [--monitor-directory PATH]
   pnpm backup sweep --operator-config JSON --local|--remote --epoch N
   pnpm backup health --operator-config JSON --local --config PATH --epoch N [--environment NAME]
   pnpm backup health --operator-config JSON --remote --epoch N
@@ -31,11 +32,13 @@ run begins, captures, verifies, publishes and completes the same explicit genera
 daily uses a durable server-owned identity and UTC capture day; re-run after failure with the same configuration. A completed day re-verifies stored data.
 health verifies stored SQL generations and the 35-day / minimum-five / daily policy against server time. Exit 0: healthy; 2: unhealthy or incomplete; 1: inspection failed.
 maintain resumes the daily generation, checks health, adds up to five current generations when needed, and checks health again. Re-run the same arguments after failure.
+--monitor-directory records maintain start/finish for the separate backup:monitor watchdog. An interrupted local run must be explicitly marked abandoned after confirming its runner stopped.
 prune deletes only the specified completed generation older than 35 days through the target BACKUPS binding. Up to 100 batches; exit 2 means re-run to continue. The immutable D1 receipt is retained.
 sweep resumes a durable expiry scan for at most 100 steps. Exit 2 means incomplete or corrupt generations deferred; errors remain in the round summary. maintain --prune-expired runs it after healthy backup inspection.
 The private BackupOperator service binding requires an enabled target and an explicit matching environment capability.
 restore-offline creates a new frozen inspection database; it does not restore a live D1 or resume service.
 `;
+let monitoring;
 try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -53,6 +56,7 @@ try {
       "operator-config": { type: "string" },
       help: { type: "boolean" },
       "prune-expired": { type: "boolean" },
+      "monitor-directory": { type: "string" },
     },
   });
   if (values.help) console.log(usage);
@@ -87,6 +91,7 @@ try {
       ],
       health: ["config", "environment", "local", "remote", "epoch", "operator-config"],
       maintain: [
+        "monitor-directory",
         "prune-expired",
         "directory",
         "config",
@@ -104,6 +109,15 @@ try {
     }[positionals[0]];
     if (!allowed || Object.keys(values).some((key) => !allowed.includes(key)))
       throw new Error("invalid_backup_arguments");
+    if (positionals[0] === "maintain" && values["monitor-directory"] !== undefined) {
+      const candidate = Number(values.epoch);
+      monitoring = await beginBackupMonitoring(
+        values["monitor-directory"],
+        /^\d+$/.test(values.epoch ?? "") && Number.isSafeInteger(candidate) && candidate > 0
+          ? candidate
+          : null,
+      );
+    }
     if (
       ["run", "daily", "health", "maintain", "receipt", "cancel", "prune", "sweep"].includes(
         positionals[0],
@@ -286,4 +300,14 @@ try {
     `${code}: verify arguments and inspect the same generation receipt; an interrupted operation may have committed. No automatic cancellation was attempted.`,
   );
   process.exitCode = 1;
+}
+if (monitoring) {
+  try {
+    monitoring.finish(process.exitCode === 2 ? 2 : process.exitCode ? 1 : 0);
+  } catch {
+    console.error(
+      "backup_monitor_record_failed: inspect the local monitor and the same backup generation before retrying.",
+    );
+    process.exitCode = 1;
+  }
 }

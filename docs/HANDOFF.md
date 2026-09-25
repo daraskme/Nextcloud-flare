@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
-「pnpm backup sweep」と「maintain --prune-expired」を追加しました。ControlDOがround・開始時刻・最大ID・走査cursorを永続化し、期限切れcompleted世代を少量ずつ回収します。100 stepで未完了なら次回へ継続し、破損世代は残して警告を保存しながら後続へ進みます。未知の通信失敗は同じ候補から再照合します。D1 receipt・元BLOBS・ローカル世代は維持します。
+「maintain --monitor-directory」と「pnpm backup:monitor」を追加しました。host内SQLiteへ開始・終了と最後の成功を保存し、失敗・6時間超の実行・24時間超の成功欠落を独立したwatchdogで検知します。最初の未通知失敗を保持するため、監視周期の間に再実行が成功しても見逃しません。
 
-maintainは日次取得・不足/鮮度補充と最終healthが正常な場合だけ、明示optionによる回収を実行します。Linux service例にも接続しましたが、hostへの設置・起動は行っていません。検査済みのhealthと回収結果cleanupを分け、回収未完了・破損保留は終了コード2で通知できます。1 RPCは100行・1世代・最大20部品、D1走査待ちを含む固定25秒の開始期限とR2要求ごとの10秒待機上限を維持します。詳細は[BACKUP_SWEEP](BACKUP_SWEEP.md)。
+HTTPS通知は状態変化と復旧だけを送り、未ACKの通知ID・本文を保存して同じIDで再送します。30秒の送信claim・10秒の待機上限・古いACKの照合を設け、秘密情報やproviderの本文をログへ出しません。中断したrunは正確なUUIDでローカル記録だけを失敗へ確定でき、バックアップのcancel/thawには接続しません。backup/monitorのserviceと別timerの例を用意しました。詳細は[BACKUP_MONITORING](BACKUP_MONITORING.md)。
 
-Node22件・workerd13件を追加しました。全Node696件（40file、44.23s）、新しい走査13件と既存prune26件の計39件（19.40s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全9操作の権限拒否、5世代の実取得と期限切れ回収、破損警告とhealthの分離を確認しました。型検査とsystemd構文検査も成功。実CLIドリルもSQL9,079bytesで成功し、4世代補充と最終5世代の検証、自動回収・再送・receipt保持を確認しました。全checkが成功し、Node696件・workerd2,100件（100file、1,245.15s）、計2,796件を確認しました。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。実CLIの4世代補充を追加したためbackup CI上限を30分へ延長しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+監視32件が成功（4.04s）。Node全728件（41file、43.29s）が成功しました。監視付き実CLIドリルも成功し、SQL9,079bytesの世代から4世代を補充、全5世代の検証と期限切れ回収を終えてから成功記録を保存することを確認しました。lint369file・型・契約/設定検査と4つのsystemd unitの構文検査も成功しています。今回Worker本体・migration・依存は変更せず、schema0039・通常67tableを維持しています。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次は運用通知への接続と復旧手順の整備です。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次はTime Travelとlogical exportからの稼働系復旧を、停止・新epoch・全監査・段階再開へ接続します。通知先・timerの実設置とhost自体の外部監視、破損・未完了世代の回収、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 次のschema変更は0040以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
 
@@ -106,7 +106,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。次は非0終了・長時間実行・24時間超の未実行を扱う運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。非0終了・長時間実行・24時間超の成功欠落を扱う運用通知も接続済み。次はTime Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
+
+復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

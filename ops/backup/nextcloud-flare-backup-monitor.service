@@ -1,0 +1,22 @@
+# Deployment example only. Configure an explicitly approved HTTPS notification receiver.
+[Unit]
+Description=Inspect Nextcloud-flare backup runs and deliver alert transitions
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ncf-backup
+Group=ncf-backup
+StateDirectory=nextcloud-flare-backup
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/nextcloud-flare-backup
+EnvironmentFile=/etc/nextcloud-flare/backup-monitor.env
+ExecStart=/usr/bin/env node /opt/nextcloud-flare/scripts/backup-monitor.mjs notify --directory /var/lib/nextcloud-flare-backup/monitor --source ${NCF_BACKUP_MONITOR_SOURCE}
+TimeoutStartSec=60s
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nextcloud-flare-backup-monitor
+# A failure to deliver must also be monitored by the host/external monitoring service.

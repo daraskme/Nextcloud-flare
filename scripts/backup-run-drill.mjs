@@ -309,20 +309,36 @@ try {
     VALUES('${nextExpired.id}',1,'completed',1,2,2,'${nextExpired.token}','${nextExpired.key}','${nextExpired.hash}')`,
   ]);
   const maintained = decode(
-    await run(cli, ["maintain", ...args.slice(1), "--prune-expired"]),
+    await run(cli, [
+      "maintain",
+      ...args.slice(1),
+      "--prune-expired",
+      "--monitor-directory",
+      join(directory, "monitor"),
+    ]),
   ).result;
   assert.equal(maintained.healthy, true);
   assert.equal(maintained.health.eligible, 5);
   assert.equal(maintained.completed.length, 4);
   assert.equal(maintained.cleanup.absent, 2);
   assert.equal(maintained.cleanup.complete, true);
+  const monitored = decode(
+    await run(join(repo, "scripts/backup-monitor.mjs"), [
+      "check",
+      "--directory",
+      join(directory, "monitor"),
+    ]),
+  ).result;
+  assert.equal(monitored.healthy, true);
+  assert.equal(monitored.run.exitCode, 0);
+  assert.ok(monitored.run.lastSuccessAt > 0);
   const report = {
     result: "PASS",
     directory,
     id,
     bytes: result.bytes,
     proof:
-      "Actual daily/run/receipt/health/download/restore-offline/prune/sweep CLI; maintain --prune-expired replenishes four generations and sweeps expired fixtures after verification; retained receipts, replay, fresh-generation protection and stale-epoch rejection.",
+      "Actual daily/run/receipt/health/download/restore-offline/prune/sweep CLI; monitored maintain --prune-expired replenishes four generations and sweeps expired fixtures after verification; local monitor confirms successful completion; retained receipts, replay, fresh-generation protection and stale-epoch rejection.",
     limits:
       "Local dev registry and resources. No remote authentication/deployment, scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

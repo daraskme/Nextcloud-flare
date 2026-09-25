@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Nextcloud-flare backup health every five minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+AccuracySec=30s
+Unit=nextcloud-flare-backup-monitor.service
+
+[Install]
+WantedBy=timers.target

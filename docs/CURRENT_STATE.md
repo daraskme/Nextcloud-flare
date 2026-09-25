@@ -2,15 +2,15 @@
 
 更新: 2026-09-25。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
-「pnpm backup sweep」と「maintain --prune-expired」を追加しました。ControlDOがround・開始時刻・最大ID・走査cursorを永続化し、期限切れcompleted世代を少量ずつ回収します。100 stepで未完了なら次回へ継続し、破損世代は残して警告を保存しながら後続へ進みます。未知の通信失敗は同じ候補から再照合します。D1 receipt・元BLOBS・ローカル世代は維持します。
+「maintain --monitor-directory」と「pnpm backup:monitor」を追加しました。host内SQLiteへ開始・終了と最後の成功を保存し、失敗・6時間超の実行・24時間超の成功欠落を独立したwatchdogで検知します。最初の未通知失敗を保持するため、監視周期の間に再実行が成功しても見逃しません。
 
-maintainは日次取得・不足/鮮度補充と最終healthが正常な場合だけ、明示optionによる回収を実行します。Linux service例にも接続しましたが、hostへの設置・起動は行っていません。検査済みのhealthと回収結果cleanupを分け、回収未完了・破損保留は終了コード2で通知できます。1 RPCは100行・1世代・最大20部品、D1走査待ちを含む固定25秒の開始期限とR2要求ごとの10秒待機上限を維持します。詳細は[BACKUP_SWEEP](BACKUP_SWEEP.md)。
+HTTPS通知は状態変化と復旧だけを送り、未ACKの通知ID・本文を保存して同じIDで再送します。30秒の送信claim・10秒の待機上限・古いACKの照合を設け、秘密情報やproviderの本文をログへ出しません。中断したrunは正確なUUIDでローカル記録だけを失敗へ確定でき、バックアップのcancel/thawには接続しません。backup/monitorのserviceと別timerの例を用意しました。詳細は[BACKUP_MONITORING](BACKUP_MONITORING.md)。
 
-Node22件・workerd13件を追加しました。全Node696件（40file、44.23s）、新しい走査13件と既存prune26件の計39件（19.40s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全9操作の権限拒否、5世代の実取得と期限切れ回収、破損警告とhealthの分離を確認しました。型検査とsystemd構文検査も成功。実CLIドリルもSQL9,079bytesで成功し、4世代補充と最終5世代の検証、自動回収・再送・receipt保持を確認しました。全checkが成功し、Node696件・workerd2,100件（100file、1,245.15s）、計2,796件を確認しました。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。実CLIの4世代補充を追加したためbackup CI上限を30分へ延長しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+監視32件が成功（4.04s）。Node全728件（41file、43.29s）が成功しました。監視付き実CLIドリルも成功し、SQL9,079bytesの世代から4世代を補充、全5世代の検証と期限切れ回収を終えてから成功記録を保存することを確認しました。lint369file・型・契約/設定検査と4つのsystemd unitの構文検査も成功しています。今回Worker本体・migration・依存は変更せず、schema0039・通常67tableを維持しています。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次は運用通知への接続と復旧手順の整備です。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次はTime Travelとlogical exportからの稼働系復旧を、停止・新epoch・全監査・段階再開へ接続します。通知先・timerの実設置とhost自体の外部監視、破損・未完了世代の回収、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 ## 状態の意味
 
@@ -28,11 +28,12 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer実設置・外部通知・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
+| バックアップ実行監視・通知 | host SQLite・失敗/長時間/成功欠落・HTTPS状態変化通知・永続未ACK・別timer例 | 監視32件、実CLI設定失敗、loopback受信fixture、ACK喪失・並行送信・復旧 | 実通知先・host監視・設置は後続。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
+| 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer/通知先の実設置・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
-| 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer設置・外部通知・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
-| バックアップ保持判定 | inventory/health、実R2/SQL検証・35日/最少5世代/最新24時間・終了コード通知 | Node27/workerd23追加、全Node644件・関連79件成功 | 外部通知・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |
-| 日次バックアップ | サーバー所有ID・同日実データ検証・R2からの再開 | Node17/workerd17追加、関連56件・全Node617件成功 | 定時起動の設置・外部通知・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
+| 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer/通知先の実設置・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
+| バックアップ保持判定 | inventory/health、実R2/SQL検証・35日/最少5世代/最新24時間・終了コード通知 | Node27/workerd23追加、全Node644件・関連79件成功 | 通知先の実設定・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |
+| 日次バックアップ | サーバー所有ID・同日実データ検証・R2からの再開 | Node17/workerd17追加、関連56件・全Node617件成功 | 定時起動・通知先の実設置・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
 | 値を保持するデータ出力 | 型情報・BLOB hex・NUL TEXT・bounded SQL writer | Node16件追加、統合600件と実D1/CLIの3ドリルが成功 | remote・大規模運用は未検証。[BACKUP_EXPORT](BACKUP_EXPORT.md) |
 | 過去schemaと全table照合 | 信頼済みprefix、保存時schema、未知tableの拒否 | Node19件追加、統合584件と実D1の3ドリルが成功 | 全データ形式・live復旧は後続。[BACKUP_HISTORY](BACKUP_HISTORY.md) |
 | バックアップ用GC保護 | migration0039・35日猶予・最後の参照による延長・WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 | 35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。過去schemaは0037以降の信頼済みmigration列だけを受け付けます。追加データ形式、定時起動、Time Travel・live復旧・全storage喪失からの運用復旧とremote検証は未完了です。 |
@@ -111,7 +112,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
 - 共有作成・編集・解除、内部共有、公開link、password/unlock、upload-only共有の完全なHTTP surface。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
-- バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
+- バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
 ### UI

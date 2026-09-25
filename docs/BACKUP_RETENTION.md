@@ -29,7 +29,7 @@ localは同じ対象Workerのdev登録とBACKUPS設定を使う。remoteは`--re
 
 `backup_generations_insufficient`は5世代不足、`backup_daily_missing`は24時間超または有効世代なし、`backup_generation_invalid`は有効期間内の検証失敗、`backup_health_incomplete`は未検査範囲が残ることを示す。`eligible`は実際に検証できた数であり、未完了時の全件数を推測しない。
 
-定時実行には[maintain](BACKUP_MAINTENANCE.md)で日次・検査・不足/鮮度補充を一連に行い、非0終了を監視へ渡す。schedulerや外部通知先はまだ設置していない。不足時は保存先の障害・破損原因を確認し、新しいUUIDで`backup run`を実行して現在の世代を追加し、healthを再実行する。日次コマンドは同日の完成済み世代を再利用するため、それだけで複数世代を補充したことにはならない。途中失敗は同じUUID/epochで再送し、自動取消ししない。過去日のsnapshotを取得できたと装わない。
+定時実行には[maintain](BACKUP_MAINTENANCE.md)で日次・検査・不足/鮮度補充を一連に行い、非0終了を監視へ渡す。[実行監視と通知](BACKUP_MONITORING.md)の実装・設定例はあるが、schedulerや実通知先はまだ設置していない。不足時は保存先の障害・破損原因を確認し、新しいUUIDで`backup run`を実行して現在の世代を追加し、healthを再実行する。日次コマンドは同日の完成済み世代を再利用するため、それだけで複数世代を補充したことにはならない。途中失敗は同じUUID/epochで再送し、自動取消ししない。過去日のsnapshotを取得できたと装わない。
 
 ## 一貫性と上限
 
