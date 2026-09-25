@@ -3,11 +3,12 @@ import { parseArgs } from "node:util";
 import { operatorControl } from "./backup/control.mjs";
 import { captureGeneration, restoreGeneration, verifyGeneration } from "./backup/generation.mjs";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
-import { operatorIdentity, runBackup } from "./backup/operator.mjs";
+import { operatorIdentity, runBackup, runDailyBackup } from "./backup/operator.mjs";
 import { downloadGeneration, publishGeneration } from "./backup/publication.mjs";
 import { wranglerSource } from "./backup/wrangler.mjs";
 
 const usage = `Usage:
+  pnpm backup daily --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME]
   pnpm backup run --operator-config JSON --config PATH --database DB --local|--remote --id UUID --epoch N --directory GENERATIONS [--environment NAME]
   pnpm backup receipt|cancel --operator-config JSON --local|--remote --id UUID --epoch N
   pnpm backup capture --config PATH --database DB --local|--remote --id UUID --epoch N --directory PATH [--environment NAME]
@@ -19,6 +20,7 @@ const usage = `Usage:
 
 capture requires an already-frozen generation from ControlDO.beginBackup. It never releases the barrier.
 run begins, captures, verifies, publishes and completes the same explicit generation. Re-run the same arguments after failure; no automatic cancel.
+daily uses a durable server-owned identity and UTC capture day; re-run after failure with the same configuration. A completed day re-verifies stored data.
 The private BackupOperator service binding requires an enabled target and an explicit matching environment capability.
 restore-offline creates a new frozen inspection database; it does not restore a live D1 or resume service.
 `;
@@ -60,12 +62,22 @@ try {
         "environment",
         "operator-config",
       ],
+      daily: [
+        "directory",
+        "config",
+        "database",
+        "local",
+        "remote",
+        "epoch",
+        "environment",
+        "operator-config",
+      ],
       receipt: ["local", "remote", "id", "epoch", "operator-config"],
       cancel: ["local", "remote", "id", "epoch", "operator-config"],
     }[positionals[0]];
     if (!allowed || Object.keys(values).some((key) => !allowed.includes(key)))
       throw new Error("invalid_backup_arguments");
-    if (["run", "receipt", "cancel"].includes(positionals[0])) {
+    if (["run", "daily", "receipt", "cancel"].includes(positionals[0])) {
       if (
         !values["operator-config"] ||
         !!values.local === !!values.remote ||
@@ -75,14 +87,18 @@ try {
       const epoch = Number(values.epoch),
         id = values.id,
         mode = values.local ? "local" : "remote";
-      operatorIdentity(epoch, id);
-      if (positionals[0] === "run" && (!values.directory || !values.config || !values.database))
+      if (positionals[0] !== "daily") operatorIdentity(epoch, id);
+      else if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
+      if (
+        ["run", "daily"].includes(positionals[0]) &&
+        (!values.directory || !values.config || !values.database)
+      )
         throw new Error("invalid_backup_arguments");
       const control = await operatorControl(values["operator-config"], mode);
       let store;
       try {
         let result;
-        if (positionals[0] === "run") {
+        if (["run", "daily"].includes(positionals[0])) {
           store = values.local
             ? await localBackupStore(values.config, values.environment)
             : new S3BackupStore(process.env);
@@ -92,7 +108,7 @@ try {
             environment: values.environment,
             mode,
           });
-          result = await runBackup({
+          result = await (positionals[0] === "daily" ? runDailyBackup : runBackup)({
             directory: values.directory,
             id,
             epoch,

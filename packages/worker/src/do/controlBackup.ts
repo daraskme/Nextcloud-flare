@@ -45,6 +45,20 @@ export interface BackupCompletionStatus {
   partsVerified: number;
   partsTotal: number;
 }
+interface DailyRow extends Record<string, SqlStorageValue> {
+  id: string;
+  epoch: number;
+  scheduled_at: number;
+}
+export type BackupDailyPlan = {
+  id: string;
+  epoch: number;
+  scheduledAt: number;
+  observedAt: number;
+} & (
+  | { state: "run" }
+  | { state: "completed"; createdAt: number; completedAt: number; manifestSha256: string }
+);
 const clock = "strftime('%s','now')*1000";
 const drained = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
   AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
@@ -61,6 +75,12 @@ export function initializeBackupState(sql: SqlStorage): void {
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL, epoch INTEGER NOT NULL,
     hash TEXT NOT NULL, cursor INTEGER NOT NULL CHECK(cursor>=0), total INTEGER NOT NULL CHECK(total>=0),
     phase TEXT NOT NULL CHECK(phase IN ('verifying','verified','completing','completed'))
+  )`);
+  // The server owns the next daily identity before an exporter attempts begin.
+  // One row bounds storage; completed generations retain their immutable D1 receipts.
+  sql.exec(`CREATE TABLE IF NOT EXISTS control_backup_daily(
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,scheduled_at INTEGER NOT NULL
   )`);
 }
 export function backupActive(sql: SqlStorage): boolean {
@@ -101,6 +121,117 @@ export class ControlBackup {
       partsVerified: row.cursor,
       partsTotal: row.total,
     };
+  }
+
+  /** Persist identity before returning it, including across lost ACKs and UTC midnight. */
+  async daily(epoch: number): Promise<BackupDailyPlan> {
+    epochNumber(epoch);
+    if (this.currentEpoch() !== epoch) throw new Error("invalid_backup_request");
+    const previous = this.storage.sql
+      .exec<DailyRow>("SELECT * FROM control_backup_daily WHERE singleton=1")
+      .toArray()[0];
+    const active = this.#row();
+    const result = await primary(this.db).batch([
+      primary(this.db).prepare(
+        "SELECT epoch,backup_frozen,backup_token FROM control WHERE singleton=1",
+      ),
+      primary(this.db)
+        .prepare(`SELECT id,epoch,state,created_at AS createdAt,completed_at AS completedAt,
+        released_at AS releasedAt,manifest_key AS manifestKey,manifest_sha256 AS manifestSha256
+        FROM backup_runs WHERE id=?`)
+        .bind(previous?.id ?? ""),
+    ]);
+    const current = this.storage.sql
+      .exec<DailyRow>("SELECT * FROM control_backup_daily WHERE singleton=1")
+      .toArray()[0];
+    if (
+      this.currentEpoch() !== epoch ||
+      current?.id !== previous?.id ||
+      this.#row()?.token !== active?.token ||
+      this.#row()?.phase !== active?.phase
+    )
+      throw new Error("backup_conflict");
+    const mirror = result[0]?.results[0] as
+      | { epoch: number; backup_frozen: number; backup_token: string | null }
+      | undefined;
+    if (mirror?.epoch !== epoch) throw new Error("backup_mirror_conflict");
+    const observedAt = Date.now();
+    if (previous && observedAt < previous.scheduled_at) throw new Error("backup_clock_conflict");
+    const plan = (row: DailyRow): BackupDailyPlan => ({
+      id: row.id,
+      epoch: row.epoch,
+      scheduledAt: row.scheduled_at,
+      observedAt,
+      state: "run",
+    });
+    if (active && active.phase !== "released") {
+      if (previous?.id !== active.id || previous.epoch !== epoch || active.epoch !== epoch)
+        throw new Error("backup_active");
+      // Preparing can precede the D1 row. Completing can outlive the D1 receipt.
+      return plan(previous);
+    }
+    if (mirror.backup_frozen !== 0 || mirror.backup_token !== null)
+      throw new Error("backup_mirror_conflict");
+    const receipt = result[1]?.results[0] as
+      | {
+          id: string;
+          epoch: number;
+          state: string;
+          createdAt: number;
+          completedAt: number | null;
+          releasedAt: number | null;
+          manifestKey: string | null;
+          manifestSha256: string | null;
+        }
+      | undefined;
+    if (previous && receipt) {
+      if (receipt.epoch !== previous.epoch) throw new Error("backup_generation_conflict");
+      if (receipt.state === "completed") {
+        if (
+          !Number.isSafeInteger(receipt.createdAt) ||
+          receipt.createdAt < 0 ||
+          !Number.isSafeInteger(receipt.completedAt) ||
+          receipt.completedAt! < receipt.createdAt ||
+          !Number.isSafeInteger(receipt.releasedAt) ||
+          receipt.releasedAt! < receipt.createdAt ||
+          receipt.manifestKey !== backupManifestKey(previous.id) ||
+          typeof receipt.manifestSha256 !== "string" ||
+          !/^[a-f0-9]{64}$/.test(receipt.manifestSha256)
+        )
+          throw new Error("backup_invalid_receipt");
+        if (observedAt < receipt.createdAt || observedAt < receipt.completedAt!)
+          throw new Error("backup_clock_conflict");
+        if (
+          previous.epoch === epoch &&
+          Math.floor(observedAt / 86400000) === Math.floor(receipt.createdAt / 86400000)
+        )
+          return {
+            ...plan(previous),
+            state: "completed",
+            createdAt: receipt.createdAt,
+            completedAt: receipt.completedAt!,
+            manifestSha256: receipt.manifestSha256,
+          };
+      } else if (receipt.state !== "failed" || receipt.releasedAt === null) {
+        // A pending receipt without its active DO authority needs explicit recovery.
+        throw new Error("backup_daily_recovery_required");
+      }
+    } else if (previous?.epoch === epoch) {
+      if (active?.id === previous.id) throw new Error("backup_receipt_missing");
+      return plan(previous);
+    }
+    // An older epoch with no D1 receipt/active intent cannot start later: begin
+    // enforces the current epoch. A terminal failed generation may be retried with
+    // a new identity, but the planner never cancels a live/unknown generation.
+    const next = { id: crypto.randomUUID(), epoch, scheduled_at: observedAt };
+    this.storage.sql.exec(
+      `INSERT INTO control_backup_daily VALUES(1,?,?,?)
+      ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,epoch=excluded.epoch,scheduled_at=excluded.scheduled_at`,
+      next.id,
+      epoch,
+      observedAt,
+    );
+    return plan(next);
   }
 
   /** Only a trusted exporter may attest the manifest hash after full offline SQL verification. */

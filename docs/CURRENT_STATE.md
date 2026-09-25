@@ -2,19 +2,19 @@
 
 更新: 2026-09-25。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-GC保護・過去世代対応は`2563731`までmainへプッシュ済みです。[CI36082097219](https://github.com/daraskme/Nextcloud-flare/actions/runs/36082097219)は確認中です。今回の値を保持する出力修正`3a6e46d`のCIはプッシュ後に確認します。
+直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
-凍結済みD1から型情報付きで値を読み、順次SQLへ出力する方式へ変更しました。実改行とliteral backslashが混在するとdumpが値を変える問題と、WranglerのJSON表示がBLOBを文字列にする問題を解消します。NULを含むTEXTは限定したhex CASTで表し、SQLを実行せず値として読み戻します。既存の書込み停止・全table/schema・全行hash・FK・FTS検査を維持しています。
+「pnpm backup daily」を追加しました。ControlDOが開始前に世代IDを永続化し、応答喪失・日付変更・eviction・別runnerからの再実行でも未完了の同じ世代を継続します。同日の完了世代はD1の完了記録とR2の全データ・SQLを検証してから省略します。日付はサーバーのUTC取得日で判断し、翌日の完了を新しいsnapshotとして数えません。手動開始した別世代との競合や不明な状態を自動取消ししません。
 
-Node16件を追加し、統合後の全600件（36file、18.58s）が成功しました。schema0039の3ドリルも成功し、通常CLIは67table/SQL9,755bytes、専用bindingは9,582bytes、実CLI run→receipt→download→restore-offlineは9,079bytesでした。実D1でUnicode・引用符・CR/LF・literal backslash・NUL・BOM、BLOBと似たTEXT、NULL・小数の保持を確認しています。保存済み0037/0038/0039世代の実CLI検証も成功。lint348file・契約/設定検査も成功しました。
+ローカルの作業世代を失っても、公開済みR2 manifestがあれば全part・SQLを検証して同じ世代を復元し、開始・抽出を繰り返さずに完了へ進めます。欠落・改変・異なる世代は拒否します。
 
-直前のGC保護では、全体workerd2,013件中2,012件が成功し、旧仕様の即時削除を期待していたDAV試験1件を35日の猶予へ更新後、対象17件（7.06s）が成功しました。再実行を含め全2,013件を確認済みです。その後Worker本体・migrationは変更していません。型検査・Web build・Worker dry-runもGC修正後に成功しています。
+Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。
 
-schema0039・通常67table。過去世代は0037以降の信頼済みmigration列だけを受け付けます。整数は安全に表現できる範囲に限定し、未知型や不正UTF-8を拒否します。remoteでの互換性、大規模DBの実行時間・費用は未検証です。35日の保護は元BLOBS bucket内の削除猶予で、別bucketへの複製や削除済みobjectの復元ではありません。
+専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。
 
-詳細は[BACKUP_EXPORT](BACKUP_EXPORT.md)、[BACKUP_HISTORY](BACKUP_HISTORY.md)、[BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md)。
+schema0039・通常67tableと依存は変更していません。日次計画はControlDO内の1行です。コマンドは1回ごとに終了し、schedulerの設置や実環境での自動運転はまだ行っていません。35日保護は元BLOBSの削除猶予であり、独立した複製ではありません。詳細は[BACKUP_OPERATOR](BACKUP_OPERATOR.md)。
 
-次は日次実行と最大35日/最少5世代の保持・不足通知を進めます。Time Travel・live復旧・新epochと全監査、全storage喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は最大35日・最少5世代の保持判定と不足通知を進めます。定時起動の設置、Time Travel・live復旧・新epochと全監査、全storage喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 ## 状態の意味
 
@@ -32,6 +32,7 @@ schema0039・通常67table。過去世代は0037以降の信頼済みmigration�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| 日次バックアップ | サーバー所有ID・同日実データ検証・R2からの再開 | Node17/workerd17追加、関連56件・全Node617件成功 | 定時起動の設置・保持/不足通知・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
 | 値を保持するデータ出力 | 型情報・BLOB hex・NUL TEXT・bounded SQL writer | Node16件追加、統合600件と実D1/CLIの3ドリルが成功 | remote・大規模運用は未検証。[BACKUP_EXPORT](BACKUP_EXPORT.md) |
 | 過去schemaと全table照合 | 信頼済みprefix、保存時schema、未知tableの拒否 | Node19件追加、統合584件と実D1の3ドリルが成功 | 全データ形式・live復旧は後続。[BACKUP_HISTORY](BACKUP_HISTORY.md) |
 | バックアップ用GC保護 | migration0039・35日猶予・最後の参照による延長・WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 | 35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。過去schemaは0037以降の信頼済みmigration列だけを受け付けます。全データ形式、日次実行・世代保持管理、Time Travel・live復旧・全storage喪失からの運用復旧とremote検証は未完了です。 |
@@ -110,7 +111,7 @@ schema0039・通常67table。過去世代は0037以降の信頼済みmigration�
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
 - 共有作成・編集・解除、内部共有、公開link、password/unlock、upload-only共有の完全なHTTP surface。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
-- バックアップの認証付き運用接続・日次実行・保持管理、Time Travel手順、live restore automation。世代生成/検証・R2保存/取得・オフライン復元と、内部RPCの完了記録は実装済み。
+- バックアップの定時起動の設置・保持管理/不足通知、Time Travel手順、live restore automation。専用bindingによるrun/daily・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
 ### UI
@@ -126,7 +127,7 @@ schema0039・通常67table。過去世代は0037以降の信頼済みmigration�
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。
-- backup/restore drill、release、rollback、障害対応runbookの実行。
+- 実環境でのbackup/restore drill、release、rollback、障害対応runbookの実行。ローカルのバックアップ/隔離復元ドリルは実行済み。
 
 ## 未検証
 
@@ -173,10 +174,10 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 1. unknown multipart IDの全体不在証明・予約精算を実装。毎回freshなS3/BLOBS対応検証は走査・中止へ接続済み。upload行喪失時の全bucket走査・容量保留、S3診断と完成済み`u/` objectの隔離・35日回収も接続済み。
 2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
 3. Queueの残るevent kindとrepair。
-4. account mutation / 終了証明を失ったKDFの運用収束、backup logical export/manifest、実環境のrestore/再開drill。内部RPCの段階再開とbackup barrierはローカル実装済み。
+4. account mutation / 終了証明を失ったKDFの運用収束、backup保持/不足通知、実環境のrestore/再開drill。内部RPCの段階再開とbackup barrierはローカル実装済み。
 5. Files UIの残り（共有・media・metadata検索）。
 6. share、media metadata検索、ZIP/reader/media配信。
-7. backup/export/restore drill。
+7. 定時バックアップの設置、Time Travel/live restore drill。
 8. staging inventoryと実環境gate。
 
 ### 次回開始時の確認

@@ -3,7 +3,7 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前検証: GC保護・過去世代対応は`2563731`までmainへプッシュ済みです。[CI36082097219](https://github.com/daraskme/Nextcloud-flare/actions/runs/36082097219)は確認中です。今回の値を保持する出力修正`3a6e46d`のCIはプッシュ後に確認します。
+直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
 ## 今回の実装
 
@@ -11,6 +11,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 日次バックアップ | ControlDOの永続ID、UTC取得日、同日R2/SQL再検証、公開済み世代の再開 | Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。 定時起動の設置・保持/不足通知・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
 | 4 値を保持するデータ出力 | typed query・BLOB hex・NUL TEXT・bounded writer、旧世代互換 | Node16件を追加し、統合後の全600件（36file、18.58s）が成功しました。schema0039の3ドリルも成功し、通常CLIは67table/SQL9,755bytes、専用bindingは9,582bytes、実CLI run→receipt→download→restore-offlineは9,079bytesでした。実D1でUnicode・引用符・CR/LF・literal backslash・NUL・BOM、BLOBと似たTEXT、NULL・小数の保持を確認しています。保存済み0037/0038/0039世代の実CLI検証も成功。lint348file・契約/設定検査も成功しました。 [BACKUP_EXPORT](BACKUP_EXPORT.md) |
 | 4 過去schemaと全table照合 | 信頼済みprefix、保存当時のschema、未知table/view/virtual・抽出中schema変更の拒否 | 過去世代の検証と抽出漏れ防止にNode19件を追加し、GC保護との統合後は全584件（35file、19.17s）が成功しました。保存済み0037/0038世代を実CLIで検証・復元し、当時のschema・凍結・FKを維持しています。実D1で全table一覧の前後照合を含む3ドリルも成功し、従来CLIは67table/SQL9,599bytes、専用bindingは9,613bytes、実CLI run→receipt→download→restore-offlineは9,110bytesでした。lint346fileも成功。Worker本体とmigrationはGC検証後に変更していません。詳細は[BACKUP_HISTORY](BACKUP_HISTORY.md)。 |
 | 4 バックアップ用GC保護 | migration0039、35日猶予、最終参照trigger、再参照競合、WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 [BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md) |
@@ -149,6 +150,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、日次バックアップとrunnerのローカル喪失からの再開を追加。Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。 直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
 - 2026-09-25、Node22件・workerd18件を追加し、全体checkが成功しました。Node527件（32file、14.22s）・workerd2,009件（95file、1,085.53s）、計2,536件を検証しています。lint335file・型・契約/設定検査・Web build・Worker dry-runも成功。schema0038で実CLIのcapture→verify→local R2 publish→download→restore-offlineが67table・SQL9,599bytesで成功しました。今回commitのCI/browserはプッシュ後に確認します。 完了までのcursor/hashをDO SQLiteへ保存し、evictionや途中失敗から同じ世代を継続できます。commitとprimary照合の両応答を失ってもintentを保持します。遅延R2/DB要求、同時検証、cancel/次世代との競合を検査し、元がclosedならclosedへ戻して保留uploadの容量も維持します。migration0038はterminal receiptの必須形状と不変性を追加します。通常67tableは維持しています。 completeBackupは内部RPCです。SQL/source/schema/FK/FTSの全検証は信頼された生成コマンドが担い、ControlDOはそのhashでR2実体を再検査します。利用者が指定したhashを転送する公開APIは追加していません。CLIからの認証付き運用接続、元BLOBSの保護、live復旧、全storage喪失からの運用復旧は未完了です。
 

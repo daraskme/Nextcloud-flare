@@ -128,11 +128,10 @@ try {
   await local(["d1", "execute", "DB", "--file", join(directory, "seed.sql")]);
   const descriptor = join(directory, "operator.json");
   await writeFile(descriptor, JSON.stringify({ service: name, environment: "development" }));
-  const id = crypto.randomUUID(),
-    cli = join(repo, "scripts/backup.mjs"),
+  const cli = join(repo, "scripts/backup.mjs"),
     generations = join(directory, "generations");
   const args = [
-    "run",
+    "daily",
     "--operator-config",
     descriptor,
     "--config",
@@ -140,8 +139,6 @@ try {
     "--database",
     "DB",
     "--local",
-    "--id",
-    id,
     "--epoch",
     "2",
     "--directory",
@@ -155,9 +152,19 @@ try {
         .findLast((line) => line.startsWith('{"command":')),
     );
   const result = decode(await run(cli, args)).result;
+  const id = result.id;
   assert.equal(result.state, "completed");
+  assert.equal(result.daily, true);
+  assert.equal(result.skipped, false);
   assert.match(result.manifestSha256, /^[a-f0-9]{64}$/);
-  assert.equal(decode(await run(cli, args)).result.manifestSha256, result.manifestSha256);
+  const replay = decode(await run(cli, args)).result;
+  assert.equal(replay.id, id);
+  assert.equal(replay.skipped, true);
+  assert.equal(replay.manifestSha256, result.manifestSha256);
+  assert.equal(
+    decode(await run(cli, ["run", ...args.slice(1), "--id", id])).result.manifestSha256,
+    result.manifestSha256,
+  );
   const receipt = decode(
     await run(cli, [
       "receipt",
@@ -215,9 +222,9 @@ try {
     id,
     bytes: result.bytes,
     proof:
-      "Actual backup run/receipt/download/restore-offline CLI, getPlatformProxy private named capability, real Wrangler D1 export and R2 publication, real ControlDO completion and same-command replay.",
+      "Actual backup daily/run/receipt/download/restore-offline CLI, getPlatformProxy private named capability, typed Wrangler D1 query export and R2 publication, real ControlDO daily identity/completion, verified daily replay and explicit run replay.",
     limits:
-      "Local dev registry and resources; no remote authentication/deployment, BLOBS protection, retention or live restore.",
+      "Local dev registry and resources; no remote authentication/deployment, scheduler installation, independent BLOBS copy, retention or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

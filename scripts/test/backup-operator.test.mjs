@@ -6,7 +6,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { controlCalls, operatorConfig, operatorControl } from "../backup/control.mjs";
 import { restoreGeneration } from "../backup/generation.mjs";
 import { manifestKey } from "../backup/objectStore.mjs";
-import { runBackup } from "../backup/operator.mjs";
+import { runBackup, runDailyBackup } from "../backup/operator.mjs";
+import { publishGeneration } from "../backup/publication.mjs";
 import { fixtureGeneration } from "./fixtures/backup.mjs";
 
 let directory, artifact, id, control, store, objects, receipt, db, source;
@@ -47,8 +48,8 @@ beforeEach(async () => {
           state,
           manifestKey: manifestKey(id),
           manifestSha256: hash,
-          releasedAt: 1,
-          completedAt: 1,
+          releasedAt: Date.now(),
+          completedAt: Date.now(),
         };
       return {
         id: generation,
@@ -88,6 +89,137 @@ const run = (extra = {}) =>
     control,
     ...extra,
   });
+
+function dailyPlan() {
+  const createdAt = artifact.manifest.generation.createdAt;
+  return {
+    id,
+    epoch: 1,
+    scheduledAt: createdAt,
+    observedAt: Date.now(),
+    ...(receipt?.state === "completed"
+      ? {
+          state: "completed",
+          createdAt,
+          completedAt: receipt.completedAt,
+          manifestSha256: receipt.manifestSha256,
+        }
+      : { state: "run" }),
+  };
+}
+const daily = (extra = {}) =>
+  runDailyBackup({
+    directory: join(directory, "generations"),
+    epoch: 1,
+    source,
+    store,
+    control,
+    ...extra,
+  });
+
+it("uses the durable daily identity and verifies all stored data before skipping the same day", async () => {
+  control.daily = vi.fn(async () => dailyPlan());
+  const first = await daily({ directory: join(directory, "daily") });
+  expect(first).toMatchObject({ id, daily: true, skipped: false, state: "completed" });
+  expect(control.begin).toHaveBeenCalledExactlyOnceWith(1, id);
+  expect(source.export).toHaveBeenCalledTimes(1);
+  store.get.mockClear();
+  store.put.mockClear();
+  control.complete.mockClear();
+  const next = await daily({ directory: join(directory, "different-runner") });
+  expect(next).toMatchObject({
+    id,
+    daily: true,
+    skipped: true,
+    manifestSha256: first.manifestSha256,
+  });
+  expect(next.bytes).toBeGreaterThan(0);
+  expect(store.get).toHaveBeenCalledWith(manifestKey(id), expect.any(Number));
+  expect(store.get.mock.calls.some(([key]) => key !== manifestKey(id))).toBe(true);
+  expect(store.put).not.toHaveBeenCalled();
+  expect(control.complete).not.toHaveBeenCalled();
+  expect(control.begin).toHaveBeenCalledTimes(1);
+  expect(control.cancel).not.toHaveBeenCalled();
+});
+it.each(["missing manifest", "missing part", "corrupt part"])(
+  "rejects a completed daily generation with %s",
+  async (kind) => {
+    control.daily = vi.fn(async () => dailyPlan());
+    await daily();
+    const key =
+      kind === "missing manifest"
+        ? manifestKey(id)
+        : [...objects.keys()].find((key) => key !== manifestKey(id));
+    if (kind === "corrupt part") objects.set(key, Buffer.from("changed"));
+    else objects.delete(key);
+    await expect(daily()).rejects.toThrow();
+    expect(control.begin).not.toHaveBeenCalled();
+    expect(control.cancel).not.toHaveBeenCalled();
+  },
+);
+it.each(["epoch", "state", "time", "scheduled", "id"])(
+  "rejects an invalid daily %s plan before starting a generation",
+  async (kind) => {
+    const plan = dailyPlan();
+    if (kind === "epoch") plan.epoch++;
+    if (kind === "state") plan.state = "unknown";
+    if (kind === "time") plan.observedAt = plan.scheduledAt - 1;
+    if (kind === "scheduled") plan.scheduledAt = -1;
+    if (kind === "id") plan.id = "invalid";
+    control.daily = vi.fn(async () => plan);
+    await expect(daily()).rejects.toThrow();
+    expect(control.begin).not.toHaveBeenCalled();
+    expect(control.receipt).not.toHaveBeenCalled();
+    expect(store.put).not.toHaveBeenCalled();
+    expect(control.cancel).not.toHaveBeenCalled();
+  },
+);
+it.each(["hash", "completion", "future", "different day", "capture identity"])(
+  "rejects a completed daily plan with mismatched %s",
+  async (kind) => {
+    await run();
+    const plan = dailyPlan();
+    if (kind === "hash") plan.manifestSha256 = "0".repeat(64);
+    if (kind === "completion") plan.completedAt--;
+    if (kind === "future") plan.createdAt = plan.observedAt + 1;
+    if (kind === "different day") plan.observedAt += 86400000;
+    if (kind === "capture identity") plan.createdAt--;
+    control.daily = vi.fn(async () => plan);
+    await expect(daily()).rejects.toThrow();
+    expect(control.begin).not.toHaveBeenCalled();
+    expect(control.cancel).not.toHaveBeenCalled();
+  },
+);
+it("keeps a lost daily-planning acknowledgement uncertain without starting or cancelling", async () => {
+  control.daily = vi.fn().mockRejectedValue(new Error("backup_operator_timeout"));
+  await expect(daily()).rejects.toThrow("backup_operator_timeout");
+  expect(control.begin).not.toHaveBeenCalled();
+  expect(control.cancel).not.toHaveBeenCalled();
+  expect(store.put).not.toHaveBeenCalled();
+});
+it("recovers published data after local disk loss without repeating begin or export", async () => {
+  const saved = await publishGeneration({ directory: artifact.directory, store });
+  await rm(artifact.directory, { recursive: true });
+  const result = await run();
+  expect(result).toMatchObject({ state: "completed", manifestSha256: saved.sha256 });
+  expect(control.begin).not.toHaveBeenCalled();
+  expect(source.export).not.toHaveBeenCalled();
+  expect(control.cancel).not.toHaveBeenCalled();
+  expect(JSON.parse(await readFile(join(artifact.directory, "manifest.json"), "utf8"))).toEqual(
+    saved.manifest,
+  );
+});
+it("refuses corrupt published data after local disk loss without re-capture or cancellation", async () => {
+  await publishGeneration({ directory: artifact.directory, store });
+  await rm(artifact.directory, { recursive: true });
+  const key = [...objects.keys()].find((key) => key !== manifestKey(id));
+  objects.set(key, Buffer.from("corrupt"));
+  await expect(run()).rejects.toThrow();
+  expect(control.begin).not.toHaveBeenCalled();
+  expect(source.export).not.toHaveBeenCalled();
+  expect(control.complete).not.toHaveBeenCalled();
+  expect(control.cancel).not.toHaveBeenCalled();
+});
 
 it("resumes a verified artifact without re-beginning, publishes and confirms completion", async () => {
   const result = await run();

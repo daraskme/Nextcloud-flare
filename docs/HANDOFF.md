@@ -25,19 +25,19 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-GC保護・過去世代対応は`2563731`までmainへプッシュ済みです。[CI36082097219](https://github.com/daraskme/Nextcloud-flare/actions/runs/36082097219)は確認中です。今回の値を保持する出力修正`3a6e46d`のCIはプッシュ後に確認します。
+直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
-凍結済みD1から型情報付きで値を読み、順次SQLへ出力する方式へ変更しました。実改行とliteral backslashが混在するとdumpが値を変える問題と、WranglerのJSON表示がBLOBを文字列にする問題を解消します。NULを含むTEXTは限定したhex CASTで表し、SQLを実行せず値として読み戻します。既存の書込み停止・全table/schema・全行hash・FK・FTS検査を維持しています。
+「pnpm backup daily」を追加しました。ControlDOが開始前に世代IDを永続化し、応答喪失・日付変更・eviction・別runnerからの再実行でも未完了の同じ世代を継続します。同日の完了世代はD1の完了記録とR2の全データ・SQLを検証してから省略します。日付はサーバーのUTC取得日で判断し、翌日の完了を新しいsnapshotとして数えません。手動開始した別世代との競合や不明な状態を自動取消ししません。
 
-Node16件を追加し、統合後の全600件（36file、18.58s）が成功しました。schema0039の3ドリルも成功し、通常CLIは67table/SQL9,755bytes、専用bindingは9,582bytes、実CLI run→receipt→download→restore-offlineは9,079bytesでした。実D1でUnicode・引用符・CR/LF・literal backslash・NUL・BOM、BLOBと似たTEXT、NULL・小数の保持を確認しています。保存済み0037/0038/0039世代の実CLI検証も成功。lint348file・契約/設定検査も成功しました。
+ローカルの作業世代を失っても、公開済みR2 manifestがあれば全part・SQLを検証して同じ世代を復元し、開始・抽出を繰り返さずに完了へ進めます。欠落・改変・異なる世代は拒否します。
 
-直前のGC保護では、全体workerd2,013件中2,012件が成功し、旧仕様の即時削除を期待していたDAV試験1件を35日の猶予へ更新後、対象17件（7.06s）が成功しました。再実行を含め全2,013件を確認済みです。その後Worker本体・migrationは変更していません。型検査・Web build・Worker dry-runもGC修正後に成功しています。
+Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。
 
-schema0039・通常67table。過去世代は0037以降の信頼済みmigration列だけを受け付けます。整数は安全に表現できる範囲に限定し、未知型や不正UTF-8を拒否します。remoteでの互換性、大規模DBの実行時間・費用は未検証です。35日の保護は元BLOBS bucket内の削除猶予で、別bucketへの複製や削除済みobjectの復元ではありません。
+専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。
 
-詳細は[BACKUP_EXPORT](BACKUP_EXPORT.md)、[BACKUP_HISTORY](BACKUP_HISTORY.md)、[BACKUP_GC_PROTECTION](BACKUP_GC_PROTECTION.md)。
+schema0039・通常67tableと依存は変更していません。日次計画はControlDO内の1行です。コマンドは1回ごとに終了し、schedulerの設置や実環境での自動運転はまだ行っていません。35日保護は元BLOBSの削除猶予であり、独立した複製ではありません。詳細は[BACKUP_OPERATOR](BACKUP_OPERATOR.md)。
 
-次は日次実行と最大35日/最少5世代の保持・不足通知を進めます。Time Travel・live復旧・新epochと全監査、全storage喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は最大35日・最少5世代の保持判定と不足通知を進めます。定時起動の設置、Time Travel・live復旧・新epochと全監査、全storage喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 次のschema変更は0040以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
 

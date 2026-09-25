@@ -20,7 +20,7 @@ export interface BackupRunReceipt {
 
 /** Private service-binding capability for a trusted SQL verifier. Never a user HTTP API. */
 export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
-  #authorize(epoch: number, id: string): void {
+  #authorize(epoch: number): void {
     if (
       this.env.BACKUP_OPERATOR_ENABLED !== "true" ||
       !["development", "staging", "production"].includes(this.env.ENVIRONMENT) ||
@@ -29,14 +29,18 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
     )
       throw new Error("backup_operator_forbidden");
     if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
-    backupManifestKey(id);
   }
   #control(epoch: number, id: string) {
-    this.#authorize(epoch, id);
+    this.#authorize(epoch);
+    backupManifestKey(id);
     return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME));
   }
   begin(epoch: number, id: string) {
     return this.#control(epoch, id).beginBackup(epoch, id);
+  }
+  daily(epoch: number) {
+    this.#authorize(epoch);
+    return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).planDailyBackup(epoch);
   }
   complete(epoch: number, id: string, manifestSha256: string) {
     return this.#control(epoch, id).completeBackup(epoch, id, manifestSha256);
@@ -45,7 +49,8 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
     return this.#control(epoch, id).cancelBackup(epoch, id);
   }
   receipt(epoch: number, id: string): Promise<BackupRunReceipt | null> {
-    this.#authorize(epoch, id);
+    this.#authorize(epoch);
+    backupManifestKey(id);
     return primary(this.env.DB)
       .prepare(
         `SELECT id,epoch,state,manifest_key AS manifestKey,manifest_sha256 AS manifestSha256,

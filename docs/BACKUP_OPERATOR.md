@@ -1,10 +1,10 @@
 # バックアップ運用コマンド
 
-更新: 2026-09-25。`pnpm backup run`が、明示した同じ世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。日次スケジュール・保持管理・live restoreは別工程。
+更新: 2026-09-25。`pnpm backup daily`がサーバーで管理する日次世代、`pnpm backup run`が明示した世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。定時起動の設置・保持管理・live restoreは別工程。
 
 ## 呼出し権限
 
-`BackupOperator`はmain Workerのnamed entrypointで、`begin/complete/cancel/receipt`だけを公開する。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
+`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt`だけを公開する。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
 
 呼出し元が持つ専用service bindingをcapabilityとして扱う。[Cloudflare RPCの権限モデル](https://developers.cloudflare.com/workers/runtime-apis/rpc/visibility/)と[named entrypoint](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/#named-entrypoints)に従い、bindingの付与を運用者に限定する。target側は`BACKUP_OPERATOR_ENABLED=true`を明示した場合だけ受け付け、bindingの`ctx.props.purpose=logical-backup-v1`と`ctx.props.environment=ENVIRONMENT`を全操作で検査する。propsは秘密鍵ではなく、環境inventoryに含むbinding設定である。このcapabilityを未信頼Workerへ渡したり、利用者入力をそのまま転送するHTTP窓口を作ったりしてはならない。
 
@@ -33,6 +33,7 @@ remote descriptorは`{"service":"<対象Worker名>","environment":"production","
 
 - 実行前にUUIDとepochを保存し、応答喪失後も同じ引数を使う。自動で別UUIDへ切り替えない。
 - 完成したローカル世代があれば全SQL検証を通して再利用し、既存R2 part/manifestを照合する。ControlDOがcompleting中でもbeginをやり直さず、同じhashで完了を再照合する。
+- ローカル世代を失っても、未完了のD1 receiptとR2の公開済みmanifestがあれば、全part・SQLを検証して同じ世代を復元する。beginや再抽出をせず、そのmanifestのhashで完了を再照合する。R2が欠落・改変されていれば停止する。
 - D1にcompletedがあってもControlDOへの同じcomplete呼出しを行い、未処理の完了intentと受付状態を収束させてから成功する。次の世代を開始済みなら古いrunは競合しうる。古い世代の参照にはreceiptを使う。
 - 1 RPCは最大60秒で呼出し元が待機を打ち切る。これは処理取消ではなく結果不明である。自動cancelや自動thawは行わない。SQL検証/保存/完了が失敗したら原因を直して同じ世代を再実行する。
 - 中止が必要なら`pnpm backup cancel --local|--remote --operator-config ... --id ... --epoch ...`を明示して実行する。completing intent中は中止できず、completeの再照合で収束させる。中止済み世代はfailedとなり、後から完成へ昇格しない。
@@ -40,8 +41,25 @@ remote descriptorは`{"service":"<対象Worker名>","environment":"production","
 
 manifest hashの証言とControlDOの完了判定は[BACKUP_COMPLETION](BACKUP_COMPLETION.md)を参照。保存完了はBLOBS本体の保護やlive復旧の完了を意味しない。
 
+## 日次実行
+
+```sh
+pnpm backup daily --local \
+  --operator-config scripts/backup/operator.local.example.json \
+  --config wrangler.jsonc --database DB \
+  --epoch <現在のepoch> --directory <世代の保存先>
+```
+
+`daily`は`--id`を受け取らない。ControlDOがUUID・epoch・計画時刻をSQLiteの1行に保存してから返す。開始前の応答喪失や日付変更、別runnerからの再実行でも、未完了の同じ世代を使う。D1 receiptがまだないpreparing intentも引き継ぐ。手動で開始した別世代は引き継がず、競合として停止する。
+
+日の境界はサーバーのUTC時刻で判断する。同じUTC日に取得した完了世代があれば、D1の完了記録とhashを照合し、R2から全データを取得してSQL・schema・FK・FTS検査を通したときだけ`skipped:true`で成功する。ローカル時計やファイルの有無で省略しない。日をまたいで完了した世代は元の取得日に属し、次の呼出しで当日の新しい世代を作る。取り逃した過去日のsnapshotを作ったことにはしない。
+
+明示的にcancelしてfailed/releasedが確定した場合は新しいIDで再試行できる。単独releaseによる未完了行や、D1に未完了行があるのにDOの権威がない場合は自動的に置換しない。epoch変更後は開始前の古い計画を置換できるが、旧epochの開始要求は拒否する。
+
+コマンドは1回の実行で終了する。定時起動のschedulerはまだ設置していない。運用時は同じ設定で定期起動し、失敗を通知して原因解消後に再実行する必要がある。最大35日・最少5世代の保持判定、不足通知、期限切れR2 object削除は未実装である。schema0039・通常67tableは変わらない。
+
 ## 検証
 
-Node試験は保存/開始/完了の失敗、ACK喪失後の再照合、不正receipt、停止した進捗、複数part、設定の取り違えと期限を検査する。`backup:operator-drill`は実named service bindingの権限/環境/無効化、実ControlDO/D1/R2によるrun、eviction再送、取消・履歴、隔離復元のFTS/会計を検査する。`backup:run-drill`は実Wrangler dev登録とgetPlatformProxy、実CLI run/receipt/download/restore-offlineをつなぐ。従来の`backup:drill`は独立したcapture/publish/downloadコマンドも維持する。
+Node試験は日次再実行・保存済みデータの欠落/改変・ローカル喪失からの復元、保存/開始/完了の失敗、ACK喪失後の再照合、不正receipt、複数part、設定の取り違えと期限を検査する。workerd試験はUTC日付変更、eviction、開始前の障害、同時要求、手動世代との競合、epoch変更を検査する。`backup:operator-drill`はdailyを含む実named service bindingの権限/環境/無効化、実ControlDO/D1/R2によるrun、eviction再送、取消・履歴、隔離復元のFTS/会計を検査する。`backup:run-drill`は実Wrangler dev登録とgetPlatformProxy、実CLI daily/run/receipt/download/restore-offlineをつなぐ。従来の`backup:drill`は独立したcapture/publish/downloadコマンドも維持する。
 
 最新の実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。全ドリルは隔離したlocal fixtureであり、remote Cloudflareの認証・配備・全storage喪失・Time Travelの証明ではない。
