@@ -144,7 +144,7 @@ try {
   const id = crypto.randomUUID();
   const clientEnv = await harness.getWorker("operator-client").getEnv();
   for (const binding of ["WRONG_ENV", "NO_GRANT", "DISABLED"]) {
-    for (const method of ["begin", "complete", "cancel", "receipt", "daily"]) {
+    for (const method of ["begin", "complete", "cancel", "receipt", "daily", "inventory"]) {
       await assert.rejects(
         controlCalls(clientEnv[binding])[method](2, id, "0".repeat(64)),
         /backup_operator_forbidden/,

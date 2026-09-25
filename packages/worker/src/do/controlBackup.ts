@@ -1,4 +1,6 @@
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
+import { inspectBackupInventory } from "../backup/inventory";
 import { verifyPublicationPart } from "../backup/publication";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { epochNumber } from "./epochHistory";
@@ -121,6 +123,26 @@ export class ControlBackup {
       partsVerified: row.cursor,
       partsTotal: row.total,
     };
+  }
+
+  inventory(epoch: number, cursor?: BackupInventoryCursor) {
+    return inspectBackupInventory(
+      this.db,
+      epoch,
+      () => {
+        const row = this.#row();
+        return {
+          epoch: this.currentEpoch(),
+          token: row?.token ?? null,
+          phase: row?.phase ?? null,
+          active:
+            row && row.phase !== "released"
+              ? { id: row.id, epoch: row.epoch, phase: row.phase, createdAt: row.created_at }
+              : null,
+        };
+      },
+      cursor,
+    );
   }
 
   /** Persist identity before returning it, including across lost ACKs and UTC midnight. */

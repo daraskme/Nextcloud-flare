@@ -25,19 +25,19 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
+日次バックアップは`221952f`までmainへプッシュ済みです。[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)はUbuntu・Windows 2/2・backup・browserが成功し、Windows 1/2は確認中です。今回の保持判定もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
-「pnpm backup daily」を追加しました。ControlDOが開始前に世代IDを永続化し、応答喪失・日付変更・eviction・別runnerからの再実行でも未完了の同じ世代を継続します。同日の完了世代はD1の完了記録とR2の全データ・SQLを検証してから省略します。日付はサーバーのUTC取得日で判断し、翌日の完了を新しいsnapshotとして数えません。手動開始した別世代との競合や不明な状態を自動取消ししません。
+「pnpm backup health」を追加しました。D1の完了記録とR2の全データ・SQLを照合し、35日以内の有効世代が5個以上、最新取得が24時間以内であるかを判定します。取得時刻を基準にし、5世代不足でも期限切れを数えません。検証後のサーバー時刻で再判定し、途中でepochやバックアップ状態が変わった検査は無効にします。
 
-ローカルの作業世代を失っても、公開済みR2 manifestがあれば全part・SQLを検証して同じ世代を復元し、開始・抽出を繰り返さずに完了へ進めます。欠落・改変・異なる世代は拒否します。
+結果は世代別状態・不足数・エラーコードを含むJSONです。正常は終了コード0、不足・破損・検査未完了は2、判定不能は1を返します。監視に渡せる形式まで実装し、外部への通知送信は行っていません。一覧は100行ずつ読み、全体10,000行・データ検証100世代の上限を超えた場合も正常とは報告しません。
 
-Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。
+Node27件・workerd23件を追加しました。全Node644件（37file、34.40s）と、バックアップ関連workerd79件（4file、43.54s）が成功。実際に保存した5世代の全SQL検証と、1世代の破損によって有効数が4へ減ることを確認しました。35日の前後1ms、24時間、検査中の期限超過、同時開始、eviction、205行のページング、破損/不正receipt、検査上限と秘密情報の非出力を含みます。lint354file・型・契約/設定検査・Web build・Worker dry-runも成功しました。
 
-専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。
+専用bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、inventoryを含む6操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→再実行→receipt→health→download→restore-offlineもSQL9,079bytesで成功しました。healthは保存済み1世代を検証し、不足4世代と終了コード2を返し、元の停止状態を変更しませんでした。
 
-schema0039・通常67tableと依存は変更していません。日次計画はControlDO内の1行です。コマンドは1回ごとに終了し、schedulerの設置や実環境での自動運転はまだ行っていません。35日保護は元BLOBSの削除猶予であり、独立した複製ではありません。詳細は[BACKUP_OPERATOR](BACKUP_OPERATOR.md)。
+schema0039・通常67tableと依存は変更していません。healthは読取り専用で、現在のD1が利用可能な場合の論理世代の検査です。source BLOBSの実在性・独立複製やlive復元の証明ではありません。運用方法と制限は[BACKUP_RETENTION](BACKUP_RETENTION.md)。
 
-次は最大35日・最少5世代の保持判定と不足通知を進めます。定時起動の設置、Time Travel・live復旧・新epochと全監査、全storage喪失からの運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は定時実行・外部通知の接続、5世代の自動補充、期限切れR2 objectの回収を進めます。Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択と運用復旧、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 次のschema変更は0040以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
 

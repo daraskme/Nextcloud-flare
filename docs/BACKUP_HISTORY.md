@@ -20,4 +20,4 @@ manifestのmigration列は、リポジトリにあるSQLファイルの先頭か
 
 保存済みの実Wrangler世代と、0037/0038から作った固定条件の世代で、凍結を保つ復元、quota/FTS/Unicode・改行・backslash、R2 publication/download、改変拒否を検証する。captureには定義外table/view/virtual、限定した内部table例外、抽出中のschema変更の試験がある。最新の実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
 
-これはオフライン検証の互換性と抽出漏れの防止であり、元BLOBSの実在性、Time Travel/live restore、新epochと復旧監査、日次/世代保持管理、remoteの運用検証は別工程である。
+これはオフライン検証の互換性と抽出漏れの防止であり、元BLOBSの実在性、Time Travel/live restore、新epochと復旧監査、定時起動/自動補充/削除、remoteの運用検証は別工程である。日次コマンドと[保持判定](BACKUP_RETENTION.md)は接続済みである。

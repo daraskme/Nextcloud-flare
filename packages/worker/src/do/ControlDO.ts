@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
+import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
 import type { KdfRequest } from "../auth/globalKdf";
 import {
   type GlobalMutationAdmission,
@@ -223,6 +224,10 @@ export class ControlDO extends DurableObject<Env> {
 
   async planDailyBackup(expectedEpoch: number) {
     return this.#backup.daily(expectedEpoch);
+  }
+
+  async inspectBackupInventory(expectedEpoch: number, cursor?: BackupInventoryCursor) {
+    return this.#backup.inventory(expectedEpoch, cursor);
   }
 
   async releaseBackup(expectedEpoch: number, id: string): Promise<BackupBarrierStatus> {

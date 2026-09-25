@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
 import { primary } from "../db/primary";
 import { CONTROL_NAME } from "../do/controlName";
 import type { Env } from "../env";
@@ -41,6 +42,13 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
   daily(epoch: number) {
     this.#authorize(epoch);
     return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).planDailyBackup(epoch);
+  }
+  inventory(epoch: number, cursor?: BackupInventoryCursor) {
+    this.#authorize(epoch);
+    return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).inspectBackupInventory(
+      epoch,
+      cursor,
+    );
   }
   complete(epoch: number, id: string, manifestSha256: string) {
     return this.#control(epoch, id).completeBackup(epoch, id, manifestSha256);

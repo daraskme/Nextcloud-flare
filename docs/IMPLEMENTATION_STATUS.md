@@ -3,7 +3,7 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
+日次バックアップは`221952f`までmainへプッシュ済みです。[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)はUbuntu・Windows 2/2・backup・browserが成功し、Windows 1/2は確認中です。今回の保持判定もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
 ## 今回の実装
 
@@ -11,6 +11,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 バックアップ保持判定 | inventory/health、サーバー時刻・実R2/SQL検証、35日/最少5世代/最新24時間、終了コード | Node27件・workerd23件を追加しました。全Node644件（37file、34.40s）と、バックアップ関連workerd79件（4file、43.54s）が成功。実際に保存した5世代の全SQL検証と、1世代の破損によって有効数が4へ減ることを確認しました。35日の前後1ms、24時間、検査中の期限超過、同時開始、eviction、205行のページング、破損/不正receipt、検査上限と秘密情報の非出力を含みます。lint354file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、inventoryを含む6操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→再実行→receipt→health→download→restore-offlineもSQL9,079bytesで成功しました。healthは保存済み1世代を検証し、不足4世代と終了コード2を返し、元の停止状態を変更しませんでした。 外部通知・自動補充/削除・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |
 | 4 日次バックアップ | ControlDOの永続ID、UTC取得日、同日R2/SQL再検証、公開済み世代の再開 | Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。 定時起動の設置・保持/不足通知・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
 | 4 値を保持するデータ出力 | typed query・BLOB hex・NUL TEXT・bounded writer、旧世代互換 | Node16件を追加し、統合後の全600件（36file、18.58s）が成功しました。schema0039の3ドリルも成功し、通常CLIは67table/SQL9,755bytes、専用bindingは9,582bytes、実CLI run→receipt→download→restore-offlineは9,079bytesでした。実D1でUnicode・引用符・CR/LF・literal backslash・NUL・BOM、BLOBと似たTEXT、NULL・小数の保持を確認しています。保存済み0037/0038/0039世代の実CLI検証も成功。lint348file・契約/設定検査も成功しました。 [BACKUP_EXPORT](BACKUP_EXPORT.md) |
 | 4 過去schemaと全table照合 | 信頼済みprefix、保存当時のschema、未知table/view/virtual・抽出中schema変更の拒否 | 過去世代の検証と抽出漏れ防止にNode19件を追加し、GC保護との統合後は全584件（35file、19.17s）が成功しました。保存済み0037/0038世代を実CLIで検証・復元し、当時のschema・凍結・FKを維持しています。実D1で全table一覧の前後照合を含む3ドリルも成功し、従来CLIは67table/SQL9,599bytes、専用bindingは9,613bytes、実CLI run→receipt→download→restore-offlineは9,110bytesでした。lint346fileも成功。Worker本体とmigrationはGC検証後に変更していません。詳細は[BACKUP_HISTORY](BACKUP_HISTORY.md)。 |
@@ -150,6 +151,8 @@ LockDO は各 namespace mutation と DAV lock 用の内部 RPC を実装した�
 - 開発 state の破棄は dev 停止後に、このリポジトリ配下の `.wrangler/state` だけを対象として行う。実行前に絶対パスを確認する。staging/production の state や既存 bucket を削除しない。
 
 ## 実行記録
+
+- 2026-09-25、保持判定と不足/破損レポートを追加。Node27件・workerd23件を追加しました。全Node644件（37file、34.40s）と、バックアップ関連workerd79件（4file、43.54s）が成功。実際に保存した5世代の全SQL検証と、1世代の破損によって有効数が4へ減ることを確認しました。35日の前後1ms、24時間、検査中の期限超過、同時開始、eviction、205行のページング、破損/不正receipt、検査上限と秘密情報の非出力を含みます。lint354file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、inventoryを含む6操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→再実行→receipt→health→download→restore-offlineもSQL9,079bytesで成功しました。healthは保存済み1世代を検証し、不足4世代と終了コード2を返し、元の停止状態を変更しませんでした。 日次バックアップは`221952f`までmainへプッシュ済みです。[CI36084559502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36084559502)はUbuntu・Windows 2/2・backup・browserが成功し、Windows 1/2は確認中です。今回の保持判定もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 
 - 2026-09-25、日次バックアップとrunnerのローカル喪失からの再開を追加。Node17件とworkerd17件を追加しました。全Node617件（36file、33.23s）、バックアップ関連workerd55件（3file、36.73s）、その後追加した日跨ぎ完了を含む日次17件（3.93s）が成功し、重複を除く関連56件を確認済みです。lint349file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用service bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、dailyを含む5操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→同日再検証→明示run再送→receipt→download→restore-offlineもSQL9,079bytesで成功しました。 直前の`3b897ea`までmainへプッシュ済みで、[CI36083116061](https://github.com/daraskme/Nextcloud-flare/actions/runs/36083116061)はWindows2分割・Ubuntu・backup・browserの全5ジョブが成功しました。今回の日次実行もローカル検証が完了しました。今回のCIはプッシュ後に確認します。
 

@@ -2,12 +2,15 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { operatorControl } from "./backup/control.mjs";
 import { captureGeneration, restoreGeneration, verifyGeneration } from "./backup/generation.mjs";
+import { inspectBackupHealth } from "./backup/health.mjs";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
 import { operatorIdentity, runBackup, runDailyBackup } from "./backup/operator.mjs";
 import { downloadGeneration, publishGeneration } from "./backup/publication.mjs";
 import { wranglerSource } from "./backup/wrangler.mjs";
 
 const usage = `Usage:
+  pnpm backup health --operator-config JSON --local --config PATH --epoch N [--environment NAME]
+  pnpm backup health --operator-config JSON --remote --epoch N
   pnpm backup daily --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME]
   pnpm backup run --operator-config JSON --config PATH --database DB --local|--remote --id UUID --epoch N --directory GENERATIONS [--environment NAME]
   pnpm backup receipt|cancel --operator-config JSON --local|--remote --id UUID --epoch N
@@ -21,6 +24,7 @@ const usage = `Usage:
 capture requires an already-frozen generation from ControlDO.beginBackup. It never releases the barrier.
 run begins, captures, verifies, publishes and completes the same explicit generation. Re-run the same arguments after failure; no automatic cancel.
 daily uses a durable server-owned identity and UTC capture day; re-run after failure with the same configuration. A completed day re-verifies stored data.
+health verifies stored SQL generations and the 35-day / minimum-five / daily policy against server time. Exit 0: healthy; 2: unhealthy or incomplete; 1: inspection failed.
 The private BackupOperator service binding requires an enabled target and an explicit matching environment capability.
 restore-offline creates a new frozen inspection database; it does not restore a live D1 or resume service.
 `;
@@ -72,12 +76,13 @@ try {
         "environment",
         "operator-config",
       ],
+      health: ["config", "environment", "local", "remote", "epoch", "operator-config"],
       receipt: ["local", "remote", "id", "epoch", "operator-config"],
       cancel: ["local", "remote", "id", "epoch", "operator-config"],
     }[positionals[0]];
     if (!allowed || Object.keys(values).some((key) => !allowed.includes(key)))
       throw new Error("invalid_backup_arguments");
-    if (["run", "daily", "receipt", "cancel"].includes(positionals[0])) {
+    if (["run", "daily", "health", "receipt", "cancel"].includes(positionals[0])) {
       if (
         !values["operator-config"] ||
         !!values.local === !!values.remote ||
@@ -87,36 +92,52 @@ try {
       const epoch = Number(values.epoch),
         id = values.id,
         mode = values.local ? "local" : "remote";
-      if (positionals[0] !== "daily") operatorIdentity(epoch, id);
+      if (!["daily", "health"].includes(positionals[0])) operatorIdentity(epoch, id);
       else if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
       if (
         ["run", "daily"].includes(positionals[0]) &&
         (!values.directory || !values.config || !values.database)
       )
         throw new Error("invalid_backup_arguments");
+      if (
+        positionals[0] === "health" &&
+        ((values.local && !values.config) ||
+          (values.remote && (values.config || values.environment)))
+      )
+        throw new Error("invalid_backup_arguments");
       const control = await operatorControl(values["operator-config"], mode);
       let store;
       try {
         let result;
-        if (["run", "daily"].includes(positionals[0])) {
+        if (["run", "daily", "health"].includes(positionals[0])) {
           store = values.local
             ? await localBackupStore(values.config, values.environment)
             : new S3BackupStore(process.env);
-          const source = await wranglerSource({
-            config: values.config,
-            database: values.database,
-            environment: values.environment,
-            mode,
-          });
-          result = await (positionals[0] === "daily" ? runDailyBackup : runBackup)({
-            directory: values.directory,
-            id,
-            epoch,
-            control,
-            source,
-            store,
-            progress: (event) => console.log(JSON.stringify(event)),
-          });
+          if (positionals[0] === "health") {
+            result = await inspectBackupHealth({
+              epoch,
+              control,
+              store,
+              progress: (event) => console.log(JSON.stringify(event)),
+            });
+            if (!result.healthy) process.exitCode = 2;
+          } else {
+            const source = await wranglerSource({
+              config: values.config,
+              database: values.database,
+              environment: values.environment,
+              mode,
+            });
+            result = await (positionals[0] === "daily" ? runDailyBackup : runBackup)({
+              directory: values.directory,
+              id,
+              epoch,
+              control,
+              source,
+              store,
+              progress: (event) => console.log(JSON.stringify(event)),
+            });
+          }
         } else result = await control[positionals[0]](epoch, id);
         console.log(JSON.stringify({ command: positionals[0], result }));
       } finally {

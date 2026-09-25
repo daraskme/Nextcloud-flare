@@ -84,9 +84,10 @@ const server = await unstable_dev(source, {
 });
 
 let command = 0;
-async function run(script, args) {
+async function run(script, args, expectedExit = 0) {
   const number = ++command;
   let result;
+  let exit = 0;
   try {
     result = await exec(process.execPath, [script, ...args], {
       cwd: repo,
@@ -94,13 +95,11 @@ async function run(script, args) {
       env: { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" },
     });
   } catch (error) {
-    await writeFile(
-      join(directory, String(number) + ".log"),
-      String(error.stdout ?? "") + String(error.stderr ?? ""),
-    );
-    throw new Error("backup_run_drill_command_failed");
+    exit = error.code;
+    result = { stdout: String(error.stdout ?? ""), stderr: String(error.stderr ?? "") };
   }
   await writeFile(join(directory, String(number) + ".log"), result.stdout + result.stderr);
+  assert.equal(exit, expectedExit, "backup_run_drill_command_failed");
   return result.stdout;
 }
 const wrangler = join(repo, "node_modules/wrangler/bin/wrangler.js");
@@ -179,6 +178,20 @@ try {
   ).result;
   assert.equal(receipt.state, "completed");
   assert.equal(receipt.manifestSha256, result.manifestSha256);
+  const health = decode(
+    await run(
+      cli,
+      ["health", "--operator-config", descriptor, "--local", "--config", config, "--epoch", "2"],
+      2,
+    ),
+  ).result;
+  assert.equal(health.healthy, false);
+  assert.equal(health.complete, true);
+  assert.equal(health.eligible, 1);
+  assert.equal(health.missing, 4);
+  assert.deepEqual(health.alerts, ["backup_generations_insufficient"]);
+  assert.equal(health.generations[0].id, id);
+  assert.equal(health.generations[0].status, "eligible");
   const status = JSON.parse(
     await local([
       "d1",
@@ -222,9 +235,9 @@ try {
     id,
     bytes: result.bytes,
     proof:
-      "Actual backup daily/run/receipt/download/restore-offline CLI, getPlatformProxy private named capability, typed Wrangler D1 query export and R2 publication, real ControlDO daily identity/completion, verified daily replay and explicit run replay.",
+      "Actual backup daily/run/receipt/health/download/restore-offline CLI, private named capability, typed D1 query export and R2 publication, durable daily replay, server inventory and stored SQL verification, minimum-five shortage alert with exit code 2.",
     limits:
-      "Local dev registry and resources; no remote authentication/deployment, scheduler installation, independent BLOBS copy, retention or live restore.",
+      "Local dev registry and resources; no remote authentication/deployment, scheduler installation, automatic replenishment/pruning, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
