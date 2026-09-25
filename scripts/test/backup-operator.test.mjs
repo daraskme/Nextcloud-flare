@@ -180,6 +180,8 @@ it("requires a matching final D1 receipt", async () => {
   control.receipt.mockImplementationOnce(async () => receipt).mockResolvedValue(null);
   await expect(run()).rejects.toThrow("backup_invalid_receipt");
 });
+// Windows CI needs >5s for fixture export and repeated full-SQL verification.
+// This runner allowance does not change the operator's RPC or storage deadlines.
 it("continues bounded completion pages for a SQL export larger than one R2 part", async () => {
   artifact = await fixtureGeneration(join(directory, "large"), 9);
   id = artifact.manifest.generation.id;
@@ -187,7 +189,7 @@ it("continues bounded completion pages for a SQL export larger than one R2 part"
   const result = await run({ directory: join(directory, "large") });
   expect(result.state).toBe("completed");
   expect(control.complete).toHaveBeenCalledTimes(2);
-});
+}, 20_000);
 
 it.each([
   { service: ["worker"], environment: "development" },
