@@ -56,7 +56,9 @@ jobs:
 
   backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Run 36109311905 took 9m49s before the actual CLI gained four replenishment captures.
+    # Keep application deadlines unchanged; allow the real Wrangler export drill to finish.
+    timeout-minutes: 30
     env:
       CI: "true"
       WRANGLER_SEND_METRICS: "false"

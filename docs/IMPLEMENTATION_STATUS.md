@@ -3,24 +3,27 @@
 更新: 2026-09-25。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-前回の世代補充`7a1378e`は[CI36087130182](https://github.com/daraskme/Nextcloud-flare/actions/runs/36087130182)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
 
-- `.local-toolchain/run pnpm check`: 成功。Node674件（39file、30.53s）、workerd2,087件（99file、1,143.07s）。lint・型・契約/設定検査・Web build・Worker dry-runも成功。
-- `.local-toolchain/run pnpm exec vitest run --config vitest.config.ts packages/worker/test/integration/backup-prune.test.ts packages/worker/test/integration/backup-completion.test.ts`: 43件成功。試験時計をD1応答時点に合わせた後のprune単独26件と最終typecheckも成功。製品の25秒/10秒期限は維持。
-- `.local-toolchain/run pnpm backup:operator-drill`: 成功。67table・SQL11,322bytes。5世代の取得と再検証、全8操作の権限拒否、期限切れfixture回収・eviction後再送・D1 receipt保持、新しい世代の削除拒否。
-- `.local-toolchain/run pnpm backup:run-drill`: 成功。SQL9,079bytes。実CLIのpruneで期限内拒否、期限切れfixture回収、再実行、旧epoch receipt保持も確認。期限切れfixtureはtransport試験専用で、復元可能なSQL世代とは扱わない。
-- 最終`pnpm lint`（361file）、`pnpm typecheck`、`git diff --check`: 成功。最初のドリルではNodeが拡張子なしTS importを解決できなかったため、専用のNode fixtureへ変更後にドリルを通し直した。
+- 新しいNodeの走査14件とmaintain26件、計40件が成功（341ms）。全check内のNode全696件（40file、44.23s）も成功。
+- 新しいworkerd走査13件と既存prune26件、計39件が成功（19.40s）。型検査も成功。
+- 専用bindingドリル成功。67table・SQL11,322bytes、全9操作の権限拒否、5世代の取得、期限切れ世代の自動回収、破損保留とhealthの分離を確認。
+- 実CLIドリル成功。SQL9,079bytes。sweepとmaintain --prune-expiredによる4世代補充、5世代の最終検証、期限切れfixture回収・再実行・receipt保持を確認。
+- `.local-toolchain/run pnpm check`: 成功。Node696件（40file、44.23s）・workerd2,100件（100file、1,245.15s）、計2,796件。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。
+- 最終lint365fileとgit diff --checkが成功。systemd service/timerの構文検査成功。設置・起動は未実施。
+- 前回CIのbackupは9分49秒だったため、実CLIに4世代補充を加えた今回から当該ジョブの上限を10分から30分へ延長。製品側の期限は変更しない。
 
 今回の変更のCIはpush後に確認する。前回のCI結果は冒頭を参照。remote migration・deploy・実R2の削除は実行していない。
 
 ## 今回の実装
 
-前回のWindows S3 timeout試験1件の失敗は、通信開始を同期して時計を進める修正で解消し、上記CIの全OSで成功しました。製品の期限は変更していません。
+以下の既存checkpoint行は当時の検証記録を維持する。最新状態は冒頭と[CURRENT_STATE](CURRENT_STATE.md)を参照。
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
+| 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 4 期限切れSQL世代の明示回収 | 専用prune、D1/R2世代照合、35日超・20部品/100RPC、manifest最終削除・再実行 | Node12件・workerd26件を追加。全Node674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功。専用bindingドリルは67table・SQL11,322bytesで成功。実CLIドリルもSQL9,079bytesで成功し、期限内拒否・回収・再実行・receipt保持を確認。全check成功、Node674件＋workerd2,087件（99file、1,143.07s）の計2,761件。型・契約/設定検査・Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査を再確認しました。schema0039・67table・依存を維持。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 4 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。 実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。 timer設置・外部通知・期限切れ削除・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
 | 4 バックアップ保持判定 | inventory/health、サーバー時刻・実R2/SQL検証、35日/最少5世代/最新24時間、終了コード | Node27件・workerd23件を追加しました。全Node644件（37file、34.40s）と、バックアップ関連workerd79件（4file、43.54s）が成功。実際に保存した5世代の全SQL検証と、1世代の破損によって有効数が4へ減ることを確認しました。35日の前後1ms、24時間、検査中の期限超過、同時開始、eviction、205行のページング、破損/不正receipt、検査上限と秘密情報の非出力を含みます。lint354file・型・契約/設定検査・Web build・Worker dry-runも成功しました。 専用bindingの実D1/DO/R2ドリルは67table・SQL9,582bytesで成功し、inventoryを含む6操作の権限・環境・無効化による拒否を確認しました。実CLIのdaily→再実行→receipt→health→download→restore-offlineもSQL9,079bytesで成功しました。healthは保存済み1世代を検証し、不足4世代と終了コード2を返し、元の停止状態を変更しませんでした。 外部通知・自動補充/削除・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |

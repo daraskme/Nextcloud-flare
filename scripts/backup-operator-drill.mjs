@@ -155,6 +155,7 @@ try {
       "inventory",
       "replenish",
       "prune",
+      "sweep",
     ]) {
       await assert.rejects(
         controlCalls(clientEnv[binding])[method](2, id, "0".repeat(64)),
@@ -196,6 +197,7 @@ try {
     });
   const maintain = () =>
     maintainBackups({
+      pruneExpired: true,
       directory: join(directory, "generations"),
       epoch: 2,
       source: dataSource,
@@ -207,6 +209,7 @@ try {
   assert.equal(maintenance.initial.missing, 4);
   assert.equal(maintenance.health.eligible, 5);
   assert.equal(maintenance.completed.length, 5);
+  assert.equal(maintenance.cleanup.healthy, true);
   id = maintenance.completed.at(-1);
   const result = await run();
   assert.equal(result.state, "completed");
@@ -262,7 +265,9 @@ try {
     VALUES(?,1,'completed',1,2,2,?,?,?)`)
     .bind(expiredId, expired.token, expired.key, expired.hash)
     .run();
-  assert.equal((await pruneBackup({ epoch: 2, id: expiredId, control })).complete, true);
+  const swept = await maintain();
+  assert.equal(swept.healthy, true);
+  assert.equal(swept.cleanup.absent, 1);
   await worker.evictDurableObject("CONTROL", { name: "singleton" });
   assert.equal((await pruneBackup({ epoch: 2, id: expiredId, control })).state, "absent");
   assert.equal(
@@ -271,6 +276,20 @@ try {
   );
   assert.equal((await control.receipt(1, expiredId)).state, "completed");
   assert.notEqual(await env.BACKUPS.head(download.key), null);
+  const corrupt = expiredBackupFixture();
+  await env.BACKUPS.put(corrupt.partKey, corrupt.part);
+  await env.BACKUPS.put(corrupt.key, "corrupt");
+  await env.DB.prepare(`INSERT INTO backup_runs(id,epoch,state,created_at,completed_at,released_at,barrier_token,manifest_key,manifest_sha256)
+    VALUES(?,1,'completed',1,2,2,?,?,?)`)
+    .bind(corrupt.id, corrupt.token, corrupt.key, corrupt.hash)
+    .run();
+  const warning = await maintain();
+  assert.equal(warning.healthy, false);
+  assert.equal(warning.health.healthy, true);
+  assert.equal(warning.cleanup.complete, true);
+  assert.equal(warning.cleanup.errors, 1);
+  assert.equal(warning.cleanup.lastError.id, corrupt.id);
+  assert.notEqual(await env.BACKUPS.head(corrupt.partKey), null);
   const cancelled = crypto.randomUUID();
   assert.equal((await control.begin(2, cancelled)).state, "frozen");
   assert.equal((await control.cancel(2, cancelled)).state, "released");
@@ -283,9 +302,9 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private named BackupOperator capability and denial for all eight methods; real daily capture plus four replenishments to five verified generations; eviction replay without extra capture; typed D1 query export, R2 publication, health, download and offline restore; explicit expired fixture pruning with receipt retention and eviction replay, fresh generation rejection.",
+      "Private named BackupOperator capability and denial for all nine methods; real daily capture plus four replenishments to five verified generations; eviction replay; typed D1 export, health and offline restore; opted-in maintenance expiry sweep, retained receipts, and persistent corruption warnings without discarding healthy backup results.",
     limits:
-      "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, automatic expiry sweep, independent BLOBS copy or live restore.",
+      "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

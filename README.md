@@ -26,7 +26,7 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 
 バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。 手順と残る運用範囲は[バックアップ世代](docs/BACKUP_GENERATIONS.md)。
 
-日次バックアップの不足・鮮度補充は[maintain](docs/BACKUP_MAINTENANCE.md)、35日を超えた指定世代のR2回収は[prune](docs/BACKUP_PRUNING.md)へ接続済みです。pruneはD1完了記録とmanifestを照合し、少量ずつ削除して中断後も同じ世代から再開します。定時回収の設置とremote運用は未実施です。
+日次バックアップの不足・鮮度補充は[maintain](docs/BACKUP_MAINTENANCE.md)、35日を超えた指定世代のR2回収は[prune](docs/BACKUP_PRUNING.md)へ接続済みです。pruneはD1完了記録とmanifestを照合し、少量ずつ削除して中断後も同じ世代から再開します。全世代の自動走査は[sweep](docs/BACKUP_SWEEP.md)、健全性確認後の回収は`maintain --prune-expired`で実行できます。走査位置と破損警告を永続化し、次回へ継続します。定時起動の設置とremote運用は未実施です。
 
 単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。 詳細は[公開失敗後の精算](docs/UPLOAD_FAILED_COMPLETION.md)。
 

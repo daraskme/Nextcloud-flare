@@ -1,6 +1,7 @@
 import { BACKUP_MIN_GENERATIONS } from "../../packages/shared/src/backupRetention.ts";
 import { inspectBackupHealth } from "./health.mjs";
 import { runBackup, validateDailyPlan } from "./operator.mjs";
+import { sweepBackups } from "./sweep.mjs";
 
 /** One scheduled cycle. Every identity belongs to the durable server plan, never runner disk. */
 export async function maintainBackups({
@@ -10,9 +11,12 @@ export async function maintainBackups({
   progress = () => {},
   inspect = inspectBackupHealth,
   run = runBackup,
+  pruneExpired = false,
+  sweep = sweepBackups,
   ...options
 }) {
-  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
+  if (!Number.isSafeInteger(epoch) || epoch < 1 || typeof pruneExpired !== "boolean")
+    throw new Error("invalid_backup_request");
   const args = { ...options, epoch, control, store, progress };
   let plan = validateDailyPlan(await control.daily(epoch), epoch);
   const completed = [];
@@ -67,13 +71,24 @@ export async function maintainBackups({
     missing: health.missing,
     alerts: health.alerts,
   });
+  let cleanup = null;
+  if (pruneExpired && health.complete && health.healthy && !health.active) {
+    cleanup = await sweep(args);
+    if (
+      cleanup?.epoch !== epoch ||
+      typeof cleanup.complete !== "boolean" ||
+      typeof cleanup.healthy !== "boolean"
+    )
+      throw new Error("backup_invalid_sweep_result");
+  }
   return {
-    healthy: health.healthy,
+    healthy: health.healthy && (!pruneExpired || cleanup?.healthy === true),
     epoch,
     completed,
     initial,
     health,
+    cleanup,
     scope:
-      "Daily capture and bounded replenishment of current snapshots; no past-date backfill, automatic cancellation, object deletion or live restore.",
+      "Daily capture and bounded replenishment; optional durable expiry sweep after healthy inspection. No past-date backfill, automatic cancellation or live restore.",
   };
 }

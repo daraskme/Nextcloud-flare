@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-前回の世代補充`7a1378e`は[CI36087130182](https://github.com/daraskme/Nextcloud-flare/actions/runs/36087130182)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
-「pnpm backup prune」を追加しました。指定したcompleted世代について、サーバーの開始時刻から35日を厳密に超えること、D1の不変receiptとR2 manifestの実hash・世代情報が一致することを確認し、1回最大20部品を回収します。manifestは他のobjectがなくなってから最後に削除し、prefixの不在まで確認します。D1 receipt・元BLOBS・ローカル世代は維持します。
+「pnpm backup sweep」と「maintain --prune-expired」を追加しました。ControlDOがround・開始時刻・最大ID・走査cursorを永続化し、期限切れcompleted世代を少量ずつ回収します。100 stepで未完了なら次回へ継続し、破損世代は残して警告を保存しながら後続へ進みます。未知の通信失敗は同じ候補から再照合します。D1 receipt・元BLOBS・ローカル世代は維持します。
 
-削除前にepoch・バックアップ停止状態・receiptを再確認し、同じControlDO instanceでは同時1件、外部要求は各10秒・開始から固定25秒の期限で制限します。進捗はR2に残るkeyから再取得するため、応答喪失・eviction後も同じUUIDから再開できます。manifest欠落時に部品が残る場合や未知key、未完了/失敗世代は推測で回収しません。CLIは最大100 RPC、完了0・継続必要2・失敗1を返します。旧epochの世代でも、引数は現在のControlDO epochを使います。
+maintainは日次取得・不足/鮮度補充と最終healthが正常な場合だけ、明示optionによる回収を実行します。Linux service例にも接続しましたが、hostへの設置・起動は行っていません。検査済みのhealthと回収結果cleanupを分け、回収未完了・破損保留は終了コード2で通知できます。1 RPCは100行・1世代・最大20部品、D1走査待ちを含む固定25秒の開始期限とR2要求ごとの10秒待機上限を維持します。詳細は[BACKUP_SWEEP](BACKUP_SWEEP.md)。
 
-Node12件・workerd26件を追加しました。Node全674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全8操作の権限拒否、期限切れfixtureの回収・eviction後再送、新しい世代の削除拒否も成功しました。実CLIドリルもSQL9,079bytesで成功し、pruneの新しい世代の拒否・期限切れfixture回収・再実行・receipt保持を確認しました。全checkが成功し、Node674件・workerd2,087件（99file、1,143.07s）、計2,761件を確認しました。型・契約/設定検査、Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査も再確認しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。詳細は[BACKUP_PRUNING](BACKUP_PRUNING.md)。
+Node22件・workerd13件を追加しました。全Node696件（40file、44.23s）、新しい走査13件と既存prune26件の計39件（19.40s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全9操作の権限拒否、5世代の実取得と期限切れ回収、破損警告とhealthの分離を確認しました。型検査とsystemd構文検査も成功。実CLIドリルもSQL9,079bytesで成功し、4世代補充と最終5世代の検証、自動回収・再送・receipt保持を確認しました。全checkが成功し、Node696件・workerd2,100件（100file、1,245.15s）、計2,796件を確認しました。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。実CLIの4世代補充を追加したためbackup CI上限を30分へ延長しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次は期限切れ世代の自動走査・定期起動と外部通知の運用接続です。maintain/timerへの削除接続、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は運用通知への接続と復旧手順の整備です。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 次のschema変更は0040以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
 
@@ -106,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収まで接続済み。次は期限切れ世代の自動走査を既存の保持判定・定期実行へ接続する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。次は非0終了・長時間実行・24時間超の未実行を扱う運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

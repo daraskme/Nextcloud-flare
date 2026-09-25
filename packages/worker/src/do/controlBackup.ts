@@ -4,6 +4,7 @@ import { inspectBackupInventory } from "../backup/inventory";
 import { pruneBackupGeneration } from "../backup/prune";
 import { verifyPublicationPart } from "../backup/publication";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import { ControlBackupSweep, initializeBackupSweep } from "./controlBackupSweep";
 import { epochNumber } from "./epochHistory";
 
 export interface BackupAdmissionSnapshot {
@@ -68,6 +69,7 @@ const drained = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
   AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')`;
 
 export function initializeBackupState(sql: SqlStorage): void {
+  initializeBackupSweep(sql);
   sql.exec(`CREATE TABLE IF NOT EXISTS control_backup(
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),id TEXT NOT NULL,epoch INTEGER NOT NULL,
     phase TEXT NOT NULL CHECK(phase IN ('preparing','frozen','releasing','released')),
@@ -165,6 +167,20 @@ export class ControlBackup {
           };
         },
       });
+    } finally {
+      this.#pruneInFlight = false;
+    }
+  }
+
+  async sweep(epoch: number, round?: string) {
+    if (this.#pruneInFlight) throw new Error("backup_prune_busy");
+    this.#pruneInFlight = true;
+    try {
+      const sweep = new ControlBackupSweep(this.storage.sql, this.db, this.backups, () => {
+        const row = this.#row();
+        return { epoch: this.currentEpoch(), token: row?.token ?? null, phase: row?.phase ?? null };
+      });
+      return round === undefined ? await sweep.plan(epoch) : await sweep.step(epoch, round);
     } finally {
       this.#pruneInFlight = false;
     }

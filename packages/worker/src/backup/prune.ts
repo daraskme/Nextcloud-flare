@@ -40,16 +40,18 @@ export async function pruneBackupGeneration({
   epoch,
   id,
   authority,
+  startedAt = Date.now(),
 }: {
   db: D1Database;
   bucket: R2Bucket;
   epoch: number;
   id: string;
   authority: () => Authority;
+  startedAt?: number;
 }): Promise<BackupPruneResult> {
   const key = backupManifestKey(id),
     prefix = key.slice(0, -"manifest.json".length),
-    started = Date.now(),
+    started = startedAt,
     snapshot = authority();
   if (!Number.isSafeInteger(epoch) || epoch < 1 || snapshot.epoch !== epoch)
     throw new Error("invalid_backup_request");

@@ -17,11 +17,11 @@ remoteは[run/dailyと同じ権限・設定](BACKUP_OPERATOR.md)を使う。`--i
 
 [health](BACKUP_RETENTION.md)で検査完了した場合に限り、実際の不足分を最大5世代まで追加する。5世代があっても最新取得が24時間を超えていれば、新しく1世代を取得する。検査上限で未完了なら追加取得を始めない。同日の完成済み世代が破損していても、それを健全と数えずに新しい世代を補充できる。既存の破損はレポートに残り、5世代を確保できても破損警告を消さない。世代数と鮮度が足りていれば、破損警告だけを理由に追加取得を繰り返さない。
 
-終了コードは最終検査が正常なら0、不足・破損・検査未完了なら2、処理失敗なら1。途中の`maintenance_health`イベントは補充前後の不足数と警告を示し、最後の`command:maintain`のJSONには`completed`、`initial`、`health`がある。外部監視は非0終了を失敗と扱い、長時間実行や24時間超の未実行も検知する必要がある。maintain自身はR2 objectを削除しない。期限切れ世代の明示的な回収は[prune](BACKUP_PRUNING.md)で行う。
+終了コードは最終検査が正常なら0、不足・破損・検査未完了なら2、処理失敗なら1。途中の`maintenance_health`イベントは補充前後の不足数と警告を示し、最後の`command:maintain`のJSONには`completed`、`initial`、`health`、`cleanup`がある。外部監視は非0終了を失敗と扱い、長時間実行や24時間超の未実行も検知する必要がある。`--prune-expired`を指定すると、最終healthが完了・正常・active backupなしの場合だけ[期限切れ世代の自動走査](BACKUP_SWEEP.md)を行う。省略時は削除せず、`cleanup:null`を返す。指定時は走査未完了・破損保留も終了コード2とし、健全性検査の結果は`health`に維持する。回収の接続失敗等は終了コード1となる。特定UUIDの回収には[prune](BACKUP_PRUNING.md)を使う。
 
 ## Linuxでの定期起動例
 
-[service](../ops/backup/nextcloud-flare-backup.service)、[timer](../ops/backup/nextcloud-flare-backup.timer)、[環境変数例](../ops/backup/backup.env.example)を用意した。repositoryやCIからinstall/enableは行わない。
+[service](../ops/backup/nextcloud-flare-backup.service)、[timer](../ops/backup/nextcloud-flare-backup.timer)、[環境変数例](../ops/backup/backup.env.example)を用意した。service例は`--prune-expired`で健全性確認後の回収を有効にする。走査が1回の上限を超えた場合は次の定期実行で継続する。repositoryやCIからinstall/enableは行わない。
 
 例はUTC 00:30に起動し、最大5分の分散待機を入れる。`Persistent=true`は停止中に逃した起動を後から1回実行するための設定であり、過去日のsnapshotを生成しない。同じserviceが実行中ならtimerは別instanceを開始しない。仕様は[systemd公式timer文書](https://raw.githubusercontent.com/systemd/systemd/v261/man/systemd.timer.xml)を参照。
 

@@ -40,32 +40,40 @@ export function controlCalls(binding, timeoutMs = 60000) {
   if (!binding || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000)
     throw new Error("backup_operator_unconfigured");
   return Object.fromEntries(
-    ["begin", "complete", "cancel", "receipt", "daily", "inventory", "replenish", "prune"].map(
-      (method) => [
-        method,
-        async (...args) => {
-          let timer;
-          try {
-            return await Promise.race([
-              Promise.resolve().then(() => binding[method](...args)),
-              new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error("backup_operator_timeout")), timeoutMs);
-              }),
-            ]);
-          } catch (error) {
-            // Provider errors can carry URLs or SQL. A timeout is an unknown outcome, not a cancellation.
-            const message = error instanceof Error ? error.message : "";
-            throw new Error(
-              /^(?:backup|invalid_backup)_[a-z_]+$/.test(message)
-                ? message
-                : "backup_operator_unavailable",
-            );
-          } finally {
-            clearTimeout(timer);
-          }
-        },
-      ],
-    ),
+    [
+      "begin",
+      "complete",
+      "cancel",
+      "receipt",
+      "daily",
+      "inventory",
+      "replenish",
+      "prune",
+      "sweep",
+    ].map((method) => [
+      method,
+      async (...args) => {
+        let timer;
+        try {
+          return await Promise.race([
+            Promise.resolve().then(() => binding[method](...args)),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("backup_operator_timeout")), timeoutMs);
+            }),
+          ]);
+        } catch (error) {
+          // Provider errors can carry URLs or SQL. A timeout is an unknown outcome, not a cancellation.
+          const message = error instanceof Error ? error.message : "";
+          throw new Error(
+            /^(?:backup|invalid_backup)_[a-z_]+$/.test(message)
+              ? message
+              : "backup_operator_unavailable",
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+    ]),
   );
 }
 

@@ -43,7 +43,7 @@ beforeEach(() => {
   });
   inspect = vi.fn(async () => health());
 });
-const maintain = () =>
+const maintain = (extra = {}) =>
   maintainBackups({
     epoch,
     control,
@@ -53,7 +53,62 @@ const maintain = () =>
     run,
     inspect,
     progress,
+    ...extra,
   });
+
+it("runs an opted-in expiry sweep only after replenishing and verifying healthy generations", async () => {
+  const sweep = vi.fn(async () => {
+    expect(finished.size).toBe(5);
+    expect(inspect).toHaveBeenCalledTimes(2);
+    return { epoch, healthy: true, complete: true };
+  });
+  expect(await maintain({ pruneExpired: true, sweep })).toMatchObject({
+    healthy: true,
+    cleanup: { complete: true },
+  });
+  expect(sweep).toHaveBeenCalledTimes(1);
+});
+it("does not sweep unless explicitly opted in", async () => {
+  const sweep = vi.fn();
+  expect(await maintain({ sweep })).toMatchObject({ healthy: true, cleanup: null });
+  expect(sweep).not.toHaveBeenCalled();
+});
+it.each(["corrupt", "incomplete", "active"])(
+  "does not sweep when final health is %s",
+  async (kind) => {
+    const sweep = vi.fn();
+    inspect.mockImplementation(async () => ({
+      ...health(),
+      ...(kind === "corrupt"
+        ? { healthy: false, alerts: ["backup_generation_invalid"] }
+        : kind === "incomplete"
+          ? { healthy: false, complete: false }
+          : { active: { id: id(5) } }),
+    }));
+    expect(await maintain({ pruneExpired: true, sweep })).toMatchObject({
+      healthy: false,
+      cleanup: null,
+    });
+    expect(sweep).not.toHaveBeenCalled();
+  },
+);
+it.each([false, true])(
+  "preserves unsuccessful cleanup even when backups themselves are healthy (complete=%s)",
+  async (complete) => {
+    const sweep = vi.fn().mockResolvedValue({ epoch, complete, healthy: false });
+    expect(await maintain({ pruneExpired: true, sweep })).toMatchObject({
+      healthy: false,
+      health: { healthy: true },
+      cleanup: { complete, healthy: false },
+    });
+  },
+);
+it("propagates ambiguous sweep failure without cancelling the completed backup", async () => {
+  const sweep = vi.fn().mockRejectedValue(new Error("backup_operator_timeout"));
+  await expect(maintain({ pruneExpired: true, sweep })).rejects.toThrow("backup_operator_timeout");
+  expect(finished.size).toBe(5);
+  expect(control.cancel).not.toHaveBeenCalled();
+});
 
 it("captures the daily generation, reports shortage, adds only the missing four and verifies health again", async () => {
   const result = await maintain();

@@ -62,6 +62,13 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
   prune(epoch: number, id: string) {
     return this.#control(epoch, id).pruneBackup(epoch, id);
   }
+  sweep(epoch: number, round?: string) {
+    this.#authorize(epoch);
+    return this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).sweepBackups(
+      epoch,
+      round,
+    );
+  }
   receipt(epoch: number, id: string): Promise<BackupRunReceipt | null> {
     this.#authorize(epoch);
     backupManifestKey(id);

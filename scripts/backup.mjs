@@ -8,10 +8,12 @@ import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
 import { operatorIdentity, runBackup, runDailyBackup } from "./backup/operator.mjs";
 import { pruneBackup } from "./backup/prune.mjs";
 import { downloadGeneration, publishGeneration } from "./backup/publication.mjs";
+import { sweepBackups } from "./backup/sweep.mjs";
 import { wranglerSource } from "./backup/wrangler.mjs";
 
 const usage = `Usage:
-  pnpm backup maintain --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME]
+  pnpm backup maintain --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME] [--prune-expired]
+  pnpm backup sweep --operator-config JSON --local|--remote --epoch N
   pnpm backup health --operator-config JSON --local --config PATH --epoch N [--environment NAME]
   pnpm backup health --operator-config JSON --remote --epoch N
   pnpm backup daily --operator-config JSON --config PATH --database DB --local|--remote --epoch N --directory GENERATIONS [--environment NAME]
@@ -30,6 +32,7 @@ daily uses a durable server-owned identity and UTC capture day; re-run after fai
 health verifies stored SQL generations and the 35-day / minimum-five / daily policy against server time. Exit 0: healthy; 2: unhealthy or incomplete; 1: inspection failed.
 maintain resumes the daily generation, checks health, adds up to five current generations when needed, and checks health again. Re-run the same arguments after failure.
 prune deletes only the specified completed generation older than 35 days through the target BACKUPS binding. Up to 100 batches; exit 2 means re-run to continue. The immutable D1 receipt is retained.
+sweep resumes a durable expiry scan for at most 100 steps. Exit 2 means incomplete or corrupt generations deferred; errors remain in the round summary. maintain --prune-expired runs it after healthy backup inspection.
 The private BackupOperator service binding requires an enabled target and an explicit matching environment capability.
 restore-offline creates a new frozen inspection database; it does not restore a live D1 or resume service.
 `;
@@ -49,6 +52,7 @@ try {
       "manifest-sha256": { type: "string" },
       "operator-config": { type: "string" },
       help: { type: "boolean" },
+      "prune-expired": { type: "boolean" },
     },
   });
   if (values.help) console.log(usage);
@@ -83,6 +87,7 @@ try {
       ],
       health: ["config", "environment", "local", "remote", "epoch", "operator-config"],
       maintain: [
+        "prune-expired",
         "directory",
         "config",
         "database",
@@ -95,11 +100,14 @@ try {
       receipt: ["local", "remote", "id", "epoch", "operator-config"],
       cancel: ["local", "remote", "id", "epoch", "operator-config"],
       prune: ["local", "remote", "id", "epoch", "operator-config"],
+      sweep: ["local", "remote", "epoch", "operator-config"],
     }[positionals[0]];
     if (!allowed || Object.keys(values).some((key) => !allowed.includes(key)))
       throw new Error("invalid_backup_arguments");
     if (
-      ["run", "daily", "health", "maintain", "receipt", "cancel", "prune"].includes(positionals[0])
+      ["run", "daily", "health", "maintain", "receipt", "cancel", "prune", "sweep"].includes(
+        positionals[0],
+      )
     ) {
       if (
         !values["operator-config"] ||
@@ -110,7 +118,8 @@ try {
       const epoch = Number(values.epoch),
         id = values.id,
         mode = values.local ? "local" : "remote";
-      if (!["daily", "health", "maintain"].includes(positionals[0])) operatorIdentity(epoch, id);
+      if (!["daily", "health", "maintain", "sweep"].includes(positionals[0]))
+        operatorIdentity(epoch, id);
       else if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_backup_request");
       if (
         ["run", "daily", "maintain"].includes(positionals[0]) &&
@@ -153,6 +162,7 @@ try {
                   ? runDailyBackup
                   : runBackup;
             result = await execute({
+              pruneExpired: values["prune-expired"] ?? false,
               directory: values.directory,
               id,
               epoch,
@@ -163,6 +173,13 @@ try {
             });
             if (positionals[0] === "maintain" && !result.healthy) process.exitCode = 2;
           }
+        } else if (positionals[0] === "sweep") {
+          result = await sweepBackups({
+            epoch,
+            control,
+            progress: (event) => console.log(JSON.stringify(event)),
+          });
+          if (!result.healthy) process.exitCode = 2;
         } else if (positionals[0] === "prune") {
           result = await pruneBackup({
             epoch,

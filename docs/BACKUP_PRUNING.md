@@ -19,7 +19,7 @@ remoteは`--local`を`--remote`へ変更し、[専用bindingのdescriptor](BACKU
 
 最少5世代に足りない場合も35日超の世代を有効世代へ戻さない。世代数の不足は[health](BACKUP_RETENTION.md)、新しい世代の補充は[maintain](BACKUP_MAINTENANCE.md)で扱う。prune自体は世代補充を行わない。
 
-pending/exporting/failed、記録が失われた世代、manifestが破損した世代は自動回収しない。将来の全世代走査、未完了・未追跡objectの回収は別工程である。
+pending/exporting/failed、記録が失われた世代、manifestが破損した世代は自動回収しない。全世代走査は[sweep](BACKUP_SWEEP.md)で行う。未完了・未追跡objectの回収は別工程である。
 
 ## 少量ずつの削除と再開
 
@@ -45,7 +45,7 @@ CLIは最大100 RPC、通常最大2,000部品を処理する。最後のJSONは`
 
 各`backup_prune`イベントの`deletedObjects`は、そのRPCでDELETEの応答を確認したkey数であり、生涯の一意な削除数ではない。応答喪失時に成功数を推測しない。秘密情報、SQL本文、providerのURLはログに出さない。
 
-maintainとLinux timerからの自動削除はまだ接続していない。運用者がhealthの`expired`世代などを確認し、UUIDを指定して実行する。remote実行、定時走査の設置、外部通知、D1/全storage喪失後の世代選択、Time Travelとlive復旧は未検証・未完了である。
+全世代の自動走査は[sweep](BACKUP_SWEEP.md)、日次取得・補充後の回収は`maintain --prune-expired`に接続済みで、Linux service例もこのoptionを使う。明示的なpruneでは運用者がhealthの`expired`世代などを確認し、UUIDを指定して実行する。remote実行、定時走査の設置、外部通知、D1/全storage喪失後の世代選択、Time Travelとlive復旧は未検証・未完了である。
 
 ## 検証
 

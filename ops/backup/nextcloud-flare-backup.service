@@ -1,6 +1,6 @@
 # Deployment example only. Provision the operator identity, inventory and credentials first.
 [Unit]
-Description=Nextcloud-flare daily backup, replenishment and health inspection
+Description=Nextcloud-flare daily backup, replenishment, health inspection and expiry sweep
 Wants=network-online.target
 After=network-online.target
 
@@ -12,7 +12,7 @@ StateDirectory=nextcloud-flare-backup
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/nextcloud-flare-backup
 EnvironmentFile=/etc/nextcloud-flare/backup.env
-ExecStart=/usr/bin/env node /opt/nextcloud-flare/scripts/backup.mjs maintain --remote --operator-config /etc/nextcloud-flare/backup-operator.json --config /etc/nextcloud-flare/wrangler.json --database DB --epoch ${NCF_BACKUP_EPOCH} --directory /var/lib/nextcloud-flare-backup/generations
+ExecStart=/usr/bin/env node /opt/nextcloud-flare/scripts/backup.mjs maintain --prune-expired --remote --operator-config /etc/nextcloud-flare/backup-operator.json --config /etc/nextcloud-flare/wrangler.json --database DB --epoch ${NCF_BACKUP_EPOCH} --directory /var/lib/nextcloud-flare-backup/generations
 TimeoutStartSec=infinity
 UMask=0077
 NoNewPrivileges=true
