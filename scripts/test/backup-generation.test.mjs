@@ -134,7 +134,7 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   expect(snapshot(db)).toEqual(saved);
 });
 
-it.each(["identity", "epoch", "thawed", "schema", "migration"])(
+it.each(["identity", "epoch", "thawed", "schema", "migration", "table", "view", "virtual"])(
   "rejects a conflicting source %s before exporting",
   async (change) => {
     let exported = false;
@@ -146,6 +146,10 @@ it.each(["identity", "epoch", "thawed", "schema", "migration"])(
     if (change === "epoch") extra.epoch = 2;
     if (change === "thawed") db.exec("UPDATE control SET backup_frozen=0");
     if (change === "schema") db.exec("CREATE INDEX unversioned_backup_index ON users(email)");
+    if (change === "table")
+      db.exec("CREATE TABLE unversioned_data(id TEXT NOT NULL PRIMARY KEY, value TEXT) STRICT");
+    if (change === "view") db.exec("CREATE VIEW unversioned_view AS SELECT id FROM users");
+    if (change === "virtual") db.exec("CREATE VIRTUAL TABLE unversioned_fts USING fts5(value)");
     if (change === "migration") {
       const query = source.query;
       source.query = (sql) =>
@@ -156,12 +160,54 @@ it.each(["identity", "epoch", "thawed", "schema", "migration"])(
     expect(await readdir(directory)).toEqual([]);
   },
 );
+it.each(["table", "schema", "migration"])(
+  "rejects source %s drift during export without leaving an artifact",
+  async (kind) => {
+    source.export = async (path) => {
+      await writeFile(path, dump(db));
+      if (kind === "table")
+        db.exec("CREATE TABLE added_during_export(id INTEGER PRIMARY KEY) STRICT");
+      if (kind === "schema") db.exec("CREATE INDEX added_during_export ON users(email)");
+      if (kind === "migration") versions = versions.slice(0, -1);
+    };
+    await expect(capture()).rejects.toThrow();
+    expect(await readdir(directory)).toEqual([]);
+    expect(db.prepare("SELECT backup_frozen FROM control").get().backup_frozen).toBe(1);
+  },
+);
 it("refuses a generation whose source barrier is released during export", async () => {
   source.export = async (path) => {
     await writeFile(path, dump(db));
     db.exec("UPDATE control SET backup_frozen=0");
   };
   await expect(capture()).rejects.toThrow("backup_not_frozen");
+  expect(await readdir(directory)).toEqual([]);
+});
+it("allows only the named D1 and Wrangler infrastructure tables outside the application catalogue", async () => {
+  const query = source.query;
+  source.query = async (sql) => {
+    const rows = await query(sql);
+    return sql === "PRAGMA table_list"
+      ? [
+          ...rows,
+          ...["_cf_KV", "_cf_METADATA", "d1_migrations"].map((name) => ({
+            schema: "main",
+            type: "table",
+            name,
+          })),
+        ]
+      : rows;
+  };
+  await expect(capture()).resolves.toBeDefined();
+});
+it("does not hide an extra ordinary table behind the Cloudflare internal prefix", async () => {
+  db.exec("CREATE TABLE _cf_unversioned_data(id INTEGER PRIMARY KEY) STRICT");
+  let exported = false;
+  source.export = async () => {
+    exported = true;
+  };
+  await expect(capture()).rejects.toThrow("backup_source_table_mismatch");
+  expect(exported).toBe(false);
   expect(await readdir(directory)).toEqual([]);
 });
 it.each(["data", "omission", "injection", "column"])(

@@ -20,6 +20,7 @@ import {
   importData,
   initialize,
   migrations,
+  schemaCatalogue,
   schemaDigest,
   schemaQuery,
   specs,
@@ -36,6 +37,21 @@ function identity(id, epoch) {
     throw new Error("invalid_backup_identity");
 }
 const versionList = (versions) => versions.map(({ name, sha256 }) => ({ name, sha256 }));
+function restoreVersions(recorded, available) {
+  // Only locally trusted SQL may create a restore schema. Older artifacts select
+  // an exact prefix, including the first schema with a durable write barrier.
+  const minimum = available.findIndex((m) => m.name === "0037_backup_barrier.sql") + 1;
+  if (
+    minimum < 1 ||
+    !Array.isArray(recorded) ||
+    recorded.length < minimum ||
+    recorded.length > available.length
+  )
+    throw new Error("backup_migration_mismatch");
+  const selected = available.slice(0, recorded.length);
+  assert.deepEqual(recorded, versionList(selected), "backup_migration_mismatch");
+  return selected;
+}
 async function absent(path) {
   try {
     await lstat(path);
@@ -77,6 +93,24 @@ function frozenTarget(db, expected) {
   assert.throws(() => db.exec("UPDATE control SET updated_at=updated_at+1"), /backup_frozen/);
 }
 
+async function sourceSchema(source, versions, expectedSchema, expectedCatalogue) {
+  assert.deepEqual(
+    (await source.query("SELECT name FROM d1_migrations ORDER BY id")).map((r) => r.name),
+    versions.map((v) => v.name),
+    "backup_migration_mismatch",
+  );
+  assert.deepEqual(
+    schemaCatalogue(await source.query("PRAGMA table_list")),
+    expectedCatalogue,
+    "backup_source_table_mismatch",
+  );
+  assert.equal(
+    schemaDigest(await source.query(schemaQuery)),
+    expectedSchema,
+    "backup_source_schema_mismatch",
+  );
+}
+
 /** Capture only an already-frozen ControlDO generation. Never release or alter the source. */
 export async function captureGeneration({
   directory,
@@ -98,18 +132,10 @@ export async function captureGeneration({
     const versions = await migrations();
     db = initialize(join(temporary, "verification.sqlite"), versions);
     const tableSpecs = specs(db),
-      expectedSchema = schemaDigest(db.prepare(schemaQuery).all());
+      expectedSchema = schemaDigest(db.prepare(schemaQuery).all()),
+      expectedCatalogue = schemaCatalogue(db.prepare("PRAGMA table_list").all());
     const generation = barrier(await source.query(barrierQuery), id, epoch);
-    assert.deepEqual(
-      (await source.query("SELECT name FROM d1_migrations ORDER BY id")).map((r) => r.name),
-      versions.map((v) => v.name),
-      "backup_migration_mismatch",
-    );
-    assert.equal(
-      schemaDigest(await source.query(schemaQuery)),
-      expectedSchema,
-      "backup_source_schema_mismatch",
-    );
+    await sourceSchema(source, versions, expectedSchema, expectedCatalogue);
     progress("source_fingerprints");
     const tables = await tableDigests(tableSpecs, source.query);
     assert.deepEqual(
@@ -122,6 +148,7 @@ export async function captureGeneration({
       join(temporary, "data.sql"),
       tableSpecs.map((s) => s.name),
     );
+    await sourceSchema(source, versions, expectedSchema, expectedCatalogue);
     assert.deepEqual(
       barrier(await source.query(barrierQuery), id, epoch),
       generation,
@@ -182,8 +209,7 @@ export async function restoreGeneration({ directory, target }) {
     manifest.capturedAt < manifest.generation.createdAt
   )
     throw new Error("backup_invalid_capture_time");
-  const versions = await migrations();
-  assert.deepEqual(manifest.schema?.migrations, versionList(versions), "backup_migration_mismatch");
+  const versions = restoreVersions(manifest.schema?.migrations, await migrations());
   const dataInfo = await lstat(join(directory, "data.sql"));
   if (!dataInfo.isFile()) throw new Error("backup_not_regular_file");
   // Exclusive creation guarantees that existing local or live database files cannot be overwritten.

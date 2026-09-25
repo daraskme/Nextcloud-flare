@@ -31,6 +31,8 @@ checksumだけが合っていても、元DBとの全行一致を示したこと�
 
 ## SQL読込みと復元
 
+過去世代は保存時のmigration列がローカルの信頼済みSQLの完全な先頭列と一致する場合だけ、当時のschemaで検証する。最小schemaは0037で、復元時に後続migrationを自動適用しない。captureは現在の全migrationを必須とし、抽出前後の全table/view/virtual一覧も照合して未知のtableの取りこぼしを防ぐ。詳細は[BACKUP_HISTORY](BACKUP_HISTORY.md)。
+
 入力SQLを`exec()`へ渡さない。data-only INSERTの既知table・全column順・literalだけを解析し、bound parameterとして挿入する。NULL・有限number・文字列・hex BLOBと、Wranglerの限定されたCR/LF `replace(...,char(...))`を扱う。ATTACH、任意PRAGMA、DDL、UPDATE、関数・式・追加statement・重複columnは拒否する。UTF-8不正、途中切れ、文の上限超過も拒否する。
 
 復元先は新規ファイルだけに限定する。versioned migrationを一つのtransactionで適用し、隔離先のtriggerだけを一時除去する。生成済みpurgeOrderでseed行を削除し、FKをdeferした同じtransactionでdataをimport、同一triggerを再作成、FK検査・FTS rebuild/integrity-checkを行う。稼働D1のtriggerは外さない。quota/ref/physical等をtriggerで二重加算せず、元の値を保存する。committed/failedのterminal履歴も書き換えない。

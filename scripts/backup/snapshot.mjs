@@ -6,6 +6,28 @@ import { exportTables, purgeOrder } from "../../packages/worker/src/db/schemaCon
 import { parseInsert, statements } from "./sql.mjs";
 
 export const migrationsDirectory = new URL("../../packages/worker/migrations/", import.meta.url);
+const INTERNAL_TABLES = new Set(["_cf_KV", "_cf_METADATA", "d1_migrations"]);
+/** Compare the whole source catalogue, including unexpected tables/views/virtual tables. */
+export function schemaCatalogue(rows) {
+  if (!Array.isArray(rows)) throw new Error("backup_invalid_schema_catalogue");
+  const result = [],
+    seen = new Set();
+  for (const row of rows) {
+    if (
+      !row ||
+      !["main", "temp"].includes(row.schema) ||
+      typeof row.name !== "string" ||
+      !["table", "view", "virtual", "shadow"].includes(row.type)
+    )
+      throw new Error("backup_invalid_schema_catalogue");
+    if (row.schema === "temp" || row.name.startsWith("sqlite_") || INTERNAL_TABLES.has(row.name))
+      continue;
+    if (seen.has(row.name)) throw new Error("backup_invalid_schema_catalogue");
+    seen.add(row.name);
+    result.push({ name: row.name, type: row.type });
+  }
+  return result.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
 export const quote = (name) => '"' + name.replaceAll('"', '""') + '"';
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 export async function migrations() {
