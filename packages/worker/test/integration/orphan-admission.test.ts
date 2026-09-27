@@ -8,7 +8,8 @@ import {
   scanOrphanObjects,
 } from "../../src/jobs/orphanInventory";
 import type { GlobalMutationSource } from "../../src/services/globalMutation";
-import { acquireGlobalMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import type { R2WriteSource } from "../../src/services/r2Write";
+import { acquireGlobalMutation, mutationEnv, r2WriteFixture } from "../fixtures/mutationAdmission";
 import { orphanBucket, orphanFixture, trackOrphan } from "../fixtures/orphanInventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 import { injectBatch } from "../fixtures/uploadEnv";
@@ -82,11 +83,15 @@ async function fixture(stage: Stage, stopped = false) {
     },
   });
   let permit = "";
-  const configure = (gate: Gate = acquireGlobalMutation, db = env.DB): GlobalMutationSource => {
+  const configure = (
+    gate: Gate = acquireGlobalMutation,
+    db = env.DB,
+  ): GlobalMutationSource & R2WriteSource => {
     let hits = 0;
     return {
       DB: db,
       systemControl: {
+        ...r2WriteFixture(),
         status: () => mutationEnv().CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
         acquireGlobalMutation: (r) => {
           if (r.permitId.startsWith(prefix(stage)) && ++hits === nth(stage)) permit = r.permitId;
@@ -257,10 +262,10 @@ it.each(calls)("does not start %s after admission passes the fixed deadline", as
     f.configure(async (r) => {
       const grant = await acquireGlobalMutation(r);
       if (r.permitId.startsWith(prefix(stage)) && ++hits === nth(stage))
-        clock.mockReturnValue(now + 1001);
+        clock.mockReturnValue(now + 5001);
       return grant;
     }),
-    1000,
+    5000,
   );
   expect(hits).toBe(nth(stage));
   expect(await f.receipt()).toMatchObject({ state: "active", committed_at: null });

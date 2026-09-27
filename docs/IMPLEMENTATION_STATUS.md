@@ -3,9 +3,22 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前のD1凍結`45167e7`は[CI36311386230](https://github.com/daraskme/Nextcloud-flare/actions/runs/36311386230)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+直前`a57fc8f`の[CI36314574203](https://github.com/daraskme/Nextcloud-flare/actions/runs/36314574203)は、Windows分割1の再実行を含め全5ジョブが成功しました。初回の既存multipart試験の準備で1件失敗した原因は未確定です。
 
 ## 今回の検証記録
+
+- blob GC（通常・停止中・ゴミ箱復元中）とorphan GCのDELETEを共通のDO/D1送信・終了記録へ接続。実成功の記録後だけ確認HEADへ進み、結果不明はlease満了やHEAD不在で解消しない。claim再取得・deleted精算・復元ready・凍結・再開を保留する。grantのbatchでclaimとdomain条件を再検査し、元の固定期限と復元pause期限を維持する。migration0042、通常68table、依存追加なし。
+- 0042は期限切れpendingと全終端行を全フィールド照合して移行し、全索引・freeze/immutable/保留guardを再作成する。orphanのownerは明示nullで、未復元ownerと長いUnicode keyも扱う。Nodeの移行・過去世代・schema関連39件（4file、5.17s）が成功。/tmp/ncf-gc-writes-node-final.log。
+- 全体checkのNode972件（49file、43.47s）が成功。workerdは2,358件中2,356件（109file、1,419.03s）が成功し、失敗2件は下記Cron fixture修正後に該当62件の再実行で成功した。再実行を含めローカル計3,330件を検証。全体check自体の終了コードは1で、最終lint411file・型・Web build・Worker dry-runは別実行で成功。契約/設定検査も成功。/tmp/ncf-gc-writes-check.log。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。全13復旧操作の権限拒否、D1書込み凍結、実更新拒否、eviction後再照会、停止token更新による取消しを確認。/tmp/ncf-gc-writes-operator.log、.wrangler/operator-drill-RdTDsk/report.json。S3/Time Travelは合成providerで、実remote検証ではない。
+- GCの回帰165件（4file、67.80s）が成功。続く6fileは125/126件が成功し、失敗した既存復元試験を「lease満了後も実DELETE終了までreadyを返さない」契約へ更新した。初回のNode失敗はbackup fixtureのFK不足、workerd失敗はRPC stubのbind呼出し、Cron fixtureの新規provider不足、遅延DELETEの旧期待値だった。fixtureと期待を修正し、固定期限試験が目的の受付段階まで到達するよう試験内の時計を調整した。productionの期限は延長していない。/tmp/ncf-gc-writes-regression-second.log、/tmp/ncf-gc-writes-latest.log。
+- 先行CIのWindows分割1では1,257/1,258件が成功。失敗はmultipart-bucket-admissionのlease/scan-pageケースで、故障注入前のfixture走査がr2_binding_verification_failedになった。原因は未確定。次回失敗時にprobe phase/last_errorと非閉鎖受付の集計だけを出す診断を追加し、token/nonceは出力しない。自動retryやproduction期限変更は加えていない。
+- 診断追加後のmultipart-bucket-admissionはローカル73件（1file、107.75s）が成功。/tmp/ncf-gc-writes-multipart-diagnostic.log。最終lint411fileと型検査も成功。これはWindowsでの再現性確認とは区別する。
+- 修正した復元待機の1ケースも単独で成功（1file、6.79s、他28件は選択対象外）。lease満了後もready=false、旧DELETEの実終了後に現claimで回収して一度だけ容量を精算する。/tmp/ncf-gc-writes-restore-final.log。変更13資料のlocal Markdownリンク258件に欠落なし。
+- 全体検査中に既存upload/multipart cleanupのCron試験2件が失敗。両fixtureのControlDO代替に送信・終了記録providerが不足していたため追加し、該当2file全62件（35.05s）が成功。production変更はなし。最終lint・型検査・Web build・Worker dry-runも成功。/tmp/ncf-gc-writes-cleanup-final.log、/tmp/ncf-gc-writes-build-final.log。
+- 全R2操作の最終終了証明・native結果不明の運用収束・新epoch予約・live上書き/採用は後続。実Cloudflareのresource作成・migration・deployは実施していない。今回のCI/browserはpush後に確認する。
+
+### 先行する空ファイル・manifestの送信記録
 
 - 空ファイルPUT・target manifest PUT/DELETEをDO/D1へ送信前から記録。直接ACKによる一度限りのgrant、実成功/未送信の終端事実、未知結果の保持、停止中の既知終了repair、凍結/再開/対象GC拒否を接続。migration0041、68通常table、依存追加なし。Node16件・workerd34件を追加。
 - 全体checkが成功。Node965件（48file、37.34s）＋workerd2,346件（109file、1,267.46s）、計3,311件を確認。lint410file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-r2-writes-check-final.log。停止拒否・通信切断fixtureのworkerdログを含むが、全テスト結果・終了コードは成功。最終資料のlocal Markdownリンクも確認した。

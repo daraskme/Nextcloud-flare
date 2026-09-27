@@ -1,27 +1,46 @@
 import { type R2WriteGrant, type R2WriteRequest, validateR2WriteGrant } from "../db/r2Write";
+import type { ControlDO } from "../do/ControlDO";
 import { CONTROL_NAME } from "../do/controlName";
 import { type AccountMutationEnv, MutationUnavailableError } from "./accountMutation";
 
+export type R2WriteSource =
+  | AccountMutationEnv
+  | {
+      DB: D1Database;
+      systemControl: Pick<ControlDO, "beginR2Write" | "finishR2Write">;
+    };
+type WriteInput = Pick<R2WriteRequest, "epoch" | "ownerId" | "kind" | "key" | "gc">;
+
 /** Each invocation gets one grant; a rejected native call remains unknown, never replayed here. */
 async function runWrite<T>(
-  env: AccountMutationEnv,
-  input: Pick<R2WriteRequest, "epoch" | "ownerId" | "kind" | "key">,
+  env: R2WriteSource,
+  input: WriteInput,
   action: () => Promise<T>,
   current: () => boolean,
+  deadline?: number,
 ): Promise<T> {
   const request: R2WriteRequest = {
     ...input,
     id: crypto.randomUUID(),
-    deadline: Date.now() + 5000,
+    deadline: Math.min(
+      deadline ?? Infinity,
+      input.gc && typeof input.gc.mode === "object" ? input.gc.mode.expiresAt : Infinity,
+      Date.now() + 5000,
+    ),
   };
-  const control = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
+  const control =
+    "systemControl" in env
+      ? env.systemControl
+      : env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
   let grant: R2WriteGrant;
   try {
     grant = await control.beginR2Write(request);
     validateR2WriteGrant(grant);
     if (
       Object.keys(request).some(
-        (key) => request[key as keyof R2WriteRequest] !== grant[key as keyof R2WriteRequest],
+        (key) =>
+          JSON.stringify(request[key as keyof R2WriteRequest]) !==
+          JSON.stringify(grant[key as keyof R2WriteRequest]),
       )
     )
       throw new Error("invalid_r2_write_grant");
@@ -51,20 +70,26 @@ async function runWrite<T>(
 }
 
 export async function trackedR2Write<T>(
-  env: AccountMutationEnv,
-  input: Pick<R2WriteRequest, "epoch" | "ownerId" | "kind" | "key">,
+  env: R2WriteSource,
+  input: WriteInput,
   action: () => Promise<T>,
+  deadline?: number,
 ): Promise<T> {
+  if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline <= Date.now()))
+    throw new MutationUnavailableError();
   let active = true,
     timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      runWrite(env, input, action, () => active),
+      runWrite(env, input, action, () => active, deadline),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          active = false;
-          reject(new MutationUnavailableError());
-        }, 25000);
+        timer = setTimeout(
+          () => {
+            active = false;
+            reject(new MutationUnavailableError());
+          },
+          Math.min(25000, deadline === undefined ? 25000 : Math.max(1, deadline - Date.now())),
+        );
       }),
     ]);
   } finally {

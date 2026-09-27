@@ -15,7 +15,12 @@ import { uploadRow } from "../../src/services/uploads/access";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { foundationFixture } from "../fixtures/foundation";
 import { expireGcGrace } from "../fixtures/gc";
-import { acquireSystemMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireSystemMutation,
+  grantPermit,
+  mutationEnv,
+  r2WriteFixture,
+} from "../fixtures/mutationAdmission";
 import { multipartCleanupFixture as fixture } from "../fixtures/uploadCleanup";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
@@ -495,6 +500,7 @@ it("runs from Cron while admission is open, with full objects waiting for unpaus
     CONTROL: {
       idFromName: () => "singleton",
       get: () => ({
+        ...r2WriteFixture(),
         acquireSystemMutation,
         status: async () => ({ epoch: 1, maintenance, gcPaused }),
       }),

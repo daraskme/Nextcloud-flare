@@ -193,9 +193,9 @@ it("settles an expired returned grant as never dispatched", async () => {
   expect(await row(issued!.id)).toMatchObject({ state: "not_started" });
 });
 
-it.each(["grant", "native"])(
-  "retains a timeout during %s and reconciles only its late continuation",
-  async (phase) => {
+it.each(["grant", "native"].flatMap((phase) => [4000, 25000].map((budget) => ({ phase, budget }))))(
+  "retains a timeout during $phase within $budget ms and reconciles only its late continuation",
+  async ({ phase, budget }) => {
     let release!: () => void, entered!: () => void, finished!: () => void;
     const wait = new Promise<void>((r) => (release = r)),
       started = new Promise<void>((r) => (entered = r)),
@@ -219,15 +219,20 @@ it.each(["grant", "native"])(
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const outcome = expect(
-        trackedR2Write(app, request(), async () => {
-          calls++;
-          entered();
-          await wait;
-          return "done";
-        }),
+        trackedR2Write(
+          app,
+          request(),
+          async () => {
+            calls++;
+            entered();
+            await wait;
+            return "done";
+          },
+          budget === 25000 ? undefined : Date.now() + budget,
+        ),
       ).rejects.toThrow(/mutation_unavailable/);
       await started;
-      await vi.advanceTimersByTimeAsync(25000);
+      await vi.advanceTimersByTimeAsync(budget);
       await outcome;
       expect(await row(issued!.id)).toMatchObject({ state: "pending" });
       release();

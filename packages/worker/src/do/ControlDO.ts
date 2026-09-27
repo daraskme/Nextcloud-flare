@@ -284,7 +284,7 @@ export class ControlDO extends DurableObject<Env> {
       ctx.storage,
       env.DB,
       (epoch, kind) =>
-        kind === "manifest.delete"
+        kind.endsWith(".delete")
           ? this.#admission.captureSystemMutationMode(epoch)
           : this.#admission.assertMutationOpen(epoch),
       (request) => this.acquireMutation(request),
@@ -294,9 +294,9 @@ export class ControlDO extends DurableObject<Env> {
           epoch: this.#row().epoch,
           deadline: Date.now() + 5000,
         }),
-      (epoch, deadline) =>
+      (epoch, deadline, kind) =>
         this.acquireGlobalMutation({
-          permitId: `global:r2.manifest-delete:${crypto.randomUUID()}`,
+          permitId: `global:${kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
           epoch,
           deadline,
         }),

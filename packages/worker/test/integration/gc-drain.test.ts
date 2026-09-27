@@ -10,7 +10,7 @@ import {
   ORPHAN_GRACE_MS,
 } from "../../src/jobs/orphanInventory";
 import { gcFixture as fixture } from "../fixtures/gc";
-import { mutationEnv } from "../fixtures/mutationAdmission";
+import { clearEndedR2TestWrites, mutationEnv } from "../fixtures/mutationAdmission";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
@@ -35,6 +35,7 @@ beforeAll(async () => {
   expect(await control().recover()).toMatchObject({ epoch: 2 });
 });
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=2,maintenance=1,gc_paused=1").run();
   await env.DB.prepare(
     "UPDATE gc_candidates SET claim_expires_at=9999999999999 WHERE state='deleting'",
@@ -271,7 +272,7 @@ it("recovers a claim acknowledgement loss but never dispatches on an unknown cou
   expect(await physical(g)).toBe(3);
 });
 
-it("resolves lost R2 delete responses only through a confirmed HEAD", async () => {
+it("retains physical bytes after unknown DELETE and after unknown HEAD", async () => {
   const f = await fixture();
   expect(
     await drain(
@@ -283,8 +284,15 @@ it("resolves lost R2 delete responses only through a confirmed HEAD", async () =
         },
       }),
     ),
-  ).toMatchObject({ deleted: 1, r2Calls: 2 });
-  expect(await physical(f)).toBe(0);
+  ).toMatchObject({ deleted: 0, retried: 1, r2Calls: 1 });
+  expect(await physical(f)).toBe(3);
+  expect(
+    await env.DB.prepare(
+      "SELECT state FROM r2_write_attempts WHERE r2_key=? AND kind='blob.delete'",
+    )
+      .bind(f.key)
+      .first("state"),
+  ).toBe("pending");
   const g = await fixture();
   expect(
     await drain(
@@ -299,7 +307,7 @@ it("resolves lost R2 delete responses only through a confirmed HEAD", async () =
   expect(await physical(g)).toBe(3);
 });
 
-it("serializes claims and fences an older deletion when a later lease has completed", async () => {
+it("keeps a native DELETE held past its claim lease until the actual invocation ends", async () => {
   const f = await fixture();
   let entered!: () => void;
   let release!: () => void;
@@ -319,14 +327,18 @@ it("serializes claims and fences an older deletion when a later lease has comple
       },
     }),
   );
-  await pending;
-  expect(await drain()).toMatchObject({ claimed: 0 });
-  await expire(f);
-  expect(await drain()).toMatchObject({ deleted: 1 });
-  const saved = await row(f);
-  release();
+  try {
+    await pending;
+    expect(await drain()).toMatchObject({ claimed: 0 });
+    await expire(f);
+    expect(await drain()).toMatchObject({ claimed: 0, deleted: 0 });
+    expect(await physical(f)).toBe(3);
+  } finally {
+    release();
+  }
   expect(await old).toMatchObject({ deleted: 0, retried: 1, r2Calls: 1 });
-  expect(await row(f)).toEqual(saved);
+  expect(await physical(f)).toBe(3);
+  expect(await drain()).toMatchObject({ deleted: 1 });
   expect(await physical(f)).toBe(0);
 });
 

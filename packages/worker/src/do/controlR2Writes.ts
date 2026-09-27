@@ -15,6 +15,8 @@ import {
   validateR2Write,
   validateR2WriteGrant,
 } from "../db/r2Write";
+import { gcDispatchFence } from "../jobs/gc";
+import { ORPHAN_GRACE_MS, objectFence } from "../jobs/orphanInventory";
 import { accountMutationStatements } from "../services/accountMutation";
 import { globalMutationStatements } from "../services/globalMutation";
 
@@ -36,6 +38,7 @@ export class ControlR2Writes {
     private readonly deleteAdmit: (
       epoch: number,
       deadline: number,
+      kind: "manifest.delete" | "blob.delete" | "orphan.delete",
     ) => Promise<GlobalMutationAdmission>,
   ) {
     const sql = storage.sql;
@@ -94,6 +97,7 @@ export class ControlR2Writes {
       deadline,
       startedAt,
       token: crypto.randomUUID(),
+      ...(input.gc ? { gc: input.gc } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -105,23 +109,52 @@ export class ControlR2Writes {
     if (saved.toArray().length !== 1) throw new Error("r2_write_unavailable");
     try {
       const statements = [insertR2Write(grant, "pending"), assertOneChange];
-      if (kind === "manifest.delete") {
-        const admission = await this.deleteAdmit(epoch, deadline);
+      if (kind === "manifest.delete" || kind === "blob.delete" || kind === "orphan.delete") {
+        const admission = await this.deleteAdmit(epoch, deadline, kind);
         this.current(epoch, kind);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        await atomicBatch(
-          this.db,
-          globalMutationStatements(admission, [
-            assertExists(
-              `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
+        const guards =
+          kind === "manifest.delete"
+            ? [
+                assertExists(
+                  `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
             AND NOT EXISTS(SELECT 1 FROM target_sets WHERE manifest_ref=?)
             AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=? AND state='pending')`,
-              [ownerId, key, key, key],
-            ),
-            ...statements,
-          ]),
-        );
+                  [ownerId, key, key, key],
+                ),
+              ]
+            : kind === "blob.delete"
+              ? [
+                  gcDispatchFence(
+                    {
+                      blobId: input.gc!.blobId!,
+                      ownerId: ownerId!,
+                      key,
+                      state: "deleting",
+                    },
+                    input.gc!.claimToken,
+                    epoch,
+                    input.gc!.mode,
+                    deadline,
+                  ),
+                ]
+              : [
+                  assertExists(
+                    "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
+                    [epoch, input.gc!.mode ? 1 : 0, input.gc!.mode ? 1 : 0],
+                  ),
+                  assertExists(
+                    "SELECT 1 FROM orphan_objects WHERE r2_key=? AND owner_key IS NOT NULL AND epoch<=? AND first_seen_at<=strftime('%s','now')*1000-?",
+                    [key, epoch, ORPHAN_GRACE_MS],
+                  ),
+                  assertExists(
+                    "SELECT 1 FROM orphan_objects WHERE r2_key=? AND claim_expires_at>=?",
+                    [key, deadline],
+                  ),
+                  objectFence({ ...input.gc!.object!, r2_key: key }, input.gc!.claimToken),
+                ];
+        await atomicBatch(this.db, globalMutationStatements(admission, [...guards, ...statements]));
       } else {
         const spaceId = await primary(this.db)
           .prepare(
@@ -141,7 +174,7 @@ export class ControlR2Writes {
         this.current(epoch, kind);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        await atomicBatch(this.db, accountMutationStatements(admission, ownerId, statements));
+        await atomicBatch(this.db, accountMutationStatements(admission, ownerId!, statements));
       }
       this.current(epoch, kind);
       if (Date.now() < startedAt || Date.now() >= deadline || this.#row(id)?.state !== "pending")

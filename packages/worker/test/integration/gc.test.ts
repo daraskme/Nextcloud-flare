@@ -7,14 +7,26 @@ import worker from "../../src/index";
 import { runGarbageCollection } from "../../src/jobs/gc";
 import { observePhysicalObject } from "../../src/services/physical";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireSystemMutation,
+  clearEndedR2TestWrites,
+  mutationEnv,
+  r2WriteFixture,
+} from "../fixtures/mutationAdmission";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
 
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_paused=0").run();
+  await env.DB.prepare(
+    "UPDATE gc_candidates SET claim_expires_at=9999999999999 WHERE state='deleting'",
+  ).run();
+  await env.DB.prepare(
+    "UPDATE gc_candidates SET not_before=9999999999999 WHERE state='candidate'",
+  ).run();
 });
 
 async function candidate() {
@@ -120,29 +132,55 @@ it("honors every pin, the materialized fence, and the GC pause", async () => {
   });
 });
 
-it("resolves a lost delete response through R2 head", async () => {
-  const f = await candidate();
-  const bucket = {
-    delete: async (key: string) => {
-      await env.BLOBS.delete(key);
-      throw new Error("delete_ack_lost");
-    },
-    head: env.BLOBS.head.bind(env.BLOBS),
-  } as unknown as R2Bucket;
-  expect(await runGarbageCollection(mutationEnv(), bucket, 1, { maxBlobs: 1 })).toMatchObject({
-    claimed: 1,
-    deleted: 1,
-    retried: 0,
-  });
-});
+it.each(["before", "after"])(
+  "retains unknown DELETE %s the native side effect, even after lease expiry",
+  async (phase) => {
+    const f = await candidate();
+    const bucket = {
+      delete: async (key: string) => {
+        if (phase === "after") await env.BLOBS.delete(key);
+        throw new Error("delete_ack_lost");
+      },
+      head: env.BLOBS.head.bind(env.BLOBS),
+    } as unknown as R2Bucket;
+    expect(await runGarbageCollection(mutationEnv(), bucket, 1, { maxBlobs: 1 })).toMatchObject({
+      claimed: 1,
+      deleted: 0,
+      retried: 1,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM r2_write_attempts WHERE r2_key=? AND kind='blob.delete'",
+      )
+        .bind(f.key)
+        .first("state"),
+    ).toBe("pending");
+    await expect(
+      env.DB.prepare("UPDATE blobs SET state='deleted' WHERE id=?").bind(f.ids.blob).run(),
+    ).rejects.toThrow(/r2_write_unsettled/);
+    expect(
+      await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
+        .bind(f.ids.user)
+        .first("physical_bytes"),
+    ).toBe(3);
+    await env.DB.prepare("UPDATE gc_candidates SET claim_expires_at=0 WHERE blob_id=?")
+      .bind(f.ids.blob)
+      .run();
+    expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+      claimed: 0,
+      deleted: 0,
+      r2Calls: 0,
+    });
+  },
+);
 
 it("retakes an expired failed claim and preserves irreversible state", async () => {
   const f = await candidate();
   const unavailable = {
-    delete: async () => {
+    head: async () => {
       throw new Error("r2_unavailable");
     },
-    head: env.BLOBS.head.bind(env.BLOBS),
+    delete: env.BLOBS.delete.bind(env.BLOBS),
   } as unknown as R2Bucket;
   expect(await runGarbageCollection(mutationEnv(), unavailable, 1, { maxBlobs: 1 })).toMatchObject({
     claimed: 1,
@@ -181,6 +219,7 @@ it("runs from Cron only after ControlDO and D1 admit GC", async () => {
     CONTROL: {
       idFromName: () => "singleton",
       get: () => ({
+        ...r2WriteFixture(),
         acquireSystemMutation,
         status: async () => ({ epoch: 1, maintenance: false, gcPaused: false }),
       }),

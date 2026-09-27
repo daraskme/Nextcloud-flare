@@ -11,7 +11,12 @@ import {
 } from "../../src/jobs/orphanInventory";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireGlobalMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireGlobalMutation,
+  clearEndedR2TestWrites,
+  mutationEnv,
+  r2WriteFixture,
+} from "../fixtures/mutationAdmission";
 import {
   orphanBucket as bucket,
   orphanFixture as fixture,
@@ -21,6 +26,7 @@ import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_paused=0").run();
   await env.DB.prepare(
     "UPDATE r2_inventory_scan SET epoch=1,cursor='',lease_token=NULL,lease_expires_at=NULL,next_scan_at=0,last_token=NULL,pages=0",
@@ -400,13 +406,82 @@ it("rechecks GC pause between HEAD and irreversible deletion", async () => {
   expect(await physical(f)).toBe(3);
 });
 
-it("recovers unknown delete responses and terminal D1 acknowledgements without double refunds", async () => {
+it.each(["before", "after"])(
+  "keeps unknown orphan DELETE %s its side effect after lease expiry",
+  async (phase) => {
+    const f = await fixture();
+    await track(f);
+    let heads = 0;
+    const interrupted = bucket({
+      head: async (key) => {
+        heads++;
+        return env.BLOBS.head(key);
+      },
+      delete: async (key) => {
+        if (phase === "after") await env.BLOBS.delete(key);
+        throw Error("delete_reply_lost");
+      },
+    });
+    expect(await collectOrphanObjects(mutationEnv(), interrupted, 1)).toMatchObject({
+      deleted: 0,
+      retried: 1,
+      r2Calls: 2,
+    });
+    expect(heads).toBe(1);
+    expect(await physical(f)).toBe(3);
+    expect(
+      await env.DB.prepare(
+        "SELECT state,owner_id FROM r2_write_attempts WHERE r2_key=? AND kind='orphan.delete'",
+      )
+        .bind(f.key)
+        .first(),
+    ).toEqual({ state: "pending", owner_id: null });
+    await expect(
+      env.DB.prepare(
+        "UPDATE orphan_objects SET state='deleted',removed_at=last_seen_at WHERE r2_key=?",
+      )
+        .bind(f.key)
+        .run(),
+    ).rejects.toThrow(/r2_write_unsettled/);
+    await env.DB.prepare(
+      "UPDATE orphan_objects SET claim_expires_at=0,next_check_at=0 WHERE r2_key=?",
+    )
+      .bind(f.key)
+      .run();
+    expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+      claimed: 0,
+      deleted: 0,
+    });
+    expect(await physical(f)).toBe(3);
+  },
+);
+
+it("tracks deletion of a long Unicode orphan key without inventing an owner", async () => {
+  const owner = "あ".repeat(120),
+    blob = crypto.randomUUID(),
+    key = `u/${owner}/b/${blob}`;
+  const object = (await env.BLOBS.put(key, "abc"))!;
+  const seen = Date.now() - ORPHAN_GRACE_MS - 2000;
+  await env.DB.prepare(
+    "INSERT INTO orphan_objects(r2_key,owner_key,blob_key,bytes,r2_etag,r2_version,uploaded_at,first_seen_at,last_seen_at,epoch) VALUES(?,?,?,3,?,?,?,?,?,1)",
+  )
+    .bind(key, owner, blob, object.etag, object.version, object.uploaded.getTime(), seen, seen)
+    .run();
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+  expect(
+    await env.DB.prepare("SELECT state,owner_id FROM r2_write_attempts WHERE r2_key=?")
+      .bind(key)
+      .first(),
+  ).toEqual({ state: "succeeded", owner_id: null });
+  expect(await env.BLOBS.head(key)).toBeNull();
+});
+
+it("recovers terminal D1 acknowledgements after a known completed DELETE without double refunds", async () => {
   const f = await fixture();
   await track(f);
   const interrupted = bucket({
     delete: async (key) => {
       await env.BLOBS.delete(key);
-      throw new Error("delete_reply_lost");
     },
   });
   const db = injectBatch(
@@ -626,6 +701,7 @@ it("runs inventory and orphan GC through Cron only under both admission and GC g
     CONTROL: {
       idFromName: () => "singleton",
       get: () => ({
+        ...r2WriteFixture(),
         status: async () => ({ epoch: 1, maintenance, gcPaused }),
         acquireGlobalMutation,
       }),

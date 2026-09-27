@@ -406,7 +406,7 @@ it("fences the permit grant if the restore's pause is replaced after LockDO auth
   await control().releaseRestorePause(epoch, nextToken!);
 });
 
-it("waits for an old in-flight delete and settles its immutable key only once after lease expiry", async () => {
+it("waits for the actual old DELETE after lease expiry before allowing restore", async () => {
   const pending = await garbage("candidate");
   const entered = deferred(),
     release = deferred();
@@ -433,13 +433,22 @@ it("waits for an old in-flight delete and settles its immutable key only once af
       .bind(pending.ids.blob)
       .run();
     expect(await control().acquireRestorePause(epoch, id)).toMatchObject({
+      ready: false,
+      token: held.token,
+    });
+    release.resolve();
+    expect(await old).toMatchObject({ deleted: 0, retried: 1, r2Calls: 1 });
+    expect(head).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
+        .bind(pending.ids.user)
+        .first("physical_bytes"),
+    ).toBe(3);
+    expect(await control().acquireRestorePause(epoch, id)).toMatchObject({
       ready: true,
       token: held.token,
     });
     await control().releaseRestorePause(epoch, held.token);
-    release.resolve();
-    expect(await old).toMatchObject({ deleted: 0, retried: 1, r2Calls: 1 });
-    expect(head).not.toHaveBeenCalled();
     expect(
       await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
         .bind(pending.ids.user)

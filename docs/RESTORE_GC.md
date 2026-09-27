@@ -1,6 +1,6 @@
 # 通常稼働中のごみ箱復元とGC
 
-更新: 2026-09-25。ローカル実装の契約。実Cloudflareでの移行・配備・復旧訓練は未実施。
+更新: 2026-09-27。ローカル実装の契約。実Cloudflareでの移行・配備・復旧訓練は未実施。
 
 ## 一時停止の所有者
 
@@ -14,7 +14,7 @@ migration `0026`はD1 `control`に`gc_operator_paused`と`gc_hold_token/operatio
 
 1. 現在のcredential・trash membership・復元先権限と、同じIdempotency-Keyの保存済み結果を確認する。terminal結果の再照会では新たにGCを止めない。
 2. `ControlDO.acquireRestorePause(epoch, operationId)`が一時停止を永続化する。管理者によるGC停止設定は別に保持する。
-3. 有効な削除leaseを待ち、期限が切れた既存`deleting`だけをdelete/HEADで収束する。1回最大20件、新規dispatchの時間枠は25秒。進行中のR2呼出しの強制中断は保証しない。新規candidate、pin付きblob、未精算uploadは処理しない。残件があれば識別子を保持して503を返し、同じkeyでの再試行を可能にする。
+3. 有効な削除leaseと実行中・結果不明のDELETEを待つ。lease期限が切れても、同keyのR2 pendingがあれば再claimせずreadyを返さない。既知の終了が反映された既存`deleting`だけを現在のclaimでdelete/HEADにより収束する。1回最大20件、新規dispatchの時間枠は25秒で元のpause期限も超えない。進行中のR2呼出しの強制中断は保証しない。新規candidate、pin付きblob、未精算uploadは処理しない。残件があれば識別子を保持して503を返し、同じkeyでの再試行を可能にする。
 4. LockDOのpermit付与batchとD1の原子的な復元batchの両方で、同じoperation/token/epoch/期限が現在も有効であることをassertする。既存の認可・permit・membership・全体GC停止・削除中blob拒否も維持する。
 5. 復元試行終了時に同じtokenだけを解放する。D1の識別子削除とGC設定変更は同じbatch。古い処理が後から届いても別operationの一時停止を利用できず、解放後の遅延commitも拒否される。
 
@@ -28,7 +28,7 @@ alarmは未完了のGC変更を再照合し、必要なら既存削除をbounded
 
 同じadmission transitionのalarmが連続6回失敗すると、それ以上の自動再試行を止め、永続的なclosing intentで受付を停止する。失敗回数はDO SQLiteに保存し、evictionでリセットしない。D1が全面的に使えない間はD1 mirrorの閉鎖完了を保証できないが、DOの新規受付は閉じたままにする。復旧後にoperatorが`quiesce(epoch)`を再送してD1を収束し、必要なrepair・全監査・段階再開を行う。alarm成功でそのtransitionの失敗回数だけを消す。遅れた古い失敗は新しいtransitionを停止せず、管理者設定変更後も必要なcleanup alarmを維持する。
 
-R2へ既に出たdeleteは取り消せないため、対象keyは不可逆な削除状態のまま扱う。旧deleteの応答が新しい回収後に届いても、claim token/epoch/modeの再検査でHEAD・最終精算を拒否する。physical bytesは現在の回収処理がR2不在を確認した後、D1で一度だけ減算する。
+R2へ既に出たdeleteは取り消せないため、対象keyは不可逆な削除状態のまま扱う。0042では送信前からDO/D1へ記録し、結果不明をHEAD不在やlease満了で解除しない。遅れた旧DELETEの実成功が記録された後でも、旧claimによるHEAD・最終精算はtoken/期限/epoch/modeの再検査で拒否する。physical bytesは現在の回収処理が既知のDELETE終了とR2不在を確認した後、D1で一度だけ減算する。
 
 ## 検証範囲と残る制約
 
@@ -47,4 +47,4 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 ControlDOのmaintenance RPC・acquireRestorePause・alarmから同じinstanceのsystem受付へ接続する。停止中はmaintenance=1、復元中はmaintenance=0と同じrestore token/operation/固定期限が必要。新規candidateは通常GCだけで扱い、停止/復元中は既存deletingのみを回収する。エラー注記に失敗してもphysical保留と不可逆状態は維持する。maxBlobsは受付できなかったclaimも含む候補検査上限。進行中R2呼出しの強制中断は保証しない。
 
-共通受付の対象は所有blob。orphan回収は既存fenceを維持し、共通受付への接続は後続。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。
+orphan回収も共通global受付へ接続済み。両GCのDELETEは同じinstanceの送信・終了記録を使い、復元のpauseや全処理の固定期限を延長しない。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)と[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。

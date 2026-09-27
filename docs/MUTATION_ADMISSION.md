@@ -240,6 +240,8 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 | gc.finalize | blob/candidateのdeleted化、physical解除、upload cleanup終了 | exact receiptまたは完全な終端tuple。別処理のtupleで自分の枠は返さない |
 | gc.error | 現在epoch/mode・自分のclaim token/epochに対するエラー | best effort。記録失敗でもdeleting・physical保留を維持 |
 
+DELETEには、予算ACKに加えて`global:r2.gc-delete`でDO/D1の送信前記録を保存し、実際のnative成功を`global:r2.write-settle`で反映する。同じ32 active/256 waiting枠を共有し、native待機中は短期枠を保持しない。別に全5種のR2操作で共有する最大32件の未精算receipt/pendingを保持し、枠の返却・lease期限・HEAD不在から終了を推定しない。grant batchでも元のclaim/domain条件を再検査する。待機は25秒と元の固定期限、開始は最大5秒と復元pause期限にも制限し、受付待ちで予算を更新しない。orphan GCも明示null ownerで同じ送信・終了受付を使う。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を参照。
+
 通常実行はmaintenance=0/gc_paused=0。停止中は1/1で既存deletingだけ。復元中は0/1に加え、同じrestore operation/token/固定期限を必須とする。ControlDOはacquireRestorePauseの永続化・mirror反映後に同一instanceのsystem受付を使い、alarmとmaintenance RPCも同じqueueへ接続する。復旧監査/quiesceや復元windowの管理は自分の受付枠に依存させない。
 
 claimの60秒leaseとremoved_atは待機後のSQL時計を使う。removed_atはobserved_atを下回らない。1回のmaxBlobsは失敗したclaimも含む候補検査数の上限とし、同じ失敗を無制限に再試行しない。既定50件（停止/復元20件）、25秒の外部dispatch開始期限を維持する。進行中R2呼出しの強制終了は保証しない。

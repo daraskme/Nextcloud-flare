@@ -130,12 +130,12 @@ export function r2WriteFixture(
               db,
             );
           },
-          (epoch, deadline) =>
+          (epoch, deadline, kind) =>
             acquireGlobalMutation(
               {
                 epoch,
                 deadline,
-                permitId: `global:r2.manifest-delete:${crypto.randomUUID()}`,
+                permitId: `global:${kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
               },
               db,
             ),
@@ -158,6 +158,22 @@ export function r2WriteFixture(
     finishR2Write: (grant: R2WriteGrant, outcome: R2WriteTerminal) =>
       invoke((writes) => writes.finish(grant, outcome)),
   };
+}
+
+/** Between tests only, after every synthetic native action has ended. No production bypass. */
+export async function clearEndedR2TestWrites() {
+  await env.DB.prepare(
+    "UPDATE r2_write_attempts SET state='not_started',finished_at=MAX(started_at,strftime('%s','now')*1000) WHERE state='pending'",
+  ).run();
+  await runInDurableObject(
+    env.CONTROL.get(env.CONTROL.idFromName("singleton")),
+    async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE control_r2_write_receipts SET state='not_started' WHERE state='pending'",
+      );
+      state.storage.sql.exec("DELETE FROM control_r2_write_receipts");
+    },
+  );
 }
 
 export async function grantPermit(

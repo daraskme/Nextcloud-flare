@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { advanceMutations, type MutationRequest } from "../../src/db/mutationAdmission";
 import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
+import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { runGarbageCollection } from "../../src/jobs/gc";
@@ -96,6 +97,67 @@ async function cleanup(space: string) {
     .run();
 }
 
+it.each(["token", "key", "mode", "lease", "pin", "owner"])(
+  "rejects a GC grant after its %s proof no longer matches",
+  async (change) => {
+    const f = await gcFixture();
+    const token = crypto.randomUUID(),
+      now = Date.now();
+    await env.DB.prepare(
+      "UPDATE gc_candidates SET claim_token=?,claim_epoch=?,claim_expires_at=? WHERE blob_id=?",
+    )
+      .bind(token, epoch, now + 60000, f.ids.blob)
+      .run();
+    const request: R2WriteRequest = {
+      id: crypto.randomUUID(),
+      epoch,
+      ownerId: f.ids.user,
+      kind: "blob.delete",
+      key: f.key,
+      deadline: now + 5000,
+      gc: { claimToken: token, mode: false, blobId: f.ids.blob },
+    };
+    if (change === "token") request.gc!.claimToken = crypto.randomUUID();
+    if (change === "key") request.key += "-wrong";
+    if (change === "mode") request.gc!.mode = true;
+    if (change === "owner") request.ownerId = crypto.randomUUID();
+    if (change === "lease")
+      await env.DB.prepare("UPDATE gc_candidates SET claim_expires_at=0 WHERE blob_id=?")
+        .bind(f.ids.blob)
+        .run();
+    if (change === "pin")
+      await env.DB.prepare("UPDATE gc_candidates SET pinned_by='fixture' WHERE blob_id=?")
+        .bind(f.ids.blob)
+        .run();
+    try {
+      await runInDurableObject(control(), async (instance) => {
+        await expect(instance.beginR2Write(request)).rejects.toThrow();
+      });
+      expect(
+        await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE id=?")
+          .bind(request.id)
+          .first("state"),
+      ).toBe("not_started");
+      expect(await env.BLOBS.head(f.key)).not.toBeNull();
+      expect(
+        await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
+          .bind(f.ids.user)
+          .first("physical_bytes"),
+      ).toBe(3);
+    } finally {
+      await env.DB.prepare(
+        "UPDATE gc_candidates SET pinned_by=NULL,claim_expires_at=0 WHERE blob_id=?",
+      )
+        .bind(f.ids.blob)
+        .run();
+      expect(await runGarbageCollection(env, env.BLOBS, epoch, { maxBlobs: 1 })).toMatchObject({
+        deleted: 1,
+      });
+      await control().quiesce(epoch);
+    }
+  },
+);
+
 it.each(["claim", "call", "finalize", "error"] as const)(
   "queues normal GC %s in the real global pool and returns the slot",
   async (stage) => {
@@ -107,6 +169,9 @@ it.each(["claim", "call", "finalize", "error"] as const)(
     const source = {
       DB: env.DB,
       systemControl: {
+        beginR2Write: (request: R2WriteRequest) => control().beginR2Write(request),
+        finishR2Write: (grant: R2WriteGrant, outcome: R2WriteTerminal) =>
+          control().finishR2Write(grant, outcome),
         status: () => control().status(),
         acquireSystemMutation: async (r: MutationRequest) => {
           if (!filled && r.permitId.startsWith(prefix)) {
@@ -120,11 +185,11 @@ it.each(["claim", "call", "finalize", "error"] as const)(
     const bucket = {
       delete: async (key: string) => {
         calls++;
-        if (stage === "error") throw new Error("delete_unconfirmed");
         await env.BLOBS.delete(key);
       },
       head: (key: string) => {
         calls++;
+        if (stage === "error") throw new Error("head_unconfirmed");
         return env.BLOBS.head(key);
       },
     } as R2Bucket;

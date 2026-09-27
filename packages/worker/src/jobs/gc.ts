@@ -6,6 +6,7 @@ import {
   type SqlStatement,
 } from "../db/primary";
 import { type RestorePause, restorePauseCondition } from "../db/restorePause";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -144,11 +145,12 @@ async function claimCandidate(
   );
 }
 
-function dispatchFence(
+export function gcDispatchFence(
   candidate: Candidate,
   token: string,
   epoch: number,
   stopped: GcMode,
+  dispatchBefore?: number,
 ): SqlStatement {
   const mode = modeFence(stopped, "c");
   return assertExists(
@@ -156,11 +158,20 @@ function dispatchFence(
     JOIN control c ON c.singleton=1 WHERE g.blob_id=? AND b.r2_key=? AND b.owner_id=?
     AND g.state='deleting' AND b.state='deleting' AND b.ref_count=0 AND g.pinned_by IS NULL
     AND g.claim_token=? AND g.claim_epoch=? AND g.claim_expires_at>${CLOCK}
+    ${dispatchBefore === undefined ? "" : "AND g.claim_expires_at>=?"}
     AND c.epoch=g.claim_epoch AND c.maintenance=? AND c.gc_paused=? AND ${mode.sql}
     AND ${SETTLED_UPLOADS}
     AND NOT EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key=b.r2_key AND w.state='pending')
     AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)`,
-    [candidate.blobId, candidate.key, candidate.ownerId, token, epoch, ...mode.values],
+    [
+      candidate.blobId,
+      candidate.key,
+      candidate.ownerId,
+      token,
+      epoch,
+      ...(dispatchBefore === undefined ? [] : [dispatchBefore]),
+      ...mode.values,
+    ],
   );
 }
 
@@ -204,7 +215,7 @@ async function finalizeCandidate(
   try {
     const admission = await acquireSystemMutation(env, candidate.ownerId, "gc.finalize");
     await commitSystemMutation(db, admission, candidate.ownerId, [
-      dispatchFence(candidate, token, epoch, stopped),
+      gcDispatchFence(candidate, token, epoch, stopped),
       {
         sql: `UPDATE blobs SET state='deleted' WHERE id=? AND state='deleting' AND ref_count=0
           AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=?)`,
@@ -249,7 +260,7 @@ async function finalizeCandidate(
 
 /** Runs only under an admitted epoch. Each claimed object uses at most delete + head. */
 export async function runGarbageCollection(
-  env: SystemMutationSource,
+  env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { maxBlobs?: number; maxWallMs?: number } = {},
@@ -259,7 +270,7 @@ export async function runGarbageCollection(
 
 /** Finish only already-irreversible deletions. A pause never admits fresh GC candidates. */
 export async function drainStoppedBlobGarbageCollection(
-  env: SystemMutationSource,
+  env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { maxBlobs?: number; maxWallMs?: number } = {},
@@ -269,7 +280,7 @@ export async function drainStoppedBlobGarbageCollection(
 
 /** Drain irreversible deletions under this exact live restore window; no new candidates. */
 export async function drainRestoreBlobGarbageCollection(
-  env: SystemMutationSource,
+  env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   pause: RestorePause,
   options: { maxBlobs?: number; maxWallMs?: number } = {},
@@ -279,7 +290,7 @@ export async function drainRestoreBlobGarbageCollection(
 }
 
 async function collect(
-  env: SystemMutationSource,
+  env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { maxBlobs?: number; maxWallMs?: number },
@@ -322,7 +333,7 @@ async function collect(
       await atomicBatch(
         db,
         systemMutationStatements(admission, candidate.ownerId, [
-          dispatchFence(candidate, token, epoch, stopped),
+          gcDispatchFence(candidate, token, epoch, stopped),
           {
             sql: "UPDATE gc_candidates SET r2_calls=r2_calls+1 WHERE blob_id=? AND claim_token=?",
             values: [candidate.blobId, token],
@@ -336,11 +347,18 @@ async function collect(
     };
     try {
       await charge();
-      try {
-        await bucket.delete(candidate.key);
-      } catch {
-        // A lost delete response is resolved by the authoritative absence check below.
-      }
+      await trackedR2Write(
+        env,
+        {
+          epoch,
+          ownerId: candidate.ownerId,
+          key: candidate.key,
+          kind: "blob.delete",
+          gc: { blobId: candidate.blobId, claimToken: token, mode: stopped },
+        },
+        () => bucket.delete(candidate.key),
+        started + wall,
+      );
       await charge();
       const remaining = await bucket.head(candidate.key);
       if (remaining || !(await finalizeCandidate(env, candidate, token, epoch, stopped))) {

@@ -8,7 +8,12 @@ import { runGarbageCollection } from "../../src/jobs/gc";
 import { repairSingleUploads } from "../../src/jobs/uploadCleanup";
 import { observePhysicalObject } from "../../src/services/physical";
 import { expireGcGrace } from "../fixtures/gc";
-import { acquireSystemMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireSystemMutation,
+  grantPermit,
+  mutationEnv,
+  r2WriteFixture,
+} from "../fixtures/mutationAdmission";
 import { singleCleanupFixture as fixture } from "../fixtures/uploadCleanup";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -430,6 +435,7 @@ it("runs from Cron under ControlDO admission and respects the GC pause", async (
     CONTROL: {
       idFromName: () => "singleton",
       get: () => ({
+        ...r2WriteFixture(),
         acquireSystemMutation,
         status: async () => ({ epoch: 1, maintenance, gcPaused }),
       }),

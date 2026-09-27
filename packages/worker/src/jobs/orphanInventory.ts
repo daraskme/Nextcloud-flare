@@ -11,6 +11,7 @@ import {
   type GlobalMutationSource,
   globalMutationStatements,
 } from "../services/globalMutation";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import { controlFence } from "./uploadCleanup";
 
 export const ORPHAN_GRACE_MS = 35 * 86400000;
@@ -83,7 +84,7 @@ function scanFence(epoch: number, token: string): SqlStatement {
   );
 }
 
-function objectFence(row: Orphan, token: string): SqlStatement {
+export function objectFence(row: Orphan, token: string): SqlStatement {
   return assertExists(
     `SELECT 1 FROM orphan_objects WHERE r2_key=? AND state='deleting'
     AND claim_token=? AND claim_expires_at>${CLOCK} AND bytes=? AND r2_etag=? AND r2_version=?
@@ -345,7 +346,7 @@ export interface OrphanGcResult {
 
 /** Separate from normal blob GC: immutable quarantine keys, 35-day grace, HEAD before and after delete. */
 export async function collectOrphanObjects(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number } = {},
@@ -355,7 +356,7 @@ export async function collectOrphanObjects(
 
 /** Maintenance may reconcile an existing irreversible deletion, but cannot start quarantine GC. */
 export async function drainStoppedOrphanGarbageCollection(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number } = {},
@@ -365,7 +366,7 @@ export async function drainStoppedOrphanGarbageCollection(
 }
 
 async function collect(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { limit?: number; maxWallMs?: number },
@@ -459,11 +460,19 @@ async function collect(
       }
       if (object) {
         await charge();
-        try {
-          await bucket.delete(key);
-        } catch {
-          /* Only HEAD absence confirms removal. */
-        }
+        const { r2_key: _key, ...objectProof } = row;
+        await trackedR2Write(
+          env,
+          {
+            epoch,
+            ownerId: null,
+            key,
+            kind: "orphan.delete",
+            gc: { claimToken: token, mode: stopped, object: objectProof },
+          },
+          () => bucket.delete(key),
+          deadline,
+        );
         await charge();
         object = await bucket.head(key);
       }

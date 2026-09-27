@@ -47,7 +47,25 @@ const resultBatch = (stage: Stage) => stage.endsWith("-page");
 async function fixture(stage: Stage, createOwner = true) {
   const f = await multipartBucketFixture(createOwner),
     s3 = multipartBucketClient(f);
-  const found = await scanMultipartBucket(mutationEnv(), env.BLOBS, s3.inventory, 1);
+  const found = await scanMultipartBucket(mutationEnv(), env.BLOBS, s3.inventory, 1).catch(
+    async (cause) => {
+      // CI 36314574203 failed in setup before the injected proof change. Preserve
+      // bounded, non-secret state for diagnosis without retrying or extending deadlines.
+      const details = await Promise.allSettled([
+        env.DB.prepare("SELECT phase,last_error FROM r2_binding_probe WHERE singleton=1").first(),
+        env.DB.prepare(
+          "SELECT state,COUNT(*) AS count,MIN(wait_until) AS first_deadline,MAX(expires_at) AS last_expiry FROM mutation_admissions WHERE state<>'closed' GROUP BY state",
+        ).all(),
+      ]);
+      throw new Error(
+        "multipart_fixture_setup_failed:" +
+          JSON.stringify(
+            details.map((result) => (result.status === "fulfilled" ? result.value : null)),
+          ),
+        { cause },
+      );
+    },
+  );
   const handleId = found.handles[0]!.id;
   if (stage.startsWith("abort-"))
     await observeMultipartBucketParts(mutationEnv(), env.BLOBS, s3.inventory, 1, handleId);

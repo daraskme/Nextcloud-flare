@@ -16,7 +16,7 @@ migration `0024`で`gc_candidates.claim_epoch`と単調増加`r2_calls`を追加
 - claimは60秒。ref=0、全pinなし、materialized pinなし、削除中blob、immutable key、token、claim epoch、control epoch・modeを確認する。
 - 対象uploadが未完了・予約保持中・cleanup claim中、または非完了multipartに閉鎖証明がない場合は回収しない。GC candidateだけを作ってuploadの予約holdを迂回できない。
 - delete/HEADそれぞれの直前にD1 fenceとcounterを同じbatchで確定する。counterの応答が不明ならR2へdispatchしない。claim応答喪失は自分のtokenを再読して照合する。
-- deleteの応答だけで物理容量を減らさない。HEAD不在を確認し、さらにcurrent fenceを再検証した同じD1 batchでblob/GC状態、`blob_storage.removed_at`、uploadのcleanup_pendingを確定する。
+- DELETEは送信前にDO/D1へ記録し、実成功と終了記録の反映後にだけ確認HEADへ進む。結果不明ならphysicalとpendingを保持し、lease満了後も同keyを再claimしない。HEAD不在を確認し、さらにcurrent fenceを再検証した同じD1 batchでblob/GC状態、`blob_storage.removed_at`、uploadのcleanup_pendingを確定する。
 - final batchの応答喪失はblob/GC両方のdeleted、key一致、claim解除、未精算physical・cleanup_pendingがないことを照合する。rollbackなら容量を保持し、lease失効後に再試行する。
 - 遅れた旧Workerは新しいtokenやepochを使えず、HEADのdispatch・最終精算を行えない。すでにdispatch済みのdelete自体を取り消すものではないため、deleting状態とkey再利用禁止は維持する。
 
@@ -24,7 +24,7 @@ migration `0024`で`gc_candidates.claim_epoch`と単調増加`r2_calls`を追加
 
 ## 未追跡object
 
-`drainStoppedOrphanGarbageCollection`は既存のHEAD照合・35日猶予・identity fence・counter・physical会計を使い、対象をdeletingだけに絞る。削除済みならHEAD不在だけで精算できる。既存の有効claim、所有者を解釈できないkey、未来epoch、猶予中のobjectは保持する。
+`drainStoppedOrphanGarbageCollection`は既存のHEAD照合・35日猶予・identity fence・counter・physical会計を使い、対象をdeletingだけに絞る。送信前のHEADで既に不在なら、同keyにpendingがない場合に限りDELETEなしで精算できる。DELETEを送った後は実成功と終了記録の反映が必要。既存の有効claim、未終了のDELETE、所有者を解釈できないkey、未来epoch、猶予中のobjectは保持する。
 
 HEADで別version/ETag/size/uploadedを見つけた場合は、新しい実容量を記録して35日の猶予を再設定する。その回では削除せず、deleting状態も維持する。このような外部置換や未解決claimが残れば復旧監査は完了しない。通常データへの同key再登録とtombstone削除は禁止したままである。
 
@@ -42,4 +42,4 @@ deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待�
 
 ControlDOのmaintenance RPC・acquireRestorePause・alarmから同じinstanceのsystem受付へ接続する。停止中はmaintenance=1、復元中はmaintenance=0と同じrestore token/operation/固定期限が必要。新規candidateは通常GCだけで扱い、停止/復元中は既存deletingのみを回収する。エラー注記に失敗してもphysical保留と不可逆状態は維持する。maxBlobsは受付できなかったclaimも含む候補検査上限。進行中R2呼出しの強制中断は保証しない。
 
-共通受付の対象は所有blob。orphan回収は既存fenceを維持し、共通受付への接続は後続。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。
+orphan回収も共通global受付へ接続済み。0042で両GCのDELETEを[R2送信・終了記録](R2_WRITE_SETTLEMENT.md)へ接続した。grantのbatchで元のclaimとdomain条件を再検査し、開始には最大5秒と元の処理期限、復元中は元のpause期限も適用する。共通更新枠の返却やlease満了でnative結果不明を解除しない。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。

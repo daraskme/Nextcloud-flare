@@ -9,9 +9,10 @@ import {
   drainStoppedBlobGarbageCollection,
   runGarbageCollection,
 } from "../../src/jobs/gc";
+import type { R2WriteSource } from "../../src/services/r2Write";
 import type { SystemMutationSource } from "../../src/services/systemMutation";
 import { gcFixture } from "../fixtures/gc";
-import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { acquireSystemMutation, mutationEnv, r2WriteFixture } from "../fixtures/mutationAdmission";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -115,17 +116,21 @@ async function fixture(mode: Mode, stage: Stage) {
   const bucket = {
     delete: async (key: string) => {
       calls.delete++;
-      if (stage === "error") throw new Error("r2_unavailable");
       await env.BLOBS.delete(key);
     },
     head: async (key: string) => {
       calls.head++;
+      if (stage === "error") throw new Error("r2_unavailable");
       return env.BLOBS.head(key);
     },
   } as R2Bucket;
-  const configure = (gate: Gate = acquireSystemMutation, db = env.DB): SystemMutationSource => ({
+  const configure = (
+    gate: Gate = acquireSystemMutation,
+    db = env.DB,
+  ): SystemMutationSource & R2WriteSource => ({
     DB: db,
     systemControl: {
+      ...r2WriteFixture(),
       status: () => mutationEnv().CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
       acquireSystemMutation: gate,
     },
