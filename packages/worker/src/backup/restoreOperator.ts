@@ -5,6 +5,10 @@ import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
+import type {
+  RestoreTimeTravelGrant,
+  RestoreTimeTravelResult,
+} from "../../../shared/src/restoreTimeTravel";
 import type { DatabaseRestoreSource } from "../do/controlDatabaseRestore";
 import { CONTROL_NAME } from "../do/controlName";
 import type { RestoreFreezeInput } from "../do/controlRestoreFreeze";
@@ -76,6 +80,22 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   reserveEpoch(epoch: number, id: string, targets: RestoreFreezeTargets) {
     return this.#control(epoch, id).reserveDatabaseRestoreEpoch(epoch, id, targets);
+  }
+  beginTimeTravel(
+    epoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+    observation: RestoreBookmarkObservation & { observedAt: number },
+  ) {
+    return this.#control(epoch, id).beginDatabaseRestoreTimeTravel(epoch, id, targets, observation);
+  }
+  finishTimeTravel(
+    epoch: number,
+    id: string,
+    grant: RestoreTimeTravelGrant,
+    result: RestoreTimeTravelResult,
+  ) {
+    return this.#control(epoch, id).finishDatabaseRestoreTimeTravel(epoch, id, grant, result);
   }
   challengeBackups(
     epoch: number,

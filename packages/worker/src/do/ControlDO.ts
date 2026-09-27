@@ -6,6 +6,10 @@ import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
+import type {
+  RestoreTimeTravelGrant,
+  RestoreTimeTravelResult,
+} from "../../../shared/src/restoreTimeTravel";
 import type { KdfRequest } from "../auth/globalKdf";
 import {
   type GlobalMutationAdmission,
@@ -72,6 +76,7 @@ import { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
+import { ControlRestoreTimeTravel } from "./controlRestoreTimeTravel";
 import { type EpochReason, epochNumber, parseEpochFloor, recoverEpochFloor } from "./epochHistory";
 import { type KdfRepairResult, KdfSettlements } from "./kdfSettlements";
 import {
@@ -143,6 +148,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreBackups: ControlRestoreBackups;
   readonly #restoreFreeze: ControlRestoreFreeze;
   readonly #restoreEpoch: ControlRestoreEpoch;
+  readonly #restoreTimeTravel: ControlRestoreTimeTravel;
   readonly #r2Writes: ControlR2Writes;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -246,6 +252,13 @@ export class ControlDO extends DurableObject<Env> {
       this.#databaseRestore,
       this.#restoreFreeze,
       env.EPOCH_FLOOR,
+    );
+    this.#restoreTimeTravel = new ControlRestoreTimeTravel(
+      ctx.storage.sql,
+      env.DB,
+      this.#databaseRestore,
+      this.#restoreEpoch,
+      this.#restoreFreeze,
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -383,6 +396,29 @@ export class ControlDO extends DurableObject<Env> {
   ) {
     this.#row();
     return this.#restoreEpoch.reserve(expectedEpoch, id, targets);
+  }
+
+  async beginDatabaseRestoreTimeTravel(
+    expectedEpoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+    observation: RestoreBookmarkObservation & { observedAt: number },
+  ) {
+    this.#row();
+    if (this.env.RESTORE_WRITE_ENABLED !== "true")
+      throw new Error("database_restore_write_disabled");
+    return this.#restoreTimeTravel.begin(expectedEpoch, id, targets, observation);
+  }
+
+  async finishDatabaseRestoreTimeTravel(
+    expectedEpoch: number,
+    id: string,
+    grant: RestoreTimeTravelGrant,
+    result: RestoreTimeTravelResult,
+  ) {
+    this.#row();
+    // Turning off dispatch must not discard a late native completion for an issued grant.
+    return this.#restoreTimeTravel.finish(expectedEpoch, id, grant, result);
   }
 
   /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */

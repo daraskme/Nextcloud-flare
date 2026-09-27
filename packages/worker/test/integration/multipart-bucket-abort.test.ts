@@ -277,6 +277,10 @@ it("keeps a transport failure or NoSuchUpload ambiguous and allows a separately 
 
 it("returns after its wait budget and never upgrades a late abort to a confirmed receipt", async () => {
   const f = await fixture();
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
   let release!: () => void;
   const pending = new Promise<void>((resolve) => {
     release = resolve;
@@ -286,13 +290,18 @@ it("returns after its wait budget and never upgrades a late abort to a confirmed
     finished = resolve;
   });
   f.abort.mockImplementationOnce(async () => {
+    started();
     await pending;
     await f.remote.abort();
     finished();
   });
   const id = crypto.randomUUID();
-  expect(
-    await abortMultipartBucketHandle(
+  // A real 1ms timeout can expire before native dispatch on Windows. Advancing the
+  // timer only after entry proves the late-response path without waiting for an
+  // abort that the expired preflight correctly never dispatched.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const operation = abortMultipartBucketHandle(
       mutationEnv(env.DB),
       f.bucket,
       f.inventory,
@@ -300,15 +309,25 @@ it("returns after its wait budget and never upgrades a late abort to a confirmed
       f.handleId,
       id,
       {
-        maxWaitMs: 1,
+        maxWaitMs: 10000,
       },
-    ),
-  ).toMatchObject({ outcome: "unconfirmed", heldBytes: 3 });
-  expect(await attempt(id)).toMatchObject({ outcome: "unconfirmed", error: "abort_timeout" });
-  release();
-  await done;
-  expect(await run(f, id)).toMatchObject({ outcome: "unconfirmed", replayed: true, heldBytes: 3 });
-  expect(f.abort).toHaveBeenCalledTimes(1);
+    );
+    await entered;
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(await operation).toMatchObject({ outcome: "unconfirmed", heldBytes: 3 });
+    expect(await attempt(id)).toMatchObject({ outcome: "unconfirmed", error: "abort_timeout" });
+    release();
+    await done;
+    expect(await run(f, id)).toMatchObject({
+      outcome: "unconfirmed",
+      replayed: true,
+      heldBytes: 3,
+    });
+    expect(f.abort).toHaveBeenCalledTimes(1);
+  } finally {
+    release();
+    vi.useRealTimers();
+  }
 });
 
 it("binds the caller's attempt ID to one handle", async () => {

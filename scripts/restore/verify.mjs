@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKUP_MAX_AGE_MS } from "../../packages/shared/src/backupRetention.ts";
 import { restoreBookmark } from "../../packages/shared/src/restoreBookmark.ts";
+import { restoreTimeTravelResult } from "../../packages/shared/src/restoreTimeTravel.ts";
 import { CHUNK_BYTES, generationId, MAX_PARTS } from "../backup/objectStore.mjs";
 import { downloadGeneration } from "../backup/publication.mjs";
 
@@ -33,9 +34,13 @@ export function restoreStatus(value, epoch, id) {
       "cancelling",
       "epoch_reserving",
       "epoch_reserved",
+      "restore_pending",
+      "restore_written",
     ].includes(value.state) ||
     (value.newEpoch !== undefined && (!integer(value.newEpoch, 1) || value.newEpoch <= epoch)) ||
-    (value.state === "epoch_reserved" && value.newEpoch === undefined) ||
+    (["epoch_reserved", "restore_pending", "restore_written"].includes(value.state) &&
+      value.newEpoch === undefined) ||
+    (value.state !== "restore_written" && value.restoreResult !== undefined) ||
     !integer(value.createdAt)
   )
     throw new Error("database_restore_invalid_status");
@@ -49,6 +54,8 @@ export function restoreStatus(value, epoch, id) {
   )
     source = { kind: "time_travel", bookmark: value.source.bookmark };
   else throw new Error("database_restore_invalid_status");
+  if (["restore_pending", "restore_written"].includes(value.state) && source.kind !== "time_travel")
+    throw new Error("database_restore_invalid_status");
   return {
     id,
     epoch,
@@ -56,6 +63,9 @@ export function restoreStatus(value, epoch, id) {
     createdAt: value.createdAt,
     source,
     ...(value.newEpoch === undefined ? {} : { newEpoch: value.newEpoch }),
+    ...(value.state === "restore_written"
+      ? { restoreResult: restoreTimeTravelResult(value.restoreResult) }
+      : {}),
   };
 }
 function verifyPage(value, epoch, id, manifestSha256, previous) {

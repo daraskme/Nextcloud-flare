@@ -45,4 +45,9 @@ assert.notEqual(
   "true",
   "restore access must be explicitly enabled in the target inventory",
 );
+assert.notEqual(
+  config.vars.RESTORE_WRITE_ENABLED,
+  "true",
+  "D1 restore dispatch is disabled by default",
+);
 console.log("Local binding configuration verified; no remote environment is configured.");

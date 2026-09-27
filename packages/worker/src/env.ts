@@ -48,6 +48,7 @@ export interface Env {
   EPOCH_FLOOR?: string;
   BACKUP_OPERATOR_ENABLED?: string;
   RESTORE_OPERATOR_ENABLED?: string;
+  RESTORE_WRITE_ENABLED?: string;
 }
 
 export const REQUIRED_BINDINGS = [

@@ -24,6 +24,9 @@ const { verifyRestoreBlobs } = await moduleAt("scripts/restore/blobs.mjs");
 const { verifyRestoreBindings } = await moduleAt("scripts/restore/bindings.mjs");
 const { freezeRestoreDatabase } = await moduleAt("scripts/restore/freeze.mjs");
 const { reserveRestoreEpoch } = await moduleAt("scripts/restore/epoch.mjs");
+const { applyRestoreTimeTravel, timeTravelProvider } = await moduleAt(
+  "scripts/restore/timeTravel.mjs",
+);
 const { S3BackupStore, bindingBackupStore } = await moduleAt("scripts/backup/objectStore.mjs");
 const { RESTORE_BACKUPS_PROBE_KEY } = await moduleAt("packages/shared/src/restoreBackups.ts");
 const { RESTORE_D1_QUERY } = await moduleAt("packages/shared/src/restoreTarget.ts");
@@ -86,6 +89,7 @@ const harness = createTestHarness({
           ENVIRONMENT: "development",
           BACKUP_OPERATOR_ENABLED: "true",
           RESTORE_OPERATOR_ENABLED: "true",
+          RESTORE_WRITE_ENABLED: "true",
           R2_INVENTORY_ACCOUNT_ID: "a".repeat(32),
           R2_INVENTORY_BUCKET: "operator-drill-blobs",
           R2_INVENTORY_ACCESS_KEY_ID: "b".repeat(32),
@@ -378,6 +382,8 @@ try {
       ["verifyBindings", [2, restoreId, {}, "", ""]],
       ["freeze", [2, restoreId, {}, {}]],
       ["reserveEpoch", [2, restoreId, {}]],
+      ["beginTimeTravel", [2, restoreId, {}, {}]],
+      ["finishTimeTravel", [2, restoreId, {}, {}]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -590,6 +596,51 @@ try {
   assert.equal((await restoreControl.inspect(2, epochId)).newEpoch, 3);
   await assert.rejects(restoreControl.cancel(2, epochId), /database_restore_epoch_reserved/);
   assert.deepEqual(await query("SELECT * FROM control"), beforeReservation);
+  let providerCalls = 0;
+  const provider = timeTravelProvider("synthetic-local-token", {
+    fetch: async (url, options) => {
+      providerCalls++;
+      assert.equal(url.origin, "https://api.cloudflare.com");
+      assert.equal(options.method, "POST");
+      assert.equal(options.redirect, "manual");
+      assert.equal(url.searchParams.get("bookmark"), "drill-bookmark");
+      assert.equal((await restoreControl.inspect(2, epochId)).state, "restore_pending");
+      // Simulate only the control-row rollback. No request leaves this process.
+      await query("UPDATE control SET restore_freeze_token=NULL");
+      await query(
+        "UPDATE control SET epoch=1,maintenance=0,gc_paused=0,admission_revision=0,admission_token=NULL",
+      );
+      return Response.json({
+        success: true,
+        result: { bookmark: "drill-restored", previous_bookmark: "drill-before" },
+      });
+    },
+  });
+  const apply = () =>
+    applyRestoreTimeTravel({
+      epoch: 2,
+      id: epochId,
+      control: restoreControl,
+      reader: bindingReader,
+      timestamp,
+      provider,
+    });
+  const written = await apply();
+  assert.equal(written.state, "restore_written");
+  assert.equal(written.newEpoch, 3);
+  assert.deepEqual(written.restoreResult, {
+    bookmark: "drill-restored",
+    previousBookmark: "drill-before",
+  });
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.deepEqual(await apply(), written);
+  assert.equal(providerCalls, 1);
+  const stopped = await api.recover();
+  assert.equal(stopped.epoch, 2);
+  assert.equal(stopped.maintenance, true);
+  assert.equal(stopped.gcPaused, true);
+  assert.equal((await query("SELECT epoch FROM control"))[0].epoch, 1);
+  await assert.rejects(restoreControl.cancel(2, epochId), /database_restore_epoch_reserved/);
   const report = {
     result: "PASS",
     directory,
@@ -597,7 +648,7 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all fourteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2, eviction replay, cancellation refusal, unchanged D1 epoch and freeze.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all sixteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; persisted native response and stopped old DO epoch after eviction; no repeat POST, cancellation or epoch adoption.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

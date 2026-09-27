@@ -61,4 +61,4 @@ Node試験は全通常tableのtrigger、実INSERT拒否、control変更拒否、
 
 freeze後に[reserve-epoch](DATABASE_RESTORE_EPOCH.md)を開始した要求は通常cancelを拒否する。inspectで`epoch_reserving`/`epoch_reserved`を確認し、同じ要求IDの予約を再照会する。凍結tokenは維持し、D1を旧epochのまま保つ。
 
-外部I/Oの全終了、新epochの事前予約、復元元の最終確認、実D1上書き後の採用、全監査・段階再開、ControlDO全storage喪失からの復旧、実Cloudflare検証は未完了。現在の`frozen`をD1の手動上書き許可として使わない。
+新epochの事前予約と[Time Travel送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)は別工程へ接続済み。送信は既定で無効。外部I/Oの運用上の全終了証明、復元snapshot照合、実D1上書き後の採用、全監査・段階再開、ControlDO全storage喪失からの復旧、実Cloudflare検証は未完了。現在の`frozen`をD1の手動上書き許可として使わない。

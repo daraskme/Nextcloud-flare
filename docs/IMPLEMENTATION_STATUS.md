@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-記録時点で5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)はUbuntu・browser成功、backup・Windows2分割は実行中。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)は全5job成功済み。
+先行5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)は4job成功・Windows分割1失敗。86d4b6eの[CI36331228499](https://github.com/daraskme/Nextcloud-flare/actions/runs/36331228499)もWindows分割1で同じmultipart試験が失敗し、Ubuntu・Windows分割2・browserは成功、記録時点でbackup実行中。両方ともintegrationは1,307件中1,306成功、待機試験1件が90秒timeout。今回fixtureを修正した。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)は全5job成功済み。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,16 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [Time Travelの一度限りの送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)をprivate RPC/CLIへ接続。RESTORE_WRITE_ENABLEDは既定で無効。要求・予約epoch・3binding・bookmark・元の時刻を固定し、pendingをDOに保存してからgrantを返す。新しい観測・native履歴終了・D1凍結・最終停止条件を再確認する。実成功応答だけをD1にアクセスせず記録し、旧DO epochと停止を維持する。timeout/ACK喪失/再起動で再送しない。
+- 新規Node34ケースを含む3file/94件が成功（26.63s）。provider応答の欠落/異常/秘密非出力、本文16KiB/10秒、redirect拒否、期限/設定/対象変更、遅延成功、結果不明と再送拒否を検証。最終34件も成功（0.25s）。/tmp/ncf-time-travel-node.log、/tmp/ncf-time-travel-node-final.log。
+- workerd4file/94件が成功（84.45s）。native履歴不明と最終D1確認の遅延/未終了を追加し、ControlDO/epoch履歴と新規22ケースの3file/60件が成功（38.98s）。eviction、同時送信、grant改変、D1 schema利用不能時の結果記録、遅延結果後も停止維持を確認。重複を除いて6file/136件。/tmp/ncf-time-travel-worker.log、/tmp/ncf-time-travel-regression.log。
+- Windows CIの既存multipart試験は1msのタイマーがnative dispatchより先に発火すると、正しく送信されなかったabortの終了をfixtureが待ち続けていた。native entryを確認してからfake timerを進める形へ変更し、同file19件が成功（43.74s）。本番の待機期限は変更していない。今回workerd関連は計7file/155件。/tmp/ncf-time-travel-multipart.log。CI失敗ログは/tmp/ncf-ci-36329896475-failed.log、/tmp/ncf-ci-108653418052.log。
+- private bindingドリルは68table・SQL11,350bytesで成功。全16復旧操作の権限拒否、実epoch予約、1回送信・応答記録・eviction再照会・再送/cancel拒否を確認。providerは合成応答で、D1 control行だけの巻戻しを模擬した。最初のドリルはRPCプロキシ全体のdeepEqualで失敗したため、戻り値の各propertyを検査するfixtureへ修正。/tmp/ncf-time-travel-operator.log、/tmp/ncf-time-travel-operator-final.log、.wrangler/operator-drill-U8RFD1/report.json。
+- 型・lint439file・契約/設定・Web build・Worker dry-run成功。/tmp/ncf-time-travel-types-complete.log、/tmp/ncf-time-travel-lint-final.log、/tmp/ncf-time-travel-build.log。schema0046・通常68table・依存追加なし。全Node/workerd・Windows/browserはpush後のCIで確認する。remote resource作成・migration・deploy・実Time Travelは行っていない。
+- 外部I/O全終了の運用証明、logical import、復元snapshot照合、予約epoch採用、結果不明/予約後の安全な中止、全監査・段階再開は未完了。送信フラグの有効化はこれらの証明を代替しない。
+
+### 先行する復旧用epochの事前予約
 
 - [復旧要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)をControlDO/private DatabaseRestoreOperator/CLIへ接続。凍結mirrorと未失効source証言を確認し、履歴走査前に永続intentを保存する。将来番号とnative receiptを同時保存し、同じ要求では番号を変えない。予約中/完了後の通常cancelを拒否し、D1のepoch・全table・凍結は変更しない。
 - 新規Node26ケースを含むCLI/source/binding/epochの4file/126件が成功（26.48s）。要求・対象・番号の改変、config変更、応答喪失、秘密非出力、予約CLIの引数を確認。/tmp/ncf-restore-epoch-node.log。

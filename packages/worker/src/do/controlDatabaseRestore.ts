@@ -1,3 +1,4 @@
+import type { RestoreTimeTravelResult } from "../../../shared/src/restoreTimeTravel";
 import { epochNumber } from "./epochHistory";
 
 /** A pinned operator selection, not proof that the archive/bookmark has been verified. */
@@ -23,9 +24,12 @@ export interface DatabaseRestoreStatus {
     | "frozen"
     | "cancelling"
     | "epoch_reserving"
-    | "epoch_reserved";
+    | "epoch_reserved"
+    | "restore_pending"
+    | "restore_written";
   createdAt: number;
   newEpoch?: number;
+  restoreResult?: RestoreTimeTravelResult;
 }
 
 // Match the existing logical-backup generation identity contract, including imported UUIDs.
@@ -81,6 +85,19 @@ export class ControlDatabaseRestore {
       CHECK((phase='allocating')=(new_epoch IS NULL)),
       CHECK((new_epoch IS NULL)=(history_at IS NULL)),CHECK(new_epoch>epoch)
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_execution(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),grant_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','ended')),result_json TEXT,
+      CHECK((state='ended')=(result_json IS NOT NULL))
+    )`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_execution_immutable
+      BEFORE UPDATE ON control_database_restore_execution
+      WHEN NEW.id<>OLD.id OR NEW.grant_json<>OLD.grant_json
+        OR NOT (OLD.state='pending' AND NEW.state='ended')
+      BEGIN SELECT RAISE(ABORT,'database_restore_execution_conflict'); END`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_execution_delete
+      BEFORE DELETE ON control_database_restore_execution
+      BEGIN SELECT RAISE(ABORT,'database_restore_execution_conflict'); END`);
   }
 
   active(): boolean {
@@ -122,6 +139,12 @@ export class ControlDatabaseRestore {
   }
 
   #status(row: RestoreRow): DatabaseRestoreStatus {
+    const execution = this.sql
+      .exec<{ state: string; result_json: string | null }>(
+        "SELECT state,result_json FROM control_database_restore_execution WHERE id=?",
+        row.id,
+      )
+      .toArray()[0];
     const reservation = this.sql
       .exec<{ phase: string; new_epoch: number | null }>(
         "SELECT phase,new_epoch FROM control_database_restore_epoch WHERE id=?",
@@ -139,15 +162,22 @@ export class ControlDatabaseRestore {
       id: row.id,
       epoch: row.epoch,
       source: JSON.parse(row.source_json) as DatabaseRestoreSource,
-      state: reservation
-        ? reservation.phase === "reserved"
-          ? "epoch_reserved"
-          : "epoch_reserving"
-        : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
-          ? row.phase
-          : freeze.phase,
+      state: execution
+        ? execution.state === "ended"
+          ? "restore_written"
+          : "restore_pending"
+        : reservation
+          ? reservation.phase === "reserved"
+            ? "epoch_reserved"
+            : "epoch_reserving"
+          : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
+            ? row.phase
+            : freeze.phase,
       createdAt: row.created_at,
       ...(reservation?.new_epoch ? { newEpoch: reservation.new_epoch } : {}),
+      ...(execution?.result_json
+        ? { restoreResult: JSON.parse(execution.result_json) as RestoreTimeTravelResult }
+        : {}),
     };
   }
 

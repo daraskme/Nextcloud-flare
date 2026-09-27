@@ -49,6 +49,8 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 | [DATABASE_RESTORE_BLOBS](docs/DATABASE_RESTORE_BLOBS.md) | 復旧先BLOBSの対象固定、fresh probeのR2/S3照合と短期の観測保存 |
 | [DATABASE_RESTORE_BINDINGS](docs/DATABASE_RESTORE_BINDINGS.md) | BACKUPSのfresh照合と、同じD1停止状態でのD1/BLOBS/BACKUPS一括照合 |
 | [DATABASE_RESTORE_FREEZE](docs/DATABASE_RESTORE_FREEZE.md) | 復旧要求ごとのD1書込み凍結・repair受付停止、正確な停止tokenによる取消し |
+| [DATABASE_RESTORE_EPOCH](docs/DATABASE_RESTORE_EPOCH.md) | 復旧要求に固定した将来epochのDO/R2事前予約 |
+| [DATABASE_RESTORE_TIME_TRAVEL](docs/DATABASE_RESTORE_TIME_TRAVEL.md) | 一度限りの復元送信・実応答記録・結果不明保持。既定で無効、snapshot照合とepoch採用は未完了 |
 | [FILES_UI](docs/FILES_UI.md) | Files画面、再開upload、private assets、browser試験と残る制約 |
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |
