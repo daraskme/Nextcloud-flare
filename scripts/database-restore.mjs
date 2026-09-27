@@ -62,7 +62,7 @@ apply-time-travel requires RESTORE_WRITE_ENABLED=true on the target and CLOUDFLA
 verify-restored independently reads the restored database, checks a trusted migration prefix and every table against an isolated SQL import, validates FK and rebuilds local FTS, then records a request-bound observation. It preserves the remote snapshot and old DO epoch. This observation is not an adoption or service-resume authorization.
 adopt-epoch atomically stops the verified D1 snapshot at the reserved epoch, independently reads its new marker, and publishes that epoch in DO. Requires RESTORE_WRITE_ENABLED=true for the first write. Unknown D1 batches are never sent again; retry only reconciles the same marker. Admission and GC remain closed.
 audit-restored rebuilds restored FTS when starting or restarting an audit, then advances bounded durable audit pages. Exit 2 means more pages remain; repeat the same request. Failed audits retain the hold and require the relevant repair. rebuild-restored-fts explicitly rebuilds FTS and restarts the audit.
-repair-restored-native scans restored KDF/R2 pending rows in durable pages and settles only matching retained native completion evidence. It restarts the audit, never repeats external I/O, and keeps unknown rows pending. Exit 2 means pages or unknown work remain. Repeating a finished pass starts a new scan.
+repair-restored-native settles known live KDF/R2 completion records, then scans restored pending rows in durable pages against retained evidence. It restarts the audit, never repeats external I/O, and keeps unknown records pending. Exit 2 means pages, unknown work, or any DO/D1 hold remains. Repeating a finished pass starts a new scan.
 resume-restored requires the exact completed audit and a fresh final D1 fence, releases the restore hold, then opens admission with GC still paused. RESTORE_WRITE_ENABLED=true is required for first hold release. resume-restored-gc separately resumes GC last. All commands use the original epoch/request ID. A newer stop invalidates the old resume request. Live operational proof, unknown execution recovery and safe abandonment remain release gates.
 `;
 try {
@@ -237,11 +237,7 @@ try {
             pageSize: Number(values["page-size"] ?? 10),
             progress: (event) => console.log(JSON.stringify(event)),
           });
-          if (
-            command === "audit-restored"
-              ? !result.audit.completed
-              : !result.repair.completed || result.repair.unknown > 0
-          )
+          if (command === "audit-restored" ? !result.audit.completed : result.repair.pending)
             process.exitCode = 2;
         } else if (command === "rebuild-restored-fts") {
           result = await rebuildRestoredFts({ epoch, id, control });

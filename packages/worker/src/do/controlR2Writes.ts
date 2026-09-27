@@ -325,9 +325,10 @@ export class ControlR2Writes {
     });
   }
 
-  async repair(limit = 20) {
+  async repair(limit = 20, current: () => void = () => {}) {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32)
       throw new Error("invalid_r2_write_limit");
+    current();
     const rows = this.sql
       .exec<Receipt>(
         "SELECT * FROM control_r2_write_receipts WHERE state<>'pending' ORDER BY id LIMIT ?",
@@ -335,16 +336,19 @@ export class ControlR2Writes {
       )
       .toArray();
     for (const row of rows) {
+      current();
       try {
         await this.#reconcile(JSON.parse(row.grant_json), row.state as R2WriteTerminal);
       } catch {
         /* Keep proof; no R2 replay, timeout-based release or inferred completion. */
       }
+      current();
     }
     const remaining = this.sql.exec<Receipt>("SELECT * FROM control_r2_write_receipts").toArray();
     const pending = await primary(this.db)
       .prepare("SELECT COUNT(*) AS n FROM r2_write_attempts WHERE state='pending'")
       .first<number>("n");
+    current();
     return {
       checked: rows.length,
       reconciled: rows.filter((row) => !remaining.some((other) => other.id === row.id)).length,

@@ -702,6 +702,8 @@ try {
   });
   assert.equal(nativeRepair.repair.completed, true);
   assert.equal(nativeRepair.repair.unknown, 0);
+  assert.equal(nativeRepair.repair.pending, false);
+  assert.deepEqual(nativeRepair.repair.databasePending, { kdf: 0, r2: 0 });
   const recovery = await auditRestored({ epoch: 2, id: epochId, control: restoreControl });
   assert.equal(recovery.audit.completed, true);
   const resumed = await resumeRestored({ epoch: 2, id: epochId, control: restoreControl });

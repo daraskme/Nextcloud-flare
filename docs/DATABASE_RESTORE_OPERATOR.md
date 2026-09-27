@@ -67,4 +67,4 @@ Node試験は実SQLの復元と改変・不正SQL・schema/table不一致、100 
 
 `backup:operator-drill`は実named service bindingで全26操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。epoch予約・同番号の再照会・予約後cancel拒否に加え、1回だけのTime Travel送信・結果記録・模擬D1 control巻戻し後の旧DO epochと停止維持、復元後68tableの隔離検証とDO証言保存、採用用D1停止batch・marker独立読戻し・DO epoch採用・eviction後の停止維持、pendingなしのnative修復走査、FTS再構築・12ページ全監査・hold解除・受付/GCの段階再開も確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。bookmark検索・実行とS3応答は合成providerで、Cloudflare上の実D1復旧ドリルとは区別する。
 
-採用後にpendingへ戻ったKDF/R2は`repair-restored-native`で[独立した終了証拠](DATABASE_RESTORE_NATIVE.md)と照合する。元epoch/要求IDへ固定した最大20行の永続cursorで修復し、未知行は保持する。修復後はFTS/全監査からやり直す。
+採用後にpendingへ戻ったKDF/R2は`repair-restored-native`で[独立した終了証拠](DATABASE_RESTORE_NATIVE.md)と照合する。各ページの前にDO内の既知の終了記録も精算し、元epoch/要求IDへ固定した最大20行の永続cursorで修復する。D1だけでなくDOだけの未知記録も保持し、いずれかの未精算が残ればCLIは終了code 2を返す。修復後はFTS/全監査からやり直す。

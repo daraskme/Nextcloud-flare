@@ -4,6 +4,8 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { RESTORE_BACKUPS_PROBE_KEY } from "../../../shared/src/restoreBackups";
 import type { RestoreSnapshotChallenge } from "../../../shared/src/restoreSnapshot";
 import type { RestoreTimeTravelGrant } from "../../../shared/src/restoreTimeTravel";
+import { atomicBatch } from "../../src/db/primary";
+import { insertR2Write, type R2WriteGrant } from "../../src/db/r2Write";
 import { RESTORE_SNAPSHOT_CONTROL_QUERY } from "../../src/db/restoreSnapshot";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { ControlDatabaseRestore } from "../../src/do/controlDatabaseRestore";
@@ -13,6 +15,7 @@ import { KdfSettlements } from "../../src/do/kdfSettlements";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { rollbackNativeReceipt } from "../fixtures/nativeRollback";
 import { inventoryEnv } from "../fixtures/s3Inventory";
+import { injectBatch } from "../fixtures/uploadEnv";
 
 const targets = {
   target: {
@@ -126,6 +129,213 @@ const releaseRecovery = () =>
   runInDurableObject(control(), (_instance, state) =>
     configured(state).releaseDatabaseRestoreRecovery(epoch, id),
   );
+
+it("settles live KDF non-dispatch evidence while retaining proof until archival succeeds", async () => {
+  await adopted();
+  const native = vi.spyOn(crypto.subtle, "deriveBits");
+  await runInDurableObject(control(), async (_, state) => {
+    // Explicit interrupted-handler fixture: no native dispatch and no D1 claim.
+    const store = new KdfSettlements(state.storage.sql, env.DB),
+      grant = {
+        id: crypto.randomUUID(),
+        token: crypto.randomUUID(),
+        epoch: 1,
+        deadline: Date.now() - 60000,
+      };
+    store.reserve(grant);
+    state.storage.sql.exec(
+      "CREATE TRIGGER fixture_history_unavailable BEFORE INSERT ON control_native_history BEGIN SELECT RAISE(ABORT,'history_unavailable'); END",
+    );
+    await expect(store.settle(grant, "not_started")).rejects.toThrow(/history_unavailable/);
+    expect(state.storage.sql.exec("SELECT state FROM control_kdf_receipts").one().state).toBe(
+      "not_started",
+    );
+  });
+  await evictDurableObject(control());
+  await control().repairDatabaseRestoreNative(epoch, id);
+  expect((await control().repairDatabaseRestoreNative(epoch, id)).repair).toMatchObject({
+    completed: true,
+    unknown: 0,
+    databasePending: { kdf: 0, r2: 0 },
+    live: { kdf: { checked: 1, reconciled: 0, pending: 1, unknown: 0 } },
+  });
+  await runInDurableObject(control(), async (instance, state) => {
+    await expect(instance.nextRecoveryAuditPage(epoch + 1)).rejects.toThrow(/kdf_unsettled/);
+    state.storage.sql.exec("DROP TRIGGER fixture_history_unavailable");
+  });
+  await evictDurableObject(control());
+  expect((await control().repairDatabaseRestoreNative(epoch, id)).repair.live.kdf).toEqual({
+    checked: 1,
+    reconciled: 1,
+    pending: 0,
+    unknown: 0,
+  });
+  expect(native).not.toHaveBeenCalled();
+  expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+  expect((await control().recover()).maintenance).toBe(true);
+});
+
+it.each(["current", "stop"])(
+  "repairs live R2 completion without dispatching another delete: %s",
+  async (source) => {
+    await adopted();
+    const grant: R2WriteGrant = {
+      id: crypto.randomUUID(),
+      token: crypto.randomUUID(),
+      epoch: epoch + 1,
+      ownerId: "fixture",
+      kind: "manifest.delete",
+      key: `target-sets/${crypto.randomUUID()}`,
+      startedAt: Date.now(),
+      deadline: Date.now() + 5000,
+    };
+    // Explicit dispatch fixture: preserve the exact live grant before actual native I/O.
+    await atomicBatch(env.DB, [insertR2Write(grant, "pending")]);
+    await runInDurableObject(control(), async (_, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO control_r2_write_receipts VALUES(?,?,?,'pending')",
+        grant.id,
+        grant.token,
+        JSON.stringify(grant),
+      );
+    });
+    await env.BLOBS.put(grant.key, "actual native object");
+    const native = vi.spyOn(env.BLOBS, "delete");
+    await env.BLOBS.delete(grant.key);
+    await runInDurableObject(control(), async (_, state) => {
+      const db = injectBatch(
+        (sql) => sql.startsWith("UPDATE r2_write_attempts"),
+        async () => {
+          throw new Error("settlement_unavailable");
+        },
+        false,
+      );
+      await expect(
+        new ControlDO(state, { ...env, DB: db }).finishR2Write(grant, "succeeded"),
+      ).rejects.toThrow(/unsettled/);
+      expect(
+        state.storage.sql.exec("SELECT state FROM control_r2_write_receipts").one().state,
+      ).toBe("succeeded");
+    });
+    await evictDurableObject(control());
+    if (source === "stop") {
+      await runInDurableObject(control(), async (instance, state) => {
+        const db = injectBatch(
+          (sql) => sql.startsWith("UPDATE r2_write_attempts"),
+          async () => {
+            await instance.quiesce(epoch + 1);
+          },
+          true,
+        );
+        await expect(
+          new ControlDO(state, { ...env, DB: db }).repairDatabaseRestoreNative(epoch, id),
+        ).rejects.toThrow(/recovery_conflict/);
+        expect(
+          state.storage.sql
+            .exec("SELECT 1 FROM control_database_restore_native_repair WHERE id=?", id)
+            .toArray(),
+        ).toHaveLength(0);
+      });
+      expect(native).toHaveBeenCalledTimes(1);
+      expect((await control().recover()).maintenance).toBe(true);
+      return;
+    }
+    expect((await control().repairDatabaseRestoreNative(epoch, id)).repair).toMatchObject({
+      live: { r2: { checked: 1, reconciled: 1, pending: 0, unknown: 0 } },
+      databasePending: { kdf: 0, r2: 0 },
+    });
+    expect(
+      await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE id=?")
+        .bind(grant.id)
+        .first("state"),
+    ).toBe("succeeded");
+    expect(native).toHaveBeenCalledTimes(1);
+    expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+  },
+);
+
+it("reports a D1 claim appearing behind a completed cursor without treating the scan as proof of absence", async () => {
+  const claimId = crypto.randomUUID();
+  await env.DB.prepare("UPDATE control SET kdf_not_before=0").run();
+  await env.DB.prepare(`INSERT INTO kdf_attempts(id,dispatch_token,epoch,issued_at,expires_at)
+    VALUES(?,?,1,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)`)
+    .bind(claimId, crypto.randomUUID())
+    .run();
+  const retire = () =>
+    env.DB.prepare(
+      "UPDATE kdf_attempts SET state='not_started',finished_at=MAX(issued_at,strftime('%s','now')*1000) WHERE id=? AND state='claimed'",
+    )
+      .bind(claimId)
+      .run();
+  await retire();
+  try {
+    await adopted();
+    expect((await control().repairDatabaseRestoreNative(epoch, id)).repair.stage).toBe("r2");
+    // The KDF page has already passed; simulate a subsequently visible restored claim.
+    await rollbackNativeReceipt(env.DB, "kdf_attempts", claimId);
+    expect((await control().repairDatabaseRestoreNative(epoch, id)).repair).toMatchObject({
+      completed: true,
+      checked: 0,
+      unknown: 0,
+      databasePending: { kdf: 1, r2: 0 },
+      live: { kdf: { pending: 0 }, r2: { pending: 0 } },
+    });
+    expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+  } finally {
+    // This fixture never dispatched crypto.
+    await retire();
+  }
+});
+
+it("reports DO-only unknown KDF and R2 holds even when the D1 scan is empty", async () => {
+  await adopted();
+  await runInDurableObject(control(), async (_, state) => {
+    // Unsent synthetic grants model interruption before a D1 row was observed.
+    new KdfSettlements(state.storage.sql, env.DB).reserve({
+      id: crypto.randomUUID(),
+      token: crypto.randomUUID(),
+      epoch: 1,
+      deadline: Date.now() - 60000,
+    });
+    const grant: R2WriteGrant = {
+      id: crypto.randomUUID(),
+      token: crypto.randomUUID(),
+      epoch: 1,
+      ownerId: "fixture",
+      kind: "manifest.delete",
+      key: `target-sets/${crypto.randomUUID()}`,
+      startedAt: Date.now() - 65000,
+      deadline: Date.now() - 60000,
+    };
+    state.storage.sql.exec(
+      "INSERT INTO control_r2_write_receipts VALUES(?,?,?,'pending')",
+      grant.id,
+      grant.token,
+      JSON.stringify(grant),
+    );
+  });
+  await control().repairDatabaseRestoreNative(epoch, id);
+  await evictDurableObject(control());
+  expect((await control().repairDatabaseRestoreNative(epoch, id)).repair).toMatchObject({
+    completed: true,
+    unknown: 0,
+    databasePending: { kdf: 0, r2: 0 },
+    live: {
+      kdf: { checked: 0, reconciled: 0, pending: 1, unknown: 1 },
+      r2: { checked: 0, reconciled: 0, pending: 1, unknown: 1 },
+    },
+  });
+  await runInDurableObject(control(), async (instance, state) => {
+    expect(state.storage.sql.exec("SELECT state FROM control_kdf_receipts").one().state).toBe(
+      "reserved",
+    );
+    expect(state.storage.sql.exec("SELECT state FROM control_r2_write_receipts").one().state).toBe(
+      "pending",
+    );
+    await expect(instance.nextRecoveryAuditPage(epoch + 1)).rejects.toThrow(/unsettled/);
+  });
+  expect((await control().recover()).maintenance).toBe(true);
+});
 
 it("audits the restored epoch, releases its exact hold, then resumes admission and GC in separate steps", async () => {
   await adopted();

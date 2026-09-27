@@ -1,5 +1,5 @@
 import { restoreAdoptionChallenge } from "../../../shared/src/restoreAdoption";
-import { assertExists, atomicBatch } from "../db/primary";
+import { assertExists, atomicBatch, primary } from "../db/primary";
 import type { ControlStatus, RecoveryAuditStatus } from "./ControlDO";
 import type {
   AdmissionTransition,
@@ -8,15 +8,23 @@ import type {
 } from "./controlAdmission";
 import type { ControlDatabaseRestore } from "./controlDatabaseRestore";
 import type { ControlRestoreEpoch } from "./controlRestoreEpoch";
+import type { KdfRepairResult } from "./kdfSettlements";
 import { RECOVERY_FINAL_QUERY } from "./recoveryAudit";
-import { type NativeRepairStatus, RestoreNativeRepair } from "./restoreNativeRepair";
+import { RestoreNativeRepair } from "./restoreNativeRepair";
 
 interface RecoveryHost {
   current(epoch: number): void;
   next(epoch: number, limit: number): Promise<RecoveryAuditStatus>;
   rebuild(epoch: number): Promise<RecoveryAuditStatus>;
   status(): Promise<ControlStatus>;
-  repair(epoch: number, action: () => Promise<NativeRepairStatus>): Promise<NativeRepairStatus>;
+  repair<T>(epoch: number, action: () => Promise<T>): Promise<T>;
+  repairLive(
+    limit: number,
+    current: () => void,
+  ): Promise<{
+    kdf: KdfRepairResult;
+    r2: KdfRepairResult;
+  }>;
 }
 
 /** Request-scoped audit, hold release, then independent service and GC resume steps. */
@@ -44,9 +52,29 @@ export class ControlRestoreRecovery {
       this.admission.assertClosed(selected.newEpoch!);
     };
     current();
-    const repair = await this.host.repair(selected.newEpoch!, () =>
-      this.#native.page(id, selected.newEpoch!, limit, current),
-    );
+    const repair = await this.host.repair(selected.newEpoch!, async () => {
+      current();
+      // Capture after maintenance has rotated the stop. A later stop invalidates this call.
+      const stop = JSON.stringify(this.admission.captureDatabaseRestore(selected.newEpoch!));
+      const stopped = () => {
+        current();
+        if (JSON.stringify(this.admission.captureDatabaseRestore(selected.newEpoch!)) !== stop)
+          throw new Error("database_restore_recovery_conflict");
+      };
+      const live = await this.host.repairLive(limit, stopped);
+      stopped();
+      const page = await this.#native.page(id, selected.newEpoch!, limit, stopped);
+      stopped();
+      // Include claims outside the saved cursor and the current epoch, plus DO-only holds.
+      const databasePending = await primary(this.db)
+        .prepare(`SELECT
+          (SELECT COUNT(*) FROM kdf_attempts WHERE state='claimed') AS kdf,
+          (SELECT COUNT(*) FROM r2_write_attempts WHERE state='pending') AS r2`)
+        .first<{ kdf: number; r2: number }>();
+      stopped();
+      if (!databasePending) throw new Error("database_restore_native_repair_unconfirmed");
+      return { ...page, live, databasePending };
+    });
     current();
     return { ...this.restore.inspect(epoch, id), repair };
   }

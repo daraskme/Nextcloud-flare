@@ -90,18 +90,21 @@ export class KdfSettlements {
     if (!(await this.#confirm({ ...r, state }))) throw new KdfUnavailableError();
   }
 
-  async repair(limit = 20): Promise<KdfRepairResult> {
+  async repair(limit = 20, current: () => void = () => {}): Promise<KdfRepairResult> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 20)
       throw new Error("invalid_kdf_repair_limit");
+    current();
     const rows = this.#rows()
       .filter((row) => row.state !== "reserved")
       .slice(0, limit);
     for (const row of rows) {
+      current();
       try {
         await this.#confirm(row);
       } catch {
         // Keep the exact proof. No inference from elapsed time or a failed DB request.
       }
+      current();
     }
     const remaining = this.#rows();
     return {

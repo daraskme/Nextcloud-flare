@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は全5job成功。直前a57175cの[CI36337843692](https://github.com/daraskme/Nextcloud-flare/actions/runs/36337843692)はUbuntu・Windows分割2・backup・browser成功、Windows分割1は53file/1,268件成功後に30分のjob上限で取消し。今回からWindowsを3分割へ変更しています。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前daa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)は確認時点でUbuntu・Windows3分割・browserの5job成功、backupは実行中。a57175cのWindows分割1が30分上限で取消されたため、daa143eから3分割へ変更し、3分割すべての成功を確認しました。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- 復元後のnative修復へ既存live KDF/R2精算を接続。各種類をpage-size件まで処理してから履歴走査を行う。DOの未知記録と保存失敗を保持し、各記録の前後に採用済み要求と同じ停止tokenを確認する。D1全体のpending件数もページ後に再取得し、CLIは走査完了だけでは成功終了しない。APIの追加・schema変更・依存追加なし。
+- 新規Node17件を含むCLI52件成功（0.66s）。DOだけの未知記録、D1の未精算、保存失敗、件数欠落/境界/不正値、出力正規化と再開拒否を確認。/tmp/ncf-live-native-node.log。
+- 新規workerd5件を含む復元/KDF/R2の3file・105件成功（104.57s）。履歴保存失敗中の既知未送信KDF、現epochの実R2削除後のD1失敗、eviction後の精算、途中の停止競合、走査済みcursorより前へ現れたD1 claim、D1行のないDO未知記録を確認。初回は採用前にlive記録を置いたfixtureがsnapshotの前提に拒否され、試験を中断した。採用後の保留を明示的に作るfixtureへ修正し、最終コードで全件成功。/tmp/ncf-live-native-worker.log、/tmp/ncf-live-native-worker-final.log。
+- 型・lint457file・契約/設定検査・Web build・Worker dry-run成功。/tmp/ncf-live-native-types.log、/tmp/ncf-live-native-build.log。全体checkの3,706件は前回daa143eの検証であり、今回の157件とは分けて扱う。
+- private bindingドリル成功。26操作の権限拒否、68table/SQL57,512bytesのsnapshot、native修復のDO/D1保留0・pending=false、12ページ全監査と受付/GCの段階再開を確認。/tmp/ncf-live-native-operator.log、.wrangler/operator-drill-0GPJhS/report.json。元backupは11,370bytes。S3/Time Travelは合成provider、D1 control巻戻しのfixtureであり、実環境の復元ではない。remote migration/deploy・通知・timer設置は行っていない。
+
+### 先行するnative終了履歴と復元行の照合
 
 - [復元後のKDF/R2終了記録の修復](DATABASE_RESTORE_NATIVE.md)を実装。D1精算後の実終了証拠をDOへ36日保持し、保存確認後だけlive receiptを削除する。private operator・repair-restored-native CLIは採用済み要求/停止tokenへ束縛した最大20行の走査を永続化する。未知行は保持し、nativeを再実行せず、FTS/監査を無効化する。D1 schema0046・通常68table・依存追加なし。
 - Node2file/69件成功（27.26s）、うち新規13件。完了走査とunknownの区別、page予算、出力正規化、応答喪失時の再送拒否、引数境界を確認。/tmp/ncf-native-node.log。

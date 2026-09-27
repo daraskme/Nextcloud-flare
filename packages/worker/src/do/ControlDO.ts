@@ -312,6 +312,21 @@ export class ControlDO extends DurableObject<Env> {
         rebuild: (epoch) => this.rebuildRecoveryFts(epoch),
         status: () => this.status(),
         repair: (epoch, action) => this.#maintenance(epoch, action),
+        repairLive: async (limit, current) => {
+          const kdf = await this.#kdfSettlements.repair(limit, current);
+          current();
+          const r2 = await this.#r2Writes.repair(limit, current);
+          current();
+          return {
+            kdf,
+            r2: {
+              checked: r2.checked,
+              reconciled: r2.reconciled,
+              pending: r2.localPending,
+              unknown: r2.unknown,
+            },
+          };
+        },
       },
     );
     this.#kdf = new ControlKdf(

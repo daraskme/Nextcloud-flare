@@ -54,6 +54,26 @@ function controlStatus(value, epoch) {
   return { epoch, maintenance: value.maintenance, gcPaused: value.gcPaused };
 }
 
+function liveNativeStatus(value, limit, capacity) {
+  if (
+    !value ||
+    ![value.checked, value.reconciled, value.pending, value.unknown].every(
+      (v) => Number.isSafeInteger(v) && v >= 0,
+    ) ||
+    value.checked > limit ||
+    value.reconciled > value.checked ||
+    value.pending > capacity ||
+    value.unknown > value.pending
+  )
+    throw new Error("database_restore_invalid_native_repair");
+  return {
+    checked: value.checked,
+    reconciled: value.reconciled,
+    pending: value.pending,
+    unknown: value.unknown,
+  };
+}
+
 /** Bounded durable pages. A new or invalidated audit first rebuilds the restored FTS index. */
 export async function auditRestored({
   epoch,
@@ -120,7 +140,10 @@ export async function repairRestoredNative({
       r.afterId.length > 36 ||
       ![r.checked, r.reconciled, r.unknown].every((v) => Number.isSafeInteger(v) && v >= 0) ||
       r.checked !== r.reconciled + r.unknown ||
-      r.completed !== (r.stage === "complete")
+      r.completed !== (r.stage === "complete") ||
+      ![r.databasePending?.kdf, r.databasePending?.r2].every(
+        (v) => Number.isSafeInteger(v) && v >= 0,
+      )
     )
       throw new Error("database_restore_invalid_native_repair");
     const repair = {
@@ -130,7 +153,19 @@ export async function repairRestoredNative({
       reconciled: r.reconciled,
       unknown: r.unknown,
       completed: r.completed,
+      live: {
+        kdf: liveNativeStatus(r.live?.kdf, pageSize, 20),
+        r2: liveNativeStatus(r.live?.r2, pageSize, 32),
+      },
+      databasePending: { kdf: r.databasePending.kdf, r2: r.databasePending.r2 },
     };
+    repair.pending =
+      !repair.completed ||
+      repair.unknown > 0 ||
+      repair.live.kdf.pending > 0 ||
+      repair.live.r2.pending > 0 ||
+      repair.databasePending.kdf > 0 ||
+      repair.databasePending.r2 > 0;
     result = { ...status, repair };
     progress({ stage: "native_repair", repair });
     if (repair.completed) break;
