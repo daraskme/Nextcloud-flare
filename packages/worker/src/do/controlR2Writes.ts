@@ -4,6 +4,8 @@ import type {
   MutationRequest,
 } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import { abortWriteProof, isAbortWrite } from "../db/r2Abort";
+import { isUploadWrite, uploadWriteProof } from "../db/r2Upload";
 import {
   insertR2Write,
   R2_WRITE_IDENTITY,
@@ -38,7 +40,12 @@ export class ControlR2Writes {
     private readonly deleteAdmit: (
       epoch: number,
       deadline: number,
-      kind: "manifest.delete" | "blob.delete" | "orphan.delete",
+      kind:
+        | "manifest.delete"
+        | "blob.delete"
+        | "orphan.delete"
+        | "multipart.abort"
+        | "bucket.abort",
     ) => Promise<GlobalMutationAdmission>,
   ) {
     const sql = storage.sql;
@@ -98,6 +105,8 @@ export class ControlR2Writes {
       startedAt,
       token: crypto.randomUUID(),
       ...(input.gc ? { gc: input.gc } : {}),
+      ...(input.upload ? { upload: input.upload } : {}),
+      ...(input.abort ? { abort: input.abort } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -109,13 +118,19 @@ export class ControlR2Writes {
     if (saved.toArray().length !== 1) throw new Error("r2_write_unavailable");
     try {
       const statements = [insertR2Write(grant, "pending"), assertOneChange];
-      if (kind === "manifest.delete" || kind === "blob.delete" || kind === "orphan.delete") {
+      if (
+        kind === "manifest.delete" ||
+        kind === "blob.delete" ||
+        kind === "orphan.delete" ||
+        isAbortWrite(kind)
+      ) {
         const admission = await this.deleteAdmit(epoch, deadline, kind);
         this.current(epoch, kind);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        const guards =
-          kind === "manifest.delete"
+        const guards = isAbortWrite(kind)
+          ? await abortWriteProof(this.db, grant)
+          : kind === "manifest.delete"
             ? [
                 assertExists(
                   `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
@@ -174,7 +189,14 @@ export class ControlR2Writes {
         this.current(epoch, kind);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        await atomicBatch(this.db, accountMutationStatements(admission, ownerId!, statements));
+        const guards = isUploadWrite(kind) ? await uploadWriteProof(this.db, grant) : [];
+        this.current(epoch, kind);
+        if (Date.now() < startedAt || Date.now() >= deadline)
+          throw new Error("r2_write_unavailable");
+        await atomicBatch(
+          this.db,
+          accountMutationStatements(admission, ownerId!, [...guards, ...statements]),
+        );
       }
       this.current(epoch, kind);
       if (Date.now() < startedAt || Date.now() >= deadline || this.#row(id)?.state !== "pending")

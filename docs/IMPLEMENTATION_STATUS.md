@@ -3,9 +3,25 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前`a57fc8f`の[CI36314574203](https://github.com/daraskme/Nextcloud-flare/actions/runs/36314574203)は、Windows分割1の再実行を含め全5ジョブが成功しました。初回の既存multipart試験の準備で1件失敗した原因は未確定です。
+直前`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)はWindows2分割・backup・browserが成功。Ubuntuの全checkは15分のjob枠で打ち切られたため、今回job枠を30分に変更した。productionと個別テストの期限は変更しない。
 
 ## 今回の検証記録
+
+- migration0043、通常68table。単一/DAV PUT・multipart作成/part/完了と初期化失敗/既知ID cleanup/未知ID inventory/全bucket abortを永続記録へ接続。元のattemptをsource_refに固定し、kindとの一意制約で二重送信を防止。grant待機25秒と送信後の元の15分leaseを分離した。同keyのpendingがある間は予約解放・cleanup完了・GC handoffを拒否する。
+- Node全983件（50file、44.16s）が成功。/tmp/ncf-upload-writes-unit-local.log。最初のsandbox内実行ではHTTP受信fixtureがlisten EPERMとなり、CLI stderr試験も失敗したため、ローカル接続を許可した実行で全件を再確認した。
+- migration0042→0043の全receipt保持、期限切れpending、元attempt重複、未送信receipt、凍結中移行拒否のNode10件が成功（3.39s）。backup世代検証にも0043を追加した。
+- 関連8fileは331件中324件が成功（235.44s）。新規試験の失効先table/cleanup lease設定と、旧abort不明時の精算期待7件を修正し、新規17件＋multipart cleanup36件の53件が成功（38.42s）。/tmp/ncf-upload-writes-focus.log、/tmp/ncf-upload-writes-targeted-final.log。先行する6fileは189件中176件成功、失敗はこのcleanup fixture/旧精算期待に含まれる。
+- lint415file・型・契約/設定検査・Web build・Worker dry-runが成功。private binding運用ドリルも68table・SQL11,350bytesで成功。/tmp/ncf-upload-writes-operator.log、.wrangler/operator-drill-NahcX5/report.json。S3/Time Travelは合成providerで、remote検証ではない。
+- 全workerdは2,378件中2,324件が成功（110file、1,684.00s）。/tmp/ncf-upload-writes-integration-all.log。初回は5fileの54件が失敗し、終了コードは1。失敗した全ケースは下記355件と復旧監査11件の再実行で成功した。Node983件・workerd2,378件・browser19件を合わせ、再実行を含めローカル計3,380件を検証。このcommitのCIはpush後に確認する。
+- 初回の失敗内訳は、終了済み合成R2試行を試験間で精算していなかったDAV/HTTP fixture18件、gc-confirm到達前に期限を使い切った故障注入fixture1件、旧形式のupload IDを直接作っていた復旧fixture2件、backup開始保護の修正前に起動したworkerで新しい試験を読んだ33件。最後の33件は最初のbackupが凍結へ進んだ後、32件がbackup_frozenで連鎖失敗した。fixtureを修正し、新規workerで全失敗ファイルを再確認した。実行中のworkerが読み込んだソースと後から追加した試験が混在したため、以後はソース変更を止めて検証する。
+- 最終レビューで、native終了記録が未精算のまま通常backupを開始すると、凍結と精算・元policy復帰が相互に待つ競合を確認。新規backup intent保存前にD1 pendingとDO receiptを検査し、記録の精算後に再試行できるようにした。D1だけ・DOだけの記録を含む3ケースを追加。最終3ケース、backup全経路と全体実行で失敗したfixtureを含む11fileの355件が成功（311.37s）。/tmp/ncf-upload-writes-regression-final.log。
+- 最終コードのbrowser全19件が成功（6.6分）。/tmp/ncf-upload-writes-browser-final.log。初回は16/19件成功。検証中のControlDO変更と開発サーバーの再読み込みが重なり、seed 503とfixture再初期化のrecovery_final_fence_pendingが発生した。ソース変更を止めた新規環境で全件を再実行した。
+- backup開始保護の修正後もprivate bindingドリルが68table・SQL11,350bytesで成功。/tmp/ncf-upload-writes-operator-final.log、.wrangler/operator-drill-8k8D1p/report.json。
+- 旧epoch復旧fixtureのupload IDを実際のup_形式へ合わせ、現epochのmultipart.abort成功receiptも検査。復旧監査11件が成功（12.29s）。/tmp/ncf-upload-writes-audit-final.log。変更した試験のlintと最終型検査も成功。/tmp/ncf-upload-writes-typecheck-last.log。
+- 最終コードのlint415file・型検査・Web build・Worker dry-runも成功。/tmp/ncf-upload-writes-typecheck-current.log、/tmp/ncf-upload-writes-build-final.log。productionの期限変更はなく、CIのUbuntu job枠だけ15分→30分へ変更した。
+- binding probe/BACKUPS/epoch履歴の全終了統合、native不明の運用証明、新epoch予約・live採用は後続。remote resource作成・migration・deployは実施していない。
+
+### 先行するGCの送信記録
 
 - blob GC（通常・停止中・ゴミ箱復元中）とorphan GCのDELETEを共通のDO/D1送信・終了記録へ接続。実成功の記録後だけ確認HEADへ進み、結果不明はlease満了やHEAD不在で解消しない。claim再取得・deleted精算・復元ready・凍結・再開を保留する。grantのbatchでclaimとdomain条件を再検査し、元の固定期限と復元pause期限を維持する。migration0042、通常68table、依存追加なし。
 - 0042は期限切れpendingと全終端行を全フィールド照合して移行し、全索引・freeze/immutable/保留guardを再作成する。orphanのownerは明示nullで、未復元ownerと長いUnicode keyも扱う。Nodeの移行・過去世代・schema関連39件（4file、5.17s）が成功。/tmp/ncf-gc-writes-node-final.log。

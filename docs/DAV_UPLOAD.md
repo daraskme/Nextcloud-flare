@@ -1,6 +1,8 @@
 # DAV PUTの保存・公開・回収
 
-更新: 2026-09-25。
+更新: 2026-09-27。
+
+migration0043で本文PUTを[送信・終了の永続記録](R2_WRITE_SETTLEMENT.md)へ接続した。元のupload/attemptと15分leaseを保持し、grant待機後に現在の認可・予約・staging blobを再検査する。native応答不明が残る間は予約解放・cleanup完了・対象GC・復旧凍結を拒否する。本文転送後に公開permitを取得する順序は維持する。
 
 WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
 

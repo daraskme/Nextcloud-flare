@@ -13,11 +13,12 @@ import { publishMultipartUpload } from "../../src/services/uploads/complete";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { foundationFixture } from "../fixtures/foundation";
-import { mutationEnv } from "../fixtures/mutationAdmission";
+import { clearEndedR2TestWrites, mutationEnv } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
 

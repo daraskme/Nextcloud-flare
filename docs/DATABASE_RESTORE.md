@@ -51,7 +51,7 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 稼働系復旧の完成には以下が必要で、今回の準備RPCは代替しない。
 
 1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。D1対象、Time Travel bookmarkの時刻検索、BLOBSのfresh probe照合も接続済み（[対象](DATABASE_RESTORE_TARGET.md)・[bookmark](DATABASE_RESTORE_BOOKMARK.md)・[BLOBS](DATABASE_RESTORE_BLOBS.md)）。BACKUPSと同じ停止状態での[BLOBS/BACKUPS一括照合](DATABASE_RESTORE_BINDINGS.md)も接続済み。最終停止とremote検証を続ける。
-2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集める。D1書込みと新規repair受付の永続的な凍結に加え、[空ファイルPUT・配信manifestの保存/削除・blob/orphan GCのDELETE](R2_WRITE_SETTLEMENT.md)の永続記録を接続済み。既存upload/multipart・probe・BACKUPS・epoch履歴を含む全操作の終了条件と未知結果の収束は未統合。
+2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集める。D1書込みと新規repair受付の永続的な凍結に加え、[upload・multipart全中止・空ファイルPUT・配信manifest・blob/orphan GC](R2_WRITE_SETTLEMENT.md)の11種類の永続記録を接続済み。probe・BACKUPS・epoch履歴を含む全操作の終了条件と未知結果の収束は未統合。
 3. D1上書き前に新epochをDO/R2履歴へ予約する。応答不明時に重複発行・再使用しない。
 4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。
 5. 復元されたbackup freeze/tokenを正確な要求に結び付けて解消し、新epochをD1へ採用する。snapshotのcommitted/failed operationは保持する。

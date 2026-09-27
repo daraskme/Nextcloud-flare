@@ -190,7 +190,14 @@ export async function settleUploadCleanup(
     ]);
     throw new Error("upload_object_mismatch");
   }
-  const statements: SqlStatement[] = [controlFence(epoch, maintenance), fence];
+  const statements: SqlStatement[] = [
+    controlFence(epoch, maintenance),
+    fence,
+    assertExists(
+      "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=? AND state='pending')",
+      [row.r2_key],
+    ),
+  ];
   if (object) statements.push(...observedObject(row, object));
   else
     statements.push(

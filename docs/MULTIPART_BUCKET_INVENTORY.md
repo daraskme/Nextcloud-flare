@@ -4,6 +4,8 @@
 
 ## 呼出しと範囲
 
+migration0043では`bucket.abort`を[送信・終了の永続記録](R2_WRITE_SETTLEMENT.md)へ接続した。ownerは明示null、元のattempt/handleと有効なbinding proof、scan/part roundを再検査する。従来の中止receiptとは別にnative呼出しの終了を保持し、timeout後に継続が実成功を受け取った場合だけ終了を記録する。容量は従来どおり保留する。
+
 停止中のControlDO内部RPCを使う。HTTP、管理UI、Cronへの接続はまだない。
 
 ```ts

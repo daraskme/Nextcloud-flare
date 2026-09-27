@@ -193,7 +193,7 @@ it.each(["kdf", "maintenance", "mutation", "r2-local", "r2-d1"])(
         const now = Date.now();
         await env.DB.prepare("UPDATE control SET maintenance=0").run();
         await env.DB.prepare(
-          "INSERT INTO r2_write_attempts VALUES(?,?,?,'fixture','manifest.put',?,?,?,'pending',NULL)",
+          "INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state,finished_at) VALUES(?,?,?,'fixture','manifest.put',?,?,?,'pending',NULL)",
         )
           .bind(
             crypto.randomUUID(),

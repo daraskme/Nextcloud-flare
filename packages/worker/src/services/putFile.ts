@@ -37,6 +37,7 @@ import {
   mutationStatements,
 } from "./fsMutation";
 import { observePhysicalObject } from "./physical";
+import { trackedR2Write } from "./r2Write";
 
 export const DAV_PUT_MAX_BYTES = 95_000_000;
 export const DAV_PUT_CREATE_STEPS = 10;
@@ -60,9 +61,10 @@ export interface PutFileRequest {
 
 /** Hash and write the request concurrently without buffering the body in Worker memory. */
 async function storeBody(
-  bucket: R2Bucket,
+  env: Pick<Env, "DB" | "CONTROL" | "BLOBS">,
   row: DavUploadRow,
   body: ReadableStream<Uint8Array>,
+  principal: Principal,
 ): Promise<StoredBody> {
   const remaining = row.write_lease_expires_at - Date.now();
   if (remaining <= 0) throw new Error("dav_put_write_expired");
@@ -70,10 +72,27 @@ async function storeBody(
     body,
     row.declared_size,
     async (stream) => {
-      const object = await bucket.put(`u/${row.owner_id}/b/${row.blob_id}`, stream, {
-        onlyIf: { etagDoesNotMatch: "*" },
-        customMetadata: davUploadMetadata(row),
-      });
+      const key = `u/${row.owner_id}/b/${row.blob_id}`;
+      const object = await trackedR2Write(
+        env,
+        {
+          epoch: row.epoch,
+          ownerId: row.owner_id,
+          kind: "upload.put",
+          key,
+          upload: {
+            id: row.id,
+            attemptId: row.write_attempt_id,
+            expiresAt: row.write_lease_expires_at,
+            principal,
+          },
+        },
+        () =>
+          env.BLOBS.put(key, stream, {
+            onlyIf: { etagDoesNotMatch: "*" },
+            customMetadata: davUploadMetadata(row),
+          }),
+      );
       if (!object || !matchesDavObject(row, object)) throw new Error("dav_put_write_failed");
       return object;
     },
@@ -417,7 +436,7 @@ export async function putFile(
   );
   let stored: StoredBody;
   try {
-    stored = await storeBody(env.BLOBS, upload, request.body);
+    stored = await storeBody(env, upload, request.body, request.principal);
     await recordStoredDavUpload(env, upload, stored);
     upload.state = "completing";
   } catch (error) {

@@ -16,11 +16,12 @@ import { uploadRow } from "../../src/services/uploads/access";
 import type { UploadPartReceipt } from "../../src/services/uploads/read";
 import { accessFixture } from "../fixtures/access";
 import { foundationFixture } from "../fixtures/foundation";
-import { mutationEnv } from "../fixtures/mutationAdmission";
+import { clearEndedR2TestWrites, mutationEnv } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_paused=0").run();
   await env.DB.prepare(
     "UPDATE uploads SET cleanup_next_at=9999999999999 WHERE mode='multipart'",

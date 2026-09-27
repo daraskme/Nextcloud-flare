@@ -11,10 +11,15 @@ import { davPublicationStatements } from "../../src/services/davUpload";
 import { putFile } from "../../src/services/putFile";
 import { davBucket, davPutFixture as fixture } from "../fixtures/davPut";
 import { davUploadHistory as history } from "../fixtures/davUploadHistory";
-import { acquireMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireMutation,
+  clearEndedR2TestWrites,
+  mutationEnv,
+} from "../fixtures/mutationAdmission";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET maintenance=1").run();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_paused=0").run();
 });

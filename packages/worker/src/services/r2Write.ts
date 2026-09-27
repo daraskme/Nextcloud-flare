@@ -9,7 +9,10 @@ export type R2WriteSource =
       DB: D1Database;
       systemControl: Pick<ControlDO, "beginR2Write" | "finishR2Write">;
     };
-type WriteInput = Pick<R2WriteRequest, "epoch" | "ownerId" | "kind" | "key" | "gc">;
+type WriteInput = Pick<
+  R2WriteRequest,
+  "epoch" | "ownerId" | "kind" | "key" | "gc" | "upload" | "abort"
+>;
 
 /** Each invocation gets one grant; a rejected native call remains unknown, never replayed here. */
 async function runWrite<T>(
@@ -17,6 +20,7 @@ async function runWrite<T>(
   input: WriteInput,
   action: () => Promise<T>,
   current: () => boolean,
+  dispatch: () => void,
   deadline?: number,
 ): Promise<T> {
   const request: R2WriteRequest = {
@@ -24,6 +28,7 @@ async function runWrite<T>(
     id: crypto.randomUUID(),
     deadline: Math.min(
       deadline ?? Infinity,
+      input.upload?.expiresAt ?? Infinity,
       input.gc && typeof input.gc.mode === "object" ? input.gc.mode.expiresAt : Infinity,
       Date.now() + 5000,
     ),
@@ -57,8 +62,11 @@ async function runWrite<T>(
   }
   let value: T;
   try {
+    dispatch();
     value = await action();
-  } catch {
+  } catch (error) {
+    // Upload callers retain their existing transport/stream error contract; the hold remains.
+    if (input.upload) throw error;
     throw new MutationUnavailableError();
   }
   try {
@@ -79,18 +87,48 @@ export async function trackedR2Write<T>(
     throw new MutationUnavailableError();
   let active = true,
     timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectTimeout!: (reason: Error) => void;
+  const timeout = new Promise<never>((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const arm = (milliseconds: number) => {
+    clearTimeout(timer);
+    timer = setTimeout(
+      () => {
+        active = false;
+        rejectTimeout(new MutationUnavailableError());
+      },
+      Math.max(1, milliseconds),
+    );
+  };
+  // Waiting for a grant stays short; a dispatched upload retains its original transfer lease.
+  arm(
+    Math.min(
+      25000,
+      (deadline ?? Infinity) - Date.now(),
+      (input.upload?.expiresAt ?? Infinity) - Date.now(),
+    ),
+  );
   try {
     return await Promise.race([
-      runWrite(env, input, action, () => active, deadline),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => {
-            active = false;
-            reject(new MutationUnavailableError());
-          },
-          Math.min(25000, deadline === undefined ? 25000 : Math.max(1, deadline - Date.now())),
-        );
-      }),
+      runWrite(
+        env,
+        input,
+        action,
+        () => active,
+        () => {
+          if (input.upload)
+            arm(
+              Math.min(
+                900000,
+                input.upload.expiresAt - Date.now(),
+                (deadline ?? Infinity) - Date.now(),
+              ),
+            );
+        },
+        deadline,
+      ),
+      timeout,
     ]);
   } finally {
     active = false;

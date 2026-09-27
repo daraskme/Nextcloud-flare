@@ -4,6 +4,8 @@ Access user向けの単一・分割upload契約。ControlDO admissionとremote�
 
 Files画面の確認付き上書きと再開は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)を参照。
 
+migration0043で単一PUT・multipart作成/part/完了と内部の全中止経路を[送信・終了の永続記録](R2_WRITE_SETTLEMENT.md)へ接続した。元のattemptの二重送信を拒否し、15分の転送leaseを維持する。例外後の完成object照合とnative終了証明は別であり、結果不明の呼出しをHEADやlease満了で消さない。未知の呼出しが残る間は予約解放・cleanup完了・対象GC・復旧凍結を保留する。
+
 ## 認証と入力
 
 全routeはapp origin上で現在のAccess session・credential・node authority・epochを検査する。作成以外は`Upload-Capability`も必要。tokenは同じcredentialとupload identityに束縛し、URLやlogには入れない。

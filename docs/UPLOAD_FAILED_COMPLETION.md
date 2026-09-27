@@ -12,6 +12,8 @@ completeSingleUpload/publishMultipartUploadからCONTROLを必須で渡し、内
 
 ## 予約を解放する証拠
 
+migration0043のD1 guardにより、同じblob keyに[未終了のR2試行](R2_WRITE_SETTLEMENT.md)があればreserved予約の解放を拒否する。完成object/hashを検証できても、応答不明のPUT/complete/abortそのものの終了証明としては扱わない。
+
 同一batchで元のupload ID・owner・space・parent/target・blob・reservation・credential・epoch・mode・size・request digest・write attempt・期限・target revision・multipart ID/complete attempt/object etagを束縛する。completion_op_idは明示引数で照合する。呼出し元がoperation ID保存前のUploadRowを持つ場合もあるため、古いrow.completion_op_idには依存しない。
 
 現在epoch・停止中の転送・実space所有者・予約のowner/bytes/epoch/期限・private予約・blobのowner/key/size/ref_count=0と、failed upload.complete operationのcredential/epoch/space/operand・step不在を検査する。claim中やcommittedのoperationは補償しない。初回解放にはreserved予約、staging/orphan blob、未除去の一致するblob_storageが必要。singleはwhole hash、multipartは独立したobject proofを要求する。容量counter driftも全体rollbackになる。SQL条件を意味ごとに括り、D1のexpression depth上限内に収める。

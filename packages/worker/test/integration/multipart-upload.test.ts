@@ -13,10 +13,12 @@ import { reserveMultipartUpload } from "../../src/services/uploads/create";
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { foundationFixture } from "../fixtures/foundation";
+import { clearEndedR2TestWrites } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
 const SHA = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";

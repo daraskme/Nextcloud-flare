@@ -25,17 +25,17 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-blob GCとorphan GCのDELETEを送信・終了の永続記録へ接続しました。削除の応答不明をHEAD不在やlease満了で解消せず、物理容量を保持して同keyの再回収・復元準備完了を拒否します。実際に終了した記録だけを反映し、通常・停止中・ゴミ箱復元中のclaimと期限を再検査します。空ファイルPUT・配信manifestと合わせて5操作が対象です。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+単一upload・WebDAV PUTとmultipartの作成/part/完了/全中止経路を、送信・終了の永続記録へ接続しました。元のattemptの二重送信を防ぎ、grant待機後に現行認可と元の転送/cleanup証明を再検査します。送信開始の5秒期限と本文転送の最大15分leaseを分け、応答不明の間は予約解放・cleanup完了・対象GC・復旧凍結を保留します。空ファイル・manifest・GCを合わせて11種類が対象です。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-schema0042・通常68table・依存追加なし。Node972件＋workerd2,358件の計3,330件を再実行を含めて検証しました。全体実行で失敗したCron試験2件はfixture修正後に該当62件が成功。最終lint411file・型・契約/設定検査・Web build・Worker dry-runと、68tableのprivate binding運用ドリルも成功しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+schema0043・通常68table・依存追加なし。Node983件とbrowser19件が成功。全workerdは2,378件中2,324件が成功し、失敗54件は修正後の関連355件と復旧監査11件の再実行ですべて成功しました。再実行を含めローカル計3,380件を検証。初回の全統合実行自体の終了コードは1です。最終lint415file・型・契約/設定検査・Web build・Worker dry-runとprivate binding運用ドリルも成功。失敗原因・再実行・CIの記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は既存upload/multipart・binding probe・BACKUPS保存・epoch履歴も含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み5操作にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はbinding probe・BACKUPS保存・epoch履歴を含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み11種類にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前a57fc8fの[CI36314574203](https://github.com/daraskme/Nextcloud-flare/actions/runs/36314574203)は、Windows分割1の再実行を含め全5ジョブが成功しました。初回multipart準備の失敗原因は未確定で、診断を追加しています。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前43597a6の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)はWindows2分割・backup・browserが成功し、Ubuntu全checkは15分のjob枠で打ち切られました。今回Ubuntuのjob枠も30分に変更し、アプリの期限は維持します。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。68通常テーブル、migration `0001`〜`0042`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。68通常テーブル、migration `0001`〜`0043`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -106,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
 
-最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。空object PUT・manifestの保存/削除・blob/orphan GCのDELETEは永続的な送信/終了記録へ接続済み。次は既存upload/multipart台帳、probe、BACKUPS、epoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
+最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。upload・multipart全中止・空object PUT・manifest保存/削除・blob/orphan GCの11種類を永続的な送信/終了記録へ接続済み。次はprobe、BACKUPS、epoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

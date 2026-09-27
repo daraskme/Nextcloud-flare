@@ -2,13 +2,13 @@
 
 更新: 2026-09-27。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-blob GCとorphan GCのDELETEを送信・終了の永続記録へ接続しました。削除の応答不明をHEAD不在やlease満了で解消せず、物理容量を保持して同keyの再回収・復元準備完了を拒否します。実際に終了した記録だけを反映し、通常・停止中・ゴミ箱復元中のclaimと期限を再検査します。空ファイルPUT・配信manifestと合わせて5操作が対象です。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+単一upload・WebDAV PUTとmultipartの作成/part/完了/全中止経路を、送信・終了の永続記録へ接続しました。元のattemptの二重送信を防ぎ、grant待機後に現行認可と元の転送/cleanup証明を再検査します。送信開始の5秒期限と本文転送の最大15分leaseを分け、応答不明の間は予約解放・cleanup完了・対象GC・復旧凍結を保留します。空ファイル・manifest・GCを合わせて11種類が対象です。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-schema0042・通常68table・依存追加なし。Node972件＋workerd2,358件の計3,330件を再実行を含めて検証しました。全体実行で失敗したCron試験2件はfixture修正後に該当62件が成功。最終lint411file・型・契約/設定検査・Web build・Worker dry-runと、68tableのprivate binding運用ドリルも成功しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+schema0043・通常68table・依存追加なし。Node983件とbrowser19件が成功。全workerdは2,378件中2,324件が成功し、失敗54件は修正後の関連355件と復旧監査11件の再実行ですべて成功しました。再実行を含めローカル計3,380件を検証。初回の全統合実行自体の終了コードは1です。最終lint415file・型・契約/設定検査・Web build・Worker dry-runとprivate binding運用ドリルも成功。失敗原因・再実行・CIの記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は既存upload/multipart・binding probe・BACKUPS保存・epoch履歴も含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み5操作にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はbinding probe・BACKUPS保存・epoch履歴を含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み11種類にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前a57fc8fの[CI36314574203](https://github.com/daraskme/Nextcloud-flare/actions/runs/36314574203)は、Windows分割1の再実行を含め全5ジョブが成功しました。初回multipart準備の失敗原因は未確定で、診断を追加しています。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前43597a6の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)はWindows2分割・backup・browserが成功し、Ubuntu全checkは15分のjob枠で打ち切られました。今回Ubuntuのjob枠も30分に変更し、アプリの期限は維持します。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,7 @@ schema0042・通常68table・依存追加なし。Node972件＋workerd2,358件�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 空ファイル・manifest・GCのR2終了記録 | migration0041〜0042・DO/D1送信記録・実成功/未送信だけの終了記録・凍結/再開/GC拒否・既知終了のrepair | 期限切れpendingの移行保持、GCの結果不明・遅延終了・claim変更・復元待機・owner未復元を試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | native結果不明の運用収束と他のR2操作への最終停止統合は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
+| upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0043・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | native結果不明の運用収束とprobe/BACKUPS/epoch履歴の最終停止統合は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
 | 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否を追加。13操作のprivate bindingドリル成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
 | 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
 | 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
@@ -66,7 +66,7 @@ schema0042・通常68table・依存追加なし。Node972件＋workerd2,358件�
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | migration `0001`〜`0042`、68通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0043`、68通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
@@ -179,7 +179,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. 外部I/Oの終了記録を最終停止へ集約。空ファイル・manifest・GCの5操作は接続済み。次はupload/multipart、probe、BACKUPS、epoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
+1. 外部I/Oの終了記録を最終停止へ集約。upload・multipart・空ファイル・manifest・GCの11種類は接続済み。次はprobe、BACKUPS、epoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
 2. 復旧要求に固定した新epoch事前予約、実D1復元後の採用・全監査・段階再開、Time Travel/live restore drill。
 3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
 4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。

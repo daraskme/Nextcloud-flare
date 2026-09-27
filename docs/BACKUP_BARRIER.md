@@ -1,18 +1,20 @@
 # バックアップ書込み停止
 
-更新: 2026-09-25。内部ControlDO RPCとD1 barrierをローカル実装。[世代生成・R2保存・オフライン復元](BACKUP_GENERATIONS.md)、[完了記録](BACKUP_COMPLETION.md)、[専用bindingの運用コマンド](BACKUP_OPERATOR.md)を接続。live restore・remote認証/配備の検証は後続。
+更新: 2026-09-27。内部ControlDO RPCとD1 barrierをローカル実装。[世代生成・R2保存・オフライン復元](BACKUP_GENERATIONS.md)、[完了記録](BACKUP_COMPLETION.md)、[専用bindingの運用コマンド](BACKUP_OPERATOR.md)を接続。live restore・remote認証/配備の検証は後続。
 
-バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常68テーブルを凍結して、同じバックアップ要求だけで解除します。
 
 migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
 
 ## 開始と凍結
 
+新規intent保存前に[未精算のR2記録](R2_WRITE_SETTLEMENT.md)がD1にもDOにもないことを確認する。凍結してからnative終了の精算と受付再開が相互に待ち続ける状態を避けるため、保留がある間はintentを作らず拒否する。実終了の反映後は同じbackup IDで再試行できる。未開始のupload予約の24時間満了は要求しない。
+
 beginBackup(epoch, UUID)は安定したopen/closedの受付・管理者GC設定をSQLiteへ保存し、preparing intentを外部I/Oより先に永続化する。進行中の復旧task・restore用GC hold・他のbackupがあれば拒否する。D1では元のepoch/revision/tokenとpolicyを照合し、専用token・maintenance/GC pause・backup_runsを保存してpermit/claim/共通枠を閉じる。準備中も新しいsystem/global grantを拒否する。
 
 active job leaseがなくなってから、確定済み操作のwatermarkをbackup_runsとcontrol.backup_barrier_opへ保存し、backup_frozenを立てる。0037以後はcommittedへの遷移と同じtransactionでcontrol.backup_last_opを更新するため、同じ秒の確定も順序を維持する。適用前の履歴はupdated_at/op_id順で初期化し、元の同時刻内の順序を証明したとは扱わない。
 
-凍結中は通常67tableへのINSERT/UPDATE/DELETEを拒否する。controlの削除・置換・epoch変更・watermark改変も拒否する。SELECTは可能。新しいtableやcontrol列を追加するmigrationではguard対象も拡張する。FTSはexport対象ではなく、restoreで再構築する。
+凍結中は通常68tableへのINSERT/UPDATE/DELETEを拒否する。controlの削除・置換・epoch変更・watermark改変も拒否する。SELECTは可能。新しいtableやcontrol列を追加するmigrationではguard対象も拡張する。FTSはexport対象ではなく、restoreで再構築する。
 
 ## 応答喪失と解除
 

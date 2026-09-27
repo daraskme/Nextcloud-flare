@@ -10,6 +10,7 @@ import {
   commitAccountMutation,
 } from "../accountMutation";
 import type { MutationOutcome } from "../fsMutation";
+import { trackedR2Write } from "../r2Write";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -235,10 +236,24 @@ export async function completeMultipartUpload(
       }
       if (dispatch && Date.now() < lease) {
         try {
-          await env.BLOBS.resumeMultipartUpload(
-            `u/${row.owner_id}/b/${row.blob_id}`,
-            row.r2_upload_id!,
-          ).complete(parts);
+          const key = `u/${row.owner_id}/b/${row.blob_id}`;
+          await trackedR2Write(
+            env,
+            {
+              epoch: row.epoch,
+              ownerId: row.owner_id,
+              kind: "multipart.complete",
+              key,
+              upload: {
+                id: row.id,
+                attemptId: attempt,
+                expiresAt: lease,
+                principal,
+                r2UploadId: row.r2_upload_id!,
+              },
+            },
+            () => env.BLOBS.resumeMultipartUpload(key, row.r2_upload_id!).complete(parts),
+          );
         } catch {
           /* Reconcile the immutable key. Never dispatch complete again after an unknown result. */
         }

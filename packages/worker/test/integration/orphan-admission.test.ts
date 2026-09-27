@@ -293,11 +293,13 @@ it.each(calls)("does not start %s after a late successful budget ACK", async (st
       return match && ++hits === nth(stage);
     },
     async () => {
-      clock.mockReturnValue(now + 1001);
+      // Reach the confirmation charge after the real D1 native-write grant. A 1s
+      // fixture budget can expire in D1's second-resolution dispatch guard first.
+      clock.mockReturnValue(now + 5001);
     },
     true,
   );
-  await f.outcome(f.configure(undefined, db), 1000);
+  await f.outcome(f.configure(undefined, db), 5000);
   expect(hits).toBeGreaterThanOrEqual(nth(stage));
   expect(await f.receipt()).toMatchObject({ state: "closed", committed_at: expect.any(Number) });
   expect(f.calls).toEqual(

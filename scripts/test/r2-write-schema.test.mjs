@@ -24,18 +24,9 @@ function insert(state = "pending", key = `target-sets/${randomUUID()}`, override
     finished: state === "pending" ? null : clock(),
     ...overrides,
   };
-  db.prepare("INSERT INTO r2_write_attempts VALUES(?,?,?,?,?,?,?,?,?,?)").run(
-    g.id,
-    g.token,
-    g.epoch,
-    g.owner,
-    g.kind,
-    g.key,
-    g.deadline,
-    g.started,
-    g.state,
-    g.finished,
-  );
+  db.prepare(
+    "INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+  ).run(g.id, g.token, g.epoch, g.owner, g.kind, g.key, g.deadline, g.started, g.state, g.finished);
   return g;
 }
 it("keeps unknown writes through elapsed time and refuses repair bypasses", async () => {

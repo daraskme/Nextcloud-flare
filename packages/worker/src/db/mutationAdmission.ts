@@ -39,6 +39,7 @@ export const GLOBAL_MUTATION_KINDS = [
   "r2.write-settle",
   "r2.manifest-delete",
   "r2.gc-delete",
+  "r2.multipart-abort",
   "r2.probe-claim",
   "r2.probe-call",
   "r2.probe-phase",

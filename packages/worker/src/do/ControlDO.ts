@@ -259,7 +259,11 @@ export class ControlDO extends DurableObject<Env> {
         if (row.phase !== "ready") throw new Error("control_not_ready");
         return row.epoch;
       },
-      () => this.#admission.captureBackup(),
+      () => {
+        // A frozen backup cannot mirror a late native completion or reopen with a pending row.
+        this.#r2Writes.assertEmpty();
+        return this.#admission.captureBackup();
+      },
       (snapshot, token) => this.#admission.restoreBackup(snapshot, token),
       env.BACKUPS,
     );
@@ -284,7 +288,7 @@ export class ControlDO extends DurableObject<Env> {
       ctx.storage,
       env.DB,
       (epoch, kind) =>
-        kind.endsWith(".delete")
+        kind.endsWith(".delete") || kind.endsWith(".abort")
           ? this.#admission.captureSystemMutationMode(epoch)
           : this.#admission.assertMutationOpen(epoch),
       (request) => this.acquireMutation(request),
@@ -296,7 +300,7 @@ export class ControlDO extends DurableObject<Env> {
         }),
       (epoch, deadline, kind) =>
         this.acquireGlobalMutation({
-          permitId: `global:${kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
+          permitId: `global:${kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
           epoch,
           deadline,
         }),

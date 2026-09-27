@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 import { handleUploadHttp } from "../../src/api/uploads";
 import type { MutationRequest } from "../../src/db/mutationAdmission";
 import { MutationUnavailableError } from "../../src/services/accountMutation";
-import { acquireMutation } from "../fixtures/mutationAdmission";
+import { acquireMutation, clearEndedR2TestWrites } from "../fixtures/mutationAdmission";
 
 import {
   type Action,
@@ -16,6 +16,7 @@ import {
 const dispatches = actions.filter((action) => action !== "single-verify");
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET maintenance=1").run();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });

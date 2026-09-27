@@ -73,7 +73,9 @@ beforeEach(async () => {
   db.exec("UPDATE control SET maintenance=0");
   const started = Date.now();
   for (const state of ["pending", "succeeded", "not_started"])
-    db.prepare("INSERT INTO r2_write_attempts VALUES(?,?,1,?,'manifest.put',?,?,?,?,?)").run(
+    db.prepare(
+      "INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state,finished_at) VALUES(?,?,1,?,'manifest.put',?,?,?,?,?)",
+    ).run(
       randomUUID(),
       randomUUID(),
       fixture.ids.user,

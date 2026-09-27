@@ -454,6 +454,17 @@ export class ControlBackup {
           throw new Error("backup_history_conflict");
         return { id, epoch, state: "released", watermark: history.watermark };
       }
+      // Check before publishing the backup intent: its barrier would also block R2 settlement.
+      // The synchronous capture below rechecks local receipts and fences new grants with intent.
+      if (
+        await primary(this.db)
+          .prepare("SELECT 1 FROM r2_write_attempts WHERE state='pending' LIMIT 1")
+          .first()
+      )
+        throw new Error("backup_r2_write_unsettled");
+      if (this.#row()?.token !== row?.token || this.#row()?.phase !== row?.phase)
+        throw new Error("backup_conflict");
+      this.#identity(epoch, id);
       const prior = this.capture();
       epochNumber(prior.revision + 2);
       this.storage.sql.exec(

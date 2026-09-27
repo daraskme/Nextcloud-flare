@@ -17,10 +17,17 @@ import { completeSingleUpload } from "../../src/services/uploads/complete";
 import { writeSingleUpload } from "../../src/services/uploads/content";
 import { createSingleUpload } from "../../src/services/uploads/create";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireMutation, acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireMutation,
+  acquireSystemMutation,
+  clearEndedR2TestWrites,
+  mutationEnv,
+  r2WriteFixture,
+} from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
 const stream = (text: string) => new Blob([text]).stream();
@@ -31,6 +38,7 @@ function admitted(): Env {
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
+        ...r2WriteFixture(),
         acquireMutation,
         acquireSystemMutation,
         status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),

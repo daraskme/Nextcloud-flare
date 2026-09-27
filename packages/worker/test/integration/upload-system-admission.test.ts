@@ -3,11 +3,16 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 import type { MutationRequest } from "../../src/db/mutationAdmission";
 import type { Env } from "../../src/env";
-import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import {
+  acquireSystemMutation,
+  clearEndedR2TestWrites,
+  mutationEnv,
+} from "../fixtures/mutationAdmission";
 import { cleanupTransferObjects, transferFixture } from "../fixtures/uploadTransfer";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET maintenance=1").run();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });

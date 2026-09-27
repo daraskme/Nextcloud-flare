@@ -1,4 +1,5 @@
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -50,7 +51,11 @@ export const MULTIPART_INVENTORY_ELIGIBLE = `${MULTIPART_CLEANUP_ELIGIBLE}
   AND u.multipart_cleanup_closed IS NULL
   AND (u.r2_upload_id IS NULL OR EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id))`;
 
-export function multipartCleanupFence(row: Candidate, token: string, closed = false) {
+export function multipartCleanupFence(
+  row: Pick<Candidate, "id" | "blob_id" | "r2_upload_id">,
+  token: string,
+  closed = false,
+) {
   return assertExists(
     `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id
     WHERE u.id=? AND u.blob_id=? AND u.r2_upload_id IS ?
@@ -141,7 +146,7 @@ export async function claimMultipartCleanup(
 
 /** Internal, bounded repair. A reservation survives until the multipart handle is proven closed. */
 export async function repairMultipartUploads(
-  env: SystemMutationSource,
+  env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
   options: { maxUploads?: number; maxWallMs?: number; maintenance?: boolean } = {},
@@ -193,7 +198,25 @@ export async function repairMultipartUploads(
         await charge();
         let aborted = false;
         try {
-          await bucket.resumeMultipartUpload(row.r2_key, row.r2_upload_id).abort();
+          await trackedR2Write(
+            env,
+            {
+              epoch,
+              ownerId: row.owner_id,
+              kind: "multipart.abort",
+              key: row.r2_key,
+              abort: {
+                source: "cleanup",
+                uploadId: row.id,
+                sourceEpoch: row.epoch,
+                r2UploadId: row.r2_upload_id,
+                attemptId: token,
+                maintenance,
+              },
+            },
+            () => bucket.resumeMultipartUpload(row.r2_key, row.r2_upload_id!).abort(),
+            started + wall,
+          );
           aborted = true;
         } catch {
           // NoSuchUpload/transport errors alone do not prove that a completed object is absent.

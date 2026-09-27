@@ -5,6 +5,7 @@ import { contentKeyRing } from "../../src/auth/contentTokens";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import type { MutationRequest } from "../../src/db/mutationAdmission";
 import { atomicBatch } from "../../src/db/primary";
+import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import type { Env } from "../../src/env";
 import { abortMultipartUpload, abortSingleUpload } from "../../src/services/uploads/abort";
@@ -13,7 +14,7 @@ import { createSingleUpload, reserveMultipartUpload } from "../../src/services/u
 import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
 import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { foundationFixture } from "./foundation";
-import { acquireMutation, acquireSystemMutation } from "./mutationAdmission";
+import { acquireMutation, acquireSystemMutation, r2WriteFixture } from "./mutationAdmission";
 import { admitted } from "./uploadEnv";
 
 export const actions = [
@@ -129,6 +130,14 @@ export async function transferFixture(
     app.CONTROL = {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
+        ...(realControl
+          ? {
+              beginR2Write: (request: R2WriteRequest) =>
+                env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).beginR2Write(request),
+              finishR2Write: (grant: R2WriteGrant, outcome: R2WriteTerminal) =>
+                env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).finishR2Write(grant, outcome),
+            }
+          : r2WriteFixture()),
         acquireMutation: acquire,
         acquireSystemMutation: systemAcquire,
         status: realControl

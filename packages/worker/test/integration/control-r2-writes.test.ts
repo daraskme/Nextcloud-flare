@@ -144,6 +144,65 @@ it("does not dispatch from a lost grant RPC reply", async () => {
   expect(await row(issued!.id)).toMatchObject({ state: "pending" });
 });
 
+it("refuses a backup before its intent can block a pending native completion", async () => {
+  const grant = await control().beginR2Write(request());
+  const id = crypto.randomUUID();
+  await runInDurableObject(control(), async (instance, state) => {
+    await expect(instance.beginBackup(epoch, id)).rejects.toThrow(/r2_write_unsettled/);
+    expect(
+      state.storage.sql.exec("SELECT 1 FROM control_backup WHERE phase<>'released'").toArray(),
+    ).toHaveLength(0);
+  });
+  expect(
+    await env.DB.prepare("SELECT backup_token,backup_frozen,maintenance FROM control").first(),
+  ).toEqual({ backup_token: null, backup_frozen: 0, maintenance: 0 });
+  await control().finishR2Write(grant, "not_started");
+  expect(await control().beginBackup(epoch, id)).toMatchObject({ state: "frozen" });
+  expect(await control().releaseBackup(epoch, id)).toMatchObject({ state: "released" });
+});
+
+it("refuses a backup with an old D1-only pending write after local receipt loss", async () => {
+  const r = request();
+  await env.DB.prepare(
+    "INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state,finished_at) VALUES(?,?,?,?,?,?,?,?,?,NULL)",
+  )
+    .bind(r.id, crypto.randomUUID(), epoch, owner, r.kind, r.key, r.deadline, Date.now(), "pending")
+    .run();
+  await runInDurableObject(control(), async (instance, state) => {
+    expect(local(state)).toHaveLength(0);
+    await expect(instance.beginBackup(epoch, crypto.randomUUID())).rejects.toThrow(
+      /r2_write_unsettled/,
+    );
+    expect(
+      state.storage.sql.exec("SELECT 1 FROM control_backup WHERE phase<>'released'").toArray(),
+    ).toHaveLength(0);
+  });
+  expect(await row(r.id)).toMatchObject({ state: "pending" });
+  expect(await control().status()).toMatchObject({ maintenance: false });
+});
+
+it("refuses a backup while a local-only never-dispatched proof still needs reconciliation", async () => {
+  const grant: R2WriteGrant = { ...request(), startedAt: Date.now(), token: crypto.randomUUID() };
+  await runInDurableObject(control(), async (instance, state) => {
+    state.storage.sql.exec(
+      "INSERT INTO control_r2_write_receipts VALUES(?,?,?,'not_started')",
+      grant.id,
+      grant.token,
+      JSON.stringify(grant),
+    );
+    await expect(instance.beginBackup(epoch, crypto.randomUUID())).rejects.toThrow(
+      /r2_write_unsettled/,
+    );
+    expect(
+      state.storage.sql.exec("SELECT 1 FROM control_backup WHERE phase<>'released'").toArray(),
+    ).toHaveLength(0);
+    expect(local(state)).toMatchObject([{ state: "not_started" }]);
+  });
+  expect(await row(grant.id)).toBeNull();
+  await control().finishR2Write(grant, "not_started");
+  expect(await row(grant.id)).toMatchObject({ state: "not_started" });
+});
+
 it("allows exact unpublished manifest cleanup after quiesce and tracks the DELETE", async () => {
   const r = request();
   keys.add(r.key);
@@ -430,7 +489,9 @@ it("repairs retained local proof after D1 receipt retention has elapsed", async 
     deadline: startedAt + 5000,
     token: crypto.randomUUID(),
   };
-  await env.DB.prepare("INSERT INTO r2_write_attempts VALUES(?,?,?,?,?,?,?,?,?,?)")
+  await env.DB.prepare(
+    "INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+  )
     .bind(
       grant.id,
       grant.token,

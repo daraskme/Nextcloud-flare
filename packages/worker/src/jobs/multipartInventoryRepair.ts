@@ -8,6 +8,7 @@ import {
 } from "../db/primary";
 import type { R2S3Inventory } from "../r2/s3Inventory";
 import type { InventoryMutationSource } from "../services/globalMutation";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -76,7 +77,7 @@ function scanFence(scan: Scan): SqlStatement {
 
 /** Verify the binding afresh, discover stopped handles, and retain unresolved reservations. */
 export async function repairUnidentifiedMultipartUploads(
-  env: InventoryMutationSource,
+  env: InventoryMutationSource & R2WriteSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -109,7 +110,7 @@ export async function repairUnidentifiedMultipartUploads(
 }
 
 async function repairVerified(
-  env: InventoryMutationSource,
+  env: InventoryMutationSource & R2WriteSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   { limit, maxHandles, wall }: { limit: number; maxHandles: number; wall: number },
@@ -326,7 +327,29 @@ async function repairVerified(
           if (Date.now() - started >= wall) break;
           await charge(handle);
           try {
-            await bucket.resumeMultipartUpload(row.r2_key, handle.r2_upload_id).abort();
+            await trackedR2Write(
+              env,
+              {
+                epoch,
+                ownerId: row.owner_id,
+                kind: "multipart.abort",
+                key: row.r2_key,
+                abort: {
+                  source: "inventory",
+                  uploadId: row.id,
+                  sourceEpoch: row.epoch,
+                  r2UploadId: handle.r2_upload_id,
+                  attemptId: token,
+                  maintenance,
+                  handleId: handle.id,
+                  scanRound: scan.round_id,
+                  knownUploadId: row.r2_upload_id,
+                  binding: verified.proof,
+                },
+              },
+              () => bucket.resumeMultipartUpload(row.r2_key, handle.r2_upload_id).abort(),
+              started + wall,
+            );
           } catch {
             uncertain = true;
             await commit("upload.inventory-error", () => [

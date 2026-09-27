@@ -4,6 +4,8 @@
 
 ## 既存uploadの共通更新受付
 
+migration0043では実BLOBS abortも[送信・終了の永続記録](R2_WRITE_SETTLEMENT.md)へ接続する。現在のbinding proof、cleanup claim、元のscan round、uploadとhandleをgrant batchで再検査し、nativeの実成功だけを終了事実として保存する。別の中止成功や完成objectの観測で過去の未知呼出しを解消しない。
+
 既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
 
 待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。

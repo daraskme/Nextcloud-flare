@@ -8,8 +8,9 @@ import {
   scanMultipartBucket,
 } from "../../src/jobs/multipartBucketInventory";
 import type { GlobalMutationSource } from "../../src/services/globalMutation";
+import type { R2WriteSource } from "../../src/services/r2Write";
 import { multipartBucketClient, multipartBucketFixture } from "../fixtures/multipartBucket";
-import { acquireGlobalMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { acquireGlobalMutation, mutationEnv, r2WriteFixture } from "../fixtures/mutationAdmission";
 import { partsXml, partXml, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 import { injectBatch } from "../fixtures/uploadEnv";
@@ -91,9 +92,13 @@ async function fixture(stage: Stage, createOwner = true) {
     },
   });
   let permit = "";
-  const configure = (gate: Gate = acquireGlobalMutation, db = env.DB): GlobalMutationSource => ({
+  const configure = (
+    gate: Gate = acquireGlobalMutation,
+    db = env.DB,
+  ): GlobalMutationSource & R2WriteSource => ({
     DB: db,
     systemControl: {
+      ...r2WriteFixture(),
       status: () => mutationEnv().CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
       acquireGlobalMutation: (r) => {
         if (r.permitId.startsWith(prefix(stage))) {

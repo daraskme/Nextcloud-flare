@@ -53,7 +53,7 @@ it("retains an aged orphan while a prior write to the key is unknown", async () 
     id = crypto.randomUUID(),
     now = Date.now();
   await env.DB.prepare(
-    "INSERT INTO r2_write_attempts VALUES(?,?,1,?,'empty.put',?,?,?,'pending',NULL)",
+    "INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state,finished_at) VALUES(?,?,1,?,'empty.put',?,?,?,'pending',NULL)",
   )
     .bind(id, crypto.randomUUID(), f.ids.user, f.key, now + 5000, now)
     .run();

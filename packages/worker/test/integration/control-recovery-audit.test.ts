@@ -5,6 +5,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { inspectRecoveryFinalFence, inspectRecoverySearchFts } from "../../src/do/recoveryAudit";
+import { digestJson } from "../../src/jobs/operations";
 import { foundationFixture } from "../fixtures/foundation";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
@@ -465,7 +466,7 @@ it.each([false, true])(
   async (legacy) => {
     const reservationId = crypto.randomUUID();
     const blobId = crypto.randomUUID();
-    const uploadId = crypto.randomUUID();
+    const uploadId = `up_${await digestJson(["recovery.multipart", crypto.randomUUID()])}`;
     const attempt = crypto.randomUUID();
     const objectKey = `u/${fixture.ids.user}/b/${blobId}`;
     const multipart = await env.BLOBS.createMultipartUpload(objectKey, {
@@ -529,6 +530,11 @@ it.each([false, true])(
         maintenance: true,
         gcPaused: true,
       });
+      expect(
+        await env.DB.prepare("SELECT epoch,kind,state FROM r2_write_attempts WHERE r2_key=?")
+          .bind(objectKey)
+          .first(),
+      ).toEqual({ epoch: 2, kind: "multipart.abort", state: "succeeded" });
       expect(
         await env.DB.prepare("SELECT physical_bytes FROM users WHERE id=?")
           .bind(fixture.ids.user)

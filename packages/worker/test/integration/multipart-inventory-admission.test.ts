@@ -6,11 +6,13 @@ import { repairUnidentifiedMultipartUploads } from "../../src/jobs/multipartInve
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import type { InventoryMutationSource } from "../../src/services/globalMutation";
+import type { R2WriteSource } from "../../src/services/r2Write";
 import { multipartInventoryFixture } from "../fixtures/multipartInventory";
 import {
   acquireGlobalMutation,
   acquireSystemMutation,
   mutationEnv,
+  r2WriteFixture,
 } from "../fixtures/mutationAdmission";
 import { inventoryEnv, uploadsXml, uploadXml } from "../fixtures/s3Inventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
@@ -96,9 +98,13 @@ async function fixture(stage: Stage) {
     }),
   } as R2Bucket;
   const admissionTrace: string[] = [];
-  const configure = (gate: Gate = acquireSystemMutation, db = env.DB): InventoryMutationSource => ({
+  const configure = (
+    gate: Gate = acquireSystemMutation,
+    db = env.DB,
+  ): InventoryMutationSource & R2WriteSource => ({
     DB: db,
     systemControl: {
+      ...r2WriteFixture(),
       status: () => mutationEnv().CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
       acquireSystemMutation: async (r) => {
         const kind = r.permitId.split(":")[1];

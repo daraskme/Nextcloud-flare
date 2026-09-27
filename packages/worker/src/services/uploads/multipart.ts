@@ -6,6 +6,7 @@ import { UPLOAD_LIMITS } from "../../do/uploadPlan";
 import type { Env } from "../../env";
 import { consumeKnownLength } from "../../platform/stream";
 import { accountMutationStatements, acquireAccountMutation } from "../accountMutation";
+import { trackedR2Write } from "../r2Write";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -124,14 +125,36 @@ export async function createMultipartUpload(
   const key = `u/${row.owner_id}/b/${row.blob_id}`;
   try {
     if (Date.now() >= lease) throw new Error("upload_init_lease_expired");
-    const multipart = await env.BLOBS.createMultipartUpload(key, {
-      customMetadata: {
-        upload_id: row.id,
-        blob_id: row.blob_id,
-        epoch: String(row.epoch),
-        attempt_id: attempt,
-      },
-    });
+    let multipart: R2MultipartUpload | undefined;
+    let settlementError: unknown;
+    try {
+      await trackedR2Write(
+        env,
+        {
+          epoch: row.epoch,
+          ownerId: row.owner_id,
+          kind: "multipart.create",
+          key,
+          upload: { id: row.id, attemptId: attempt, expiresAt: lease, principal: input.principal },
+        },
+        async () => {
+          multipart = await env.BLOBS.createMultipartUpload(key, {
+            customMetadata: {
+              upload_id: row.id,
+              blob_id: row.blob_id,
+              epoch: String(row.epoch),
+              attempt_id: attempt,
+            },
+          });
+          return multipart;
+        },
+      );
+    } catch (error) {
+      // Preserve a known external ID even when recording native completion lost its ACK.
+      if (!multipart) throw error;
+      settlementError = error;
+    }
+    if (!multipart) throw new Error("upload_init_unknown");
     if (!multipart.uploadId || multipart.key !== key) throw new Error("upload_object_mismatch");
     try {
       // Recording a known external ID must still work after credential revocation. It grants
@@ -160,13 +183,32 @@ export async function createMultipartUpload(
               assertOneChange,
             ]),
           );
-          await multipart.abort();
+          const handle = multipart;
+          await trackedR2Write(
+            env,
+            {
+              epoch: cleanup.epoch,
+              ownerId: row.owner_id,
+              kind: "multipart.abort",
+              key,
+              abort: {
+                source: "initialization",
+                uploadId: row.id,
+                sourceEpoch: row.epoch,
+                attemptId: attempt,
+                r2UploadId: handle.uploadId,
+                maintenance: cleanup.maintenance === 1,
+              },
+            },
+            () => handle.abort(),
+          );
         } catch {
           /* cleanup remains pending */
         }
         throw error;
       }
     }
+    if (settlementError) throw settlementError;
   } catch (error) {
     const stopped = await acquireSystemMutation(env, row.owner_id, "upload.multipart-stop");
     await commitSystemMutation(env.DB, stopped, row.owner_id, [
@@ -219,12 +261,29 @@ export async function writeMultipartPart(
       bytes,
       (stream) => {
         // resumeMultipartUpload only constructs a handle; it does not verify existence.
-        const multipart = env.BLOBS.resumeMultipartUpload(
-          `u/${row.owner_id}/b/${row.blob_id}`,
-          row.r2_upload_id!,
+        const key = `u/${row.owner_id}/b/${row.blob_id}`;
+        const multipart = env.BLOBS.resumeMultipartUpload(key, row.r2_upload_id!);
+        return trackedR2Write(
+          env,
+          {
+            epoch: row.epoch,
+            ownerId: row.owner_id,
+            kind: "multipart.part",
+            key,
+            upload: {
+              id: row.id,
+              attemptId,
+              expiresAt: lease.expiresAt,
+              principal,
+              r2UploadId: row.r2_upload_id!,
+              partNumber,
+            },
+          },
+          () => {
+            started = true;
+            return multipart.uploadPart(partNumber, stream);
+          },
         );
-        started = true;
-        return multipart.uploadPart(partNumber, stream);
       },
       AbortSignal.timeout(remaining),
     );

@@ -6,6 +6,7 @@ import {
   type GlobalMutationSource,
   globalMutationStatements,
 } from "../services/globalMutation";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -32,7 +33,7 @@ export interface MultipartBucketAbortResult {
 
 /** One explicit attempt. A retry of its ID never dispatches R2 again, even after an unknown ACK. */
 export async function abortMultipartBucketHandle(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -60,7 +61,7 @@ export async function abortMultipartBucketHandle(
 }
 
 async function abortVerified(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   verified: VerifiedR2Inventory,
   epoch: number,
   handleId: string,
@@ -128,7 +129,25 @@ async function abortVerified(
     const abort = Promise.resolve()
       .then(() => {
         withinBudget();
-        return verified.bucket.resumeMultipartUpload(handle.r2_key, handle.r2_upload_id).abort();
+        return trackedR2Write(
+          env,
+          {
+            epoch,
+            ownerId: null,
+            kind: "bucket.abort",
+            key: handle.r2_key,
+            abort: {
+              source: "bucket",
+              handleId,
+              attemptId,
+              r2UploadId: handle.r2_upload_id,
+              maintenance: true,
+              binding: verified.proof,
+            },
+          },
+          () => verified.bucket.resumeMultipartUpload(handle.r2_key, handle.r2_upload_id).abort(),
+          deadline,
+        );
       })
       .then(
         () => null,

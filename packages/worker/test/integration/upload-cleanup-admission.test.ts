@@ -4,8 +4,9 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { MutationRequest, SystemMutationAdmission } from "../../src/db/mutationAdmission";
 import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
 import { repairSingleUploads } from "../../src/jobs/uploadCleanup";
+import type { R2WriteSource } from "../../src/services/r2Write";
 import type { SystemMutationSource } from "../../src/services/systemMutation";
-import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { acquireSystemMutation, mutationEnv, r2WriteFixture } from "../fixtures/mutationAdmission";
 import { multipartCleanupFixture, singleCleanupFixture } from "../fixtures/uploadCleanup";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -101,9 +102,13 @@ async function fixture(mode: Mode, stage: Stage) {
       },
     }),
   } as R2Bucket;
-  const configure = (gate: Gate = acquireSystemMutation, db = env.DB): SystemMutationSource => ({
+  const configure = (
+    gate: Gate = acquireSystemMutation,
+    db = env.DB,
+  ): SystemMutationSource & R2WriteSource => ({
     DB: db,
     systemControl: {
+      ...r2WriteFixture(),
       status: () => mutationEnv().CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
       acquireSystemMutation: gate,
     },

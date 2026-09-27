@@ -1,4 +1,5 @@
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
+import type { InventoryBindingProof } from "../db/r2Abort";
 import {
   BINDING_PROBE_BYTES,
   BINDING_PROBE_KEY,
@@ -31,6 +32,7 @@ export interface BindingVerificationScope {
 
 /** Only usable inside withVerifiedR2Inventory; persist mutations in the same batch as fence(). */
 export interface VerifiedR2Inventory {
+  readonly proof: InventoryBindingProof;
   readonly bucket: R2Bucket;
   readonly inventory: R2S3Inventory;
   readonly observation: BindingVerification;
@@ -210,6 +212,7 @@ export async function withVerifiedR2Inventory<T>(
     };
     const result = await action(
       Object.freeze({
+        proof: Object.freeze({ epoch, token, nonce, source }),
         bucket,
         inventory,
         observation: Object.freeze({

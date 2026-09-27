@@ -9,6 +9,7 @@ import {
   commitAccountMutation,
 } from "../accountMutation";
 import { observePhysicalObject } from "../physical";
+import { trackedR2Write } from "../r2Write";
 import { accessUpload, type UploadRow, uploadFence, uploadRow, uploadStatus } from "./access";
 
 function metadata(row: UploadRow) {
@@ -99,10 +100,26 @@ export async function writeSingleUpload(
         body,
         size,
         async (stream) => {
-          const object = await env.BLOBS.put(key, stream, {
-            onlyIf: { etagDoesNotMatch: "*" },
-            customMetadata: metadata(row),
-          });
+          const object = await trackedR2Write(
+            env,
+            {
+              epoch: row.epoch,
+              ownerId: row.owner_id,
+              kind: "upload.put",
+              key,
+              upload: {
+                id: row.id,
+                attemptId: attempt,
+                expiresAt: row.write_lease_expires_at!,
+                principal,
+              },
+            },
+            () =>
+              env.BLOBS.put(key, stream, {
+                onlyIf: { etagDoesNotMatch: "*" },
+                customMetadata: metadata(row),
+              }),
+          );
           if (!object || !matches(row, object)) throw new Error("upload_object_mismatch");
           return object;
         },

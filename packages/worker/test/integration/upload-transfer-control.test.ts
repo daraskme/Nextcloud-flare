@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { advanceMutations } from "../../src/db/mutationAdmission";
 import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
+import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { repairMultipartUploads } from "../../src/jobs/multipartCleanup";
@@ -248,6 +249,9 @@ it.each([
     DB: env.DB,
     systemControl: {
       status: () => control().status(),
+      beginR2Write: (request: R2WriteRequest) => control().beginR2Write(request),
+      finishR2Write: (grant: R2WriteGrant, outcome: R2WriteTerminal) =>
+        control().finishR2Write(grant, outcome),
       acquireSystemMutation: async (
         request: Parameters<ReturnType<typeof control>["acquireSystemMutation"]>[0],
       ) => {

@@ -17,6 +17,7 @@ import { foundationFixture } from "../fixtures/foundation";
 import { expireGcGrace } from "../fixtures/gc";
 import {
   acquireSystemMutation,
+  clearEndedR2TestWrites,
   grantPermit,
   mutationEnv,
   r2WriteFixture,
@@ -26,6 +27,7 @@ import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0,gc_paused=0").run();
   // Persistent D1 per file: isolate each scan without weakening immutable upload timestamps.
   await env.DB.prepare(
@@ -185,7 +187,7 @@ it.each(["complete", "initialization"])("waits for the persisted %s lease", asyn
   expect(await counters(f)).toMatchObject({ reserved_bytes: 3 });
 });
 
-it("retains reservation on an unknown abort result despite absent HEAD, then retries", async () => {
+it("retains an unknown abort hold after absent HEAD and a later successful abort", async () => {
   const f = await fixture();
   const missing = aborting(async () => {
     throw new Error("NoSuchUpload (10024)");
@@ -195,7 +197,15 @@ it("retains reservation on an unknown abort result despite absent HEAD, then ret
   expect(await row(f)).toMatchObject({ cleanup_pending: 1, multipart_cleanup_closed: null });
   expect(await repair()).toMatchObject({ claimed: 0 });
   await due(f);
-  expect(await repair()).toMatchObject({ absent: 1 });
+  expect(await repair()).toMatchObject({ absent: 0, retried: 1 });
+  expect(await counters(f)).toMatchObject({ reserved_bytes: 3 });
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) n FROM r2_write_attempts WHERE r2_key=? AND state='pending'",
+    )
+      .bind(f.key)
+      .first("n"),
+  ).toBe(1);
 });
 
 it("keeps an unknown creation ID quarantined regardless of idle expiry", async () => {
@@ -249,8 +259,7 @@ it.each([
   expect(await counters(f)).toMatchObject({ reserved_bytes: 0 });
 });
 
-it("accounts a completed object when abort cannot find its old handle, then hands it to GC", async () => {
-  const queuedAfter = Date.now();
+it("charges an observed completed object but retains its unknown abort hold before GC", async () => {
   const f = await fixture({ state: "completing" });
   await complete(f);
   expect(
@@ -259,8 +268,8 @@ it("accounts a completed object when abort cannot find its old handle, then hand
         throw new Error("NoSuchUpload (10024)");
       }),
     ),
-  ).toMatchObject({ queued: 1, r2Calls: 2 });
-  expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
+  ).toMatchObject({ queued: 0, retried: 1, r2Calls: 2 });
+  expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 3 });
   expect(await row(f)).toMatchObject({
     state: "failed",
     cleanup_pending: 1,
@@ -270,10 +279,16 @@ it("accounts a completed object when abort cannot find its old handle, then hand
     claimed: 0,
     r2Calls: 0,
   });
-  await expireGcGrace(f.blob, queuedAfter);
-  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
-  expect(await counters(f)).toMatchObject({ physical_bytes: 0 });
-  expect(await row(f)).toMatchObject({ cleanup_pending: 0 });
+  await expect(
+    env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?").bind(f.reservation).run(),
+  ).rejects.toThrow(/r2_write_unsettled/);
+  await expect(
+    env.DB.prepare("UPDATE uploads SET cleanup_pending=0 WHERE id=?").bind(f.id).run(),
+  ).rejects.toThrow(/r2_write_unsettled/);
+  await expect(
+    env.DB.prepare("UPDATE blobs SET state='deleting' WHERE id=?").bind(f.blob).run(),
+  ).rejects.toThrow(/r2_write_unsettled/);
+  expect(await env.BLOBS.head(f.key)).not.toBeNull();
 });
 
 it("counts actual bytes of an owned malformed completed object before GC", async () => {
@@ -523,7 +538,7 @@ it("runs from Cron while admission is open, with full objects waiting for unpaus
   expect(await counters(f)).toMatchObject({ physical_bytes: 0 });
 });
 
-it("retries an actual abort whose successful response was lost", async () => {
+it("keeps a lost abort response pending even after a successful retry", async () => {
   const f = await fixture();
   expect(
     await repair(
@@ -535,7 +550,8 @@ it("retries an actual abort whose successful response was lost", async () => {
   ).toMatchObject({ retried: 1, absent: 0 });
   expect(await counters(f)).toMatchObject({ reserved_bytes: 3 });
   await due(f);
-  expect(await repair()).toMatchObject({ absent: 1 });
+  expect(await repair()).toMatchObject({ absent: 0, retried: 1 });
+  expect(await counters(f)).toMatchObject({ reserved_bytes: 3 });
 });
 
 it("accepts a late initialization ID only for subsequent cleanup, never for part dispatch", async () => {
@@ -566,10 +582,10 @@ it.each(["INSERT INTO blob_storage", "multipart_cleanup_closed='completed'"])(
     const closed = aborting(async () => {
       throw new Error("NoSuchUpload");
     });
-    expect(await repair(closed, lost(point))).toMatchObject({ retried: 0, queued: 1 });
-    expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
+    expect(await repair(closed, lost(point))).toMatchObject({ retried: 1, queued: 0 });
+    expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 3 });
     expect(await repair(closed)).toMatchObject({ claimed: 0 });
-    expect(await counters(f)).toMatchObject({ reserved_bytes: 0, physical_bytes: 3 });
+    expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 3 });
   },
 );
 
