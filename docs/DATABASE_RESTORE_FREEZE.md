@@ -26,11 +26,11 @@ pnpm database:restore freeze --remote --operator-config restore-operator.json \
 | `cancelling` | 元の凍結を解消するintentを保存済み。受付の拒否を維持して取消しを再送できる |
 | `cancelled` | 当該要求の凍結だけを解消し、D1とDOの停止revision/tokenを更新済み。maintenance/GC pauseは維持 |
 
-DOの`control_database_restore_freeze`はD1復元で巻き戻らない。既存の準備要求も保持し、同時に別の復旧要求・通常epoch発行・backup・受付再開を始められない。凍結intent保存前にはKDF終了記録・maintenance taskの保留がないことを確認する。
+DOの`control_database_restore_freeze`はD1復元で巻き戻らない。既存の準備要求も保持し、同時に別の復旧要求・通常epoch発行・backup・受付再開を始められない。凍結intent保存前にはKDF終了記録・R2書込みreceipt・maintenance taskの保留がないことを確認する。
 
 初回のD1事前照会では`RECOVERY_FINAL_QUERY`の予約・upload・GC・job・outbox・inventory/probe・multipart・bootstrap条件と、現行停止状態、backup解除を確認する。保留があれば`preparing`のまま拒否し、repairを続けられる。DOのintent保存後、**同じD1条件を凍結batch内で再評価**する。事前照会の成功だけで凍結しない。
 
-migration `0040_restore_freeze.sql`は`control.restore_freeze_token`を追加する。tokenがある間は全67通常tableのINSERT/UPDATE/DELETEをtriggerで拒否する。controlへの例外は、他の列を変えずに凍結tokenだけをNULLにする操作。公開APIからこの例外を呼び出す窓口はない。FTSは通常tableではないが、アプリの更新は共通mutationのbatchへ接続されており、凍結中の確定は拒否される。
+migration `0040_restore_freeze.sql`は`control.restore_freeze_token`と当時の全67通常tableへのguardを追加する。0041の`r2_write_attempts`にもguardを追加し、現在は全68通常tableのINSERT/UPDATE/DELETEを拒否する。controlへの例外は、他の列を変えずに凍結tokenだけをNULLにする操作。公開APIからこの例外を呼び出す窓口はない。FTSは通常tableではないが、アプリの更新は共通mutationのbatchへ接続されており、凍結中の確定は拒否される。
 
 閉じた状態の共通system/global受付も、DO側で待機前後に凍結intentを検査する。DOの検査前に送信済みのD1更新にはDB triggerが効く。凍結のD1更新は専用制御操作であり、閉鎖する通常mutation受付へ自己待機しない。
 
@@ -55,16 +55,8 @@ migrationはmaintenance中かつbackupなし、open permit/claimed operation/non
 
 Node試験は全通常tableのtrigger、実INSERT拒否、control変更拒否、取消しrollback、移行前提、CLI再送・設定変更・秘密非出力を検証する。workerdは実DO/D1/R2で凍結、eviction、受付の待機競合、事前照会後のD1競合、ACK喪失、期限切れ、遅延batch、timeout、DO transaction失敗を確認する。専用bindingドリルは13操作の権限拒否と、既知の試験用予約を解放する前の拒否、凍結・再起動・取消しを確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-**これは最終的なR2終了証明ではない。** `createLockedFile.ts`の空object PUT、`targetManifest.ts`のmanifest staging、`contentTicket.ts`の未公開manifest削除などには、最終停止へ集約する永続的な送信/終了記録が不足している。既存upload/GC/multipartの保留、KDF、DO maintenance taskの確認に加えてこれらを接続し、未知結果を解消する必要がある。未知結果を期限だけで完了扱いにしない。
+空ファイルPUT、target manifest staging、未公開manifest削除の送信・終了記録はmigration0041で接続済み。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)が正本。DOの未精算receiptと全epochのD1 pendingを検査し、応答不明・期限切れ・DO storage喪失だけで凍結を確定しない。停止中に既知の実終了をD1へ反映するrepairはあるが、native結果不明の解除は未実装。
 
-次の実装では、以下の送信点を先に扱う。これは未実装箇所の調査記録であり、現行freezeの保証ではない。
-
-| 送信点 | 現在の境界 | 追加する検証 |
-|---|---|---|
-| `createLockedFile`の空PUT | LockDO permit・認可の後、operation claimの前にR2へ送る。PUT失敗時のHEADはobjectの観測であり、別の遅延PUTの終了証明にはならない | 送信前の永続記録、停止後の遅延開始拒否、同じkeyの並行試行、ACK喪失/eviction後の保留 |
-| `stageTargetManifest`の条件付きPUT | 新しいUUIDのmanifestを保存・読戻し後、ticket公開のmutation admissionを取得する | staging前からの受付と送信記録、停止競合、公開失敗時も保持される未精算状態 |
-| `discardUnpublishedManifest`のDELETE | 正確な公開取消しbatchの直接ACK後に削除する。公開との競合は防ぐが削除の終了は記録しない | 取消しACK喪失で送信しないこと、削除待機中の停止拒否、削除失敗/応答喪失の永続保留 |
-
-既存の共通mutation受付を外部I/Oの待機中ずっと占有するだけでは、D1巻戻しやDO再起動後の完了証明にならない。送信許可の直接ACK、実送信前の停止検査、正確な試行の終了記録、未確定状態の再照会を合わせて設計する。
+**これは最終的なR2終了証明ではない。** 既存upload/GC/multipart、binding probe、BACKUPS保存、epoch履歴などの送信点も個別に確認し、全ての終了条件を集約する必要がある。共通mutation枠の期限、HEAD不在、D1のterminalだけを外部処理終了へ読み替えない。
 
 外部I/Oの全終了、新epochの事前予約、復元元の最終確認、実D1上書き後の採用、全監査・段階再開、ControlDO全storage喪失からの復旧、実Cloudflare検証は未完了。現在の`frozen`をD1の手動上書き許可として使わない。

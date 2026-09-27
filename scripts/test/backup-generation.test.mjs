@@ -70,6 +70,20 @@ beforeEach(async () => {
     );
   }
   // Compact terminal fixtures test exact data preservation, not operation provenance or live recovery.
+  db.exec("UPDATE control SET maintenance=0");
+  const started = Date.now();
+  for (const state of ["pending", "succeeded", "not_started"])
+    db.prepare("INSERT INTO r2_write_attempts VALUES(?,?,1,?,'manifest.put',?,?,?,?,?)").run(
+      randomUUID(),
+      randomUUID(),
+      fixture.ids.user,
+      `target-sets/${randomUUID()}`,
+      started + 5000,
+      started,
+      state,
+      state === "pending" ? null : started,
+    );
+  db.exec("UPDATE control SET maintenance=1");
   const token = randomUUID();
   db.prepare(
     "INSERT INTO backup_runs(id,epoch,state,created_at,barrier_token,watermark) VALUES(?,1,'exporting',?,?,'committed-history')",
@@ -112,7 +126,7 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   const saved = snapshot(db),
     schema = schemaDigest(db.prepare(schemaQuery).all());
   const { directory: artifact, manifest } = await capture();
-  expect(manifest.tables).toHaveLength(67);
+  expect(manifest.tables).toHaveLength(68);
   expect(manifest.generation.watermark).toBe("committed-history");
   expect(await readdir(artifact)).toEqual(["data.sql", "manifest.json"]);
   expect(await verifyGeneration(artifact)).toEqual(manifest);
@@ -121,6 +135,12 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   const restored = new DatabaseSync(target);
   try {
     expect(snapshot(restored)).toEqual(saved);
+    expect(
+      restored
+        .prepare("SELECT state FROM r2_write_attempts ORDER BY state")
+        .all()
+        .map((row) => row.state),
+    ).toEqual(["not_started", "pending", "succeeded"]);
     expect(schemaDigest(restored.prepare(schemaQuery).all())).toBe(schema);
     expect(
       restored.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get(),

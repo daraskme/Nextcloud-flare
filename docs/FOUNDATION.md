@@ -3,6 +3,12 @@
 2026-09-22。設計 v0.6 と IMPLEMENTATION_BRIEF §8 の確定条件を具体化する。
 Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node 認可基盤の実装記録。
 
+## 空ファイル・manifestのR2書込み記録（0041）
+
+空ファイルPUT・target manifest PUT・未公開manifest DELETEを、ControlDOのSQLiteと68番目の通常table `r2_write_attempts`へ送信前から記録する。grantは5秒以内・一度限り。共通mutationの直接ACK後に送信し、native実成功または確実な未送信だけを終端事実として保存する。R2例外、25秒待機上限、HEAD不在、evictionでpendingを解消しない。
+
+DO receiptと全epochのD1 pendingを凍結・監査・再開へ接続し、対象keyのblob/orphan GCも禁止する。停止中のrepairは既知の終端事実だけを再反映する。新tableのbackup/restore freeze guard、オフライン復元時のpending保持、旧schema0037〜0040の互換性を維持する。既存upload/GC/multipart・probe・BACKUPS・epoch履歴を含む最終I/O停止は別途必要。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を正本とする。
+
 ## バックアップ書込み停止（0037）
 
 バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。

@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   enqueueGlobalMutation,
@@ -10,6 +11,8 @@ import {
 } from "../../src/db/mutationAdmission";
 import { grantPermit as grant } from "../../src/db/permits";
 import type { SqlStatement } from "../../src/db/primary";
+import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
+import { ControlR2Writes } from "../../src/do/controlR2Writes";
 import type { Env } from "../../src/env";
 
 /** Explicit immediate admission fixture; actual ControlDO FIFO/stop/restart is tested separately. */
@@ -78,6 +81,7 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
+        ...r2WriteFixture(admissionDb),
         acquireMutation: (request: MutationRequest) => acquireMutation(request, admissionDb),
         acquireGlobalMutation: (request: Omit<MutationRequest, "spaceId">) =>
           acquireGlobalMutation(request, admissionDb),
@@ -98,6 +102,61 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
           acquireMutation({ ...request, spaceId: null }, admissionDb),
       }),
     } as unknown as Env["CONTROL"],
+  };
+}
+
+/** Real DO receipt storage and D1 ledger with explicit test-only immediate admission. */
+export function r2WriteFixture(
+  db = env.DB,
+  acquire = (request: MutationRequest) => acquireMutation(request, db),
+) {
+  const invoke = async <T>(action: (writes: ControlR2Writes) => Promise<T>) => {
+    const result = await runInDurableObject(
+      env.CONTROL.get(env.CONTROL.idFromName("singleton")),
+      async (_instance, state) => {
+        const writes = new ControlR2Writes(
+          state.storage,
+          db,
+          () => {},
+          acquire,
+          async () => {
+            const epoch = await db.prepare("SELECT epoch FROM control").first<number>("epoch");
+            return acquireGlobalMutation(
+              {
+                permitId: `global:r2.write-settle:${crypto.randomUUID()}`,
+                epoch: epoch!,
+                deadline: Date.now() + 5000,
+              },
+              db,
+            );
+          },
+          (epoch, deadline) =>
+            acquireGlobalMutation(
+              {
+                epoch,
+                deadline,
+                permitId: `global:r2.manifest-delete:${crypto.randomUUID()}`,
+              },
+              db,
+            ),
+        );
+        try {
+          return { ok: true as const, value: await action(writes) };
+        } catch (error) {
+          return {
+            ok: false as const,
+            message: error instanceof Error ? error.message : "r2_write_failed",
+          };
+        }
+      },
+    );
+    if (!result.ok) throw new Error(result.message);
+    return result.value;
+  };
+  return {
+    beginR2Write: (request: R2WriteRequest) => invoke((writes) => writes.begin(request)),
+    finishR2Write: (grant: R2WriteGrant, outcome: R2WriteTerminal) =>
+      invoke((writes) => writes.finish(grant, outcome)),
   };
 }
 

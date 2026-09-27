@@ -87,7 +87,8 @@ function objectFence(row: Orphan, token: string): SqlStatement {
   return assertExists(
     `SELECT 1 FROM orphan_objects WHERE r2_key=? AND state='deleting'
     AND claim_token=? AND claim_expires_at>${CLOCK} AND bytes=? AND r2_etag=? AND r2_version=?
-    AND uploaded_at=? AND first_seen_at=? AND ${UNKNOWN}`,
+    AND uploaded_at=? AND first_seen_at=? AND ${UNKNOWN}
+    AND NOT EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key=orphan_objects.r2_key AND w.state='pending')`,
     [
       row.r2_key,
       token,
@@ -385,6 +386,7 @@ async function collect(
       [epoch, stopped ? 1 : 0, stopped ? 1 : 0],
     );
   const due = `${stopped ? "state='deleting'" : "state<>'deleted'"} AND owner_key IS NOT NULL AND first_seen_at<=${CLOCK}-${ORPHAN_GRACE_MS}
+    AND NOT EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key=orphan_objects.r2_key AND w.state='pending')
     AND next_check_at<=${CLOCK} AND (claim_token IS NULL OR claim_expires_at<=${CLOCK})`;
   const rows = await primary(db)
     .prepare(`SELECT r2_key FROM orphan_objects WHERE ${due} AND epoch<=?

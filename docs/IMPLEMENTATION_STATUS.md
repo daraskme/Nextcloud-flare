@@ -3,9 +3,19 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前の一括照合`8a220e7`は[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+直前のD1凍結`45167e7`は[CI36311386230](https://github.com/daraskme/Nextcloud-flare/actions/runs/36311386230)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
+
+- 空ファイルPUT・target manifest PUT/DELETEをDO/D1へ送信前から記録。直接ACKによる一度限りのgrant、実成功/未送信の終端事実、未知結果の保持、停止中の既知終了repair、凍結/再開/対象GC拒否を接続。migration0041、68通常table、依存追加なし。Node16件・workerd34件を追加。
+- 全体checkが成功。Node965件（48file、37.34s）＋workerd2,346件（109file、1,267.46s）、計3,311件を確認。lint410file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-r2-writes-check-final.log。停止拒否・通信切断fixtureのworkerdログを含むが、全テスト結果・終了コードは成功。最終資料のlocal Markdownリンクも確認した。
+- 最新の経路回帰98件（workerd3file、66.40s）、Node schema/backup92件（4file、21.74s）、旧世代互換性とschema88件（2file、7.15s）が成功。先行する広範囲回帰248件（workerd10file、182.93s）も成功。/tmp/ncf-r2-writes-final-regression.log、/tmp/ncf-r2-writes-latest-node.log、/tmp/ncf-r2-writes-history.log、/tmp/ncf-r2-writes-regression.log。
+- private bindingの運用ドリルが68table・SQL11,350bytesで成功。全13復旧操作の権限拒否、凍結、実D1更新拒否、eviction後再照会、停止token更新による取消しを確認。/tmp/ncf-r2-writes-operator-final.log、.wrangler/operator-drill-s6sXpC/report.json。S3/Time Travelは合成providerで、実remote検証ではない。
+- 全体検査の初回は最新68tableを旧schemaにも要求するバックアップ互換性問題11件と、schema期待値67の1件で失敗。保存時migrationの検証済みprefixで作った隔離DBに限り当時のtable一覧を使い、現在のcaptureは68tableを必須のままとした。schema0037〜0041の復元を試験へ追加し、ドリルの期待値も更新した。
+- 新規経路の先行試験では、同keyの並行空PUTを禁止するindexと旧HEAD回収の期待を修正。各条件付きPUTを個別に記録し、native例外をHEADで成功へ読み替えない。未公開fixture manifestの監査拒否とRPC例外のテストhook波及も修正した。既知終了の24時間超のrepair中に自己receiptを掃除しない試験を追加。
+- 全R2操作の最終終了証明・新epoch予約・live上書き/採用は後続。今回のfreezeを手動上書き許可として使わない。実Cloudflareのresource作成・migration・deployは実施していない。最新commitのCI/browserはpush後に確認する。
+
+### 先行するD1凍結の記録
 
 - D1書込み凍結を追加。migration0040・全67通常table guard、DO永続intent、修復受付拒否、正確な対象固定による再照会、取消し時の停止revision/token更新を接続。Node24件・workerd31件を追加。全体checkが成功し、Node949件（47file、38.96s）＋workerd2,312件（108file、1,239.63s）、計3,261件を確認。lint405file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-freeze-check.log。停止拒否・通信切断fixtureのworkerdログを含むが、全テスト結果・終了コードは成功。最後にコメント・試験名だけを修正し、lintとCLI help、変更した11資料の251個のlocal Markdownリンクも確認した。
 - 関連Node66件（2file、1.47s）、新規workerd31件（1file、33.05s）が成功。全table guard、CLI入力/再送/秘密非出力、eviction、対象相違、待機中の受付/事前照会後のD1競合、ACK喪失、期限切れ、遅いbatch、25秒timeout、DO保存のABORT/IGNOREと取消しrollbackを検証。/tmp/ncf-freeze-node.log、/tmp/ncf-freeze-workerd-final.log。

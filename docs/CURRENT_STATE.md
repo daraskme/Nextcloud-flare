@@ -2,13 +2,13 @@
 
 更新: 2026-09-27。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-D1の書き込み凍結を追加しました。freshなD1/BLOBS/BACKUPS照合後、DOにintentを保存して修復の新規受付を閉じ、migration0040で全67通常tableの更新を拒否します。再起動・応答喪失後は同じ要求を再照会でき、取消しは停止revision/tokenを更新して遅れた凍結を拒否します。詳細は[DATABASE_RESTORE_FREEZE](DATABASE_RESTORE_FREEZE.md)。
+空ファイルPUTと配信manifestの保存・削除に、送信前からの永続記録を追加しました。ControlDOとD1の正確な試行記録を使い、応答不明や再起動で保留を消さず、凍結確定・受付再開・対象GCを拒否します。未公開manifestは停止中も証明付きで回収でき、公開済みmanifestの削除は拒否します。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-Node24件・workerd31件を追加しました。関連Node66件とworkerd31件、全13操作の権限拒否・保留予約による拒否・凍結・再起動・取消しの非公開bindingドリルが成功しました。全体checkが成功し、Node949件＋workerd2,312件の計3,261件、lint405file・型・契約/設定検査・Web build・Worker dry-runを確認しました。schema0040・通常67table・依存追加なし。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+schema0041・通常68table・依存追加なし。全体checkが成功し、Node965件＋workerd2,346件の計3,311件、lint410file・型・契約/設定検査・Web build・Worker dry-runを確認しました。68tableのprivate binding運用ドリルも成功しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次は外部I/Oの送信・終了記録を補い、R2/KDF/job/repairの全終了を証明する最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。空ファイルPUTやtarget manifestの保存/削除には最終停止へ集約する記録が不足しています。現在の凍結はD1の書込み障壁で、全外部処理の終了や上書き許可は与えません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は既存upload/GC/multipart・binding probe・BACKUPS保存・epoch履歴も含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回の3操作にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前8a220e7の[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前45167e7の[CI36311386230](https://github.com/daraskme/Nextcloud-flare/actions/runs/36311386230)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,8 @@ Node24件・workerd31件を追加しました。関連Node66件とworkerd31件�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 復旧中D1書込み凍結 | migration0040・全67通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 関連Node66/workerd31・13操作のprivate bindingドリル成功。全体check3,261件成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
+| 空ファイル・manifestのR2終了記録 | migration0041・DO/D1送信記録・実成功/未送信だけの終了記録・凍結/再開/GC拒否・既知終了のrepair | 関連workerd98件・Node92件・旧schema互換性88件、68tableの運用ドリルが成功。全体結果はIMPLEMENTATION_STATUS | native結果不明の運用収束と他のR2操作への最終停止統合は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
+| 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否を追加。13操作のprivate bindingドリル成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
 | 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
 | 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
 | Time Travel候補の照合 | remote候補準備・固定D1のfresh照合・時刻検索bookmark一致・DO証言 | Node42件/workerd24件追加、全Node843/関連workerd144、実private bindingと合成providerのドリル成功 | 実remote検索、保持期限保証、最終停止・D1上書き・採用は未接続。[詳細](DATABASE_RESTORE_BOOKMARK.md) |
@@ -65,7 +66,7 @@ Node24件・workerd31件を追加しました。関連Node66件とworkerd31件�
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | migration `0001`〜`0039`、67通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0041`、68通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
@@ -178,14 +179,14 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. unknown multipart IDの全体不在証明・予約精算を実装。毎回freshなS3/BLOBS対応検証は走査・中止へ接続済み。upload行喪失時の全bucket走査・容量保留、S3診断と完成済み`u/` objectの隔離・35日回収も接続済み。
-2. Upload/GC/Queueの未完了状態を復旧監査と修復に統合。
-3. Queueの残るevent kindとrepair。
-4. account mutation / 終了証明を失ったKDFの運用収束、backup定時運用、実環境のrestore/再開drill。内部RPCの段階再開とbackup barrierはローカル実装済み。
-5. Files UIの残り（共有・media・metadata検索）。
-6. share、media metadata検索、ZIP/reader/media配信。
-7. 定時バックアップの設置、Time Travel/live restore drill。
-8. staging inventoryと実環境gate。
+1. 外部I/Oの終了記録を最終停止へ集約。空ファイル・manifestの3操作は接続済み。次はGC自身のDELETE、upload/multipart、probe、BACKUPS、epoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
+2. 復旧要求に固定した新epoch事前予約、実D1復元後の採用・全監査・段階再開、Time Travel/live restore drill。
+3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
+4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。
+5. Files UIの残り、共有/公開link、media metadata検索、ZIP/reader/media配信。
+6. Gallery/Bookshelf/Audio、AVIF/AV1/Opusの実browser検証。
+7. 定時バックアップと通知先の設置、全storage喪失からの運用復旧。
+8. staging inventory、実OS client、実環境gateと公開。
 
 ### 次回開始時の確認
 

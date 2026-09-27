@@ -16,6 +16,7 @@ import {
 } from "./accountMutation";
 import { prepareAuthorizedNodeBlobRead } from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
+import { trackedR2Write } from "./r2Write";
 import { stageTargetManifest, type TargetEntry, type TargetManifestRecord } from "./targetManifest";
 
 export interface ContentTicketTarget {
@@ -177,7 +178,11 @@ export async function issueContentTicket(
   const first = proofs[0];
   if (!first || !ownerId) throw new Error("invalid_content_ticket_request");
   const budget = await ensureContentBudget(env, first, expiresAt, share);
-  const record = await stageTargetManifest(bucket, entries);
+  const record = await stageTargetManifest(bucket, entries, {
+    env,
+    ownerId,
+    epoch: principal.epoch,
+  });
   const ticketId = crypto.randomUUID();
   const claims = {
     ticket_id: ticketId,
@@ -250,7 +255,16 @@ export async function issueContentTicket(
       },
     ]);
   } catch (error) {
-    await discardUnpublishedManifest(db, bucket, record, ticketId, admission, error);
+    await discardUnpublishedManifest(
+      env,
+      bucket,
+      record,
+      ticketId,
+      admission,
+      error,
+      ownerId,
+      principal.epoch,
+    );
     throw error;
   }
   return Object.freeze({ ...result, ticket: signed });
@@ -258,13 +272,16 @@ export async function issueContentTicket(
 
 /** A primary absence read alone cannot fence an in-flight publication. */
 async function discardUnpublishedManifest(
-  db: D1Database,
+  env: AccountMutationEnv,
   bucket: R2Bucket,
   record: TargetManifestRecord,
   ticketId: string,
   admission: MutationAdmission | undefined,
   cause: unknown,
+  ownerId: string,
+  epoch: number,
 ): Promise<void> {
+  const db = env.DB;
   if (admission) {
     try {
       await atomicBatch(db, [
@@ -294,5 +311,7 @@ async function discardUnpublishedManifest(
   }
   // The staged PUT was awaited before admission. No publication was dispatched without a ticket.
   // If the fencing batch or its acknowledgement is lost, keep the manifest.
-  await bucket.delete(record.ref).catch(() => undefined);
+  await trackedR2Write(env, { epoch, ownerId, kind: "manifest.delete", key: record.ref }, () =>
+    bucket.delete(record.ref),
+  ).catch(() => undefined);
 }

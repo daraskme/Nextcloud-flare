@@ -221,7 +221,7 @@ export async function restoreGeneration({ directory, target }) {
       manifest.schema.sha256,
       "backup_schema_mismatch",
     );
-    const tableSpecs = specs(db);
+    const tableSpecs = specs(db, { historical: true });
     const data = await importFile(db, join(directory, "data.sql"), tableSpecs);
     assert.deepEqual(data, manifest.data, "backup_checksum_mismatch");
     frozenTarget(db, manifest.generation);

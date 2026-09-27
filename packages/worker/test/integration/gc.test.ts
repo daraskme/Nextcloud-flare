@@ -57,6 +57,33 @@ it("deletes an unreferenced object and finalizes physical accounting", async () 
   ).toBe(0);
 });
 
+it("keeps a GC candidate while any native write to its key is unknown", async () => {
+  const f = await candidate(),
+    id = crypto.randomUUID(),
+    now = Date.now();
+  await env.DB.prepare(
+    "INSERT INTO r2_write_attempts VALUES(?,?,1,?,'empty.put',?,?,?,'pending',NULL)",
+  )
+    .bind(id, crypto.randomUUID(), f.ids.user, f.key, now + 5000, now)
+    .run();
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  await expect(
+    env.DB.prepare("UPDATE blobs SET state='deleting' WHERE id=?").bind(f.ids.blob).run(),
+  ).rejects.toThrow(/r2_write_unsettled/);
+  expect(await env.BLOBS.head(f.key)).not.toBeNull();
+  await env.DB.prepare(
+    "UPDATE r2_write_attempts SET state='succeeded',finished_at=MAX(started_at,strftime('%s','now')*1000) WHERE id=?",
+  )
+    .bind(id)
+    .run();
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+    deleted: 1,
+  });
+});
+
 it("honors every pin, the materialized fence, and the GC pause", async () => {
   const f = await candidate();
   await atomicBatch(env.DB, [

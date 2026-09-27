@@ -16,6 +16,7 @@ import {
   type SystemMutationAdmission,
 } from "../db/mutationAdmission";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../db/r2Write";
 import { type RestorePause, restorePauseCondition } from "../db/restorePause";
 import type { Env } from "../env";
 import {
@@ -63,6 +64,7 @@ import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDat
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
+import { ControlR2Writes } from "./controlR2Writes";
 import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
@@ -144,6 +146,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreBlobs: ControlRestoreBlobs;
   readonly #restoreBackups: ControlRestoreBackups;
   readonly #restoreFreeze: ControlRestoreFreeze;
+  readonly #r2Writes: ControlR2Writes;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -172,7 +175,10 @@ export class ControlDO extends DurableObject<Env> {
         if (row.phase !== "ready") throw new Error("control_not_ready");
         return epochNumber(row.epoch);
       },
-      () => this.#kdfSettlements.assertEmpty(),
+      () => {
+        this.#kdfSettlements.assertEmpty();
+        this.#r2Writes.assertEmpty();
+      },
       () => this.#databaseRestore.assertInactive(),
       () => this.#databaseRestore.active(),
       () => this.#databaseRestore.assertCanRepair(),
@@ -215,6 +221,7 @@ export class ControlDO extends DurableObject<Env> {
           throw new Error("database_restore_epoch_conflict");
         assertNoBackup(ctx.storage.sql);
         this.#kdfSettlements.assertEmpty();
+        this.#r2Writes.assertEmpty();
         if (
           ctx.storage.sql.exec("SELECT 1 FROM control_maintenance_tasks LIMIT 1").toArray().length
         )
@@ -272,6 +279,27 @@ export class ControlDO extends DurableObject<Env> {
         "system" in request
           ? this.#admission.assertSystemMutationMode(request.epoch, request.maintenance)
           : this.#admission.assertMutationOpen(request.epoch),
+    );
+    this.#r2Writes = new ControlR2Writes(
+      ctx.storage,
+      env.DB,
+      (epoch, kind) =>
+        kind === "manifest.delete"
+          ? this.#admission.captureSystemMutationMode(epoch)
+          : this.#admission.assertMutationOpen(epoch),
+      (request) => this.acquireMutation(request),
+      () =>
+        this.acquireGlobalMutation({
+          permitId: `global:r2.write-settle:${crypto.randomUUID()}`,
+          epoch: this.#row().epoch,
+          deadline: Date.now() + 5000,
+        }),
+      (epoch, deadline) =>
+        this.acquireGlobalMutation({
+          permitId: `global:r2.manifest-delete:${crypto.randomUUID()}`,
+          epoch,
+          deadline,
+        }),
     );
   }
 
@@ -516,6 +544,21 @@ export class ControlDO extends DurableObject<Env> {
     });
     if (admission.space_id !== request.spaceId) throw new Error("mutation_unavailable");
     return { ...admission, space_id: request.spaceId };
+  }
+
+  /** Private trusted-Worker grants, never a public R2 proxy or a replayable dispatch receipt. */
+  async beginR2Write(request: R2WriteRequest) {
+    this.#row();
+    return this.#r2Writes.begin(request);
+  }
+
+  async finishR2Write(grant: R2WriteGrant, outcome: R2WriteTerminal) {
+    this.#row();
+    return this.#r2Writes.finish(grant, outcome);
+  }
+
+  async repairR2WriteSettlements(expectedEpoch: number, limit = 20) {
+    return this.#maintenance(expectedEpoch, () => this.#r2Writes.repair(limit));
   }
 
   /** Bootstrap shares capacity before any personal space exists. No namespace authority. */
@@ -972,6 +1015,7 @@ export class ControlDO extends DurableObject<Env> {
   async nextRecoveryAuditPage(expectedEpoch: number, limit = 10): Promise<RecoveryAuditStatus> {
     epochNumber(expectedEpoch);
     this.#kdfSettlements.assertEmpty();
+    this.#r2Writes.assertEmpty();
     const status = await this.status();
     if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
     this.#admission.assertClosed(expectedEpoch);

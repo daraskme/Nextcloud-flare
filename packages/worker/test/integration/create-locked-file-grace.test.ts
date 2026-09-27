@@ -53,7 +53,7 @@ it("never deletes the committed empty object when a concurrent identical operati
   ).toEqual({ state: "committed", ref_count: 1 });
 });
 
-it("retains an uncertain empty PUT for orphan inventory when its HEAD is unavailable", async () => {
+it("retains an uncertain empty PUT without using HEAD as completion evidence", async () => {
   const f = await fixture();
   let key = "",
     deleted = 0;
@@ -72,7 +72,7 @@ it("retains an uncertain empty PUT for orphan inventory when its HEAD is unavail
     },
   });
   await expect(createLockedEmptyFile({ ...f.app, BLOBS: bucket }, f.input)).rejects.toThrow(
-    "head_unavailable",
+    "mutation_unavailable",
   );
   expect(deleted).toBe(0);
   expect(await env.BLOBS.head(key)).toMatchObject({ size: 0 });

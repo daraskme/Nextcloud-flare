@@ -46,7 +46,7 @@ async function historical(last = 37) {
       "INSERT INTO backup_runs(id,epoch,state,created_at,barrier_token) VALUES(?,1,'exporting',1,?)",
     ).run(id, token);
     db.prepare("UPDATE control SET backup_token=?,backup_frozen=1").run(token);
-    const tableSpecs = specs(db),
+    const tableSpecs = specs(db, { historical: true }),
       lines = ["PRAGMA defer_foreign_keys=TRUE;"];
     const literal = (value) =>
       value === null
@@ -84,11 +84,22 @@ async function historical(last = 37) {
   }
 }
 
-it.each([37, 38])(
+it("keeps current capture strict when an older migration prefix lacks new tables", async () => {
+  const db = initialize(":memory:", (await migrations()).slice(0, 40));
+  try {
+    expect(() => specs(db)).toThrow("backup_table_contract");
+    expect(specs(db, { historical: true })).toHaveLength(67);
+  } finally {
+    db.close();
+  }
+});
+
+it.each([37, 38, 39, 40, 41])(
   "restores schema %s without applying later migrations or thawing the snapshot",
   async (last) => {
     const manifest = await historical(last),
       target = join(root, "restored.sqlite");
+    expect(manifest.tables).toHaveLength(last < 41 ? 67 : 68);
     expect(await verifyGeneration(root)).toEqual(manifest);
     await restoreGeneration({ directory: root, target });
     const db = new DatabaseSync(target);

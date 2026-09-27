@@ -42,6 +42,32 @@ async function rescan(f: Fixture, db = env.DB) {
   return scanOrphanObjects(mutationEnv(db), f.bucket, 1);
 }
 
+it("retains an aged orphan while a prior write to the key is unknown", async () => {
+  const f = await fixture(),
+    id = crypto.randomUUID(),
+    now = Date.now();
+  await env.DB.prepare(
+    "INSERT INTO r2_write_attempts VALUES(?,?,1,?,'empty.put',?,?,?,'pending',NULL)",
+  )
+    .bind(id, crypto.randomUUID(), f.ids.user, f.key, now + 5000, now)
+    .run();
+  await track(f);
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({
+    claimed: 0,
+    r2Calls: 0,
+  });
+  await expect(
+    env.DB.prepare("UPDATE orphan_objects SET state='deleting' WHERE r2_key=?").bind(f.key).run(),
+  ).rejects.toThrow(/r2_write_unsettled/);
+  expect(await env.BLOBS.head(f.key)).not.toBeNull();
+  await env.DB.prepare(
+    "UPDATE r2_write_attempts SET state='succeeded',finished_at=MAX(started_at,strftime('%s','now')*1000) WHERE id=?",
+  )
+    .bind(id)
+    .run();
+  expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ deleted: 1 });
+});
+
 it("quarantines unknown objects, charges physical capacity once, and preserves the first discovery", async () => {
   const f = await fixture();
   expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({

@@ -25,17 +25,17 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-D1の書き込み凍結を追加しました。freshなD1/BLOBS/BACKUPS照合後、DOにintentを保存して修復の新規受付を閉じ、migration0040で全67通常tableの更新を拒否します。再起動・応答喪失後は同じ要求を再照会でき、取消しは停止revision/tokenを更新して遅れた凍結を拒否します。詳細は[DATABASE_RESTORE_FREEZE](DATABASE_RESTORE_FREEZE.md)。
+空ファイルPUTと配信manifestの保存・削除に、送信前からの永続記録を追加しました。ControlDOとD1の正確な試行記録を使い、応答不明や再起動で保留を消さず、凍結確定・受付再開・対象GCを拒否します。未公開manifestは停止中も証明付きで回収でき、公開済みmanifestの削除は拒否します。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-Node24件・workerd31件を追加しました。関連Node66件とworkerd31件、全13操作の権限拒否・保留予約による拒否・凍結・再起動・取消しの非公開bindingドリルが成功しました。全体checkが成功し、Node949件＋workerd2,312件の計3,261件、lint405file・型・契約/設定検査・Web build・Worker dry-runを確認しました。schema0040・通常67table・依存追加なし。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+schema0041・通常68table・依存追加なし。全体checkが成功し、Node965件＋workerd2,346件の計3,311件、lint410file・型・契約/設定検査・Web build・Worker dry-runを確認しました。68tableのprivate binding運用ドリルも成功しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次は外部I/Oの送信・終了記録を補い、R2/KDF/job/repairの全終了を証明する最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。空ファイルPUTやtarget manifestの保存/削除には最終停止へ集約する記録が不足しています。現在の凍結はD1の書込み障壁で、全外部処理の終了や上書き許可は与えません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は既存upload/GC/multipart・binding probe・BACKUPS保存・epoch履歴も含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回の3操作にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前8a220e7の[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前45167e7の[CI36311386230](https://github.com/daraskme/Nextcloud-flare/actions/runs/36311386230)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0040`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。68通常テーブル、migration `0001`〜`0041`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

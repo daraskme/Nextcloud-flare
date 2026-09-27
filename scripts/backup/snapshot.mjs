@@ -52,15 +52,19 @@ export function initialize(path, versions) {
     throw error;
   }
 }
-export function specs(db) {
+export function specs(db, { historical = false } = {}) {
   const actual = db
     .prepare("PRAGMA table_list")
     .all()
     .filter((r) => r.type === "table" && !r.name.startsWith("sqlite_"))
     .map((r) => r.name)
     .sort();
-  assert.deepEqual(actual, [...exportTables].sort(), "backup_table_contract");
-  return exportTables.map((name) => {
+  // Historical targets are freshly initialized from a hash-verified prefix of
+  // trusted migrations. Capture still requires every current table. Preserve
+  // the canonical order of older manifests without inventing later tables.
+  const names = historical ? exportTables.filter((name) => actual.includes(name)) : exportTables;
+  assert.deepEqual(actual, [...names].sort(), "backup_table_contract");
+  return names.map((name) => {
     const columns = db.prepare(`PRAGMA table_info(${quote(name)})`).all();
     const keys = columns
       .filter((c) => c.pk)
@@ -237,7 +241,7 @@ export async function importData(db, chunks, tableSpecs) {
   try {
     // This function is only called on a newly created isolated target, never the source database.
     for (const t of triggerRows) db.exec(`DROP TRIGGER ${quote(t.name)}`);
-    for (const name of purgeOrder) db.exec(`DELETE FROM ${quote(name)}`);
+    for (const name of purgeOrder) if (byName.has(name)) db.exec(`DELETE FROM ${quote(name)}`);
     for await (const statement of statements(chunks)) {
       const row = parseInsert(statement);
       if (!row) continue;

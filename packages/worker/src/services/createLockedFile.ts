@@ -5,6 +5,7 @@ import type { DavLockResult } from "../do/LockDO";
 import type { Env } from "../env";
 import { claimOperation, findOperationIntent, operationIntent } from "../jobs/operations";
 import { fsMutation, type MutationOutcome, type MutationPlan } from "./fsMutation";
+import { trackedR2Write } from "./r2Write";
 
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 export const CREATE_LOCKED_FILE_STEPS = 10;
@@ -174,7 +175,7 @@ function lockedFilePlan(
 
 /** Create RFC 4918's locked empty resource without exposing an unlocked namespace state. */
 export async function createLockedEmptyFile(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   request: CreateLockedFileRequest,
 ): Promise<CreateLockedFileOutcome> {
   const name = portableName(request.name);
@@ -226,12 +227,19 @@ export async function createLockedEmptyFile(
       spaceId: request.spaceId,
     });
     if (authorized.operation !== "node.create") throw new Error("invalid_create_authorization");
-    let object: R2Object | null = null;
-    try {
-      object = await env.BLOBS.put(key, "");
-    } catch {
-      object = await env.BLOBS.head(key);
-    }
+    const stored = await trackedR2Write(
+      env,
+      {
+        epoch: request.principal.epoch,
+        ownerId: authorized.parent.owner_id,
+        kind: "empty.put",
+        key,
+      },
+      () => env.BLOBS.put(key, "", { onlyIf: { etagDoesNotMatch: "*" } }),
+    );
+    // Conditional rejection is a completed no-op. A thrown PUT remains unknown;
+    // a HEAD cannot establish that the failed invocation has stopped writing.
+    const object = stored ?? (await env.BLOBS.head(key));
     if (!object || object.size !== 0 || !object.etag) throw new Error("empty_blob_write_failed");
     const claim = await claimOperation(
       env.DB,

@@ -14,8 +14,9 @@ import { MutationUnavailableError } from "../../src/services/accountMutation";
 import { ensureContentBudget } from "../../src/services/contentBudget";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
+import { trackedR2Write } from "../../src/services/r2Write";
 import { foundationFixture } from "../fixtures/foundation";
-import { acquireMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { acquireMutation, mutationEnv, r2WriteFixture } from "../fixtures/mutationAdmission";
 
 const actions = ["budget", "issue", "accept", "cancel"] as const;
 type Action = (typeof actions)[number];
@@ -226,7 +227,7 @@ async function fixture(identity: Identity = "owner") {
     CONTENT_ORIGIN: "https://content.invalid",
     CONTROL: {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({ acquireMutation: acquire }),
+      get: () => ({ ...r2WriteFixture(env.DB, acquire), acquireMutation: acquire }),
     } as unknown as Env["CONTROL"],
   });
   const run = (action: Action, configured = app()) =>
@@ -290,6 +291,34 @@ async function fixture(identity: Identity = "owner") {
     revoke,
   };
 }
+
+it("refuses cleanup of a published manifest and retains the object", async () => {
+  const f = await fixture();
+  const key = await env.DB.prepare("SELECT manifest_ref FROM target_sets WHERE id=?")
+    .bind(f.issued.targetSetId)
+    .first<string>("manifest_ref");
+  expect(key).toBeTruthy();
+  let dispatched = false;
+  await expect(
+    trackedR2Write(
+      f.app(),
+      { epoch: 1, ownerId: f.f.ids.user, kind: "manifest.delete", key: key! },
+      async () => {
+        dispatched = true;
+        await env.BLOBS.delete(key!);
+      },
+    ),
+  ).rejects.toBeInstanceOf(MutationUnavailableError);
+  expect(dispatched).toBe(false);
+  expect(await env.BLOBS.head(key!)).not.toBeNull();
+  expect(
+    await env.DB.prepare(
+      "SELECT state FROM r2_write_attempts WHERE r2_key=? AND kind='manifest.delete'",
+    )
+      .bind(key)
+      .first("state"),
+  ).toBe("not_started");
+});
 
 it.each(
   (["owner", "app", "internal", "anonymous"] as const).flatMap((identity) =>

@@ -31,15 +31,19 @@ async function fixture(totalBytes = 3) {
   const f = foundationFixture(crypto.randomUUID(), now - 1000);
   await atomicBatch(env.DB, f.statements);
   await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
-  const manifest = await stageTargetManifest(env.BLOBS, [
-    {
-      spaceId: f.ids.space,
-      nodeId: f.ids.file,
-      blobId: f.ids.blob,
-      purpose: "content",
-      size: totalBytes,
-    },
-  ]);
+  const manifest = await stageTargetManifest(
+    env.BLOBS,
+    [
+      {
+        spaceId: f.ids.space,
+        nodeId: f.ids.file,
+        blobId: f.ids.blob,
+        purpose: "content",
+        size: totalBytes,
+      },
+    ],
+    { env: mutationEnv(), epoch: 1, ownerId: f.ids.user },
+  );
   const ids = {
     budget: `u:${f.ids.user}`,
     target: manifest.id,
@@ -95,7 +99,11 @@ async function anotherSession(
   f: Awaited<ReturnType<typeof fixture>>,
   targets: readonly TargetEntry[],
 ) {
-  const manifest = await stageTargetManifest(env.BLOBS, targets);
+  const manifest = await stageTargetManifest(env.BLOBS, targets, {
+    env: mutationEnv(),
+    epoch: 1,
+    ownerId: f.f.ids.user,
+  });
   const ticket = crypto.randomUUID(),
     session = crypto.randomUUID(),
     now = Date.now();

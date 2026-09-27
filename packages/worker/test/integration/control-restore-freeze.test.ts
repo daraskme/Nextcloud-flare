@@ -157,7 +157,7 @@ it.each(["global", "repair", "quiesce", "challenge", "resume", "epoch", "backup"
   },
 );
 
-it.each(["kdf", "maintenance", "mutation"])(
+it.each(["kdf", "maintenance", "mutation", "r2-local", "r2-d1"])(
   "keeps ordinary preparation repairable when %s is unfinished",
   async (kind) => {
     await runInDurableObject(control(), async (instance, state) => {
@@ -181,11 +181,40 @@ it.each(["kdf", "maintenance", "mutation"])(
           deadline: Date.now() + 5000,
           permitId: "global:r2.probe-phase:" + crypto.randomUUID(),
         });
+      if (kind === "r2-local")
+        state.storage.sql.exec(
+          "INSERT INTO control_r2_write_receipts VALUES(?,?,?,'pending')",
+          crypto.randomUUID(),
+          crypto.randomUUID(),
+          "{}",
+        );
+      if (kind === "r2-d1") {
+        // Simulate an outstanding native grant whose local storage was lost before quiesce.
+        const now = Date.now();
+        await env.DB.prepare("UPDATE control SET maintenance=0").run();
+        await env.DB.prepare(
+          "INSERT INTO r2_write_attempts VALUES(?,?,?,'fixture','manifest.put',?,?,?,'pending',NULL)",
+        )
+          .bind(
+            crypto.randomUUID(),
+            crypto.randomUUID(),
+            epoch,
+            `target-sets/${crypto.randomUUID()}`,
+            now + 5000,
+            now,
+          )
+          .run();
+        await env.DB.prepare("UPDATE control SET maintenance=1").run();
+      }
       await expect(instance.freezeDatabaseRestore(epoch, id, targets, input)).rejects.toThrow();
       expect(freezeRow(state)).toBeUndefined();
       await expect(instance.inspectDatabaseRestore(epoch, id)).resolves.toMatchObject({
         state: "preparing",
       });
+      if (kind === "r2-d1")
+        await env.DB.prepare(
+          "UPDATE r2_write_attempts SET state='not_started',finished_at=MAX(started_at,strftime('%s','now')*1000) WHERE state='pending'",
+        ).run();
     });
   },
 );

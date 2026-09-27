@@ -275,6 +275,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
       AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
       AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
+      AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')
       AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
         AND claim_expires_at>strftime('%s','now')*1000)

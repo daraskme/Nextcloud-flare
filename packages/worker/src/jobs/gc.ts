@@ -61,6 +61,7 @@ async function nextCandidate(
         (g.state='deleting' AND b.state='deleting' AND (g.claim_token IS NULL OR g.claim_expires_at<=?)))
         AND b.ref_count=0 AND g.pinned_by IS NULL
         AND ${SETTLED_UPLOADS}
+        AND NOT EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key=b.r2_key AND w.state='pending')
         AND NOT EXISTS(SELECT 1 FROM blob_pins p WHERE p.blob_id=g.blob_id)
         AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=? AND ${mode.sql})
       ORDER BY CASE g.state WHEN 'deleting' THEN 0 ELSE 1 END,g.not_before,g.blob_id LIMIT 1`)
@@ -81,7 +82,8 @@ async function claimCandidate(
   const mode = modeFence(stopped, "control");
   const common = `blob_id=? AND pinned_by IS NULL
     AND NOT EXISTS(SELECT 1 FROM blob_pins p WHERE p.blob_id=gc_candidates.blob_id)
-    AND EXISTS(SELECT 1 FROM blobs b WHERE b.id=gc_candidates.blob_id AND b.owner_id=? AND b.r2_key=? AND b.ref_count=0 AND ${SETTLED_UPLOADS})
+    AND EXISTS(SELECT 1 FROM blobs b WHERE b.id=gc_candidates.blob_id AND b.owner_id=? AND b.r2_key=? AND b.ref_count=0 AND ${SETTLED_UPLOADS}
+      AND NOT EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key=b.r2_key AND w.state='pending'))
     AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=? AND ${mode.sql})`;
   const statements =
     candidate.state === "candidate"
@@ -156,6 +158,7 @@ function dispatchFence(
     AND g.claim_token=? AND g.claim_epoch=? AND g.claim_expires_at>${CLOCK}
     AND c.epoch=g.claim_epoch AND c.maintenance=? AND c.gc_paused=? AND ${mode.sql}
     AND ${SETTLED_UPLOADS}
+    AND NOT EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key=b.r2_key AND w.state='pending')
     AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)`,
     [candidate.blobId, candidate.key, candidate.ownerId, token, epoch, ...mode.values],
   );

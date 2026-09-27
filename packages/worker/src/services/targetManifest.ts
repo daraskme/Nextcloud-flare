@@ -1,4 +1,6 @@
 import type { ContentPurpose } from "../auth/contentSession";
+import type { AccountMutationEnv } from "./accountMutation";
+import { trackedR2Write } from "./r2Write";
 
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_TARGETS = 1_000;
@@ -74,12 +76,22 @@ export async function encodeTargetManifest(
 export async function stageTargetManifest(
   bucket: R2Bucket,
   targets: readonly TargetEntry[],
+  write: { env: AccountMutationEnv; ownerId: string; epoch: number },
 ): Promise<TargetManifestRecord> {
   const encoded = await encodeTargetManifest(targets);
   const id = crypto.randomUUID();
   const ref = `target-sets/${id}`;
   const size = new TextEncoder().encode(encoded.json).byteLength;
-  const object = await bucket.put(ref, encoded.json, { onlyIf: { etagDoesNotMatch: "*" } });
+  const object = await trackedR2Write(
+    write.env,
+    {
+      epoch: write.epoch,
+      ownerId: write.ownerId,
+      kind: "manifest.put",
+      key: ref,
+    },
+    () => bucket.put(ref, encoded.json, { onlyIf: { etagDoesNotMatch: "*" } }),
+  );
   if (!object || object.size !== size) throw new Error("target_manifest_stage_failed");
   const record = Object.freeze({ id, ref, hash: encoded.hash, totalBytes: encoded.totalBytes });
   await loadTargetManifest(bucket, record);

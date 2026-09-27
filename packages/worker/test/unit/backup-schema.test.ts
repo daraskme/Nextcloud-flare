@@ -28,7 +28,9 @@ function freeze() {
 }
 const snapshot = () =>
   Object.fromEntries(
-    exportTables.map((t) => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY 1`).all()]),
+    exportTables
+      .filter((t) => db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(t))
+      .map((t) => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY 1`).all()]),
   );
 it("preserves existing data and foreign keys through the forward backup migration", () => {
   const users = db.prepare("SELECT * FROM users").all(),
@@ -44,6 +46,10 @@ it("preserves existing data and foreign keys through the forward backup migratio
 });
 it("guards every normal table, requiring future tables to join the backup freeze", () => {
   migrate();
+  for (const file of readdirSync(dir)
+    .filter((f) => f.endsWith(".sql") && f > "0037_backup_barrier.sql")
+    .sort())
+    db.exec(readFileSync(new URL(file, dir), "utf8"));
   const tables = db
     .prepare("PRAGMA table_list")
     .all()
