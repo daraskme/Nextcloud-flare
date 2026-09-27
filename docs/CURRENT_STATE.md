@@ -8,7 +8,7 @@ Node42件・workerd24件を追加し、全Node843件と復旧/受付の関連wor
 
 次はR2 binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。bookmark照合はローカルの模擬provider応答と実D1/DOで検証したもので、実Cloudflare検索・復元は未検証です。Time Travel/live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
 
-専用codex/database-restoreで検証済みの区切りをcommitしました。今回の通常pushは自動承認レビューに拒否され未実行です。レビューは、送信内容とGitHub originへの明示的許可を確認できず、過去の引き継ぎ記述を承認根拠にできないとしています。ユーザーへ明示許可を求める状態で、別経路からpushしないでください。共有main・remote migration・deployは更新していません。今回の全体check・Windows・browser・実CLI backupドリルはローカル再実行していません。直前7b39e93の[CI36153888412](https://github.com/daraskme/Nextcloud-flare/actions/runs/36153888412)はWindowsの一時path短縮名比較で失敗していたため、今回fixtureをrealpathへ正規化しました。最新のpush/CIはgit statusとgh run listで確認します。
+専用codex/database-restoreで検証済みの区切りをcommitしました。2026-09-27にユーザーが「コミットプッシュして」と明示承認しました。送信先はGitHub daraskme/Nextcloud-flareのcodex/database-restoreです。先行する自動承認レビューによる許可待ちは解消しています。共有main・remote migration・deployは更新していません。今回の全体check・Windows・browser・実CLI backupドリルはローカル再実行していません。直前7b39e93の[CI36153888412](https://github.com/daraskme/Nextcloud-flare/actions/runs/36153888412)はWindowsの一時path短縮名比較で失敗していたため、今回fixtureをrealpathへ正規化しました。最新のpush/CIはgit statusとgh run listで確認します。
 ## 状態の意味
 
 | 状態 | 意味 |
