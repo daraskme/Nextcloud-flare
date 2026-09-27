@@ -7,6 +7,14 @@
 
 ## 今回の検証記録
 
+- 復旧先BLOBSの対象固定・fresh probe照合・DO観測保存を追加。Node40件・workerd26件を追加。全Node883件（45file、36.24s）が成功。`.local-toolchain/run pnpm check`で全workerd2,253件（106file、1,260.46s）も成功し、計3,136件を確認。lint394file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-blobs-check.log。停止拒否・切断fixture由来のworkerdログを含むが、テスト結果・終了コードは成功。
+- `vitest run --config vitest.config.ts`でprobe/共通受付の関連workerd106件（3file、40.01s）が成功。取消し、待機中のD1停止変更、外部予算ACK喪失、誤bucketの古いnonce、保存失敗、時計逆行、25秒timeoutと遅延継続、eviction後の対象固定を検証。/tmp/ncf-blobs-workerd.log。
+- `.local-toolchain/run pnpm backup:operator-drill`が成功。67table・SQL11,322bytes、全9復旧操作の権限拒否、実BLOBS probeの更新・再起動後の新nonce照合・取消し後拒否を確認。S3 providerは固定URL/署名形式を確認するローカルfixtureで模擬し、remote照合とは扱わない。/tmp/ncf-blobs-operator-drill.log、.wrangler/operator-drill-1lxITR/report.json。初回はfixtureのS3秘密値が既存設定検査の最短長に満たず失敗し、テスト値を修正して全ドリルを再実行した。
+- 直前26d0ef3の[CI36288518080](https://github.com/daraskme/Nextcloud-flare/actions/runs/36288518080)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功。前回修正したWindows一時pathの正規化も確認済み。
+- schema0039・通常67table・依存は維持。今回はWindows・browser・実CLI backupドリルをローカル再実行していない。実Cloudflareのresource作成・migration・deploy・Time Travel・S3接続は行っていない。
+
+### 先行するTime Travel bookmark照合の記録
+
 - Time Travel候補の準備・時刻検索照合・DOへの証言保存を追加。Node42件・workerd24件を追加し、全Node843件（44file、43.33s）が成功。/tmp/ncf-bookmark-unit.log。
 - bookmark/D1対象/復旧準備/復旧元/受付の関連workerd144件（5file、131.49s）が成功。時刻競合の試験が実際にD1読取り後まで到達することを強めた後、新規24件も再確認（8.78s）。/tmp/ncf-bookmark-regression.log、/tmp/ncf-bookmark-workerd-final.log。既存LockDO拒否fixtureのadmission_closedログを含むが、テスト・終了コードは成功。
 - named service bindingドリルが成功。67table・SQL11,322bytesの世代検証に加え、全8復旧操作の権限拒否、合成remote descriptor/provider応答によるbookmark証言保存、eviction後の新challenge再実行、取消し後拒否を確認。/tmp/ncf-bookmark-operator-drill.log、.wrangler/operator-drill-CpShcr/report.json。実remote検索・復元の証明ではない。

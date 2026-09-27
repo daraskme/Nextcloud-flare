@@ -12,7 +12,7 @@ import {
   restoreD1Target,
 } from "../../../shared/src/restoreTarget";
 import type { RestoreSourceAuthority } from "../backup/restoreSource";
-import { primary } from "../db/primary";
+import { assertExists, primary } from "../db/primary";
 import type { ControlDatabaseRestore } from "./controlDatabaseRestore";
 
 interface TargetRow extends Record<string, SqlStorageValue> {
@@ -165,6 +165,36 @@ export class ControlRestoreTarget {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** Internal scope for recovery verifiers. Recheck after every await and fence each D1 batch. */
+  verifiedScope(epoch: number, id: string, input: RestoreD1Challenge) {
+    const target = JSON.parse(this.#row(id).target_json) as RestoreD1Target,
+      challenge = structuredClone(restoreD1Challenge(input, epoch, id, target));
+    const current = () => {
+      const now = this.#current(challenge);
+      if (this.#row(id).verified_at === null) throw new Error("database_restore_target_unverified");
+      return now;
+    };
+    current();
+    return {
+      challenge,
+      current,
+      readMirror: async () => {
+        current();
+        await this.#readMirror(challenge);
+        return current();
+      },
+      fence: () => {
+        current();
+        return assertExists(
+          `SELECT 1 FROM control WHERE singleton=1 AND epoch=?
+          AND admission_revision=? AND admission_token=? AND maintenance=1 AND gc_paused=1
+          AND backup_frozen=0 AND backup_token IS NULL`,
+          [epoch, challenge.revision, challenge.token],
+        );
+      },
+    };
   }
 
   /** The private CLI independently read the same fresh mirror through its pinned D1 target. */

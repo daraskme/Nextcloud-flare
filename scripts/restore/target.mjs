@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { restoreBlobsTarget } from "../../packages/shared/src/restoreBlobs.ts";
 import {
   restoreBookmark,
   restoreBookmarkTimestamp,
@@ -22,7 +23,7 @@ const execute = promisify(execFile),
 
 /** Resolve DB once, then query with a minimal pinned configuration and a fixed SELECT only. */
 export async function restoreD1Reader(
-  { config, environment, operatorConfig, mode },
+  { config, environment, operatorConfig, mode, blobs = false },
   run = execute,
 ) {
   if (!["local", "remote"].includes(mode) || typeof config !== "string" || !config)
@@ -45,11 +46,22 @@ export async function restoreD1Reader(
   )
     throw new Error("database_restore_target_config_conflict");
   const target = restoreD1Target({
-      mode,
-      databaseId: databases[0].database_id,
-      ...(mode === "remote" ? { accountId: selected.account_id } : {}),
-    }),
-    directory = await mkdtemp(join(tmpdir(), "ncf-restore-d1-"));
+    mode,
+    databaseId: databases[0].database_id,
+    ...(mode === "remote" ? { accountId: selected.account_id } : {}),
+  });
+  let blobsTarget;
+  if (blobs) {
+    const buckets = selected.r2_buckets?.filter((entry) => entry.binding === "BLOBS");
+    if (mode !== "remote" || buckets?.length !== 1)
+      throw new Error("database_restore_invalid_blobs_target");
+    blobsTarget = restoreBlobsTarget({
+      accountId: target.accountId,
+      bucket: buckets[0].bucket_name,
+      jurisdiction: buckets[0].jurisdiction ?? "default",
+    });
+  }
+  const directory = await mkdtemp(join(tmpdir(), "ncf-restore-d1-"));
   try {
     const queryConfig = join(directory, "wrangler.json");
     await writeFile(
@@ -102,6 +114,8 @@ export async function restoreD1Reader(
     await unchanged();
     return {
       target,
+      ...(blobsTarget ? { blobsTarget } : {}),
+      assertUnchanged: unchanged,
       async readMirror() {
         const result = await read(
           [

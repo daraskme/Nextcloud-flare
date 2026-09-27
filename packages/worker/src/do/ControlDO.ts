@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
+import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type { KdfRequest } from "../auth/globalKdf";
@@ -60,6 +61,7 @@ import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDat
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
+import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
 import {
@@ -135,6 +137,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #databaseRestore: ControlDatabaseRestore;
   readonly #restoreSource: ControlRestoreSource;
   readonly #restoreTarget: ControlRestoreTarget;
+  readonly #restoreBlobs: ControlRestoreBlobs;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -180,6 +183,13 @@ export class ControlDO extends DurableObject<Env> {
       this.#databaseRestore,
       (epoch) => this.#admission.captureDatabaseRestore(epoch),
       (epoch) => this.quiesce(epoch),
+    );
+    this.#restoreBlobs = new ControlRestoreBlobs(
+      ctx.storage.sql,
+      { DB: env.DB, systemControl: this },
+      env.BLOBS,
+      this.#restoreTarget,
+      () => new R2S3Inventory(env),
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -307,6 +317,18 @@ export class ControlDO extends DurableObject<Env> {
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");
     return this.#restoreTarget.attestBookmark(expectedEpoch, id, challenge, observation);
+  }
+
+  async verifyDatabaseRestoreBlobs(
+    expectedEpoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    source: RestoreBlobsTarget,
+  ) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreBlobs.verify(expectedEpoch, id, challenge, source);
   }
 
   /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */

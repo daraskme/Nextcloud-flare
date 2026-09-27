@@ -2,13 +2,14 @@
 
 更新: 2026-09-27。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-Time Travel候補の`prepare --bookmark`と`verify-bookmark`を追加しました。明示remote・固定account/DBで新しいD1停止tokenを独立照合し、指定UTC時刻へのprovider応答が選択済みbookmarkと一致する場合だけControlDOへ証言を保存します。元challengeから5分の期限を維持し、対象・bookmark・時刻の不一致、取消し、停止更新、時計逆行、保存失敗を拒否します。詳細は[DATABASE_RESTORE_BOOKMARK](DATABASE_RESTORE_BOOKMARK.md)。この記録は復元成功や上書き許可ではありません。
+復旧先BLOBSを照合する`verify-blobs`を追加しました。毎回新しいD1停止tokenを独立照合し、同じ復旧要求へaccount・bucket・jurisdictionを固定します。Workerの固定64-byte probeを新しいnonceへ条件付き更新し、S3経由で一致を確認してからDOへ観測を保存します。共通受付と各D1 batchの停止条件を維持し、取消し・対象変更・応答喪失・時計逆行・25秒超過では成功を返しません。詳細は[DATABASE_RESTORE_BLOBS](DATABASE_RESTORE_BLOBS.md)。
 
-Node42件・workerd24件を追加し、全Node843件と復旧/受付の関連workerd144件が成功しました。named service bindingの全8操作の権限拒否、合成provider応答によるbookmark保存・再起動後再検証・取消し後拒否も成功。型・lint389file・契約/設定・Web build・Worker dry-runも成功しました。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+Node40件・workerd26件を追加しました。全Node883件、probe/共通受付の関連workerd106件と、非公開bindingの全9操作の拒否・BLOBS更新・再起動後再検証・取消し後拒否のドリルが成功しました。全体checkも成功し、Node883件＋workerd2,253件の計3,136件、lint394file・型・契約/設定・Web build・Worker dry-runを確認しました。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次はR2 binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。bookmark照合はローカルの模擬provider応答と実D1/DOで検証したもので、実Cloudflare検索・復元は未検証です。Time Travel/live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
+次はBACKUPS binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回のS3応答とremote descriptorはローカルfixtureで模擬し、実Cloudflare接続・復旧は実行していません。別コマンドで得た過去のD1/bookmark/BLOBS観測をまとめて上書き許可にはしません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-専用codex/database-restoreで検証済みの区切りをcommitしました。2026-09-27にユーザーが「コミットプッシュして」と明示承認しました。送信先はGitHub daraskme/Nextcloud-flareのcodex/database-restoreです。先行する自動承認レビューによる許可待ちは解消しています。共有main・remote migration・deployは更新していません。今回の全体check・Windows・browser・実CLI backupドリルはローカル再実行していません。直前7b39e93の[CI36153888412](https://github.com/daraskme/Nextcloud-flare/actions/runs/36153888412)はWindowsの一時path短縮名比較で失敗していたため、今回fixtureをrealpathへ正規化しました。最新のpush/CIはgit statusとgh run listで確認します。
+2026-09-27のユーザーの明示承認に従い、送信先はGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前26d0ef3の[CI36288518080](https://github.com/daraskme/Nextcloud-flare/actions/runs/36288518080)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
+
 ## 状態の意味
 
 | 状態 | 意味 |
@@ -25,8 +26,9 @@ Node42件・workerd24件を追加し、全Node843件と復旧/受付の関連wor
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| Time Travel候補の照合 | remote候補準備・固定D1のfresh照合・時刻検索bookmark一致・DO証言 | Node42件/workerd24件追加、全Node843/関連workerd144、実private bindingと合成providerのドリル成功 | 実remote検索、保持期限保証、R2照合、最終停止・D1上書き・採用は未接続。[詳細](DATABASE_RESTORE_BOOKMARK.md) |
-| 復旧先D1の照合 | 対象のDO固定・fresh停止token・独立Wrangler query・5分の観測・再実行 | Node39件/workerd23件追加。全Node801件・関連workerd120件と実binding/CLI成功 | R2対応確認・最終停止・実上書きは後続。[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md) |
+| 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | BACKUPS照合、最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
+| Time Travel候補の照合 | remote候補準備・固定D1のfresh照合・時刻検索bookmark一致・DO証言 | Node42件/workerd24件追加、全Node843/関連workerd144、実private bindingと合成providerのドリル成功 | 実remote検索、保持期限保証、BACKUPS照合、最終停止・D1上書き・採用は未接続。[詳細](DATABASE_RESTORE_BOOKMARK.md) |
+| 復旧先D1の照合 | 対象のDO固定・fresh停止token・独立Wrangler query・5分の観測・再実行 | Node39件/workerd23件追加。全Node801件・関連workerd120件と実binding/CLI成功 | BACKUPS対応確認・最終停止・実上書きは後続。[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md) |
 | 復旧準備の運用CLI | 専用service binding、prepare/verify/inspect/cancel、隔離SQL検証とDOへの証言保存 | Node34件追加・DO10件追加。全check2,942件・実binding/CLI両ドリル成功 | 対象binding・最終停止・実D1上書き・新epoch採用は後続。[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md) |
 | logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規42件、関連115件。再起動・取消し・古い結果・期限・時計逆行・完了後の競合・遅い応答 | 対象binding・最終停止・実復旧は後続。SQL/schema再検証は専用CLIへ追加。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
 | D1復旧準備 | DO内の要求・世代選択固定、停止保持、照会/取消し、通常操作との排他 | primary/ACK喪失、eviction、巻き戻り、遅延処理、未知KDF、同epoch巻き戻りと未確定停止の28件が成功。全体結果は検証記録 | 最終停止・新epoch採用・実D1復元は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
@@ -151,11 +153,11 @@ Node42件・workerd24件を追加し、全Node843件と復旧/受付の関連wor
 
 ### 目標
 
-Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) の製品完了条件まで進める。ユーザー確認が不要なローカル実装、試験、通常commit、`origin/main`への通常pushは継続する。
+Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) の製品完了条件まで進める。ユーザー確認が不要なローカル実装、試験、通常commit、承認済みの`origin/codex/database-restore`への通常pushは継続する。
 
 ### 許可と禁止
 
-- 検証済みのまとまりはcommitし、`origin/main`へ通常pushしてよい。
+- 検証済みのまとまりはcommitし、`origin/codex/database-restore`へ通常pushしてよい。共有mainへのpushは自動承認レビューに拒否されている。
 - force pushはしない。
 - GitHubへのpushをCloudflare production deployの許可と解釈しない。
 - remote resource作成、remote D1 migration、secret設定、staging/production deployは、具体的な環境情報と実行段階の確認が必要。

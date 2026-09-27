@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-Time Travel候補の`prepare --bookmark`と`verify-bookmark`を追加しました。明示remote・固定account/DBで新しいD1停止tokenを独立照合し、指定UTC時刻へのprovider応答が選択済みbookmarkと一致する場合だけControlDOへ証言を保存します。元challengeから5分の期限を維持し、対象・bookmark・時刻の不一致、取消し、停止更新、時計逆行、保存失敗を拒否します。詳細は[DATABASE_RESTORE_BOOKMARK](DATABASE_RESTORE_BOOKMARK.md)。この記録は復元成功や上書き許可ではありません。
+復旧先BLOBSを照合する`verify-blobs`を追加しました。毎回新しいD1停止tokenを独立照合し、同じ復旧要求へaccount・bucket・jurisdictionを固定します。Workerの固定64-byte probeを新しいnonceへ条件付き更新し、S3経由で一致を確認してからDOへ観測を保存します。共通受付と各D1 batchの停止条件を維持し、取消し・対象変更・応答喪失・時計逆行・25秒超過では成功を返しません。詳細は[DATABASE_RESTORE_BLOBS](DATABASE_RESTORE_BLOBS.md)。
 
-Node42件・workerd24件を追加し、全Node843件と復旧/受付の関連workerd144件が成功しました。named service bindingの全8操作の権限拒否、合成provider応答によるbookmark保存・再起動後再検証・取消し後拒否も成功。型・lint389file・契約/設定・Web build・Worker dry-runも成功しました。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+Node40件・workerd26件を追加しました。全Node883件、probe/共通受付の関連workerd106件と、非公開bindingの全9操作の拒否・BLOBS更新・再起動後再検証・取消し後拒否のドリルが成功しました。全体checkも成功し、Node883件＋workerd2,253件の計3,136件、lint394file・型・契約/設定・Web build・Worker dry-runを確認しました。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次はR2 binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。bookmark照合はローカルの模擬provider応答と実D1/DOで検証したもので、実Cloudflare検索・復元は未検証です。Time Travel/live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
+次はBACKUPS binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回のS3応答とremote descriptorはローカルfixtureで模擬し、実Cloudflare接続・復旧は実行していません。別コマンドで得た過去のD1/bookmark/BLOBS観測をまとめて上書き許可にはしません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-専用codex/database-restoreで検証済みの区切りをcommitしました。2026-09-27にユーザーが「コミットプッシュして」と明示承認しました。送信先はGitHub daraskme/Nextcloud-flareのcodex/database-restoreです。先行する自動承認レビューによる許可待ちは解消しています。共有main・remote migration・deployは更新していません。今回の全体check・Windows・browser・実CLI backupドリルはローカル再実行していません。直前7b39e93の[CI36153888412](https://github.com/daraskme/Nextcloud-flare/actions/runs/36153888412)はWindowsの一時path短縮名比較で失敗していたため、今回fixtureをrealpathへ正規化しました。最新のpush/CIはgit statusとgh run listで確認します。
+2026-09-27のユーザーの明示承認に従い、送信先はGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前26d0ef3の[CI36288518080](https://github.com/daraskme/Nextcloud-flare/actions/runs/36288518080)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 

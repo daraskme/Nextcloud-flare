@@ -38,4 +38,4 @@ pnpm database:restore verify-bookmark --remote --operator-config restore-operato
 
 信頼されたCLIのcapabilityであり、Worker単独ではprovider呼出しを独立に証明できない。任意のbookmark証言を転送する公開HTTP窓口を作らない。保存行は取消し・停止更新・新challenge・期限経過後にも履歴として残る。将来の採用処理は、行の存在だけで判定せず、現行要求・target・challenge・revision/token・期限を再照合する必要がある。
 
-実CloudflareでのTime Travel検索・復元は未検証。Node試験ではprovider応答と子プロセスを模擬し、workerdとnamed service bindingドリルでは実ローカルD1/DOに合成remote対象を渡す。これをremote接続や復元の成功とは扱わない。R2 binding照合、R2/KDF/job/repairの終了証明、最終停止、新epoch予約、D1上書き・採用・全監査・段階再開は後続。検証件数は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+実CloudflareでのTime Travel検索・復元は未検証。Node試験ではprovider応答と子プロセスを模擬し、workerdとnamed service bindingドリルでは実ローカルD1/DOに合成remote対象を渡す。これをremote接続や復元の成功とは扱わない。BLOBS照合は[verify-blobs](DATABASE_RESTORE_BLOBS.md)へ接続した。各CLIは新しいchallengeを使うため、別工程の過去の証言をまとめて上書き許可にしない。BACKUPS照合、R2/KDF/job/repairの終了証明、最終停止、新epoch予約、D1上書き・採用・全監査・段階再開は後続。検証件数は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。

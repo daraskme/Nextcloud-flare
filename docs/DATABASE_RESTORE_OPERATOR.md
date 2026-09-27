@@ -36,7 +36,7 @@ pnpm database:restore cancel --local --operator-config restore-operator.json \
 
 `verify-d1 --config <対象設定>`を追加した。新しい停止tokenを発行して、CLIから独立に読んだDBがWorkerのDB bindingと一致することを照合する。毎回再検証し、対象と5分以内の観測をControlDOへ保存する。SQL検証とは別工程で、`verify`と順に実行する。詳細は[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md)。
 
-remoteの`verify`は`--remote`を指定し、`--config/--environment`を受け取らない。BACKUPSの読取りには既存の`R2_BACKUP_*`設定を使う。CLIはR2へ書き込まない。remote認証・実resourceでの検証と配備は未実施。
+remoteの`verify`は`--remote`を指定し、`--config/--environment`を受け取らない。BACKUPSの読取りには既存の`R2_BACKUP_*`設定を使う。この`verify`はR2へ書き込まない。remote認証・実resourceでの検証と配備は未実施。
 
 ## SQL検証と保存する証言
 
@@ -51,10 +51,10 @@ ControlDO SQLiteの`control_database_restore_sql`に、要求ID・epoch・manife
 
 成功結果は`state:sql_verified`と`complete:true`。これはSQL検証工程の完了であり、復旧全体の完了ではない。停止中repairの終了、BLOBSとの対応確認、新epoch予約、実D1上書き・採用・全監査が必要。manifest/SQLの一致は同じbucket/accountであることの証明にもならない。
 
-1 RPCの待機は最大60秒。応答喪失では結果不明として同じ要求を照会・再実行する。再実行時も全SQL検証を通してから同じhashを証言する。過去の成功結果だけで検証を省略しない。Time Travelの`prepare --bookmark`と`verify-bookmark`は[bookmark照合](DATABASE_RESTORE_BOOKMARK.md)へ接続済み。実復元は未接続。
+1 RPCの待機は最大60秒。応答喪失では結果不明として同じ要求を照会・再実行する。再実行時も全SQL検証を通してから同じhashを証言する。過去の成功結果だけで検証を省略しない。Time Travelの`prepare --bookmark`と`verify-bookmark`は[bookmark照合](DATABASE_RESTORE_BOOKMARK.md)へ接続済み。`verify-blobs`は[BLOBS bindingの照合](DATABASE_RESTORE_BLOBS.md)を行い、Workerの固定64-byte system probeを更新する。実復元は未接続。
 
 ## ローカル検証
 
 Node試験は実SQLの復元と改変・不正SQL・schema/table不一致、100 step継続、誤った応答、応答喪失、設定の取り違えと秘密非出力を確認する。workerd試験は不完全な部品・誤hash・期限・取消し・停止revision競合・保存失敗・再起動と内部RPCを確認する。
 
-`backup:operator-drill`は実named service bindingで全8操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。bookmarkの証言保存・再起動後再実行も合成provider応答で確認する。Cloudflare上の実D1復旧ドリルとは区別する。
+`backup:operator-drill`は実named service bindingで全9操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。bookmarkの証言保存とBLOBSのprobe更新・再起動後再検証も合成provider応答で確認する。Cloudflare上の実D1復旧ドリルとは区別する。

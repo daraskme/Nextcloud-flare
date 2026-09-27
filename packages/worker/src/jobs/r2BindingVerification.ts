@@ -23,6 +23,12 @@ export interface BindingVerification {
   readonly bindingVerified: true;
 }
 
+/** Optional additional authority; the inventory probe's own lease/accounting still apply. */
+export interface BindingVerificationScope {
+  current(): void;
+  fence(): SqlStatement;
+}
+
 /** Only usable inside withVerifiedR2Inventory; persist mutations in the same batch as fence(). */
 export interface VerifiedR2Inventory {
   readonly bucket: R2Bucket;
@@ -77,7 +83,7 @@ async function readCurrent(bucket: R2Bucket): Promise<R2ObjectBody | null> {
 
 function errorCode(error: unknown): string {
   return error instanceof Error &&
-    /^(?:invalid_r2_binding_probe|r2_binding_(?:mismatch|conflict|scope_closed)|s3_inventory_(?:http_\d{3}|timeout|body_limit|unavailable)|invalid_s3_inventory_xml)$/.test(
+    /^(?:database_restore_[a-z_]+|invalid_r2_binding_probe|r2_binding_(?:mismatch|conflict|scope_closed)|s3_inventory_(?:http_\d{3}|timeout|body_limit|unavailable)|invalid_s3_inventory_xml)$/.test(
       error.message,
     )
     ? error.message
@@ -95,12 +101,15 @@ export async function withVerifiedR2Inventory<T>(
   inventory: R2S3Inventory,
   epoch: number,
   action: (verified: VerifiedR2Inventory) => Promise<T>,
+  scope?: BindingVerificationScope,
 ): Promise<T> {
   const { DB: db } = env;
   const deadline = Date.now() + 25_000;
   const withinBudget = () => {
     if (Date.now() >= deadline) throw new Error("r2_binding_verification_failed");
+    scope?.current();
   };
+  const scopeFence = () => (scope ? [scope.fence()] : []);
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("invalid_s3_inventory_request");
   const token = crypto.randomUUID();
   const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
@@ -115,15 +124,24 @@ export async function withVerifiedR2Inventory<T>(
       [epoch, token, nonce, source, phase],
     );
   const transition = async (from: string, sql: string, values: SqlStatement["values"] = []) => {
+    scope?.current();
     const admission = await acquireGlobalMutation(env, "r2.probe-phase");
-    await commitGlobalMutation(db, admission, [fence(from), { sql, values }, assertOneChange]);
+    await commitGlobalMutation(db, admission, [
+      ...scopeFence(),
+      fence(from),
+      { sql, values },
+      assertOneChange,
+    ]);
+    scope?.current();
   };
   const countCall = async (phase: string) => {
+    scope?.current();
     const admission = await acquireGlobalMutation(env, "r2.probe-call", deadline);
     withinBudget();
     await atomicBatch(
       db,
       globalMutationStatements(admission, [
+        ...scopeFence(),
         fence(phase),
         { sql: "UPDATE r2_binding_probe SET calls=calls+1 WHERE singleton=1" },
         assertOneChange,
@@ -133,12 +151,14 @@ export async function withVerifiedR2Inventory<T>(
   };
   let active = false;
   try {
+    scope?.current();
     // Unknown claim/counter ACK means no dispatch. Retry only after expiry, with a fresh nonce.
     const admission = await acquireGlobalMutation(env, "r2.probe-claim", deadline);
     withinBudget();
     await atomicBatch(
       db,
       globalMutationStatements(admission, [
+        ...scopeFence(),
         controlFence(epoch, true),
         {
           sql: `INSERT INTO r2_binding_probe(singleton,epoch,generation,source,nonce,phase,lease_token,lease_expires_at)
@@ -185,6 +205,7 @@ export async function withVerifiedR2Inventory<T>(
     active = true;
     const scopedFence = (): SqlStatement => {
       if (!active) throw new Error("r2_binding_scope_closed");
+      scope?.current();
       return fence("verified");
     };
     const result = await action(
@@ -198,25 +219,30 @@ export async function withVerifiedR2Inventory<T>(
         }),
         fence: scopedFence,
         assertCurrent: async () => {
-          await atomicBatch(db, [scopedFence()]);
+          await atomicBatch(db, [...scopeFence(), scopedFence()]);
         },
       }),
     );
+    scope?.current();
     const release = await acquireGlobalMutation(env, "r2.probe-release");
     await commitGlobalMutation(db, release, [
+      ...scopeFence(),
       fence("verified"),
       {
         sql: "UPDATE r2_binding_probe SET phase='idle',lease_token=NULL,lease_expires_at=0 WHERE singleton=1",
       },
       assertOneChange,
     ]);
+    scope?.current();
     return result;
   } catch (error) {
     const code = errorCode(error);
     // Retain lease and allocation after every ambiguous write. A new CAS generation reconciles it.
     try {
+      scope?.current();
       const admission = await acquireGlobalMutation(env, "r2.probe-error");
       await commitGlobalMutation(db, admission, [
+        ...scopeFence(),
         controlFence(epoch, true),
         {
           sql: `UPDATE r2_binding_probe SET phase='failed',last_error=?
