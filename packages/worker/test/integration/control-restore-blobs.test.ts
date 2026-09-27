@@ -7,9 +7,9 @@ import { ControlDatabaseRestore } from "../../src/do/controlDatabaseRestore";
 import { ControlRestoreBlobs } from "../../src/do/controlRestoreBlobs";
 import { ControlRestoreTarget } from "../../src/do/controlRestoreTarget";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import type { BindingVerificationSource } from "../../src/jobs/r2BindingVerification";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
-import type { GlobalMutationSource } from "../../src/services/globalMutation";
 import { inventoryEnv } from "../fixtures/s3Inventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 
@@ -66,7 +66,7 @@ function fixture(
     put?: () => Promise<void>;
     s3?: () => Promise<Response>;
     db?: D1Database;
-    mutations?: GlobalMutationSource;
+    mutations?: BindingVerificationSource;
     inventory?: R2S3Inventory;
   } = {},
 ) {
@@ -233,9 +233,11 @@ it.each([1, 2, 3])(
   async (nth) => {
     await runInDurableObject(control(), async (instance, state) => {
       let calls = 0;
-      const mutations: GlobalMutationSource = {
+      const mutations: BindingVerificationSource = {
         DB: env.DB,
         systemControl: {
+          beginR2Write: (request) => instance.beginR2Write(request),
+          finishR2Write: (grant, outcome) => instance.finishR2Write(grant, outcome),
           status: () => instance.status(),
           acquireGlobalMutation: async (request) => {
             const grant = await instance.acquireGlobalMutation(request);

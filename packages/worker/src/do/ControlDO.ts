@@ -288,7 +288,7 @@ export class ControlDO extends DurableObject<Env> {
       ctx.storage,
       env.DB,
       (epoch, kind) =>
-        kind.endsWith(".delete") || kind.endsWith(".abort")
+        kind.endsWith(".delete") || kind.endsWith(".abort") || kind === "probe.put"
           ? this.#admission.captureSystemMutationMode(epoch)
           : this.#admission.assertMutationOpen(epoch),
       (request) => this.acquireMutation(request),
@@ -300,7 +300,7 @@ export class ControlDO extends DurableObject<Env> {
         }),
       (epoch, deadline, kind) =>
         this.acquireGlobalMutation({
-          permitId: `global:${kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
+          permitId: `global:${kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
           epoch,
           deadline,
         }),

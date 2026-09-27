@@ -12,7 +12,7 @@ import {
 import { BINDING_PROBE_KEY, BINDING_PROBE_KIND } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { foundationFixture } from "../fixtures/foundation";
-import { mutationEnv } from "../fixtures/mutationAdmission";
+import { clearEndedR2TestWrites, mutationEnv } from "../fixtures/mutationAdmission";
 import { inventoryEnv } from "../fixtures/s3Inventory";
 import { injectBatch } from "../fixtures/uploadEnv";
 
@@ -58,6 +58,7 @@ beforeAll(async () => {
   expect(await control().recover()).toMatchObject({ epoch });
 });
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await env.DB.prepare("UPDATE control SET epoch=2,maintenance=1,gc_paused=1").run();
   await expire();
 });
@@ -290,7 +291,7 @@ it.each([
   },
 );
 
-it("reconciles a committed PUT whose response was lost without replaying its nonce", async () => {
+it("rotates after a lost PUT reply while retaining that native call's unresolved receipt", async () => {
   const bucket = {
     get: env.BLOBS.get.bind(env.BLOBS),
     put: async (...args: Parameters<R2Bucket["put"]>) => {
@@ -300,10 +301,22 @@ it("reconciles a committed PUT whose response was lost without replaying its non
   } as unknown as R2Bucket;
   await expect(verify({ bucket })).rejects.toThrow("r2_binding_verification_failed");
   const failedNonce = (await row())!.nonce;
+  const pending = await env.DB.prepare(
+    "SELECT id FROM r2_write_attempts WHERE state='pending'",
+  ).first("id");
+  expect(pending).toEqual(expect.any(String));
   expect(await (await env.BLOBS.get(BINDING_PROBE_KEY))!.text()).toBe(failedNonce);
   await expire();
   await verify();
   expect((await row())!.nonce).not.toBe(failedNonce);
+  expect(
+    await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE id=?")
+      .bind(pending)
+      .first("state"),
+  ).toBe("pending");
+  await expect(inspectRecoveryFinalFence(env.DB, epoch)).rejects.toThrow(
+    /recovery_final_fence_pending/,
+  );
 });
 
 it("does not overwrite an unrecognized object at the reserved key", async () => {

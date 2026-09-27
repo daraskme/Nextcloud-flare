@@ -1,8 +1,10 @@
 import { type RestoreBlobsTarget, restoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreD1Challenge } from "../../../shared/src/restoreTarget";
-import { withVerifiedR2Inventory } from "../jobs/r2BindingVerification";
+import {
+  type BindingVerificationSource,
+  withVerifiedR2Inventory,
+} from "../jobs/r2BindingVerification";
 import type { R2S3Inventory } from "../r2/s3Inventory";
-import type { GlobalMutationSource } from "../services/globalMutation";
 import type { ControlRestoreTarget } from "./controlRestoreTarget";
 
 interface BlobsRow extends Record<string, SqlStorageValue> {
@@ -24,7 +26,7 @@ export class ControlRestoreBlobs {
   #busy = false;
   constructor(
     private readonly sql: SqlStorage,
-    private readonly env: GlobalMutationSource,
+    private readonly env: BindingVerificationSource,
     private readonly bucket: R2Bucket,
     private readonly target: ControlRestoreTarget,
     private readonly inventory: () => R2S3Inventory,
@@ -147,6 +149,7 @@ export class ControlRestoreBlobs {
             current();
           },
           {
+            stop: { revision: challenge.revision, token: challenge.token, expiresAt: deadline },
             current,
             fence: () => {
               current();

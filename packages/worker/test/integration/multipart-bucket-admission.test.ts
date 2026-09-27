@@ -171,9 +171,10 @@ it.each([
   const fault =
     mode === "unavailable" ? null : systemMutationFault(prefix("scan-init"), mode, 1, db);
   let permit = "";
-  const source: GlobalMutationSource = {
+  const source: GlobalMutationSource & R2WriteSource = {
     DB: fault?.db ?? db,
     systemControl: {
+      ...r2WriteFixture(db),
       status: () => mutationEnv(db, db).CONTROL.get(env.CONTROL.idFromName("fixture")).status(),
       acquireGlobalMutation: (r) => {
         if (r.permitId.startsWith(prefix("scan-init"))) {

@@ -1,5 +1,6 @@
 import type { SqlStatement } from "./primary";
 import { isAbortWrite, type R2AbortProof, validateAbortWrite } from "./r2Abort";
+import { type R2ProbeProof, validateProbeWrite } from "./r2Probe";
 import {
   isUploadWrite,
   type R2UploadProof,
@@ -9,6 +10,7 @@ import {
 import { type RestorePause, restorePauseCondition } from "./restorePause";
 
 export type R2WriteKind =
+  | "probe.put"
   | "multipart.abort"
   | "bucket.abort"
   | UploadWriteKind
@@ -40,6 +42,7 @@ export interface R2WriteRequest {
   gc?: R2GcProof;
   upload?: R2UploadProof;
   abort?: R2AbortProof;
+  probe?: R2ProbeProof;
 }
 export interface R2WriteGrant extends R2WriteRequest {
   token: string;
@@ -52,24 +55,33 @@ export function validateR2Write(request: R2WriteRequest): void {
     !uuid.test(request.id) ||
     !Number.isSafeInteger(request.epoch) ||
     request.epoch < 1 ||
-    (request.kind === "orphan.delete" || request.kind === "bucket.abort"
+    (request.kind === "orphan.delete" ||
+    request.kind === "bucket.abort" ||
+    request.kind === "probe.put"
       ? request.ownerId !== null
       : typeof request.ownerId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(request.ownerId)) ||
     !Number.isSafeInteger(request.deadline) ||
     typeof request.key !== "string" ||
-    (request.kind === "blob.delete" ||
-    request.kind === "orphan.delete" ||
-    isUploadWrite(request.kind) ||
-    isAbortWrite(request.kind)
-      ? !request.key.startsWith("u/") || new TextEncoder().encode(request.key).length > 1024
-      : request.kind === "empty.put"
-        ? !request.key.startsWith(`u/${request.ownerId}/b/op_`) ||
-          !/^u\/[A-Za-z0-9_-]+\/b\/op_[a-f0-9]{64}_blob$/.test(request.key)
-        : !["manifest.put", "manifest.delete"].includes(request.kind) ||
-          !request.key.startsWith("target-sets/") ||
-          !uuid.test(request.key.slice(12)))
+    (request.kind === "probe.put"
+      ? false
+      : request.kind === "blob.delete" ||
+          request.kind === "orphan.delete" ||
+          isUploadWrite(request.kind) ||
+          isAbortWrite(request.kind)
+        ? !request.key.startsWith("u/") || new TextEncoder().encode(request.key).length > 1024
+        : request.kind === "empty.put"
+          ? !request.key.startsWith(`u/${request.ownerId}/b/op_`) ||
+            !/^u\/[A-Za-z0-9_-]+\/b\/op_[a-f0-9]{64}_blob$/.test(request.key)
+          : !["manifest.put", "manifest.delete"].includes(request.kind) ||
+            !request.key.startsWith("target-sets/") ||
+            !uuid.test(request.key.slice(12)))
   )
     throw new Error("invalid_r2_write");
+  if (request.kind === "probe.put") {
+    validateProbeWrite(request);
+    return;
+  }
+  if (request.probe !== undefined) throw new Error("invalid_r2_write");
   if (isUploadWrite(request.kind)) {
     if (request.abort !== undefined) throw new Error("invalid_r2_write");
     validateUploadWrite(request);
@@ -135,6 +147,7 @@ export function validateR2WriteGrant(grant: R2WriteGrant): void {
 export const R2_WRITE_IDENTITY =
   "id=? AND token=? AND epoch=? AND owner_id IS ? AND kind=? AND r2_key=? AND dispatch_before=? AND started_at=? AND source_ref IS ?";
 export function r2WriteSourceRef(g: R2WriteRequest): string | null {
+  if (g.probe) return JSON.stringify([g.epoch, g.probe.token, g.probe.nonce]);
   if (g.upload) return JSON.stringify([g.upload.id, g.upload.attemptId]);
   if (g.abort)
     return JSON.stringify([

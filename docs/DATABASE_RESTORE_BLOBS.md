@@ -26,13 +26,15 @@ pnpm database:restore verify-blobs --remote --operator-config restore-operator.j
 
 返り値は`state:blobs_verified`、`validator:r2-binding-v1`、D1/BLOBS対象、試行ID、challenge ID、revision、観測時刻、元challengeの期限。停止token・probe nonce・credentialsをCLIの成功結果に含めない。
 
-復旧要求に結び付いた観測はD1と別のDO SQLiteに保存し、eviction後も対象固定を維持する。D1 schemaは0039、通常67tableのまま。既存の`r2_binding_probe`台帳とsystem容量64 bytesを再利用する。probeは恒久的に保持し、成功・失敗・取消しで削除しない。遅延した新規PUTが後から別のprobeを作ることを防ぐためである。利用者のファイルやBACKUPSのobjectは変更しない。
+復旧要求に結び付いた観測はD1と別のDO SQLiteに保存し、eviction後も対象固定を維持する。現在のD1 schemaは0044、通常68table。既存の`r2_binding_probe`台帳とsystem容量64 bytesを再利用し、`r2_write_attempts`へ各PUTの送信と実終了も記録する。probeは恒久的に保持し、成功・失敗・取消しで削除しない。遅延した新規PUTが後から別のprobeを作ることを防ぐためである。利用者のファイルやBACKUPSのobjectは変更しない。
 
 条件付きPUTの失敗ではR2 Workers APIが`null`を返す。成功した書込み後の読取りについては[公式Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)の整合性契約に依存する。jurisdictionはbucketの区分として固定し、単なるlocation hintと混同しない（[公式data location](https://developers.cloudflare.com/r2/reference/data-location/)）。
 
 ## 失効・応答喪失
 
 probeのclaim、各外部操作の予算、段階記録、解放は既存の同時32・待機256の共通受付を使う。ControlDO内部は同一instanceで受付を行う。D1更新batchにはepoch・停止revision/token・maintenance/GC停止・backup非凍結の条件を追加する。外部GET/PUT/S3 GETは、その回の予算batchの直接ACKを受けた場合だけ送信する。
+
+PUTはさらに`probe.put`の永続grantを要求する。元のlease token/nonce/source/期待ETagと停止revision/tokenを同じD1 batchで検査し、grant受領後にもDOの復旧scopeを同期検査する。送信前にscopeが閉じていればnot_startedを記録する。R2から実成功が返った場合だけ終了を反映し、timeout後の実成功は検証済み証言へ進めない。新しいprobeの成功やlease満了では、古い結果不明のPUTを精算しない。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
 DO側でもawaitの前後に現在の要求・試行・challenge・停止状態を再検査する。元challengeは5分、BLOBS検証はその残り時間と25秒の短い方に制限する。S3読取りは既存の10秒・64-byte上限を使う。timeout、取消し、停止更新、epoch変更、時計逆行、別試行への置換があれば、遅い応答から次の外部操作を開始しない。既に送信したR2処理の完了を推測せず、未確定の60秒leaseと容量を保持する。
 

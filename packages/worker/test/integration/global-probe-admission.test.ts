@@ -2,11 +2,13 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { GlobalMutationAdmission, MutationRequest } from "../../src/db/mutationAdmission";
-import { withVerifiedR2Inventory } from "../../src/jobs/r2BindingVerification";
+import {
+  type BindingVerificationSource,
+  withVerifiedR2Inventory,
+} from "../../src/jobs/r2BindingVerification";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
-import type { GlobalMutationSource } from "../../src/services/globalMutation";
-import { acquireGlobalMutation } from "../fixtures/mutationAdmission";
+import { acquireGlobalMutation, r2WriteFixture } from "../fixtures/mutationAdmission";
 import { inventoryEnv } from "../fixtures/s3Inventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 
@@ -65,9 +67,13 @@ function fixture(stage: Stage) {
     if (stage.name === "error") throw new Error("r2_binding_mismatch");
     return "verified";
   });
-  const configure = (gate: Gate = acquireGlobalMutation, db = env.DB): GlobalMutationSource => ({
+  const configure = (
+    gate: Gate = acquireGlobalMutation,
+    db = env.DB,
+  ): BindingVerificationSource => ({
     DB: db,
     systemControl: {
+      ...r2WriteFixture(),
       status: async () => ({
         epoch: (await env.DB.prepare("SELECT epoch FROM control").first<number>("epoch"))!,
         maintenance: true,

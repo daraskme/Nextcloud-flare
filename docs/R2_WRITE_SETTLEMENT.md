@@ -1,11 +1,12 @@
 # ファイル保存・multipart・配信manifest・GCのR2書込み記録
 
-更新: 2026-09-27。migration `0041`〜`0043`、通常68table。空ファイルPUT・単一/DAV PUT・multipart作成/part/完了/中止・target manifest PUT/DELETE・blob/orphan GCのDELETEを送信前から記録し、結果不明のまま復旧凍結・受付再開・対象GCへ進むことを防ぐ。
+更新: 2026-09-27。migration `0041`〜`0044`、通常68table。BLOBS接続probe・空ファイルPUT・単一/DAV PUT・multipart作成/part/完了/中止・target manifest PUT/DELETE・blob/orphan GCのDELETEを送信前から記録し、結果不明のまま復旧凍結・受付再開・対象GCへ進むことを防ぐ。
 
 ## 接続した送信点
 
 | 操作 | 送信条件 | 完了の扱い |
 |---|---|---|
+| BLOBS/S3接続probe | 固定system key、明示null owner、元のlease token/nonce/source/期待ETag、prepared phase、現epoch・maintenance/GC停止をgrant batchで再検査。復旧先照合では停止revision/tokenと元期限も要求 | `probe.put`のnative実成功を記録後にS3読戻しへ進む。条件不成立のnullもnativeが終了した事実として記録するが、接続検証はconflictで失敗する |
 | `createLockedEmptyFile` | 元のLockDO permit・認可に加え、実ownerの共通受付と永続grant。既存keyを上書きしない条件付きPUT | native PUT成功だけを終了記録へ送る。条件不成立の`null`は終了したno-opで、既存の空objectをHEADで検証する |
 | `stageTargetManifest` | 新しいUUID key・実owner・現epochで共通受付と永続grant。保持中の履歴と同じkeyを使うPUTは拒否 | 条件付きPUTの終了を記録後、従来のmanifest読戻し・hash検証・ticket公開へ進む |
 | `discardUnpublishedManifest` | 従来の公開取消しbatchの直接ACKを維持。成功したstagingのowner/key、未公開、同keyのpendingなしをD1で再検査 | 専用global受付でDELETEを記録する。安定したmaintenance中も回収できるが、復旧凍結中は新規受付しない |
@@ -26,11 +27,13 @@
 
 beginのD1更新が失敗し、grantを一度も返していない場合は`not_started`を永続化する。D1の終端行は遅延した同IDのINSERTを主キーで拒否する。開始batchのACK喪失を再送許可へ変えない。
 
-DOの未精算receipt・D1のpendingはそれぞれ全11種類で共有する最大32件。空ファイルの同keyへの並行条件付きPUTは個別の試行として数える。開始・終了のD1処理には既存の32 active/256 waiting枠を使い、R2待機中はその短期枠を保持しない。GCの開始は`global:r2.gc-delete`、multipart中止は`global:r2.multipart-abort`、終了反映は`global:r2.write-settle`を使う。ControlDO内部からは同じinstanceへ直接接続する。
+DOの未精算receipt・D1のpendingはそれぞれ全12種類で共有する最大32件。空ファイルの同keyへの並行条件付きPUTは個別の試行として数える。開始・終了のD1処理には既存の32 active/256 waiting枠を使い、R2待機中はその短期枠を保持しない。probeの開始は`global:r2.probe-put`、GCは`global:r2.gc-delete`、multipart中止は`global:r2.multipart-abort`、終了反映は`global:r2.write-settle`を使う。ControlDO内部からは同じinstanceへ直接接続する。
 
 grant待機の上限は25秒で、送信開始期限自体は最大5秒。uploadのnative送信を開始した後は、元の最大15分の転送leaseまで待機する。GCと中止処理は25秒と呼出し元の固定期限を上限にする。timeoutはnative処理の中止や終了を意味せず、pendingを残す。生きている継続が後から実成功を受け取った場合は、その事実を終了RPCへ送る。nativeの拒否、RPC応答喪失、DO eviction、lease満了、HEAD不在だけではpendingを解消しない。
 
 新しい6種類は`source_ref`に元のupload/attempt、または中止元/claim/handleを保存する。kindとsource_refの一意制約により、新しい要求UUIDでも同じ元試行を再送できない。送信されなかった別要求の`not_started`行だけは同じsource_refを許可し、拒否したgrantのローカル保留を確実に精算できるようにする。
+
+probeの`source_ref`はepoch・元lease token・nonceを固定する。既存の64-byte永久割当、ETagによるCAS、60秒leaseを維持し、全検証の25秒期限をgrant待機で延長しない。停止challengeの残り時間が短い場合はそちらを上限にする。復旧のscopeをgrant受領後にも同期検査し、その直後にgrantの5秒期限を再確認する。閉鎖済みまたは期限超過ならnativeを呼ばずnot_startedを記録する。送信済みのPUTがtimeout後に実成功した場合は終了記録だけを反映し、S3読取りや検証済み証言を遅れて実行しない。新しいgenerationで接続を検証できても、過去の不明なPUTは独立したpendingとして保持する。
 
 同keyにpendingがある間はuploadの予約解放・cleanup完了・GC handoffを拒否する。完成objectのphysical計上や既存のobject検証は可能だが、HEAD不在、成功した別のabort、UploadDOの停止だけでは古いnative保留を消さない。D1 triggerでも予約のreserved→releasedとcleanup_pendingの解除を拒否する。
 
@@ -49,20 +52,20 @@ DOの使用済みIDは24時間、D1終端receiptはSQL時計で24時間保持し
 
 通常バックアップを新規開始するときも、intent保存前にD1のpendingとDOの未精算receiptが空であることを要求する。転送中に凍結するとnative終了のD1反映と元のopen policyへの復帰が互いに待ち続けるため、終了記録が残る間はbackup intentを作らず拒否する。生きている転送の終了記録はそのまま反映でき、解消後に同じbackup IDで開始できる。D1だけ・DOだけに残った記録も検査する。単なる未開始upload予約の満了は待たない。
 
-migrationはmaintenance中、backup/restore freezeなし、open permit・claimed operation・未閉鎖mutation admissionなしで適用する。0042はGCの2種類とorphanのnull owner、UTF-8で最大1,024bytesのkeyを追加。0043はupload/multipartの6種類、bucket.abortのnull owner、source_refと一意制約、upload精算guardを追加する。期限切れpendingと終端行は旧10列を双方向に照合して全行保持し、索引と全guardを再作成する。通常table数は増やさない。実環境へは未適用。新Workerは0043を前提とする。
+migrationはmaintenance中、backup/restore freezeなし、open permit・claimed operation・未閉鎖mutation admissionなしで適用する。0042はGCの2種類とorphanのnull owner、UTF-8で最大1,024bytesのkeyを追加。0043はupload/multipartの6種類、bucket.abortのnull owner、source_refと一意制約、upload精算guardを追加する。0044はownerなしのprobe.putと元challengeの一意性を追加する。期限切れpendingと終端行は0042/0043では旧10列、0044ではsource_refを含む旧11列を双方向に照合して全行保持し、索引と全guardを再作成する。通常table数は増やさない。実環境へは未適用。新Workerは0044を前提とする。
 
 移行は旧Workerから既に送信された処理の記録を後付けできない。実配備の切替えでは旧処理の終了確認も必要であり、tableが空であることだけを旧処理の終了証明にしない。
 
 ## 残る境界
 
-この記録は上記11種類が対象。binding probe、BACKUPS保存、epoch履歴などを含む全R2処理の最終終了証明はまだ統合していない。native結果自体が不明な試行を解消する運用証明も未実装。
+この記録は上記12種類が対象。BACKUPS側の接続probe・保存/削除、epoch履歴などを含む全R2処理の最終終了証明はまだ統合していない。native結果自体が不明な試行を解消する運用証明も未実装。
 
 最終停止への次の確認点は以下。通常の運用上の収束条件と、DB巻戻し前のnative終了証明を区別する。
 
 | 既存の送信点 | コードで確認した境界 | 復元前に追加確認すること |
 |---|---|---|
-| `jobs/r2BindingVerification.ts` | CAS、nonce、generationと60秒leaseを持ち、期限後には新しいgenerationを開始できる | 期限を超えた過去のPUTと現在のproofを区別し、全試行の終了を最終停止へ保持する |
-| `backup/prune.ts` / `scripts/backup/publication.mjs` | part/manifestを固定key・hashで照合し、削除後の一覧で世代不在を確認する | Worker側の削除と外部operator側の保存の双方を停止対象へ含める |
+| `do/controlRestoreBackups.ts` | 復旧先BACKUPSの固定probeを新nonce・CASで更新し、DOに試行と停止challengeを保持する | BLOBS側と同様に各PUTのnative終了を保持する。DOのlease満了や新しいprobe成功を旧PUTの終了と扱わない |
+| `backup/prune.ts` / `scripts/backup/publication.mjs` | part/manifestを固定key・hashで照合し、削除後の一覧で世代不在を確認する。CLIの保存は元D1を凍結してから開始する | 凍結中はr2_write_attemptsとmutation_admissionsも更新できない。全table凍結を維持した外部の終了証明と、Worker側のDELETEの双方を停止対象へ含める |
 | `do/epochHistory.ts` | 新epochの履歴は条件付きPUTと正確なrecord照合で作る | 復旧要求に固定した事前予約と復元後のD1採用を分離し、遅延した古い発行を拒否する |
 
 uploadでは短い送信開始許可、nativeの終了事実、本文/hash検証、公開の認可を元のattemptへ対応させた。結果不明の運用上の解消と、未知multipart全体の閉鎖・容量精算は別途必要。

@@ -11,7 +11,7 @@ export type R2WriteSource =
     };
 type WriteInput = Pick<
   R2WriteRequest,
-  "epoch" | "ownerId" | "kind" | "key" | "gc" | "upload" | "abort"
+  "epoch" | "ownerId" | "kind" | "key" | "gc" | "upload" | "abort" | "probe"
 >;
 
 /** Each invocation gets one grant; a rejected native call remains unknown, never replayed here. */
@@ -22,6 +22,7 @@ async function runWrite<T>(
   current: () => boolean,
   dispatch: () => void,
   deadline?: number,
+  beforeDispatch?: () => void,
 ): Promise<T> {
   const request: R2WriteRequest = {
     ...input,
@@ -29,6 +30,7 @@ async function runWrite<T>(
     deadline: Math.min(
       deadline ?? Infinity,
       input.upload?.expiresAt ?? Infinity,
+      input.probe?.stop?.expiresAt ?? Infinity,
       input.gc && typeof input.gc.mode === "object" ? input.gc.mode.expiresAt : Infinity,
       Date.now() + 5000,
     ),
@@ -52,13 +54,26 @@ async function runWrite<T>(
   } catch {
     throw new MutationUnavailableError();
   }
-  if (!current() || Date.now() < grant.startedAt || Date.now() >= grant.deadline) {
+  let dispatchError: unknown;
+  let dispatchReady = false;
+  try {
+    if (!current() || Date.now() < grant.startedAt || Date.now() >= grant.deadline)
+      throw new MutationUnavailableError();
+    beforeDispatch?.();
+    const dispatchAt = Date.now();
+    if (!current() || dispatchAt < grant.startedAt || dispatchAt >= grant.deadline)
+      throw new MutationUnavailableError();
+    dispatchReady = true;
+  } catch (error) {
+    dispatchError = error;
+  }
+  if (!dispatchReady) {
     try {
       await control.finishR2Write(grant, "not_started");
     } catch {
       /* keep durable hold */
     }
-    throw new MutationUnavailableError();
+    throw dispatchError;
   }
   let value: T;
   try {
@@ -82,6 +97,7 @@ export async function trackedR2Write<T>(
   input: WriteInput,
   action: () => Promise<T>,
   deadline?: number,
+  beforeDispatch?: () => void,
 ): Promise<T> {
   if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline <= Date.now()))
     throw new MutationUnavailableError();
@@ -127,6 +143,7 @@ export async function trackedR2Write<T>(
             );
         },
         deadline,
+        beforeDispatch,
       ),
       timeout,
     ]);

@@ -1,5 +1,6 @@
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { InventoryBindingProof } from "../db/r2Abort";
+import type { R2ProbeProof } from "../db/r2Probe";
 import {
   BINDING_PROBE_BYTES,
   BINDING_PROBE_KEY,
@@ -13,6 +14,7 @@ import {
   type GlobalMutationSource,
   globalMutationStatements,
 } from "../services/globalMutation";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import { controlFence } from "./uploadCleanup";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -26,9 +28,11 @@ export interface BindingVerification {
 
 /** Optional additional authority; the inventory probe's own lease/accounting still apply. */
 export interface BindingVerificationScope {
+  readonly stop: NonNullable<R2ProbeProof["stop"]>;
   current(): void;
   fence(): SqlStatement;
 }
+export type BindingVerificationSource = GlobalMutationSource & R2WriteSource;
 
 /** Only usable inside withVerifiedR2Inventory; persist mutations in the same batch as fence(). */
 export interface VerifiedR2Inventory {
@@ -98,7 +102,7 @@ function errorCode(error: unknown): string {
  * the permanent probe: delayed initial conditional creates must continue to fail.
  */
 export async function withVerifiedR2Inventory<T>(
-  env: GlobalMutationSource,
+  env: BindingVerificationSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -106,7 +110,7 @@ export async function withVerifiedR2Inventory<T>(
   scope?: BindingVerificationScope,
 ): Promise<T> {
   const { DB: db } = env;
-  const deadline = Date.now() + 25_000;
+  const deadline = Math.min(Date.now() + 25_000, scope?.stop.expiresAt ?? Infinity);
   const withinBudget = () => {
     if (Date.now() >= deadline) throw new Error("r2_binding_verification_failed");
     scope?.current();
@@ -184,11 +188,30 @@ export async function withVerifiedR2Inventory<T>(
       [current?.etag ?? null],
     );
     await countCall("prepared");
-    const object = await bucket.put(BINDING_PROBE_KEY, nonce, {
-      onlyIf: current ? { etagMatches: current.etag } : new Headers({ "If-None-Match": "*" }),
-      customMetadata: { ncf_kind: BINDING_PROBE_KIND },
-      httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
-    });
+    const object = await trackedR2Write(
+      env,
+      {
+        epoch,
+        ownerId: null,
+        kind: "probe.put",
+        key: BINDING_PROBE_KEY,
+        probe: {
+          token,
+          nonce,
+          source,
+          expectedEtag: current?.etag ?? null,
+          ...(scope ? { stop: scope.stop } : {}),
+        },
+      },
+      () =>
+        bucket.put(BINDING_PROBE_KEY, nonce, {
+          onlyIf: current ? { etagMatches: current.etag } : new Headers({ "If-None-Match": "*" }),
+          customMetadata: { ncf_kind: BINDING_PROBE_KIND },
+          httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
+        }),
+      deadline,
+      withinBudget,
+    );
     if (!object) throw new Error("r2_binding_conflict");
     validObject(object);
     await transition(
@@ -240,7 +263,7 @@ export async function withVerifiedR2Inventory<T>(
     return result;
   } catch (error) {
     const code = errorCode(error);
-    // Retain lease and allocation after every ambiguous write. A new CAS generation reconciles it.
+    // Retain lease and allocation. A fresh CAS never settles an older unknown native write.
     try {
       scope?.current();
       const admission = await acquireGlobalMutation(env, "r2.probe-error");

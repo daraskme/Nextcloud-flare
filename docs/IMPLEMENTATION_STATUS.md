@@ -3,9 +3,20 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)はWindows2分割・backup・browserが成功。Ubuntuの全checkは15分のjob枠で打ち切られたため、今回job枠を30分に変更した。productionと個別テストの期限は変更しない。
+直前`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- migration0044でBLOBS接続probeの条件付きPUTを送信・終了記録へ接続。明示null owner、固定system key、元のlease token/nonce/source/期待ETagと復旧の停止revision/tokenを要求する。元の25秒期限を延長せず、grant後にscopeが閉じた場合は送信前にnot_startedを記録する。新しいprobeの成功は古いunknownを解消しない。
+- 新規workerd14件を含むprobe・共通受付・復旧先BLOBS・schemaの5file/125件が成功（57.65s）。/tmp/ncf-probe-writes-targeted.log。応答喪失、scope終了、grant待機中のlease/phase/mode/proof変更、timeout後の実成功、凍結/再開拒否を確認した。
+- 全11種類・全状態・期限切れpendingの11列保持、元probeの一意性、凍結中移行拒否のNode5件を追加。0044保存世代も追加し、移行/過去世代の2file/23件が成功（6.39s）。/tmp/ncf-probe-writes-node-schema.log。
+- 全体checkが成功。Node989件（51file、45.21s）＋workerd2,392件（111file、1,504.86s）、計3,381件を確認。lint418file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-probe-writes-check.log。停止拒否・通信切断fixtureのworkerdログを含むが、テスト結果と終了コードは成功。
+- 全体check後の最終レビューで、同期scope確認中に5秒のgrant期限を越えた場合にもPUTを呼んでしまう境界を追加試験で再現（1件失敗、2.95s）。/tmp/ncf-probe-writes-clock-before.log。scope確認直後の時刻再検査を追加し、元の停止challengeの残り時間が25秒より短い場合はprobe全体もその期限を使うようにした。期限境界の新規2ケースを含むR2/probe/upload/GC/復旧の6file/260件が成功（128.14s）。/tmp/ncf-probe-writes-regression-final.log。全体checkと追加2件で計3,383ケースを確認し、追加・修正した境界は最終コードで再検証した。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。/tmp/ncf-probe-writes-operator.log、.wrangler/operator-drill-97ylHb/report.json。全13復旧操作の権限拒否、BLOBS/BACKUPSの同じchallengeでの照合、D1凍結・実更新拒否・eviction・取消しを確認。S3/Time Travelは合成providerで、remote運用の検証ではない。
+- 期限境界の修正後もlint418file・型・Web build・Worker dry-runとprivate binding運用ドリルが成功。/tmp/ncf-probe-writes-typecheck-final.log、/tmp/ncf-probe-writes-build-final.log、/tmp/ncf-probe-writes-operator-final.log、.wrangler/operator-drill-9ssqjh/report.json。
+- BACKUPS側probe・保存/削除・epoch履歴とnative結果不明の運用証明は後続。通常68table・依存追加なし、remote resource作成・migration・deployなし。
+
+### 先行するupload・multipartの送信記録
 
 - migration0043、通常68table。単一/DAV PUT・multipart作成/part/完了と初期化失敗/既知ID cleanup/未知ID inventory/全bucket abortを永続記録へ接続。元のattemptをsource_refに固定し、kindとの一意制約で二重送信を防止。grant待機25秒と送信後の元の15分leaseを分離した。同keyのpendingがある間は予約解放・cleanup完了・GC handoffを拒否する。
 - Node全983件（50file、44.16s）が成功。/tmp/ncf-upload-writes-unit-local.log。最初のsandbox内実行ではHTTP受信fixtureがlisten EPERMとなり、CLI stderr試験も失敗したため、ローカル接続を許可した実行で全件を再確認した。

@@ -13,6 +13,7 @@ import {
   type GlobalMutationSource,
   globalMutationStatements,
 } from "../services/globalMutation";
+import type { R2WriteSource } from "../services/r2Write";
 import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -144,7 +145,7 @@ function observation(
 
 /** One verified u/ listing page. An empty page is never a closure certificate. */
 export async function scanMultipartBucket(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
@@ -246,7 +247,7 @@ async function scanPage(
 
 /** Observe one part page; high-water holds survive missing/shrinking parts and lost replies. */
 export async function observeMultipartBucketParts(
-  env: GlobalMutationSource,
+  env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   inventory: R2S3Inventory,
   epoch: number,
