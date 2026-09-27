@@ -25,15 +25,15 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[復元後のKDF/R2終了記録の修復](DATABASE_RESTORE_NATIVE.md)を拡張しました。36日保持の履歴照合に加え、D1精算や履歴保存の障害でDO内に残った終了記録も、同じ復旧要求のコマンドから精算できます。D1の走査が完了してもDO/D1に保留が残ればCLIは終了code 2を返します。処理途中の新しい停止を検知し、外部処理を再実行せず、FTS/全監査が終わるまで受付を閉じたままにします。
+[復元後のupload・予約・outbox修復](DATABASE_RESTORE_DOMAINS.md)をprivate operatorとCLIへ接続しました。`repair-restored`から4種類を1回最大20件ずつ処理します。multipartの実中止後にDB更新だけ失敗した場合は、元のR2記録とDO履歴を照合して閉鎖記録を補い、再中止せず精算できます。証拠が不足する対象の容量と元tokenは保持し、修復前後の停止・全監査を維持します。
 
-schema0046・通常68table・依存追加なし。今回の関連テストはNode52件＋workerd105件＝157件成功（新規22件）。型・lint457file・契約/設定・Web build・Worker dry-runも成功しました。前回daa143eの全体checkは3,706件成功。今回の検証範囲とprivate binding試験の結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。今回の関連テストはNode112件と、再実行を含むworkerd7file/190件で計302件成功（新規49件）。型・lint463file・契約/設定・Web build・Worker dry-runも成功しました。運用通し試験とCIを含む検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はupload/multipart・予約・outbox・旧backup記録など、復元後に残る各領域の修復を要求単位のoperatorへ接続する工程です。今回の履歴は導入前の削除済み証拠や全storage喪失を補えず、unknownは保持します。安全な中止、logical import、大規模DBの再開/RTO、終了履歴の実容量/負荷測定も残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はmultipart inventory・全bucketの未知handle・orphan/GC・旧backup記録の修復を、同じ復旧要求へ固定した運用経路へ接続する工程です。元abortのD1記録がないsnapshot、導入前の削除済み証拠、全DO storage喪失などのunknownは引き続き保持します。安全な中止、logical import、大規模DBの再開/RTO、終了履歴の実容量/負荷測定も残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-domain修復を接続する際は、`multipartCleanup.ts`が既存cleanup_tokenを上書きする前に、元abortの全R2識別tuple・source_refとDO履歴を照合できるようにする。実abort成功後のD1 closure更新失敗を再abortで補うと、NoSuchUploadを新しいunknownへ変えてしまう。既存の`multipart_cleanup_closed`だけが欠けたケースと、元snapshotにabort記録がないケースを区別し、後者はinventory等の別の証拠なしに終了扱いしない。単一uploadの24時間期限、予約のupload/DAV参照保護、outboxの元operation照合を維持する。native未終了のpreflightと同じ停止tokenへの束縛も必要。これらのdomain変更はまだ実装していない。
+今回のdomain接続は`restoreDomainRepair.ts`と`restoreMultipartAbort.ts`が中心。private `repairDomain`と`repair-restored --kind ... --limit ...`は1回だけのbounded passで、自動再送しない。前回のabortの照合は新しいcleanup claimの前に行い、元tupleをclaim内にも渡す。DO履歴はhashだけなので、元のD1 receiptが欠けるsnapshotや通常の24時間保持後の削除をそれだけで補えない。inventory接続では新しい成功を以前のunknownの終了証明にせず、bucket/source照合、元handle・upload対応、native保留、容量・最終監査を維持する。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前daa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)は確認時点でUbuntu・Windows3分割・browserの5job成功、backupは実行中。a57175cのWindows分割1が30分上限で取消されたため、daa143eから3分割へ変更し、3分割すべての成功を確認しました。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)はUbuntu・Windows3分割・backup・browserの全6job成功。先行daa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)も全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 

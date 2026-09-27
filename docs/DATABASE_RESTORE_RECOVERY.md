@@ -21,7 +21,7 @@ pnpm database:restore resume-restored-gc --remote --operator-config restore-oper
 
 `audit-restored`は開始時または修復で監査が無効になった時に遠隔D1のFTSを再構築し、その後、永続cursorを進める。page sizeは1〜20、1回のCLIのpage数は1〜100。`audit.completed=false`なら終了code 2で、同じコマンドを再実行して続ける。pageの失敗を成功扱いにしたり、自動再送・自動再開したりしない。
 
-復元でpendingへ戻ったKDF/R2は[終了証拠に基づく修復CLI](DATABASE_RESTORE_NATIVE.md)で照合する。各領域の修復は既存の停止中repairで行う。修復後は監査が無効になり、FTS再構築からやり直す。明示的にやり直す場合は`rebuild-restored-fts`に同じ引数を渡す。これはholdを解除しない。
+復元でpendingへ戻ったKDF/R2は[終了証拠に基づく修復CLI](DATABASE_RESTORE_NATIVE.md)で照合する。続いて[upload・multipart・予約・outboxの修復CLI](DATABASE_RESTORE_DOMAINS.md)を必要な種類ごとに実行する。修復後は監査が無効になり、FTS再構築からやり直す。明示的にやり直す場合は`rebuild-restored-fts`に同じ引数を渡す。これはholdを解除しない。
 
 `resume-restored`は全監査が完了した停止状態からholdを解除して受付を開く。GCは停止したまま。`resume-restored-gc`は受付再開後の別工程であり、最後にGCを再開する。CLIはtokenや監査の内部nonceを出力しない。
 
@@ -48,6 +48,6 @@ DOの既存要求tableへnullable `released_at`を追加し、activeの一意制
 
 ## 残る制約
 
-この経路は既存の全監査で検証可能な復元状態を対象とする。古いschemaは先のsnapshot検証・epoch採用には対応するが、この監査は現行schemaを必要とし、自動migrationはしない。未終了のKDF/R2や未知multipartを期限・HEADだけで終了扱いにしない。必要なrepairをprivate operatorへ集約するUI/CLI、旧backup記録や未知処理の全ケースの収束、旧実装/全DO喪失時の外部I/O終了証明、logical import、安全な中止、大規模DBのRTOは引き続き未完了。
+この経路は既存の全監査で検証可能な復元状態を対象とする。古いschemaは先のsnapshot検証・epoch採用には対応するが、この監査は現行schemaを必要とし、自動migrationはしない。未終了のKDF/R2や未知multipartを期限・HEADだけで終了扱いにしない。inventory/GC・旧backup修復のprivate operator接続、未知処理の全ケースの収束、旧実装/全DO喪失時の外部I/O終了証明、logical import、安全な中止、大規模DBのRTOは引き続き未完了。
 
 実Cloudflareでの復元・再開は未実施。ローカルの合成providerとD1 control巻戻しによる通し試験は、実Time Travelや本番運用証明の代わりにはしない。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。

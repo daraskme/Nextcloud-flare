@@ -4,6 +4,7 @@ import type { RestoreAdoptionChallenge } from "../../../shared/src/restoreAdopti
 import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
+import type { RestoreDomainKind } from "../../../shared/src/restoreDomain";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
 import type {
   RestoreSnapshotChallenge,
@@ -100,6 +101,9 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   repairNative(epoch: number, id: string, limit = 10) {
     return this.#control(epoch, id).repairDatabaseRestoreNative(epoch, id, limit);
+  }
+  repairDomain(epoch: number, id: string, kind: RestoreDomainKind, limit = 20) {
+    return this.#control(epoch, id).repairDatabaseRestoreDomain(epoch, id, kind, limit);
   }
   rebuildRecoveryFts(epoch: number, id: string) {
     return this.#control(epoch, id).rebuildDatabaseRestoreFts(epoch, id);

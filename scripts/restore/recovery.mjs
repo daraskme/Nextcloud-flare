@@ -1,3 +1,4 @@
+import { restoreDomainKind } from "../../packages/shared/src/restoreDomain.ts";
 import { restoreStatus } from "./verify.mjs";
 
 const released = ["recovery_ready", "service_resumed", "gc_resumed"];
@@ -180,6 +181,49 @@ export async function rebuildRestoredFts({ epoch, id, control }) {
     status = sameStatus(raw, selected);
   if (status.state !== "epoch_adopted") throw new Error("database_restore_recovery_conflict");
   return { ...status, audit: auditStatus(raw.audit, selected.newEpoch) };
+}
+
+/** One explicit bounded domain pass, including possible native multipart aborts. Never retry RPC. */
+export async function repairRestoredDomain({ epoch, id, kind, limit = 20, control }) {
+  restoreDomainKind(kind);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+    throw new Error("database_restore_invalid_recovery_limit");
+  const selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
+  if (selected.state !== "epoch_adopted") throw new Error("database_restore_recovery_unavailable");
+  const raw = await control.repairDomain(epoch, id, kind, limit),
+    status = sameStatus(raw, selected),
+    r = raw.repair;
+  if (status.state !== "epoch_adopted" || !r || r.kind !== kind || typeof r.pending !== "boolean")
+    throw new Error("database_restore_invalid_domain_repair");
+  const repair = { kind, pending: r.pending };
+  const count = (v) => Number.isSafeInteger(v) && v >= 0 && v <= limit;
+  if (kind === "single" || kind === "multipart") {
+    const c = r.cleanup;
+    if (
+      !c ||
+      ![c.claimed, c.absent, c.queued, c.retried, r.held].every(count) ||
+      c.claimed !== c.absent + c.queued + c.retried ||
+      c.claimed + r.held > limit ||
+      (kind === "single" && r.held !== 0) ||
+      !Number.isSafeInteger(c.r2Calls) ||
+      c.r2Calls < 0 ||
+      c.r2Calls > c.claimed * (kind === "single" ? 1 : 2)
+    )
+      throw new Error("database_restore_invalid_domain_repair");
+    repair.cleanup = {
+      claimed: c.claimed,
+      absent: c.absent,
+      queued: c.queued,
+      retried: c.retried,
+      r2Calls: c.r2Calls,
+    };
+    repair.held = r.held;
+  } else {
+    const key = kind === "reservations" ? "released" : "failed";
+    if (!count(r[key])) throw new Error("database_restore_invalid_domain_repair");
+    repair[key] = r[key];
+  }
+  return { ...status, repair };
 }
 
 /** Hold release uses the exact completed audit. Service opens first; GC has a separate command. */

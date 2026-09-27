@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前daa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)は確認時点でUbuntu・Windows3分割・browserの5job成功、backupは実行中。a57175cのWindows分割1が30分上限で取消されたため、daa143eから3分割へ変更し、3分割すべての成功を確認しました。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)はUbuntu・Windows3分割・backup・browserの全6job成功。先行daa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)も全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [復元後のupload・予約・outbox修復](DATABASE_RESTORE_DOMAINS.md)をprivate `repairDomain`と`repair-restored --kind ... --limit ...`へ接続。元要求/採用済みepoch/同じ停止token、write flag、DO/D1 native保留なしを確認して1回最大20件を修復し、監査を無効にする。単一uploadの元期限、予約のupload/DAV保護、outboxのcommitted operation/stepを維持する。内部token・keyを出力せず、未解決状態は終了code 2とする。
+- multipartの前回cleanupを、新しいtokenへ上書きする前に照合。全9列のR2識別tuple/source_refとDO履歴が一致した実abort成功からDBの閉鎖記録を補い、HEADと容量精算へ進む。未送信証明なら新しい中止が可能。不足/不一致は元tokenと容量を保持して60秒backoffし、後続対象へ進める。claimにも元tupleをassertし、停止変更前後の未送信/遅延終了を記録する。
+- 新規Node26件を含む3file/112件成功（29.70s）。4種類の単発実行、limit/CLI引数、結果のcount/種別/要求照合、秘密非出力、unknown RPC再送拒否を確認。/tmp/ncf-domain-node.log。
+- 新規workerdは初回21件成功（37.88s）。未対応outboxとDO-only R2保留、hold解除後拒否を加えた7file/190件の回帰は189成功・1失敗（168.27s）。不一致を作るfixtureの期限+1msが、元grantの開始時刻と同じmsでは5秒上限を越えていた。制約内の-1msへ修正し、新規file全23件が成功（37.01s）。再実行を含め7file/190件を確認した。実abort後のclosure失敗/修復ACK喪失/rollback/期限不一致、eviction、未送信/遅延native終了、DBだけの成功行、未知handle、保持と後続処理、予約/physical/GC handoff、監査無効化を検証。既存single/multipart/inventory/復旧受付の6file/167件も成功。/tmp/ncf-domain-worker.log、/tmp/ncf-domain-worker-final.log、/tmp/ncf-domain-worker-focus-final.log。
+- 型・lint463file・契約/設定検査・Web build・Worker dry-run成功。fixtureのR2 handle wrapperへ実uploadPart/complete methodを委譲して型を修正し、最終型検査も成功。/tmp/ncf-domain-types.log、/tmp/ncf-domain-build.log。D1 schema0046・通常68table・依存追加なし。
+- private bindingドリル成功。全27復旧操作の権限拒否、68table/SQL57,512bytesのsnapshot、native修復、空の4種類のdomain修復、12ページ全監査、hold解除と受付/GC段階再開を確認。/tmp/ncf-domain-operator.log、.wrangler/operator-drill-ZgeAGQ/report.json。元backupは11,370bytes。S3/Time Travelは合成provider、D1 control巻戻しのfixtureであり、実Cloudflare復元ではない。remote migration/deploy・通知・timer設置は行っていない。
+
+### 先行するlive終了記録の修復と保留判定
 
 - 復元後のnative修復へ既存live KDF/R2精算を接続。各種類をpage-size件まで処理してから履歴走査を行う。DOの未知記録と保存失敗を保持し、各記録の前後に採用済み要求と同じ停止tokenを確認する。D1全体のpending件数もページ後に再取得し、CLIは走査完了だけでは成功終了しない。APIの追加・schema変更・依存追加なし。
 - 新規Node17件を含むCLI52件成功（0.66s）。DOだけの未知記録、D1の未精算、保存失敗、件数欠落/境界/不正値、出力正規化と再開拒否を確認。/tmp/ncf-live-native-node.log。

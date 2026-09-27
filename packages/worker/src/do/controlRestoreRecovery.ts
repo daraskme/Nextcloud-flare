@@ -1,4 +1,5 @@
 import { restoreAdoptionChallenge } from "../../../shared/src/restoreAdoption";
+import { type RestoreDomainKind, restoreDomainKind } from "../../../shared/src/restoreDomain";
 import { assertExists, atomicBatch, primary } from "../db/primary";
 import type { ControlStatus, RecoveryAuditStatus } from "./ControlDO";
 import type {
@@ -10,6 +11,7 @@ import type { ControlDatabaseRestore } from "./controlDatabaseRestore";
 import type { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import type { KdfRepairResult } from "./kdfSettlements";
 import { RECOVERY_FINAL_QUERY } from "./recoveryAudit";
+import type { RestoreDomainRepairStatus } from "./restoreDomainRepair";
 import { RestoreNativeRepair } from "./restoreNativeRepair";
 
 interface RecoveryHost {
@@ -18,6 +20,12 @@ interface RecoveryHost {
   rebuild(epoch: number): Promise<RecoveryAuditStatus>;
   status(): Promise<ControlStatus>;
   repair<T>(epoch: number, action: () => Promise<T>): Promise<T>;
+  domain(
+    kind: RestoreDomainKind,
+    limit: number,
+    transition: { epoch: number; revision: number; token: string },
+    current: () => void,
+  ): Promise<RestoreDomainRepairStatus>;
   repairLive(
     limit: number,
     current: () => void,
@@ -74,6 +82,41 @@ export class ControlRestoreRecovery {
       stopped();
       if (!databasePending) throw new Error("database_restore_native_repair_unconfirmed");
       return { ...page, live, databasePending };
+    });
+    current();
+    return { ...this.restore.inspect(epoch, id), repair };
+  }
+
+  async repairDomain(
+    epoch: number,
+    id: string,
+    kind: RestoreDomainKind,
+    limit: number,
+    writeEnabled: boolean,
+  ) {
+    restoreDomainKind(kind);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+      throw new Error("invalid_recovery_limit");
+    const { selected } = this.#scope(epoch, id);
+    const current = () => {
+      if (this.#scope(epoch, id).selected.state !== "epoch_adopted")
+        throw new Error("database_restore_recovery_released");
+      this.admission.assertClosed(selected.newEpoch!);
+    };
+    current();
+    if (!writeEnabled) throw new Error("database_restore_write_disabled");
+    const repair = await this.host.repair(selected.newEpoch!, async () => {
+      current();
+      const transition = this.admission.captureDatabaseRestore(selected.newEpoch!),
+        encoded = JSON.stringify(transition);
+      const stopped = () => {
+        current();
+        if (JSON.stringify(this.admission.captureDatabaseRestore(selected.newEpoch!)) !== encoded)
+          throw new Error("database_restore_recovery_conflict");
+      };
+      const result = await this.host.domain(kind, limit, transition, stopped);
+      stopped();
+      return result;
     });
     current();
     return { ...this.restore.inspect(epoch, id), repair };

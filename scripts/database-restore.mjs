@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { restoreBookmarkTimestamp } from "../packages/shared/src/restoreBookmark.ts";
+import { RESTORE_DOMAIN_KINDS } from "../packages/shared/src/restoreDomain.ts";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
 import { adoptRestoreEpoch } from "./restore/adoption.mjs";
 import { verifyRestoreBackups } from "./restore/backups.mjs";
@@ -12,6 +13,7 @@ import { freezeRestoreDatabase } from "./restore/freeze.mjs";
 import {
   auditRestored,
   rebuildRestoredFts,
+  repairRestoredDomain,
   repairRestoredNative,
   resumeRestored,
 } from "./restore/recovery.mjs";
@@ -43,6 +45,7 @@ const usage = `Usage:
   pnpm database:restore verify-restored --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore audit-restored --operator-config JSON --remote --epoch N --id UUID [--max-pages 100] [--page-size 10]
   pnpm database:restore repair-restored-native --operator-config JSON --remote --epoch N --id UUID [--max-pages 100] [--page-size 10]
+  pnpm database:restore repair-restored --operator-config JSON --remote --epoch N --id UUID --kind single|multipart|reservations|outbox [--limit 20]
   pnpm database:restore rebuild-restored-fts --operator-config JSON --remote --epoch N --id UUID
   pnpm database:restore resume-restored --operator-config JSON --remote --epoch N --id UUID
   pnpm database:restore resume-restored-gc --operator-config JSON --remote --epoch N --id UUID
@@ -63,6 +66,7 @@ verify-restored independently reads the restored database, checks a trusted migr
 adopt-epoch atomically stops the verified D1 snapshot at the reserved epoch, independently reads its new marker, and publishes that epoch in DO. Requires RESTORE_WRITE_ENABLED=true for the first write. Unknown D1 batches are never sent again; retry only reconciles the same marker. Admission and GC remain closed.
 audit-restored rebuilds restored FTS when starting or restarting an audit, then advances bounded durable audit pages. Exit 2 means more pages remain; repeat the same request. Failed audits retain the hold and require the relevant repair. rebuild-restored-fts explicitly rebuilds FTS and restarts the audit.
 repair-restored-native settles known live KDF/R2 completion records, then scans restored pending rows in durable pages against retained evidence. It restarts the audit, never repeats external I/O, and keeps unknown records pending. Exit 2 means pages, unknown work, or any DO/D1 hold remains. Repeating a finished pass starts a new scan.
+repair-restored runs one bounded domain repair pass after adoption with RESTORE_WRITE_ENABLED=true. Native holds must be settled first. Single uploads retain their original expiry; multipart cleanup requires closure evidence before refunds. Stale reservations and supported outbox events use their original provenance. A failed RPC is never retried automatically. Exit 2 means domain holds remain, including ineligible uploads, inventory/GC handoffs or unsupported events. Full audit and separate resume commands remain required.
 resume-restored requires the exact completed audit and a fresh final D1 fence, releases the restore hold, then opens admission with GC still paused. RESTORE_WRITE_ENABLED=true is required for first hold release. resume-restored-gc separately resumes GC last. All commands use the original epoch/request ID. A newer stop invalidates the old resume request. Live operational proof, unknown execution recovery and safe abandonment remain release gates.
 `;
 try {
@@ -83,6 +87,8 @@ try {
       timestamp: { type: "string" },
       "max-pages": { type: "string" },
       "page-size": { type: "string" },
+      kind: { type: "string" },
+      limit: { type: "string" },
       help: { type: "boolean" },
     },
   });
@@ -107,6 +113,7 @@ try {
         "adopt-epoch": ["config", "environment"],
         "audit-restored": ["max-pages", "page-size"],
         "repair-restored-native": ["max-pages", "page-size"],
+        "repair-restored": ["kind", "limit"],
         "rebuild-restored-fts": [],
         "resume-restored": [],
         "resume-restored-gc": [],
@@ -121,11 +128,18 @@ try {
       ([
         "audit-restored",
         "repair-restored-native",
+        "repair-restored",
         "rebuild-restored-fts",
         "resume-restored",
         "resume-restored-gc",
       ].includes(command) &&
         !values.remote) ||
+      (command === "repair-restored" &&
+        (!RESTORE_DOMAIN_KINDS.includes(values.kind) ||
+          (values.limit !== undefined &&
+            (!/^\d+$/.test(values.limit) ||
+              Number(values.limit) < 1 ||
+              Number(values.limit) > 20)))) ||
       (values["max-pages"] !== undefined &&
         (!/^\d+$/.test(values["max-pages"]) ||
           Number(values["max-pages"]) < 1 ||
@@ -239,6 +253,15 @@ try {
           });
           if (command === "audit-restored" ? !result.audit.completed : result.repair.pending)
             process.exitCode = 2;
+        } else if (command === "repair-restored") {
+          result = await repairRestoredDomain({
+            epoch,
+            id,
+            kind: values.kind,
+            limit: Number(values.limit ?? 20),
+            control,
+          });
+          if (result.repair.pending) process.exitCode = 2;
         } else if (command === "rebuild-restored-fts") {
           result = await rebuildRestoredFts({ epoch, id, control });
         } else if (["resume-restored", "resume-restored-gc"].includes(command)) {

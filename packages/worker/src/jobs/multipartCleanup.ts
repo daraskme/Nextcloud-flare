@@ -79,6 +79,7 @@ export async function claimMultipartCleanup(
   token: string,
   deadline: number,
   inventory?: { source: string; fence(): SqlStatement },
+  previous?: SqlStatement,
 ): Promise<Candidate | null> {
   const { DB: db } = env;
   const ownerId = await primary(db)
@@ -90,6 +91,7 @@ export async function claimMultipartCleanup(
     const admission = await acquireSystemMutation(env, ownerId, "upload.cleanup-claim", deadline);
     await commitSystemMutation(db, admission, ownerId, [
       controlFence(epoch, maintenance),
+      ...(previous ? [previous] : []),
       ...(inventory ? [inventory.fence()] : []),
       assertExists(
         `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.owner_id=? AND u.epoch<=? AND ${inventory === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
@@ -149,7 +151,13 @@ export async function repairMultipartUploads(
   env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { maxUploads?: number; maxWallMs?: number; maintenance?: boolean } = {},
+  options: {
+    maxUploads?: number;
+    maxWallMs?: number;
+    maintenance?: boolean;
+    current?: () => void;
+    beforeClaim?: (id: string, deadline: number) => Promise<SqlStatement | false>;
+  } = {},
 ): Promise<UploadCleanupResult> {
   const { DB: db } = env;
   const limit = options.maxUploads ?? 20;
@@ -176,9 +184,23 @@ export async function repairMultipartUploads(
     .bind(epoch, epoch, epoch, maintenance ? 1 : 0, maintenance ? 1 : 0, limit)
     .all<{ id: string }>();
   for (const { id } of rows.results) {
+    options.current?.();
     if (Date.now() - started >= wall) break;
+    const previous = await options.beforeClaim?.(id, started + wall);
+    options.current?.();
+    if (previous === false) continue;
     const token = crypto.randomUUID();
-    const row = await claimMultipartCleanup(env, id, epoch, maintenance, token, started + wall);
+    const row = await claimMultipartCleanup(
+      env,
+      id,
+      epoch,
+      maintenance,
+      token,
+      started + wall,
+      undefined,
+      previous,
+    );
+    options.current?.();
     if (!row) continue;
     result.claimed++;
     const charge = async () => {
@@ -216,6 +238,7 @@ export async function repairMultipartUploads(
             },
             () => bucket.resumeMultipartUpload(row.r2_key, row.r2_upload_id!).abort(),
             started + wall,
+            options.current,
           );
           aborted = true;
         } catch {
@@ -284,5 +307,6 @@ export async function repairMultipartUploads(
       await recordUploadCleanupError(env, row, epoch, maintenance, token, code);
     }
   }
+  options.current?.();
   return result;
 }

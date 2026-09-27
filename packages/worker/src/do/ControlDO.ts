@@ -5,6 +5,7 @@ import type { RestoreAdoptionChallenge } from "../../../shared/src/restoreAdopti
 import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
+import type { RestoreDomainKind } from "../../../shared/src/restoreDomain";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
 import type {
   RestoreSnapshotChallenge,
@@ -95,6 +96,7 @@ import {
   rebuildRecoverySearchFts,
   releaseStaleRecoveryReservations,
 } from "./recoveryAudit";
+import { repairRestoredDomain } from "./restoreDomainRepair";
 
 export { CONTROL_NAME } from "./controlName";
 
@@ -312,6 +314,21 @@ export class ControlDO extends DurableObject<Env> {
         rebuild: (epoch) => this.rebuildRecoveryFts(epoch),
         status: () => this.status(),
         repair: (epoch, action) => this.#maintenance(epoch, action),
+        domain: (kind, limit, transition, current) => {
+          current();
+          this.#kdfSettlements.assertEmpty();
+          this.#r2Writes.assertEmpty();
+          return repairRestoredDomain(
+            ctx.storage.sql,
+            env.DB,
+            env.BLOBS,
+            this,
+            kind,
+            limit,
+            transition,
+            current,
+          );
+        },
         repairLive: async (limit, current) => {
           const kdf = await this.#kdfSettlements.repair(limit, current);
           current();
@@ -539,6 +556,21 @@ export class ControlDO extends DurableObject<Env> {
   async repairDatabaseRestoreNative(expectedEpoch: number, id: string, limit = 10) {
     this.#row();
     return this.#restoreRecovery.repairNative(expectedEpoch, id, limit);
+  }
+  async repairDatabaseRestoreDomain(
+    expectedEpoch: number,
+    id: string,
+    kind: RestoreDomainKind,
+    limit = 20,
+  ) {
+    this.#row();
+    return this.#restoreRecovery.repairDomain(
+      expectedEpoch,
+      id,
+      kind,
+      limit,
+      this.env.RESTORE_WRITE_ENABLED === "true",
+    );
   }
   async rebuildDatabaseRestoreFts(expectedEpoch: number, id: string) {
     this.#row();
