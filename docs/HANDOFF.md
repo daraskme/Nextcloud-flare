@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-26。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-27。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-復旧先D1を照合する`pnpm database:restore verify-d1`を追加しました。対象mode・DB UUID・remote accountをControlDOへ固定し、新しい停止tokenをCLIの独立queryとWorker側の再読取りで照合します。観測は5分以内に限定し、別DB・古いtoken・取消し・期限・時計逆行・保存失敗を拒否します。再実行でも新しいchallengeとqueryを使います。詳細は[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md)。既存の隔離SQL検証は[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md)を参照してください。
+Time Travel候補の`prepare --bookmark`と`verify-bookmark`を追加しました。明示remote・固定account/DBで新しいD1停止tokenを独立照合し、指定UTC時刻へのprovider応答が選択済みbookmarkと一致する場合だけControlDOへ証言を保存します。元challengeから5分の期限を維持し、対象・bookmark・時刻の不一致、取消し、停止更新、時計逆行、保存失敗を拒否します。詳細は[DATABASE_RESTORE_BOOKMARK](DATABASE_RESTORE_BOOKMARK.md)。この記録は復元成功や上書き許可ではありません。
 
-今回の全Node801件と復旧/受付の関連workerd120件（重複を除く）が成功しました。Node39件・workerd23件を追加しています。実named service bindingで全7操作の権限拒否・D1照合・再起動後の再実行を確認し、既存の隔離local fixtureを使った実CLIでも照合・再実行・誤DB拒否・取消し後拒否を確認しました。型・lint385file・契約/設定・Web build・Worker dry-runも成功。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+Node42件・workerd24件を追加し、全Node843件と復旧/受付の関連workerd144件が成功しました。named service bindingの全8操作の権限拒否、合成provider応答によるbookmark保存・再起動後再検証・取消し後拒否も成功。型・lint389file・契約/設定・Web build・Worker dry-runも成功しました。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次はR2 binding・Time Travel bookmarkの検証、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。d1_verifiedとsql_verifiedは各工程の観測/検証で、D1上書き許可ではありません。Time Travel・live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
+次はR2 binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。bookmark照合はローカルの模擬provider応答と実D1/DOで検証したもので、実Cloudflare検索・復元は未検証です。Time Travel/live logical restore、通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。
 
-先行1285adfは専用codex/database-restoreへpush済みで、[CI36134958172](https://github.com/daraskme/Nextcloud-flare/actions/runs/36134958172)の全5ジョブが成功しました。今回のD1照合を区切りとして同じ専用ブランチへcommit/pushします。共有main・remote migration・deployは更新していません。最新のpush/CIはgit statusとgh run listで確認します。
+専用codex/database-restoreで検証済みの区切りをcommitしました。今回の通常pushは自動承認レビューに拒否され未実行です。レビューは、送信内容とGitHub originへの明示的許可を確認できず、過去の引き継ぎ記述を承認根拠にできないとしています。ユーザーへ明示許可を求める状態で、別経路からpushしないでください。共有main・remote migration・deployは更新していません。今回の全体check・Windows・browser・実CLI backupドリルはローカル再実行していません。直前7b39e93の[CI36153888412](https://github.com/daraskme/Nextcloud-flare/actions/runs/36153888412)はWindowsの一時path短縮名比較で失敗していたため、今回fixtureをrealpathへ正規化しました。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 

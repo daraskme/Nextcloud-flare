@@ -5,6 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  restoreBookmark,
+  restoreBookmarkTimestamp,
+} from "../../packages/shared/src/restoreBookmark.ts";
+import {
   assertRestoreD1Mirror,
   RESTORE_D1_QUERY,
   restoreD1Challenge,
@@ -68,46 +72,49 @@ export async function restoreD1Reader(
       )
         throw new Error("database_restore_target_config_changed");
     }
+    async function read(args, error) {
+      await unchanged();
+      let result;
+      try {
+        const output = await run(
+          process.execPath,
+          [wrangler, ...args, "--config", queryConfig, "--json"],
+          {
+            cwd: directory,
+            encoding: "utf8",
+            timeout: 30000,
+            maxBuffer: 1024 * 1024,
+            env: {
+              ...process.env,
+              CI: "true",
+              WRANGLER_SEND_METRICS: "false",
+              ...(mode === "remote" ? { CLOUDFLARE_ACCOUNT_ID: target.accountId } : {}),
+            },
+          },
+        );
+        result = JSON.parse(output.stdout);
+      } catch {
+        throw new Error(error);
+      }
+      await unchanged();
+      return result;
+    }
     await unchanged();
     return {
       target,
       async readMirror() {
-        await unchanged();
-        let result;
-        try {
-          const output = await run(
-            process.execPath,
-            [
-              wrangler,
-              "d1",
-              "execute",
-              "DB",
-              `--${mode}`,
-              "--config",
-              queryConfig,
-              "--command",
-              RESTORE_D1_QUERY,
-              "--json",
-              ...(mode === "local" ? ["--persist-to", join(dirname(path), ".wrangler/state")] : []),
-            ],
-            {
-              cwd: directory,
-              encoding: "utf8",
-              timeout: 30000,
-              maxBuffer: 1024 * 1024,
-              env: {
-                ...process.env,
-                CI: "true",
-                WRANGLER_SEND_METRICS: "false",
-                ...(mode === "remote" ? { CLOUDFLARE_ACCOUNT_ID: target.accountId } : {}),
-              },
-            },
-          );
-          result = JSON.parse(output.stdout);
-        } catch {
-          throw new Error("database_restore_target_read_failed");
-        }
-        await unchanged();
+        const result = await read(
+          [
+            "d1",
+            "execute",
+            "DB",
+            `--${mode}`,
+            "--command",
+            RESTORE_D1_QUERY,
+            ...(mode === "local" ? ["--persist-to", join(dirname(path), ".wrangler/state")] : []),
+          ],
+          "database_restore_target_read_failed",
+        );
         if (
           !Array.isArray(result) ||
           result.length !== 1 ||
@@ -117,6 +124,15 @@ export async function restoreD1Reader(
           throw new Error("database_restore_target_read_failed");
         return result[0].results;
       },
+      async readBookmark(timestamp) {
+        if (mode !== "remote") throw new Error("database_restore_bookmark_unavailable");
+        restoreBookmarkTimestamp(timestamp, Date.now());
+        const result = await read(
+          ["d1", "time-travel", "info", "DB", "--timestamp", timestamp],
+          "database_restore_bookmark_read_failed",
+        );
+        return { bookmark: restoreBookmark(result?.bookmark), timestamp };
+      },
       dispose: () => rm(directory, { recursive: true, force: true }),
     };
   } catch (error) {
@@ -125,7 +141,7 @@ export async function restoreD1Reader(
   }
 }
 
-export async function verifyRestoreD1({ epoch, id, control, reader }) {
+export async function verifyRestoreD1Challenge({ epoch, id, control, reader }) {
   restoreIdentity(epoch, id);
   const target = restoreD1Target(reader.target),
     selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
@@ -155,14 +171,21 @@ export async function verifyRestoreD1({ epoch, id, control, reader }) {
     throw new Error("database_restore_invalid_target_proof");
   // Do not print the admission token, arbitrary provider fields or a cached proof.
   return {
-    id,
-    epoch,
-    target,
-    state: result.state,
-    validator: result.validator,
-    challengeId: result.challengeId,
-    revision: result.revision,
-    verifiedAt: result.verifiedAt,
-    expiresAt: result.expiresAt,
+    challenge,
+    result: {
+      id,
+      epoch,
+      target,
+      state: result.state,
+      validator: result.validator,
+      challengeId: result.challengeId,
+      revision: result.revision,
+      verifiedAt: result.verifiedAt,
+      expiresAt: result.expiresAt,
+    },
   };
+}
+
+export async function verifyRestoreD1(options) {
+  return (await verifyRestoreD1Challenge(options)).result;
 }

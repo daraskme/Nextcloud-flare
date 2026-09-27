@@ -33,4 +33,4 @@ CLIはDBのUUIDとmode、remoteの場合はaccount IDを固定した最小の一
 
 照合のための停止更新は既存のsource検証と競合し得るため、`verify`と`verify-d1`は順に実行する。成功したD1観測も、別の停止更新・取消し・期限経過後には使用できない。将来の最終停止と上書き工程は、その時点で対象とauthorityを再確認する必要がある。
 
-R2 bindingの照合、Time Travel bookmarkの検証、R2/KDF/job/repairの終了証明、最終停止、新epoch予約、実D1上書き・採用・全監査・段階再開は未完了。今回のlocal実CLIとservice bindingの成功は、remote認証や実Cloudflare復旧の成功を示さない。検証件数と実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
+Time Travel bookmarkの時刻検索照合は[専用工程](DATABASE_RESTORE_BOOKMARK.md)へ接続した。R2 bindingの照合、R2/KDF/job/repairの終了証明、最終停止、新epoch予約、実D1上書き・採用・全監査・段階再開は未完了。今回のlocal実CLIとservice bindingの成功は、remote認証や実Cloudflare復旧の成功を示さない。検証件数と実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。

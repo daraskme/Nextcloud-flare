@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -12,7 +12,8 @@ import { restoreD1Reader, verifyRestoreD1 } from "../restore/target.mjs";
 
 let directory, id, target, c, control, reader;
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), "restore-d1-test-"));
+  // Windows TEMP can use an 8.3 alias (RUNNER~1); the reader resolves the actual config path.
+  directory = await realpath(await mkdtemp(join(tmpdir(), "restore-d1-test-")));
   id = randomUUID();
   target = { mode: "local", databaseId: randomUUID() };
   const issuedAt = Date.now();

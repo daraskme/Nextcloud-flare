@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
+import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type { KdfRequest } from "../auth/globalKdf";
 import {
@@ -294,6 +295,18 @@ export class ControlDO extends DurableObject<Env> {
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");
     return this.#restoreTarget.attest(expectedEpoch, id, challenge);
+  }
+
+  async attestDatabaseRestoreBookmark(
+    expectedEpoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    observation: RestoreBookmarkObservation,
+  ) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreTarget.attestBookmark(expectedEpoch, id, challenge, observation);
   }
 
   /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */

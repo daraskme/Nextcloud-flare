@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type { DatabaseRestoreSource } from "../do/controlDatabaseRestore";
 import { CONTROL_NAME } from "../do/controlName";
@@ -41,6 +42,19 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   attestD1(epoch: number, id: string, challenge: RestoreD1Challenge) {
     return this.#control(epoch, id).attestDatabaseRestoreD1(epoch, id, challenge);
+  }
+  attestBookmark(
+    epoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    observation: RestoreBookmarkObservation,
+  ) {
+    return this.#control(epoch, id).attestDatabaseRestoreBookmark(
+      epoch,
+      id,
+      challenge,
+      observation,
+    );
   }
   cancel(epoch: number, id: string) {
     return this.#control(epoch, id).cancelDatabaseRestore(epoch, id);

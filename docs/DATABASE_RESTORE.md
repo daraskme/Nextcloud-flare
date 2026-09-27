@@ -49,7 +49,7 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 
 稼働系復旧の完成には以下が必要で、今回の準備RPCは代替しない。
 
-1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。対象bindingとTime Travel bookmarkの検証を続ける。
+1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。D1対象とTime Travel bookmarkの時刻検索照合も接続済み（[対象](DATABASE_RESTORE_TARGET.md)・[bookmark](DATABASE_RESTORE_BOOKMARK.md)）。R2 binding照合とremote検証を続ける。
 2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集め、停止中repairも禁止する永続的な最終段階へ移す。
 3. D1上書き前に新epochをDO/R2履歴へ予約する。応答不明時に重複発行・再使用しない。
 4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。

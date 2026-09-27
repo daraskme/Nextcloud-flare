@@ -1,4 +1,8 @@
 import {
+  type RestoreBookmarkObservation,
+  restoreBookmarkObservation,
+} from "../../../shared/src/restoreBookmark";
+import {
   assertRestoreD1Mirror,
   RESTORE_D1_QUERY,
   RESTORE_D1_WINDOW_MS,
@@ -37,6 +41,12 @@ export class ControlRestoreTarget {
       id TEXT PRIMARY KEY REFERENCES control_database_restore(id),epoch INTEGER NOT NULL,
       target_json TEXT NOT NULL,challenge_id TEXT NOT NULL,revision INTEGER,token TEXT,
       issued_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,verified_at INTEGER
+    )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_bookmark(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),epoch INTEGER NOT NULL,
+      target_json TEXT NOT NULL,bookmark TEXT NOT NULL,requested_timestamp TEXT NOT NULL,
+      challenge_id TEXT NOT NULL,revision INTEGER NOT NULL,token TEXT NOT NULL,
+      verified_at INTEGER NOT NULL,expires_at INTEGER NOT NULL
     )`);
   }
 
@@ -139,14 +149,9 @@ export class ControlRestoreTarget {
     }
   }
 
-  /** The private CLI independently read the same fresh mirror through its pinned D1 target. */
-  async attest(epoch: number, id: string, input: RestoreD1Challenge) {
-    if (this.#busy) throw new Error("database_restore_target_busy");
-    this.#busy = true;
+  async #readMirror(challenge: RestoreD1Challenge) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const target = JSON.parse(this.#row(id).target_json) as RestoreD1Target,
-        challenge = restoreD1Challenge(input, epoch, id, target);
       this.#current(challenge);
       const result = await Promise.race([
         primary(this.db).prepare(RESTORE_D1_QUERY).all(),
@@ -156,6 +161,21 @@ export class ControlRestoreTarget {
       ]);
       const now = this.#current(challenge);
       assertRestoreD1Mirror(result.results, challenge);
+      return now;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** The private CLI independently read the same fresh mirror through its pinned D1 target. */
+  async attest(epoch: number, id: string, input: RestoreD1Challenge) {
+    if (this.#busy) throw new Error("database_restore_target_busy");
+    this.#busy = true;
+    try {
+      const target = JSON.parse(this.#row(id).target_json) as RestoreD1Target,
+        challenge = restoreD1Challenge(input, epoch, id, target);
+      await this.#readMirror(challenge);
+      const now = this.#current(challenge);
       const saved = this.sql.exec(
         "UPDATE control_database_restore_target SET verified_at=? WHERE id=? AND challenge_id=? RETURNING id",
         now,
@@ -175,7 +195,63 @@ export class ControlRestoreTarget {
         expiresAt: challenge.expiresAt,
       };
     } finally {
-      clearTimeout(timer);
+      this.#busy = false;
+    }
+  }
+
+  /** Trusted CLI testimony of a fresh provider lookup, not proof of a successful restore. */
+  async attestBookmark(
+    epoch: number,
+    id: string,
+    input: RestoreD1Challenge,
+    observation: RestoreBookmarkObservation,
+  ) {
+    if (this.#busy) throw new Error("database_restore_target_busy");
+    this.#busy = true;
+    try {
+      const target = JSON.parse(this.#row(id).target_json) as RestoreD1Target,
+        challenge = restoreD1Challenge(input, epoch, id, target);
+      this.#current(challenge);
+      const source = this.restore.inspect(epoch, id).source;
+      if (source.kind !== "time_travel" || target.mode !== "remote")
+        throw new Error("database_restore_bookmark_unavailable");
+      if (this.#row(id).verified_at === null) throw new Error("database_restore_target_unverified");
+      const verified = restoreBookmarkObservation(observation, source.bookmark, challenge.issuedAt);
+      await this.#readMirror(challenge);
+      const now = this.#current(challenge);
+      const saved = this.sql.exec(
+        `INSERT INTO control_database_restore_bookmark VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET requested_timestamp=excluded.requested_timestamp,
+          challenge_id=excluded.challenge_id,revision=excluded.revision,token=excluded.token,
+          verified_at=excluded.verified_at,expires_at=excluded.expires_at
+        WHERE epoch=excluded.epoch AND target_json=excluded.target_json
+          AND bookmark=excluded.bookmark AND verified_at<=excluded.verified_at
+        RETURNING id`,
+        id,
+        epoch,
+        JSON.stringify(target),
+        verified.bookmark,
+        verified.timestamp,
+        challenge.challengeId,
+        challenge.revision,
+        challenge.token,
+        now,
+        challenge.expiresAt,
+      );
+      if (saved.toArray().length !== 1) throw new Error("database_restore_bookmark_conflict");
+      return {
+        id,
+        epoch,
+        target,
+        ...verified,
+        state: "bookmark_verified" as const,
+        validator: "time-travel-bookmark-v1" as const,
+        challengeId: challenge.challengeId,
+        revision: challenge.revision,
+        verifiedAt: now,
+        expiresAt: challenge.expiresAt,
+      };
+    } finally {
       this.#busy = false;
     }
   }

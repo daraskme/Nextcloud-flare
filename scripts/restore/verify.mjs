@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKUP_MAX_AGE_MS } from "../../packages/shared/src/backupRetention.ts";
+import { restoreBookmark } from "../../packages/shared/src/restoreBookmark.ts";
 import { CHUNK_BYTES, generationId, MAX_PARTS } from "../backup/objectStore.mjs";
 import { downloadGeneration } from "../backup/publication.mjs";
 
@@ -15,6 +16,9 @@ export function logicalSelection(id, epoch, manifestSha256) {
   restoreIdentity(epoch, id);
   if (!hash(manifestSha256)) throw new Error("invalid_database_restore");
   return { kind: "logical", id, epoch, manifestSha256 };
+}
+export function timeTravelSelection(bookmark) {
+  return { kind: "time_travel", bookmark: restoreBookmark(bookmark) };
 }
 export function restoreStatus(value, epoch, id) {
   restoreIdentity(epoch, id);

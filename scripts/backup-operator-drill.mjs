@@ -19,6 +19,7 @@ const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
 const { restoreControlCalls } = await moduleAt("scripts/restore/control.mjs");
 const { verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
 const { verifyRestoreD1 } = await moduleAt("scripts/restore/target.mjs");
+const { verifyRestoreBookmark } = await moduleAt("scripts/restore/bookmark.mjs");
 const { RESTORE_D1_QUERY } = await moduleAt("packages/shared/src/restoreTarget.ts");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
@@ -355,6 +356,7 @@ try {
         [2, restoreId, { mode: "local", databaseId: "00000000-0000-0000-0000-000000000000" }],
       ],
       ["attestD1", [2, restoreId, {}]],
+      ["attestBookmark", [2, restoreId, {}, {}]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -410,6 +412,30 @@ try {
     verifyRestoreSelection({ epoch: 2, id: restoreId, control: restoreControl, store }),
     /database_restore_not_preparing/,
   );
+  // Real private RPC and DO persistence with an explicitly simulated provider response.
+  const bookmarkId = crypto.randomUUID(),
+    timestamp = new Date(Date.now() - 60000).toISOString(),
+    bookmarkReader = {
+      target: { mode: "remote", databaseId: d1Reader.target.databaseId, accountId: "a".repeat(32) },
+      readMirror: d1Reader.readMirror,
+      readBookmark: async () => ({ bookmark: "drill-bookmark", timestamp }),
+    };
+  await restoreControl.prepare(2, bookmarkId, { kind: "time_travel", bookmark: "drill-bookmark" });
+  const verifyBookmark = () =>
+    verifyRestoreBookmark({
+      epoch: 2,
+      id: bookmarkId,
+      control: restoreControl,
+      reader: bookmarkReader,
+      timestamp,
+    });
+  const bookmark = await verifyBookmark();
+  assert.equal(bookmark.state, "bookmark_verified");
+  assert.equal("token" in bookmark, false);
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.notEqual((await verifyBookmark()).challengeId, bookmark.challengeId);
+  await restoreControl.cancel(2, bookmarkId);
+  await assert.rejects(verifyBookmark(), /database_restore_not_preparing/);
   assert.deepEqual(
     (await query("SELECT epoch,maintenance,gc_paused,backup_frozen FROM control"))[0],
     { epoch: 2, maintenance: 1, gc_paused: 1, backup_frozen: 0 },
@@ -423,7 +449,7 @@ try {
     proof:
       "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, fresh independent D1 mirror observation, eviction replay and cancellation retaining closed admission.",
     limits:
-      "Local service-binding capability only; remote credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
+      "Local service-binding capability only; bookmark provider responses are simulated. Remote Time Travel, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

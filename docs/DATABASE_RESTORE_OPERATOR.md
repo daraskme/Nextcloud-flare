@@ -1,10 +1,10 @@
 # 復旧準備とSQL検証の運用コマンド
 
-更新: 2026-09-26。`pnpm database:restore`を[復旧準備](DATABASE_RESTORE.md)と[復旧元照合](DATABASE_RESTORE_SOURCE.md)へ接続した。logical世代を固定し、全SQLを隔離SQLiteへ復元して検証し、その結果をControlDOに保存する。稼働系D1の上書き、最終停止、新epoch発行・採用、受付再開は次の工程である。
+更新: 2026-09-27。`pnpm database:restore`を[復旧準備](DATABASE_RESTORE.md)と[復旧元照合](DATABASE_RESTORE_SOURCE.md)へ接続した。logical世代を固定し、全SQLを隔離SQLiteへ復元して検証し、その結果をControlDOに保存する。稼働系D1の上書き、最終停止、新epoch発行・採用、受付再開は次の工程である。
 
 ## 専用の権限
 
-main Workerのnamed entrypoint `DatabaseRestoreOperator`に、`prepare/inspect/verify/attest/challengeD1/attestD1/cancel`を追加した。HTTPのfetchは404で、任意SQLや外部restore、ControlDOのrecover/resumeは受け付けない。
+main Workerのnamed entrypoint `DatabaseRestoreOperator`に、`prepare/inspect/verify/attest/challengeD1/attestD1/attestBookmark/cancel`を追加した。HTTPのfetchは404で、任意SQLや外部restore、ControlDOのrecover/resumeは受け付けない。
 
 targetの`RESTORE_OPERATOR_ENABLED=true`と、呼出し元service bindingの`props.purpose=database-restore-v1`、`props.environment=targetのENVIRONMENT`の一致が必要。既存の`BACKUP_OPERATOR_ENABLED`や`logical-backup-v1`だけでは復旧準備を操作できない。標準wrangler.jsoncでは復旧権限を有効にしない。
 
@@ -51,10 +51,10 @@ ControlDO SQLiteの`control_database_restore_sql`に、要求ID・epoch・manife
 
 成功結果は`state:sql_verified`と`complete:true`。これはSQL検証工程の完了であり、復旧全体の完了ではない。停止中repairの終了、BLOBSとの対応確認、新epoch予約、実D1上書き・採用・全監査が必要。manifest/SQLの一致は同じbucket/accountであることの証明にもならない。
 
-1 RPCの待機は最大60秒。応答喪失では結果不明として同じ要求を照会・再実行する。再実行時も全SQL検証を通してから同じhashを証言する。過去の成功結果だけで検証を省略しない。Time Travel要求は照会・取消しできるが、CLIからの新規準備とbookmark検証・復元は未接続。
+1 RPCの待機は最大60秒。応答喪失では結果不明として同じ要求を照会・再実行する。再実行時も全SQL検証を通してから同じhashを証言する。過去の成功結果だけで検証を省略しない。Time Travelの`prepare --bookmark`と`verify-bookmark`は[bookmark照合](DATABASE_RESTORE_BOOKMARK.md)へ接続済み。実復元は未接続。
 
 ## ローカル検証
 
 Node試験は実SQLの復元と改変・不正SQL・schema/table不一致、100 step継続、誤った応答、応答喪失、設定の取り違えと秘密非出力を確認する。workerd試験は不完全な部品・誤hash・期限・取消し・停止revision競合・保存失敗・再起動と内部RPCを確認する。
 
-`backup:operator-drill`は実named service bindingで全7操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。Cloudflare上の実D1復旧ドリルとは区別する。
+`backup:operator-drill`は実named service bindingで全8操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。bookmarkの証言保存・再起動後再実行も合成provider応答で確認する。Cloudflare上の実D1復旧ドリルとは区別する。

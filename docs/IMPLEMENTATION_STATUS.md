@@ -1,11 +1,21 @@
 # 実装進捗
 
-更新: 2026-09-26。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
 前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
+
+- Time Travel候補の準備・時刻検索照合・DOへの証言保存を追加。Node42件・workerd24件を追加し、全Node843件（44file、43.33s）が成功。/tmp/ncf-bookmark-unit.log。
+- bookmark/D1対象/復旧準備/復旧元/受付の関連workerd144件（5file、131.49s）が成功。時刻競合の試験が実際にD1読取り後まで到達することを強めた後、新規24件も再確認（8.78s）。/tmp/ncf-bookmark-regression.log、/tmp/ncf-bookmark-workerd-final.log。既存LockDO拒否fixtureのadmission_closedログを含むが、テスト・終了コードは成功。
+- named service bindingドリルが成功。67table・SQL11,322bytesの世代検証に加え、全8復旧操作の権限拒否、合成remote descriptor/provider応答によるbookmark証言保存、eviction後の新challenge再実行、取消し後拒否を確認。/tmp/ncf-bookmark-operator-drill.log、.wrangler/operator-drill-CpShcr/report.json。実remote検索・復元の証明ではない。
+- lint389file・型・契約/設定・Web build・Worker dry-runが成功。/tmp/ncf-bookmark-{lint,typecheck-final,contracts,config,build}.log。D1 schema0039・通常67table・依存は維持。
+- 今回は全workerd・Windows・browser・実CLI backupドリルをローカル再実行していない。Nodeの子プロセスとworkerdのlocalhost待受けがsandboxで拒否されたため、テスト範囲を変えず制限外で再実行した。実Cloudflareの操作は行っていない。
+
+- 直前7b39e93の[CI36153888412](https://github.com/daraskme/Nextcloud-flare/actions/runs/36153888412)は両Windowsジョブで一時pathのRUNNER~1/runneradmin比較が失敗。実装の正規化に合わせて既存D1対象試験のfixtureをrealpathへ解決するよう修正。実Windowsでの結果は今回のCIで確認する。
+
+### 先行する復旧先D1照合の記録
 
 - 復旧先D1の照合を追加。Node39件、workerd23件を追加し、全Node801件（43file、39.33s）が成功。/tmp/ncf-restore-d1-unit-final.log。
 - 復旧先/復旧準備/復旧元/受付停止の回帰118件（4file、109.70s）と、保存時のRETURNING確認・追加2境界を含む最終D1照合23件（8.89s）が成功。重複を除くworkerd120件。/tmp/ncf-restore-d1-regression.log と /tmp/ncf-restore-d1-target-final.log。
