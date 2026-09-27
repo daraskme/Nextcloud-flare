@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[復元後の監査と段階再開](DATABASE_RESTORE_RECOVERY.md)をprivate operator・CLIへ接続しました。FTS再構築と同じtokenの全監査を完了し、D1最終fence・DO未終了処理・予約履歴を再確認して復旧holdを解除します。受付とGCは別操作で順に再開し、後の停止やGC pauseを古い復旧要求が上書きしないよう、解除と再開の証拠を保存します。
+[復元後のKDF/R2終了記録の修復](DATABASE_RESTORE_NATIVE.md)を実装しました。通常の精算後もDOへ終了証拠を36日間保持し、復元されたpending行と照合するprivate operator・CLIを追加しています。1ページ最大20行の進捗を保存し、未知行を保留しながら後続を修復します。修復後はFTS/全監査をやり直すまで受付を再開できません。
 
-schema0046・通常68table・依存追加なし。新規Node22/workerd10ケースを含むCLI関連110件・workerd関連144件が成功しました。全25復旧操作の権限拒否と、実R2ファイル・12ページの全監査から受付/GCの段階再開までのprivate binding通し試験、型・lint453file・契約/設定・Web build・Worker dry-runも成功。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。新規Node13/workerd17ケースを含む全体checkはNode1,155件＋workerd2,551件＝3,706件成功。型・lint457file・契約/設定・Web build・Worker dry-runも成功しました。全26復旧操作の権限拒否と、空のnative修復走査から12ページ全監査・段階再開までのprivate binding通し試験も成功。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は復元後に残る未終了処理を、実終了の証拠に従って収束させる修復経路の整備です。未知のKDF/R2やmultipart、旧backup記録を成功扱いにして監査を通しません。旧実装/全storage喪失時の外部I/O終了証明、安全な中止、logical import、大規模DBの再開/RTOも残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はupload/multipart・予約・outbox・旧backup記録など、復元後に残る各領域の修復を要求単位のoperatorへ接続する工程です。今回の履歴は導入前の削除済み証拠や全storage喪失を補えず、unknownは保持します。安全な中止、logical import、大規模DBの再開/RTO、終了履歴の実容量/負荷測定も残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。1e2207fの[CI36334806558](https://github.com/daraskme/Nextcloud-flare/actions/runs/36334806558)は全5job成功。直前422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は記録時点でUbuntu・Windows分割1・browser成功、Windows分割2・backup実行中。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は全5job成功。直前a57175cの[CI36337843692](https://github.com/daraskme/Nextcloud-flare/actions/runs/36337843692)はUbuntu・Windows分割2・backup・browser成功、Windows分割1は53file/1,268件成功後に30分のjob上限で取消し。今回からWindowsを3分割へ変更しています。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
@@ -104,9 +104,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。非0終了・長時間実行・24時間超の成功欠落を扱う運用通知も接続済み。次はTime Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
 
-復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
+復旧の次の具体的な接続点: 採用済み要求の`ControlRestoreRecovery`から既存の停止中upload/multipart・予約・outbox修復を呼び、元要求/採用epochを固定したprivate operatorへ接続する。`repair-restored-native`は共通native呼出しの終了のみを確定し、容量精算やnamespace公開は行わない。旧backup記録の扱い、旧schemaから現行監査への移行も確認する。採用用の原子的停止batchは接続済みであり、凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。ローカルfixtureの成功を実Time Travel成功とは区別する。
 
-最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart全中止・空object PUT・manifest保存/削除・blob/orphan GCの14種類を永続的な送信/終了記録へ接続済み。BACKUPS外部CLI保存も専用DO記録へ接続済み。次はepoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
+最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYはnamespace/会計整合性も要求するため、壊れたD1に対する外部処理終了証明としては代用しない。14種類のR2書込み、BACKUPS外部CLI保存、通常/復旧epoch履歴、KDFとmaintenance taskの記録は接続済み。未知native・旧実装・全DO喪失時の運用収束は残る。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

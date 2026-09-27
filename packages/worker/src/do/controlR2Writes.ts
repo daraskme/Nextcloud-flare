@@ -24,6 +24,7 @@ import { gcDispatchFence } from "../jobs/gc";
 import { ORPHAN_GRACE_MS, objectFence } from "../jobs/orphanInventory";
 import { accountMutationStatements } from "../services/accountMutation";
 import { globalMutationStatements } from "../services/globalMutation";
+import { NativeHistory, nativeIdentity } from "./nativeHistory";
 
 interface Receipt extends Record<string, SqlStorageValue> {
   id: string;
@@ -34,6 +35,7 @@ interface Receipt extends Record<string, SqlStorageValue> {
 
 /** The trusted Worker reports only actual native success or its own never-dispatched grant. */
 export class ControlR2Writes {
+  readonly #history: NativeHistory;
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly db: D1Database,
@@ -55,6 +57,7 @@ export class ControlR2Writes {
     ) => Promise<GlobalMutationAdmission>,
   ) {
     const sql = storage.sql;
+    this.#history = new NativeHistory(sql);
     sql.exec(
       `CREATE TABLE IF NOT EXISTS control_r2_write_used(id TEXT PRIMARY KEY,expires_at INTEGER NOT NULL)`,
     );
@@ -295,6 +298,7 @@ export class ControlR2Writes {
       /* A DB-only terminal fact may be recovered from its exact receipt. */
     }
     if (!(await this.#confirmed(grant, outcome))) throw new Error("r2_write_unsettled");
+    const identity = await nativeIdentity("r2", r2WriteValues(grant));
     const row = this.#row(grant.id);
     if (!row) return;
     if (
@@ -304,6 +308,7 @@ export class ControlR2Writes {
     )
       throw new Error("r2_write_conflict");
     this.storage.transactionSync(() => {
+      this.#history.remember(identity, outcome, grant.deadline);
       const used = this.sql.exec(
         "INSERT INTO control_r2_write_used VALUES(?,?) RETURNING id",
         grant.id,

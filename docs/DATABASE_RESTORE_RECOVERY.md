@@ -21,7 +21,7 @@ pnpm database:restore resume-restored-gc --remote --operator-config restore-oper
 
 `audit-restored`は開始時または修復で監査が無効になった時に遠隔D1のFTSを再構築し、その後、永続cursorを進める。page sizeは1〜20、1回のCLIのpage数は1〜100。`audit.completed=false`なら終了code 2で、同じコマンドを再実行して続ける。pageの失敗を成功扱いにしたり、自動再送・自動再開したりしない。
 
-必要な修復は既存の停止中repairで行う。修復後は監査が無効になり、FTS再構築からやり直す。明示的にやり直す場合は`rebuild-restored-fts`に同じ引数を渡す。これはholdを解除しない。
+復元でpendingへ戻ったKDF/R2は[終了証拠に基づく修復CLI](DATABASE_RESTORE_NATIVE.md)で照合する。各領域の修復は既存の停止中repairで行う。修復後は監査が無効になり、FTS再構築からやり直す。明示的にやり直す場合は`rebuild-restored-fts`に同じ引数を渡す。これはholdを解除しない。
 
 `resume-restored`は全監査が完了した停止状態からholdを解除して受付を開く。GCは停止したまま。`resume-restored-gc`は受付再開後の別工程であり、最後にGCを再開する。CLIはtokenや監査の内部nonceを出力しない。
 

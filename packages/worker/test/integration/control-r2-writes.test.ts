@@ -6,8 +6,10 @@ import { type R2WriteGrant, type R2WriteRequest } from "../../src/db/r2Write";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { ControlR2Writes } from "../../src/do/controlR2Writes";
 import { RECOVERY_FINAL_QUERY } from "../../src/do/recoveryAudit";
+import { RestoreNativeRepair } from "../../src/do/restoreNativeRepair";
 import { trackedR2Write } from "../../src/services/r2Write";
 import { acquireGlobalMutation, acquireMutation } from "../fixtures/mutationAdmission";
+import { rollbackNativeReceipt } from "../fixtures/nativeRollback";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
@@ -541,13 +543,19 @@ it.each(["token", "key", "ownerId", "epoch"] as const)(
     await control().finishR2Write(g, "not_started");
   },
 );
-it.each(["proof", "used", "remove"])(
+it.each(["proof", "used", "remove", "archive"])(
   "rolls back local %s failure without releasing evidence",
   async (kind) => {
     const g = await control().beginR2Write(request());
     await runInDurableObject(control(), async (instance, state) => {
-      const operation = kind === "proof" ? "UPDATE" : kind === "used" ? "INSERT" : "DELETE";
-      const table = kind === "used" ? "control_r2_write_used" : "control_r2_write_receipts";
+      const operation =
+        kind === "proof" ? "UPDATE" : ["used", "archive"].includes(kind) ? "INSERT" : "DELETE";
+      const table =
+        kind === "archive"
+          ? "control_native_history"
+          : kind === "used"
+            ? "control_r2_write_used"
+            : "control_r2_write_receipts";
       state.storage.sql.exec(
         `CREATE TRIGGER fail_receipt BEFORE ${operation} ON ${table} BEGIN SELECT RAISE(IGNORE); END`,
       );
@@ -556,6 +564,100 @@ it.each(["proof", "used", "remove"])(
       state.storage.sql.exec("DROP TRIGGER fail_receipt");
       await instance.finishR2Write(g, "succeeded");
       expect(local(state)).toHaveLength(0);
+    });
+  },
+);
+
+it.each(["exact", "token", "source_ref", "ack", "stop", "write_failure", "terminal"])(
+  "repairs only retained native R2 identity after rollback: %s",
+  async (mode) => {
+    const g = await control().beginR2Write(request()),
+      restoreId = crypto.randomUUID();
+    keys.add(g.key);
+    await env.BLOBS.put(g.key, "actual native write");
+    await control().finishR2Write(g, "succeeded");
+    await rollbackNativeReceipt(
+      env.DB,
+      "r2_write_attempts",
+      g.id,
+      mode === "token"
+        ? { token: crypto.randomUUID() }
+        : mode === "source_ref"
+          ? {
+              kind: "multipart.part",
+              source_ref: JSON.stringify([crypto.randomUUID(), crypto.randomUUID()]),
+            }
+          : {},
+    );
+    await control().quiesce(epoch);
+    await env.DB.prepare("UPDATE control SET epoch=epoch+1").run();
+    await evictDurableObject(control());
+    await runInDurableObject(control(), async (_, state) => {
+      expect(local(state)).toHaveLength(0);
+      state.storage.sql.exec(
+        "INSERT INTO control_database_restore(id,epoch,source_json,phase,created_at) VALUES(?,?,'{}','preparing',1)",
+        restoreId,
+        epoch,
+      );
+      const db = ["ack", "stop", "write_failure", "terminal"].includes(mode)
+        ? ({
+            prepare: env.DB.prepare.bind(env.DB),
+            batch: async (statements: D1PreparedStatement[]) => {
+              if (mode === "write_failure") throw new Error("write_failed");
+              if (mode === "terminal")
+                await env.DB.prepare(
+                  "UPDATE r2_write_attempts SET state='not_started',finished_at=MAX(started_at,strftime('%s','now')*1000) WHERE id=? AND state='pending'",
+                )
+                  .bind(g.id)
+                  .run();
+              if (mode === "stop")
+                await env.DB.prepare(
+                  "UPDATE control SET admission_revision=admission_revision+1,admission_token=?",
+                )
+                  .bind(crypto.randomUUID())
+                  .run();
+              const value = await env.DB.batch(statements);
+              if (mode === "ack") throw new Error("lost_ack");
+              return value;
+            },
+          } as D1Database)
+        : env.DB;
+      const repair = new RestoreNativeRepair(state.storage.sql, db);
+      await repair.page(restoreId, epoch + 1, 20, () => {});
+      if (["stop", "write_failure", "terminal"].includes(mode)) {
+        await expect(repair.page(restoreId, epoch + 1, 20, () => {})).rejects.toThrow(
+          /unconfirmed/,
+        );
+        expect((await row(g.id))!.state).toBe(mode === "terminal" ? "not_started" : "pending");
+        const cursor = JSON.parse(
+          state.storage.sql
+            .exec(
+              "SELECT progress_json FROM control_database_restore_native_repair WHERE id=?",
+              restoreId,
+            )
+            .one().progress_json as string,
+        );
+        expect(cursor).toMatchObject({ stage: "r2", afterId: "", reconciled: 0 });
+        expect(
+          await new RestoreNativeRepair(state.storage.sql, env.DB).page(
+            restoreId,
+            epoch + 1,
+            20,
+            () => {},
+          ),
+        ).toMatchObject({ completed: true, reconciled: mode === "terminal" ? 0 : 1 });
+        expect((await row(g.id))!.state).toBe(mode === "terminal" ? "not_started" : "succeeded");
+      } else {
+        const result = await repair.page(restoreId, epoch + 1, 20, () => {});
+        const unknown = ["token", "source_ref"].includes(mode);
+        expect(result).toMatchObject({
+          completed: true,
+          reconciled: unknown ? 0 : 1,
+          unknown: unknown ? 1 : 0,
+        });
+        expect((await row(g.id))!.state).toBe(unknown ? "pending" : "succeeded");
+      }
+      expect(await (await env.BLOBS.get(g.key))!.text()).toBe("actual native write");
     });
   },
 );

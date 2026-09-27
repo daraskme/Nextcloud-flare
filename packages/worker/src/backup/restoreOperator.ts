@@ -98,6 +98,9 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   auditRecovery(epoch: number, id: string, limit = 10) {
     return this.#control(epoch, id).auditDatabaseRestoreRecovery(epoch, id, limit);
   }
+  repairNative(epoch: number, id: string, limit = 10) {
+    return this.#control(epoch, id).repairDatabaseRestoreNative(epoch, id, limit);
+  }
   rebuildRecoveryFts(epoch: number, id: string) {
     return this.#control(epoch, id).rebuildDatabaseRestoreFts(epoch, id);
   }

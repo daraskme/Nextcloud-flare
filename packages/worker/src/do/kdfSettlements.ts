@@ -1,5 +1,6 @@
 import { KdfUnavailableError } from "../auth/kdf";
 import { assertOneChange, atomicBatch, primary } from "../db/primary";
+import { NativeHistory, nativeIdentity } from "./nativeHistory";
 
 const CLOCK = "strftime('%s','now')*1000";
 export interface KdfDispatch {
@@ -26,10 +27,12 @@ interface Saved {
 
 /** Bounded completion evidence, never password material or a replayable crypto request. */
 export class KdfSettlements {
+  readonly #history: NativeHistory;
   constructor(
     private readonly sql: SqlStorage,
     private readonly db: D1Database,
   ) {
+    this.#history = new NativeHistory(sql);
     sql.exec(`CREATE TABLE IF NOT EXISTS control_kdf_receipts(
       token TEXT PRIMARY KEY CHECK(length(token)=36),id TEXT NOT NULL CHECK(length(id)=36),
       epoch INTEGER NOT NULL CHECK(epoch>0),deadline INTEGER NOT NULL CHECK(deadline>0),
@@ -110,7 +113,10 @@ export class KdfSettlements {
     };
   }
 
-  #forget(r: Receipt): void {
+  async #forget(r: Receipt): Promise<void> {
+    if (r.state === "reserved") throw new KdfUnavailableError();
+    const identity = await nativeIdentity("kdf", [r.id, r.token, r.epoch]);
+    this.#history.remember(identity, r.state, r.deadline);
     this.sql.exec(
       "DELETE FROM control_kdf_receipts WHERE token=? AND id=? AND epoch=? AND deadline=? AND state=?",
       r.token,
@@ -142,7 +148,7 @@ export class KdfSettlements {
       .first<Saved>();
     if (saved) {
       if (!this.#matches(saved, r)) throw new KdfUnavailableError();
-      this.#forget(r);
+      await this.#forget(r);
       return true;
     }
     // Acquire a write transaction before observing absence. A delayed claim serialized after
@@ -159,10 +165,10 @@ export class KdfSettlements {
     const observed = results[2]?.results[0] as (Saved & { now: number }) | undefined;
     if (!observed) throw new KdfUnavailableError();
     if (observed.state !== null && this.#matches(observed, r)) {
-      this.#forget(r);
+      await this.#forget(r);
       return true;
     }
-    if (observed.state === null && observed.now >= r.deadline) this.#forget(r);
+    if (observed.state === null && observed.now >= r.deadline) await this.#forget(r);
     // Even a proven absent receipt never turns an uncertain derivation into a successful one.
     return false;
   }

@@ -18,15 +18,19 @@ jobs:
             name: local (ubuntu-latest)
             shard: ""
           - os: windows-latest
-            name: local (windows-latest, 1/2)
-            shard: "1/2"
+            name: local (windows-latest, 1/3)
+            shard: "1/3"
           - os: windows-latest
-            name: local (windows-latest, 2/2)
-            shard: "2/2"
+            name: local (windows-latest, 2/3)
+            shard: "2/3"
+          - os: windows-latest
+            name: local (windows-latest, 3/3)
+            shard: "3/3"
     runs-on: ${{ matrix.os }}
     # Run 36060684164 passed every test/build but hit 30m during Windows cleanup.
     # Split only integration files; every shard retains the other check gates.
     # Run 36317210449 exhausted Ubuntu's 15m job budget during the growing full suite.
+    # Run 36337843692 hit 30m after 53 Windows files / 1268 tests passed; use three shards.
     # Keep application deadlines unchanged and allow the same 30m runner budget.
     timeout-minutes: 30
     env:

@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。1e2207fの[CI36334806558](https://github.com/daraskme/Nextcloud-flare/actions/runs/36334806558)は全5job成功。直前422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は記録時点でUbuntu・Windows分割1・browser成功、Windows分割2・backup実行中。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は全5job成功。直前a57175cの[CI36337843692](https://github.com/daraskme/Nextcloud-flare/actions/runs/36337843692)はUbuntu・Windows分割2・backup・browser成功、Windows分割1は53file/1,268件成功後に30分のjob上限で取消し。今回からWindowsを3分割へ変更しています。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -13,10 +13,19 @@
 
 ## 今回の検証記録
 
+- [復元後のKDF/R2終了記録の修復](DATABASE_RESTORE_NATIVE.md)を実装。D1精算後の実終了証拠をDOへ36日保持し、保存確認後だけlive receiptを削除する。private operator・repair-restored-native CLIは採用済み要求/停止tokenへ束縛した最大20行の走査を永続化する。未知行は保持し、nativeを再実行せず、FTS/監査を無効化する。D1 schema0046・通常68table・依存追加なし。
+- Node2file/69件成功（27.26s）、うち新規13件。完了走査とunknownの区別、page予算、出力正規化、応答喪失時の再送拒否、引数境界を確認。/tmp/ncf-native-node.log。
+- 初回workerd4file/100件成功（96.71s）。未知の先頭行を越える実KDFのprivate修復、D1失敗と反対の終端への競合を追加し、最終4file/103件成功（127.78s）、うち新規17件。実PBKDF2/R2終了後のD1巻戻し、eviction、ACK喪失、識別tuple/停止競合、cursor保持、履歴保存失敗/容量/不変性/32件剪定/復旧中保持、修復後の再監査と解除後拒否を確認。/tmp/ncf-native-worker.log、/tmp/ncf-native-worker-final.log。
+- private bindingドリル成功。26操作の権限拒否、68table/SQL57,512bytesのsnapshot、停止中epoch採用、pendingなしのnative修復2ページ、12ページ全監査、hold解除と受付/GCの段階再開を確認。元backupはSQL11,370bytes。/tmp/ncf-native-operator.log、.wrangler/operator-drill-n2RIoD/report.json。初回reportの説明文は25操作のままだったため26へ訂正した（検査配列自体は26）。provider/S3は合成応答、D1 control巻戻しのfixtureであり、実Time Travelではない。
+- 全体`pnpm check`成功。Node59file/1,155件（43.34s）、workerd117file/2,551件（1443.80s）、合計3,706件。型・lint457file・契約/設定・Web build・Worker dry-runも成功。途中でworkerdのpump canceled/admission_closed/Network connection lostログが出るが、全件成功・終了code 0を確認。/tmp/ncf-native-check.log、/tmp/ncf-native-types-final.log、/tmp/ncf-native-lint.log。更新9資料のlocal link186件とgit diff --checkも成功。実環境の復元・migration/deploy・通知・timer設置は行っていない。
+- 前回a57175cのWindows分割1は30分のjob上限で取消し（GitHub check annotationで確認）。Node1,142件と統合53file/1,268件まで成功し、失敗assertionは記録されていない。残りの統合/最終buildは未完了。Windows matrixを2分割から3分割へ増やし、アプリと各testの期限は変更しない。固定版VitestのBaseSequencerで117fileを39/39/39に分割し、重複/欠落なしを確認。`list --filesOnly`はshardを適用しない実装のため、全file一覧に実sequencerを適用して検査した。/tmp/ncf-ci-108672008190.log、/tmp/ncf-native-shard-coverage.json。
+
+### 先行する復元後の監査と段階再開
+
 - [復元後の監査と段階再開](DATABASE_RESTORE_RECOVERY.md)をprivate operator・CLIへ接続しました。FTS再構築と同じtokenの全監査を完了し、D1最終fence・DO未終了処理・予約履歴を再確認して復旧holdを解除します。受付とGCは別操作で順に再開し、後の停止やGC pauseを古い復旧要求が上書きしないよう、解除と再開の証拠を保存します。
 - Node4file/110件成功（26.90s）、うち新規22件。監査のpage予算、出力の正規化、失敗時の再送/解除拒否、GCの別操作化、CLI引数境界を確認。/tmp/ncf-recovery-node.log。
 - 初回workerd3file/110件は78成功・32失敗。未終了R2を模したfixture行が残り、後続testのbeforeEachが正しくfreeze_pendingを返していた。実際にはnative送信していないfixtureをfinallyでnot_startedへ記録する後片付けを追加。既存DO台帳の移行テストも追加し、最終4file/144件成功（167.21s）、新規10件。FTS再構築と監査tokenの束縛、未終了処理/maintenance holdの拒否、古い再開要求の拒否、GC再送が後のpauseを上書きしないこと、次の復旧要求作成、遅延fenceで解除しないことを確認。/tmp/ncf-recovery-worker.log、/tmp/ncf-recovery-worker-final.log。
-- private binding通し試験成功。全25復旧操作の権限拒否、68table/SQL57,512bytesのsnapshot検証、停止中epoch採用、実R2ファイルを含む12ページ全監査、hold解除、受付再開後のeviction、GC再開まで確認。元backup世代はSQL11,370bytes。従来fixtureはfake ETagとSQLだけでR2実体を持たなかったため初回監査が失敗し、実blob PUTの結果をledgerへ記録するfixtureへ修正。/tmp/ncf-recovery-operator.log、/tmp/ncf-recovery-operator-final.log、.wrangler/operator-drill-sQqDSC/report.json。
+- private binding通し試験成功。全25復旧操作の権限拒否、68table/SQL57,512bytesのsnapshot検証、停止中epoch採用、実R2ファイルを含む12ページ全監査、hold解除、受付再開後のeviction、GC再開まで確認。元backup世代はSQL11,370bytes。初回はgeneric operator errorで失敗。その調査で従来fixtureがfake ETagとSQLだけでR2実体を持たないことを確認し、実blob PUTの結果をledgerへ記録するfixtureへ修正後に成功した。初回エラーとの直接因果は独立に切り分けていない。/tmp/ncf-recovery-operator.log、/tmp/ncf-recovery-operator-final.log、.wrangler/operator-drill-sQqDSC/report.json。
 - 型・lint453file・契約/設定・Web build・Worker dry-run成功。/tmp/ncf-recovery-types-final.log、/tmp/ncf-recovery-lint.log、/tmp/ncf-recovery-build.log。schema0046・通常68table・依存追加なし。実環境の復旧・再開・migration/deploy・通知・timer設置は行っていない。
 
 ### 先行する予約epochの停止中採用

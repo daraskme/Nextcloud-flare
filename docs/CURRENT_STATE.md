@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[復元後の監査と段階再開](DATABASE_RESTORE_RECOVERY.md)をprivate operator・CLIへ接続しました。FTS再構築と同じtokenの全監査を完了し、D1最終fence・DO未終了処理・予約履歴を再確認して復旧holdを解除します。受付とGCは別操作で順に再開し、後の停止やGC pauseを古い復旧要求が上書きしないよう、解除と再開の証拠を保存します。
+[復元後のKDF/R2終了記録の修復](DATABASE_RESTORE_NATIVE.md)を実装しました。通常の精算後もDOへ終了証拠を36日間保持し、復元されたpending行と照合するprivate operator・CLIを追加しています。1ページ最大20行の進捗を保存し、未知行を保留しながら後続を修復します。修復後はFTS/全監査をやり直すまで受付を再開できません。
 
-schema0046・通常68table・依存追加なし。新規Node22/workerd10ケースを含むCLI関連110件・workerd関連144件が成功しました。全25復旧操作の権限拒否と、実R2ファイル・12ページの全監査から受付/GCの段階再開までのprivate binding通し試験、型・lint453file・契約/設定・Web build・Worker dry-runも成功。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。新規Node13/workerd17ケースを含む全体checkはNode1,155件＋workerd2,551件＝3,706件成功。型・lint457file・契約/設定・Web build・Worker dry-runも成功しました。全26復旧操作の権限拒否と、空のnative修復走査から12ページ全監査・段階再開までのprivate binding通し試験も成功。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は復元後に残る未終了処理を、実終了の証拠に従って収束させる修復経路の整備です。未知のKDF/R2やmultipart、旧backup記録を成功扱いにして監査を通しません。旧実装/全storage喪失時の外部I/O終了証明、安全な中止、logical import、大規模DBの再開/RTOも残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はupload/multipart・予約・outbox・旧backup記録など、復元後に残る各領域の修復を要求単位のoperatorへ接続する工程です。今回の履歴は導入前の削除済み証拠や全storage喪失を補えず、unknownは保持します。安全な中止、logical import、大規模DBの再開/RTO、終了履歴の実容量/負荷測定も残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。1e2207fの[CI36334806558](https://github.com/daraskme/Nextcloud-flare/actions/runs/36334806558)は全5job成功。直前422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は記録時点でUbuntu・Windows分割1・browser成功、Windows分割2・backup実行中。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は全5job成功。直前a57175cの[CI36337843692](https://github.com/daraskme/Nextcloud-flare/actions/runs/36337843692)はUbuntu・Windows分割2・backup・browser成功、Windows分割1は53file/1,268件成功後に30分のjob上限で取消し。今回からWindowsを3分割へ変更しています。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -183,8 +183,8 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. 外部I/Oの終了記録を最終停止へ集約。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart・空ファイル・manifest・GCの14種類は接続済み。外部CLI保存も専用記録へ接続済み。次はepoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
-2. 復元後の採用用停止障壁と予約epoch採用、予約後の安全な中止、全監査・段階再開、Time Travel/live restore drill。復旧要求に固定した事前予約・1回送信・snapshot読取り照合は接続済み。
+1. 復元後の各領域の修復を要求単位のoperator/CLIへ接続する。KDF/R2の保持された終了証拠との照合は[実装済み](DATABASE_RESTORE_NATIVE.md)。upload/multipart・予約・outbox・旧backup記録の収束を進める。未知nativeや証拠喪失を終了扱いにしない。
+2. 予約後の安全な中止、logical import、大規模snapshotの再開/RTO、旧schemaの移行手順、実Time Travel/全storage喪失の復旧drill。事前予約・1回送信・snapshot照合・停止中epoch採用・全監査/段階再開はローカル実装済み。
 3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
 4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。
 5. Files UIの残り、共有/公開link、media metadata検索、ZIP/reader/media配信。

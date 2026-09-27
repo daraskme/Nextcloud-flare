@@ -311,6 +311,7 @@ export class ControlDO extends DurableObject<Env> {
         next: (epoch, limit) => this.nextRecoveryAuditPage(epoch, limit),
         rebuild: (epoch) => this.rebuildRecoveryFts(epoch),
         status: () => this.status(),
+        repair: (epoch, action) => this.#maintenance(epoch, action),
       },
     );
     this.#kdf = new ControlKdf(
@@ -519,6 +520,10 @@ export class ControlDO extends DurableObject<Env> {
   async auditDatabaseRestoreRecovery(expectedEpoch: number, id: string, limit = 10) {
     this.#row();
     return this.#restoreRecovery.audit(expectedEpoch, id, limit);
+  }
+  async repairDatabaseRestoreNative(expectedEpoch: number, id: string, limit = 10) {
+    this.#row();
+    return this.#restoreRecovery.repairNative(expectedEpoch, id, limit);
   }
   async rebuildDatabaseRestoreFts(expectedEpoch: number, id: string) {
     this.#row();

@@ -40,6 +40,8 @@ current epoch、maintenance、cooldown、rate、枠数をD1 insert triggerで検
 
 ## 終了記録の修復
 
+D1巻戻しに備え、live receiptを削除する前に[独立した終了履歴](DATABASE_RESTORE_NATIVE.md)へ識別hash・状態・期限を保存する。復元後の旧epoch claimはprivate修復CLIで照合できる。保存失敗ではlive枠を保持し、履歴導入前・全storage喪失・未知nativeの終了は推定しない。
+
 ControlDO SQLiteの`control_kdf_receipts`に、id・handler token・元epoch・元送信期限・状態だけを最大20件保存する。D1 claimより前に`reserved`を保存し、枠がなければ新しいclaim/計算を始めない。native計算の実終了後は`finished`、handlerが以後送信しないと確定した場合だけ`not_started`へ一度遷移する。入力・salt・結果はここにも保存しない。
 
 終了記録を保存してから、同じid/token/epochのD1行を精算する。D1終端receiptを確認した後だけローカル記録を削除する。DB書込み・読戻しの応答喪失やeviction後も、次のKDF受付前に最大20件を照合する。内部RPC `repairKdfSettlements(expectedEpoch, limit=20)`は受付を停止し、復旧監査を前後で初期化して同じ処理を行う。返す件数は`checked/reconciled/pending/unknown`。public HTTPへの公開・自動alarm再試行は行わない。復旧監査と受付再開はD1未精算行に加え、ローカル未解決記録も拒否する。

@@ -4,6 +4,8 @@
 
 ## 接続した送信点
 
+D1巻戻しに備え、精算済みlive receiptを削除する前に[独立した終了履歴](DATABASE_RESTORE_NATIVE.md)へ全識別tupleのhashと終了状態を保存する。復元後はprivate修復CLIで照合し、証拠のないpendingや別tupleは保持する。
+
 | 操作 | 送信条件 | 完了の扱い |
 |---|---|---|
 | BACKUPS世代削除 | 完成receiptの全tuple/hash、35日超の保持、元epoch・停止mode/revision/token、世代内の正確な1〜20 key。同じ世代のpendingなしをgrant batchで再検査し、DO側の元のbackup/停止状態も確認 | `backup.delete`の実成功を記録してから次の一覧へ進む。part batchと最後のmanifestを別試行にし、応答喪失では追加削除・absent確定を保留する |

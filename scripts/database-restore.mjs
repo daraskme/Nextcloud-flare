@@ -9,7 +9,12 @@ import { verifyRestoreBookmark } from "./restore/bookmark.mjs";
 import { restoreErrorCode, restoreOperatorControl } from "./restore/control.mjs";
 import { reserveRestoreEpoch } from "./restore/epoch.mjs";
 import { freezeRestoreDatabase } from "./restore/freeze.mjs";
-import { auditRestored, rebuildRestoredFts, resumeRestored } from "./restore/recovery.mjs";
+import {
+  auditRestored,
+  rebuildRestoredFts,
+  repairRestoredNative,
+  resumeRestored,
+} from "./restore/recovery.mjs";
 import { verifyRestoredSnapshot } from "./restore/snapshot.mjs";
 import { restoreD1Reader, verifyRestoreD1 } from "./restore/target.mjs";
 import { applyRestoreTimeTravel, timeTravelProvider } from "./restore/timeTravel.mjs";
@@ -37,6 +42,7 @@ const usage = `Usage:
   pnpm database:restore adopt-epoch --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore verify-restored --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore audit-restored --operator-config JSON --remote --epoch N --id UUID [--max-pages 100] [--page-size 10]
+  pnpm database:restore repair-restored-native --operator-config JSON --remote --epoch N --id UUID [--max-pages 100] [--page-size 10]
   pnpm database:restore rebuild-restored-fts --operator-config JSON --remote --epoch N --id UUID
   pnpm database:restore resume-restored --operator-config JSON --remote --epoch N --id UUID
   pnpm database:restore resume-restored-gc --operator-config JSON --remote --epoch N --id UUID
@@ -56,6 +62,7 @@ apply-time-travel requires RESTORE_WRITE_ENABLED=true on the target and CLOUDFLA
 verify-restored independently reads the restored database, checks a trusted migration prefix and every table against an isolated SQL import, validates FK and rebuilds local FTS, then records a request-bound observation. It preserves the remote snapshot and old DO epoch. This observation is not an adoption or service-resume authorization.
 adopt-epoch atomically stops the verified D1 snapshot at the reserved epoch, independently reads its new marker, and publishes that epoch in DO. Requires RESTORE_WRITE_ENABLED=true for the first write. Unknown D1 batches are never sent again; retry only reconciles the same marker. Admission and GC remain closed.
 audit-restored rebuilds restored FTS when starting or restarting an audit, then advances bounded durable audit pages. Exit 2 means more pages remain; repeat the same request. Failed audits retain the hold and require the relevant repair. rebuild-restored-fts explicitly rebuilds FTS and restarts the audit.
+repair-restored-native scans restored KDF/R2 pending rows in durable pages and settles only matching retained native completion evidence. It restarts the audit, never repeats external I/O, and keeps unknown rows pending. Exit 2 means pages or unknown work remain. Repeating a finished pass starts a new scan.
 resume-restored requires the exact completed audit and a fresh final D1 fence, releases the restore hold, then opens admission with GC still paused. RESTORE_WRITE_ENABLED=true is required for first hold release. resume-restored-gc separately resumes GC last. All commands use the original epoch/request ID. A newer stop invalidates the old resume request. Live operational proof, unknown execution recovery and safe abandonment remain release gates.
 `;
 try {
@@ -99,6 +106,7 @@ try {
         "verify-restored": ["config", "environment"],
         "adopt-epoch": ["config", "environment"],
         "audit-restored": ["max-pages", "page-size"],
+        "repair-restored-native": ["max-pages", "page-size"],
         "rebuild-restored-fts": [],
         "resume-restored": [],
         "resume-restored-gc": [],
@@ -110,9 +118,13 @@ try {
       Object.keys(values).some((key) => ![...common, ...extra].includes(key)) ||
       !!values.local === !!values.remote ||
       !/^\d+$/.test(values.epoch ?? "") ||
-      (["audit-restored", "rebuild-restored-fts", "resume-restored", "resume-restored-gc"].includes(
-        command,
-      ) &&
+      ([
+        "audit-restored",
+        "repair-restored-native",
+        "rebuild-restored-fts",
+        "resume-restored",
+        "resume-restored-gc",
+      ].includes(command) &&
         !values.remote) ||
       (values["max-pages"] !== undefined &&
         (!/^\d+$/.test(values["max-pages"]) ||
@@ -216,8 +228,8 @@ try {
       let store;
       try {
         let result;
-        if (command === "audit-restored") {
-          result = await auditRestored({
+        if (["audit-restored", "repair-restored-native"].includes(command)) {
+          result = await (command === "audit-restored" ? auditRestored : repairRestoredNative)({
             epoch,
             id,
             control,
@@ -225,7 +237,12 @@ try {
             pageSize: Number(values["page-size"] ?? 10),
             progress: (event) => console.log(JSON.stringify(event)),
           });
-          if (!result.audit.completed) process.exitCode = 2;
+          if (
+            command === "audit-restored"
+              ? !result.audit.completed
+              : !result.repair.completed || result.repair.unknown > 0
+          )
+            process.exitCode = 2;
         } else if (command === "rebuild-restored-fts") {
           result = await rebuildRestoredFts({ epoch, id, control });
         } else if (["resume-restored", "resume-restored-gc"].includes(command)) {

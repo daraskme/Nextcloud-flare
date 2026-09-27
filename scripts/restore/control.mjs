@@ -70,6 +70,7 @@ export function restoreControlCalls(binding, timeoutMs = 60000) {
       "beginAdoption",
       "attestAdoption",
       "auditRecovery",
+      "repairNative",
       "rebuildRecoveryFts",
       "releaseRecovery",
       "resumeRecovery",

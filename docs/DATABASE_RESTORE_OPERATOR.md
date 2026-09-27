@@ -4,7 +4,7 @@
 
 ## 専用の権限
 
-main Workerのnamed entrypoint `DatabaseRestoreOperator`は、`prepare/inspect/verify/attest/challengeD1/attestD1/attestBookmark/verifyBlobs/challengeBackups/attestBackups/verifyBindings/freeze/reserveEpoch/beginTimeTravel/finishTimeTravel/challengeSnapshot/attestSnapshot/beginAdoption/attestAdoption/auditRecovery/rebuildRecoveryFts/releaseRecovery/resumeRecovery/resumeRecoveryGc/cancel`の25操作を提供する。HTTPのfetchは404で、任意SQLやControlDOの汎用recover/resumeは受け付けない。beginTimeTravel、最初のbeginAdoptionとreleaseRecoveryは追加のRESTORE_WRITE_ENABLED設定が必要。finishTimeTravelは発行済みgrantの実応答だけを記録する。
+main Workerのnamed entrypoint `DatabaseRestoreOperator`は、`prepare/inspect/verify/attest/challengeD1/attestD1/attestBookmark/verifyBlobs/challengeBackups/attestBackups/verifyBindings/freeze/reserveEpoch/beginTimeTravel/finishTimeTravel/challengeSnapshot/attestSnapshot/beginAdoption/attestAdoption/auditRecovery/repairNative/rebuildRecoveryFts/releaseRecovery/resumeRecovery/resumeRecoveryGc/cancel`の26操作を提供する。HTTPのfetchは404で、任意SQLやControlDOの汎用recover/resumeは受け付けない。beginTimeTravel、最初のbeginAdoptionとreleaseRecoveryは追加のRESTORE_WRITE_ENABLED設定が必要。finishTimeTravelは発行済みgrantの実応答だけを記録する。
 
 targetの`RESTORE_OPERATOR_ENABLED=true`と、呼出し元service bindingの`props.purpose=database-restore-v1`、`props.environment=targetのENVIRONMENT`の一致が必要。既存の`BACKUP_OPERATOR_ENABLED`や`logical-backup-v1`だけでは復旧準備を操作できない。標準wrangler.jsoncでは復旧権限を有効にしない。
 
@@ -65,4 +65,6 @@ ControlDO SQLiteの`control_database_restore_sql`に、要求ID・epoch・manife
 
 Node試験は実SQLの復元と改変・不正SQL・schema/table不一致、100 step継続、誤った応答、応答喪失、設定の取り違えと秘密非出力を確認する。workerd試験は不完全な部品・誤hash・期限・取消し・停止revision競合・保存失敗・再起動と内部RPCを確認する。
 
-`backup:operator-drill`は実named service bindingで全25操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。epoch予約・同番号の再照会・予約後cancel拒否に加え、1回だけのTime Travel送信・結果記録・模擬D1 control巻戻し後の旧DO epochと停止維持、復元後68tableの隔離検証とDO証言保存、採用用D1停止batch・marker独立読戻し・DO epoch採用・eviction後の停止維持、FTS再構築・12ページ全監査・hold解除・受付/GCの段階再開も確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。bookmark検索・実行とS3応答は合成providerで、Cloudflare上の実D1復旧ドリルとは区別する。
+`backup:operator-drill`は実named service bindingで全26操作の拒否境界と、実SQL世代の検証・記録・D1の新しい停止token照合・eviction後再実行を確認する。epoch予約・同番号の再照会・予約後cancel拒否に加え、1回だけのTime Travel送信・結果記録・模擬D1 control巻戻し後の旧DO epochと停止維持、復元後68tableの隔離検証とDO証言保存、採用用D1停止batch・marker独立読戻し・DO epoch採用・eviction後の停止維持、pendingなしのnative修復走査、FTS再構築・12ページ全監査・hold解除・受付/GCの段階再開も確認する。`backup:run-drill`は実CLIとWrangler dev/getPlatformProxyをつなぎ、prepareの再送、verify、verify-d1の再送、inspect、cancel、元epochと停止維持を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。bookmark検索・実行とS3応答は合成providerで、Cloudflare上の実D1復旧ドリルとは区別する。
+
+採用後にpendingへ戻ったKDF/R2は`repair-restored-native`で[独立した終了証拠](DATABASE_RESTORE_NATIVE.md)と照合する。元epoch/要求IDへ固定した最大20行の永続cursorで修復し、未知行は保持する。修復後はFTS/全監査からやり直す。

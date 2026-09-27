@@ -2,7 +2,12 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { beforeEach, expect, it, vi } from "vitest";
-import { auditRestored, rebuildRestoredFts, resumeRestored } from "../restore/recovery.mjs";
+import {
+  auditRestored,
+  rebuildRestoredFts,
+  repairRestoredNative,
+  resumeRestored,
+} from "../restore/recovery.mjs";
 
 let selected, control, page;
 const audit = (stage = "complete", pages = 10) => ({
@@ -27,6 +32,18 @@ beforeEach(() => {
   page = audit();
   control = {
     inspect: vi.fn(async () => structuredClone(selected)),
+    repairNative: vi.fn(async () => ({
+      ...selected,
+      repair: {
+        stage: "complete",
+        afterId: "",
+        checked: 3,
+        reconciled: 2,
+        unknown: 1,
+        completed: true,
+        token: "private",
+      },
+    })),
     auditRecovery: vi.fn(async () => ({ ...selected, audit: page })),
     rebuildRecoveryFts: vi.fn(async () => ({ ...selected, audit: audit("users", 0) })),
     releaseRecovery: vi.fn(async () => {
@@ -47,6 +64,66 @@ beforeEach(() => {
   };
 });
 const args = () => ({ epoch: 2, id: selected.id, control });
+
+it("reports unknown native rows separately from a complete scan without opening admission", async () => {
+  const result = await repairRestoredNative(args());
+  expect(result.repair).toEqual({
+    stage: "complete",
+    afterId: "",
+    checked: 3,
+    reconciled: 2,
+    unknown: 1,
+    completed: true,
+  });
+  expect(JSON.stringify(result)).not.toContain("private");
+  expect(control.releaseRecovery).not.toHaveBeenCalled();
+});
+it("respects the native page budget and retains server progress", async () => {
+  control.repairNative.mockResolvedValue({
+    ...selected,
+    repair: {
+      stage: "kdf",
+      afterId: selected.id,
+      checked: 1,
+      reconciled: 1,
+      unknown: 0,
+      completed: false,
+    },
+  });
+  expect(
+    (await repairRestoredNative({ ...args(), maxPages: 2, pageSize: 1 })).repair.completed,
+  ).toBe(false);
+  expect(control.repairNative).toHaveBeenCalledTimes(2);
+  expect(control.repairNative).toHaveBeenLastCalledWith(2, selected.id, 1);
+});
+it.each(["stage", "counts", "completed", "id"])(
+  "rejects invalid native repair output: %s",
+  async (kind) => {
+    const value = await control.repairNative();
+    control.repairNative.mockClear();
+    if (kind === "stage") value.repair.stage = "unknown";
+    if (kind === "counts") value.repair.unknown = 4;
+    if (kind === "completed") value.repair.completed = false;
+    if (kind === "id") value.id = randomUUID();
+    control.repairNative.mockResolvedValue(value);
+    await expect(repairRestoredNative(args())).rejects.toThrow(/invalid_/);
+    expect(control.repairNative).toHaveBeenCalledTimes(1);
+  },
+);
+it("does not automatically retry an unknown native repair RPC", async () => {
+  control.repairNative.mockRejectedValue(new Error("database_restore_operator_timeout"));
+  await expect(repairRestoredNative(args())).rejects.toThrow(/timeout/);
+  expect(control.repairNative).toHaveBeenCalledTimes(1);
+});
+it.each([{ maxPages: 0 }, { maxPages: 101 }, { pageSize: 0 }, { pageSize: 21 }])(
+  "rejects invalid native bounds before RPC: %j",
+  async (limits) => {
+    await expect(repairRestoredNative({ ...args(), ...limits })).rejects.toThrow(
+      /invalid_recovery_limit/,
+    );
+    expect(control.inspect).not.toHaveBeenCalled();
+  },
+);
 
 it("returns sanitized complete audit evidence without releasing or resuming", async () => {
   const result = await auditRestored(args());
@@ -141,6 +218,8 @@ it("rejects a mismatched request returned by a resume RPC", async () => {
   await expect(resumeRestored(args())).rejects.toThrow(/invalid_status/);
 });
 it.each([
+  ["repair-restored-native", "--local"],
+  ["repair-restored-native", "--remote", "--max-pages", "0"],
   ["audit-restored", "--local"],
   ["audit-restored", "--remote", "--max-pages", "0"],
   ["resume-restored", "--remote", "--page-size", "20"],

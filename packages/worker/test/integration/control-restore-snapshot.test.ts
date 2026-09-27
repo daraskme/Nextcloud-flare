@@ -7,8 +7,11 @@ import type { RestoreTimeTravelGrant } from "../../../shared/src/restoreTimeTrav
 import { RESTORE_SNAPSHOT_CONTROL_QUERY } from "../../src/db/restoreSnapshot";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { ControlDatabaseRestore } from "../../src/do/controlDatabaseRestore";
+import { ControlKdf } from "../../src/do/controlKdf";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { KdfSettlements } from "../../src/do/kdfSettlements";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
+import { rollbackNativeReceipt } from "../fixtures/nativeRollback";
 import { inventoryEnv } from "../fixtures/s3Inventory";
 
 const targets = {
@@ -152,6 +155,129 @@ it("audits the restored epoch, releases its exact hold, then resumes admission a
   await control().pauseGarbageCollection(epoch + 1);
   expect((await control().resumeDatabaseRestoreGc(epoch, id)).control.gcPaused).toBe(true);
   expect((await control().recover()).gcPaused).toBe(true);
+});
+
+it("runs request-scoped native repair pages after adoption and invalidates the prior complete audit", async () => {
+  await adopted();
+  await auditedRestore();
+  expect((await control().repairDatabaseRestoreNative(epoch, id, 1)).repair).toMatchObject({
+    stage: "r2",
+    completed: false,
+  });
+  await evictDurableObject(control());
+  expect((await control().repairDatabaseRestoreNative(epoch, id, 1)).repair).toMatchObject({
+    stage: "complete",
+    completed: true,
+    unknown: 0,
+  });
+  await runInDurableObject(control(), async (_, state) => {
+    await expect(configured(state).releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /audit_incomplete/,
+    );
+  });
+  expect((await control().auditDatabaseRestoreRecovery(epoch, id)).audit).toMatchObject({
+    stage: "users",
+    pages: 0,
+  });
+  await auditedRestore();
+  await releaseRecovery();
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.repairDatabaseRestoreNative(epoch, id)).rejects.toThrow(
+      /recovery_released/,
+    );
+  });
+});
+
+it("rejects native repair before adoption, for another request, and for invalid page limits", async () => {
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.repairDatabaseRestoreNative(epoch, id)).rejects.toThrow(
+      /recovery_unavailable/,
+    );
+  });
+  await adopted();
+  await runInDurableObject(control(), async (instance) => {
+    await expect(
+      instance.repairDatabaseRestoreNative(epoch, crypto.randomUUID()),
+    ).rejects.toThrow();
+    await expect(instance.repairDatabaseRestoreNative(epoch, id, 21)).rejects.toThrow(
+      /invalid_recovery_limit/,
+    );
+  });
+});
+
+it("repairs a real native KDF after an unknown first row without releasing that row or the restore hold", async () => {
+  const unknownId = "00000000-0000-0000-0000-000000000001",
+    completedId = crypto.randomUUID(),
+    native = vi.spyOn(crypto.subtle, "deriveBits");
+  await env.DB.prepare("UPDATE control SET kdf_not_before=0").run();
+  await env.DB.prepare(`INSERT INTO kdf_attempts(id,dispatch_token,epoch,issued_at,expires_at)
+    VALUES(?,?,1,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)`)
+    .bind(unknownId, crypto.randomUUID())
+    .run();
+  try {
+    await runInDurableObject(control(), async (_, state) => {
+      // This fixture supplies the pre-restore native execution; the private recovery path never does.
+      await new ControlKdf(
+        env.DB,
+        async () => {},
+        () => {},
+        new KdfSettlements(state.storage.sql, env.DB),
+      ).derive({
+        id: completedId,
+        epoch: 1,
+        deadline: Date.now() + 5000,
+        input: new Uint8Array(32).fill(4).buffer,
+        salt: new Uint8Array(16).fill(8),
+      });
+    });
+    await rollbackNativeReceipt(env.DB, "kdf_attempts", completedId);
+    await adopted();
+    expect((await control().repairDatabaseRestoreNative(epoch, id, 1)).repair).toMatchObject({
+      checked: 1,
+      reconciled: 0,
+      unknown: 1,
+      completed: false,
+    });
+    await evictDurableObject(control());
+    expect((await control().repairDatabaseRestoreNative(epoch, id, 1)).repair).toMatchObject({
+      checked: 2,
+      reconciled: 1,
+      unknown: 1,
+      completed: false,
+    });
+    await control().repairDatabaseRestoreNative(epoch, id, 1);
+    expect((await control().repairDatabaseRestoreNative(epoch, id, 1)).repair).toMatchObject({
+      checked: 2,
+      reconciled: 1,
+      unknown: 1,
+      completed: true,
+    });
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(
+      await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?")
+        .bind(unknownId)
+        .first("state"),
+    ).toBe("claimed");
+    expect(
+      await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?")
+        .bind(completedId)
+        .first("state"),
+    ).toBe("finished");
+    expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+    expect((await control().recover()).maintenance).toBe(true);
+    // Starting a new pass revisits unknown rows and skips already-terminal work.
+    expect((await control().repairDatabaseRestoreNative(epoch, id, 20)).repair).toMatchObject({
+      checked: 1,
+      reconciled: 0,
+      unknown: 1,
+    });
+  } finally {
+    // The unknown fixture had no native dispatch. Retire it so subsequent tests can freeze.
+    await env.DB.prepare(`UPDATE kdf_attempts SET state='not_started',finished_at=MAX(issued_at,strftime('%s','now')*1000)
+      WHERE id IN (?,?) AND state='claimed'`)
+      .bind(unknownId, completedId)
+      .run();
+  }
 });
 
 it("keeps the restore hold until the full audit and restored FTS rebuild are proved", async () => {

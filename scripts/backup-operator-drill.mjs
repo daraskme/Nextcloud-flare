@@ -26,7 +26,9 @@ const { freezeRestoreDatabase } = await moduleAt("scripts/restore/freeze.mjs");
 const { reserveRestoreEpoch } = await moduleAt("scripts/restore/epoch.mjs");
 const { verifyRestoredSnapshot } = await moduleAt("scripts/restore/snapshot.mjs");
 const { adoptRestoreEpoch } = await moduleAt("scripts/restore/adoption.mjs");
-const { auditRestored, resumeRestored } = await moduleAt("scripts/restore/recovery.mjs");
+const { auditRestored, repairRestoredNative, resumeRestored } = await moduleAt(
+  "scripts/restore/recovery.mjs",
+);
 const { applyRestoreTimeTravel, timeTravelProvider } = await moduleAt(
   "scripts/restore/timeTravel.mjs",
 );
@@ -393,6 +395,7 @@ try {
       ["beginAdoption", [2, restoreId, {}]],
       ["attestAdoption", [2, restoreId, {}]],
       ["auditRecovery", [2, restoreId]],
+      ["repairNative", [2, restoreId]],
       ["rebuildRecoveryFts", [2, restoreId]],
       ["releaseRecovery", [2, restoreId]],
       ["resumeRecovery", [2, restoreId]],
@@ -692,6 +695,13 @@ try {
   });
   assert.equal((await apply()).state, "epoch_adopted");
   assert.equal(providerCalls, 1);
+  const nativeRepair = await repairRestoredNative({
+    epoch: 2,
+    id: epochId,
+    control: restoreControl,
+  });
+  assert.equal(nativeRepair.repair.completed, true);
+  assert.equal(nativeRepair.repair.unknown, 0);
   const recovery = await auditRestored({ epoch: 2, id: epochId, control: restoreControl });
   assert.equal(recovery.audit.completed, true);
   const resumed = await resumeRestored({ epoch: 2, id: epochId, control: restoreControl });
@@ -713,7 +723,12 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     adoption: { state: adoption.state, newEpoch: adoption.newEpoch },
-    recovery: { state: gcResumed.state, audit: recovery.audit, control: gcResumed.control },
+    recovery: {
+      state: gcResumed.state,
+      repair: nativeRepair.repair,
+      audit: recovery.audit,
+      control: gcResumed.control,
+    },
     snapshot: {
       state: snapshot.state,
       tables: snapshot.tables,
@@ -722,7 +737,7 @@ try {
       dataSha256: snapshot.dataSha256,
     },
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty-five restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; restored FTS rebuild and full audit, exact hold release, service admission then GC resume with eviction, no repeat POST or cancellation.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty-six restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; bounded native repair scan with no pending rows, restored FTS rebuild and full audit, exact hold release, service admission then GC resume with eviction, no repeat POST or cancellation.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

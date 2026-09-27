@@ -7,6 +7,9 @@ import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { ControlKdf } from "../../src/do/controlKdf";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { type KdfDispatch, KdfSettlements } from "../../src/do/kdfSettlements";
+import { NATIVE_HISTORY_LIMIT, NativeHistory, nativeIdentity } from "../../src/do/nativeHistory";
+import { RestoreNativeRepair } from "../../src/do/restoreNativeRepair";
+import { rollbackNativeReceipt } from "../fixtures/nativeRollback";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 const fixtures: string[] = [];
@@ -87,6 +90,97 @@ function fault(kind: "write" | "write-ack" | "read"): D1Database {
     prepare: (sql: string) => wrap(env.DB.prepare(sql), sql),
   } as unknown as D1Database;
 }
+
+it("repairs a rolled-back completed native derivation from retained evidence after eviction", async () => {
+  const f = fixture(),
+    r = request(),
+    native = vi.spyOn(crypto.subtle, "deriveBits"),
+    restoreId = crypto.randomUUID();
+  await f.use((store) =>
+    new ControlKdf(
+      env.DB,
+      async () => {},
+      () => {},
+      store,
+    ).derive(r),
+  );
+  await f.use(async (_, state) => {
+    expect(state.storage.sql.exec("SELECT * FROM control_kdf_receipts").toArray()).toHaveLength(0);
+    expect(state.storage.sql.exec("SELECT * FROM control_native_history").toArray()).toHaveLength(
+      1,
+    );
+    state.storage.sql.exec(
+      "INSERT INTO control_database_restore(id,epoch,source_json,phase,created_at) VALUES(?,1,'{}','preparing',1)",
+      restoreId,
+    );
+  });
+  await rollbackNativeReceipt(env.DB, "kdf_attempts", r.id);
+  await env.DB.prepare(
+    "UPDATE control SET epoch=2,maintenance=1,gc_paused=1,admission_token=?,admission_revision=1",
+  )
+    .bind(crypto.randomUUID())
+    .run();
+  await evictDurableObject(f.stub);
+  await f.use(async (_, state) => {
+    const repair = new RestoreNativeRepair(state.storage.sql, env.DB);
+    expect(await repair.page(restoreId, 2, 1, () => {})).toMatchObject({
+      checked: 1,
+      reconciled: 1,
+      unknown: 0,
+      stage: "kdf",
+    });
+  });
+  await evictDurableObject(f.stub);
+  await f.use(async (_, state) => {
+    const repair = new RestoreNativeRepair(state.storage.sql, env.DB);
+    expect(await repair.page(restoreId, 2, 1, () => {})).toMatchObject({ checked: 1, stage: "r2" });
+    expect(await repair.page(restoreId, 2, 1, () => {})).toMatchObject({
+      reconciled: 1,
+      unknown: 0,
+      completed: true,
+    });
+  });
+  expect(
+    await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?").bind(r.id).first("state"),
+  ).toBe("finished");
+  expect(native).toHaveBeenCalledTimes(1);
+});
+
+it.each(["capacity", "ignored_insert"])(
+  "keeps live KDF proof when native history cannot persist: %s",
+  async (kind) => {
+    const f = fixture(),
+      r = dispatch();
+    await claim(r);
+    await f.use(async (store, state) => {
+      store.reserve(r);
+      if (kind === "capacity")
+        state.storage.sql.exec(
+          "UPDATE control_native_history_usage SET entries=?",
+          NATIVE_HISTORY_LIMIT,
+        );
+      else
+        state.storage.sql.exec(
+          "CREATE TRIGGER fixture_history_ignore BEFORE INSERT ON control_native_history BEGIN SELECT RAISE(IGNORE); END",
+        );
+      await expect(store.settle(r, "finished")).rejects.toThrow();
+      expect(state.storage.sql.exec("SELECT state FROM control_kdf_receipts").one().state).toBe(
+        "finished",
+      );
+      if (kind === "capacity")
+        state.storage.sql.exec("UPDATE control_native_history_usage SET entries=0");
+      else state.storage.sql.exec("DROP TRIGGER fixture_history_ignore");
+      expect((await store.repair()).reconciled).toBe(1);
+      const history = new NativeHistory(state.storage.sql),
+        identity = await nativeIdentity("kdf", [r.id, r.token, r.epoch]);
+      expect(history.find(identity)).toEqual({ outcome: "finished", deadline: r.deadline });
+      expect(() => history.remember(identity, "not_started", r.deadline)).toThrow(/conflict/);
+      expect(() => state.storage.sql.exec("DELETE FROM control_native_history")).toThrow(
+        /retained/,
+      );
+    });
+  },
+);
 
 it("persists actual native completion, repairs after eviction, and never repeats crypto", async () => {
   const f = fixture(),

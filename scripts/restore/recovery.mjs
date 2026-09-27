@@ -87,6 +87,57 @@ export async function auditRestored({
   return result;
 }
 
+/** A complete scan may still contain unknown work; it never opens admission. */
+export async function repairRestoredNative({
+  epoch,
+  id,
+  control,
+  maxPages = 100,
+  pageSize = 10,
+  progress = () => {},
+}) {
+  if (
+    !Number.isInteger(maxPages) ||
+    maxPages < 1 ||
+    maxPages > 100 ||
+    !Number.isInteger(pageSize) ||
+    pageSize < 1 ||
+    pageSize > 20
+  )
+    throw new Error("database_restore_invalid_recovery_limit");
+  const selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
+  if (selected.state !== "epoch_adopted") throw new Error("database_restore_recovery_unavailable");
+  let result;
+  for (let n = 0; n < maxPages; n++) {
+    const raw = await control.repairNative(epoch, id, pageSize),
+      status = sameStatus(raw, selected),
+      r = raw.repair;
+    if (
+      status.state !== "epoch_adopted" ||
+      !r ||
+      !["kdf", "r2", "complete"].includes(r.stage) ||
+      typeof r.afterId !== "string" ||
+      r.afterId.length > 36 ||
+      ![r.checked, r.reconciled, r.unknown].every((v) => Number.isSafeInteger(v) && v >= 0) ||
+      r.checked !== r.reconciled + r.unknown ||
+      r.completed !== (r.stage === "complete")
+    )
+      throw new Error("database_restore_invalid_native_repair");
+    const repair = {
+      stage: r.stage,
+      afterId: r.afterId,
+      checked: r.checked,
+      reconciled: r.reconciled,
+      unknown: r.unknown,
+      completed: r.completed,
+    };
+    result = { ...status, repair };
+    progress({ stage: "native_repair", repair });
+    if (repair.completed) break;
+  }
+  return result;
+}
+
 export async function rebuildRestoredFts({ epoch, id, control }) {
   const selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
   if (selected.state !== "epoch_adopted") throw new Error("database_restore_recovery_unavailable");

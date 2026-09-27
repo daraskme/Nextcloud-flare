@@ -9,16 +9,19 @@ import type {
 import type { ControlDatabaseRestore } from "./controlDatabaseRestore";
 import type { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import { RECOVERY_FINAL_QUERY } from "./recoveryAudit";
+import { type NativeRepairStatus, RestoreNativeRepair } from "./restoreNativeRepair";
 
 interface RecoveryHost {
   current(epoch: number): void;
   next(epoch: number, limit: number): Promise<RecoveryAuditStatus>;
   rebuild(epoch: number): Promise<RecoveryAuditStatus>;
   status(): Promise<ControlStatus>;
+  repair(epoch: number, action: () => Promise<NativeRepairStatus>): Promise<NativeRepairStatus>;
 }
 
 /** Request-scoped audit, hold release, then independent service and GC resume steps. */
 export class ControlRestoreRecovery {
+  readonly #native: RestoreNativeRepair;
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly db: D1Database,
@@ -26,7 +29,27 @@ export class ControlRestoreRecovery {
     private readonly reservation: ControlRestoreEpoch,
     private readonly admission: ControlAdmission,
     private readonly host: RecoveryHost,
-  ) {}
+  ) {
+    this.#native = new RestoreNativeRepair(storage.sql, db);
+  }
+
+  async repairNative(epoch: number, id: string, limit = 10) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+      throw new Error("invalid_recovery_limit");
+    const { selected } = this.#scope(epoch, id);
+    const current = () => {
+      const scope = this.#scope(epoch, id);
+      if (scope.selected.state !== "epoch_adopted")
+        throw new Error("database_restore_recovery_released");
+      this.admission.assertClosed(selected.newEpoch!);
+    };
+    current();
+    const repair = await this.host.repair(selected.newEpoch!, () =>
+      this.#native.page(id, selected.newEpoch!, limit, current),
+    );
+    current();
+    return { ...this.restore.inspect(epoch, id), repair };
+  }
 
   #scope(epoch: number, id: string) {
     const selected = this.restore.inspect(epoch, id),
