@@ -67,6 +67,7 @@ export const GLOBAL_MUTATION_KINDS = [
   "bucket.parts-page",
   "bucket.abort-start",
   "bucket.abort-finish",
+  "bucket.abort-reconcile",
   "recovery.fts-rebuild",
 ] as const;
 export type GlobalMutationKind = (typeof GLOBAL_MUTATION_KINDS)[number];

@@ -27,6 +27,7 @@ interface Attempt {
   handle_id: string;
   epoch: number;
   outcome: "started" | "confirmed" | "unconfirmed";
+  reconciled: number;
 }
 export interface MultipartBucketAbortResult {
   attemptId: string;
@@ -43,7 +44,11 @@ export async function abortMultipartBucketHandle(
   epoch: number,
   handleId: string,
   attemptId: string,
-  options: { maxWaitMs?: number; scope?: BindingVerificationScope } = {},
+  options: {
+    maxWaitMs?: number;
+    scope?: BindingVerificationScope;
+    reconcile?: (verified: VerifiedR2Inventory, deadline: number) => Promise<boolean>;
+  } = {},
 ): Promise<MultipartBucketAbortResult> {
   const deadline = Date.now() + 25_000;
   const wait = options.maxWaitMs ?? 10_000;
@@ -74,6 +79,7 @@ export async function abortMultipartBucketHandle(
         wait,
         deadline,
         options.scope?.current,
+        options.reconcile,
       ),
     options.scope,
   );
@@ -88,6 +94,7 @@ async function abortVerified(
   wait: number,
   deadline: number,
   current?: () => void,
+  reconcile?: (verified: VerifiedR2Inventory, deadline: number) => Promise<boolean>,
 ): Promise<MultipartBucketAbortResult> {
   const { DB: db } = env;
   const withinBudget = () => {
@@ -103,16 +110,24 @@ async function abortVerified(
     .first<Handle>();
   if (!handle) throw new Error("multipart_bucket_handle_unavailable");
   const previous = await primary(db)
-    .prepare("SELECT id,handle_id,epoch,outcome FROM multipart_bucket_abort_attempts WHERE id=?")
+    .prepare(`SELECT a.id,a.handle_id,a.epoch,a.outcome,
+      EXISTS(SELECT 1 FROM multipart_bucket_abort_reconciliations r WHERE r.attempt_id=a.id) AS reconciled
+      FROM multipart_bucket_abort_attempts a WHERE a.id=?`)
     .bind(attemptId)
     .first<Attempt>();
   if (previous) {
     if (previous.handle_id !== handleId || previous.epoch > epoch)
       throw new Error("multipart_bucket_abort_identity_conflict");
     await verified.assertCurrent();
+    const confirmed =
+      previous.outcome === "confirmed" ||
+      previous.reconciled === 1 ||
+      (await reconcile?.(verified, deadline)) === true;
+    withinBudget();
+    await verified.assertCurrent();
     return {
       attemptId,
-      outcome: previous.outcome === "confirmed" ? "confirmed" : "unconfirmed",
+      outcome: confirmed ? "confirmed" : "unconfirmed",
       replayed: true,
       heldBytes: handle.held_bytes,
     };

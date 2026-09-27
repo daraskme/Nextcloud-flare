@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前d50c58bの[CI36345681064](https://github.com/daraskme/Nextcloud-flare/actions/runs/36345681064)は確認時点でUbuntu・Windows3分割・browserの5job成功、backupは実行中。先行7024160の[CI36344576265](https://github.com/daraskme/Nextcloud-flare/actions/runs/36344576265)と981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前9b0f257の[CI36347414539](https://github.com/daraskme/Nextcloud-flare/actions/runs/36347414539)はUbuntu・Windows3分割・browser・backupの全6job成功。先行d50c58bの[CI36345681064](https://github.com/daraskme/Nextcloud-flare/actions/runs/36345681064)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [multipart中止の実成功記録の回復](MULTIPART_ABORT_RECONCILIATION.md)を実装。migration0047・69通常table。元native tupleの9項目と独立DO履歴を照合し、upload handle成功の回復とbucketの補足成功記録を保存する。既存28method・CLI引数を維持し、全体閉鎖/容量holdは未解除。
+- Nodeのschema/backup生成/復旧inventory 3file174件が成功（15.58s）。初回workerd38件は37成功・1失敗（73.67s）。停止故障注入後に残るprobe leaseを同じ試験内で満了させるfixtureへ修正。型検査の部分R2 mockのassertionも修正後、型・lint471file・契約/設定検査とWeb build/Worker dry-runが成功。
+- 中間workerd7file/283件は282成功・1失敗（322.28s）。snapshot試験の68tableの旧assertionを69へ更新。upload中止の送信前にsource/tokenを保存し、その組もnative grantと成功照合の両方で確認する条件を追加。旧記録へsourceを推測して補填しない。
+- 全Node61file/1,277件は1,276成功・1失敗（56.52s）。database-restore試験の表数期待値が旧68のまま残っていたため修正し、同file全34件が成功（27.92s）。他の60fileと合わせ全Node1,277件を確認。/tmp/ncf-abort-reconcile-unit-all.log、/tmp/ncf-abort-reconcile-unit-final.log。
+- private operatorドリルは69tableで成功。元backup11,370bytes・snapshot57,512bytes、全28methodの拒否、7domain、空inventory、12ページ監査と受付/GC再開を確認。/tmp/ncf-abort-reconcile-operator-final.log、.wrangler/operator-drill-t5BwhN/report.json。初回は表数の旧assertionで停止し更新後に再実行した。実S3/Time Travelは合成provider。
+- source照合追加後の型・lint471file・契約/設定・Web build/Worker dry-run成功。最終workerd5file/198件が成功（274.31s）。新しいinventory fileは42件で19件追加。9項目の不一致、DO履歴の欠落/結果/期限、補足保存ACK喪失、遅い成功と元diagnostic保持、eviction、停止変更直前のatomic拒否、別scan round、source/token不一致、再中止禁止と容量保持を確認。/tmp/ncf-abort-reconcile-worker-source.log、/tmp/ncf-abort-reconcile-build-final.log。全体Nodeと最終workerdを合わせ1,475件。remote migration/deployは未実施。
+
+### 先行するmultipart inventoryの運用接続
 
 - [multipart inventory](DATABASE_RESTORE_INVENTORY.md)をprivate `repairInventory`と`inventory-restored --action verify|uploads|bucket|parts|abort`へ接続。採用済みBLOBS target、同じ停止token、native保留なし、write flagを要求し、毎回fresh probe。全体25秒、単発処理、元attempt再送時の非dispatch、容量保留と全監査の無効化を維持する。内部token/key/R2 ID/cursorをCLIへ出さない。共通source/読取りguardをrestoreRepairContextへ抽出し、既存7種domainにも使用する。
 - 新規Node59件を含む4file/190件成功（26.53s）。operator handleの重複拒否を追加後、新規file60件が成功（0.85s）。既存分と合わせ今回Node191件を確認。入力の余分なkey・bounds・action、結果の件数/状態/ID一致、秘密除去、CLI引数、unknown RPC非再送を検証。/tmp/ncf-inventory-node.log、/tmp/ncf-inventory-node-final.log。

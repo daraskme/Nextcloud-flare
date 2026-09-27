@@ -335,7 +335,15 @@ export class ControlDO extends DurableObject<Env> {
           current();
           this.#kdfSettlements.assertEmpty();
           this.#r2Writes.assertEmpty();
-          return repairRestoredInventory(env, this, request, target, transition, current);
+          return repairRestoredInventory(
+            ctx.storage.sql,
+            env,
+            this,
+            request,
+            target,
+            transition,
+            current,
+          );
         },
         repairLive: async (limit, current) => {
           const kdf = await this.#kdfSettlements.repair(limit, current);

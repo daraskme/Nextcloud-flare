@@ -156,7 +156,7 @@ export async function abortWriteProof(
     JOIN multipart_inventory_scans s ON s.upload_id=h.upload_id JOIN uploads u ON u.id=h.upload_id
     WHERE h.id=? AND h.upload_id=? AND h.r2_upload_id=? AND h.state='observed'
     AND s.r2_key=? AND s.source=? AND s.epoch=? AND s.round_id=? AND s.completed_at IS NOT NULL
-    AND u.r2_upload_id IS ?`,
+    AND u.r2_upload_id IS ? AND h.abort_source=s.source AND h.abort_token=?`,
         [
           p.handleId!,
           p.uploadId!,
@@ -166,6 +166,7 @@ export async function abortWriteProof(
           request.epoch,
           p.scanRound!,
           p.knownUploadId!,
+          p.attemptId,
         ],
       ),
     );

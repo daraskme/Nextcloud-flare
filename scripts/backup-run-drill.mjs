@@ -364,7 +364,7 @@ try {
   assert.equal(verifiedRestore.state, "sql_verified");
   assert.equal(verifiedRestore.complete, true);
   assert.equal(verifiedRestore.bytes, result.bytes);
-  assert.equal(verifiedRestore.tables, 68);
+  assert.equal(verifiedRestore.tables, 69);
   assert.equal(verifiedRestore.source.manifestSha256, result.manifestSha256);
   const d1Args = ["verify-d1", ...restoreArgs, "--config", config];
   const verifiedD1 = decode(await run(restoreCli, d1Args)).result;

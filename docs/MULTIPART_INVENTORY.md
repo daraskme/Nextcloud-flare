@@ -1,5 +1,7 @@
 # 未完了multipartのS3診断
 
+migration0047では[復元後の中止成功の照合](MULTIPART_ABORT_RECONCILIATION.md)を追加した。D1と独立DO履歴が一致した元handleは、cleanup token変更後も再中止せずabortedへ進める。予約holdと全体閉鎖の条件は維持する。
+
 migration0044で、各走査の前に行うBLOBS接続probeのPUTも[送信・終了記録](R2_WRITE_SETTLEMENT.md)へ接続した。新しいnonceの検証が成功しても古い不明なPUTはpendingとして保持し、復旧凍結と再開を拒否する。64-byte永久割当・60秒lease・元の25秒期限を維持する。
 
 `r2/s3Inventory.ts`、`r2/s3InventoryPages.ts`、`r2/s3Xml.ts`は、Workers bindingでは列挙できない未完了multipartをS3 APIから読み取る。`jobs/multipartInventory.ts`と`ControlDO.inspectIncompleteMultipart`はmaintenance中の診断へ接続する。migration `0022`と`jobs/multipartInventoryRepair.ts`は、D1にupload行が残っている未知IDを永続走査し、実BLOBS bindingから中止する。migration `0023`と`jobs/r2BindingVerification.ts`は、fresh nonceによるBLOBS/S3対応検証を追加する。migration `0027`でupload行喪失時の[全bucket走査・part容量保留](MULTIPART_BUCKET_INVENTORY.md)も追加した。完全な不在証明・予約解放は未接続。

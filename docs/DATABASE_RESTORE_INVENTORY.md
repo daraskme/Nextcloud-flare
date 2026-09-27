@@ -2,6 +2,8 @@
 
 更新: 2026-09-28
 
+migration0047で[中止の実成功記録の回復](MULTIPART_ABORT_RECONCILIATION.md)を追加。`uploads`は元handleの成功を照合し、`abort`は同じattemptの再実行時に補足記録を保存する。R2へ再中止せず、元診断と容量保留を維持する。
+
 [epoch採用](DATABASE_RESTORE_ADOPTION.md)後、同じ復旧要求からmultipartの接続照合、upload単位の未知handle修復、bucket全体の走査、部品容量の観測、中止試行を実行する。通常の受付とGCは停止したままにする。
 
 ## 実行
@@ -42,4 +44,4 @@ bucketとpartsのcursorは既存のD1台帳で管理する。source/epochが変�
 
 この入口で調査・中止を実行できるが、未知multipart全体の閉鎖証明と予約/physicalの最終精算は未完了。空のS3一覧、NoSuchUpload、個別abort成功だけを全体閉鎖とせず、既存scan/handleのdelete guardや容量holdを維持する。古いsnapshotに欠けたnative tuple、旧実装、全DO storage喪失の収束、旧backup修復、logical import、安全な中止、大規模RTOと実Cloudflareでの復旧も残る。
 
-D1 schema0046・通常68table・依存追加なし。ローカル試験のS3応答は合成providerで、実S3・Time Travelの検証ではない。結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
+D1 schema0047・通常69table・依存追加なし。ローカル試験のS3応答は合成providerで、実S3・Time Travelの検証ではない。結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。

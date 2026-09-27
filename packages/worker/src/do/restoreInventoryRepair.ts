@@ -21,6 +21,11 @@ import {
   withVerifiedR2Inventory,
 } from "../jobs/r2BindingVerification";
 import { R2S3Inventory } from "../r2/s3Inventory";
+import { NativeHistory } from "./nativeHistory";
+import {
+  reconcileRestoredBucketAbort,
+  restoredInventoryAbortReconciler,
+} from "./restoreInventoryAbort";
 import { type RestoreRepairControl, restoreRepairContext } from "./restoreRepairContext";
 
 type InventoryResult =
@@ -36,6 +41,7 @@ export type RestoreInventoryStatus = {
 
 /** One request-bound inventory operation. Empty listings and abort ACKs never release holds. */
 export async function repairRestoredInventory(
+  sql: SqlStorage,
   env: Env,
   control: RestoreRepairControl,
   request: RestoreInventoryRequest,
@@ -87,6 +93,7 @@ export async function repairRestoredInventory(
       },
     };
     const epoch = transition.epoch;
+    const history = new NativeHistory(sql);
     let result: InventoryResult;
     if (request.action === "verify")
       result = {
@@ -107,6 +114,7 @@ export async function repairRestoredInventory(
         uploads: await repairUnidentifiedMultipartUploads(source, bucket, inventory, epoch, {
           maxUploads: request.limit,
           scope,
+          reconcileAbort: restoredInventoryAbortReconciler(history, source, epoch, stop, current),
         }),
       };
     else if (request.action === "bucket")
@@ -134,7 +142,21 @@ export async function repairRestoredInventory(
           epoch,
           request.handleId,
           request.attemptId,
-          { scope },
+          {
+            scope,
+            reconcile: (verified, abortDeadline) =>
+              reconcileRestoredBucketAbort(
+                history,
+                source,
+                verified,
+                request.handleId,
+                request.attemptId,
+                epoch,
+                stop,
+                current,
+                Math.min(deadline, abortDeadline),
+              ),
+          },
         ),
       };
     current();

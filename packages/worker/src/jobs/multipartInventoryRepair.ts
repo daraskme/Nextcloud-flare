@@ -46,6 +46,13 @@ interface Handle {
   id: string;
   r2_upload_id: string;
 }
+export type InventoryAbortReconciler = (
+  verified: VerifiedR2Inventory,
+  row: MultipartCleanupCandidate,
+  handle: Handle,
+  fences: () => SqlStatement[],
+  deadline: number,
+) => Promise<boolean>;
 export interface MultipartInventoryRepairResult {
   claimed: number;
   pages: number;
@@ -90,6 +97,7 @@ export async function repairUnidentifiedMultipartUploads(
     maxHandles?: number;
     maxWallMs?: number;
     scope?: BindingVerificationScope;
+    reconcileAbort?: InventoryAbortReconciler;
   } = {},
 ): Promise<MultipartInventoryRepairResult> {
   const limit = options.maxUploads ?? 5;
@@ -115,7 +123,14 @@ export async function repairUnidentifiedMultipartUploads(
     inventory,
     epoch,
     (verified) =>
-      repairVerified(env, verified, epoch, { limit, maxHandles, wall }, options.scope?.current),
+      repairVerified(
+        env,
+        verified,
+        epoch,
+        { limit, maxHandles, wall },
+        options.scope?.current,
+        options.reconcileAbort,
+      ),
     options.scope,
   );
 }
@@ -126,6 +141,7 @@ async function repairVerified(
   epoch: number,
   { limit, maxHandles, wall }: { limit: number; maxHandles: number; wall: number },
   current?: () => void,
+  reconcileAbort?: InventoryAbortReconciler,
 ): Promise<MultipartInventoryRepairResult> {
   const { DB: db } = env;
   const { bucket, inventory } = verified;
@@ -224,9 +240,9 @@ async function repairVerified(
             ...(handle
               ? [
                   {
-                    sql: `UPDATE multipart_inventory_handles SET attempts=attempts+1,last_attempt_at=MAX(last_attempt_at,${CLOCK}),last_error=NULL
+                    sql: `UPDATE multipart_inventory_handles SET attempts=attempts+1,last_attempt_at=MAX(last_attempt_at,${CLOCK}),last_error=NULL,abort_source=?,abort_token=?
             WHERE id=? AND upload_id=? AND state='observed'`,
-                    values: [handle.id, id],
+                    values: [source, token, handle.id, id],
                   },
                   assertOneChange,
                 ]
@@ -338,7 +354,12 @@ async function repairVerified(
           .bind(id, maxHandles)
           .all<Handle>();
         for (const handle of handles.results) {
+          current?.();
           if (Date.now() - started >= wall) break;
+          if (await reconcileAbort?.(verified, row, handle, fences, started + wall)) {
+            result.aborted++;
+            continue;
+          }
           await charge(handle);
           try {
             await trackedR2Write(

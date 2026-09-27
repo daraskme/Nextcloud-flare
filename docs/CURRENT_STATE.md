@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[復元後のmultipart inventory](DATABASE_RESTORE_INVENTORY.md)をprivate operatorとCLIへ接続しました。`inventory-restored`から接続照合、upload単位修復、bucket走査、部品観測、中止試行を明示的に実行します。採用済みのbucketと同じ停止状態へ固定し、毎回fresh probeで照合します。同じattemptのabortは再送せず、空一覧や個別中止成功から全体閉鎖と容量解放を推測しません。
+[multipart中止の実成功記録の回復](MULTIPART_ABORT_RECONCILIATION.md)を追加しました。元abortの9項目のD1 tupleと独立DO履歴を照合し、upload handleを再中止せず回復します。bucketの同じattemptには不変の補足記録を保存し、元のstarted/unconfirmed診断を残します。容量保留と全体閉鎖の条件は維持します。
 
-schema0046・通常68table・依存追加なし。今回の関連テストはNode191件と、再実行を含むworkerd10file/221件で計412件成功（新規83件）。運用ドリルも28復旧methodの権限拒否、multipart操作、全監査と受付/GC再開を確認しました。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0047・通常69table・依存追加なし。Node全1,277件と最終の関連workerd 5file/198件、型・lint・契約/設定・build、69tableの復旧ドリルが成功しました。既存28methodとCLI引数を維持しています。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
 次は未知multipartの全体閉鎖証明と予約/physicalの最終精算、旧backup記録の修復を進める工程です。inventoryの調査・中止コマンドを接続しても、scan/handleのholdを解除するだけで完了にはしません。元abortのD1記録がないsnapshot、導入前の削除済み証拠、全DO storage喪失などのunknownは引き続き保持します。安全な中止、logical import、大規模DBの再開/RTO、終了履歴の実容量/負荷測定も残ります。通知先・timer設置、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前d50c58bの[CI36345681064](https://github.com/daraskme/Nextcloud-flare/actions/runs/36345681064)は確認時点でUbuntu・Windows3分割・browserの5job成功、backupは実行中。先行7024160の[CI36344576265](https://github.com/daraskme/Nextcloud-flare/actions/runs/36344576265)と981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前9b0f257の[CI36347414539](https://github.com/daraskme/Nextcloud-flare/actions/runs/36347414539)はUbuntu・Windows3分割・browser・backupの全6job成功。先行d50c58bの[CI36345681064](https://github.com/daraskme/Nextcloud-flare/actions/runs/36345681064)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -70,7 +70,7 @@ schema0046・通常68table・依存追加なし。今回の関連テストはNod
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | migration `0001`〜`0046`、68通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0047`、69通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |

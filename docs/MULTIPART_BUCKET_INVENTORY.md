@@ -1,5 +1,7 @@
 # upload行が失われたmultipartの観測・中止・容量保留
 
+migration0047では[復元後の中止成功の照合](MULTIPART_ABORT_RECONCILIATION.md)を追加した。元attemptのstarted/unconfirmedを保持し、D1と独立DO履歴が一致した成功を補足記録へ保存する。同じattemptの再送はconfirmedを返し、中止を再dispatchしない。physical/quarantineは維持する。
+
 migration0044で、全bucket走査・part観測・中止の前提となるBLOBS接続probeのPUTも[送信・終了記録](R2_WRITE_SETTLEMENT.md)へ接続した。新しい検証の成功で古い不明なPUTは解消しない。probeと中止は同じ32件のR2保留枠を共有する。
 
 更新: 2026-09-25。migration `0027`と`jobs/multipartBucketInventory.ts`で、D1のupload行がない未完了multipartも保存先の`u/`全体から発見し、各partの観測済み容量を保留する。migration `0028`と`jobs/multipartBucketAbort.ts`で発見済みhandleの中止と不変receiptを追加した。全体不在の証明と容量精算は未実装。実S3試験・remote migration・deployは行っていない。

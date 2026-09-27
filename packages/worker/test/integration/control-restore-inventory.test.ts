@@ -6,6 +6,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { insertR2Write, type R2WriteGrant } from "../../src/db/r2Write";
 import { ControlDO } from "../../src/do/ControlDO";
 import { KdfSettlements } from "../../src/do/kdfSettlements";
+import { NativeHistory, nativeIdentity } from "../../src/do/nativeHistory";
 import type { Env } from "../../src/env";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { multipartBucketFixture } from "../fixtures/multipartBucket";
@@ -351,7 +352,7 @@ it.each(["probe.put", "bucket.abort"] as const)(
   },
 );
 
-it("records actual late abort success but leaves its domain receipt and capacity unresolved", async () => {
+it("recovers actual late abort success after eviction and preserves the original diagnostic and capacity", async () => {
   const f = await multipartBucketFixture(),
     id = await discover(f);
   await run({ action: "parts", handleId: id, limit: 20 });
@@ -403,12 +404,307 @@ it("records actual late abort success but leaves its domain receipt and capacity
       .first("outcome"),
   ).toBe("started");
   expect(await balance(f.ids.user)).toMatchObject({ physical_bytes: 3 });
+  await env.DB.prepare(
+    "UPDATE r2_binding_probe SET lease_expires_at=1 WHERE lease_token IS NOT NULL",
+  ).run();
+  await evictDurableObject(restored.control);
+  const abort = vi.fn(async () => {
+    throw new Error("unexpected_abort");
+  });
+  const bucket = orphanBucket({
+    resumeMultipartUpload: (key, uploadId) =>
+      ({ key, uploadId, abort }) as unknown as R2MultipartUpload,
+  });
+  const request = { action: "abort" as const, handleId: id, attemptId };
+  expect((await run(request, { BLOBS: bucket })).inventory).toMatchObject({
+    pending: true,
+    abort: { outcome: "confirmed", replayed: true, heldBytes: 3 },
+  });
+  expect(
+    await env.DB.prepare("SELECT outcome FROM multipart_bucket_abort_attempts WHERE id=?")
+      .bind(attemptId)
+      .first("outcome"),
+  ).toBe("started");
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM multipart_bucket_abort_reconciliations WHERE attempt_id=?",
+    )
+      .bind(attemptId)
+      .first("n"),
+  ).toBe(1);
+  await evictDurableObject(restored.control);
+  expect(
+    (
+      await run(request, {
+        BLOBS: bucket,
+        DB: rewriteNativeReceipt(() => {
+          throw new Error("native_receipt_was_reloaded");
+        }),
+      })
+    ).inventory,
+  ).toMatchObject({ abort: { outcome: "confirmed", replayed: true } });
+  expect(abort).not.toHaveBeenCalled();
+  expect(await balance(f.ids.user)).toMatchObject({ physical_bytes: 3 });
+  for (const sql of [
+    "UPDATE multipart_bucket_abort_reconciliations SET epoch=epoch+1 WHERE attempt_id=?",
+    "DELETE FROM multipart_bucket_abort_reconciliations WHERE attempt_id=?",
+    "UPDATE multipart_bucket_handles SET held_bytes=0 WHERE id=?",
+  ])
+    await expect(
+      env.DB.prepare(sql)
+        .bind(sql.includes("handles") ? id : attemptId)
+        .run(),
+    ).rejects.toThrow();
 });
+
+function rewriteNativeReceipt(rewrite: (row: Record<string, unknown>) => unknown): D1Database {
+  return new Proxy(env.DB, {
+    get(target, key) {
+      if (key === "prepare")
+        return (query: string) => {
+          const wrap = (statement: D1PreparedStatement): D1PreparedStatement =>
+            new Proxy(statement, {
+              get(s, prop) {
+                if (prop === "bind") return (...values: unknown[]) => wrap(s.bind(...values));
+                if (prop === "first" && query.includes("SELECT r.* FROM r2_write_attempts"))
+                  return async () => {
+                    const row = await s.first<Record<string, unknown>>();
+                    return row ? rewrite(row) : null;
+                  };
+                const value = Reflect.get(s, prop);
+                return typeof value === "function" ? value.bind(s) : value;
+              },
+            });
+          return wrap(target.prepare(query));
+        };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function lostBucketAbort() {
+  const f = await multipartBucketFixture(),
+    id = await discover(f);
+  await run({ action: "parts", handleId: id, limit: 20 });
+  const request = { action: "abort" as const, handleId: id, attemptId: crypto.randomUUID() };
+  const DB = injectBatch(
+    (sql) => sql.startsWith("UPDATE multipart_bucket_abort_attempts SET outcome="),
+    async () => {
+      throw new Error("domain_write_failed");
+    },
+    false,
+  );
+  await expect(run(request, { DB })).rejects.toThrow();
+  await env.DB.prepare(
+    "UPDATE r2_binding_probe SET lease_expires_at=1 WHERE lease_token IS NOT NULL",
+  ).run();
+  return { f, request };
+}
+
+it.each([
+  "id",
+  "token",
+  "epoch",
+  "owner_id",
+  "kind",
+  "r2_key",
+  "dispatch_before",
+  "started_at",
+  "source_ref",
+])("does not reconcile a native receipt with a mismatched %s", async (field) => {
+  const { f, request } = await lostBucketAbort();
+  const DB = rewriteNativeReceipt((row) => ({
+    ...row,
+    [field]: typeof row[field] === "number" ? row[field] + 1 : `${row[field]}-wrong`,
+  }));
+  expect((await run(request, { DB })).inventory).toMatchObject({
+    pending: true,
+    abort: { outcome: "unconfirmed", replayed: true },
+  });
+  expect(
+    await env.DB.prepare("SELECT 1 FROM multipart_bucket_abort_reconciliations WHERE attempt_id=?")
+      .bind(request.attemptId)
+      .first(),
+  ).toBeNull();
+  expect(await balance(f.ids.user)).toMatchObject({ physical_bytes: 3 });
+});
+
+it.each(["missing", "not_started", "deadline"])(
+  "requires matching DO history: %s",
+  async (fault) => {
+    const { request } = await lostBucketAbort();
+    const row = (await env.DB.prepare(
+      "SELECT * FROM r2_write_attempts WHERE kind='bucket.abort' AND source_ref=?",
+    )
+      .bind(JSON.stringify(["bucket", request.handleId, request.attemptId, null]))
+      .first<Record<string, unknown>>())!;
+    const digest = new Uint8Array(
+      await nativeIdentity("r2", [
+        row.id,
+        row.token,
+        row.epoch,
+        row.owner_id,
+        row.kind,
+        row.r2_key,
+        row.dispatch_before,
+        row.started_at,
+        row.source_ref,
+      ]),
+    ).join(",");
+    const find = NativeHistory.prototype.find;
+    const spy = vi.spyOn(NativeHistory.prototype, "find").mockImplementation(function (
+      this: NativeHistory,
+      identity,
+    ) {
+      const saved = find.call(this, identity);
+      if (!saved || new Uint8Array(identity).join(",") !== digest) return saved;
+      return fault === "missing"
+        ? undefined
+        : fault === "deadline"
+          ? { ...saved, deadline: saved.deadline + 1 }
+          : { ...saved, outcome: "not_started" };
+    });
+    try {
+      expect((await run(request)).inventory).toMatchObject({
+        abort: { outcome: "unconfirmed", replayed: true },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  },
+);
+
+it.each([false, true])(
+  "recovers reconciliation batch acknowledgement loss (after commit: %s)",
+  async (after) => {
+    const { request } = await lostBucketAbort();
+    const DB = injectBatch(
+      (sql) => sql.startsWith("INSERT INTO multipart_bucket_abort_reconciliations"),
+      async () => {
+        throw new Error("lost_ack");
+      },
+      after,
+    );
+    if (after)
+      expect((await run(request, { DB })).inventory).toMatchObject({
+        abort: { outcome: "confirmed", replayed: true },
+      });
+    else {
+      await expect(run(request, { DB })).rejects.toThrow();
+      await env.DB.prepare(
+        "UPDATE r2_binding_probe SET lease_expires_at=1 WHERE lease_token IS NOT NULL",
+      ).run();
+      expect((await run(request)).inventory).toMatchObject({
+        abort: { outcome: "confirmed", replayed: true },
+      });
+    }
+  },
+);
+
+it.each(["same_round", "new_round", "wrong_source", "wrong_token"])(
+  "checks an upload handle's previous native abort after claim changes: %s",
+  async (mode) => {
+    const f = await multipartInventoryFixture();
+    serve([f]);
+    const DB = injectBatch(
+      (sql) => sql.startsWith("UPDATE multipart_inventory_handles SET state='aborted'"),
+      async () => {
+        throw new Error("lost_domain_write");
+      },
+      false,
+    );
+    expect((await run({ action: "uploads", limit: 1 }, { DB })).inventory).toMatchObject({
+      uploads: { retried: 1, aborted: 0 },
+    });
+    const before = await env.DB.prepare("SELECT cleanup_token FROM uploads WHERE id=?")
+      .bind(f.id)
+      .first("cleanup_token");
+    const handle = (await env.DB.prepare(
+      "SELECT id,abort_source,abort_token FROM multipart_inventory_handles WHERE upload_id=?",
+    )
+      .bind(f.id)
+      .first<{ id: string; abort_source: string; abort_token: string }>())!;
+    expect(handle.abort_token).toBe(before);
+    for (const field of ["abort_source", "abort_token"])
+      await expect(
+        env.DB.prepare(`UPDATE multipart_inventory_handles SET ${field}=NULL WHERE id=?`)
+          .bind(handle.id)
+          .run(),
+      ).rejects.toThrow();
+    if (mode === "new_round") {
+      await env.DB.prepare("UPDATE multipart_inventory_scans SET next_scan_at=0 WHERE upload_id=?")
+        .bind(f.id)
+        .run();
+      serve();
+    } else if (mode === "wrong_source") {
+      const source = JSON.stringify({
+        ...JSON.parse(handle.abort_source),
+        bucket: "different-bucket",
+      });
+      await env.DB.prepare(
+        "UPDATE multipart_inventory_scans SET source=?,round_id=?,pages=0,completed_at=NULL,cursor_key=NULL,cursor_upload_id=NULL WHERE upload_id=?",
+      )
+        .bind(source, crypto.randomUUID(), f.id)
+        .run();
+      await env.DB.prepare(
+        "UPDATE multipart_inventory_handles SET attempts=attempts+1,abort_source=? WHERE id=?",
+      )
+        .bind(source, handle.id)
+        .run();
+      serve();
+    } else if (mode === "wrong_token") {
+      const token = crypto.randomUUID();
+      await env.DB.prepare("UPDATE uploads SET cleanup_token=? WHERE id=?").bind(token, f.id).run();
+      await env.DB.prepare(
+        "UPDATE multipart_inventory_handles SET attempts=attempts+1,abort_token=? WHERE id=?",
+      )
+        .bind(token, handle.id)
+        .run();
+    }
+    await env.DB.prepare(
+      "UPDATE uploads SET cleanup_lease_expires_at=1,cleanup_next_at=0 WHERE id=?",
+    )
+      .bind(f.id)
+      .run();
+    await evictDurableObject(restored.control);
+    const abort = vi.fn(async () => {
+      throw new Error("unexpected_abort");
+    });
+    const BLOBS = orphanBucket({
+      resumeMultipartUpload: (key, uploadId) =>
+        ({ key, uploadId, abort }) as unknown as R2MultipartUpload,
+    });
+    const valid = mode === "same_round" || mode === "new_round";
+    expect((await run({ action: "uploads", limit: 1 }, { BLOBS })).inventory).toMatchObject({
+      pending: true,
+      uploads: { aborted: valid ? 1 : 0, retried: valid ? 0 : 1 },
+    });
+    expect(abort).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare("SELECT state FROM multipart_inventory_handles WHERE upload_id=?")
+        .bind(f.id)
+        .first("state"),
+    ).toBe(valid ? "aborted" : "observed");
+    expect(
+      await env.DB.prepare("SELECT cleanup_token FROM uploads WHERE id=?")
+        .bind(f.id)
+        .first("cleanup_token"),
+    ).not.toBe(before);
+    expect(await balance(f.ids.user)).toMatchObject({ reserved_bytes: 3 });
+    await expect(
+      env.DB.prepare("UPDATE reservations SET state='released' WHERE id=?")
+        .bind(f.reservation)
+        .run(),
+    ).rejects.toThrow();
+  },
+);
 
 it("keeps an unknown native abort pending and blocks the next fresh probe", async () => {
   const f = await multipartBucketFixture(),
     id = await discover(f);
   await run({ action: "parts", handleId: id, limit: 20 });
+  const request = { action: "abort" as const, handleId: id, attemptId: crypto.randomUUID() };
   const bucket = orphanBucket({
     resumeMultipartUpload: (key, uploadId) => {
       const handle = env.BLOBS.resumeMultipartUpload(key, uploadId);
@@ -425,14 +721,10 @@ it("keeps an unknown native abort pending and blocks the next fresh probe", asyn
     },
   });
   try {
-    expect(
-      (
-        await run(
-          { action: "abort", handleId: id, attemptId: crypto.randomUUID() },
-          { BLOBS: bucket },
-        )
-      ).inventory,
-    ).toMatchObject({ pending: true, abort: { outcome: "unconfirmed" } });
+    expect((await run(request, { BLOBS: bucket })).inventory).toMatchObject({
+      pending: true,
+      abort: { outcome: "unconfirmed" },
+    });
     const fetch = serve();
     fetch.mockClear();
     await expect(run({ action: "verify" })).rejects.toThrow(/unsettled|preflight_pending/);
@@ -441,6 +733,53 @@ it("keeps an unknown native abort pending and blocks the next fresh probe", asyn
   } finally {
     // Fixture-only settlement: the mocked native abort above has actually completed.
     await settleFixtureNatives();
+  }
+  expect((await run(request)).inventory).toMatchObject({
+    pending: true,
+    abort: { outcome: "confirmed", replayed: true },
+  });
+  expect(
+    await env.DB.prepare("SELECT outcome FROM multipart_bucket_abort_attempts WHERE id=?")
+      .bind(request.attemptId)
+      .first("outcome"),
+  ).toBe("unconfirmed");
+});
+
+it("rejects reconciliation when the D1 stop changes immediately before its atomic save", async () => {
+  const { f, request } = await lostBucketAbort();
+  let mirror = null as { admission_revision: number; admission_token: string } | null;
+  const DB = injectBatch(
+    (sql) => sql.startsWith("INSERT INTO multipart_bucket_abort_reconciliations"),
+    async () => {
+      mirror = await env.DB.prepare(
+        "SELECT admission_revision,admission_token FROM control WHERE singleton=1",
+      ).first();
+      await env.DB.prepare("UPDATE control SET admission_token=? WHERE singleton=1")
+        .bind(crypto.randomUUID())
+        .run();
+    },
+    false,
+  );
+  try {
+    await expect(run(request, { DB })).rejects.toThrow();
+    expect(mirror).not.toBeNull();
+    expect(
+      await env.DB.prepare(
+        "SELECT 1 FROM multipart_bucket_abort_reconciliations WHERE attempt_id=?",
+      )
+        .bind(request.attemptId)
+        .first(),
+    ).toBeNull();
+    expect(await balance(f.ids.user)).toMatchObject({ physical_bytes: 3 });
+  } finally {
+    if (mirror)
+      await env.DB.prepare("UPDATE control SET admission_token=? WHERE admission_revision=?")
+        .bind(mirror.admission_token, mirror.admission_revision)
+        .run();
+    await env.DB.prepare(
+      "UPDATE mutation_admissions SET state='closed' WHERE state<>'closed'",
+    ).run();
+    await restored.control.quiesce(restored.epoch + 1);
   }
 });
 
