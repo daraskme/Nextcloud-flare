@@ -74,7 +74,7 @@ export async function listTrash(
             FROM trash_ops t INDEXED BY trash_ops_space_created_keyset
             JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
               AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
-            WHERE t.space_id=? AND t.actor_id=? AND t.state='trashed'
+            WHERE t.space_id=? AND EXISTS(SELECT 1 FROM spaces owner_space WHERE owner_space.id=t.space_id AND owner_space.owner_id=?) AND t.state='trashed'
             ORDER BY t.created_at DESC,t.op_id DESC LIMIT ?`,
           values: [spaceId, principal.user_id, limit + 1],
         }
@@ -85,7 +85,7 @@ export async function listTrash(
             FROM trash_ops t INDEXED BY trash_ops_space_created_keyset
             JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
               AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
-            WHERE t.space_id=? AND t.actor_id=? AND t.state='trashed'
+            WHERE t.space_id=? AND EXISTS(SELECT 1 FROM spaces owner_space WHERE owner_space.id=t.space_id AND owner_space.owner_id=?) AND t.state='trashed'
               AND (t.created_at<? OR (t.created_at=? AND t.op_id<?))
             ORDER BY t.created_at DESC,t.op_id DESC LIMIT ?`,
           values: [spaceId, principal.user_id, lastSort, lastSort, lastId ?? "", limit + 1],

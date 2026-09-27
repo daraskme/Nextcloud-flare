@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[受信者のShared画面](SHARED_WORKSPACE.md)にedit共有へのフォルダー作成・改名・単一/分割upload・上書きを接続しました。選択した共有ID/versionをoperation・uploadへ保存し、再送・照会・Outbox・UploadDO・R2書込み・公開確定でも維持します。直接共有したfileの上書きは非共有の親IDを取得せずに実行し、容量は所有者へ計上します。
+[受信者のShared画面](SHARED_WORKSPACE.md)へ、選択した共有内の移動・コピー・ごみ箱移動を接続しました。元と先の両方を同じ共有で検査し、確定済みの再送も共有ID/versionの省略・差替えを拒否します。削除者を記録し、所有者がごみ箱を一覧・復元・完全削除できます。コピー・移動、削除の応答喪失後の再確認と、所有者の復元を実browserで確認しました。
 
-schema0049・通常69table、依存追加なし。全Node64file/1,325件、全workerd123file/2,691件、全browser27件の計4,043件が成功。型・lint・契約/設定・Web build/Worker dry-runとmobile表示も確認済みです。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0049・通常69table、migration/依存追加なし。全Node64file/1,325件、関連workerd9file/182件、全browser28件の計1,535件が成功。型・lint・契約/設定・Web build/Worker dry-runとmobile表示も確認済みです。今回の全workerd/Windows検査はpush後のCIで確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はDAV Sharedの固定mount解決・旧NULL mount方針と、共有内の移動・削除を接続します。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はDAV Sharedの固定mount解決・旧NULL mount方針、app passwordの範囲制限を保つ共有操作を接続します。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)は5job成功、Windows分割1でR2保存先照合が失敗。再実行でも別ケースの準備中に失敗し、原因切り分けが残っています。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行ec0a9ebの[CI36358399164](https://github.com/daraskme/Nextcloud-flare/actions/runs/36358399164)はUbuntu・Windows分割1・browserが成功、Windows分割2/3はbackup-healthの30秒超過で失敗し、backupは確認時点で実行中。今回その複合試験だけWindows実行枠を60秒へ変更しました。先行21cd396のR2保存先照合失敗の原因は別途切り分けが必要です。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,7 @@ schema0049・通常69table、依存追加なし。全Node64file/1,325件、全wo
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 共有内の移動/削除・DAV Shared・公開linkは後続。[詳細](SHARED_WORKSPACE.md) |
+| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | DAV Shared・公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
 | 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | DAV Shared・公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
 | Time Travel送信と実応答記録 | 永続pending・5秒の1回grant・固定APIへのPOST・実応答のDO保存・unknownの再送拒否・旧epoch停止維持 | Node34/workerd22追加、関連CLI94/workerd155、16操作の権限拒否と模擬巻戻しを含むbindingドリル成功 | 既定で無効。全I/O運用証明・snapshot照合・epoch採用・live復旧は未完了。[詳細](DATABASE_RESTORE_TIME_TRAVEL.md) |

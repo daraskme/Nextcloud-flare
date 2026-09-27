@@ -450,7 +450,8 @@ export async function lookupOperation(
           return null;
         const visible = await primary(db)
           .prepare(
-            `SELECT 1 AS ok FROM trash_ops WHERE op_id=? AND space_id=? AND actor_id=?
+            `SELECT 1 AS ok FROM trash_ops WHERE op_id=? AND space_id=?
+              AND EXISTS(SELECT 1 FROM spaces WHERE id=trash_ops.space_id AND owner_id=?)
               AND state IN ('trashed','purged')`,
           )
           .bind((operands as { trashOpId: string }).trashOpId, row.space_id, principal.user_id)
@@ -465,6 +466,15 @@ export async function lookupOperation(
         nodeId: operands.nodeId,
         spaceId: row.space_id,
       });
+      if (principalSelection(principal) && ["node.move", "dav.move"].includes(row.kind)) {
+        if (typeof operands.sourceParentId !== "string") return null;
+        for (const parentId of [operands.sourceParentId, operands.parentId])
+          await authorizeNode(db, principal, {
+            operation: "node.create",
+            parentId,
+            spaceId: row.space_id,
+          });
+      }
       const expectedParent =
         ["node.move", "dav.move"].includes(row.kind) && row.state !== "committed"
           ? operands.sourceParentId

@@ -5,8 +5,9 @@ import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { handleNodeMutationHttp } from "../../src/api/nodeMutations";
 import { handleUploadHttp } from "../../src/api/uploads";
-import { accessPrincipal, authorizeNode } from "../../src/auth/authorize";
+import { accessPrincipal, authorizeNode, type Principal } from "../../src/auth/authorize";
 import { contentKeyRing } from "../../src/auth/contentTokens";
+import { ListCursorTokens } from "../../src/auth/listCursor";
 import type { AccessSession } from "../../src/auth/sessions";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
@@ -14,9 +15,15 @@ import type { R2WriteRequest } from "../../src/db/r2Write";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { lookupOperation } from "../../src/jobs/operations";
+import { copyNode } from "../../src/services/copyNode";
 import { createFolder } from "../../src/services/createFolder";
 import { createInternalShare, updateInternalShare } from "../../src/services/internalShares";
+import { moveNode } from "../../src/services/moveNode";
+import { purgeTrash } from "../../src/services/purgeTrash";
 import { renameNode } from "../../src/services/renameNode";
+import { restoreTrash } from "../../src/services/restoreTrash";
+import { trashNode } from "../../src/services/trashNode";
+import { listTrash } from "../../src/services/trashRead";
 import { uploadRow } from "../../src/services/uploads/access";
 import { completeSingleUpload } from "../../src/services/uploads/complete";
 import { writeSingleUpload } from "../../src/services/uploads/content";
@@ -453,4 +460,289 @@ it("overwrites a directly shared file without returning or requiring its private
     kind: "terminal",
     operation: { state: "committed", result: { status: 204 } },
   });
+});
+
+async function sharedDestination(f: Fixture, name = "Destination") {
+  const created = await createFolder(f.app, {
+    ...f.folderInput,
+    name,
+    idempotencyKey: crypto.randomUUID(),
+  });
+  if (created.kind !== "terminal" || created.operation.state !== "committed")
+    throw new Error("missing_destination");
+  return `${created.operation.id}_node`;
+}
+function transfer(
+  f: Fixture,
+  kind: "move" | "copy" | "trash",
+  destinationParentId: string,
+  requestId: string,
+  principal: Principal = f.selected,
+) {
+  const common = { principal, requestId, spaceId: f.owner.ids.space, lockTokens: [] };
+  return kind === "trash"
+    ? trashNode(f.app, { ...common, operation: "node.trash", nodeId: f.owner.ids.file })
+    : kind === "move"
+      ? moveNode(f.app, {
+          ...common,
+          operation: "node.move",
+          nodeId: f.owner.ids.file,
+          destinationParentId,
+          name: "Moved",
+        })
+      : copyNode(f.app, {
+          ...common,
+          operation: "node.copy",
+          sourceNodeId: f.owner.ids.file,
+          destinationParentId,
+          name: "Copied",
+          depth: "infinity",
+        });
+}
+
+it.each(["move", "copy", "trash"] as const)(
+  "preserves selected %s identity on terminal replay, lookup and outbox",
+  async (kind) => {
+    const f = await fixture();
+    const destination = await sharedDestination(f);
+    const key = crypto.randomUUID();
+    const done = await transfer(f, kind, destination, key);
+    expect(done).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+    if (done.kind !== "terminal") throw new Error("missing_terminal");
+    expect(await transfer(f, kind, destination, key)).toEqual(done);
+    await expect(transfer(f, kind, destination, key, f.principal)).rejects.toThrow(
+      "idempotency_conflict",
+    );
+    await expect(
+      transfer(f, kind, destination, key, { ...f.principal, selected_share: f.broader }),
+    ).rejects.toThrow("idempotency_conflict");
+    expect(await lookupOperation(env.DB, f.principal, done.operation.id)).toEqual(done.operation);
+    expect(await dispatch(f, done.operation.id)).toBe("completed");
+    await f.revoke();
+    await expect(transfer(f, kind, destination, key)).rejects.toThrow("authorization_denied");
+    expect(await lookupOperation(env.DB, f.principal, done.operation.id)).toBeNull();
+  },
+);
+
+it.each(["move", "copy"] as const)(
+  "rejects selected %s to an out-of-share destination despite another edit grant",
+  async (kind) => {
+    const f = await fixture();
+    await expect(transfer(f, kind, f.owner.ids.root, crypto.randomUUID())).rejects.toThrow(
+      "authorization_denied",
+    );
+    expect(
+      await env.DB.prepare("SELECT parent_id FROM nodes WHERE id=?")
+        .bind(f.owner.ids.file)
+        .first("parent_id"),
+    ).toBe(f.owner.ids.folder);
+  },
+);
+
+it.each(["move", "copy", "trash"] as const)(
+  "rolls back selected %s when the share is revoked immediately before commit",
+  async (kind) => {
+    const f = await fixture();
+    const destination = await sharedDestination(f);
+    f.app.DB = injectBatch(
+      (sql) => sql.includes("UPDATE operations SET state='committed'"),
+      async () => {
+        await f.revoke();
+      },
+      false,
+    );
+    const result = await transfer(f, kind, destination, crypto.randomUUID());
+    expect(result).toMatchObject({ kind: "commit_unknown" });
+    expect(
+      await env.DB.prepare("SELECT parent_id,deleted_at FROM nodes WHERE id=?")
+        .bind(f.owner.ids.file)
+        .first(),
+    ).toEqual({ parent_id: f.owner.ids.folder, deleted_at: null });
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM nodes WHERE parent_id=?")
+        .bind(destination)
+        .first("n"),
+    ).toBe(0);
+  },
+);
+
+it("forbids trash of the selected root and read-only deletion without falling back to another grant", async () => {
+  const f = await fixture();
+  await expect(
+    trashNode(f.app, {
+      principal: f.selected,
+      requestId: "root-trash",
+      spaceId: f.owner.ids.space,
+      nodeId: f.owner.ids.folder,
+      lockTokens: [],
+    }),
+  ).rejects.toThrow("authorization_denied");
+  const read = await updateInternalShare(mutationEnv(), f.session, f.share.id, f.share.version, {
+    kind: "internal",
+    rootNodeId: f.owner.ids.folder,
+    recipients: [`${f.recipient.ids.user}@example.invalid`],
+    role: "read",
+    expiresAt: null,
+  });
+  for (const kind of ["move", "copy", "trash"] as const)
+    await expect(
+      transfer(f, kind, f.owner.ids.folder, `read-${kind}`, {
+        ...f.principal,
+        selected_share: { id: read.id, version: read.version },
+      }),
+    ).rejects.toThrow("authorization_denied");
+});
+
+it("keeps recipient-deleted items in the owner's trash while preserving the deleting actor", async () => {
+  const f = await fixture();
+  const nested = await createInternalShare(mutationEnv(), f.session, {
+    kind: "internal",
+    rootNodeId: f.owner.ids.file,
+    recipients: [`${f.recipient.ids.user}@example.invalid`],
+    role: "edit",
+    expiresAt: null,
+  });
+  const done = await transfer(f, "trash", f.owner.ids.folder, "recipient-trash");
+  if (done.kind !== "terminal" || done.operation.state !== "committed")
+    throw new Error("missing_terminal");
+  expect(
+    await env.DB.prepare(
+      "SELECT disabled_at IS NOT NULL AS disabled,version FROM shares WHERE id=?",
+    )
+      .bind(nested.id)
+      .first(),
+  ).toEqual({ disabled: 1, version: nested.version + 1 });
+  const owner = accessPrincipal(f.session);
+  const tokens = new ListCursorTokens(
+    await contentKeyRing("test", {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    }),
+  );
+  const listed = await listTrash(env.DB, owner, tokens, f.owner.ids.space);
+  expect(listed.items).toEqual([
+    expect.objectContaining({ opId: done.operation.id, rootNodeId: f.owner.ids.file }),
+  ]);
+  expect(
+    await env.DB.prepare("SELECT actor_id FROM trash_ops WHERE op_id=?")
+      .bind(done.operation.id)
+      .first("actor_id"),
+  ).toBe(f.recipient.ids.user);
+  await expect(listTrash(env.DB, f.principal, tokens, f.owner.ids.space)).rejects.toThrow(
+    "trash_unavailable",
+  );
+  await expect(
+    restoreTrash(f.app, {
+      principal: f.principal,
+      requestId: "recipient-restore",
+      spaceId: f.owner.ids.space,
+      trashOpId: done.operation.id,
+      destinationParentId: f.owner.ids.folder,
+      lockTokens: [],
+    }),
+  ).rejects.toThrow("authorization_denied");
+  const purge = {
+    principal: owner,
+    requestId: "owner-purge",
+    spaceId: f.owner.ids.space,
+    trashOpId: done.operation.id,
+  };
+  await expect(purgeTrash(f.app, { ...purge, principal: f.principal })).rejects.toThrow(
+    "authorization_denied",
+  );
+  const purged = await purgeTrash(f.app, purge);
+  expect(purged).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+  expect(await purgeTrash(f.app, purge)).toEqual(purged);
+  expect(await listTrash(env.DB, owner, tokens, f.owner.ids.space)).toMatchObject({ items: [] });
+});
+
+it("hides a scoped move receipt and defers its outbox if the original parent leaves the selected share", async () => {
+  const f = await fixture();
+  const originalParent = await sharedDestination(f, "Original");
+  const destination = await sharedDestination(f, "Next");
+  await transfer(f, "move", originalParent, "first-move");
+  const done = await transfer(f, "move", destination, "second-move");
+  if (done.kind !== "terminal" || done.operation.state !== "committed")
+    throw new Error("missing_terminal");
+  expect(await lookupOperation(env.DB, f.principal, done.operation.id)).not.toBeNull();
+  expect(
+    await moveNode(f.app, {
+      principal: accessPrincipal(f.session),
+      requestId: "parent-outside",
+      spaceId: f.owner.ids.space,
+      nodeId: originalParent,
+      destinationParentId: f.owner.ids.root,
+      name: "Outside",
+      lockTokens: [],
+      operation: "node.move",
+    }),
+  ).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+  expect(await lookupOperation(env.DB, f.principal, done.operation.id)).toBeNull();
+  expect(await dispatch(f, done.operation.id)).toBe("retry");
+});
+
+it("accepts selected move/copy/trash HTTP and refuses a shared restore request", async () => {
+  const f = await fixture();
+  const destination = await sharedDestination(f);
+  const http = (path: string, method: string, body: unknown) =>
+    handleNodeMutationHttp(
+      new Request(`${origin}/api/v1/${path}`, {
+        method,
+        headers: {
+          Origin: origin,
+          "Content-Type": "application/json",
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify(body),
+      }),
+      f.app,
+      f.principal,
+      csrf,
+    );
+  const body = {
+    spaceId: f.owner.ids.space,
+    share: f.share,
+    destinationParentId: destination,
+    name: "Moved",
+  };
+  expect((await http(`nodes/${f.owner.ids.file}/move`, "POST", body)).status).toBe(200);
+  expect(
+    (
+      await http(`nodes/${f.owner.ids.file}/copy`, "POST", {
+        ...body,
+        name: "Copied",
+        depth: "infinity",
+      })
+    ).status,
+  ).toBe(201);
+  expect(
+    (
+      await http(`nodes/${f.owner.ids.file}`, "DELETE", {
+        spaceId: f.owner.ids.space,
+        share: f.share,
+      })
+    ).status,
+  ).toBe(200);
+  expect((await http("trash/any/restore", "POST", body)).status).toBe(400);
+});
+
+it("does not consume a selected copy event after its original source leaves the share", async () => {
+  const f = await fixture();
+  const destination = await sharedDestination(f);
+  const copied = await transfer(f, "copy", destination, "copy-source");
+  if (copied.kind !== "terminal" || copied.operation.state !== "committed")
+    throw new Error("missing_terminal");
+  expect(
+    await moveNode(f.app, {
+      principal: accessPrincipal(f.session),
+      requestId: "source-outside",
+      spaceId: f.owner.ids.space,
+      nodeId: f.owner.ids.file,
+      destinationParentId: f.owner.ids.root,
+      name: "Outside",
+      lockTokens: [],
+      operation: "node.move",
+    }),
+  ).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+  expect(await lookupOperation(env.DB, f.principal, copied.operation.id)).toBeNull();
+  expect(await dispatch(f, copied.operation.id)).toBe("retry");
 });

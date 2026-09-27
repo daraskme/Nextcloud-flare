@@ -1,6 +1,6 @@
 # 受信した共有の閲覧と編集
 
-更新: 2026-09-28。内部共有の受信一覧・フォルダー閲覧・ファイル配信に加え、edit共有へのフォルダー作成・改名・単一/分割upload・上書きを接続。DAV Shared、公開link、共有内の移動・削除は後続。
+更新: 2026-09-28。内部共有の受信一覧・フォルダー閲覧・ファイル配信に加え、edit共有へのフォルダー作成・改名・単一/分割upload・上書き・共有内の移動/コピー/ごみ箱への移動を接続。DAV Shared、公開link、cross-owner copyは後続。
 
 ## 画面とAPI
 
@@ -34,6 +34,16 @@ UIの未確認操作は共有付きの元body/keyをsessionStorageへ保存す�
 
 0049適用後に選択付きwriteを受け付けたDBは、選択情報を読まない旧Workerへそのまま戻さない。旧版はuploadやOutboxのscopeを復元できないため、rollback時はmaintenanceを保ち、選択情報を扱うWorkerを再配備・検証する。新しい列を削除して旧版へ合わせることはしない。remote migration・配備・rollback演習は未実施。
 
+## 移動・コピー・ごみ箱
+
+共有内の子項目の「その他の操作」から、移動・コピー・ごみ箱への移動を行う。移動先/コピー先のpickerも選択したshareで一覧とpathを読み、共有ルートより上へ移動しない。同一共有内のsame-owner COPYは既存COWを使い、内容所有者・容量会計を維持する。共有ルート自体の移動・改名・削除は許可しない。
+
+`POST /api/v1/nodes/:id/move`、`POST /api/v1/nodes/:id/copy`、`DELETE /api/v1/nodes/:id`もJSONの`share: { id, version }`を受け付ける。元と先の両方を同じ共有で認可し、別の広いedit共有で代替しない。確定済みのoperation shortcutも保存したshare pairを明示比較し、省略・変更した再送を拒否する。結果照会とOutboxは元のsource/parentと現在の宛先を同じ共有で再検査する。選択を省略したoperation照会だけは保存scopeを復元する。
+
+共有での削除は選択付きAccess userのedit grantに限定する。live subtreeのmembership、子の共有停止、ticket/session失効、activity/Outboxを既存の原子的trashへ接続する。trash_ops.actor_idには削除した受信者を保存し、ごみ箱の一覧・復元・完全削除はspace所有者で検査する。受信者には所有者のごみ箱や復元権限を公開しない。所有者の復元先が共有外なら、受信者は復元後の項目を取得できない。停止した子の共有も自動復活しない。
+
+schema0049・69通常tableを維持し、migration追加はない。移動・コピー・削除の確定直前の共有停止では全変更をrollbackする。share root削除、read共有からの削除、範囲外の宛先、元source/parentが共有外へ移った後の照会・Outbox、所有者以外によるtrash一覧/restore/purgeを回帰試験で検査する。browserではmobileのfolder COPY・file MOVE、削除ACK喪失後の同じkey/body再送、所有者の復元まで確認する。
+
 ## 検証
 
 従来のpathが共有ファイルより上の非共有フォルダー名を返すことを、実D1テストで修正前に再現した。新規workerd14件は共有ルートでのparent遮蔽、read共有から別edit共有への権限代替拒否、停止/version/root/credential/recipient/owner/祖先trash/maintenance/epochのbatch直前競合、201件paginationとcursor選択束縛、HTTP query境界を検証する。
@@ -46,4 +56,4 @@ UIの未確認操作は共有付きの元body/keyをsessionStorageへ保存す�
 
 ## 次の実装
 
-共有内の移動・削除、DAVの固定mount解決、旧NULL mount方針、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。
+DAVの固定mount解決、旧NULL mount方針、cross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。

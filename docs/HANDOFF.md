@@ -25,21 +25,21 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[受信者のShared画面](SHARED_WORKSPACE.md)にedit共有へのフォルダー作成・改名・単一/分割upload・上書きを接続しました。選択した共有ID/versionをoperation・uploadへ保存し、再送・照会・Outbox・UploadDO・R2書込み・公開確定でも維持します。直接共有したfileの上書きは非共有の親IDを取得せずに実行し、容量は所有者へ計上します。
+[受信者のShared画面](SHARED_WORKSPACE.md)へ、選択した共有内の移動・コピー・ごみ箱移動を接続しました。元と先の両方を同じ共有で検査し、確定済みの再送も共有ID/versionの省略・差替えを拒否します。削除者を記録し、所有者がごみ箱を一覧・復元・完全削除できます。コピー・移動、削除の応答喪失後の再確認と、所有者の復元を実browserで確認しました。
 
-schema0049・通常69table、依存追加なし。全Node64file/1,325件、全workerd123file/2,691件、全browser27件の計4,043件が成功。型・lint・契約/設定・Web build/Worker dry-runとmobile表示も確認済みです。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0049・通常69table、migration/依存追加なし。全Node64file/1,325件、関連workerd9file/182件、全browser28件の計1,535件が成功。型・lint・契約/設定・Web build/Worker dry-runとmobile表示も確認済みです。今回の全workerd/Windows検査はpush後のCIで確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はDAV Sharedの固定mount解決・旧NULL mount方針と、共有内の移動・削除を接続します。0049で保存されたscopeを旧Workerが無視しないよう、rollbackには停止維持が必要です。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はDAV Sharedの固定mount解決・旧NULL mount方針、app passwordの範囲制限を保つ共有操作を接続します。0049で保存されたscopeを旧Workerが無視しないよう、rollbackには停止維持が必要です。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-DAV Shared着手時は`dav/path.ts`が先頭Sharedを`dav_shared_not_ready`で拒否し、personal pathをapp passwordのown rootから解決している点を確認する。現時点のselected_shareはAccess user限定、0049のupload保存はprivate限定である。DAVへの拡張は既存0049を書き換えず後続migrationと認可・再送・PUT台帳の対応が必要。root制限付きapp passwordを仮想mount経由で拡張しない。共有のtrashも現在はowner以外を明示拒否しているため、ボタン追加だけでは接続できない。
+DAV Shared着手時は`dav/path.ts`が先頭Sharedを`dav_shared_not_ready`で拒否し、personal pathをapp passwordのown rootから解決している点を確認する。現時点のselected_shareはAccess user限定、0049のupload保存はprivate限定である。DAVへの拡張は既存0049を書き換えず後続migrationと認可・再送・PUT台帳の対応が必要。root制限付きapp passwordを仮想mount経由で拡張しない。共有のtrashは選択付きAccess userだけへ拡張済み。DAVにはまだ適用せず、ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
 
 今回のmultipart入口は`restoreInventoryRepair.ts`/`restoreInventory.ts`/`scripts/restore/inventory.mjs`。private `repairInventory`は28番目のmethod。共有の`restoreRepairContext.ts`がsystem/global受付とBLOBS読取りを同じ停止へ固定し、実完了のfinishだけは停止後も保存する。各inventory jobへBindingVerificationScopeを渡し、S3 sourceを採用済みBLOBS対象と照合する。全体25秒のtimeoutでactiveを失わせ、遅延GETから新たなnativeを送らない。既知multipartの元abort照合は`restoreMultipartAbort.ts`。DO履歴はhashだけなので、元D1 tuple欠落はそれだけで修復できない。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)は5job成功、Windows分割1でR2保存先照合が失敗。再実行でも別ケースの準備中に失敗し、原因切り分けが残っています。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行ec0a9ebの[CI36358399164](https://github.com/daraskme/Nextcloud-flare/actions/runs/36358399164)はUbuntu・Windows分割1・browserが成功、Windows分割2/3はbackup-healthの30秒超過で失敗し、backupは確認時点で実行中。今回その複合試験だけWindows実行枠を60秒へ変更しました。先行21cd396のR2保存先照合失敗の原因は別途切り分けが必要です。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。69通常テーブル、migration `0001`〜`0048`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。69通常テーブル、migration `0001`〜`0049`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

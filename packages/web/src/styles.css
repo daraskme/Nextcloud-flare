@@ -881,6 +881,33 @@ h1 {
 .shared-row-actions {
   flex-shrink: 0;
 }
+.shared-more {
+  position: relative;
+}
+.shared-more summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  border-radius: 7px;
+}
+.shared-more summary:hover {
+  background: #f2f4f7;
+}
+.shared-more-items {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  display: grid;
+  min-width: 160px;
+  padding: 6px;
+  background: white;
+  border: 1px solid #e6e8ec;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #15213b20;
+}
 .share-row {
   display: flex;
   flex-wrap: wrap;

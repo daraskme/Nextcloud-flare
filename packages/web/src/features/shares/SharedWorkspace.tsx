@@ -6,6 +6,7 @@ import {
   Folder,
   FolderPlus,
   LoaderCircle,
+  MoreHorizontal,
   Pencil,
   RefreshCw,
   Upload,
@@ -22,7 +23,9 @@ export interface SharedActionScope {
 }
 type SharedActions = {
   onAction: (
-    action: { kind: "create" } | { kind: "rename" | "overwrite"; node: FileNode },
+    action:
+      | { kind: "create" }
+      | { kind: "rename" | "overwrite" | "move" | "copy" | "trash"; node: FileNode },
     scope: SharedActionScope,
   ) => void;
   writesBlocked: boolean;
@@ -220,7 +223,7 @@ function SharedContent({
           <h1>{!error && !loading ? node.data?.name || "共有ドライブ" : "共有された項目"}</h1>
           <p>
             {share.role === "edit"
-              ? "共有された項目の追加・名前変更・上書きができます。"
+              ? "共有された項目の追加・編集・移動・コピー・削除ができます。"
               : "共有されたファイルを開いて保存できます。"}
           </p>
         </div>
@@ -320,6 +323,35 @@ function SharedContent({
                       >
                         <Upload size={16} />
                       </Button>
+                    )}
+                    {file.id !== share.rootNodeId && (
+                      <details className="shared-more">
+                        <summary aria-label={`${file.name}のその他の操作`}>
+                          <MoreHorizontal size={18} />
+                        </summary>
+                        <div className="shared-more-items">
+                          {(["move", "copy", "trash"] as const).map((kind) => (
+                            <Button
+                              key={kind}
+                              variant="ghost"
+                              disabled={writesBlocked}
+                              onClick={(event) => {
+                                event.currentTarget.closest("details")?.removeAttribute("open");
+                                onAction(
+                                  { kind, node: file },
+                                  { share, parentId: folder ? id : (file.parentId ?? null) },
+                                );
+                              }}
+                            >
+                              {kind === "move"
+                                ? "移動"
+                                : kind === "copy"
+                                  ? "コピー"
+                                  : "ごみ箱に移動"}
+                            </Button>
+                          ))}
+                        </div>
+                      </details>
                     )}
                   </div>
                 ) : (

@@ -470,3 +470,90 @@ test("directly shared file overwrite keeps its parent private and recovers a los
     await context.close();
   }
 });
+
+test("recipient copies and moves within its share, recovers a lost trash response, and the owner restores it", async ({
+  page,
+  browser,
+}, info) => {
+  const data = await setup(page, "共有内整理", "edit"),
+    context = await recipientContext(browser);
+  try {
+    const recipient = await context.newPage();
+    await recipient.setViewportSize({ width: 390, height: 844 });
+    await recipient.goto(`/shared/${data.share.id}`);
+    await recipient.getByLabel("子フォルダー-共有内整理のその他の操作", { exact: true }).click();
+    await recipient.getByRole("button", { name: "コピー", exact: true }).click();
+    const copyDialog = recipient.getByRole("dialog", { name: "コピー先を選択", exact: true });
+    await expect(copyDialog).toContainText("受信フォルダー-共有内整理");
+    await expect(copyDialog).not.toContainText("非共有の親");
+    await expect(copyDialog.getByRole("button", { name: "上の階層" })).toHaveCount(0);
+    await copyDialog.getByLabel("名前", { exact: true }).fill("共有でコピーしたフォルダー");
+    await copyDialog.getByRole("button", { name: "コピー先を選択", exact: true }).click();
+    await expect(copyDialog).toHaveCount(0);
+    await recipient.getByRole("link", { name: /共有でコピーしたフォルダー/ }).click();
+    await recipient.getByLabel(`${data.filename}のその他の操作`, { exact: true }).click();
+    await recipient.getByRole("button", { name: "移動", exact: true }).click();
+    const moveDialog = recipient.getByRole("dialog", { name: "移動先を選択", exact: true });
+    await expect(moveDialog).toContainText("受信フォルダー-共有内整理");
+    await moveDialog.getByLabel("名前", { exact: true }).fill("共有で移動したメモ.txt");
+    await moveDialog.getByRole("button", { name: "移動先を選択", exact: true }).click();
+    await expect(moveDialog).toHaveCount(0);
+    await recipient.goto(`/shared/${data.share.id}`);
+    await expect(
+      recipient.getByRole("button", { name: /共有で移動したメモ.txt.*開く/ }),
+    ).toBeVisible();
+    const trashRequests: { body: unknown; key: string }[] = [];
+    let lose = true;
+    await recipient.route("**/api/v1/nodes/*", async (route) => {
+      if (route.request().method() !== "DELETE") return route.continue();
+      trashRequests.push({
+        body: route.request().postDataJSON(),
+        key: route.request().headers()["idempotency-key"]!,
+      });
+      if (lose) {
+        lose = false;
+        const response = await localFetch(route);
+        expect(response.status()).toBe(200);
+        return route.abort("failed");
+      }
+      return route.continue();
+    });
+    await recipient.getByLabel("共有で移動したメモ.txtのその他の操作", { exact: true }).click();
+    await recipient.screenshot({
+      path: info.outputPath("shared-organize-mobile.png"),
+      fullPage: true,
+    });
+    expect(await recipient.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await recipient.getByRole("button", { name: "ごみ箱に移動", exact: true }).click();
+    const trashDialog = recipient.getByRole("dialog", { name: "ごみ箱に移動", exact: true });
+    await expect(trashDialog).toContainText("復元は所有者が行えます");
+    await trashDialog.getByRole("button", { name: "ごみ箱に移動", exact: true }).click();
+    await expect(trashDialog.getByRole("alert")).toBeVisible();
+    await recipient.reload();
+    await recipient.getByRole("button", { name: "結果を確認", exact: true }).click();
+    await expect(recipient.getByRole("button", { name: "結果を確認", exact: true })).toHaveCount(0);
+    expect(trashRequests).toHaveLength(2);
+    expect(trashRequests[1]).toEqual(trashRequests[0]);
+    expect(trashRequests[0]!.body).toEqual({ spaceId: data.spaceId, share: data.share });
+    await expect(recipient.getByText("共有で移動したメモ.txt", { exact: true })).toHaveCount(0);
+    await page.goto("/trash");
+    const row = page.getByRole("article").filter({ hasText: "共有で移動したメモ.txt" });
+    await expect(row).toBeVisible();
+    await row.getByRole("button", { name: "復元", exact: true }).click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "復元先を選択", exact: true })
+      .click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.goto("/files");
+    await expect(
+      page.getByRole("button", { name: "共有で移動したメモ.txtの操作", exact: true }),
+    ).toBeVisible();
+    await recipient.goto(`/shared/${data.share.id}`);
+    await expect(recipient.getByText("共有で移動したメモ.txt", { exact: true })).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});

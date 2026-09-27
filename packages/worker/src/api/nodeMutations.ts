@@ -256,7 +256,7 @@ export async function handleNodeMutationHttp(
   try {
     body = await readBody(request);
     if ("share" in body) {
-      if (!folder && !rename) throw new Error("invalid_share_selection");
+      if (!folder && !rename && !trash && !transfer) throw new Error("invalid_share_selection");
       principal = { ...principal, selected_share: selectedShare(body.share) };
       const { share: _share, ...fields } = body;
       body = fields;

@@ -193,35 +193,41 @@ function FolderPicker({
   value,
   onChange,
   exclude,
+  share,
 }: {
   account: Account;
   value: string;
   onChange: (id: string) => void;
   exclude?: string;
+  share?: SelectedShare;
 }) {
   const listing = useInfiniteQuery({
-    queryKey: ["picker", account.id, account.epoch, value],
-    queryFn: ({ pageParam, signal }) => api.children(value, pageParam, signal),
+    queryKey: ["picker", account.id, account.epoch, value, share],
+    queryFn: ({ pageParam, signal }) => api.children(value, pageParam, signal, share),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
   });
   const path = useQuery({
-    queryKey: ["path", account.id, account.epoch, value],
-    queryFn: ({ signal }) => api.path(value, signal),
+    queryKey: ["path", account.id, account.epoch, value, share],
+    queryFn: ({ signal }) => api.path(value, signal, share),
   });
-  const folders =
-    listing.data?.pages
-      .flatMap((page) => page.children)
-      .filter((node) => node.kind === "folder" && node.id !== exclude) ?? [];
+  const unavailable = listing.error || path.error || listing.isRefetching || path.isFetching;
+  const folders = unavailable
+    ? []
+    : (listing.data?.pages
+        .flatMap((page) => page.children)
+        .filter((node) => node.kind === "folder" && node.id !== exclude) ?? []);
   return (
     <div className="folder-picker">
       <div className="picker-path">
         <Folder size={16} />
-        {path.data?.path.at(-1)?.name || "マイドライブ"}
+        {(!unavailable && path.data?.path.at(-1)?.name) ||
+          (share ? "共有フォルダー" : "マイドライブ")}
         {value !== account.rootNodeId && (
           <Button
             size="small"
             variant="ghost"
+            disabled={!!unavailable || !path.data}
             onClick={() => onChange(path.data?.path.at(-2)?.id ?? account.rootNodeId)}
           >
             <ArrowLeft size={14} />
@@ -240,9 +246,9 @@ function FolderPicker({
         {!folders.length && !listing.isPending && <p>この場所にサブフォルダーはありません</p>}
         {listing.isPending && <p>読み込み中…</p>}
       </div>
-      {listing.error && (
+      {(listing.error || path.error) && (
         <p role="alert" className="form-error">
-          {errorMessage(listing.error)}
+          {errorMessage(listing.error || path.error)}
         </p>
       )}
       {listing.hasNextPage && (
@@ -348,7 +354,7 @@ function OperationDialog({
   const description = destructive
     ? `「${"item" in action ? action.item.name : ""}」を完全に削除します。この操作は取り消せません。`
     : action.kind === "trash"
-      ? `「${"node" in action ? action.node.name : ""}」を移動します。ごみ箱から復元できます。`
+      ? `「${"node" in action ? action.node.name : ""}」を${share ? "所有者のごみ箱へ移動します。復元は所有者が行えます。" : "移動します。ごみ箱から復元できます。"}`
       : ["move", "copy", "restore"].includes(action.kind)
         ? "下のフォルダーを開いて保存先を選んでください。"
         : "ファイルを整理するための名前を入力してください。";
@@ -388,6 +394,7 @@ function OperationDialog({
             <legend className="field-label">保存先</legend>
             <FolderPicker
               account={account}
+              {...(share ? { share } : {})}
               value={destination}
               onChange={(id) => {
                 setDestination(id);
@@ -1275,7 +1282,15 @@ export function App() {
         <OperationDialog
           key={JSON.stringify(action)}
           action={action}
-          account={actionScope ? { ...me, spaceId: actionScope.share.spaceId } : me}
+          account={
+            actionScope
+              ? {
+                  ...me,
+                  spaceId: actionScope.share.spaceId,
+                  rootNodeId: actionScope.share.rootNodeId,
+                }
+              : me
+          }
           parentId={actionScope?.parentId ?? parentId}
           {...(actionScope
             ? { share: { id: actionScope.share.id, version: actionScope.share.version } }

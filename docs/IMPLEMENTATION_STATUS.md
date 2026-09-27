@@ -13,6 +13,15 @@
 
 ## 今回の検証記録
 
+- [共有内の整理](SHARED_WORKSPACE.md)を接続。edit共有のmove/copy/trash、共有rootで止まる宛先picker、同じshare pairによる確定済み再送、元source/parentを含む照会・Outbox認可を追加。削除actorを残し、所有者がtrash一覧/restore/purgeを行う。共有rootの移動・削除、範囲外の宛先、別grantへの代替は拒否する。schema0049・69通常table、migration/依存追加なし。
+- 新規workerd13ケースはmove/copy/trashのscope付き再送・選択省略/変更拒否・照会・Outbox、確定直前の共有停止と全rollback、read共有とroot削除拒否、元source/parentの範囲外移動、所有者trash・子共有停止・受信者の復元/完全削除拒否を確認。初回はread fixtureが選択に余分なdisabled列を含めていたため修正し、関連26件が成功（23.54s）。最終の認可・lock・namespace mutation・Outbox・復元・共有閲覧を含む9file/182件も成功（141.41s）。/tmp/ncf-shared-transfer-worker-final.log。
+- 新規browserシナリオはmobileでfolder COPY→file MOVE→trash応答喪失→reload/同じkey/body再送→所有者の復元→共有外での非表示を確認。初回はテストのroute.fetchがlocal hostnameを解決できず、次はtrash行をtrと誤指定して失敗。既存のlocalFetchと実際のarticleへ修正し、新規1件成功（39.4s）。mobile画像を確認。最終の全browser28件も成功（6.0分）。/tmp/ncf-shared-transfer-browser-3.log、/tmp/ncf-shared-transfer-browser-final.log。
+- 全Node64file/1,325件成功（49.96s）。先行ec0a9ebの[CI36358399164](https://github.com/daraskme/Nextcloud-flare/actions/runs/36358399164)のWindows分割2/3と3/3は、同じbackup-health複合試験が30秒を超過し、それぞれ1,324/1,325件成功。5つの実SQL世代の生成・公開と2回の実検証は維持し、この試験だけWindowsの実行枠を60秒へ変更した。productionのI/O期限は変更していない。先行21cd396のR2保存先照合失敗とは別であり、その原因は未確定。/tmp/ncf-shared-transfer-node-all.log、/tmp/ncf-shared-write-ci-win2.log、/tmp/ncf-shared-write-ci-win3.log。
+
+- 最終は全Node1,325 + 関連workerd182 + 全browser28 = **1,535件**。型・lint486file・契約/設定・Web build/Worker dry-run、資料のlocal link239件とgit diff --checkも成功。今回は全workerdをローカル再実行しておらず、Windowsと合わせpush後のCIで確認する。remote migration/deployは行っていない。/tmp/ncf-shared-transfer-build-final.log。
+
+### 先行する受信共有への書込み
+
 - [受信共有の編集](SHARED_WORKSPACE.md)を実装。edit共有でfolder作成・改名・単一/分割upload・上書きができる。直接共有したfileのparent IDを取得せず上書きし、容量は所有者へ計上する。migration0049でoperations/uploadsに選択share pairを保存し、再送・operation照会・Outbox・UploadDO・R2書込みの許可・公開確定・回収・復旧照合まで同じ選択を保つ。69通常table、依存追加なし。
 - 新規workerd13件は別edit grantによる代替拒否、選択付きoperationの再送/照会/Outbox、commit直前失効・native R2許可直前失効、read共有からの書込み拒否、単一/分割uploadの再送・停止・所有者容量、直接file共有の上書きとparent非公開を確認。関連5file/79件成功（41.14s）。先行検査で見つかった列数固定のOutbox fixtureは明示列INSERTへ修正。/tmp/ncf-shared-writes-integration-3.log。
 - 全Node64file/1,325件成功（48.84s）。追加14件は選択の複製・不正入力・旧digest互換性、migrationのpair/不変性/完了operation整合性、停止後の正常な過去記録と不整合な復旧記録の拒否を検証。lint486file・型・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-shared-writes-unit-final.log、/tmp/ncf-shared-writes-static-final.log、/tmp/ncf-shared-writes-build-final.log。

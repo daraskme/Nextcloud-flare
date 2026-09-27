@@ -6,6 +6,7 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { assertCreateLocks, assertTrashLocks, lockTokenHashes } from "../auth/locks";
+import { freezePrincipal, principalSelection } from "../auth/selectedShare";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -368,6 +369,8 @@ export async function copyNode(
   env: Pick<Env, "DB" | "LOCKS">,
   request: CopyNodeRequest,
 ): Promise<MutationOutcome> {
+  request = { ...request, principal: freezePrincipal(request.principal) };
+  const share = principalSelection(request.principal);
   if (request.principal.kind !== "user" && request.principal.kind !== "app_password")
     throw new Error("authorization_denied");
   const name = portableName(request.name);
@@ -389,6 +392,8 @@ export async function copyNode(
       throw new Error("idempotency_conflict");
     }
     if (
+      terminalSlot.selected_share_id !== (share?.id ?? null) ||
+      terminalSlot.selected_share_version !== (share?.version ?? null) ||
       terminalSlot.principal_kind !== request.principal.kind ||
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||

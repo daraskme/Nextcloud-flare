@@ -55,9 +55,9 @@ async function snapshot(
       (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) AS memberCount,
       (SELECT COUNT(*) FROM search_index si JOIN trash_members tm ON tm.node_id=si.node_id
         WHERE tm.trash_op_id=t.op_id) AS searchCount
-      FROM trash_ops t JOIN spaces s ON s.id=t.space_id AND s.owner_id=t.actor_id
+      FROM trash_ops t JOIN spaces s ON s.id=t.space_id
       JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-      WHERE t.op_id=? AND t.space_id=? AND t.actor_id=? AND t.state='trashed'
+      WHERE t.op_id=? AND t.space_id=? AND EXISTS(SELECT 1 FROM spaces owner_space WHERE owner_space.id=t.space_id AND owner_space.owner_id=?) AND t.state='trashed'
         AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL`)
     .bind(trashOpId, spaceId, principal.user_id)
     .first<{ rootId: string; spaceRootId: string; memberCount: number; searchCount: number }>();
@@ -104,7 +104,7 @@ function purgeGuard(claim: OperationClaim, rootId: string, memberCount: number) 
   if (typeof operands.trashOpId !== "string") throw new Error("invalid_mutation_plan");
   return assertExists(
     `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-      WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+      WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND EXISTS(SELECT 1 FROM spaces owner_space WHERE owner_space.id=t.space_id AND owner_space.owner_id=?) AND t.state='trashed'
         AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
         AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)=?
         AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id

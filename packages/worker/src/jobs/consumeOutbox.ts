@@ -1,5 +1,9 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { type SelectedShareRecord, storedPrincipal } from "../auth/selectedShare";
+import {
+  principalSelection,
+  type SelectedShareRecord,
+  storedPrincipal,
+} from "../auth/selectedShare";
 import { assertOneChange, primary } from "../db/primary";
 import {
   acquireSystemMutation,
@@ -112,11 +116,15 @@ export async function consumeOutbox(
   if (!principal) return "retry";
   let parentId: string;
   let nodeId: string | undefined;
+  let sourceNodeId: string | undefined;
+  let sourceParentId: string | undefined;
   try {
     const operands = JSON.parse(row.operands_json) as {
       parentId?: unknown;
       overwriteTargetId?: unknown;
       nodeId?: unknown;
+      sourceNodeId?: unknown;
+      sourceParentId?: unknown;
     };
     const result = JSON.parse(row.result_json ?? "null") as {
       status?: unknown;
@@ -144,6 +152,16 @@ export async function consumeOutbox(
     )
       return "retry";
     parentId = operands.parentId;
+    if (principalSelection(principal)) {
+      if (row.op_kind === "node.copy") {
+        if (typeof operands.sourceNodeId !== "string") return "retry";
+        sourceNodeId = operands.sourceNodeId;
+      }
+      if (row.op_kind === "node.move") {
+        if (typeof operands.sourceParentId !== "string") return "retry";
+        sourceParentId = operands.sourceParentId;
+      }
+    }
     if (
       row.kind === "node.renamed" ||
       row.kind === "node.updated" ||
@@ -161,7 +179,25 @@ export async function consumeOutbox(
     return "retry";
   }
   let authorized: Awaited<ReturnType<typeof authorizeNode>>;
+  const originalAuthorities: Awaited<ReturnType<typeof authorizeNode>>[] = [];
   try {
+    if (sourceNodeId)
+      originalAuthorities.push(
+        await authorizeNode(db, principal, {
+          operation: "node.read",
+          nodeId: sourceNodeId,
+          spaceId: row.space_id,
+        }),
+      );
+    if (sourceParentId)
+      for (const originalParent of [sourceParentId, parentId])
+        originalAuthorities.push(
+          await authorizeNode(db, principal, {
+            operation: "node.create",
+            parentId: originalParent,
+            spaceId: row.space_id,
+          }),
+        );
     authorized =
       row.kind === "node.trashed" || row.kind === "node.purged"
         ? await authorizeNode(db, principal, {
@@ -195,6 +231,7 @@ export async function consumeOutbox(
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, claim, row.owner_id, [
       authorizationAssertion(authorized),
+      ...originalAuthorities.map(authorizationAssertion),
       {
         sql: `UPDATE outbox SET claim_token=?,claim_expires_at=${clock}+?,updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND epoch=? AND state IN ('dispatching','sent')
@@ -222,6 +259,7 @@ export async function consumeOutbox(
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
       authorizationAssertion(authorized),
+      ...originalAuthorities.map(authorizationAssertion),
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}

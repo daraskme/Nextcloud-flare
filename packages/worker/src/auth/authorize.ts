@@ -209,7 +209,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     SELECT sh.* FROM shares sh JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
       JOIN a ON a.id=sh.root_node_id AND a.owner_id=sh.owner_id
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
-        AND (?6<>'node.rename' OR sh.root_node_id<>?1)
+        AND (?6 NOT IN ('node.rename','node.trash') OR sh.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
         AND ((SELECT selected_id FROM p) IS NULL OR EXISTS(SELECT 1 FROM p WHERE p.kind='user' AND sh.id=p.selected_id AND sh.version=p.selected_version))
   )
@@ -232,7 +232,8 @@ const NODE_AUTHORITY = `WITH RECURSIVE
         (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE (u.id=n.owner_id AND p.selected_id IS NULL) OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
-              WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
+              WHERE (?6<>'node.trash' OR (p.kind='user' AND p.selected_id IS NOT NULL))
+                AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
         OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
