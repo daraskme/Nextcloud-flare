@@ -21,6 +21,9 @@ const { verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
 const { verifyRestoreD1 } = await moduleAt("scripts/restore/target.mjs");
 const { verifyRestoreBookmark } = await moduleAt("scripts/restore/bookmark.mjs");
 const { verifyRestoreBlobs } = await moduleAt("scripts/restore/blobs.mjs");
+const { verifyRestoreBindings } = await moduleAt("scripts/restore/bindings.mjs");
+const { S3BackupStore } = await moduleAt("scripts/backup/objectStore.mjs");
+const { RESTORE_BACKUPS_PROBE_KEY } = await moduleAt("packages/shared/src/restoreBackups.ts");
 const { RESTORE_D1_QUERY } = await moduleAt("packages/shared/src/restoreTarget.ts");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
 const { foundationFixture } = await moduleAt("packages/worker/test/fixtures/foundation.ts");
@@ -380,6 +383,9 @@ try {
       ["attestD1", [2, restoreId, {}]],
       ["attestBookmark", [2, restoreId, {}, {}]],
       ["verifyBlobs", [2, restoreId, {}, {}]],
+      ["challengeBackups", [2, restoreId, {}, {}]],
+      ["attestBackups", [2, restoreId, {}, "", ""]],
+      ["verifyBindings", [2, restoreId, {}, "", ""]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -479,9 +485,53 @@ try {
   assert.notEqual(nextBlobs.attemptId, blobs.attemptId);
   assert.notEqual(nextBlobs.challengeId, blobs.challengeId);
   assert.notEqual(await (await env.BLOBS.get(probeKey)).text(), probe);
+  const bindingReader = {
+    ...blobsReader,
+    backupsTarget: { accountId: "a".repeat(32), bucket: "operator-drill", jurisdiction: "default" },
+  };
+  const backupProbeStore = new S3BackupStore(
+    {
+      R2_BACKUP_ACCOUNT_ID: "a".repeat(32),
+      R2_BACKUP_BUCKET: "operator-drill",
+      R2_BACKUP_ACCESS_KEY_ID: "b".repeat(32),
+      R2_BACKUP_SECRET_ACCESS_KEY: "c".repeat(64),
+    },
+    {
+      timeoutMs: 10000,
+      fetch: async (request) => {
+        assert.equal(request.method, "GET");
+        assert.equal(
+          request.url,
+          `https://${"a".repeat(32)}.r2.cloudflarestorage.com/operator-drill/${RESTORE_BACKUPS_PROBE_KEY}`,
+        );
+        assert.match(request.headers.get("authorization"), /^AWS4-HMAC-SHA256 /);
+        const object = await env.BACKUPS.get(RESTORE_BACKUPS_PROBE_KEY);
+        return object
+          ? new Response(await object.arrayBuffer())
+          : new Response(null, { status: 404 });
+      },
+    },
+  );
+  const verifyBindings = () =>
+    verifyRestoreBindings({
+      epoch: 2,
+      id: bookmarkId,
+      control: restoreControl,
+      reader: bindingReader,
+      store: backupProbeStore,
+    });
+  const bindings = await verifyBindings();
+  assert.equal(bindings.state, "bindings_verified");
+  const backupsNonce = await (await env.BACKUPS.get(RESTORE_BACKUPS_PROBE_KEY)).text();
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  const nextBindings = await verifyBindings();
+  assert.notEqual(nextBindings.challengeId, bindings.challengeId);
+  assert.notEqual(nextBindings.backups.attemptId, bindings.backups.attemptId);
+  assert.notEqual(await (await env.BACKUPS.get(RESTORE_BACKUPS_PROBE_KEY)).text(), backupsNonce);
   await restoreControl.cancel(2, bookmarkId);
   await assert.rejects(verifyBookmark(), /database_restore_not_preparing/);
   await assert.rejects(verifyBlobs(), /database_restore_not_preparing/);
+  await assert.rejects(verifyBindings(), /database_restore_not_preparing/);
   assert.deepEqual(
     (await query("SELECT epoch,maintenance,gc_paused,backup_frozen FROM control"))[0],
     { epoch: 2, maintenance: 1, gc_paused: 1, backup_frozen: 0 },
@@ -493,7 +543,7 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all nine restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, fresh independent D1 mirror observation, Time Travel bookmark observation and BLOBS nonce rotation with simulated provider responses, eviction replay and cancellation retaining closed admission.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twelve restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, fresh independent D1 mirror observation, Time Travel bookmark observation and combined D1/BLOBS/BACKUPS identity verification with fresh nonces and simulated provider responses, eviction replay and cancellation retaining closed admission.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
@@ -67,6 +68,44 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   cancel(epoch: number, id: string) {
     return this.#control(epoch, id).cancelDatabaseRestore(epoch, id);
+  }
+  challengeBackups(
+    epoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    source: RestoreBackupsTarget,
+  ) {
+    return this.#control(epoch, id).challengeDatabaseRestoreBackups(epoch, id, challenge, source);
+  }
+  attestBackups(
+    epoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    attemptId: string,
+    nonce: string,
+  ) {
+    return this.#control(epoch, id).attestDatabaseRestoreBackups(
+      epoch,
+      id,
+      challenge,
+      attemptId,
+      nonce,
+    );
+  }
+  verifyBindings(
+    epoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    blobsAttempt: string,
+    backupsAttempt: string,
+  ) {
+    return this.#control(epoch, id).verifyDatabaseRestoreBindings(
+      epoch,
+      id,
+      challenge,
+      blobsAttempt,
+      backupsAttempt,
+    );
   }
   fetch(): Response {
     return new Response(null, { status: 404 });

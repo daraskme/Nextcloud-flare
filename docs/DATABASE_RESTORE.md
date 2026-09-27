@@ -1,6 +1,6 @@
 # D1復旧要求の準備と停止保持
 
-更新: 2026-09-25。Time Travel / logical exportからの稼働系復旧に向けた、準備段階・logical世代照合・信頼されたSQL検証者による証言を実装した。[運用CLI](DATABASE_RESTORE_OPERATOR.md)で準備・検証・照会・取消しを行える。D1の上書きと新epochへの採用はまだ接続していない。`preparing`や`sql_verified`を上書き許可やR2処理の全終了証明として扱わない。
+更新: 2026-09-27。Time Travel / logical exportからの稼働系復旧に向けた、準備段階・logical世代照合・信頼されたSQL検証者による証言を実装した。[運用CLI](DATABASE_RESTORE_OPERATOR.md)で準備・検証・照会・取消しを行える。D1の上書きと新epochへの採用はまだ接続していない。`preparing`や`sql_verified`を上書き許可やR2処理の全終了証明として扱わない。
 
 ## 内部RPC
 
@@ -49,7 +49,7 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 
 稼働系復旧の完成には以下が必要で、今回の準備RPCは代替しない。
 
-1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。D1対象、Time Travel bookmarkの時刻検索、BLOBSのfresh probe照合も接続済み（[対象](DATABASE_RESTORE_TARGET.md)・[bookmark](DATABASE_RESTORE_BOOKMARK.md)・[BLOBS](DATABASE_RESTORE_BLOBS.md)）。BACKUPS binding照合とremote検証を続ける。
+1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。D1対象、Time Travel bookmarkの時刻検索、BLOBSのfresh probe照合も接続済み（[対象](DATABASE_RESTORE_TARGET.md)・[bookmark](DATABASE_RESTORE_BOOKMARK.md)・[BLOBS](DATABASE_RESTORE_BLOBS.md)）。BACKUPSと同じ停止状態での[BLOBS/BACKUPS一括照合](DATABASE_RESTORE_BINDINGS.md)も接続済み。最終停止とremote検証を続ける。
 2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集め、停止中repairも禁止する永続的な最終段階へ移す。
 3. D1上書き前に新epochをDO/R2履歴へ予約する。応答不明時に重複発行・再使用しない。
 4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。
@@ -57,3 +57,14 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 6. FTS再構築、D1/R2の全監査、段階再開、再開後CRUD、実Cloudflareでの復旧ドリル。
 
 現時点のテストは停止保持・競合・取消し・R2世代照合のローカルDO/D1/R2試験。control行だけを戻す試験を実Time Travel成功と呼ばない。ControlDO自体の全storage喪失、別account、D1の全schema喪失からの要求復元も未実装。準備要求があるだけではD1の手動上書きを開始しない。
+
+### 最終停止へ接続する際のコード上の境界
+
+以下は次工程の実装条件であり、現在の`verify-bindings`の保証には含めない。
+
+- `ControlAdmission.captureSystemMutationMode/systemMutationMode/assertSystemMutationMode`はclosed modeの修復を許可している。最終停止では、受付前・D1待機後の両方で永続intentを検査する。共通mutationのD1述語はepoch/maintenanceであり、停止revision/tokenを変えるだけでは送信済みの同epoch・closed mode更新を拒否できない。最終停止のD1確定点にも遅延更新を防ぐ条件が必要。
+- `control_maintenance_tasks`と`KdfSettlements.assertEmpty()`はDO外部に出た処理の保留を保持する。再起動・lease期限・時計経過だけで空にしない。KDFの実終了記録がD1へ精算済みであることと、R2/delete/upload/multipart各台帳の終了条件を最終停止の前に確認する。
+- `recoveryAudit.ts`の`RECOVERY_FINAL_QUERY`はサービス再開用のfenceで、予約・upload・GC・job・outbox・inventory/probe・multipart・bootstrapの条件を含む。復元直前の終了証明に使う場合は各条件の意味を確認し、DOの保留や送信済み外部操作の証明を併せる。`ControlBackup`のfreeze条件だけではこの確認を満たさない。
+- `ControlDO.#reserve/#completePending`は通常のepoch発行とD1への即時採用を組み合わせている。復旧では、要求IDに固定した新epochをDO/R2へ先に予約し、外部D1復元後の採用とは分ける。準備取消しや通常recover経由で予約を捨てたり、復元前に採用したりしない。
+
+最低限の競合試験は、最終停止中の新規repair・待機中の受付・遅延D1 batch・未知R2/KDF・停止ACK喪失・DO eviction・取消し・同一要求再送である。復元後のsnapshot照合、terminal operation保持、全監査、受付/GCの段階再開はその後に接続する。

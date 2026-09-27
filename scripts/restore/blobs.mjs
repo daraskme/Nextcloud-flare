@@ -4,12 +4,29 @@ import { verifyRestoreD1Challenge } from "./target.mjs";
 
 /** The Worker rotates and reads its own fresh probe through server-configured S3 credentials. */
 export async function verifyRestoreBlobs({ epoch, id, control, reader }) {
+  blobsInputs(reader);
+  await reader.assertUnchanged();
+  const verified = await verifyRestoreD1Challenge({ epoch, id, control, reader });
+  return verifyBlobsWithChallenge({ epoch, id, control, reader, ...verified });
+}
+
+export function blobsInputs(reader) {
   const source = restoreBlobsTarget(reader.blobsTarget),
     target = restoreD1Target(reader.target);
   if (target.mode !== "remote" || target.accountId !== source.accountId)
     throw new Error("database_restore_blobs_target_mismatch");
-  await reader.assertUnchanged();
-  const { challenge, result: d1 } = await verifyRestoreD1Challenge({ epoch, id, control, reader });
+  return { source, target };
+}
+
+export async function verifyBlobsWithChallenge({
+  epoch,
+  id,
+  control,
+  reader,
+  challenge,
+  result: d1,
+}) {
+  const { source, target } = blobsInputs(reader);
   await reader.assertUnchanged();
   const result = await control.verifyBlobs(epoch, id, challenge, source);
   await reader.assertUnchanged();

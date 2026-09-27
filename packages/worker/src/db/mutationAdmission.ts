@@ -41,6 +41,7 @@ export const GLOBAL_MUTATION_KINDS = [
   "r2.probe-phase",
   "r2.probe-release",
   "r2.probe-error",
+  "restore.backups-probe",
   "orphan.scan-claim",
   "orphan.scan-call",
   "orphan.scan-observe",

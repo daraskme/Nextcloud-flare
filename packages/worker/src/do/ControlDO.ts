@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
+import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
@@ -61,6 +62,7 @@ import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDat
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
+import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
@@ -138,6 +140,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreSource: ControlRestoreSource;
   readonly #restoreTarget: ControlRestoreTarget;
   readonly #restoreBlobs: ControlRestoreBlobs;
+  readonly #restoreBackups: ControlRestoreBackups;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -190,6 +193,12 @@ export class ControlDO extends DurableObject<Env> {
       env.BLOBS,
       this.#restoreTarget,
       () => new R2S3Inventory(env),
+    );
+    this.#restoreBackups = new ControlRestoreBackups(
+      ctx.storage,
+      { DB: env.DB, systemControl: this },
+      env.BACKUPS,
+      this.#restoreTarget,
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -329,6 +338,67 @@ export class ControlDO extends DurableObject<Env> {
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");
     return this.#restoreBlobs.verify(expectedEpoch, id, challenge, source);
+  }
+
+  async challengeDatabaseRestoreBackups(
+    expectedEpoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    source: RestoreBackupsTarget,
+  ) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreBackups.challenge(expectedEpoch, id, challenge, source);
+  }
+
+  async attestDatabaseRestoreBackups(
+    expectedEpoch: number,
+    id: string,
+    challenge: RestoreD1Challenge,
+    attemptId: string,
+    nonce: string,
+  ) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    return this.#restoreBackups.attest(expectedEpoch, id, challenge, attemptId, nonce);
+  }
+
+  async verifyDatabaseRestoreBindings(
+    expectedEpoch: number,
+    id: string,
+    input: RestoreD1Challenge,
+    blobsAttempt: string,
+    backupsAttempt: string,
+  ) {
+    const row = this.#row();
+    if (row.phase !== "ready" || row.epoch !== expectedEpoch)
+      throw new Error("database_restore_epoch_conflict");
+    const scope = this.#restoreTarget.verifiedScope(expectedEpoch, id, input),
+      challenge = scope.challenge;
+    await scope.readMirror();
+    const blobs = this.#restoreBlobs.observation(expectedEpoch, id, challenge, blobsAttempt),
+      backups = this.#restoreBackups.observation(expectedEpoch, id, challenge, backupsAttempt);
+    if (JSON.stringify(blobs.source) === JSON.stringify(backups.source))
+      throw new Error("database_restore_backups_target_mismatch");
+    const verifiedAt = scope.current(),
+      expiresAt = Math.min(blobs.expiresAt, backups.expiresAt);
+    if (verifiedAt < Math.max(blobs.verifiedAt, backups.verifiedAt) || verifiedAt >= expiresAt)
+      throw new Error("database_restore_bindings_expired");
+    return {
+      id,
+      epoch: expectedEpoch,
+      target: challenge.target,
+      state: "bindings_verified" as const,
+      validator: "restore-bindings-v1" as const,
+      challengeId: challenge.challengeId,
+      revision: challenge.revision,
+      blobs,
+      backups,
+      verifiedAt,
+      expiresAt,
+    };
   }
 
   /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */

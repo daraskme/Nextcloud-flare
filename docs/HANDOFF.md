@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-復旧先BLOBSを照合する`verify-blobs`を追加しました。毎回新しいD1停止tokenを独立照合し、同じ復旧要求へaccount・bucket・jurisdictionを固定します。Workerの固定64-byte probeを新しいnonceへ条件付き更新し、S3経由で一致を確認してからDOへ観測を保存します。共通受付と各D1 batchの停止条件を維持し、取消し・対象変更・応答喪失・時計逆行・25秒超過では成功を返しません。詳細は[DATABASE_RESTORE_BLOBS](DATABASE_RESTORE_BLOBS.md)。
+BACKUPSのfresh照合と、D1・BLOBS・BACKUPSを一つの停止challengeへ結び付ける`verify-bindings`を追加しました。Workerだけが生成するnonceを固定probeへ条件付き保存し、運用側S3で読んだ値・objectのETag/version・現在のD1停止状態を照合します。最後に両bucketの正確な試行IDと期限をDOで再確認するため、別の停止状態や古い試行を混ぜた結果は成功になりません。詳細は[DATABASE_RESTORE_BINDINGS](DATABASE_RESTORE_BINDINGS.md)。
 
-Node40件・workerd26件を追加しました。全Node883件、probe/共通受付の関連workerd106件と、非公開bindingの全9操作の拒否・BLOBS更新・再起動後再検証・取消し後拒否のドリルが成功しました。全体checkも成功し、Node883件＋workerd2,253件の計3,136件、lint394file・型・契約/設定・Web build・Worker dry-runを確認しました。詳しい範囲とログは[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
+Node42件・workerd28件を追加しました。全体checkが成功し、Node925件＋workerd2,281件の計3,206件、lint400file・型・契約/設定検査・Web build・Worker dry-runを確認しました。全12操作の権限拒否・一括照合・再起動後再検証を含む非公開bindingドリルも成功しています。schema0039・通常67table・依存は維持しています。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次はBACKUPS binding照合、R2/KDF/job/repairの終了証明と最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回のS3応答とremote descriptorはローカルfixtureで模擬し、実Cloudflare接続・復旧は実行していません。別コマンドで得た過去のD1/bookmark/BLOBS観測をまとめて上書き許可にはしません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はR2/KDF/job/repairの終了証明、修復の新規受付も閉じる最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回の結果は接続先の短期観測であり、復旧全体の完了やD1上書き許可ではありません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了で、製品全体の完成まで継続します。
 
-2026-09-27のユーザーの明示承認に従い、送信先はGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前26d0ef3の[CI36288518080](https://github.com/daraskme/Nextcloud-flare/actions/runs/36288518080)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
+ユーザーの明示承認に従い、送信先はGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前0e298b2の[CI36290565335](https://github.com/daraskme/Nextcloud-flare/actions/runs/36290565335)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 

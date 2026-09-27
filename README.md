@@ -45,6 +45,7 @@ WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ�
 | [DATABASE_RESTORE_BOOKMARK](docs/DATABASE_RESTORE_BOOKMARK.md) | Time Travel候補の固定、指定時刻とbookmarkの照合、短期の証言保存 |
 | [DATABASE_RESTORE_TARGET](docs/DATABASE_RESTORE_TARGET.md) | 復旧先D1を新しい停止tokenと独立queryで照合し、対象と短期の観測をDOへ保存 |
 | [DATABASE_RESTORE_BLOBS](docs/DATABASE_RESTORE_BLOBS.md) | 復旧先BLOBSの対象固定、fresh probeのR2/S3照合と短期の観測保存 |
+| [DATABASE_RESTORE_BINDINGS](docs/DATABASE_RESTORE_BINDINGS.md) | BACKUPSのfresh照合と、同じD1停止状態でのD1/BLOBS/BACKUPS一括照合 |
 | [FILES_UI](docs/FILES_UI.md) | Files画面、再開upload、private assets、browser試験と残る制約 |
 | [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
 | [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |

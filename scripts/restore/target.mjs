@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { restoreBackupsTarget } from "../../packages/shared/src/restoreBackups.ts";
 import { restoreBlobsTarget } from "../../packages/shared/src/restoreBlobs.ts";
 import {
   restoreBookmark,
@@ -23,7 +24,7 @@ const execute = promisify(execFile),
 
 /** Resolve DB once, then query with a minimal pinned configuration and a fixed SELECT only. */
 export async function restoreD1Reader(
-  { config, environment, operatorConfig, mode, blobs = false },
+  { config, environment, operatorConfig, mode, blobs = false, backups = false },
   run = execute,
 ) {
   if (!["local", "remote"].includes(mode) || typeof config !== "string" || !config)
@@ -60,6 +61,19 @@ export async function restoreD1Reader(
       bucket: buckets[0].bucket_name,
       jurisdiction: buckets[0].jurisdiction ?? "default",
     });
+  }
+  let backupsTarget;
+  if (backups) {
+    const buckets = selected.r2_buckets?.filter((entry) => entry.binding === "BACKUPS");
+    if (mode !== "remote" || buckets?.length !== 1)
+      throw new Error("database_restore_invalid_backups_target");
+    backupsTarget = restoreBackupsTarget({
+      accountId: target.accountId,
+      bucket: buckets[0].bucket_name,
+      jurisdiction: buckets[0].jurisdiction ?? "default",
+    });
+    if (blobsTarget && JSON.stringify(backupsTarget) === JSON.stringify(blobsTarget))
+      throw new Error("database_restore_backups_target_mismatch");
   }
   const directory = await mkdtemp(join(tmpdir(), "ncf-restore-d1-"));
   try {
@@ -115,6 +129,7 @@ export async function restoreD1Reader(
     return {
       target,
       ...(blobsTarget ? { blobsTarget } : {}),
+      ...(backupsTarget ? { backupsTarget } : {}),
       assertUnchanged: unchanged,
       async readMirror() {
         const result = await read(

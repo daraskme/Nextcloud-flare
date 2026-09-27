@@ -37,6 +37,35 @@ export class ControlRestoreBlobs {
     )`);
   }
 
+  observation(epoch: number, id: string, input: RestoreD1Challenge, attemptId: string) {
+    const scope = this.target.verifiedScope(epoch, id, input),
+      c = scope.challenge,
+      now = scope.current(),
+      row = this.sql
+        .exec<BlobsRow>("SELECT * FROM control_database_restore_blobs WHERE id=?", id)
+        .toArray()[0];
+    if (
+      !row ||
+      row.epoch !== epoch ||
+      row.attempt_id !== attemptId ||
+      row.challenge_id !== c.challengeId ||
+      row.target_json !== JSON.stringify(c.target) ||
+      row.revision !== c.revision ||
+      row.token !== c.token ||
+      row.verified_at === null ||
+      now < row.verified_at ||
+      now >= row.expires_at ||
+      row.expires_at !== c.expiresAt
+    )
+      throw new Error("database_restore_blobs_conflict");
+    return {
+      source: restoreBlobsTarget(JSON.parse(row.source_json)),
+      attemptId,
+      verifiedAt: row.verified_at,
+      expiresAt: row.expires_at,
+    };
+  }
+
   async verify(
     epoch: number,
     id: string,

@@ -4,6 +4,8 @@ Cloudflare のサービスだけで完結する、Google Drive / Nextcloud ラ�
 
 > ステータス: **Astra ラウンド1〜5 反映済み（R5 No-Go 是正版）**。本書は v1 の実装契約であり、「要確認」は §18 の staging gate を通るまで有効化しない。
 >
+> R6の確定条件は[IMPLEMENTATION_BRIEF §8](IMPLEMENTATION_BRIEF.md#8-r6-条件付き-go-の確定事項phase-01-で-fixture-化する)を優先する。§11.3のepoch・停止・export条件は2026-09-27に確定条件と現在の実装契約へ合わせた。機能の実装状況は[CURRENT_STATE](CURRENT_STATE.md)を参照。
+>
 > 制限定義と一次資料の確認基準日: 2026-09-21。Cloudflare 数値の正本は §13、アプリの安全側上限も §13 に一元化する。
 
 ---
@@ -956,12 +958,14 @@ CREATE TABLE gc_candidates (
 
 journal は廃止する。第一の復旧手段は D1 **Time Travel point-in-time restore（30日）**、第二は account喪失/別region向けの `wrangler d1 export` logical export である。virtual/shadow FTS は export せず、通常 table（operations/outbox/claimsを含む）から再構築する。
 
-1. 日次 export は ControlDO の短い backup write barrier で新規 mutation admission を止め、open permit/claimed operation を収束してから、最新 `operations.state='committed'` の op ID を `control.backup_barrier_op` に記録する。その直後に export snapshot を開始し、開始確認後に barrier を解除する。watermark を含む export/checksum/manifest を同じ generation として公開し、「watermark 時点の状態」とする。
-2. restore 前に maintenance、ControlDO `gc_paused=true` を設定し、新規 GC claim を止める。open permit を revoke、claimed operation を収束し、in-flight R2 delete/job lease の期限経過を待ってから D1 を restore する。
-3. **ControlDO が唯一の epoch 発行者**である。maintenance 中に `bumpEpoch()` で単調増加値を発行し、restore 後 D1 `control.epoch` へ複製する。ControlDO storage 自体を失った場合の初期値は `max(D1 control.epoch, 現在時刻の秒)+1` とし、過去値を再使用しない。
+1. 日次 export は ControlDO の永続backup write barrierで新規mutation admissionを止め、open permit/claimed operationを収束してから、最後にcommitしたop IDを`control.backup_barrier_op`へ記録する。全通常tableの抽出・整合性検証を通して凍結を維持し、watermarkを含むexport/checksum/manifestを同じgenerationとして保存する。世代の完了記録とbarrier解除を確定し、「watermark時点の状態」とする。抽出開始だけではbarrierを解除しない。
+2. restore前にmaintenance、ControlDO `gc_paused=true`を設定し、新規GC claimを止める。open permitをrevokeし、claimed operationを収束する。R2 delete/upload/multipart・KDF・job・repairの終了証明を確認し、修復の新規受付も停止してからD1をrestoreする。lease期限や通信timeoutだけを外部処理の終了証明にしない。
+3. **ControlDOが唯一のepoch発行者**である。D1上書き前に要求IDへ固定した新epochをDOに予約し、R2 `sys/epoch/<epoch>.json`へ`{epoch, at, reason}`を不変保存する。R2保存成功前にepochを公開せず、復元後にD1 `control.epoch`へ採用する。ControlDO storage喪失時はR2履歴の最大epoch+1とD1 epoch+1を下限とし、時刻を使わず過去値を再使用しない。R2 list失敗/空で下限を証明できない場合は起動を拒否し、operatorの明示的な`EPOCH_FLOOR`を要求する。
 4. Time Travel は選択時点、logical export は `backup_barrier_op` までの状態として復元する。snapshot に存在する committed/failed operation の terminal state を保存し、`failed` に書き換えない。watermark 後の operation は restore 後に存在しないため照合は404となり、client は「未確定・同じ Idempotency-Key で再送可」と扱う。
 5. §12 の base `search_index` から FTS external-content index を再構築し、R2 existence、quota/ref、root/owner、bootstrap、share version、credential、permit/claim、outbox を検査する。旧 UploadDO は stale epoch failed、LockDO/BudgetDO は old epoch lease を無効化する。
 6. 検証後に maintenance を解除し、最後に GC pause を解除する。月1回 staging restore drill を行う。
+
+最終停止・復元専用epoch予約・D1上書き後の採用は未接続である。通常の`bumpEpoch()`はD1採用まで行うため、上記の復元専用予約へそのまま流用しない。実装済みの準備・照合と次工程の境界は[DATABASE_RESTORE](DATABASE_RESTORE.md)に記録する。
 
 保持は Time Travel 30日 + logical export を **日次、最大年齢35日、最少5世代**の両条件で満たす。すなわち5世代を残しても35日超の export は復旧対象にせず、失敗時は alert して新しい5世代を再確保する。R2だけから namespace を再構築できるとは主張しない。
 

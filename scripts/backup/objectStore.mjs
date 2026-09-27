@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-
 import {
   BACKUP_CHUNK_BYTES,
   BACKUP_MANIFEST_BYTES,
@@ -9,6 +8,10 @@ import {
   backupManifestKey,
   backupPartKey,
 } from "../../packages/shared/src/backupPublication.ts";
+import {
+  RESTORE_BACKUPS_PROBE_BYTES,
+  RESTORE_BACKUPS_PROBE_KEY,
+} from "../../packages/shared/src/restoreBackups.ts";
 
 const require = createRequire(new URL("../../packages/worker/package.json", import.meta.url));
 const { AwsClient } = require("aws4fetch");
@@ -99,7 +102,7 @@ async function deadline(run, timeoutMs) {
   }
 }
 
-/** A fixed private R2 endpoint, only GET and conditional PUT under sys/backups/v1. No retries or deletes. */
+/** Fixed private R2 endpoint: backup GET/conditional PUT and one restore-probe GET. No retries or deletes. */
 export class S3BackupStore {
   constructor(env, { fetch: transport = fetch, timeoutMs = 60000 } = {}) {
     const account = env.R2_BACKUP_ACCOUNT_ID,
@@ -130,8 +133,16 @@ export class S3BackupStore {
     this.transport = transport;
     this.timeoutMs = timeoutMs;
   }
-  async #request(method, key, bytes, limit) {
-    validateKey(key);
+  async #request(method, key, bytes, limit, probe = false) {
+    if (probe) {
+      if (
+        method !== "GET" ||
+        key !== RESTORE_BACKUPS_PROBE_KEY ||
+        bytes !== null ||
+        limit !== RESTORE_BACKUPS_PROBE_BYTES
+      )
+        throw new Error("backup_invalid_object_key");
+    } else validateKey(key);
     byteLimit(limit);
     if (method !== "GET" && method !== "PUT") throw new Error("backup_invalid_object_method");
     return deadline(async (signal) => {
@@ -169,6 +180,9 @@ export class S3BackupStore {
   }
   get(key, limit) {
     return this.#request("GET", key, null, limit);
+  }
+  readRestoreProbe() {
+    return this.#request("GET", RESTORE_BACKUPS_PROBE_KEY, null, RESTORE_BACKUPS_PROBE_BYTES, true);
   }
   put(key, bytes) {
     validatePayload(key, bytes);

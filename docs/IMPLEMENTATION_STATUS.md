@@ -7,6 +7,15 @@
 
 ## 今回の検証記録
 
+- BACKUPS照合と同一D1 challengeでのD1/BLOBS/BACKUPS一括照合を追加。Node42件・workerd28件を追加。全体checkが成功し、Node925件（46file、33.40s）＋workerd2,281件（107file、1,219.92s）、計3,206件を確認。lint400file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-backups-check.log。停止拒否・通信切断fixture由来のworkerdログを含むが、全テスト結果・終了コードは成功。最終コメント修正後のlintとCLI helpも成功した。
+- 関連Node141件（4file、12.81s）と新規workerd28件（1file、13.16s）が成功。対象固定・取消し・D1-only停止変更・3回の外部予算ACK喪失・nonce/version不一致・保存/lease解放の原子的rollback・遅延create/CAS PUT・同一challengeの現在試行を検証。/tmp/ncf-backups-node.log、/tmp/ncf-backups-workerd.log。初回fixtureでRPC拒否例外が後続hookへ影響したためDO内で捕捉し、Wrangler自身が重複bindingを拒否する境界も試験へ反映して再実行した。
+- `.local-toolchain/run pnpm backup:operator-drill`が成功。67table・SQL11,322bytes、全12復旧操作の権限拒否、同一challengeでの3 binding照合、eviction後の新nonce/試行、取消し後拒否を確認。S3 providerは署名と固定URLを確認するローカルfixtureであり、実remote照合とは区別する。/tmp/ncf-backups-operator-drill.log、.wrangler/operator-drill-mkog45/report.json。
+- Nodeのnative TypeScript読込みとWorkerのbundleが同じ共有validatorを使えるよう、noEmitの型検査で.ts importを許可した。D1 schema0039・通常67table・依存は維持。実Cloudflareの操作は行っていない。
+- DESIGN §11.3の古い時刻ベースepoch・抽出開始時のbarrier解除・lease期限だけでの復元開始を、BRIEF §8と現在の実装契約へ整合させた。最終停止・復元専用epoch予約・採用は未実装として明記し、DATABASE_RESTOREへ次工程で確認すべきDO/D1の境界を記録した。
+- 直前0e298b2の[CI36290565335](https://github.com/daraskme/Nextcloud-flare/actions/runs/36290565335)は全5ジョブ成功。今回のWindows・browser・実CLI backupドリルはローカル再実行していない。
+
+### 先行するBLOBS照合の記録
+
 - 復旧先BLOBSの対象固定・fresh probe照合・DO観測保存を追加。Node40件・workerd26件を追加。全Node883件（45file、36.24s）が成功。`.local-toolchain/run pnpm check`で全workerd2,253件（106file、1,260.46s）も成功し、計3,136件を確認。lint394file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-blobs-check.log。停止拒否・切断fixture由来のworkerdログを含むが、テスト結果・終了コードは成功。
 - `vitest run --config vitest.config.ts`でprobe/共通受付の関連workerd106件（3file、40.01s）が成功。取消し、待機中のD1停止変更、外部予算ACK喪失、誤bucketの古いnonce、保存失敗、時計逆行、25秒timeoutと遅延継続、eviction後の対象固定を検証。/tmp/ncf-blobs-workerd.log。
 - `.local-toolchain/run pnpm backup:operator-drill`が成功。67table・SQL11,322bytes、全9復旧操作の権限拒否、実BLOBS probeの更新・再起動後の新nonce照合・取消し後拒否を確認。S3 providerは固定URL/署名形式を確認するローカルfixtureで模擬し、remote照合とは扱わない。/tmp/ncf-blobs-operator-drill.log、.wrangler/operator-drill-1lxITR/report.json。初回はfixtureのS3秘密値が既存設定検査の最短長に満たず失敗し、テスト値を修正して全ドリルを再実行した。

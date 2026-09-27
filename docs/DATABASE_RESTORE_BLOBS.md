@@ -42,6 +42,6 @@ DO側でもawaitの前後に現在の要求・試行・challenge・停止状態�
 
 この観測は短期の接続先照合であり、R2処理全体の終了証明やD1上書き許可ではない。`verify-d1`・`verify-bookmark`・`verify-blobs`はいずれも新しい停止challengeを作るため、別コマンドの過去の証言を組み合わせて復元許可にしない。同じ最終停止へ全検証を接続する工程は後続である。
 
-BACKUPS bindingのfresh照合、R2/KDF/job/repairの終了証明、最終停止、新epoch予約、実D1上書き・採用・全監査・段階再開は未完了。BLOBS自体の独立バックアップも追加していない。
+BACKUPS bindingのfresh照合と、同じD1 challengeでの[BLOBS/BACKUPS一括照合](DATABASE_RESTORE_BINDINGS.md)を追加した。R2/KDF/job/repairの終了証明、最終停止、新epoch予約、実D1上書き・採用・全監査・段階再開は未完了。BLOBS自体の独立バックアップも追加していない。
 
 Node試験はCLI/config/RPC境界を、workerdは実D1/DO/R2で照合・取消し・競合・応答喪失・保存失敗・期限を確認する。named service bindingドリルは全9復旧操作の権限拒否とprobe更新・eviction後再検証を確認する。S3 provider応答とremote descriptorはローカルfixtureで模擬しており、実Cloudflareの接続・復元・deployは実施していない。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。
