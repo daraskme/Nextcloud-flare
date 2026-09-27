@@ -4,7 +4,7 @@
 
 ## 専用の権限
 
-main Workerのnamed entrypoint `DatabaseRestoreOperator`に、`prepare/inspect/verify/attest/challengeD1/attestD1/attestBookmark/cancel`を追加した。HTTPのfetchは404で、任意SQLや外部restore、ControlDOのrecover/resumeは受け付けない。
+main Workerのnamed entrypoint `DatabaseRestoreOperator`は、`prepare/inspect/verify/attest/challengeD1/attestD1/attestBookmark/verifyBlobs/challengeBackups/attestBackups/verifyBindings/freeze/cancel`の13操作を提供する。HTTPのfetchは404で、任意SQLや外部restore、ControlDOのrecover/resumeは受け付けない。
 
 targetの`RESTORE_OPERATOR_ENABLED=true`と、呼出し元service bindingの`props.purpose=database-restore-v1`、`props.environment=targetのENVIRONMENT`の一致が必要。既存の`BACKUP_OPERATOR_ENABLED`や`logical-backup-v1`だけでは復旧準備を操作できない。標準wrangler.jsoncでは復旧権限を有効にしない。
 
@@ -32,9 +32,11 @@ pnpm database:restore cancel --local --operator-config restore-operator.json \
   --epoch <現在のepoch> --id <同じ復旧要求UUID>
 ```
 
-`prepare`は通常書込みとGCを止める。`inspect`は保存された要求を読む。`cancel`は準備だけを取り消し、受付とGCは停止を維持する。失敗時に自動でcancelや再開はしない。
+`prepare`は通常書込みとGCを止める。`inspect`は保存された要求を読む。`cancel`は要求を取り消し、受付とGCは停止を維持する。凍結済みならD1の凍結解除と停止token更新を確認してからDOの取消しを確定する。失敗時に自動でcancelや再開はしない。
 
 `verify-d1 --config <対象設定>`を追加した。新しい停止tokenを発行して、CLIから独立に読んだDBがWorkerのDB bindingと一致することを照合する。毎回再検証し、対象と5分以内の観測をControlDOへ保存する。SQL検証とは別工程で、`verify`と順に実行する。詳細は[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md)。
+
+`freeze --remote --config <対象設定>`はfreshなD1/BLOBS/BACKUPS照合後にD1書込みを凍結する。状態は`preparing → freezing → frozen`、取消しは`cancelling → cancelled`。同じ対象・要求の再実行で応答喪失から再照会できる。凍結後に新しいchallengeを作らない。これはD1書込み障壁であり、外部R2の全終了・新epoch予約・実上書きはまだ接続していない。設定・再送・取消しの手順は[DATABASE_RESTORE_FREEZE](DATABASE_RESTORE_FREEZE.md)を参照する。
 
 remoteの`verify`は`--remote`を指定し、`--config/--environment`を受け取らない。BACKUPSの読取りには既存の`R2_BACKUP_*`設定を使う。この`verify`はR2へ書き込まない。remote認証・実resourceでの検証と配備は未実施。
 

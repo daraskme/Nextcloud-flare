@@ -965,7 +965,7 @@ journal は廃止する。第一の復旧手段は D1 **Time Travel point-in-tim
 5. §12 の base `search_index` から FTS external-content index を再構築し、R2 existence、quota/ref、root/owner、bootstrap、share version、credential、permit/claim、outbox を検査する。旧 UploadDO は stale epoch failed、LockDO/BudgetDO は old epoch lease を無効化する。
 6. 検証後に maintenance を解除し、最後に GC pause を解除する。月1回 staging restore drill を行う。
 
-最終停止・復元専用epoch予約・D1上書き後の採用は未接続である。通常の`bumpEpoch()`はD1採用まで行うため、上記の復元専用予約へそのまま流用しない。実装済みの準備・照合と次工程の境界は[DATABASE_RESTORE](DATABASE_RESTORE.md)に記録する。
+[D1書込み凍結](DATABASE_RESTORE_FREEZE.md)として修復の新規受付拒否・全通常table guardを接続済みだが、外部I/Oの全終了を証明する最終停止・復元専用epoch予約・D1上書き後の採用は未接続である。通常の`bumpEpoch()`はD1採用まで行うため、上記の復元専用予約へそのまま流用しない。実装済みの準備・照合と次工程の境界は[DATABASE_RESTORE](DATABASE_RESTORE.md)に記録する。
 
 保持は Time Travel 30日 + logical export を **日次、最大年齢35日、最少5世代**の両条件で満たす。すなわち5世代を残しても35日超の export は復旧対象にせず、失敗時は alert して新しい5世代を再確保する。R2だけから namespace を再構築できるとは主張しない。
 

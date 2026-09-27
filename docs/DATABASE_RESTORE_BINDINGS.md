@@ -52,4 +52,4 @@ BACKUPSの観測・leaseは発行から60秒とD1 challenge期限の短い方に
 
 Node試験はS3署名・固定key・body/時間上限、対象設定、CLI境界、返り値検査と一つのchallengeでの実行順を確認する。workerdは実D1/DO/R2でeviction、対象固定、取消し、budget ACK喪失、停止変更、保存/lease解放の原子的rollback、遅延PUTのCAS、現在の試行の組合せを検証する。named service bindingドリルは全12復旧操作の権限拒否と一括照合・再起動後再検証を確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
-S3とTime Travelのprovider応答はローカルfixtureで模擬し、実Cloudflareへの接続・復元・配備は未実施。次はR2/KDF/job/repairの終了証明、修復の新規受付も閉じる最終停止、新epoch予約、実D1上書き・採用・全監査・段階再開を接続する。BLOBS本体の独立バックアップ、ControlDO全storage喪失からの復旧も未完了。
+S3とTime Travelのprovider応答はローカルfixtureで模擬し、実Cloudflareへの接続・復元・配備は未実施。後続の[D1書込み凍結](DATABASE_RESTORE_FREEZE.md)を追加し、修復の新規受付拒否・全通常table guard・応答喪失後の再照会と取消しを接続した。現在のドリルはfreezeを含む13操作を検証する。R2/KDF/job/repairの全終了証明、新epoch予約、実D1上書き・採用・全監査・段階再開は未完了。BLOBS本体の独立バックアップ、ControlDO全storage喪失からの復旧も未完了。

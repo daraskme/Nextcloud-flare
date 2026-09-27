@@ -44,6 +44,7 @@ export class ControlAdmission {
     private readonly assertKdfQuiescent: () => void,
     private readonly assertCanOpen: () => void = () => {},
     private readonly requireCloseMirror: () => boolean = () => false,
+    private readonly assertCanRepair: () => void = () => {},
   ) {
     initializeBackupState(storage.sql);
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS control_admission(
@@ -119,12 +120,14 @@ export class ControlAdmission {
   }
 
   #current(intent: AdmissionRow, phase = intent.phase): void {
+    this.assertCanRepair();
     const row = this.#row(intent.epoch);
     if (row.revision !== intent.revision || row.token !== intent.token || row.phase !== phase)
       throw new Error("admission_conflict");
   }
 
   assertClosed(epoch: number): void {
+    this.assertCanRepair();
     if (this.#row(epoch).phase !== "closed") throw new Error("recovery_admission_not_closed");
   }
 
@@ -134,6 +137,27 @@ export class ControlAdmission {
     if (row.phase !== "closed" || row.token === null)
       throw new Error("recovery_admission_not_closed");
     return { epoch: row.epoch, revision: row.revision, token: row.token };
+  }
+
+  /** Called with freeze cancellation and its request cancellation in one DO transaction. */
+  restoreFreezeCancelled(epoch: number, revision: number, token: string, nextToken: string): void {
+    const nextRevision = epochNumber(revision + 1),
+      row = this.#row(epoch);
+    if (row.phase !== "closed" || row.revision !== revision || row.token !== token)
+      throw new Error("database_restore_freeze_conflict");
+    const saved = this.storage.sql.exec(
+      `UPDATE control_admission SET revision=?,token=?,prior_token=NULL,gc_paused=1,audit_token=NULL
+       WHERE singleton=1 AND epoch=? AND revision=? AND token=? AND phase='closed' RETURNING singleton`,
+      nextRevision,
+      nextToken,
+      epoch,
+      revision,
+      token,
+    );
+    if (saved.toArray().length !== 1) throw new Error("database_restore_freeze_conflict");
+    this.storage.sql.exec("DELETE FROM recovery_audit_v7");
+    if (this.storage.sql.exec("SELECT 1 FROM recovery_audit_v7").toArray().length)
+      throw new Error("database_restore_freeze_conflict");
   }
 
   /** Called in the same local transaction that publishes the new ready epoch. */
@@ -154,6 +178,7 @@ export class ControlAdmission {
   }
 
   beginTask(epoch: number): string {
+    this.assertCanRepair();
     this.#row(epoch);
     const token = crypto.randomUUID();
     this.storage.sql.exec("INSERT INTO control_maintenance_tasks VALUES(?,?)", token, epoch);
@@ -264,6 +289,7 @@ export class ControlAdmission {
 
   /** Capture locally before entering the bounded queue; all D1 work stays inside that queue. */
   captureSystemMutationMode(epoch: number): 0 | 1 {
+    this.assertCanRepair();
     const phase = this.#row(epoch).phase;
     if (phase === "open") this.assertCanOpen();
     if (phase !== "open" && phase !== "closed") throw new Error("mutation_unavailable");
@@ -272,6 +298,7 @@ export class ControlAdmission {
 
   /** Internal facts may queue in a stable closed mode; transitional or mismatched mirrors cannot. */
   async systemMutationMode(epoch: number): Promise<0 | 1> {
+    this.assertCanRepair();
     const row = this.#row(epoch);
     if (row.phase === "open") this.assertCanOpen();
     if (row.phase !== "open" && row.phase !== "closed") throw new Error("mutation_unavailable");
@@ -282,12 +309,14 @@ export class ControlAdmission {
   }
 
   assertSystemMutationMode(epoch: number, maintenance: 0 | 1): void {
+    this.assertCanRepair();
     if (!maintenance) this.assertCanOpen();
     if (this.#row(epoch).phase !== (maintenance ? "closed" : "open"))
       throw new Error("mutation_unavailable");
   }
 
   async close(epoch: number): Promise<ControlStatus & { activeJobLease: boolean }> {
+    this.assertCanRepair();
     epochNumber(epoch);
     const row = this.#row(epoch);
     if (this.requireCloseMirror() && row.phase === "closed") {

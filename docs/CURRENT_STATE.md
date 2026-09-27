@@ -2,13 +2,13 @@
 
 更新: 2026-09-27。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-BACKUPSのfresh照合と、D1・BLOBS・BACKUPSを一つの停止challengeへ結び付ける`verify-bindings`を追加しました。Workerだけが生成するnonceを固定probeへ条件付き保存し、運用側S3で読んだ値・objectのETag/version・現在のD1停止状態を照合します。最後に両bucketの正確な試行IDと期限をDOで再確認するため、別の停止状態や古い試行を混ぜた結果は成功になりません。詳細は[DATABASE_RESTORE_BINDINGS](DATABASE_RESTORE_BINDINGS.md)。
+D1の書き込み凍結を追加しました。freshなD1/BLOBS/BACKUPS照合後、DOにintentを保存して修復の新規受付を閉じ、migration0040で全67通常tableの更新を拒否します。再起動・応答喪失後は同じ要求を再照会でき、取消しは停止revision/tokenを更新して遅れた凍結を拒否します。詳細は[DATABASE_RESTORE_FREEZE](DATABASE_RESTORE_FREEZE.md)。
 
-Node42件・workerd28件を追加しました。全体checkが成功し、Node925件＋workerd2,281件の計3,206件、lint400file・型・契約/設定検査・Web build・Worker dry-runを確認しました。全12操作の権限拒否・一括照合・再起動後再検証を含む非公開bindingドリルも成功しています。schema0039・通常67table・依存は維持しています。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+Node24件・workerd31件を追加しました。関連Node66件とworkerd31件、全13操作の権限拒否・保留予約による拒否・凍結・再起動・取消しの非公開bindingドリルが成功しました。全体checkが成功し、Node949件＋workerd2,312件の計3,261件、lint405file・型・契約/設定検査・Web build・Worker dry-runを確認しました。schema0040・通常67table・依存追加なし。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次はR2/KDF/job/repairの終了証明、修復の新規受付も閉じる最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回の結果は接続先の短期観測であり、復旧全体の完了やD1上書き許可ではありません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了で、製品全体の完成まで継続します。
+次は外部I/Oの送信・終了記録を補い、R2/KDF/job/repairの全終了を証明する最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。空ファイルPUTやtarget manifestの保存/削除には最終停止へ集約する記録が不足しています。現在の凍結はD1の書込み障壁で、全外部処理の終了や上書き許可は与えません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-ユーザーの明示承認に従い、送信先はGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前0e298b2の[CI36290565335](https://github.com/daraskme/Nextcloud-flare/actions/runs/36290565335)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前8a220e7の[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,6 +26,7 @@ Node42件・workerd28件を追加しました。全体checkが成功し、Node92
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| 復旧中D1書込み凍結 | migration0040・全67通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 関連Node66/workerd31・13操作のprivate bindingドリル成功。全体check3,261件成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
 | 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
 | 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
 | Time Travel候補の照合 | remote候補準備・固定D1のfresh照合・時刻検索bookmark一致・DO証言 | Node42件/workerd24件追加、全Node843/関連workerd144、実private bindingと合成providerのドリル成功 | 実remote検索、保持期限保証、最終停止・D1上書き・採用は未接続。[詳細](DATABASE_RESTORE_BOOKMARK.md) |

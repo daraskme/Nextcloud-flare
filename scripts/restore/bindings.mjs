@@ -4,6 +4,11 @@ import { verifyRestoreD1Challenge } from "./target.mjs";
 
 /** One fresh stop challenge for D1, BLOBS and BACKUPS; no permission to overwrite D1. */
 export async function verifyRestoreBindings(options) {
+  return (await verifyRestoreBindingsChallenge(options)).result;
+}
+
+/** Internal continuation retains the challenge; public output never includes its stop token. */
+export async function verifyRestoreBindingsChallenge(options) {
   const { epoch, id, control, reader, store } = options;
   const { source: backupSource, target } = backupsInputs(reader, store),
     { source: blobSource } = blobsInputs(reader);
@@ -53,16 +58,19 @@ export async function verifyRestoreBindings(options) {
   )
     throw new Error("database_restore_invalid_bindings_proof");
   return {
-    id,
-    epoch,
-    target,
-    state: result.state,
-    validator: result.validator,
-    challengeId: challenge.challengeId,
-    revision: challenge.revision,
-    blobs: expectedBlobs,
-    backups: expectedBackups,
-    verifiedAt: result.verifiedAt,
-    expiresAt: result.expiresAt,
+    challenge,
+    result: {
+      id,
+      epoch,
+      target,
+      state: result.state,
+      validator: result.validator,
+      challengeId: challenge.challengeId,
+      revision: challenge.revision,
+      blobs: expectedBlobs,
+      backups: expectedBackups,
+      verifiedAt: result.verifiedAt,
+      expiresAt: result.expiresAt,
+    },
   };
 }

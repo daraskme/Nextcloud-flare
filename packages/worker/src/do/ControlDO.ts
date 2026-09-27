@@ -4,6 +4,7 @@ import type { BackupInventoryCursor } from "../../../shared/src/backupRetention"
 import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
+import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type { KdfRequest } from "../auth/globalKdf";
 import {
@@ -64,6 +65,7 @@ import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
 import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
+import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
 import {
@@ -141,6 +143,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreTarget: ControlRestoreTarget;
   readonly #restoreBlobs: ControlRestoreBlobs;
   readonly #restoreBackups: ControlRestoreBackups;
+  readonly #restoreFreeze: ControlRestoreFreeze;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -172,6 +175,7 @@ export class ControlDO extends DurableObject<Env> {
       () => this.#kdfSettlements.assertEmpty(),
       () => this.#databaseRestore.assertInactive(),
       () => this.#databaseRestore.active(),
+      () => this.#databaseRestore.assertCanRepair(),
     );
     this.#restoreSource = new ControlRestoreSource(
       ctx.storage.sql,
@@ -199,6 +203,36 @@ export class ControlDO extends DurableObject<Env> {
       { DB: env.DB, systemControl: this },
       env.BACKUPS,
       this.#restoreTarget,
+    );
+    this.#restoreFreeze = new ControlRestoreFreeze(
+      ctx.storage,
+      env.DB,
+      this.#databaseRestore,
+      this.#admission,
+      (epoch) => {
+        const row = this.#row();
+        if (row.phase !== "ready" || row.epoch !== epoch)
+          throw new Error("database_restore_epoch_conflict");
+        assertNoBackup(ctx.storage.sql);
+        this.#kdfSettlements.assertEmpty();
+        if (
+          ctx.storage.sql.exec("SELECT 1 FROM control_maintenance_tasks LIMIT 1").toArray().length
+        )
+          throw new Error("database_restore_maintenance_active");
+      },
+      (epoch, id, input) => {
+        const { challenge, blobsAttempt, backupsAttempt } = input;
+        const scope = this.#restoreTarget.verifiedScope(epoch, id, challenge);
+        const blobs = this.#restoreBlobs.observation(epoch, id, challenge, blobsAttempt);
+        const backups = this.#restoreBackups.observation(epoch, id, challenge, backupsAttempt);
+        const expiresAt = Math.min(blobs.expiresAt, backups.expiresAt);
+        if (
+          JSON.stringify(blobs.source) === JSON.stringify(backups.source) ||
+          scope.current() >= expiresAt
+        )
+          throw new Error("database_restore_freeze_unverified");
+        return { blobs, backups, expiresAt };
+      },
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -267,7 +301,7 @@ export class ControlDO extends DurableObject<Env> {
   async prepareDatabaseRestore(expectedEpoch: number, id: string, source: DatabaseRestoreSource) {
     const row = this.#row();
     const previous = this.#databaseRestore.existing(expectedEpoch, id, source);
-    if (previous?.state === "cancelled") return previous;
+    if (previous && previous.state !== "preparing") return previous;
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");
     assertNoBackup(this.ctx.storage.sql);
@@ -283,6 +317,17 @@ export class ControlDO extends DurableObject<Env> {
   async inspectDatabaseRestore(expectedEpoch: number, id: string) {
     this.#row();
     return this.#databaseRestore.inspect(expectedEpoch, id);
+  }
+
+  /** Freeze D1 writes after current binding checks; external restore authorization is separate. */
+  async freezeDatabaseRestore(
+    expectedEpoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+    input?: RestoreFreezeInput,
+  ) {
+    this.#row();
+    return this.#restoreFreeze.freeze(expectedEpoch, id, targets, input);
   }
 
   /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */
@@ -401,13 +446,14 @@ export class ControlDO extends DurableObject<Env> {
     };
   }
 
-  /** Cancel only preparation. Keep admission and GC closed; a new audit is still required. */
+  /** Cancel preparation or its D1 freeze. Keep admission and GC closed for a new audit. */
   async cancelDatabaseRestore(expectedEpoch: number, id: string) {
     const row = this.#row();
     const previous = this.#databaseRestore.inspect(expectedEpoch, id);
     if (previous.state === "cancelled") return previous;
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");
+    if (previous.state !== "preparing") return this.#restoreFreeze.cancel(expectedEpoch, id);
     await this.#assertNoBackup();
     if (this.#databaseRestore.inspect(expectedEpoch, id).state === "cancelled")
       return this.#databaseRestore.inspect(expectedEpoch, id);

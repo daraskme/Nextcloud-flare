@@ -3,9 +3,18 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-前回の自動走査`c664c85`は[CI36122071388](https://github.com/daraskme/Nextcloud-flare/actions/runs/36122071388)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+直前の一括照合`8a220e7`は[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
+
+- D1書込み凍結を追加。migration0040・全67通常table guard、DO永続intent、修復受付拒否、正確な対象固定による再照会、取消し時の停止revision/token更新を接続。Node24件・workerd31件を追加。全体checkが成功し、Node949件（47file、38.96s）＋workerd2,312件（108file、1,239.63s）、計3,261件を確認。lint405file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-freeze-check.log。停止拒否・通信切断fixtureのworkerdログを含むが、全テスト結果・終了コードは成功。最後にコメント・試験名だけを修正し、lintとCLI help、変更した11資料の251個のlocal Markdownリンクも確認した。
+- 関連Node66件（2file、1.47s）、新規workerd31件（1file、33.05s）が成功。全table guard、CLI入力/再送/秘密非出力、eviction、対象相違、待機中の受付/事前照会後のD1競合、ACK喪失、期限切れ、遅いbatch、25秒timeout、DO保存のABORT/IGNOREと取消しrollbackを検証。/tmp/ncf-freeze-node.log、/tmp/ncf-freeze-workerd-final.log。
+- `pnpm backup:operator-drill`が成功。67table・SQL11,350bytes、全13復旧操作の権限拒否、保留予約による凍結拒否、既知の試験用予約解放後の凍結、実D1更新拒否、eviction後再送、取消し時の新しい停止tokenを確認。/tmp/ncf-freeze-operator-drill-final.log、.wrangler/operator-drill-5b3o6C/report.json。S3/Time Travel応答は合成providerで、実remote検証ではない。
+- 初回試験ではschema fixtureの列名誤りと既存mutation receiptの削除禁止に当たり、正しい列・receiptを保持するepoch更新へ修正した。専用ドリルの初回凍結は既知の保留予約があるため正しく拒否し、その拒否も期待結果へ追加して全体を再実行した。
+- 直前8a220e7の[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)は全5ジョブ成功。今回はWindows/browser/実CLI backupドリルをローカル再実行していない。schema0040・通常67table・依存追加なし。実Cloudflareの操作は行っていない。
+- D1凍結を外部I/O全終了や復元実行許可として扱わない。空object PUT、target manifestのstaging/削除に送信・終了記録の不足を確認し、DATABASE_RESTORE_FREEZE/HANDOFFへ次の接続点を記録した。新epoch予約・実上書き後採用・全監査/段階再開は後続。
+
+### 先行するBACKUPS・一括照合の記録
 
 - BACKUPS照合と同一D1 challengeでのD1/BLOBS/BACKUPS一括照合を追加。Node42件・workerd28件を追加。全体checkが成功し、Node925件（46file、33.40s）＋workerd2,281件（107file、1,219.92s）、計3,206件を確認。lint400file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-backups-check.log。停止拒否・通信切断fixture由来のworkerdログを含むが、全テスト結果・終了コードは成功。最終コメント修正後のlintとCLI helpも成功した。
 - 関連Node141件（4file、12.81s）と新規workerd28件（1file、13.16s）が成功。対象固定・取消し・D1-only停止変更・3回の外部予算ACK喪失・nonce/version不一致・保存/lease解放の原子的rollback・遅延create/CAS PUT・同一challengeの現在試行を検証。/tmp/ncf-backups-node.log、/tmp/ncf-backups-workerd.log。初回fixtureでRPC拒否例外が後続hookへ影響したためDO内で捕捉し、Wrangler自身が重複bindingを拒否する境界も試験へ反映して再実行した。

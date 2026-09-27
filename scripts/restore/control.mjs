@@ -61,6 +61,7 @@ export function restoreControlCalls(binding, timeoutMs = 60000) {
       "challengeBackups",
       "attestBackups",
       "verifyBindings",
+      "freeze",
       "cancel",
     ].map((method) => [
       method,

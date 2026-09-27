@@ -3,9 +3,11 @@ import { backupManifestKey } from "../../../shared/src/backupPublication";
 import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
+import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type { DatabaseRestoreSource } from "../do/controlDatabaseRestore";
 import { CONTROL_NAME } from "../do/controlName";
+import type { RestoreFreezeInput } from "../do/controlRestoreFreeze";
 import type { Env } from "../env";
 
 interface RestoreOperatorProps {
@@ -68,6 +70,9 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   cancel(epoch: number, id: string) {
     return this.#control(epoch, id).cancelDatabaseRestore(epoch, id);
+  }
+  freeze(epoch: number, id: string, targets: RestoreFreezeTargets, input?: RestoreFreezeInput) {
+    return this.#control(epoch, id).freezeDatabaseRestore(epoch, id, targets, input);
   }
   challengeBackups(
     epoch: number,

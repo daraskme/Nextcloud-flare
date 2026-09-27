@@ -25,17 +25,17 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-BACKUPSのfresh照合と、D1・BLOBS・BACKUPSを一つの停止challengeへ結び付ける`verify-bindings`を追加しました。Workerだけが生成するnonceを固定probeへ条件付き保存し、運用側S3で読んだ値・objectのETag/version・現在のD1停止状態を照合します。最後に両bucketの正確な試行IDと期限をDOで再確認するため、別の停止状態や古い試行を混ぜた結果は成功になりません。詳細は[DATABASE_RESTORE_BINDINGS](DATABASE_RESTORE_BINDINGS.md)。
+D1の書き込み凍結を追加しました。freshなD1/BLOBS/BACKUPS照合後、DOにintentを保存して修復の新規受付を閉じ、migration0040で全67通常tableの更新を拒否します。再起動・応答喪失後は同じ要求を再照会でき、取消しは停止revision/tokenを更新して遅れた凍結を拒否します。詳細は[DATABASE_RESTORE_FREEZE](DATABASE_RESTORE_FREEZE.md)。
 
-Node42件・workerd28件を追加しました。全体checkが成功し、Node925件＋workerd2,281件の計3,206件、lint400file・型・契約/設定検査・Web build・Worker dry-runを確認しました。全12操作の権限拒否・一括照合・再起動後再検証を含む非公開bindingドリルも成功しています。schema0039・通常67table・依存は維持しています。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+Node24件・workerd31件を追加しました。関連Node66件とworkerd31件、全13操作の権限拒否・保留予約による拒否・凍結・再起動・取消しの非公開bindingドリルが成功しました。全体checkが成功し、Node949件＋workerd2,312件の計3,261件、lint405file・型・契約/設定検査・Web build・Worker dry-runを確認しました。schema0040・通常67table・依存追加なし。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-次はR2/KDF/job/repairの終了証明、修復の新規受付も閉じる最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。今回の結果は接続先の短期観測であり、復旧全体の完了やD1上書き許可ではありません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了で、製品全体の完成まで継続します。
+次は外部I/Oの送信・終了記録を補い、R2/KDF/job/repairの全終了を証明する最終停止、新epoch予約、実D1上書き後の採用・全監査・段階再開です。空ファイルPUTやtarget manifestの保存/削除には最終停止へ集約する記録が不足しています。現在の凍結はD1の書込み障壁で、全外部処理の終了や上書き許可は与えません。実Cloudflare接続・復旧は未検証です。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-ユーザーの明示承認に従い、送信先はGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前0e298b2の[CI36290565335](https://github.com/daraskme/Nextcloud-flare/actions/runs/36290565335)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。共有main・remote migration・deployは更新しません。直前8a220e7の[CI36309001925](https://github.com/daraskme/Nextcloud-flare/actions/runs/36309001925)はUbuntu・Windows両分割・backup・browserの全5ジョブが成功しました。最新のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0039`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0040`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -106,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
 
-最終停止の調査結果: controlAdmission.closedWorkとcontrolBackup.drainedが確認するのはopen permit・claimed operation・未閉鎖mutation admissionで、R2/KDFの全終了証明ではない。ControlDO.#maintenanceとcontrol_maintenance_tasks、systemMutationMode/assertSystemMutationModeへの入口を調べ、既存処理の終了記録と新規dispatchの禁止を分けて接続する。recoveryAudit.RECOVERY_FINAL_QUERYはnamespace/会計の整合性まで要求する再開用の式なので、壊れたD1を上書きする前の停止証明としてそのまま代用しない。未知KDF、DAV/upload/multipart、削除・jobの結果不明を時間だけで終了扱いにしない。対象bindingのfreshな照合も最終停止前に必要。現在のSQL証言はこの許可を与えない。
+最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。createLockedFileの空object PUT、targetManifestのstaging、contentTicketの未公開manifest削除には永続的な送信/終了記録が不足している。既存upload/GC/multipart台帳とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

@@ -10,6 +10,7 @@ import { S3BackupStore } from "../backup/objectStore.mjs";
 import { verifyRestoreBackups } from "../restore/backups.mjs";
 import { verifyRestoreBindings } from "../restore/bindings.mjs";
 import { restoreControlCalls } from "../restore/control.mjs";
+import { freezeRestoreDatabase } from "../restore/freeze.mjs";
 import { restoreD1Reader } from "../restore/target.mjs";
 
 let directory, id, c, target, source, reader, control, store, probe, blobs, backups;
@@ -106,6 +107,19 @@ beforeEach(async () => {
       backups: summary(backups),
       verifiedAt: issuedAt,
       expiresAt: probe.expiresAt,
+    })),
+    freeze: vi.fn(async () => ({
+      id,
+      epoch: 2,
+      state: "frozen",
+      createdAt: issuedAt,
+      source: { kind: "time_travel", bookmark: "opaque" },
+      targets: { target, blobs: blobs.source, backups: source },
+      validator: "d1-write-freeze-v1",
+      startedAt: issuedAt,
+      frozenAt: issuedAt,
+      token: "must-not-print",
+      proof_json: "must-not-print",
     })),
     cancel: vi.fn(),
   };
@@ -253,6 +267,77 @@ it("restarts from a fresh challenge after an unknown attestation response", asyn
   expect(store.readRestoreProbe).toHaveBeenCalledTimes(2);
 });
 
+it("freezes only after all fresh binding checks and redacts the returned barrier", async () => {
+  const result = await freezeRestoreDatabase(options());
+  expect(result).toMatchObject({ state: "frozen", validator: "d1-write-freeze-v1" });
+  expect(result).not.toHaveProperty("token");
+  expect(result).not.toHaveProperty("proof_json");
+  expect(control.freeze).toHaveBeenCalledExactlyOnceWith(
+    2,
+    id,
+    { target, blobs: blobs.source, backups: source },
+    { challenge: c, blobsAttempt: blobs.attemptId, backupsAttempt: backups.attemptId },
+  );
+  expect(control.verifyBindings.mock.invocationCallOrder[0]).toBeLessThan(
+    control.freeze.mock.invocationCallOrder[0],
+  );
+  expect(control.challengeD1).toHaveBeenCalledOnce();
+});
+
+it.each(["freezing", "frozen"])(
+  "reconciles %s with the saved identity without creating new probes",
+  async (state) => {
+    const selected = await control.inspect();
+    control.inspect.mockResolvedValue({ ...selected, state });
+    expect(await freezeRestoreDatabase(options())).toMatchObject({ state: "frozen" });
+    expect(control.freeze).toHaveBeenCalledExactlyOnceWith(
+      2,
+      id,
+      { target, blobs: blobs.source, backups: source },
+      undefined,
+    );
+    expect(control.challengeD1).not.toHaveBeenCalled();
+    expect(store.readRestoreProbe).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["cancelled", "cancelling"])("refuses freeze while %s", async (state) => {
+  control.inspect.mockResolvedValue({ ...(await control.inspect()), state });
+  await expect(freezeRestoreDatabase(options())).rejects.toThrow(/freeze_conflict/);
+  expect(control.freeze).not.toHaveBeenCalled();
+});
+
+it.each([
+  { state: "freezing" },
+  { validator: "other" },
+  { frozenAt: 0 },
+  { startedAt: 0 },
+  { source: { kind: "time_travel", bookmark: "different" } },
+])(
+  "rejects invalid freeze output %j without cancelling a possibly committed barrier",
+  async (change) => {
+    control.freeze.mockResolvedValue({ ...(await control.freeze()), ...change });
+    await expect(freezeRestoreDatabase(options())).rejects.toThrow(/invalid_freeze_proof/);
+    expect(control.cancel).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["before", "after"])(
+  "detects config changes %s freezing without automatic thaw",
+  async (when) => {
+    reader.assertUnchanged.mockImplementation(async () => {
+      if (
+        (when === "before" && control.verifyBindings.mock.calls.length) ||
+        (when === "after" && control.freeze.mock.calls.length)
+      )
+        throw new Error("database_restore_target_config_changed");
+    });
+    await expect(freezeRestoreDatabase(options())).rejects.toThrow(/config_changed/);
+    expect(control.freeze).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+    expect(control.cancel).not.toHaveBeenCalled();
+  },
+);
+
 async function configuration(change = () => {}) {
   const config = join(directory, "wrangler.json"),
     operatorConfig = join(directory, "operator.json");
@@ -348,8 +433,8 @@ it.each(["redirect", "oversize", "http", "timeout"])(
   },
 );
 
-it("redacts and bounds all three new RPCs", async () => {
-  for (const method of ["challengeBackups", "attestBackups", "verifyBindings"]) {
+it("redacts and bounds backup verification and freeze RPCs", async () => {
+  for (const method of ["challengeBackups", "attestBackups", "verifyBindings", "freeze"]) {
     await expect(
       restoreControlCalls({
         [method]: async () => {
@@ -363,7 +448,7 @@ it("redacts and bounds all three new RPCs", async () => {
   }
 });
 
-it.each(["verify-backups", "verify-bindings"])(
+it.each(["verify-backups", "verify-bindings", "freeze"])(
   "requires explicit remote and target configuration for %s",
   async (command) => {
     for (const args of [

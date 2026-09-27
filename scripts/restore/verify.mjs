@@ -25,7 +25,7 @@ export function restoreStatus(value, epoch, id) {
   if (
     value?.id !== id ||
     value.epoch !== epoch ||
-    !["preparing", "cancelled"].includes(value.state) ||
+    !["preparing", "cancelled", "freezing", "frozen", "cancelling"].includes(value.state) ||
     !integer(value.createdAt)
   )
     throw new Error("database_restore_invalid_status");
