@@ -1,8 +1,12 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, expect, it } from "vitest";
-import { atomicBatch } from "../../src/db/primary";
-import { inspectRecoveryPage, type RecoveryCursor } from "../../src/do/recoveryAudit";
+import { assertExists, assertOneChange, atomicBatch } from "../../src/db/primary";
+import {
+  inspectRecoveryPage,
+  RECOVERY_FINAL_QUERY,
+  type RecoveryCursor,
+} from "../../src/do/recoveryAudit";
 import { foundationFixture } from "../fixtures/foundation";
 
 const fixtures: ReturnType<typeof foundationFixture>[] = [];
@@ -41,6 +45,28 @@ it("checks users, ledgers, roots and R2 blobs in bounded pages", async () => {
     if (++pages > 25) throw new Error("recovery_page_loop");
   }
   expect(examined).toBe(10);
+});
+
+it("asserts the complete recovery fence inside the write-freeze transaction", async () => {
+  const token = crypto.randomUUID();
+  try {
+    await atomicBatch(env.DB, [
+      assertExists(
+        RECOVERY_FINAL_QUERY +
+          " AND c.admission_revision=? AND c.admission_token IS ? AND c.backup_frozen=0 AND c.backup_token IS NULL AND c.restore_freeze_token IS NULL AND strftime('%s','now')*1000+1000<?",
+        [1, 0, null, Date.now() + 60000],
+      ),
+      { sql: "UPDATE control SET restore_freeze_token=? WHERE singleton=1", values: [token] },
+      assertOneChange,
+    ]);
+    expect(
+      await env.DB.prepare("SELECT restore_freeze_token FROM control").first(
+        "restore_freeze_token",
+      ),
+    ).toBe(token);
+  } finally {
+    await env.DB.prepare("UPDATE control SET restore_freeze_token=NULL").run();
+  }
 });
 
 it("detects source rows missing their credential registry entries", async () => {

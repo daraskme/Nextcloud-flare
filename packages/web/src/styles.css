@@ -869,6 +869,18 @@ h1 {
 .shared-access {
   margin: 0 0 18px;
 }
+.shared-actions,
+.shared-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.shared-actions {
+  margin: 0 0 18px;
+}
+.shared-row-actions {
+  flex-shrink: 0;
+}
 .share-row {
   display: flex;
   flex-wrap: wrap;

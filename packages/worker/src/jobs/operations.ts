@@ -1,10 +1,17 @@
 import type { Operation } from "@next-cloud-flare/shared/contracts";
+import type { SelectedShare } from "../../../shared/src/shares";
 import {
   type AuthorizedNode,
   authorizationAssertion,
   authorizeNode,
   type Principal,
 } from "../auth/authorize";
+import {
+  freezePrincipal,
+  principalSelection,
+  type SelectedShareRecord,
+  storedPrincipal,
+} from "../auth/selectedShare";
 import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 
@@ -17,7 +24,7 @@ export interface OperationIntent {
   readonly digest: string;
   readonly operands: string;
 }
-export interface OperationRow {
+export interface OperationRow extends SelectedShareRecord {
   op_id: string;
   principal_kind: Principal["kind"];
   principal_id: string;
@@ -84,6 +91,16 @@ export function principalId(principal: Principal): string {
       : principal.user_id;
 }
 
+/** Preserve legacy digests while binding selected writes to one share version. */
+export function operationDigest(
+  spaceId: string,
+  kind: Operation,
+  body: unknown,
+  share?: SelectedShare,
+) {
+  return digestJson({ spaceId, kind, body, ...(share ? { share } : {}) });
+}
+
 /** The key selects a credential-local slot; the entire canonical intent is compared separately. */
 export async function operationIntent(
   principal: Principal,
@@ -94,13 +111,14 @@ export async function operationIntent(
   operands: Record<string, string>,
 ): Promise<OperationIntent> {
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new Error("invalid_idempotency_key");
+  principal = freezePrincipal(principal);
   const actor = principalId(principal);
   const id = `op_${await digestJson([principal.kind, actor, principal.credential_id, key])}`;
-  const digest = await digestJson({ spaceId, kind, body });
+  const digest = await operationDigest(spaceId, kind, body, principalSelection(principal));
   const encoded = canonicalJson(operands, 8192);
   return Object.freeze({
     id,
-    principal: Object.freeze({ ...principal }),
+    principal,
     principalId: actor,
     spaceId,
     kind,
@@ -117,7 +135,10 @@ export async function operationRow(db: D1Database, id: string): Promise<Operatio
 }
 
 function sameIntent(row: OperationRow, intent: OperationIntent, steps: number): boolean {
+  const share = principalSelection(intent.principal);
   return (
+    row.selected_share_id === (share?.id ?? null) &&
+    row.selected_share_version === (share?.version ?? null) &&
     row.principal_kind === intent.principal.kind &&
     row.principal_id === intent.principalId &&
     row.credential_id === intent.principal.credential_id &&
@@ -143,9 +164,11 @@ export async function findOperationIntent(
 
 export function assertOperationClaim(claim: OperationClaim): SqlStatement {
   const { intent, permit } = claim;
+  const share = principalSelection(intent.principal);
   return assertExists(
     `SELECT 1 FROM operations WHERE op_id=? AND state='claimed' AND credential_id=? AND credential_version IS ? AND principal_kind=? AND principal_id=?
-    AND space_id=? AND kind=? AND request_digest=? AND epoch=? AND permit_id=? AND permit_expires_at=? AND claimed_expires_at=? AND expected_steps=? AND operands_json=?`,
+    AND space_id=? AND kind=? AND request_digest=? AND epoch=? AND permit_id=? AND permit_expires_at=? AND claimed_expires_at=? AND expected_steps=? AND operands_json=?
+    AND selected_share_id IS ? AND selected_share_version IS ?`,
     [
       intent.id,
       intent.principal.credential_id,
@@ -161,6 +184,8 @@ export function assertOperationClaim(claim: OperationClaim): SqlStatement {
       permit.expires_at,
       claim.steps,
       intent.operands,
+      share?.id ?? null,
+      share?.version ?? null,
     ],
   );
 }
@@ -171,6 +196,8 @@ export function validateClaimAuthorization(
   authorized: AuthorizedNode,
   steps: number,
 ): SqlStatement {
+  const selected = principalSelection(intent.principal);
+  const proved = principalSelection(authorized.principal);
   const operands = JSON.parse(intent.operands) as {
     parentId?: unknown;
     overwriteTargetId?: unknown;
@@ -231,6 +258,8 @@ export function validateClaimAuthorization(
       authorized.node.space_id === intent.spaceId);
   if (
     !targetMatches ||
+    selected?.id !== proved?.id ||
+    selected?.version !== proved?.version ||
     authorized.principal.kind !== intent.principal.kind ||
     principalId(authorized.principal) !== intent.principalId ||
     principalId(intent.principal) !== intent.principalId ||
@@ -259,6 +288,7 @@ export async function claimOperation(
   steps: number,
 ): Promise<{ kind: "claimed"; claim: OperationClaim } | { kind: "terminal"; row: OperationRow }> {
   const authority = validateClaimAuthorization(intent, permit, authorized, steps);
+  const share = principalSelection(intent.principal);
   const claim: OperationClaim = Object.freeze({ intent, permit, steps });
   const existing = await findOperationIntent(db, intent, steps);
   if (existing && existing.state !== "claimed") {
@@ -271,8 +301,8 @@ export async function claimOperation(
       authority,
       {
         sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,
-          permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000) ON CONFLICT(op_id) DO NOTHING`,
+          permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,selected_share_id,selected_share_version,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000) ON CONFLICT(op_id) DO NOTHING`,
         values: [
           intent.id,
           intent.principal.kind,
@@ -288,6 +318,8 @@ export async function claimOperation(
           permit.expires_at,
           steps,
           intent.operands,
+          share?.id ?? null,
+          share?.version ?? null,
         ],
       },
       assertOperationClaim(claim),
@@ -346,6 +378,7 @@ export async function lookupOperation(
   )
     return null;
   try {
+    principal = storedPrincipal(principal, row);
     const operands = JSON.parse(row.operands_json) as {
       parentId?: unknown;
       uploadId?: unknown;
@@ -361,6 +394,7 @@ export async function lookupOperation(
       const bound = await primary(db)
         .prepare(`SELECT 1 FROM uploads WHERE id=? AND completion_op_id=?
         AND credential_id=? AND epoch=? AND space_id=? AND parent_id=? AND target_id IS ?
+        AND selected_share_id IS ? AND selected_share_version IS ?
         AND (?<>'committed' OR state='completed')`)
         .bind(
           operands.uploadId,
@@ -370,6 +404,8 @@ export async function lookupOperation(
           row.space_id,
           operands.parentId,
           typeof operands.nodeId === "string" ? operands.nodeId : null,
+          row.selected_share_id,
+          row.selected_share_version,
           row.state,
         )
         .first();

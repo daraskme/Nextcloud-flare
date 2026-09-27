@@ -1,5 +1,6 @@
 import { problem } from "@next-cloud-flare/shared/errors";
-import type { Principal } from "../auth/authorize";
+import { selectedShare } from "../../../shared/src/shares";
+import { authorizeNode, type Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
 import type { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
@@ -259,10 +260,12 @@ export async function handleUploadHttp(
             "declared_size",
             "targetId",
             "targetRevision",
+            "share",
           ].includes(key),
       ) ||
       typeof body.spaceId !== "string" ||
-      typeof body.parentId !== "string" ||
+      (typeof body.parentId !== "string" &&
+        !(body.parentId === undefined && "share" in body && typeof body.targetId === "string")) ||
       typeof body.name !== "string" ||
       typeof body.declared_size !== "number" ||
       (body.targetId !== undefined && typeof body.targetId !== "string") ||
@@ -270,11 +273,23 @@ export async function handleUploadHttp(
     )
       return problem(400, "bad_request");
     if (body.mode !== "single" && body.mode !== "multipart") return problem(400, "bad_request");
+    if ("share" in body) principal = { ...principal, selected_share: selectedShare(body.share) };
+    // A directly shared file hides its parent ID. Resolve that operand under the selected grant.
+    let parentId = body.parentId as string | undefined;
+    if (parentId === undefined) {
+      const target = await authorizeNode(env.DB, principal, {
+        operation: "node.content.write",
+        spaceId: body.spaceId,
+        nodeId: body.targetId as string,
+      });
+      if (target.operation !== "node.content.write") throw new Error("authorization_denied");
+      parentId = target.parentId;
+    }
     const input = {
       principal,
       requestId: key,
       spaceId: body.spaceId,
-      parentId: body.parentId,
+      parentId,
       name: body.name,
       declaredSize: body.declared_size,
       ...(typeof body.targetId === "string" ? { targetId: body.targetId } : {}),

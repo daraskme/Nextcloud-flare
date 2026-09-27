@@ -31,11 +31,12 @@ import {
   X,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { SelectedShare } from "../../shared/src/shares";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
-import { SharedWorkspace } from "./features/shares/SharedWorkspace";
+import { type SharedActionScope, SharedWorkspace } from "./features/shares/SharedWorkspace";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import {
@@ -264,12 +265,14 @@ function OperationDialog({
   action,
   account,
   parentId,
+  share,
   onClose,
   refresh,
 }: {
   action: Exclude<Action, { kind: "overwrite" | "share" }>;
   account: Account;
   parentId: string;
+  share?: SelectedShare;
   onClose: () => void;
   refresh: () => void;
 }) {
@@ -298,7 +301,7 @@ function OperationDialog({
     setFailure("");
     let path = "/api/v1/nodes",
       method = "POST",
-      body: Record<string, unknown> = { spaceId: account.spaceId };
+      body: Record<string, unknown> = { spaceId: account.spaceId, ...(share ? { share } : {}) };
     if (action.kind === "create") body = { ...body, kind: "folder", parentId, name };
     else if ("node" in action) {
       path += `/${encodeURIComponent(action.node.id)}`;
@@ -600,6 +603,7 @@ export function App() {
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
   const searching = !trash && !shared && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
+  const [actionScope, setActionScope] = useState<SharedActionScope | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
   useEffect(() => setStatsScope(null), [pathname]);
   const [notice, setNotice] = useState("");
@@ -641,7 +645,19 @@ export function App() {
     retry: false,
   });
   const refresh = () => {
-    for (const key of ["children", "trash", "path", "picker", "search", "stats"])
+    for (const key of [
+      "children",
+      "trash",
+      "path",
+      "picker",
+      "search",
+      "stats",
+      "received-shares",
+      "received-share",
+      "shared-node",
+      "shared-path",
+      "shared-children",
+    ])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
   };
@@ -684,6 +700,7 @@ export function App() {
     setSearchTerm(null);
     setSidebar(false);
     setAction(null);
+    setActionScope(null);
   }, [pathname]);
   useEffect(() => {
     const listener = (event: BeforeUnloadEvent) => {
@@ -708,12 +725,13 @@ export function App() {
       bc.close();
     };
   }, [query]);
-  const act = (next: Action) => {
+  const act = (next: Action, scope: SharedActionScope | null = null) => {
     if (sessionStorage.getItem(PENDING_KEY)) {
       setNotice("未確認の操作があります。結果を確認してから続けてください。");
       return;
     }
     setAction(next);
+    setActionScope(scope);
   };
   const addFiles = async (files: FileList | null) => {
     if (!files || !me || trash || shared) return;
@@ -1002,7 +1020,13 @@ export function App() {
               )}
             </div>
           ) : shared ? (
-            <SharedWorkspace account={me} shareId={sharedPath?.[1]} nodeId={sharedPath?.[2]} />
+            <SharedWorkspace
+              account={me}
+              shareId={sharedPath?.[1]}
+              nodeId={sharedPath?.[2]}
+              onAction={act}
+              writesBlocked={!!recovery}
+            />
           ) : (
             <>
               {!trash && statsScope === parentId && (
@@ -1227,7 +1251,15 @@ export function App() {
           key={JSON.stringify(action)}
           node={action.node}
           account={me}
-          parentId={action.node.parentId ?? parentId}
+          parentId={actionScope ? actionScope.parentId : (action.node.parentId ?? parentId)}
+          {...(actionScope
+            ? {
+                shared: {
+                  spaceId: actionScope.share.spaceId,
+                  share: { id: actionScope.share.id, version: actionScope.share.version },
+                },
+              }
+            : {})}
           onClose={() => setAction(null)}
         />
       )}
@@ -1243,8 +1275,11 @@ export function App() {
         <OperationDialog
           key={JSON.stringify(action)}
           action={action}
-          account={me}
-          parentId={parentId}
+          account={actionScope ? { ...me, spaceId: actionScope.share.spaceId } : me}
+          parentId={actionScope?.parentId ?? parentId}
+          {...(actionScope
+            ? { share: { id: actionScope.share.id, version: actionScope.share.version } }
+            : {})}
           onClose={() => {
             setAction(null);
             try {

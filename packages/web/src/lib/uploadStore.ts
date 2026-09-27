@@ -1,9 +1,12 @@
+import type { SelectedShare } from "../../../shared/src/shares";
+
 export interface UploadRecord {
   localId: string;
   accountId: string;
   epoch: number;
   spaceId: string;
-  parentId: string;
+  parentId: string | null;
+  share?: SelectedShare;
   name: string;
   sourceName?: string;
   target?: { id: string; revision: number; blobId: string };

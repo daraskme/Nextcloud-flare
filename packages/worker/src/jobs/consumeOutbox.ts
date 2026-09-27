@@ -1,4 +1,5 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import { type SelectedShareRecord, storedPrincipal } from "../auth/selectedShare";
 import { assertOneChange, primary } from "../db/primary";
 import {
   acquireSystemMutation,
@@ -9,7 +10,7 @@ import {
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
 
-interface EventRow {
+interface EventRow extends SelectedShareRecord {
   state: string;
   kind: string;
   payload_ref: string;
@@ -31,7 +32,7 @@ async function eventRow(db: D1Database, id: string): Promise<EventRow | null> {
   return primary(db)
     .prepare(`SELECT b.state,b.kind,b.payload_ref,b.epoch,o.op_id,o.kind AS op_kind,
       o.state AS op_state,o.principal_kind,o.principal_id,o.credential_id,
-      o.credential_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      o.credential_version,o.selected_share_id,o.selected_share_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
       JOIN spaces s ON s.id=o.space_id
       WHERE b.outbox_id=?`)
     .bind(id)
@@ -39,25 +40,35 @@ async function eventRow(db: D1Database, id: string): Promise<EventRow | null> {
 }
 
 function savedPrincipal(row: EventRow): Principal | null {
-  if (!row.credential_id) return null;
-  if (row.principal_kind === "user" || row.principal_kind === "app_password") {
-    return {
-      kind: row.principal_kind,
-      user_id: row.principal_id,
-      credential_id: row.credential_id,
-      epoch: row.epoch,
-    };
+  try {
+    if (!row.credential_id) return null;
+    if (row.principal_kind === "user" || row.principal_kind === "app_password") {
+      return storedPrincipal(
+        {
+          kind: row.principal_kind,
+          user_id: row.principal_id,
+          credential_id: row.credential_id,
+          epoch: row.epoch,
+        },
+        row,
+      );
+    }
+    if (row.principal_kind === "link_share" && row.credential_version !== null) {
+      return storedPrincipal(
+        {
+          kind: "link_share",
+          share_id: row.principal_id,
+          share_version: row.credential_version,
+          credential_id: row.credential_id,
+          epoch: row.epoch,
+        },
+        row,
+      );
+    }
+    return null;
+  } catch {
+    return null;
   }
-  if (row.principal_kind === "link_share" && row.credential_version !== null) {
-    return {
-      kind: "link_share",
-      share_id: row.principal_id,
-      share_version: row.credential_version,
-      credential_id: row.credential_id,
-      epoch: row.epoch,
-    };
-  }
-  return null;
 }
 
 /** Complete a node event only after a fenced D1 claim and current authorization. */

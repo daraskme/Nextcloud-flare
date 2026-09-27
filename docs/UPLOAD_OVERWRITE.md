@@ -26,4 +26,4 @@ namespaceへの確定が成功して応答だけ失われた場合は、保存�
 
 上書き後の内容確認で発見した配信枠の修正は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)を参照。全体の成否・件数は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)が正本。
 
-公開/内部共有、File System Access handle、大容量・低速網・実Access/R2と複数browserのgateは残る。今回のreceipt回収は同じ親の認可済み対象のrevision変更を扱う。対象の移動・削除、credential失効、期限切れなどで再確認できない未完了uploadはserverの期限切れ回収・停止中repairに従う。未知の予約をローカル記録だけで解放したことにはしない。
+[内部共有の上書き](SHARED_WORKSPACE.md)は選択した共有を保存して接続済み。公開共有、File System Access handle、大容量・低速網・実Access/R2と複数browserのgateは残る。今回のreceipt回収は同じ親の認可済み対象のrevision変更を扱う。対象の移動・削除、credential/共有失効、期限切れなどで再確認できない未完了uploadはserverの期限切れ回収・停止中repairに従う。未知の予約をローカル記録だけで解放したことにはしない。

@@ -3,17 +3,19 @@ import { type FormEvent, useId, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/ui/dialog";
 import { type Account, ApiError, errorMessage, type FileNode, formatBytes } from "../../lib/api";
-import { uploads } from "./manager";
+import { type SharedUploadScope, uploads } from "./manager";
 
 export function OverwriteDialog({
   node,
   account,
   parentId,
+  shared,
   onClose,
 }: {
   node: FileNode;
   account: Account;
-  parentId: string;
+  parentId: string | null;
+  shared?: SharedUploadScope;
   onClose: () => void;
 }) {
   const [file, setFile] = useState<File>();
@@ -27,7 +29,7 @@ export function OverwriteDialog({
     setPending(true);
     setFailure("");
     try {
-      await uploads.enqueue(file, account, parentId, node);
+      await uploads.enqueue(file, account, parentId, node, shared);
       onClose();
     } catch (error) {
       setFailure(

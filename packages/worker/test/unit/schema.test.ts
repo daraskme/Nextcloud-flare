@@ -30,6 +30,58 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
+it("keeps selected write authority immutable and requires matching upload completion authority", () => {
+  db.exec(`INSERT INTO shares(id,owner_id,root_node_id,kind,created_at,version) VALUES('selected','f-u','f-d','internal',1,2);
+    INSERT INTO permits(permit_id,space_id,epoch,expires_at,state) VALUES('permit','f-s',1,10000,'open');
+    INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES('res','f-u',3,'reserved',10000,1);`);
+  const operation =
+    db.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,selected_share_id,selected_share_version)
+    VALUES(?,?,'f-u','as:f-session','f-s','upload.complete','claimed','digest',1,'permit',10000,10000,0,1,1,?,?)`);
+  operation.run("legacy", "user", null, null);
+  operation.run("scoped", "user", "selected", 1);
+  operation.run("current", "user", "selected", 2);
+  for (const [kind, id, version] of [
+    ["user", "selected", null],
+    ["user", null, 1],
+    ["user", "selected", 3],
+    ["app_password", "selected", 1],
+  ] as const)
+    expect(() => operation.run("invalid", kind, id, version)).toThrow("invalid_operation_share");
+  expect(() =>
+    db.exec(
+      "UPDATE operations SET selected_share_id='selected',selected_share_version=1 WHERE op_id='legacy'",
+    ),
+  ).toThrow("immutable_operation_share");
+  expect(() =>
+    db.exec("UPDATE operations SET selected_share_version=2 WHERE op_id='scoped'"),
+  ).toThrow("immutable_operation_share");
+  const upload =
+    db.prepare(`INSERT INTO uploads(id,source,owner_id,space_id,parent_id,blob_id,credential_id,reservation_id,mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,selected_share_id,selected_share_version,completion_op_id)
+    VALUES(?,'private','f-u','f-s','f-d','f-b','as:f-session','res','single','created',3,'hash',1,1,10000,1,?,?,?)`);
+  for (const [id, version] of [
+    ["selected", null],
+    [null, 1],
+    ["selected", 3],
+  ] as const)
+    expect(() => upload.run("invalid", id, version, null)).toThrow("invalid_upload_share");
+  expect(() => upload.run("mismatched", "selected", 1, "legacy")).toThrow(
+    "upload_operation_share_mismatch",
+  );
+  upload.run("upload", "selected", 1, "scoped");
+  expect(() =>
+    db.exec(
+      "UPDATE uploads SET selected_share_id=NULL,selected_share_version=NULL WHERE id='upload'",
+    ),
+  ).toThrow("immutable_upload_share");
+  expect(() => db.exec("UPDATE uploads SET completion_op_id='current' WHERE id='upload'")).toThrow(
+    "upload_operation_share_mismatch",
+  );
+  db.exec("UPDATE shares SET version=3,disabled_at=1 WHERE id='selected'");
+  expect(db.prepare("SELECT selected_share_version FROM uploads WHERE id='upload'").get()).toEqual({
+    selected_share_version: 1,
+  });
+});
+
 it("preserves legacy shares and freezes new internal mount names without blocking revocation", () => {
   const insert = db.prepare(
     "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at,mount_name,mount_name_ci) VALUES(?,'f-u','f-d',?,1,?,?)",

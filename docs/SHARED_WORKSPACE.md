@@ -1,6 +1,6 @@
-# 受信した共有の閲覧
+# 受信した共有の閲覧と編集
 
-更新: 2026-09-28。内部共有の受信一覧・フォルダー閲覧・ファイル配信を接続した段階。共有への編集・upload、DAV Shared、公開linkは後続。
+更新: 2026-09-28。内部共有の受信一覧・フォルダー閲覧・ファイル配信に加え、edit共有へのフォルダー作成・改名・単一/分割upload・上書きを接続。DAV Shared、公開link、共有内の移動・削除は後続。
 
 ## 画面とAPI
 
@@ -20,14 +20,30 @@ nodeReadは認可の再検査と同じD1 batchでshare root/owner/versionを固�
 
 画面のquery keyはaccount/epoch/share/version/nodeを含む。再検査中・認可拒否後は以前の一覧やbreadcrumbを隠し、手動更新で現在のshare詳細から読み直す。既に表示済みの情報を遠隔消去する仕組みではなく、画面更新・再表示・新しいAPI要求時に検査する。タブへ戻るだけでは自動更新しない。
 
+## 編集と再開
+
+edit共有のフォルダーでは新規フォルダーとuploadを表示し、子項目の改名とfile上書きを許可する。共有ルート自体の改名は許可しない。read共有には書込みボタンを表示しない。成功後は共有一覧・詳細・node/path/childrenを読み直す。
+
+`POST /api/v1/nodes`、`PATCH /api/v1/nodes/:id`、`POST /api/v1/uploads`のJSONに`share: { id, version }`を指定する。直接共有したfileを上書きする場合は`parentId`を送らず、選択した共有でtargetを認可してserver内で親を解決する。親IDをupload receiptへ返さない。容量はコンテンツ所有者へ計上する。
+
+migration `0049_selected_share_writes.sql`はoperations/uploadsへnullableな`selected_share_id`・`selected_share_version`を追加する。pair、internal share、所有者、principal/sourceの整合性を検査し、保存後のscope差替えを禁止する。completion operationとuploadのpairも一致を要求する。過去の選択なし記録はNULLのまま、operation IDと従来のrequest digestを維持する。通常table数は69のままで依存追加はない。
+
+選択したshareはcanonical request digestへ含める。同じIdempotency-Keyで選択を省略・変更した要求は別intentとして拒否する。operation照会、Outbox、UploadDO、R2書込みの許可、upload公開・結果照合・後始末は保存済みscopeを復元して使用する。別のedit grantが残っていても停止した共有を代替しない。復旧検査はscope pairとupload/operationの対応を検査するが、過去の正常な記録に対して現在のgrantを要求しない。
+
+UIの未確認操作は共有付きの元body/keyをsessionStorageへ保存する。uploadのIndexedDB記録には受信者のaccount/epoch、所有者のspace、選択したshareと上書き対象revision/blobを保持する。reload後も同じ記録を使い、分割済みpartは再送しない。直接共有されたfileでは保存するparentIdもnullのまま。共有停止やversion変更後の送信・確定・再開は拒否し、未確定の容量は既存のserver回収処理へ残す。
+
+0049適用後に選択付きwriteを受け付けたDBは、選択情報を読まない旧Workerへそのまま戻さない。旧版はuploadやOutboxのscopeを復元できないため、rollback時はmaintenanceを保ち、選択情報を扱うWorkerを再配備・検証する。新しい列を削除して旧版へ合わせることはしない。remote migration・配備・rollback演習は未実施。
+
 ## 検証
 
 従来のpathが共有ファイルより上の非共有フォルダー名を返すことを、実D1テストで修正前に再現した。新規workerd14件は共有ルートでのparent遮蔽、read共有から別edit共有への権限代替拒否、停止/version/root/credential/recipient/owner/祖先trash/maintenance/epochのbatch直前競合、201件paginationとcursor選択束縛、HTTP query境界を検証する。
 
 ブラウザーでは所有者と受信者を独立したAccess sessionにし、実APIで共有を作成する。mobileで一覧→子フォルダー→reload→実bytesのダウンロード→所有者の共有停止→発行済みcontent Cookieの拒否・一覧更新を確認する。単体file共有、祖先名の非表示、受信者の共有停止拒否、範囲外への直接URLも確認する。test-only identityはapp host限定Cookieで切り替え、content originのCORS条件は変更しない。最新結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
+編集の実D1試験では、別grantへの代替拒否、共有付きoperationの再送・照会・Outbox、commit直前とnative R2受付直前の失効、単一/分割uploadの再送・停止・所有者容量、単体file上書きのparent非公開を確認した。保存済みscopeの不正pair、完了operationとの不一致、停止済み共有に属する正常な過去記録も復旧検査で区別する。復旧freezeの全SQLを実D1の確定batchで実行し、式深さ上限を超えないことを回帰試験に含める。
+
+編集のbrowser試験では、folder作成の応答喪失後にreloadして同じkey/bodyで照会・再送する経路、改名とmobile表示、96MiBの分割uploadを同じattemptで再開して送信済みpartを省略する経路、直接file上書きのparent非公開・完了応答喪失後の非再送を確認した。全browser27件が成功している。
+
 ## 次の実装
 
-edit共有のfolder作成・改名・uploadをUIへ接続する前に、選択したshareをnamespace operationのcanonical request、再送/照会、Outboxの保存済みprincipal、復旧検査、UploadDOの権限照合まで保持する必要がある。現状のbackground復元がkind/user/credentialだけを再構成する箇所へ、選択したshareの処理を渡さない。共有選択が失われた状態で別grantに切り替わることを防ぐ試験が必要。
-
-DAVの固定mount解決、旧NULL mount方針、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証も残る。今回の受信画面だけでPhase 6完了とはしない。schema0048・通常69tableのままで、migration・依存追加はない。
+共有内の移動・削除、DAVの固定mount解決、旧NULL mount方針、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。

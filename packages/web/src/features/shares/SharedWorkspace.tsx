@@ -1,10 +1,32 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, File, Folder, LoaderCircle, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import {
+  ChevronRight,
+  File,
+  Folder,
+  FolderPlus,
+  LoaderCircle,
+  Pencil,
+  RefreshCw,
+  Upload,
+} from "lucide-react";
+import { useRef, useState } from "react";
 import type { InternalShare } from "../../../../shared/src/shares";
 import { Button } from "../../components/ui/button";
 import { type Account, api, errorMessage, type FileNode, formatBytes } from "../../lib/api";
+import { uploads } from "../uploads/manager";
+
+export interface SharedActionScope {
+  share: InternalShare;
+  parentId: string | null;
+}
+type SharedActions = {
+  onAction: (
+    action: { kind: "create" } | { kind: "rename" | "overwrite"; node: FileNode },
+    scope: SharedActionScope,
+  ) => void;
+  writesBlocked: boolean;
+};
 
 function Loading() {
   return (
@@ -95,15 +117,20 @@ function SharedContent({
   share,
   nodeId,
   refresh,
+  onAction,
+  writesBlocked,
 }: {
   account: Account;
   share: InternalShare;
   nodeId: string | undefined;
   refresh: () => void;
-}) {
+} & SharedActions) {
   const selected = { id: share.id, version: share.version };
   const id = nodeId ?? share.rootNodeId;
   const [failure, setFailure] = useState<string | null>(null);
+  const [uploadFailure, setUploadFailure] = useState("");
+  const [adding, setAdding] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
   const node = useQuery({
     queryKey: ["shared-node", account.id, account.epoch, share.id, share.version, id],
     queryFn: ({ signal }) => api.node(id, selected, signal),
@@ -129,6 +156,23 @@ function SharedContent({
   const error = failure || node.error || path.error || (folder && children.error);
   const loading =
     node.isFetching || path.isFetching || (folder && (children.isPending || children.isRefetching));
+  const editable = share.role === "edit" && !error && !loading;
+  const addFiles = async (files: FileList | null) => {
+    if (!files || !editable || !folder || writesBlocked || adding) return;
+    setAdding(true);
+    setUploadFailure("");
+    try {
+      for (const file of Array.from(files))
+        await uploads.enqueue(file, account, id, undefined, {
+          spaceId: share.spaceId,
+          share: selected,
+        });
+    } catch (error) {
+      setUploadFailure(error instanceof Error ? error.message : "アップロードを開始できません。");
+    } finally {
+      setAdding(false);
+    }
+  };
   const open = (file: FileNode) => {
     const target = window.open("about:blank", "_blank");
     if (!target) {
@@ -174,7 +218,11 @@ function SharedContent({
         <div>
           <p className="eyebrow">SHARED WITH YOU</p>
           <h1>{!error && !loading ? node.data?.name || "共有ドライブ" : "共有された項目"}</h1>
-          <p>共有されたファイルを開いて保存できます。</p>
+          <p>
+            {share.role === "edit"
+              ? "共有された項目の追加・名前変更・上書きができます。"
+              : "共有されたファイルを開いて保存できます。"}
+          </p>
         </div>
         <Button disabled={loading} onClick={refresh}>
           <RefreshCw size={16} />
@@ -188,6 +236,38 @@ function SharedContent({
       ) : (
         <>
           <p className="shared-access">共有の権限：{share.role === "read" ? "閲覧" : "編集"}</p>
+          {editable && folder && (
+            <div className="shared-actions">
+              <Button
+                disabled={writesBlocked}
+                onClick={() => onAction({ kind: "create" }, { share, parentId: id })}
+              >
+                <FolderPlus size={16} />
+                新規フォルダー
+              </Button>
+              <Button disabled={writesBlocked || adding} onClick={() => input.current?.click()}>
+                <Upload size={16} />
+                アップロード
+              </Button>
+            </div>
+          )}
+          {uploadFailure && (
+            <p className="form-error" role="alert">
+              {uploadFailure}
+            </p>
+          )}
+          <input
+            ref={input}
+            type="file"
+            hidden
+            multiple
+            aria-label="共有先にアップロードするファイル"
+            disabled={!editable || writesBlocked || adding}
+            onChange={(event) => {
+              void addFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
           <div className="shared-list" aria-label="共有フォルダーの項目">
             {files.map((file) => (
               <article className="shared-row" key={file.id}>
@@ -207,7 +287,44 @@ function SharedContent({
                     <span>{formatBytes(file.size)} · 開く・保存</span>
                   </button>
                 )}
-                <ChevronRight aria-hidden="true" size={18} />
+                {editable ? (
+                  <div className="shared-row-actions">
+                    {file.id !== share.rootNodeId && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`${file.name}の名前を変更`}
+                        disabled={writesBlocked}
+                        onClick={() =>
+                          onAction(
+                            { kind: "rename", node: file },
+                            { share, parentId: folder ? id : (file.parentId ?? null) },
+                          )
+                        }
+                      >
+                        <Pencil size={16} />
+                      </Button>
+                    )}
+                    {file.kind === "file" && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`${file.name}を上書き`}
+                        disabled={writesBlocked}
+                        onClick={() =>
+                          onAction(
+                            { kind: "overwrite", node: file },
+                            { share, parentId: folder ? id : (file.parentId ?? null) },
+                          )
+                        }
+                      >
+                        <Upload size={16} />
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <ChevronRight aria-hidden="true" size={18} />
+                )}
               </article>
             ))}
           </div>
@@ -236,11 +353,13 @@ function SharedItem({
   account,
   shareId,
   nodeId,
+  onAction,
+  writesBlocked,
 }: {
   account: Account;
   shareId: string;
   nodeId: string | undefined;
-}) {
+} & SharedActions) {
   const detail = useQuery({
     queryKey: ["received-share", account.id, account.epoch, shareId],
     queryFn: ({ signal }) => api.share(shareId, signal),
@@ -267,6 +386,8 @@ function SharedItem({
       share={share}
       nodeId={nodeId}
       refresh={() => void detail.refetch()}
+      onAction={onAction}
+      writesBlocked={writesBlocked}
     />
   );
 }
@@ -274,13 +395,21 @@ export function SharedWorkspace({
   account,
   shareId,
   nodeId,
+  onAction,
+  writesBlocked,
 }: {
   account: Account;
   shareId: string | undefined;
   nodeId: string | undefined;
-}) {
+} & SharedActions) {
   return shareId ? (
-    <SharedItem account={account} shareId={shareId} nodeId={nodeId} />
+    <SharedItem
+      account={account}
+      shareId={shareId}
+      nodeId={nodeId}
+      onAction={onAction}
+      writesBlocked={writesBlocked}
+    />
   ) : (
     <ReceivedShares account={account} />
   );

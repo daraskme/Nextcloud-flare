@@ -1,3 +1,4 @@
+import { type SelectedShareRecord, storedSelection } from "../auth/selectedShare";
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
@@ -43,7 +44,7 @@ interface BlobRow {
   removed_at: number | null;
 }
 
-interface OutboxRow {
+interface OutboxRow extends SelectedShareRecord {
   outbox_id: string;
   kind: string;
   payload_ref: string;
@@ -56,6 +57,7 @@ interface OutboxRow {
   operation_state: string | null;
   operation_epoch: number | null;
   operation_kind: string | null;
+  principal_kind: string | null;
   node_step_id: string | null;
   operands_json: string | null;
   result_json: string | null;
@@ -245,10 +247,29 @@ export async function rebuildRecoverySearchFts(
   await inspectRecoverySearchFts(db, epoch);
 }
 
-/** Also asserted inside the admission transaction, not just observed before it. */
+/** Also asserted inside the admission transaction. Group predicates to stay below D1's
+ * expression-depth limit after callers wrap this query in an assertion and add stop fences. */
 export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=?
       AND c.maintenance=1 AND c.gc_paused=1
-      AND c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
+      AND (NOT EXISTS(SELECT 1 FROM operations o
+        WHERE (o.selected_share_id IS NOT NULL OR o.selected_share_version IS NOT NULL)
+        AND (o.selected_share_id IS NULL OR o.selected_share_version IS NULL OR o.principal_kind<>'user'
+          OR length(o.selected_share_id) NOT BETWEEN 1 AND 128 OR o.selected_share_id GLOB '*[^A-Za-z0-9_-]*'
+          OR o.selected_share_version NOT BETWEEN 1 AND 9007199254740991
+          OR NOT EXISTS(SELECT 1 FROM shares sh JOIN spaces sp ON sp.id=o.space_id
+            WHERE sh.id=o.selected_share_id AND sh.kind='internal' AND sh.owner_id=sp.owner_id
+              AND o.selected_share_version BETWEEN 1 AND sh.version)))
+      AND NOT EXISTS(SELECT 1 FROM uploads u
+        WHERE (u.selected_share_id IS NOT NULL OR u.selected_share_version IS NOT NULL)
+        AND (u.selected_share_id IS NULL OR u.selected_share_version IS NULL OR u.source<>'private'
+          OR length(u.selected_share_id) NOT BETWEEN 1 AND 128 OR u.selected_share_id GLOB '*[^A-Za-z0-9_-]*'
+          OR u.selected_share_version NOT BETWEEN 1 AND 9007199254740991
+          OR NOT EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.selected_share_id AND sh.kind='internal'
+            AND sh.owner_id=u.owner_id AND u.selected_share_version BETWEEN 1 AND sh.version)))
+      AND NOT EXISTS(SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
+        WHERE o.selected_share_id IS NOT u.selected_share_id
+          OR o.selected_share_version IS NOT u.selected_share_version))
+      AND (c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))
@@ -271,14 +292,14 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=s.source AND p.epoch=c.epoch AND p.phase='idle'))
       AND NOT EXISTS(SELECT 1 FROM multipart_bucket_handles h WHERE h.state='quarantined'
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=h.source)
-        OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id))
-      AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+        OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id)))
+      AND (NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
       AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
       AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')
       AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
-        AND claim_expires_at>strftime('%s','now')*1000)
+        AND claim_expires_at>strftime('%s','now')*1000))
       AND ((c.bootstrap_done_at IS NULL AND c.bootstrap_iss IS NULL AND c.bootstrap_sub IS NULL
         AND NOT EXISTS(SELECT 1 FROM users) AND NOT EXISTS(SELECT 1 FROM spaces))
         OR (c.bootstrap_done_at IS NOT NULL AND length(c.bootstrap_iss)>0 AND length(c.bootstrap_sub)>0
@@ -624,7 +645,7 @@ export async function inspectRecoveryPage(
     const rows = await primary(db)
       .prepare(`SELECT b.outbox_id,b.kind,b.payload_ref,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
         b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch,
-        o.kind AS operation_kind,o.operands_json,o.result_json,
+        o.kind AS operation_kind,o.principal_kind,o.selected_share_id,o.selected_share_version,o.operands_json,o.result_json,
         (SELECT s.affected_id FROM operation_steps s WHERE s.op_id=o.op_id
           AND s.kind='node' LIMIT 1) AS node_step_id
       FROM outbox b LEFT JOIN operations o ON o.op_id=b.op_id
@@ -665,6 +686,8 @@ export async function inspectRecoveryPage(
       )
         throw new Error("recovery_outbox_provenance_mismatch");
       try {
+        if (storedSelection(row) && row.principal_kind !== "user")
+          throw new Error("recovery_outbox_provenance_mismatch");
         const operands = JSON.parse(row.operands_json ?? "null") as {
           parentId?: unknown;
           overwriteTargetId?: unknown;

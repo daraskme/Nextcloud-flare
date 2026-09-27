@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { authorizationAssertion, type Principal } from "../auth/authorize";
+import { storedSelection } from "../auth/selectedShare";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
-import { digestJson } from "../jobs/operations";
+import { digestJson, operationDigest } from "../jobs/operations";
 import { accountMutationStatements, acquireAccountMutation } from "../services/accountMutation";
 import {
   acquireSystemMutation,
@@ -256,11 +257,12 @@ export class UploadDO extends DurableObject<Env> {
   }
 
   async #completed(row: UploadRow) {
-    const digest = await digestJson({
-      spaceId: row.space_id,
-      kind: "upload.complete",
-      body: { uploadId: row.id, digest: row.request_digest },
-    });
+    const digest = await operationDigest(
+      row.space_id,
+      "upload.complete",
+      { uploadId: row.id, digest: row.request_digest },
+      storedSelection(row),
+    );
     await atomicBatch(this.env.DB, [
       assertExists(
         `SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
@@ -271,6 +273,7 @@ export class UploadDO extends DurableObject<Env> {
           AND EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
             WHERE c.id=u.credential_id AND s.user_id=o.principal_id)
           AND o.credential_id=u.credential_id AND o.epoch=u.epoch AND o.space_id=u.space_id
+          AND o.selected_share_id IS u.selected_share_id AND o.selected_share_version IS u.selected_share_version
           AND json_extract(o.operands_json,'$.uploadId')=u.id
           AND json_extract(o.operands_json,'$.parentId')=u.parent_id
           AND json_extract(o.operands_json,'$.nodeId') IS u.target_id

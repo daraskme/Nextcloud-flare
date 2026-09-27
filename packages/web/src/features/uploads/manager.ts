@@ -1,3 +1,4 @@
+import { type SelectedShare, selectedShare } from "../../../../shared/src/shares";
 import {
   type Account,
   ApiError,
@@ -22,6 +23,10 @@ export interface UploadTask {
   phase: "queued" | "uploading" | "checking" | "completing" | "paused" | "completed" | "cancelled";
   bytes: number;
   message: string;
+}
+export interface SharedUploadScope {
+  spaceId: string;
+  share: SelectedShare;
 }
 const terminal = new Set(["failed", "aborting", "aborted", "expired"]);
 const tick = () => new Promise((resolve) => setTimeout(resolve, 1000));
@@ -55,9 +60,7 @@ export class UploadManager {
 
   async #assertTarget(record: UploadRecord) {
     if (!record.target) return;
-    const current = await api.request<FileNode & { parentId: string; spaceId: string }>(
-      `/api/v1/nodes/${encodeURIComponent(record.target.id)}`,
-    );
+    const current = await api.node(record.target.id, record.share);
     if (
       current.id !== record.target.id ||
       current.kind !== "file" ||
@@ -110,7 +113,16 @@ export class UploadManager {
     this.#notify();
   }
 
-  async enqueue(file: File, account: Account, parentId: string, replacement?: FileNode) {
+  async enqueue(
+    file: File,
+    account: Account,
+    parentId: string | null,
+    replacement?: FileNode,
+    shared?: SharedUploadScope,
+  ) {
+    const share = shared ? selectedShare(shared.share) : undefined;
+    if (parentId === null && (!share || !replacement))
+      throw new Error("保存先を確認できません。一覧を更新して選び直してください。");
     if (this.#tasks.filter((task) => !["completed", "cancelled"].includes(task.phase)).length >= 32)
       throw new Error("同時に待機できるファイルは32件までです。");
     if (file.size > 536_870_912_000) throw new Error("1ファイルの上限は500 GBです。");
@@ -127,8 +139,9 @@ export class UploadManager {
       localId: crypto.randomUUID(),
       accountId: account.id,
       epoch: account.epoch,
-      spaceId: account.spaceId,
+      spaceId: shared?.spaceId ?? account.spaceId,
       parentId,
+      ...(share ? { share } : {}),
       name: replacement?.name ?? file.name,
       sourceName: file.name,
       ...(replacement
@@ -204,7 +217,8 @@ export class UploadManager {
                 {
                   mode: record.mode,
                   spaceId: record.spaceId,
-                  parentId: record.parentId,
+                  ...(record.parentId !== null ? { parentId: record.parentId } : {}),
+                  ...(record.share ? { share: record.share } : {}),
                   name: record.name,
                   declared_size: record.size,
                   ...(record.target

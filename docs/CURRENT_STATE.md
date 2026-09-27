@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[受信者のShared画面](SHARED_WORKSPACE.md)を追加しました。受信一覧からフォルダー配下を閲覧し、ファイルを開いて保存できます。選択した共有ID/versionをmetadata・cursor・content ticketへ固定し、共有より上のフォルダー名と親IDを返さないよう修正しました。[所有者の共有管理](INTERNAL_SHARES.md)と共有停止後の失効も接続済みです。
+[受信者のShared画面](SHARED_WORKSPACE.md)にedit共有へのフォルダー作成・改名・単一/分割upload・上書きを接続しました。選択した共有ID/versionをoperation・uploadへ保存し、再送・照会・Outbox・UploadDO・R2書込み・公開確定でも維持します。直接共有したfileの上書きは非共有の親IDを取得せずに実行し、容量は所有者へ計上します。
 
-schema0048・通常69table・migration/依存追加なし。全体check成功：Node62file/1,311件、workerd122file/2,677件。全browser24件も成功し、計4,012件を確認しました。lint482file・型・契約/設定・Web build/Worker dry-runも成功。mobile表示を確認済みです。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0049・通常69table、依存追加なし。全Node64file/1,325件、全workerd123file/2,691件、全browser27件の計4,043件が成功。型・lint・契約/設定・Web build/Worker dry-runとmobile表示も確認済みです。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は選択した共有を保つfolder作成・改名・uploadを接続します。再送・operation照会・Outbox・UploadDO・復旧検査まで共有選択を保持する必要があります。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はDAV Sharedの固定mount解決・旧NULL mount方針と、共有内の移動・削除を接続します。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行a5c7aa0の[CI36351626854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36351626854)はUbuntu・Windows3分割・browser・backupの全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)は5job成功、Windows分割1でR2保存先照合が失敗。再実行でも別ケースの準備中に失敗し、原因切り分けが残っています。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,8 +26,8 @@ schema0048・通常69table・migration/依存追加なし。全体check成功：
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 受信共有の閲覧 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download | 実D1で認可/失効競合/cursor、実browserで独立した受信者のmobile閲覧/bytes取得/停止後拒否 | 編集/upload・DAV Shared・公開linkは後続。[詳細](SHARED_WORKSPACE.md) |
-| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 受信側の編集/upload・DAV Shared・公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
+| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 共有内の移動/削除・DAV Shared・公開linkは後続。[詳細](SHARED_WORKSPACE.md) |
+| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | DAV Shared・公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
 | Time Travel送信と実応答記録 | 永続pending・5秒の1回grant・固定APIへのPOST・実応答のDO保存・unknownの再送拒否・旧epoch停止維持 | Node34/workerd22追加、関連CLI94/workerd155、16操作の権限拒否と模擬巻戻しを含むbindingドリル成功 | 既定で無効。全I/O運用証明・snapshot照合・epoch採用・live復旧は未完了。[詳細](DATABASE_RESTORE_TIME_TRAVEL.md) |
 | probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と実復元後epoch採用は後続。[詳細](R2_WRITE_SETTLEMENT.md) |

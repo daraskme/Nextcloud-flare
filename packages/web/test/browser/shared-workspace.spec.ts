@@ -1,75 +1,111 @@
-import { expect, type Page, test } from "@playwright/test";
+import { open } from "node:fs/promises";
+import { type Browser, expect, type Page, type Route, test } from "@playwright/test";
+import { fileContent } from "./uploadHelpers";
 
-async function setup(owner: Page, label: string) {
+async function setup(owner: Page, label: string, role: "read" | "edit" = "read") {
   await owner.request.post("https://127.0.0.1:8879/__test__/access-login", {
     headers: { Host: "app.ncf.test:8879" },
   });
   await owner.goto("/files");
   await expect(owner.getByRole("button", { name: "新規フォルダー", exact: true })).toBeVisible();
-  return owner.evaluate(async (label) => {
-    const json = async (path: string, init?: RequestInit) => {
-      const response = await fetch(path, init);
-      if (!response.ok) throw new Error(`setup_${response.status}_${path}`);
-      return response.json();
-    };
-    const me = await json("/api/v1/me"),
-      { token } = await json("/api/v1/csrf", { method: "POST" });
-    const headers = { "Content-Type": "application/json", "X-CSRF-Token": token };
-    const post = (path: string, body: unknown, extra: Record<string, string> = {}) =>
-      json(path, {
-        method: "POST",
-        headers: { ...headers, "Idempotency-Key": crypto.randomUUID(), ...extra },
-        body: JSON.stringify(body),
+  return owner.evaluate(
+    async ({ label, role }) => {
+      const json = async (path: string, init?: RequestInit) => {
+        const response = await fetch(path, init);
+        if (!response.ok) throw new Error(`setup_${response.status}_${path}`);
+        return response.json();
+      };
+      const me = await json("/api/v1/me"),
+        { token } = await json("/api/v1/csrf", { method: "POST" });
+      const headers = { "Content-Type": "application/json", "X-CSRF-Token": token };
+      const post = (path: string, body: unknown, extra: Record<string, string> = {}) =>
+        json(path, {
+          method: "POST",
+          headers: { ...headers, "Idempotency-Key": crypto.randomUUID(), ...extra },
+          body: JSON.stringify(body),
+        });
+      const folder = async (parentId: string, name: string) =>
+        (await post("/api/v1/nodes", { kind: "folder", spaceId: me.spaceId, parentId, name }))
+          .result.nodeId as string;
+      const hidden = await folder(me.rootNodeId, `非共有の親-${label}`);
+      const root = await folder(hidden, `受信フォルダー-${label}`);
+      const child = await folder(root, `子フォルダー-${label}`);
+      const text = `Shared content ${label}\n`,
+        filename = `共有メモ-${label}.txt`;
+      const upload = await post("/api/v1/uploads", {
+        mode: "single",
+        spaceId: me.spaceId,
+        parentId: child,
+        name: filename,
+        declared_size: new TextEncoder().encode(text).length,
       });
-    const folder = async (parentId: string, name: string) =>
-      (await post("/api/v1/nodes", { kind: "folder", spaceId: me.spaceId, parentId, name })).result
-        .nodeId as string;
-    const hidden = await folder(me.rootNodeId, `非共有の親-${label}`);
-    const root = await folder(hidden, `受信フォルダー-${label}`);
-    const child = await folder(root, `子フォルダー-${label}`);
-    const text = `Shared content ${label}\n`,
-      filename = `共有メモ-${label}.txt`;
-    const upload = await post("/api/v1/uploads", {
-      mode: "single",
-      spaceId: me.spaceId,
-      parentId: child,
-      name: filename,
-      declared_size: new TextEncoder().encode(text).length,
-    });
-    await json(`/api/v1/uploads/${upload.id}/content`, {
-      method: "PUT",
-      headers: { "Upload-Capability": upload.capability },
-      body: text,
-    });
-    await post(
-      `/api/v1/uploads/${upload.id}/complete`,
-      {},
-      { "Upload-Capability": upload.capability },
-    );
-    const { children } = await json(`/api/v1/nodes/${child}/children`);
-    const file = children.find((n: { name: string }) => n.name === filename);
-    if (!file) throw new Error("shared_file_missing");
-    const input = {
-      kind: "internal",
-      recipients: ["recipient@example.invalid"],
-      role: "read",
-      expiresAt: null,
-    };
-    const share = await post("/api/v1/shares", { ...input, rootNodeId: root });
-    const fileShare = await post("/api/v1/shares", { ...input, rootNodeId: file.id });
-    return {
-      share,
-      fileShare,
-      hidden,
-      root,
-      child,
-      file,
-      filename,
-      text,
-      spaceId: me.spaceId,
-      contentOrigin: me.contentOrigin,
-    };
-  }, label);
+      await json(`/api/v1/uploads/${upload.id}/content`, {
+        method: "PUT",
+        headers: { "Upload-Capability": upload.capability },
+        body: text,
+      });
+      await post(
+        `/api/v1/uploads/${upload.id}/complete`,
+        {},
+        { "Upload-Capability": upload.capability },
+      );
+      const { children } = await json(`/api/v1/nodes/${child}/children`);
+      const file = children.find((n: { name: string }) => n.name === filename);
+      if (!file) throw new Error("shared_file_missing");
+      const input = {
+        kind: "internal",
+        recipients: ["recipient@example.invalid"],
+        role,
+        expiresAt: null,
+      };
+      const share = await post("/api/v1/shares", { ...input, rootNodeId: root });
+      const fileShare = await post("/api/v1/shares", { ...input, rootNodeId: file.id });
+      return {
+        share,
+        fileShare,
+        hidden,
+        root,
+        child,
+        file,
+        filename,
+        text,
+        spaceId: me.spaceId,
+        contentOrigin: me.contentOrigin,
+      };
+    },
+    { label, role },
+  );
+}
+
+async function recipientContext(browser: Browser) {
+  const context = await browser.newContext({
+    baseURL: "https://app.ncf.test:8879",
+    ignoreHTTPSErrors: true,
+  });
+  await context.addCookies([
+    {
+      name: "ncf-test-user",
+      value: "recipient",
+      url: "https://app.ncf.test:8879",
+      secure: true,
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ]);
+  await context.request.post("https://127.0.0.1:8879/__test__/access-login", {
+    headers: { Host: "app.ncf.test:8879", "X-Test-Access-Identity": "recipient" },
+  });
+  return context;
+}
+async function localFetch(route: Route) {
+  return route.fetch({
+    url: route.request().url().replace("app.ncf.test", "127.0.0.1"),
+    headers: {
+      ...(await route.request().allHeaders()),
+      host: "app.ncf.test:8879",
+      "sec-fetch-site": "same-origin",
+    },
+  });
 }
 async function stop(owner: Page, id: string, version: number) {
   return owner.evaluate(
@@ -228,6 +264,208 @@ test("a directly shared file exposes no parent path and a recipient cannot manag
     await recipient.goto(`/shared/${data.fileShare.id}/${data.root}`);
     await expect(recipient.getByRole("alert")).toContainText("アクセスできません");
     await expect(recipient.getByText("非共有の親-単一ファイル", { exact: true })).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("recipient creates and renames with selected scope, including recovery after a lost response and reload", async ({
+  page,
+  browser,
+}, info) => {
+  const data = await setup(page, "編集と再送", "edit"),
+    context = await recipientContext(browser);
+  try {
+    const recipient = await context.newPage();
+    const requests: { body: Record<string, unknown>; key: string }[] = [];
+    let lose = true;
+    await recipient.route("**/api/v1/nodes", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      requests.push({
+        body: route.request().postDataJSON(),
+        key: route.request().headers()["idempotency-key"]!,
+      });
+      if (lose) {
+        lose = false;
+        expect((await localFetch(route)).status()).toBe(201);
+        await route.abort("connectionfailed");
+      } else await route.continue();
+    });
+    await recipient.goto(`/shared/${data.share.id}`);
+    await recipient.getByRole("button", { name: "新規フォルダー", exact: true }).click();
+    const dialog = recipient.getByRole("dialog", { name: "新しいフォルダー", exact: true });
+    await dialog.getByLabel("名前", { exact: true }).fill("受信者が作成");
+    await dialog.getByRole("button", { name: "新しいフォルダー", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+    await recipient.reload();
+    await recipient.getByRole("button", { name: "結果を確認", exact: true }).click();
+    await expect(recipient.getByRole("link", { name: /受信者が作成/ })).toBeVisible();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(requests[0]!.body).toMatchObject({
+      spaceId: data.spaceId,
+      parentId: data.root,
+      share: data.share,
+    });
+    await recipient.getByRole("button", { name: "受信者が作成の名前を変更", exact: true }).click();
+    await recipient
+      .getByRole("dialog")
+      .getByLabel("名前", { exact: true })
+      .fill("共有で改名したフォルダー");
+    await recipient
+      .getByRole("dialog")
+      .getByRole("button", { name: "名前を変更", exact: true })
+      .click();
+    await expect(recipient.getByRole("link", { name: /共有で改名したフォルダー/ })).toBeVisible();
+    await recipient.setViewportSize({ width: 390, height: 844 });
+    await recipient.screenshot({ path: info.outputPath("shared-edit-mobile.png"), fullPage: true });
+    expect(await recipient.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    const children = await page.evaluate(
+      async (id) => (await fetch(`/api/v1/nodes/${id}/children`).then((r) => r.json())).children,
+      data.root,
+    );
+    expect(
+      children.filter((n: { name: string }) => n.name === "共有で改名したフォルダー"),
+    ).toHaveLength(1);
+    expect(await stop(page, data.share.id, data.share.version)).toBe(200);
+    await recipient.getByRole("button", { name: "新規フォルダー", exact: true }).click();
+    await recipient
+      .getByRole("dialog")
+      .getByLabel("名前", { exact: true })
+      .fill("停止後の書き込み");
+    await recipient
+      .getByRole("dialog")
+      .getByRole("button", { name: "新しいフォルダー", exact: true })
+      .click();
+    await expect(recipient.getByRole("dialog").getByRole("alert")).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("shared multipart resumes the same upload after reload and charges its owner", async ({
+  page,
+  browser,
+}, info) => {
+  test.setTimeout(150_000);
+  const data = await setup(page, "分割再開", "edit"),
+    context = await recipientContext(browser);
+  try {
+    const recipient = await context.newPage(),
+      filePath = info.outputPath("共有の大きなファイル.bin");
+    const file = await open(filePath, "w");
+    await file.write(Buffer.from("shared multipart fixture"));
+    await file.truncate(96 * 1024 * 1024 + 37);
+    await file.close();
+    const creates: Record<string, unknown>[] = [],
+      attempts: string[] = [];
+    let firstParts = 0;
+    recipient.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/uploads")
+        creates.push(request.postDataJSON());
+      if (request.url().endsWith("/parts/1")) firstParts++;
+    });
+    await recipient.route("**/api/v1/uploads/*/parts/2", async (route) => {
+      attempts.push(route.request().headers()["upload-attempt-id"]!);
+      if (attempts.length === 1) await route.abort("connectionfailed");
+      else await route.continue();
+    });
+    await recipient.goto(`/shared/${data.share.id}`);
+    const before = await recipient.evaluate(() => fetch("/api/v1/me").then((r) => r.json()));
+    await recipient
+      .getByLabel("共有先にアップロードするファイル", { exact: true })
+      .setInputFiles(filePath);
+    await expect(recipient.getByRole("button", { name: "元のファイルを選択・再確認" })).toBeVisible(
+      { timeout: 90_000 },
+    );
+    await recipient.reload();
+    const chooser = recipient.waitForEvent("filechooser");
+    await recipient.getByRole("button", { name: "元のファイルを選択・再確認" }).click();
+    await (await chooser).setFiles(filePath);
+    await expect(recipient.getByText("アップロード完了", { exact: true })).toBeVisible({
+      timeout: 90_000,
+    });
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      mode: "multipart",
+      spaceId: data.spaceId,
+      parentId: data.root,
+      share: data.share,
+    });
+    expect(firstParts).toBe(1);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toBe(attempts[0]);
+    const after = await recipient.evaluate(() => fetch("/api/v1/me").then((r) => r.json()));
+    expect(after.usedBytes).toBe(before.usedBytes);
+    expect(after.reservedBytes).toBe(before.reservedBytes);
+    const owner = await page.evaluate(() => fetch("/api/v1/me").then((r) => r.json()));
+    expect(owner.usedBytes).toBeGreaterThanOrEqual(96 * 1024 * 1024 + 37);
+    await expect(
+      recipient.getByRole("button", { name: "共有の大きなファイル.binを上書き", exact: true }),
+    ).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("directly shared file overwrite keeps its parent private and recovers a lost completion", async ({
+  page,
+  browser,
+}, info) => {
+  const data = await setup(page, "単体上書き", "edit"),
+    context = await recipientContext(browser);
+  try {
+    const recipient = await context.newPage(),
+      filePath = info.outputPath("置換する原稿.txt");
+    const value = "shared replacement\n",
+      file = await open(filePath, "w");
+    await file.write(value);
+    await file.close();
+    const creates: Record<string, unknown>[] = [];
+    let completions = 0;
+    recipient.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/uploads")
+        creates.push(request.postDataJSON());
+    });
+    await recipient.route("**/api/v1/uploads/*/complete", async (route) => {
+      if (++completions === 1) {
+        expect((await localFetch(route)).status()).toBe(200);
+        await route.abort("connectionfailed");
+      } else await route.continue();
+    });
+    await recipient.goto(`/shared/${data.fileShare.id}`);
+    await expect(
+      recipient.getByRole("button", { name: `${data.filename}の名前を変更`, exact: true }),
+    ).toHaveCount(0);
+    await recipient.getByRole("button", { name: `${data.filename}を上書き`, exact: true }).click();
+    await recipient.getByLabel("上書きするファイル", { exact: true }).setInputFiles(filePath);
+    await recipient.getByRole("button", { name: "上書きを開始", exact: true }).click();
+    await expect(
+      recipient.getByRole("button", { name: "元のファイルを選択・再確認" }),
+    ).toBeVisible();
+    await recipient.reload();
+    const chooser = recipient.waitForEvent("filechooser");
+    await recipient.getByRole("button", { name: "元のファイルを選択・再確認" }).click();
+    await (await chooser).setFiles(filePath);
+    await expect(recipient.getByText("アップロード完了", { exact: true })).toBeVisible();
+    expect(completions).toBe(1);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      share: data.fileShare,
+      spaceId: data.spaceId,
+      targetId: data.file.id,
+      targetRevision: data.file.revision,
+    });
+    expect(creates[0]).not.toHaveProperty("parentId");
+    const after = await page.evaluate(
+      (id) => fetch(`/api/v1/nodes/${id}`).then((r) => r.json()),
+      data.file.id,
+    );
+    expect(after.revision).toBe(data.file.revision + 1);
+    expect(await fileContent(page, after)).toBe(value);
+    await expect(recipient.getByLabel("パンくず")).not.toContainText("子フォルダー");
   } finally {
     await context.close();
   }

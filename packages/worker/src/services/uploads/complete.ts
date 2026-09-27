@@ -240,6 +240,7 @@ async function completeUpload(
     false,
     "receipt",
   );
+  principal = authorized.principal;
   if (principal.kind !== "user" || row.mode !== mode) throw new Error("invalid_upload_complete");
   if (row.completion_op_id) {
     const saved = await lookupOperation(env.DB, principal, row.completion_op_id);

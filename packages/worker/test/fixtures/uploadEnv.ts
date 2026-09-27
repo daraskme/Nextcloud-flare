@@ -74,6 +74,8 @@ export function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
       return {
         acquireCreate: (r: Parameters<LockDO["acquireCreate"]>[0]) =>
           invoke((lock) => lock.acquireCreate(r)),
+        acquireRename: (r: Parameters<LockDO["acquireRename"]>[0]) =>
+          invoke((lock) => lock.acquireRename(r)),
         acquireNodeWrite: (r: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
           invoke((lock) => lock.acquireNodeWrite(r)),
         release: (id: string, permit: Parameters<LockDO["release"]>[1]) =>

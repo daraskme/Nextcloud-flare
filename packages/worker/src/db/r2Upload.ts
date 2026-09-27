@@ -1,4 +1,5 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import { storedPrincipal } from "../auth/selectedShare";
 import type { UploadRow } from "../services/uploads/access";
 import { multipartPartsProof } from "../services/uploads/multipartProof";
 import { assertExists, primary, type SqlStatement } from "./primary";
@@ -71,7 +72,7 @@ export async function uploadWriteProof(
     throw new Error("r2_upload_unavailable");
   const authorized = await authorizeNode(
     db,
-    proof.principal,
+    storedPrincipal(proof.principal, row),
     row.target_id
       ? { operation: "node.content.write", nodeId: row.target_id, spaceId: row.space_id }
       : { operation: "node.create", parentId: row.parent_id, spaceId: row.space_id },
@@ -99,6 +100,7 @@ export async function uploadWriteProof(
       `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id JOIN control c ON c.singleton=1
       JOIN reservations r ON r.id=u.reservation_id
       WHERE u.id=? AND u.owner_id=? AND u.credential_id=? AND u.epoch=? AND u.source=?
+      AND u.selected_share_id IS ? AND u.selected_share_version IS ?
       AND b.owner_id=u.owner_id AND b.r2_key=? AND b.state='staging' AND b.ref_count=0
       AND c.epoch=u.epoch AND c.maintenance=0 AND u.cleanup_pending=0
       AND u.expires_at>=? AND u.last_progress_at>strftime('%s','now')*1000-86400000
@@ -113,6 +115,8 @@ export async function uploadWriteProof(
         row.credential_id,
         row.epoch,
         row.source,
+        row.selected_share_id,
+        row.selected_share_version,
         request.key,
         request.deadline,
         request.deadline,

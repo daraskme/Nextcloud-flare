@@ -1,4 +1,5 @@
 import { problem } from "@next-cloud-flare/shared/errors";
+import { selectedShare } from "../../../shared/src/shares";
 import type { Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
@@ -254,6 +255,12 @@ export async function handleNodeMutationHttp(
   let body: Record<string, unknown>;
   try {
     body = await readBody(request);
+    if ("share" in body) {
+      if (!folder && !rename) throw new Error("invalid_share_selection");
+      principal = { ...principal, selected_share: selectedShare(body.share) };
+      const { share: _share, ...fields } = body;
+      body = fields;
+    }
   } catch {
     return problem(400, "bad_request");
   }

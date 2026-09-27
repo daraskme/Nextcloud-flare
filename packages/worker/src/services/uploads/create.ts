@@ -1,5 +1,6 @@
 import { portableName } from "@next-cloud-flare/shared/names";
 import { authorizationAssertion, authorizeNode, type Principal } from "../../auth/authorize";
+import { freezePrincipal, principalSelection } from "../../auth/selectedShare";
 import type { UploadCapabilities } from "../../auth/uploadCapability";
 import { assertExists, atomicBatch } from "../../db/primary";
 import { multipartPlan, UPLOAD_LIMITS } from "../../do/uploadPlan";
@@ -49,6 +50,8 @@ async function reserveUpload(
   mode: "single" | "multipart",
 ) {
   const db = env.DB;
+  input = { ...input, principal: freezePrincipal(input.principal) };
+  const share = principalSelection(input.principal);
   if (
     input.principal.kind !== "user" ||
     !/^[\x21-\x7e]{1,200}$/.test(input.requestId) ||
@@ -73,6 +76,7 @@ async function reserveUpload(
     size: input.declaredSize,
     targetId: input.targetId ?? null,
     targetRevision: input.targetRevision ?? null,
+    ...(share ? { share } : {}),
   });
   const replay = async () => {
     const row = await uploadRow(db, id);
@@ -152,8 +156,8 @@ async function reserveUpload(
       {
         sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,target_id,blob_id,credential_id,reservation_id,
         mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,
-        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count)
-        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?)`,
+        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count,selected_share_id,selected_share_version)
+        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         values: [
           id,
           owner,
@@ -176,6 +180,8 @@ async function reserveUpload(
           identity.capability_kid,
           plan?.partBytes ?? null,
           plan?.partCount ?? null,
+          share?.id ?? null,
+          share?.version ?? null,
         ],
       },
       assertExists("SELECT 1 FROM uploads WHERE id=? AND request_digest=?", [id, digest]),

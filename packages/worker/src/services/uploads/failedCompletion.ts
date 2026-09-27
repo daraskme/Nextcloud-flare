@@ -32,6 +32,7 @@ function source(row: UploadRow, operationId: string): SqlStatement {
         AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id)
         AND (o.kind='upload.complete' AND o.state='failed' AND o.principal_kind='user'
         AND o.credential_id=u.credential_id AND o.epoch=u.epoch AND o.space_id=u.space_id
+        AND o.selected_share_id IS u.selected_share_id AND o.selected_share_version IS u.selected_share_version
         AND json_extract(o.operands_json,'$.uploadId')=u.id
         AND json_extract(o.operands_json,'$.parentId')=u.parent_id
         AND json_extract(o.operands_json,'$.nodeId') IS u.target_id)

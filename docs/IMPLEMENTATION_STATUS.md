@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行a5c7aa0の[CI36351626854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36351626854)はUbuntu・Windows3分割・browser・backupの全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)はUbuntu・Windows分割2/3・browser・backupの5job成功、Windows分割1は915/919件成功・4件失敗。multipart-bucket-inventoryの保存先照合で`r2_binding_verification_failed`となった。該当ケースは19〜29秒で失敗し、前後の同系統ケースは成功している。失敗jobの再実行では元の4件が通過したが、別のmultipart-bucket-admissionケースのfixture準備で同じ照合失敗が起き、918/919件成功・1件失敗。14.05秒で終了し、意図したlease失効の注入前に失敗している。WindowsのI/O・受付期限を含む切り分けは継続事項とし、productionの期限やテスト条件は緩めていない。先行a5c7aa0の[CI36351626854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36351626854)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,16 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [受信共有の編集](SHARED_WORKSPACE.md)を実装。edit共有でfolder作成・改名・単一/分割upload・上書きができる。直接共有したfileのparent IDを取得せず上書きし、容量は所有者へ計上する。migration0049でoperations/uploadsに選択share pairを保存し、再送・operation照会・Outbox・UploadDO・R2書込みの許可・公開確定・回収・復旧照合まで同じ選択を保つ。69通常table、依存追加なし。
+- 新規workerd13件は別edit grantによる代替拒否、選択付きoperationの再送/照会/Outbox、commit直前失効・native R2許可直前失効、read共有からの書込み拒否、単一/分割uploadの再送・停止・所有者容量、直接file共有の上書きとparent非公開を確認。関連5file/79件成功（41.14s）。先行検査で見つかった列数固定のOutbox fixtureは明示列INSERTへ修正。/tmp/ncf-shared-writes-integration-3.log。
+- 全Node64file/1,325件成功（48.84s）。追加14件は選択の複製・不正入力・旧digest互換性、migrationのpair/不変性/完了operation整合性、停止後の正常な過去記録と不整合な復旧記録の拒否を検証。lint486file・型・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-shared-writes-unit-final.log、/tmp/ncf-shared-writes-static-final.log、/tmp/ncf-shared-writes-build-final.log。
+- 共有browser5件成功（1.3分）、全browser27件も成功（5.7分）。新規3件はfolder作成応答喪失後のreload/同じkey・共有付きbody再送と改名、分割uploadの既存part省略/同じattempt再開/owner課金、単体file上書きの親非公開/完了応答喪失後の非再送を確認。mobile screenshotと横はみ出しなしを確認。/tmp/ncf-shared-writes-browser-final.log。
+- 全workerd初回で復旧freezeが確定しない問題を発見し中断。復旧SQLを確定batchへ組み込むとD1の式深さ上限100を超えることを、追加した実D1回帰テストで再現した（`Expression tree is too large`）。条件を変えずに述語をグループ化した。修正後は復旧audit/freeze/snapshotの3file/92件成功（117.83s）、Node復旧6件と型・lint・Worker dry-runも成功。/tmp/ncf-shared-writes-freeze-repro.log、/tmp/ncf-shared-writes-freeze-fixed.log。
+- 最終の全workerd123file/2,691件が成功。2分割の内訳は62file/1,385件（1,230.57s）と61file/1,306件（1,186.32s）、両方とも終了コード0。全Node1,325 + workerd2,691 + browser27 = **4,043件**を確認した。新規はNode14/workerd14/browser3件。/tmp/ncf-shared-writes-workerd-final-1.log、/tmp/ncf-shared-writes-workerd-final-2.log。
+- remote migration/deployは行っていない。0049適用後の旧Workerへのrollbackは選択情報を失うため、停止維持と対応版での再検証が必要。
+
+### 先行する受信共有の閲覧
 
 - [受信共有の閲覧](SHARED_WORKSPACE.md)を実装。Sharedの一覧・配下/単体file閲覧・content取得を接続。selected share id/versionを認可・cursor・ticketへ固定し、共有rootより上のparent ID/breadcrumb名を遮蔽する。schema0048・69通常table、migration/依存追加なし。共有への編集/uploadは後続。
 - 修正前の実D1テストで非共有祖先名の漏出を再現し、修正後は新規workerd14件を含む4file/73件が成功（16.00s）。share失効/version/root変更・credential/owner/recipient失効・祖先trash・maintenance/epoch競合と選択cursorを確認。/tmp/ncf-shared-read-repro.log、/tmp/ncf-shared-read-worker.log。

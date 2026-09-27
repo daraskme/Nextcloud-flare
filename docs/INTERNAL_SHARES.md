@@ -35,4 +35,4 @@ Filesの各項目の「共有を管理」から、登録済みメールアドレ
 
 Nodeで入力境界とmigrationの不変条件、workerdの実D1でCRUD・read/edit認可・再共有拒否・相手差替え・旧session/ticket失効・budget保持・待機中の失効/祖先trash/停止/epoch/同時version更新・SQL rollback・確定応答喪失・cursorの用途分離を確認する。ブラウザーは実Access/CSRF/ControlDO/D1のAPIでmobile CRUD、作成応答喪失後の非再送、古い編集画面の競合拒否を確認する。最新件数は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-受信者の[Shared画面](SHARED_WORKSPACE.md)は一覧・共有ルート内のbreadcrumb・配下閲覧・content取得を接続済み。共有選択を保つ編集/upload操作、`/dav/Shared/<mount>`の解決、既存NULL mountの移行方針、公開link/password/unlock/public bundle、upload-only、ZIPと共有メディアのE2Eは後続。現時点の管理/閲覧だけでPhase 6完了とはしない。復旧の全体閉鎖と容量精算の未完了事項は[MULTIPART_ABORT_RECONCILIATION](MULTIPART_ABORT_RECONCILIATION.md)に残る。
+受信者の[Shared画面](SHARED_WORKSPACE.md)は一覧・共有ルート内のbreadcrumb・配下閲覧・content取得に加え、共有選択を保つフォルダー作成・改名・単一/分割upload・上書きを接続済み。共有内の移動・削除、`/dav/Shared/<mount>`の解決、既存NULL mountの移行方針、公開link/password/unlock/public bundle、upload-only、ZIPと共有メディアのE2Eは後続。現時点でPhase 6完了とはしない。復旧の全体閉鎖と容量精算の未完了事項は[MULTIPART_ABORT_RECONCILIATION](MULTIPART_ABORT_RECONCILIATION.md)に残る。

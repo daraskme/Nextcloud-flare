@@ -131,7 +131,8 @@ it.each(["maintenance", "epoch", "uncommitted"])(
     if (condition === "uncommitted") {
       // Terminal operations and outbox identities cannot be repointed.
       await env.DB.prepare(
-        `INSERT INTO operations SELECT op_id||'-claimed',principal_kind,principal_id,credential_id,credential_version,space_id,kind,'claimed',request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,NULL,NULL,created_at,updated_at,operands_json FROM operations WHERE op_id=?`,
+        `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,result_json,error_code,created_at,updated_at,operands_json,selected_share_id,selected_share_version)
+        SELECT op_id||'-claimed',principal_kind,principal_id,credential_id,credential_version,space_id,kind,'claimed',request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,NULL,NULL,created_at,updated_at,operands_json,selected_share_id,selected_share_version FROM operations WHERE op_id=?`,
       )
         .bind(f.id)
         .run();

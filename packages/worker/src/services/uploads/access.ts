@@ -1,9 +1,10 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../../auth/authorize";
+import { type SelectedShareRecord, storedPrincipal } from "../../auth/selectedShare";
 import type { UploadCapabilities } from "../../auth/uploadCapability";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../../db/primary";
 import { digestJson } from "../../jobs/operations";
 
-export interface UploadRow {
+export interface UploadRow extends SelectedShareRecord {
   id: string;
   owner_id: string;
   space_id: string;
@@ -66,6 +67,7 @@ export function uploadFence(
     `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
       WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
         AND u.state IN (SELECT value FROM json_each(?))
+        AND u.selected_share_id IS ? AND u.selected_share_version IS ?
         AND u.expires_at>strftime('%s','now')*1000
         AND u.last_progress_at>strftime('%s','now')*1000-86400000
         ${
@@ -75,7 +77,14 @@ export function uploadFence(
           AND r.state='reserved' AND r.expires_at>strftime('%s','now')*1000)`
             : ""
         }`,
-    [row.id, row.credential_id, row.epoch, JSON.stringify(states)],
+    [
+      row.id,
+      row.credential_id,
+      row.epoch,
+      JSON.stringify(states),
+      row.selected_share_id,
+      row.selected_share_version,
+    ],
   );
 }
 
@@ -92,6 +101,7 @@ export async function uploadAuthority(
     principal.epoch !== row.epoch
   )
     throw new Error("upload_authorization_denied");
+  principal = storedPrincipal(principal, row);
   const authorized = await authorizeNode(
     db,
     principal,
@@ -146,8 +156,9 @@ export async function accessUpload(
 export function uploadReceiptFence(row: UploadRow): SqlStatement {
   return assertExists(
     `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
-      WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0`,
-    [row.id, row.credential_id, row.epoch],
+      WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
+        AND u.selected_share_id IS ? AND u.selected_share_version IS ?`,
+    [row.id, row.credential_id, row.epoch, row.selected_share_id, row.selected_share_version],
   );
 }
 
