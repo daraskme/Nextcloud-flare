@@ -74,6 +74,9 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   freeze(epoch: number, id: string, targets: RestoreFreezeTargets, input?: RestoreFreezeInput) {
     return this.#control(epoch, id).freezeDatabaseRestore(epoch, id, targets, input);
   }
+  reserveEpoch(epoch: number, id: string, targets: RestoreFreezeTargets) {
+    return this.#control(epoch, id).reserveDatabaseRestoreEpoch(epoch, id, targets);
+  }
   challengeBackups(
     epoch: number,
     id: string,

@@ -25,7 +25,17 @@ export function restoreStatus(value, epoch, id) {
   if (
     value?.id !== id ||
     value.epoch !== epoch ||
-    !["preparing", "cancelled", "freezing", "frozen", "cancelling"].includes(value.state) ||
+    ![
+      "preparing",
+      "cancelled",
+      "freezing",
+      "frozen",
+      "cancelling",
+      "epoch_reserving",
+      "epoch_reserved",
+    ].includes(value.state) ||
+    (value.newEpoch !== undefined && (!integer(value.newEpoch, 1) || value.newEpoch <= epoch)) ||
+    (value.state === "epoch_reserved" && value.newEpoch === undefined) ||
     !integer(value.createdAt)
   )
     throw new Error("database_restore_invalid_status");
@@ -45,6 +55,7 @@ export function restoreStatus(value, epoch, id) {
     state: value.state,
     createdAt: value.createdAt,
     source,
+    ...(value.newEpoch === undefined ? {} : { newEpoch: value.newEpoch }),
   };
 }
 function verifyPage(value, epoch, id, manifestSha256, previous) {

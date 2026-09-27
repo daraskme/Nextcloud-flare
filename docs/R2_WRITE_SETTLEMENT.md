@@ -66,14 +66,14 @@ migrationはmaintenance中、backup/restore freezeなし、open permit・claimed
 
 外部CLIのpart/manifest保存も[専用送信受付](BACKUP_PUBLICATION_WRITES.md)へ接続した。D1全table凍結中はDO側にpendingを保持し、既存backup_tokenで全体を停止する。S3の200/412またはlocal binding PUTの実終了後だけ終了を記録し、未終了の間は完了・解除・取消しを拒否する。単独publishにもprivate operator設定が必要。
 
-共通DO/D1記録は上記14種類が対象で、凍結中のCLI保存は専用DO記録を使う。[epoch履歴](EPOCH_HISTORY_WRITES.md)も専用DO記録へ接続し、同じpending予約のPUTを一度だけ送信する。native結果自体が不明な試行を解消する運用証明と、復旧要求に固定したepoch予約・復元後の採用は未実装。
+共通DO/D1記録は上記14種類が対象で、凍結中のCLI保存は専用DO記録を使う。[epoch履歴](EPOCH_HISTORY_WRITES.md)も専用DO記録へ接続し、同じpending予約のPUTを一度だけ送信する。[復旧要求に固定した事前予約](DATABASE_RESTORE_EPOCH.md)も別receiptで同じ規則を使う。native不明の運用証明と実復元後のepoch採用は未実装。
 
 最終停止への次の確認点は以下。通常の運用上の収束条件と、DB巻戻し前のnative終了証明を区別する。
 
 | 既存の送信点 | コードで確認した境界 | 復元前に追加確認すること |
 |---|---|---|
 | `scripts/backup/publication.mjs` / `scripts/backup/objectStore.mjs` | 元の世代tuple・key/hash/bytesのgrant後に一度だけPUTし、元のnative応答から終了を記録する。保存前後の照会により全keyが既存でもunknownを回避できない | native結果不明の運用証明と、記録導入前の旧CLI処理終了確認は未実装。読戻しや再起動でpendingを消さない |
-| `do/controlEpochHistory.ts` / `ControlDO.ts` | pending intentとreserved receiptを同時保存し、native PUTの実終了後だけ履歴を照合する。10秒timeout後の成功は終了記録のみ。古いpending tupleの継続は拒否 | 復旧要求に固定した事前予約と復元後のD1採用の分離、native不明・旧実装・receipt全喪失の運用証明 |
+| `do/controlEpochHistory.ts` / `ControlDO.ts` / `ControlRestoreEpoch` | pending intentとreserved receiptを同時保存し、native PUTの実終了後だけ履歴を照合する。10秒timeout後の成功は終了記録のみ。復旧用は要求に固定した番号を予約し、D1は更新しない | 実復元後のD1採用、native不明・旧実装・receipt全喪失の運用証明 |
 
 S3BackupStoreは自動retryを無効にし、timeout後の実応答は終了記録だけへ反映する。AbortSignalとPromise.raceは外部PUT終了の証明ではなく、CLI停止や終了記録失敗ではpendingを保持する。
 

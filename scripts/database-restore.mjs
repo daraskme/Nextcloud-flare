@@ -6,6 +6,7 @@ import { verifyRestoreBindings } from "./restore/bindings.mjs";
 import { verifyRestoreBlobs } from "./restore/blobs.mjs";
 import { verifyRestoreBookmark } from "./restore/bookmark.mjs";
 import { restoreErrorCode, restoreOperatorControl } from "./restore/control.mjs";
+import { reserveRestoreEpoch } from "./restore/epoch.mjs";
 import { freezeRestoreDatabase } from "./restore/freeze.mjs";
 import { restoreD1Reader, verifyRestoreD1 } from "./restore/target.mjs";
 import {
@@ -27,6 +28,7 @@ const usage = `Usage:
   pnpm database:restore verify-blobs --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore verify-backups|verify-bindings --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore freeze --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
+  pnpm database:restore reserve-epoch --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
 
 prepare pins the logical source or Time Travel bookmark and closes writes/GC. Keep the same request ID after an uncertain response.
 verify checks up to 100 server-owned parts, then downloads and validates SQL/schema/all tables/FK/FTS in an isolated local database, and records the trusted verification in ControlDO.
@@ -38,7 +40,8 @@ The target must explicitly enable RESTORE_OPERATOR_ENABLED=true and grant the pr
 verify-blobs checks fresh D1 identity, pins the configured BLOBS bucket and asks the Worker to rotate its fixed 64-byte system probe and read it through server-configured R2_INVENTORY_* credentials. This writes only the probe, not user files.
 verify-backups pins BACKUPS and reads the Worker's fresh fixed probe using R2_BACKUP_* credentials. verify-bindings verifies D1, BLOBS and BACKUPS under one new stop challenge; both bucket targets must differ.
 freeze verifies bindings and freezes D1 writes under the request ID. Repeat freeze to reconcile an unknown response; cancel thaws only this exact barrier while keeping maintenance/GC closed.
-These commands do not overwrite D1, reserve a new epoch, prove all external I/O has finished or resume service.
+reserve-epoch requires prior source verification and D1 freeze. It pins one future epoch in DO/R2 under the same request, preserving D1's old epoch and freeze. Ordinary cancellation is disabled once reservation begins; inspect and retry the same ID after an unknown response.
+These commands do not overwrite D1, adopt the reserved epoch, prove all external I/O has finished or resume service.
 `;
 try {
   const { values, positionals } = parseArgs({
@@ -74,6 +77,7 @@ try {
         "verify-backups": ["config", "environment"],
         "verify-bindings": ["config", "environment"],
         freeze: ["config", "environment"],
+        "reserve-epoch": ["config", "environment"],
       }[command];
     if (
       positionals.length !== 1 ||
@@ -84,7 +88,9 @@ try {
       !/^\d+$/.test(values.epoch ?? "") ||
       (command === "verify-d1" && !values.config) ||
       (command === "verify-bookmark" && (!values.remote || !values.config || !values.timestamp)) ||
-      (["verify-blobs", "verify-backups", "verify-bindings", "freeze"].includes(command) &&
+      (["verify-blobs", "verify-backups", "verify-bindings", "freeze", "reserve-epoch"].includes(
+        command,
+      ) &&
         (!values.remote || !values.config)) ||
       (command === "verify" &&
         ((values.local && !values.config) ||
@@ -122,14 +128,17 @@ try {
       "verify-backups",
       "verify-bindings",
       "freeze",
+      "reserve-epoch",
     ].includes(command)
       ? await restoreD1Reader({
           config: values.config,
           environment: values.environment,
           operatorConfig: values["operator-config"],
           mode: values.local ? "local" : "remote",
-          blobs: ["verify-blobs", "verify-bindings", "freeze"].includes(command),
-          backups: ["verify-backups", "verify-bindings", "freeze"].includes(command),
+          blobs: ["verify-blobs", "verify-bindings", "freeze", "reserve-epoch"].includes(command),
+          backups: ["verify-backups", "verify-bindings", "freeze", "reserve-epoch"].includes(
+            command,
+          ),
         })
       : undefined;
     let control;
@@ -141,7 +150,9 @@ try {
       let store;
       try {
         let result;
-        if (["verify-backups", "verify-bindings", "freeze"].includes(command)) {
+        if (command === "reserve-epoch") {
+          result = await reserveRestoreEpoch({ epoch, id, control, reader });
+        } else if (["verify-backups", "verify-bindings", "freeze"].includes(command)) {
           store = new S3BackupStore(process.env, { timeoutMs: 10000 });
           result = await (command === "freeze"
             ? freezeRestoreDatabase

@@ -12,24 +12,31 @@ interface Receipt extends Record<string, SqlStorageValue> {
 
 /** One native PUT per durable epoch reservation. Readback cannot settle an unknown PUT. */
 export class ControlEpochHistory {
-  constructor(private readonly sql: SqlStorage) {
-    sql.exec(`CREATE TABLE IF NOT EXISTS control_epoch_write(
+  constructor(
+    private readonly sql: SqlStorage,
+    private readonly table:
+      | "control_epoch_write"
+      | "control_restore_epoch_write" = "control_epoch_write",
+  ) {
+    if (!["control_epoch_write", "control_restore_epoch_write"].includes(table))
+      throw new Error("invalid_epoch_history_table");
+    sql.exec(`CREATE TABLE IF NOT EXISTS ${table}(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),token TEXT NOT NULL,
       epoch INTEGER NOT NULL CHECK(epoch>0),at INTEGER NOT NULL CHECK(at>0),reason TEXT NOT NULL,
       state TEXT NOT NULL CHECK(state IN ('reserved','pending','ended')))`);
-    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_epoch_write_immutable
-      BEFORE UPDATE ON control_epoch_write
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_immutable
+      BEFORE UPDATE ON ${table}
       WHEN NEW.singleton<>OLD.singleton OR NEW.token<>OLD.token OR NEW.epoch<>OLD.epoch
         OR NEW.at<>OLD.at OR NEW.reason<>OLD.reason
         OR NOT ((OLD.state='reserved' AND NEW.state='pending') OR (OLD.state='pending' AND NEW.state='ended'))
       BEGIN SELECT RAISE(ABORT,'epoch_history_receipt_conflict'); END`);
-    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_epoch_write_delete
-      BEFORE DELETE ON control_epoch_write WHEN OLD.state<>'ended'
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_delete
+      BEFORE DELETE ON ${table} WHEN OLD.state<>'ended'
       BEGIN SELECT RAISE(ABORT,'epoch_history_write_unsettled'); END`);
   }
 
   assertSettled(): void {
-    if (this.sql.exec("SELECT 1 FROM control_epoch_write WHERE state<>'ended'").toArray().length)
+    if (this.sql.exec(`SELECT 1 FROM ${this.table} WHERE state<>'ended'`).toArray().length)
       throw new Error("epoch_history_write_unsettled");
   }
 
@@ -46,9 +53,9 @@ export class ControlEpochHistory {
     )
       throw new Error("invalid_pending_epoch");
     this.assertSettled();
-    this.sql.exec("DELETE FROM control_epoch_write WHERE state='ended'");
+    this.sql.exec(`DELETE FROM ${this.table} WHERE state='ended'`);
     this.sql.exec(
-      "INSERT INTO control_epoch_write VALUES(1,?,?,?,?,'reserved')",
+      `INSERT INTO ${this.table} VALUES(1,?,?,?,?,'reserved')`,
       token,
       record.epoch,
       record.at,
@@ -57,7 +64,7 @@ export class ControlEpochHistory {
   }
 
   #receipt(record: EpochRecord, token: string): Receipt {
-    const row = this.sql.exec<Receipt>("SELECT * FROM control_epoch_write").toArray()[0];
+    const row = this.sql.exec<Receipt>(`SELECT * FROM ${this.table}`).toArray()[0];
     // Legacy pending intents lack termination evidence; never synthesize a receipt from GET.
     if (!row) throw new Error("epoch_history_receipt_missing");
     if (
@@ -97,7 +104,7 @@ export class ControlEpochHistory {
         (async () => {
           current();
           if (this.#receipt(record, token).state === "reserved") {
-            this.sql.exec("UPDATE control_epoch_write SET state='pending' WHERE state='reserved'");
+            this.sql.exec(`UPDATE ${this.table} SET state='pending' WHERE state='reserved'`);
             // No await between the durable dispatch record and the one native invocation.
             await bucket.put(key, JSON.stringify(record), {
               onlyIf: { etagDoesNotMatch: "*" },
@@ -106,7 +113,7 @@ export class ControlEpochHistory {
             // Success or conditional no-op proves this invocation ended, even after timeout.
             // It grants no right to continue the expired/superseded publication.
             this.#receipt(record, token);
-            this.sql.exec("UPDATE control_epoch_write SET state='ended' WHERE state='pending'");
+            this.sql.exec(`UPDATE ${this.table} SET state='ended' WHERE state='pending'`);
             current();
           }
           const existing = await bucket.get(key);
@@ -127,9 +134,14 @@ export class ControlEpochHistory {
               count += part.value.byteLength;
             }
             if (count !== bytes.length) throw new Error("epoch_history_conflict");
-            const found: unknown = JSON.parse(
-              new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
-            );
+            let found: unknown;
+            try {
+              found = JSON.parse(
+                new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+              );
+            } catch {
+              throw new Error("epoch_history_conflict");
+            }
             if (
               !found ||
               typeof found !== "object" ||

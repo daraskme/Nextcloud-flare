@@ -7,7 +7,7 @@ Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node
 
 単一/DAV PUT・multipart作成/part/完了/全中止・空ファイルPUT・target manifest PUT/DELETE・blob/orphan GCのDELETEを、ControlDOのSQLiteと68番目の通常table `r2_write_attempts`へ送信前から記録する。grantは5秒以内・一度限り。uploadは元のattempt/leaseと現在認可、abortはclaim/handleとbinding proof等を再検査する。GCは元の固定期限・復元pause期限を維持する。共通mutationの直接ACK後に送信し、native実成功または確実な未送信だけを終端事実として保存する。grant待機は25秒、upload送信後は元の最大15分leaseまで。R2例外、timeout、HEAD不在、lease満了、evictionでpendingを解消しない。
 
-DO receiptと全epochのD1 pendingを凍結・監査・再開へ接続し、対象keyのblob/orphan GC再claimとdeleted精算、upload予約解放とcleanup完了を禁止する。停止中のrepairは既知の終端事実だけを再反映する。0042〜0046のtable再構築は期限切れpendingも全行保持する。0043のsource_refは元のupload/attemptまたはabort claim/handleを束縛し、新しいgrant UUIDでも同じ元試行の二重送信を拒否する。backup/restore freeze guard、オフライン復元時のpending保持と過去世代互換性を維持する。BACKUPS外部CLI保存は全D1凍結を保つ専用DO記録へ接続済み。[BACKUP_PUBLICATION_WRITES](BACKUP_PUBLICATION_WRITES.md)を参照。[epoch履歴PUT](EPOCH_HISTORY_WRITES.md)も専用DO記録へ接続済み。復旧要求に固定したepoch事前予約・native不明の運用証明を含む最終I/O停止は別途必要。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を正本とする。
+DO receiptと全epochのD1 pendingを凍結・監査・再開へ接続し、対象keyのblob/orphan GC再claimとdeleted精算、upload予約解放とcleanup完了を禁止する。停止中のrepairは既知の終端事実だけを再反映する。0042〜0046のtable再構築は期限切れpendingも全行保持する。0043のsource_refは元のupload/attemptまたはabort claim/handleを束縛し、新しいgrant UUIDでも同じ元試行の二重送信を拒否する。backup/restore freeze guard、オフライン復元時のpending保持と過去世代互換性を維持する。BACKUPS外部CLI保存は全D1凍結を保つ専用DO記録へ接続済み。[BACKUP_PUBLICATION_WRITES](BACKUP_PUBLICATION_WRITES.md)を参照。[epoch履歴PUT](EPOCH_HISTORY_WRITES.md)と[復旧用epoch事前予約](DATABASE_RESTORE_EPOCH.md)も専用DO記録へ接続済み。native不明の運用証明を含む最終I/O停止と実復元後採用は別途必要。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を正本とする。
 
 0046で期限切れBACKUPSの部品batch/manifest DELETEも接続した。世代全tuple/hash、元の停止mode/revision/tokenと1〜20個の正確なkeyを固定し、送信・終了を共有台帳に記録する。同じ世代のpendingがあれば追加削除とabsent確定を拒否する。prune/sweep双方へ接続し、35日保持・10秒I/O・25秒全体期限を維持した。
 
@@ -77,6 +77,8 @@ DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoc
 履歴が空・取得失敗なら EPOCH_FLOOR の明示なしで起動しない。時刻から epoch を生成しない。
 履歴走査は100ページまでで、上限を越えた場合も明示的 floor なしでは拒否する。
 `bumpEpoch(expectedEpoch,reason)` の期待値は再送・並行 bump の重複発行を防ぐ。
+
+復旧用の`reserveDatabaseRestoreEpoch`は凍結済みの要求・復旧元・対象に将来番号を固定し、通常epoch発行とは別のDO receiptで履歴を保存する。D1を更新せず、予約開始後は通常cancelを拒否する。ソース検証は初回予約前、nativeの終了証明は各PUTの実応答から得る。実上書き後の採用と予約後の安全な中止は後続。[DATABASE_RESTORE_EPOCH](DATABASE_RESTORE_EPOCH.md)を参照する。
 
 復旧用D1書込み凍結は`control_database_restore_freeze`の永続intentでsystem/global修復の新規受付を閉じ、migration0040/0041の`control.restore_freeze_token`と全68通常tableのtriggerで遅延更新も拒否する。取消しはD1の停止revision/tokenを原子的に更新し、DOのmirror更新・監査無効化・要求取消しを一つのtransactionで保存する。D1書込み障壁をR2の全終了や実復元許可として扱わない。対象照合・再送・次の境界は[DATABASE_RESTORE_FREEZE](DATABASE_RESTORE_FREEZE.md)を参照する。
 

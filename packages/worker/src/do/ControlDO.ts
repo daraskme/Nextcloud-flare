@@ -68,6 +68,7 @@ import { CONTROL_NAME } from "./controlName";
 import { ControlR2Writes } from "./controlR2Writes";
 import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
+import { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
@@ -141,6 +142,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreBlobs: ControlRestoreBlobs;
   readonly #restoreBackups: ControlRestoreBackups;
   readonly #restoreFreeze: ControlRestoreFreeze;
+  readonly #restoreEpoch: ControlRestoreEpoch;
   readonly #r2Writes: ControlR2Writes;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -237,6 +239,13 @@ export class ControlDO extends DurableObject<Env> {
           throw new Error("database_restore_freeze_unverified");
         return { blobs, backups, expiresAt };
       },
+    );
+    this.#restoreEpoch = new ControlRestoreEpoch(
+      ctx.storage,
+      env.BACKUPS,
+      this.#databaseRestore,
+      this.#restoreFreeze,
+      env.EPOCH_FLOOR,
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -366,6 +375,16 @@ export class ControlDO extends DurableObject<Env> {
     return this.#restoreFreeze.freeze(expectedEpoch, id, targets, input);
   }
 
+  /** Pin a future epoch in DO/R2; retain the current D1 epoch and write freeze. */
+  async reserveDatabaseRestoreEpoch(
+    expectedEpoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+  ) {
+    this.#row();
+    return this.#restoreEpoch.reserve(expectedEpoch, id, targets);
+  }
+
   /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */
   async verifyDatabaseRestoreSource(expectedEpoch: number, id: string) {
     const row = this.#row();
@@ -486,6 +505,7 @@ export class ControlDO extends DurableObject<Env> {
   async cancelDatabaseRestore(expectedEpoch: number, id: string) {
     const row = this.#row();
     const previous = this.#databaseRestore.inspect(expectedEpoch, id);
+    this.#databaseRestore.assertCancellable(id);
     if (previous.state === "cancelled") return previous;
     if (row.phase !== "ready" || row.epoch !== expectedEpoch)
       throw new Error("database_restore_epoch_conflict");

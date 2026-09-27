@@ -23,6 +23,7 @@ const { verifyRestoreBookmark } = await moduleAt("scripts/restore/bookmark.mjs")
 const { verifyRestoreBlobs } = await moduleAt("scripts/restore/blobs.mjs");
 const { verifyRestoreBindings } = await moduleAt("scripts/restore/bindings.mjs");
 const { freezeRestoreDatabase } = await moduleAt("scripts/restore/freeze.mjs");
+const { reserveRestoreEpoch } = await moduleAt("scripts/restore/epoch.mjs");
 const { S3BackupStore, bindingBackupStore } = await moduleAt("scripts/backup/objectStore.mjs");
 const { RESTORE_BACKUPS_PROBE_KEY } = await moduleAt("packages/shared/src/restoreBackups.ts");
 const { RESTORE_D1_QUERY } = await moduleAt("packages/shared/src/restoreTarget.ts");
@@ -376,6 +377,7 @@ try {
       ["attestBackups", [2, restoreId, {}, "", ""]],
       ["verifyBindings", [2, restoreId, {}, "", ""]],
       ["freeze", [2, restoreId, {}, {}]],
+      ["reserveEpoch", [2, restoreId, {}]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -559,6 +561,35 @@ try {
     (await query("SELECT epoch,maintenance,gc_paused,backup_frozen FROM control"))[0],
     { epoch: 2, maintenance: 1, gc_paused: 1, backup_frozen: 0 },
   );
+  const epochId = crypto.randomUUID();
+  await restoreControl.prepare(2, epochId, { kind: "time_travel", bookmark: "drill-bookmark" });
+  await verifyRestoreBookmark({
+    epoch: 2,
+    id: epochId,
+    control: restoreControl,
+    reader: bookmarkReader,
+    timestamp,
+  });
+  await freezeRestoreDatabase({
+    epoch: 2,
+    id: epochId,
+    control: restoreControl,
+    reader: bindingReader,
+    store: backupProbeStore,
+  });
+  const beforeReservation = await query("SELECT * FROM control");
+  const reserveEpoch = () =>
+    reserveRestoreEpoch({ epoch: 2, id: epochId, control: restoreControl, reader: bindingReader });
+  const reserved = await reserveEpoch();
+  assert.equal(reserved.state, "epoch_reserved");
+  assert.equal(reserved.newEpoch, 3);
+  assert.equal("token" in reserved, false);
+  assert.equal((await (await env.BACKUPS.get("sys/epoch/3.json")).json()).reason, "restore");
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.deepEqual(await reserveEpoch(), reserved);
+  assert.equal((await restoreControl.inspect(2, epochId)).newEpoch, 3);
+  await assert.rejects(restoreControl.cancel(2, epochId), /database_restore_epoch_reserved/);
+  assert.deepEqual(await query("SELECT * FROM control"), beforeReservation);
   const report = {
     result: "PASS",
     directory,
@@ -566,7 +597,7 @@ try {
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all thirteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated full SQL verification and durable attestation, fresh independent D1 mirror observation, Time Travel bookmark observation and combined D1/BLOBS/BACKUPS identity verification with fresh nonces and simulated provider responses; D1 write freeze, rejected writes, eviction replay and cancellation with a fresh closed admission token.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all fourteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2, eviction replay, cancellation refusal, unchanged D1 epoch and freeze.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

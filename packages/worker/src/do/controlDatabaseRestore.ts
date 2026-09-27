@@ -17,8 +17,15 @@ export interface DatabaseRestoreStatus {
   id: string;
   epoch: number;
   source: DatabaseRestoreSource;
-  state: RestoreRow["phase"] | "freezing" | "frozen" | "cancelling";
+  state:
+    | RestoreRow["phase"]
+    | "freezing"
+    | "frozen"
+    | "cancelling"
+    | "epoch_reserving"
+    | "epoch_reserved";
   createdAt: number;
+  newEpoch?: number;
 }
 
 // Match the existing logical-backup generation identity contract, including imported UUIDs.
@@ -65,6 +72,15 @@ export class ControlDatabaseRestore {
       challenge_json TEXT NOT NULL,proof_json TEXT NOT NULL,expires_at INTEGER NOT NULL,
       started_at INTEGER NOT NULL,frozen_at INTEGER,cancel_token TEXT,cancel_revision INTEGER
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_epoch(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),epoch INTEGER NOT NULL,
+      source_json TEXT NOT NULL,targets_json TEXT NOT NULL,freeze_token TEXT NOT NULL,
+      history_token TEXT NOT NULL UNIQUE,proof_json TEXT NOT NULL,created_at INTEGER NOT NULL,
+      phase TEXT NOT NULL CHECK(phase IN ('allocating','writing','reserved')),
+      new_epoch INTEGER,history_at INTEGER,
+      CHECK((phase='allocating')=(new_epoch IS NULL)),
+      CHECK((new_epoch IS NULL)=(history_at IS NULL)),CHECK(new_epoch>epoch)
+    )`);
   }
 
   active(): boolean {
@@ -76,6 +92,13 @@ export class ControlDatabaseRestore {
 
   assertInactive(): void {
     if (this.active()) throw new Error("database_restore_active");
+  }
+
+  assertCancellable(id: string): void {
+    if (
+      this.sql.exec("SELECT 1 FROM control_database_restore_epoch WHERE id=?", id).toArray().length
+    )
+      throw new Error("database_restore_epoch_reserved");
   }
 
   /** A durable freeze intent also closes the maintenance-only mutation path. */
@@ -99,6 +122,12 @@ export class ControlDatabaseRestore {
   }
 
   #status(row: RestoreRow): DatabaseRestoreStatus {
+    const reservation = this.sql
+      .exec<{ phase: string; new_epoch: number | null }>(
+        "SELECT phase,new_epoch FROM control_database_restore_epoch WHERE id=?",
+        row.id,
+      )
+      .toArray()[0];
     const freeze = this.sql
       .exec<{ phase: "freezing" | "frozen" | "cancelling" | "cancelled" }>(
         "SELECT phase FROM control_database_restore_freeze WHERE id=? AND epoch=?",
@@ -110,11 +139,15 @@ export class ControlDatabaseRestore {
       id: row.id,
       epoch: row.epoch,
       source: JSON.parse(row.source_json) as DatabaseRestoreSource,
-      state:
-        row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
+      state: reservation
+        ? reservation.phase === "reserved"
+          ? "epoch_reserved"
+          : "epoch_reserving"
+        : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
           ? row.phase
           : freeze.phase,
       createdAt: row.created_at,
+      ...(reservation?.new_epoch ? { newEpoch: reservation.new_epoch } : {}),
     };
   }
 
@@ -149,6 +182,7 @@ export class ControlDatabaseRestore {
 
   /** Only preparation can be cancelled, after the caller has freshly closed D1 admission. */
   cancel(epoch: number, id: string): DatabaseRestoreStatus {
+    this.assertCancellable(id);
     const previous = this.inspect(epoch, id);
     this.assertCanRepair();
     if (previous.state === "cancelled") return previous;

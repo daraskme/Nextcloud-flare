@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)はUbuntu・Windows分割2・browserの3job成功、backup・Windows分割1は実行中。現時点では全体成功としない。
+記録時点で5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)はUbuntu・browser成功、backup・Windows2分割は実行中。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)は全5job成功済み。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [復旧要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)をControlDO/private DatabaseRestoreOperator/CLIへ接続。凍結mirrorと未失効source証言を確認し、履歴走査前に永続intentを保存する。将来番号とnative receiptを同時保存し、同じ要求では番号を変えない。予約中/完了後の通常cancelを拒否し、D1のepoch・全table・凍結は変更しない。
+- 新規Node26ケースを含むCLI/source/binding/epochの4file/126件が成功（26.48s）。要求・対象・番号の改変、config変更、応答喪失、秘密非出力、予約CLIの引数を確認。/tmp/ncf-restore-epoch-node.log。
+- 初回workerd4file/82件は81成功・1失敗（47.17s）。不正JSONのエラー名が未正規化だったため、履歴本文を例外へ含めない`epoch_history_conflict`に統一。D1照会・履歴走査失敗・取消し競合など追加4ケースを含む7file/162件が成功（89.54s）。新規15ケースで全68通常table不変・番号固定・eviction・unknown保持・遅延応答を確認。/tmp/ncf-restore-epoch-worker.log、/tmp/ncf-restore-epoch-regression.log。
+- 型検査でbookmark fixtureの不要なobservedAtを除去し、optional環境変数を明示undefinedからプロパティ削除へ修正。最終予約15件も成功（14.22s）。型・lint434file・契約/設定・Web build・Worker dry-run成功。/tmp/ncf-restore-epoch-final.log、/tmp/ncf-restore-epoch-types-final.log、/tmp/ncf-restore-epoch-lint.log、/tmp/ncf-restore-epoch-build-final.log。schema0046・通常68table・依存追加なし。remote resource作成・migration・deployなし。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。新しいreserveEpochを含む全14復旧操作の権限拒否と、実R2予約・eviction後の同番号再実行・cancel拒否・旧D1 epoch/凍結不変を確認。S3/Time Travel応答は合成provider。/tmp/ncf-restore-epoch-operator.log、.wrangler/operator-drill-59Piel/report.json。
+- 今回は関連範囲をローカル検証した。全Node/workerd・Windows/browserはpush後のCIで確認する。外部I/Oの全終了証明、実D1上書きと予約epoch採用、予約後の安全な中止、全監査・段階再開は未完了。
+
+### 先行するepoch履歴のnative終了記録
 
 - epoch履歴PUTを専用の`control_epoch_write`へ接続。pending intentとreserved receiptの同時保存、1回だけのnative PUT、実成功/null応答による終了記録、1024byte/10秒の読取りとpending tuple再検査を実装。応答喪失やGET一致でunknownを解消せず、遅延した処理からのD1採用・DO公開を拒否する。詳細は[EPOCH_HISTORY_WRITES](EPOCH_HISTORY_WRITES.md)。
 - 最初のworkerd2file/33件が成功（8.43s）。型検査で見つかったTextDecoder optionとテストfixtureの型互換を修正し、期限境界・停止本文など5ケースを追加。最終のcontrol・epoch履歴・受付・復旧監査・D1復旧・凍結・backup barrierの7file/177件が成功（129.33s）。新規24ケース。既存のPUT応答喪失試験はunknown保持へ更新し、D1失敗後のeviction再試行と全DO喪失時の数値下限を維持。/tmp/ncf-epoch-native-worker.log、/tmp/ncf-epoch-native-regression.log。

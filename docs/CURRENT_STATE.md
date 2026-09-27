@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-epoch履歴の条件付きPUTを[専用の送信・終了記録](EPOCH_HISTORY_WRITES.md)へ接続しました。pending intentとreserved receiptを同時保存し、同じ予約では一度だけPUTします。実応答を失った場合は、GET一致や期限満了でも再送・epoch公開を許可しません。10秒timeout後の実成功は終了記録だけへ反映し、遅延した古い処理はD1採用を進めません。外部CLI保存の[専用記録](BACKUP_PUBLICATION_WRITES.md)と14種類の[共通R2記録](R2_WRITE_SETTLEMENT.md)も接続済みです。
+復旧要求に固定した[epoch事前予約](DATABASE_RESTORE_EPOCH.md)を内部RPC・private operator・運用CLIへ接続しました。検証済みの復旧元と凍結したD1/BLOBS/BACKUPSを束縛し、DO/R2へ将来の番号を予約します。同じ要求の再実行では番号を変えず、D1の旧epochと凍結を維持します。予約開始後の通常取消し・通常epoch発行・受付再開を拒否し、native結果不明も保持します。実D1上書き後の採用は後続です。
 
-schema0046・通常68table・依存追加なし。新規24ケースを含む関連workerd177件とNode11件、型・lint430file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。新規workerd15ケースを含む関連162件、CLI関連Node126件、型・lint434file・契約/設定・Web build・Worker dry-runが成功しました。全14復旧操作の権限境界と実epoch予約を含むprivate binding運用ドリルも成功。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は復旧要求に固定した新epochの事前予約とD1採用の分離、native結果不明の運用証明を含む全終了確認、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。旧実装や全storage喪失でreceiptがない場合の終了証明、通知先・timer設置、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はnative結果不明の運用証明を含む全終了確認、実D1上書き・snapshot照合・予約epochの採用・全監査・段階再開です。予約後の安全な中止手順も残ります。凍結や予約だけでD1上書きを開始しません。旧実装や全storage喪失時の終了証明、通知先・timer設置、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)はUbuntu・Windows分割2・browserの3job成功、backup・Windows分割1は実行中です。3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)は全5job成功。0dbb5a5のWindows移行fixture失敗は3f2217bで修正済みです。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。記録時点で5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)はUbuntu・browser成功、backup・Windows2分割は実行中。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)と3f2217bのCIは全5job成功済みです。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,9 +26,10 @@ schema0046・通常68table・依存追加なし。新規24ケースを含む関�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と復旧用epoch予約/採用の分離は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
-| epoch履歴のnative終了記録 | DO pending intentとreserved receiptの原子的保存、1回だけの条件付きPUT、実応答のみの終了記録、古い継続の拒否 | 新規24件と停止・監査・凍結・backupの関連workerd177件、Node11件が成功 | 復旧要求に固定した事前予約、旧実装/全喪失の終了証明、live復元後採用。[詳細](EPOCH_HISTORY_WRITES.md) |
-| 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否を追加。13操作のprivate bindingドリル成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
+| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と実復元後epoch採用は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
+| epoch履歴のnative終了記録 | DO pending intentとreserved receiptの原子的保存、1回だけの条件付きPUT、実応答のみの終了記録、古い継続の拒否 | 新規24件と停止・監査・凍結・backupの関連workerd177件、Node11件が成功 | 旧実装/全喪失の終了証明、live復元後採用。[詳細](EPOCH_HISTORY_WRITES.md) |
+| 復旧用epoch事前予約 | 復旧元証言・凍結対象・要求IDの固定、DO/R2予約、private RPCとCLI、通常cancel拒否、D1旧epoch維持 | 新規workerd15件を含む関連162件、Node126件、14操作の権限拒否を含む実bindingドリル成功 | 実D1上書き・予約epoch採用、予約後の安全な中止、全I/O終了証明。[詳細](DATABASE_RESTORE_EPOCH.md) |
+| 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否とprivate bindingドリル成功 | 全外部I/Oの終了証明・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
 | 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
 | 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
 | Time Travel候補の照合 | remote候補準備・固定D1のfresh照合・時刻検索bookmark一致・DO証言 | Node42件/workerd24件追加、全Node843/関連workerd144、実private bindingと合成providerのドリル成功 | 実remote検索、保持期限保証、最終停止・D1上書き・採用は未接続。[詳細](DATABASE_RESTORE_BOOKMARK.md) |
@@ -181,7 +182,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 ### 次の優先順
 
 1. 外部I/Oの終了記録を最終停止へ集約。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart・空ファイル・manifest・GCの14種類は接続済み。外部CLI保存も専用記録へ接続済み。次はepoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
-2. 復旧要求に固定した新epoch事前予約、実D1復元後の採用・全監査・段階再開、Time Travel/live restore drill。
+2. 実D1復元・snapshot照合と予約epoch採用、予約後の安全な中止、全監査・段階再開、Time Travel/live restore drill。復旧要求に固定した事前予約は接続済み。
 3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
 4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。
 5. Files UIの残り、共有/公開link、media metadata検索、ZIP/reader/media配信。

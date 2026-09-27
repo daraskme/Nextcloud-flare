@@ -28,6 +28,7 @@ export async function recoverEpochFloor(
   bucket: R2Bucket,
   d1Epoch: number,
   operatorFloor?: number,
+  assertCurrent: () => void = () => {},
 ): Promise<number> {
   epochNumber(d1Epoch);
   if (operatorFloor !== undefined) epochNumber(operatorFloor);
@@ -35,12 +36,14 @@ export async function recoverEpochFloor(
   let cursor: string | undefined;
   try {
     for (let page = 0; ; page++) {
+      assertCurrent();
       if (page >= 100) throw new Error("epoch_history_scan_limit");
       const result = await bucket.list({
         prefix: EPOCH_PREFIX,
         limit: 1000,
         ...(cursor ? { cursor } : {}),
       });
+      assertCurrent();
       for (const object of result.objects) {
         const match = /^sys\/epoch\/([1-9][0-9]*)\.json$/.exec(object.key);
         if (!match) throw new Error("invalid_epoch_history_key");
@@ -55,6 +58,7 @@ export async function recoverEpochFloor(
     if (operatorFloor === undefined) throw error;
     // Explicit operator assertion is the only escape hatch for unavailable history.
   }
+  assertCurrent();
   if (maximum === 0 && operatorFloor === undefined) throw new Error("epoch_floor_required");
   return epochNumber(Math.max(maximum + 1, d1Epoch + 1, operatorFloor ?? 1));
 }

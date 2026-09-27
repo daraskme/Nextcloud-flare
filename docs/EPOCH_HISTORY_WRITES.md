@@ -32,6 +32,6 @@ timeout、取消し、isolate終了はnative PUTが終了した証拠ではな�
 
 旧実装のpending intentにreceiptがない場合は`epoch_history_receipt_missing`で止める。既存objectや空tableから過去のnative終了を推定しない。実配備時には旧実装からの送信終了確認が必要。
 
-この記録は通常のepoch更新を保護する。復旧要求に固定した新epochの事前予約と、実D1上書き後の採用を分ける処理は未実装。[D1書込み凍結](DATABASE_RESTORE_FREEZE.md)だけで実上書きを開始しない。
+この記録は通常のepoch更新を保護する。復旧用には別tableの`control_restore_epoch_write`で同じnative終了規則を使い、[要求に固定した事前予約](DATABASE_RESTORE_EPOCH.md)を実装した。予約時にはD1を更新せず、実上書き後の採用は後続。[D1書込み凍結](DATABASE_RESTORE_FREEZE.md)や予約の成功だけで実上書きを開始しない。
 
 DO全storage喪失後の履歴数値最大値・D1下限・明示EPOCH_FLOORによる復旧は従来どおりだが、消えたreceiptや旧native処理の終了を証明するものではない。native結果不明の運用証明、全storage喪失を含む実復旧、実環境の停止・監査・段階再開は後続。[外部I/O終了記録](R2_WRITE_SETTLEMENT.md)も参照する。

@@ -1,6 +1,6 @@
 # D1復旧要求の準備と停止保持
 
-更新: 2026-09-27。Time Travel / logical exportからの稼働系復旧に向けた、準備段階・logical世代照合・信頼されたSQL検証者による証言を実装した。[運用CLI](DATABASE_RESTORE_OPERATOR.md)で準備・検証・照会・取消しを行える。D1の上書きと新epochへの採用はまだ接続していない。`preparing`や`sql_verified`を上書き許可やR2処理の全終了証明として扱わない。
+更新: 2026-09-28。Time Travel / logical exportからの稼働系復旧に向けた準備・世代照合・SQL検証証言・対象照合・凍結と、[要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)を実装した。D1の上書きと新epochへの採用はまだ接続していない。準備・検証・予約の成功を、上書き許可やR2処理の全終了証明として扱わない。
 
 ## 内部RPC
 
@@ -12,6 +12,7 @@
 | `attestDatabaseRestoreSql(epoch, id, hash)` | 信頼された検証者による全SQL/schema検証の証言を、準備中の同じ世代に結び付けてDOへ保存する |
 | `cancelDatabaseRestore(epoch, id)` | 正確な要求を取り消す。準備中は再度quiesce、凍結中は原子的な解除と停止token更新を使い、受付とGCの停止を維持する |
 | `freezeDatabaseRestore(epoch, id, targets, input?)` | 現行binding照合を使ってD1全通常tableと新規repair受付を凍結する。再送は同じ対象と保存済みtokenを確認。[詳細](DATABASE_RESTORE_FREEZE.md) |
+| `reserveDatabaseRestoreEpoch(epoch, id, targets)` | 検証済み復旧元と凍結済み対象を固定し、将来epochをDO/R2へ予約する。D1は変更せず、予約開始後の通常取消しを拒否。[詳細](DATABASE_RESTORE_EPOCH.md) |
 
 いずれもsingletonの内部RPCで、専用DatabaseRestoreOperatorのservice bindingへ接続する。HTTP endpoint、既存BackupOperatorの権限追加、remote設定はない。
 
@@ -51,8 +52,8 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 稼働系復旧の完成には以下が必要で、今回の準備RPCは代替しない。
 
 1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。D1対象、Time Travel bookmarkの時刻検索、BLOBSのfresh probe照合も接続済み（[対象](DATABASE_RESTORE_TARGET.md)・[bookmark](DATABASE_RESTORE_BOOKMARK.md)・[BLOBS](DATABASE_RESTORE_BLOBS.md)）。BACKUPSと同じ停止状態での[BLOBS/BACKUPS一括照合](DATABASE_RESTORE_BINDINGS.md)も接続済み。最終停止とremote検証を続ける。
-2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集める。D1書込みと新規repair受付の永続的な凍結に加え、[BACKUPS世代削除・BLOBS/BACKUPS接続probe・upload・multipart全中止・空ファイルPUT・配信manifest・blob/orphan GC](R2_WRITE_SETTLEMENT.md)の14種類の永続記録を接続済み。[BACKUPS外部CLI保存](BACKUP_PUBLICATION_WRITES.md)と[epoch履歴](EPOCH_HISTORY_WRITES.md)も専用DO記録へ接続済み。native不明の運用証明、全storage喪失を含む全終了確認、復旧要求に固定したepoch事前予約は未統合。
-3. D1上書き前に新epochをDO/R2履歴へ予約する。応答不明時に重複発行・再使用しない。
+2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集める。D1書込みと新規repair受付の永続的な凍結に加え、[BACKUPS世代削除・BLOBS/BACKUPS接続probe・upload・multipart全中止・空ファイルPUT・配信manifest・blob/orphan GC](R2_WRITE_SETTLEMENT.md)の14種類の永続記録を接続済み。[BACKUPS外部CLI保存](BACKUP_PUBLICATION_WRITES.md)と[通常/復旧用epoch履歴](EPOCH_HISTORY_WRITES.md)も専用DO記録へ接続済み。native不明の運用証明、全storage喪失を含む全終了確認は未統合。
+3. D1上書き前に新epochをDO/R2履歴へ予約する。[reserve-epoch](DATABASE_RESTORE_EPOCH.md)へ接続済み。応答不明でも要求・番号を固定し、重複発行・再使用を拒否する。予約後の安全な中止手順は後続。
 4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。
 5. 復元されたbackup freeze/tokenを正確な要求に結び付けて解消し、新epochをD1へ採用する。snapshotのcommitted/failed operationは保持する。
 6. FTS再構築、D1/R2の全監査、段階再開、再開後CRUD、実Cloudflareでの復旧ドリル。
@@ -67,6 +68,6 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 - `control_maintenance_tasks`と`KdfSettlements.assertEmpty()`はDO外部に出た処理の保留を保持する。再起動・lease期限・時計経過だけで空にしない。KDFの実終了記録がD1へ精算済みであることと、R2/delete/upload/multipart各台帳の終了条件を最終停止の前に確認する。
 - `ControlR2Writes.assertEmpty()`とD1の`r2_write_attempts`は空ファイルPUT・manifest PUT/DELETE・blob/orphan GCのDELETEの保留を保持する。DO全喪失後もD1 pendingが再開・凍結を拒否する。既知終了のrepairはあるが、unknownをHEADや時計から解消しない。GC claimのlease満了も再送や復元開始の許可にはしない。
 - `recoveryAudit.ts`の`RECOVERY_FINAL_QUERY`はサービス再開用のfenceで、予約・upload・GC・job・outbox・inventory/probe・multipart・bootstrapの条件を含む。復元直前の終了証明に使う場合は各条件の意味を確認し、DOの保留や送信済み外部操作の証明を併せる。`ControlBackup`のfreeze条件だけではこの確認を満たさない。
-- `ControlDO.#reserve/#completePending`は通常のepoch発行とD1への即時採用を組み合わせている。復旧では、要求IDに固定した新epochをDO/R2へ先に予約し、外部D1復元後の採用とは分ける。準備取消しや通常recover経由で予約を捨てたり、復元前に採用したりしない。
+- `ControlDO.#reserve/#completePending`は通常のepoch発行とD1への即時採用を組み合わせている。復旧では`ControlRestoreEpoch`が要求IDに固定した新epochをDO/R2へ先に予約する。通常recoverで採用せず、準備取消しも拒否する。外部D1復元後の採用は後続。
 
 最低限の競合試験は、最終停止中の新規repair・待機中の受付・遅延D1 batch・未知R2/KDF・停止ACK喪失・DO eviction・取消し・同一要求再送である。復元後のsnapshot照合、terminal operation保持、全監査、受付/GCの段階再開はその後に接続する。

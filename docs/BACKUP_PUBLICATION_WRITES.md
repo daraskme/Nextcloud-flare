@@ -32,6 +32,6 @@ pendingが残る間は`complete`、`release`、`cancel`、同一/別世代の`be
 3. 通信例外・HTTPエラー・timeoutは結果不明として停止する。objectの一致では解消しない。元のnative応答が遅れて戻った場合、生きている継続は終了記録だけを送り、期限切れのpublicationを再開しない。終了RPCの応答を失った場合も、その呼出しは失敗し、次の実行でサーバー状態を照合する。
 4. grant/check/finishのprivate RPCは既存adapterで各最大60秒、native I/Oは既定60秒。native待機中にCLIを終了してもpendingは残る。ControlDOを終了したり通信を失ったりして終了事実が記録できなければ、再起動しただけでは送信・解除を再開できない。
 
-native結果が不明な試行を外部証明から安全に解除する運用経路は未実装。既に送信された旧CLI処理の記録は後付けできず、実配備時の旧処理終了確認も別途必要。[epoch履歴のnative終了記録](EPOCH_HISTORY_WRITES.md)は接続済み。復旧要求に固定した新epoch予約とlive採用は引き続き後続である。
+native結果が不明な試行を外部証明から安全に解除する運用経路は未実装。既に送信された旧CLI処理の記録は後付けできず、実配備時の旧処理終了確認も別途必要。[epoch履歴のnative終了記録](EPOCH_HISTORY_WRITES.md)と[復旧用epoch事前予約](DATABASE_RESTORE_EPOCH.md)は接続済み。実復元後の採用は後続である。
 
 検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、他の14種類の記録と残る復旧境界は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を参照。

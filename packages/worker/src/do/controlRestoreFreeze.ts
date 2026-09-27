@@ -139,6 +139,32 @@ export class ControlRestoreFreeze {
     );
   }
 
+  /** Frozen identity used by epoch reservation; it never permits D1 writes or unfreezing. */
+  frozenScope(epoch: number, id: string, targets: RestoreFreezeTargets) {
+    const row = this.#row(epoch, id);
+    if (!row || row.phase !== "frozen" || row.frozen_at === null)
+      throw new Error("database_restore_epoch_not_frozen");
+    const expected = JSON.stringify(restoreFreezeTargets(targets));
+    if (JSON.stringify(this.#status(row).targets) !== expected)
+      throw new Error("database_restore_freeze_target_mismatch");
+    const current = () => {
+      this.localReady(epoch);
+      this.#same(row, "frozen");
+      if (Date.now() < row.frozen_at!) throw new Error("database_restore_freeze_clock_conflict");
+    };
+    current();
+    return {
+      token: row.token,
+      current,
+      verify: async () => {
+        current();
+        const observed = await primary(this.db).prepare(mirrorQuery).first<Mirror>();
+        current();
+        if (!this.#matches(observed, row)) throw new Error("database_restore_freeze_unconfirmed");
+      },
+    };
+  }
+
   async freeze(
     epoch: number,
     id: string,
@@ -254,6 +280,7 @@ export class ControlRestoreFreeze {
 
   async cancel(epoch: number, id: string) {
     return this.#run(epoch, id, async (current) => {
+      this.restore.assertCancellable(id);
       let row = this.#row(epoch, id);
       if (!row) throw new Error("database_restore_freeze_missing");
       if (row.phase === "cancelled") return this.restore.inspect(epoch, id);
