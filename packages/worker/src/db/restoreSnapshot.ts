@@ -17,21 +17,13 @@ const digest = async (value: unknown) =>
     .map((v) => v.toString(16).padStart(2, "0"))
     .join("");
 
-/** Same canonical read observation for the Worker and the independently configured CLI. */
-export async function restoredSnapshotMirror(
-  control: Record<string, unknown>[],
-  schema: Record<string, unknown>[],
-  catalogue: Record<string, unknown>[],
-): Promise<RestoreSnapshotMirror> {
+export async function restoredControlDigest(control: Record<string, unknown>[]): Promise<string> {
   if (
     !Array.isArray(control) ||
     control.length !== 1 ||
     control[0]?.singleton !== 1 ||
     !Number.isSafeInteger(control[0].epoch) ||
-    (control[0].epoch as number) < 1 ||
-    !Array.isArray(schema) ||
-    !schema.length ||
-    !Array.isArray(catalogue)
+    (control[0].epoch as number) < 1
   )
     throw new Error("database_restore_invalid_snapshot");
   const fields = Object.keys(control[0])
@@ -48,6 +40,26 @@ export async function restoredSnapshotMirror(
         throw new Error("database_restore_invalid_snapshot");
       return [key, value];
     });
+  return digest(fields);
+}
+
+/** The epoch trigger may extend the KDF cooldown using the actual D1 execution clock. */
+export async function restoredAdoptionDigest(control: Record<string, unknown>[], minimum: number) {
+  const row = Array.isArray(control) && control.length === 1 ? control[0] : undefined;
+  if (!row || !Number.isSafeInteger(row.kdf_not_before) || (row.kdf_not_before as number) < minimum)
+    throw new Error("database_restore_adoption_mirror_conflict");
+  return restoredControlDigest([{ ...row, kdf_not_before: minimum }]);
+}
+
+/** Same canonical read observation for the Worker and the independently configured CLI. */
+export async function restoredSnapshotMirror(
+  control: Record<string, unknown>[],
+  schema: Record<string, unknown>[],
+  catalogue: Record<string, unknown>[],
+): Promise<RestoreSnapshotMirror> {
+  const controlSha256 = await restoredControlDigest(control);
+  if (!Array.isArray(schema) || !schema.length || !Array.isArray(catalogue))
+    throw new Error("database_restore_invalid_snapshot");
   const objects = schema.map((row) => {
     if (
       !["table", "index", "trigger", "view"].includes(row.type as string) ||
@@ -88,8 +100,8 @@ export async function restoredSnapshotMirror(
   if (new Set(tables.map((t) => t.name)).size !== tables.length)
     throw new Error("database_restore_invalid_snapshot");
   return {
-    snapshotEpoch: control[0].epoch as number,
-    controlSha256: await digest(fields),
+    snapshotEpoch: control[0]!.epoch as number,
+    controlSha256,
     schemaSha256: await digest(objects),
     catalogueSha256: await digest(tables),
     tables: tables.filter((t) => t.type === "table").map((t) => t.name),

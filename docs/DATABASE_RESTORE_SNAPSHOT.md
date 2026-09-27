@@ -44,6 +44,6 @@ DO SQLiteの`control_database_restore_snapshot`にchallengeと証言を保存す
 
 この結果は、観測した復元先のschemaとデータを隔離再構成できたという証言である。元のTime Travel指定時点はproviderの実成功応答に束縛するが、別の過去snapshotの全行を独立に取得して照合したものではない。D1 bindingの新しい書込みchallengeや、検証後も全行が不変であるという障壁も設けていない。`snapshot_verified`は有効期限後も過去の検証記録として残り、epoch採用の許可にはならない。
 
-次は、復元されたbackup/restore tokenと古いpermit/claimを正確なsnapshotに対するtransactionで処理し、予約済みepochをD1/DOへ採用する接続である。committed/failed operationのterminal記録を保持し、全監査・R2実体/会計照合・段階再開まで進める必要がある。現行の通常`bumpEpoch`へ置き換えない。
+後続の[予約epoch採用](DATABASE_RESTORE_ADOPTION.md)ではcontrol全列のCASを伴う停止batchと新しいtokenの独立読戻しを行う。snapshot証言だけでDO epochを変更せず、採用後も復旧holdを維持する。全監査・R2実体/会計照合・段階再開は引き続き必要。採用intent保存後は新しいsnapshot challengeを拒否する。
 
 外部I/O全終了の運用証明、旧実装・DO全storage喪失、logical import、安全な中止、実Cloudflareの復旧ドリルも未完了。送信フラグは既定で無効のまま。ローカルprivate bindingドリルのcontrol行巻戻しと合成provider応答を、実Time Travel成功として扱わない。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。

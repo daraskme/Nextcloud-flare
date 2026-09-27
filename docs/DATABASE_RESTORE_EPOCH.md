@@ -2,7 +2,7 @@
 
 更新: 2026-09-28
 
-`reserve-epoch`は検証済みの復旧元と凍結済みD1/BLOBS/BACKUPSに対して、将来のepochをDOとR2履歴へ予約する。D1のepochは変更せず、凍結を維持する。後続の[Time Travel送信と実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)は既定で無効の別工程へ、[復元後snapshotの読取り照合](DATABASE_RESTORE_SNAPSHOT.md)も別工程へ接続済み。採用用の停止障壁と予約epochの採用は未実装。
+`reserve-epoch`は検証済みの復旧元と凍結済みD1/BLOBS/BACKUPSに対して、将来のepochをDOとR2履歴へ予約する。D1のepochは変更せず、凍結を維持する。後続の[Time Travel送信と実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)は既定で無効の別工程へ、[復元後snapshotの読取り照合](DATABASE_RESTORE_SNAPSHOT.md)も別工程へ接続済み。[採用用の停止batchと独立marker読戻し](DATABASE_RESTORE_ADOPTION.md)も接続済みで、採用後も復旧holdを保持する。
 
 ## コマンドと前提
 
@@ -38,4 +38,4 @@ DO SQLiteの`control_database_restore_epoch`に予約を保存し、`control_res
 
 予約の再送は固定した予約を再照会するもので、期限を過ぎた復旧元証言を更新するものではない。実上書きの直前にはソース有効性・外部I/O全終了・実対象を別途確認する必要がある。
 
-Time Travel送信と復元後snapshotの隔離照合はローカルfixtureで検証する段階であり、実環境の復旧は未検証。logical import、採用用停止障壁、backup/restore tokenの解消、新epochのD1採用、全監査・段階再開は未実装。native結果不明・旧実装・DO全喪失時の終了証明も残る。ローカル試験を実Time Travel成功とは扱わない。通常68table・migration0046のままで、remote migration・配備は行っていない。
+Time Travel送信と復元後snapshotの隔離照合はローカルfixtureで検証する段階であり、実環境の復旧は未検証。logical import、採用後の全監査・段階再開と復旧holdの解除は未実装。native結果不明・旧実装・DO全喪失時の終了証明も残る。ローカル試験を実Time Travel成功とは扱わない。通常68table・migration0046のままで、remote migration・配備は行っていない。

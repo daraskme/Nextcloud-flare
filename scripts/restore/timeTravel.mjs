@@ -123,7 +123,16 @@ export async function applyRestoreTimeTravel({ epoch, id, control, reader, times
   if (selected.source.kind !== "time_travel")
     throw new Error("database_restore_dispatch_unavailable");
   // A durable successful receipt is safe to report. Pending must never acquire another grant.
-  if (["restore_written", "snapshot_checking", "snapshot_verified"].includes(selected.state))
+  if (
+    [
+      "restore_written",
+      "snapshot_checking",
+      "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
+    ].includes(selected.state)
+  )
     return selected;
   if (selected.state !== "epoch_reserved") throw new Error("database_restore_dispatch_unavailable");
   const observed = restoreBookmarkObservation(

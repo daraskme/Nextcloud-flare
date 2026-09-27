@@ -17,7 +17,7 @@ const { maintainBackups } = await moduleAt("scripts/backup/maintenance.mjs");
 const { pruneBackup } = await moduleAt("scripts/backup/prune.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
 const { restoreControlCalls } = await moduleAt("scripts/restore/control.mjs");
-const { verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
+const { restoreStatus, verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
 const { verifyRestoreD1 } = await moduleAt("scripts/restore/target.mjs");
 const { verifyRestoreBookmark } = await moduleAt("scripts/restore/bookmark.mjs");
 const { verifyRestoreBlobs } = await moduleAt("scripts/restore/blobs.mjs");
@@ -25,6 +25,7 @@ const { verifyRestoreBindings } = await moduleAt("scripts/restore/bindings.mjs")
 const { freezeRestoreDatabase } = await moduleAt("scripts/restore/freeze.mjs");
 const { reserveRestoreEpoch } = await moduleAt("scripts/restore/epoch.mjs");
 const { verifyRestoredSnapshot } = await moduleAt("scripts/restore/snapshot.mjs");
+const { adoptRestoreEpoch } = await moduleAt("scripts/restore/adoption.mjs");
 const { applyRestoreTimeTravel, timeTravelProvider } = await moduleAt(
   "scripts/restore/timeTravel.mjs",
 );
@@ -387,6 +388,8 @@ try {
       ["finishTimeTravel", [2, restoreId, {}, {}]],
       ["challengeSnapshot", [2, restoreId, {}]],
       ["attestSnapshot", [2, restoreId, {}, {}]],
+      ["beginAdoption", [2, restoreId, {}]],
+      ["attestAdoption", [2, restoreId, {}]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -662,12 +665,33 @@ try {
   assert.equal((await apply()).state, "snapshot_verified");
   assert.equal(providerCalls, 1);
   assert.deepEqual(await query("SELECT * FROM control"), beforeSnapshot);
+  const adoption = await adoptRestoreEpoch({
+    epoch: 2,
+    id: epochId,
+    control: restoreControl,
+    reader: { ...bindingReader, snapshotQuery: query },
+  });
+  assert.equal(adoption.state, "epoch_adopted");
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.deepEqual(restoreStatus(await restoreControl.inspect(2, epochId), 2, epochId), adoption);
+  const adoptedControl = await api.recover();
+  assert.equal(adoptedControl.epoch, 3);
+  assert.equal(adoptedControl.maintenance, true);
+  assert.equal(adoptedControl.gcPaused, true);
+  assert.deepEqual((await query("SELECT epoch,maintenance,gc_paused FROM control"))[0], {
+    epoch: 3,
+    maintenance: 1,
+    gc_paused: 1,
+  });
+  assert.equal((await apply()).state, "epoch_adopted");
+  assert.equal(providerCalls, 1);
   const report = {
     result: "PASS",
     directory,
     id,
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
+    adoption: { state: adoption.state, newEpoch: adoption.newEpoch },
     snapshot: {
       state: snapshot.state,
       tables: snapshot.tables,
@@ -676,7 +700,7 @@ try {
       dataSha256: snapshot.dataSha256,
     },
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all eighteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; stopped old DO epoch and unchanged D1 snapshot; no repeat POST, cancellation or epoch adoption.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; maintenance/GC and restore hold retained, no repeat POST or cancellation.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

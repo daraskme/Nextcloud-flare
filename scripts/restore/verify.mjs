@@ -38,6 +38,9 @@ export function restoreStatus(value, epoch, id) {
       "restore_written",
       "snapshot_checking",
       "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
     ].includes(value.state) ||
     (value.newEpoch !== undefined && (!integer(value.newEpoch, 1) || value.newEpoch <= epoch)) ||
     ([
@@ -46,11 +49,23 @@ export function restoreStatus(value, epoch, id) {
       "restore_written",
       "snapshot_checking",
       "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
     ].includes(value.state) &&
       value.newEpoch === undefined) ||
-    (!["restore_written", "snapshot_checking", "snapshot_verified"].includes(value.state) &&
+    (![
+      "restore_written",
+      "snapshot_checking",
+      "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
+    ].includes(value.state) &&
       value.restoreResult !== undefined) ||
-    (value.state === "snapshot_verified" &&
+    (["snapshot_verified", "adoption_pending", "adoption_written", "epoch_adopted"].includes(
+      value.state,
+    ) &&
       (!integer(value.snapshotVerifiedAt) || value.snapshotVerifiedAt < value.createdAt)) ||
     !integer(value.createdAt)
   )
@@ -66,9 +81,15 @@ export function restoreStatus(value, epoch, id) {
     source = { kind: "time_travel", bookmark: value.source.bookmark };
   else throw new Error("database_restore_invalid_status");
   if (
-    ["restore_pending", "restore_written", "snapshot_checking", "snapshot_verified"].includes(
-      value.state,
-    ) &&
+    [
+      "restore_pending",
+      "restore_written",
+      "snapshot_checking",
+      "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
+    ].includes(value.state) &&
     source.kind !== "time_travel"
   )
     throw new Error("database_restore_invalid_status");
@@ -79,10 +100,19 @@ export function restoreStatus(value, epoch, id) {
     createdAt: value.createdAt,
     source,
     ...(value.newEpoch === undefined ? {} : { newEpoch: value.newEpoch }),
-    ...(["restore_written", "snapshot_checking", "snapshot_verified"].includes(value.state)
+    ...([
+      "restore_written",
+      "snapshot_checking",
+      "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
+    ].includes(value.state)
       ? { restoreResult: restoreTimeTravelResult(value.restoreResult) }
       : {}),
-    ...(value.state === "snapshot_verified"
+    ...(["snapshot_verified", "adoption_pending", "adoption_written", "epoch_adopted"].includes(
+      value.state,
+    )
       ? { snapshotVerifiedAt: value.snapshotVerifiedAt }
       : {}),
   };

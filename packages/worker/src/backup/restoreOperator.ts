@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import type { RestoreAdoptionChallenge } from "../../../shared/src/restoreAdoption";
 import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
@@ -87,6 +88,12 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   challengeSnapshot(epoch: number, id: string, targets: RestoreFreezeTargets) {
     return this.#control(epoch, id).challengeDatabaseRestoreSnapshot(epoch, id, targets);
+  }
+  beginAdoption(epoch: number, id: string, targets: RestoreFreezeTargets) {
+    return this.#control(epoch, id).beginDatabaseRestoreAdoption(epoch, id, targets);
+  }
+  attestAdoption(epoch: number, id: string, challenge: RestoreAdoptionChallenge) {
+    return this.#control(epoch, id).attestDatabaseRestoreAdoption(epoch, id, challenge);
   }
   attestSnapshot(
     epoch: number,

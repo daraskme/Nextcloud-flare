@@ -1,6 +1,6 @@
 # D1復旧要求の準備と停止保持
 
-更新: 2026-09-28。Time Travel / logical exportからの稼働系復旧に向けた準備・世代照合・SQL検証証言・対象照合・凍結と、[要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)を実装した。[Time Travelの一度限りの送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)も接続済みだが既定で無効で、local fixtureの検証段階。新epochへの採用は未接続。準備・検証・予約の成功や機能フラグを、R2処理の全終了証明として扱わない。
+更新: 2026-09-28。Time Travel / logical exportからの稼働系復旧に向けた準備・世代照合・SQL検証証言・対象照合・凍結と、[要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)を実装した。[Time Travelの一度限りの送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)も接続済みだが既定で無効で、local fixtureの検証段階。[新epochへの停止中採用](DATABASE_RESTORE_ADOPTION.md)も接続済みで、全監査と復旧hold解除は後続。準備・検証・予約の成功や機能フラグを、R2処理の全終了証明として扱わない。
 
 ## 内部RPC
 
@@ -68,6 +68,6 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 - `control_maintenance_tasks`と`KdfSettlements.assertEmpty()`はDO外部に出た処理の保留を保持する。再起動・lease期限・時計経過だけで空にしない。KDFの実終了記録がD1へ精算済みであることと、R2/delete/upload/multipart各台帳の終了条件を最終停止の前に確認する。
 - `ControlR2Writes.assertEmpty()`とD1の`r2_write_attempts`は空ファイルPUT・manifest PUT/DELETE・blob/orphan GCのDELETEの保留を保持する。DO全喪失後もD1 pendingが再開・凍結を拒否する。既知終了のrepairはあるが、unknownをHEADや時計から解消しない。GC claimのlease満了も再送や復元開始の許可にはしない。
 - `recoveryAudit.ts`の`RECOVERY_FINAL_QUERY`はサービス再開用のfenceで、予約・upload・GC・job・outbox・inventory/probe・multipart・bootstrapの条件を含む。復元直前の終了証明に使う場合は各条件の意味を確認し、DOの保留や送信済み外部操作の証明を併せる。`ControlBackup`のfreeze条件だけではこの確認を満たさない。
-- `ControlDO.#reserve/#completePending`は通常のepoch発行とD1への即時採用を組み合わせている。復旧では`ControlRestoreEpoch`が要求IDに固定した新epochをDO/R2へ先に予約する。通常recoverで採用せず、準備取消しも拒否する。外部D1復元後の採用は後続。
+- `ControlDO.#reserve/#completePending`は通常のepoch発行とD1への即時採用を組み合わせている。復旧では`ControlRestoreEpoch`が要求IDに固定した新epochをDO/R2へ先に予約する。通常recoverで採用せず、準備取消しも拒否する。外部D1復元後は隔離snapshot検証・D1停止batch・独立marker読戻し・DO採用へ進む。
 
 最低限の競合試験は、最終停止中の新規repair・待機中の受付・遅延D1 batch・未知R2/KDF・停止ACK喪失・DO eviction・取消し・同一要求再送である。復元後のsnapshot照合、terminal operation保持、全監査、受付/GCの段階再開はその後に接続する。

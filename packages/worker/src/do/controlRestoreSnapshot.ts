@@ -75,7 +75,7 @@ export class ControlRestoreSnapshot {
       catalogue = await read(RESTORE_SNAPSHOT_CATALOGUE_QUERY);
     const result = await restoredSnapshotMirror(control, schema, catalogue);
     current();
-    return result;
+    return { mirror: result, control: control[0]! };
   }
   async #bounded<T>(run: (active: () => void) => Promise<T>): Promise<T> {
     const started = Date.now();
@@ -131,7 +131,7 @@ export class ControlRestoreSnapshot {
       };
       current();
       await this.reservation.verifyHistory(epoch, id, targets, current);
-      const mirror = await this.#mirror(current);
+      const { mirror } = await this.#mirror(current);
       const challenge = restoreSnapshotChallenge({
         id,
         epoch,
@@ -187,7 +187,7 @@ export class ControlRestoreSnapshot {
       };
       current();
       await this.reservation.verifyHistory(epoch, id, challenge.targets, current);
-      if (JSON.stringify(await this.#mirror(current)) !== JSON.stringify(challenge.mirror))
+      if (JSON.stringify((await this.#mirror(current)).mirror) !== JSON.stringify(challenge.mirror))
         throw new Error("database_restore_snapshot_changed");
       current();
       this.sql.exec(
@@ -206,5 +206,42 @@ export class ControlRestoreSnapshot {
         bytes: proof.data.bytes,
       };
     });
+  }
+
+  /** Fresh preflight only. The caller must CAS this exact control row in its stop batch. */
+  async adoptionSnapshot(
+    epoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+    active: () => void,
+  ) {
+    const row = this.#row(id);
+    if (!row?.challenge_json || !row.proof_json || typeof row.verified_at !== "number")
+      throw new Error("database_restore_snapshot_unverified");
+    const challenge = restoreSnapshotChallenge(JSON.parse(row.challenge_json as string));
+    restoreSnapshotProof(JSON.parse(row.proof_json as string), challenge);
+    const current = () => {
+      active();
+      const selected = this.#selection(epoch, id, targets);
+      if (
+        this.restore.inspect(epoch, id).state !== "snapshot_verified" ||
+        challenge.id !== id ||
+        challenge.epoch !== epoch ||
+        challenge.newEpoch !== selected.newEpoch ||
+        JSON.stringify(challenge.targets) !== JSON.stringify(targets) ||
+        JSON.stringify(challenge.restoreResult) !== JSON.stringify(selected.restoreResult) ||
+        JSON.stringify(this.#row(id)) !== JSON.stringify(row)
+      )
+        throw new Error("database_restore_snapshot_conflict");
+      if (Date.now() < (row.verified_at as number) || Date.now() >= challenge.expiresAt)
+        throw new Error("database_restore_snapshot_expired");
+    };
+    current();
+    await this.reservation.verifyHistory(epoch, id, targets, current);
+    const { mirror, control } = await this.#mirror(current);
+    if (JSON.stringify(mirror) !== JSON.stringify(challenge.mirror))
+      throw new Error("database_restore_snapshot_changed");
+    current();
+    return { challenge, control, current };
   }
 }

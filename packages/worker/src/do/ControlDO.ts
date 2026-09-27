@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
+import type { RestoreAdoptionChallenge } from "../../../shared/src/restoreAdoption";
 import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
@@ -74,6 +75,7 @@ import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
 import { ControlR2Writes } from "./controlR2Writes";
+import { ControlRestoreAdoption } from "./controlRestoreAdoption";
 import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreEpoch } from "./controlRestoreEpoch";
@@ -155,6 +157,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreEpoch: ControlRestoreEpoch;
   readonly #restoreTimeTravel: ControlRestoreTimeTravel;
   readonly #restoreSnapshot: ControlRestoreSnapshot;
+  readonly #restoreAdoption: ControlRestoreAdoption;
   readonly #r2Writes: ControlR2Writes;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -271,6 +274,24 @@ export class ControlDO extends DurableObject<Env> {
       this.#databaseRestore,
       this.#restoreEpoch,
       restoreReady,
+    );
+    this.#restoreAdoption = new ControlRestoreAdoption(
+      ctx.storage,
+      env.DB,
+      this.#databaseRestore,
+      this.#restoreSnapshot,
+      this.#restoreEpoch,
+      restoreReady,
+      (epoch, next, token) => {
+        restoreReady(epoch);
+        const saved = ctx.storage.sql.exec(
+          "UPDATE control_state SET epoch=? WHERE singleton=1 AND phase='ready' AND epoch=? RETURNING singleton",
+          next,
+          epoch,
+        );
+        if (saved.toArray().length !== 1) throw new Error("database_restore_adoption_conflict");
+        this.#admission.resetEpoch(next, token);
+      },
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -450,6 +471,29 @@ export class ControlDO extends DurableObject<Env> {
   ) {
     this.#row();
     return this.#restoreSnapshot.attest(expectedEpoch, id, challenge, proof);
+  }
+
+  async beginDatabaseRestoreAdoption(
+    expectedEpoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+  ) {
+    this.#row();
+    return this.#restoreAdoption.begin(
+      expectedEpoch,
+      id,
+      targets,
+      this.env.RESTORE_WRITE_ENABLED === "true",
+    );
+  }
+
+  async attestDatabaseRestoreAdoption(
+    expectedEpoch: number,
+    id: string,
+    challenge: RestoreAdoptionChallenge,
+  ) {
+    this.#row();
+    return this.#restoreAdoption.attest(expectedEpoch, id, challenge);
   }
 
   /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */

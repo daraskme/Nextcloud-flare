@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-記録時点でfe736b6の[CI36333077770](https://github.com/daraskme/Nextcloud-flare/actions/runs/36333077770)はUbuntu・Windows2分割・browser成功、backup実行中。先行5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)と86d4b6eの[CI36331228499](https://github.com/daraskme/Nextcloud-flare/actions/runs/36331228499)はいずれも4job成功・Windows分割1失敗。同じmultipart試験の90秒timeoutをfe736b6で修正し、Windowsでの成功を確認した。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)も全5job成功済み。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行fe736b6の[CI36333077770](https://github.com/daraskme/Nextcloud-flare/actions/runs/36333077770)は全5job成功。直前1e2207fの[CI36334806558](https://github.com/daraskme/Nextcloud-flare/actions/runs/36334806558)は記録時点でUbuntu・Windows分割2・browser成功、backup・Windows分割1実行中。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [復元後の予約epoch採用](DATABASE_RESTORE_ADOPTION.md)をprivate operator・adopt-epoch CLIへ接続しました。検証済みcontrolの全列を比較する原子的D1 batchで旧凍結/tokenを解消し、予約epoch・新しい停止tokenを設定します。独立CLIがそのtokenを指定先から読み返した後、DOへ同じepochを採用します。完了済みoperationと未終了KDF/R2記録を保持し、採用後もmaintenance・GC停止・復旧holdを維持します。
+- 初回Node4file/100件は91成功・9失敗。D1のepochトリガーによるKDF待機期限延長を期待hashに反映できていなかったため、同列の下限以上を許容し、他のcontrol全列を厳密照合する形へ修正。最終4file/104件成功（26.82s）、うち新規20件。schema0037/0039/0040/0046、backup/restore凍結の原子的解除とrollback、terminal保持、KDF/R2保留保持、mutation admission閉鎖、設定変更・読戻し不一致・秘密非出力を確認。/tmp/ncf-adoption-node.log、/tmp/ncf-adoption-node-final.log。
+- 初回snapshot/adoption workerd26件成功（28.04s）。遅延成功と最終CAS競合を追加し、snapshot/adoption・復旧要求・凍結・admissionの4file/134件成功（123.81s）、新規12件。epoch採用後のeviction、応答喪失の読戻し収束、結果不明の再送拒否、通常再開拒否、停止中監査への接続を確認。既存admission拒否fixtureでworkerdのadmission_closedログが出るが、全テストは成功。/tmp/ncf-adoption-worker.log、/tmp/ncf-adoption-worker-final.log。
+- private bindingドリル成功。全20復旧操作の権限拒否、68table/SQL57,492bytesのsnapshot検証から停止token独立読戻し・epoch3のD1/DO採用・eviction後停止維持・Time Travel再送拒否まで確認。最初はfixtureがRPC proxy全体をplain objectと直接比較して失敗したため、status正規化と各propertyの検査に修正。/tmp/ncf-adoption-operator.log、/tmp/ncf-adoption-operator-final.log、.wrangler/operator-drill-Y5ISFT/report.json。providerは合成応答で、D1 control行巻戻しを模擬している。
+- 型・lint450file・契約/設定・Web build・Worker dry-run成功。12資料のlocal link272件とgit diff --checkも成功。/tmp/ncf-adoption-types-final.log、/tmp/ncf-adoption-lint.log、/tmp/ncf-adoption-build.log。schema0046・通常68table・依存追加なし。実Cloudflare restore/migration/deploy、通知・timer設置は行っていない。全監査・復旧hold解除・段階再開・運用終了証明・安全な中止・logical importは後続。
+
+### 先行する復元後snapshotの隔離検証
 
 - [復元後snapshotの隔離検証](DATABASE_RESTORE_SNAPSHOT.md)をControlDO/private operator/verify-restored CLIへ接続。実成功済みのTime Travel要求・予約epoch・3bindingへchallengeを束縛する。DOと独立CLIのcontrol/schema/catalogueを照合し、信頼済みmigration prefix・全table hash・隔離SQL/FK/FTS検証の証言をDOへ保存する。D1の内容と旧DO epoch、停止を維持し、epoch採用や受付再開は許可しない。
 - 新規Nodeは隔離検証16件と読取りadapter1件。最初の3file/89件は88成功・1失敗で、FK異常fixtureが既存のimmutable session triggerに止められていた。FK違反のnode_propsを作るfixtureへ修正し、CLI/target/Time Travel/epoch/復旧準備の5file/150件が成功（27.60s）。古い0037 schema、NUL/引用符を含む値、committed/failed terminal保持、未知schema、FK違反、読取り中の変更、設定/期限/ACK喪失を確認。/tmp/ncf-restored-snapshot-node.log、/tmp/ncf-restored-snapshot-node-final.log。

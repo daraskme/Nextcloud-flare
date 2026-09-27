@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { restoreBookmarkTimestamp } from "../packages/shared/src/restoreBookmark.ts";
 import { localBackupStore, S3BackupStore } from "./backup/objectStore.mjs";
+import { adoptRestoreEpoch } from "./restore/adoption.mjs";
 import { verifyRestoreBackups } from "./restore/backups.mjs";
 import { verifyRestoreBindings } from "./restore/bindings.mjs";
 import { verifyRestoreBlobs } from "./restore/blobs.mjs";
@@ -32,6 +33,7 @@ const usage = `Usage:
   pnpm database:restore freeze --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore reserve-epoch --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore apply-time-travel --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID --timestamp YYYY-MM-DDTHH:mm:ss.sssZ
+  pnpm database:restore adopt-epoch --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore verify-restored --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
 
 prepare pins the logical source or Time Travel bookmark and closes writes/GC. Keep the same request ID after an uncertain response.
@@ -47,7 +49,7 @@ freeze verifies bindings and freezes D1 writes under the request ID. Repeat free
 reserve-epoch requires prior source verification and D1 freeze. It pins one future epoch in DO/R2 under the same request, preserving D1's old epoch and freeze. Ordinary cancellation is disabled once reservation begins; inspect and retry the same ID after an unknown response.
 apply-time-travel requires RESTORE_WRITE_ENABLED=true on the target and CLOUDFLARE_API_TOKEN locally. It destructively restores the pinned D1 database with one provider POST and records the native response. Unknown dispatches are never retried. This path is disabled by default; live operational I/O proof and end-to-end restoration validation remain release gates.
 verify-restored independently reads the restored database, checks a trusted migration prefix and every table against an isolated SQL import, validates FK and rebuilds local FTS, then records a request-bound observation. It preserves the remote snapshot and old DO epoch. This observation is not an adoption or service-resume authorization.
-No command adopts the reserved epoch or resumes service. Adoption and safe abandonment remain unfinished.
+adopt-epoch atomically stops the verified D1 snapshot at the reserved epoch, independently reads its new marker, and publishes that epoch in DO. Requires RESTORE_WRITE_ENABLED=true for the first write. Unknown D1 batches are never sent again; retry only reconciles the same marker. Admission and GC remain closed; audits, safe abandonment and release remain unfinished.
 `;
 try {
   const { values, positionals } = parseArgs({
@@ -86,6 +88,7 @@ try {
         "reserve-epoch": ["config", "environment"],
         "apply-time-travel": ["config", "environment", "timestamp"],
         "verify-restored": ["config", "environment"],
+        "adopt-epoch": ["config", "environment"],
       }[command];
     if (
       positionals.length !== 1 ||
@@ -104,6 +107,7 @@ try {
         "freeze",
         "reserve-epoch",
         "verify-restored",
+        "adopt-epoch",
       ].includes(command) &&
         (!values.remote || !values.config)) ||
       (command === "verify" &&
@@ -150,13 +154,14 @@ try {
       "reserve-epoch",
       "apply-time-travel",
       "verify-restored",
+      "adopt-epoch",
     ].includes(command)
       ? await restoreD1Reader({
           config: values.config,
           environment: values.environment,
           operatorConfig: values["operator-config"],
           mode: values.local ? "local" : "remote",
-          snapshot: command === "verify-restored",
+          snapshot: ["verify-restored", "adopt-epoch"].includes(command),
           blobs: [
             "verify-blobs",
             "verify-bindings",
@@ -164,6 +169,7 @@ try {
             "reserve-epoch",
             "apply-time-travel",
             "verify-restored",
+            "adopt-epoch",
           ].includes(command),
           backups: [
             "verify-backups",
@@ -172,6 +178,7 @@ try {
             "reserve-epoch",
             "apply-time-travel",
             "verify-restored",
+            "adopt-epoch",
           ].includes(command),
         })
       : undefined;
@@ -184,7 +191,9 @@ try {
       let store;
       try {
         let result;
-        if (command === "verify-restored") {
+        if (command === "adopt-epoch") {
+          result = await adoptRestoreEpoch({ epoch, id, control, reader });
+        } else if (command === "verify-restored") {
           result = await verifyRestoredSnapshot({
             epoch,
             id,

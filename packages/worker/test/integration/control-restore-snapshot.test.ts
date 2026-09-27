@@ -102,6 +102,221 @@ const proof = (c: RestoreSnapshotChallenge) => ({
 });
 const attest = (c: RestoreSnapshotChallenge) =>
   control().attestDatabaseRestoreSnapshot(epoch, id, c, proof(c));
+const adopt = () =>
+  runInDurableObject(control(), (_instance, state) =>
+    configured(state).beginDatabaseRestoreAdoption(epoch, id, targets),
+  );
+const verifySnapshot = async () => attest(await challenge());
+
+it("adopts exactly the reserved epoch after a fresh D1 marker, retaining maintenance and the restore hold", async () => {
+  await verifySnapshot();
+  const c = await adopt();
+  expect(c.newEpoch).toBe(epoch + 1);
+  expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("adoption_written");
+  expect(await control().recover()).toEqual({ epoch, maintenance: true, gcPaused: true });
+  expect(
+    await env.DB.prepare(
+      "SELECT epoch,maintenance,gc_paused,admission_token,backup_token,restore_freeze_token FROM control",
+    ).first(),
+  ).toEqual({
+    epoch: epoch + 1,
+    maintenance: 1,
+    gc_paused: 1,
+    admission_token: c.token,
+    backup_token: null,
+    restore_freeze_token: null,
+  });
+  await evictDurableObject(control());
+  expect(await adopt()).toEqual(c);
+  const saved = await control().attestDatabaseRestoreAdoption(epoch, id, c);
+  expect(saved.state).toBe("epoch_adopted");
+  expect(JSON.stringify(saved)).not.toContain(c.token);
+  await evictDurableObject(control());
+  expect(await control().attestDatabaseRestoreAdoption(epoch, id, c)).toEqual(saved);
+  expect(await control().recover()).toEqual({
+    epoch: epoch + 1,
+    maintenance: true,
+    gcPaused: true,
+  });
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.resumeAdmission(epoch + 1)).rejects.toThrow(/database_restore_active/);
+    await expect(instance.resumeGarbageCollection(epoch + 1)).rejects.toThrow();
+    await expect(instance.bumpEpoch(epoch + 1, "operator")).rejects.toThrow(
+      /database_restore_active/,
+    );
+    await expect(instance.cancelDatabaseRestore(epoch, id)).rejects.toThrow(/epoch_reserved/);
+    await expect(instance.challengeDatabaseRestoreSnapshot(epoch, id, targets)).rejects.toThrow();
+  });
+  expect((await control().beginRecoveryAudit(epoch + 1)).epoch).toBe(epoch + 1);
+});
+
+it("requires the write flag only for the first adoption dispatch", async () => {
+  await verifySnapshot();
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.beginDatabaseRestoreAdoption(epoch, id, targets)).rejects.toThrow(
+      /write_disabled/,
+    );
+  });
+  const c = await adopt();
+  expect(await control().beginDatabaseRestoreAdoption(epoch, id, targets)).toEqual(c);
+  expect((await control().attestDatabaseRestoreAdoption(epoch, id, c)).state).toBe("epoch_adopted");
+});
+
+it.each(["unverified", "expired", "changed"])(
+  "refuses adoption with %s snapshot evidence before dispatch",
+  async (kind) => {
+    const c = await challenge();
+    if (kind !== "unverified") await attest(c);
+    if (kind === "expired") vi.spyOn(Date, "now").mockReturnValue(c.expiresAt);
+    if (kind === "changed")
+      await env.DB.prepare("UPDATE control SET updated_at=updated_at+1").run();
+    const before = await env.DB.prepare("SELECT * FROM control").first();
+    await runInDurableObject(control(), async (_instance, state) => {
+      await expect(
+        configured(state).beginDatabaseRestoreAdoption(epoch, id, targets),
+      ).rejects.toThrow(/snapshot_/);
+      expect(
+        state.storage.sql.exec("SELECT * FROM control_database_restore_adoption").toArray(),
+      ).toHaveLength(0);
+    });
+    expect(await env.DB.prepare("SELECT * FROM control").first()).toEqual(before);
+  },
+);
+
+it("reconciles a lost D1 success without a second batch or an automatic DO publication", async () => {
+  await verifySnapshot();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const batch = vi.fn(async (statements: D1PreparedStatement[]) => {
+      await env.DB.batch(statements);
+      throw new Error("lost_response");
+    });
+    const db = new Proxy(env.DB, {
+      get: (target, key) =>
+        key === "batch"
+          ? batch
+          : typeof Reflect.get(target, key) === "function"
+            ? Reflect.get(target, key).bind(target)
+            : Reflect.get(target, key),
+    });
+    const instance = new ControlDO(state, { ...env, DB: db, RESTORE_WRITE_ENABLED: "true" });
+    await expect(instance.beginDatabaseRestoreAdoption(epoch, id, targets)).rejects.toThrow(
+      /lost_response/,
+    );
+    expect((await instance.inspectDatabaseRestore(epoch, id)).state).toBe("adoption_pending");
+    expect((await instance.recover()).epoch).toBe(epoch);
+    const c = await instance.beginDatabaseRestoreAdoption(epoch, id, targets);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect((await instance.attestDatabaseRestoreAdoption(epoch, id, c)).state).toBe(
+      "epoch_adopted",
+    );
+    expect(batch).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("keeps a rejected atomic batch pending and never retries its mutation", async () => {
+  await verifySnapshot();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const batch = vi.fn(async (_statements: D1PreparedStatement[]) => {
+      throw new Error("unknown_native_failure");
+    });
+    const db = new Proxy(env.DB, {
+      get: (target, key) =>
+        key === "batch"
+          ? batch
+          : typeof Reflect.get(target, key) === "function"
+            ? Reflect.get(target, key).bind(target)
+            : Reflect.get(target, key),
+    });
+    const instance = new ControlDO(state, { ...env, DB: db, RESTORE_WRITE_ENABLED: "true" });
+    await expect(instance.beginDatabaseRestoreAdoption(epoch, id, targets)).rejects.toThrow(
+      /unknown_native_failure/,
+    );
+    await expect(instance.beginDatabaseRestoreAdoption(epoch, id, targets)).rejects.toThrow(
+      /mirror_conflict/,
+    );
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect((await instance.inspectDatabaseRestore(epoch, id)).state).toBe("adoption_pending");
+    await expect(instance.challengeDatabaseRestoreSnapshot(epoch, id, targets)).rejects.toThrow(
+      /snapshot_unavailable/,
+    );
+  });
+  expect((await control().recover()).epoch).toBe(epoch);
+});
+
+it("records a late native success without publishing the epoch after its call deadline", async () => {
+  await verifySnapshot();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const at = Date.now();
+    const batch = vi.fn(async (statements: D1PreparedStatement[]) => {
+      const saved = await env.DB.batch(statements);
+      vi.spyOn(Date, "now").mockReturnValue(at + 30000);
+      return saved;
+    });
+    const db = new Proxy(env.DB, {
+      get: (target, key) =>
+        key === "batch"
+          ? batch
+          : typeof Reflect.get(target, key) === "function"
+            ? Reflect.get(target, key).bind(target)
+            : Reflect.get(target, key),
+    });
+    const instance = new ControlDO(state, { ...env, DB: db, RESTORE_WRITE_ENABLED: "true" });
+    await expect(instance.beginDatabaseRestoreAdoption(epoch, id, targets)).rejects.toThrow(
+      /adoption_timeout/,
+    );
+    vi.restoreAllMocks();
+    expect((await instance.inspectDatabaseRestore(epoch, id)).state).toBe("adoption_written");
+    expect((await instance.recover()).epoch).toBe(epoch);
+    await instance.attestDatabaseRestoreAdoption(
+      epoch,
+      id,
+      await instance.beginDatabaseRestoreAdoption(epoch, id, targets),
+    );
+    expect((await instance.recover()).epoch).toBe(epoch + 1);
+    expect(batch).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("rejects a control change between snapshot preflight and atomic dispatch", async () => {
+  await verifySnapshot();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const batch = vi.fn(async (statements: D1PreparedStatement[]) => {
+      await env.DB.prepare("UPDATE control SET updated_at=updated_at+1").run();
+      return env.DB.batch(statements);
+    });
+    const db = new Proxy(env.DB, {
+      get: (target, key) =>
+        key === "batch"
+          ? batch
+          : typeof Reflect.get(target, key) === "function"
+            ? Reflect.get(target, key).bind(target)
+            : Reflect.get(target, key),
+    });
+    const instance = new ControlDO(state, { ...env, DB: db, RESTORE_WRITE_ENABLED: "true" });
+    await expect(instance.beginDatabaseRestoreAdoption(epoch, id, targets)).rejects.toThrow();
+    expect((await instance.recover()).epoch).toBe(epoch);
+    expect(await env.DB.prepare("SELECT epoch FROM control").first("epoch")).toBe(1);
+    expect((await instance.inspectDatabaseRestore(epoch, id)).state).toBe("adoption_pending");
+  });
+});
+
+it.each(["token", "target", "control"])(
+  "rejects %s disagreement before DO publication",
+  async (kind) => {
+    await verifySnapshot();
+    const c = await adopt();
+    if (kind === "token") c.token = crypto.randomUUID();
+    if (kind === "target") c.targets.target.databaseId = crypto.randomUUID();
+    if (kind === "control")
+      await env.DB.prepare("UPDATE control SET updated_at=updated_at+1").run();
+    await runInDurableObject(control(), async (instance) => {
+      await expect(instance.attestDatabaseRestoreAdoption(epoch, id, c)).rejects.toThrow(
+        /conflict/,
+      );
+    });
+    expect((await control().recover()).epoch).toBe(epoch);
+  },
+);
 
 it("binds the restored snapshot to the original request and records an observation without changing D1", async () => {
   const before = await env.DB.prepare("SELECT * FROM control").first();

@@ -28,7 +28,10 @@ export interface DatabaseRestoreStatus {
     | "restore_pending"
     | "restore_written"
     | "snapshot_checking"
-    | "snapshot_verified";
+    | "snapshot_verified"
+    | "adoption_pending"
+    | "adoption_written"
+    | "epoch_adopted";
   createdAt: number;
   newEpoch?: number;
   restoreResult?: RestoreTimeTravelResult;
@@ -107,6 +110,18 @@ export class ControlDatabaseRestore {
       proof_json TEXT,verified_at INTEGER,
       CHECK((proof_json IS NULL)=(verified_at IS NULL))
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_adoption(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),challenge_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','written','adopted'))
+    )`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_adoption_immutable
+      BEFORE UPDATE ON control_database_restore_adoption
+      WHEN NEW.id<>OLD.id OR NEW.challenge_json<>OLD.challenge_json OR NOT (
+        OLD.state='pending' AND NEW.state='written' OR OLD.state='written' AND NEW.state='adopted')
+      BEGIN SELECT RAISE(ABORT,'database_restore_adoption_conflict'); END`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_adoption_delete
+      BEFORE DELETE ON control_database_restore_adoption
+      BEGIN SELECT RAISE(ABORT,'database_restore_adoption_conflict'); END`);
   }
 
   active(): boolean {
@@ -131,7 +146,8 @@ export class ControlDatabaseRestore {
   assertCanRepair(): void {
     if (
       this.sql
-        .exec("SELECT 1 FROM control_database_restore_freeze WHERE phase<>'cancelled' LIMIT 1")
+        .exec(`SELECT 1 FROM control_database_restore_freeze f WHERE phase<>'cancelled'
+          AND NOT EXISTS(SELECT 1 FROM control_database_restore_adoption a WHERE a.id=f.id AND a.state='adopted') LIMIT 1`)
         .toArray().length
     )
       throw new Error("database_restore_frozen");
@@ -148,6 +164,9 @@ export class ControlDatabaseRestore {
   }
 
   #status(row: RestoreRow): DatabaseRestoreStatus {
+    const adoption = this.sql
+      .exec("SELECT state FROM control_database_restore_adoption WHERE id=?", row.id)
+      .toArray()[0];
     const snapshot = this.sql
       .exec<{ verified_at: number | null }>(
         "SELECT verified_at FROM control_database_restore_snapshot WHERE id=?",
@@ -177,21 +196,27 @@ export class ControlDatabaseRestore {
       id: row.id,
       epoch: row.epoch,
       source: JSON.parse(row.source_json) as DatabaseRestoreSource,
-      state: snapshot
-        ? snapshot.verified_at === null
-          ? "snapshot_checking"
-          : "snapshot_verified"
-        : execution
-          ? execution.state === "ended"
-            ? "restore_written"
-            : "restore_pending"
-          : reservation
-            ? reservation.phase === "reserved"
-              ? "epoch_reserved"
-              : "epoch_reserving"
-            : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
-              ? row.phase
-              : freeze.phase,
+      state: adoption
+        ? adoption.state === "adopted"
+          ? "epoch_adopted"
+          : adoption.state === "written"
+            ? "adoption_written"
+            : "adoption_pending"
+        : snapshot
+          ? snapshot.verified_at === null
+            ? "snapshot_checking"
+            : "snapshot_verified"
+          : execution
+            ? execution.state === "ended"
+              ? "restore_written"
+              : "restore_pending"
+            : reservation
+              ? reservation.phase === "reserved"
+                ? "epoch_reserved"
+                : "epoch_reserving"
+              : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
+                ? row.phase
+                : freeze.phase,
       createdAt: row.created_at,
       ...(reservation?.new_epoch ? { newEpoch: reservation.new_epoch } : {}),
       ...(execution?.result_json
