@@ -58,27 +58,3 @@ export async function recoverEpochFloor(
   if (maximum === 0 && operatorFloor === undefined) throw new Error("epoch_floor_required");
   return epochNumber(Math.max(maximum + 1, d1Epoch + 1, operatorFloor ?? 1));
 }
-
-/** Conditional creation plus exact reconciliation; never overwrite an epoch record. */
-export async function persistEpoch(bucket: R2Bucket, record: EpochRecord): Promise<void> {
-  epochNumber(record.epoch);
-  const key = `${EPOCH_PREFIX}${record.epoch}.json`;
-  const existing = await bucket.get(key);
-  if (existing) {
-    if (existing.size > 1024) {
-      await existing.body.cancel();
-      throw new Error("epoch_history_conflict");
-    }
-    const found = await existing.json<EpochRecord>();
-    if (found.epoch !== record.epoch || found.at !== record.at || found.reason !== record.reason) {
-      throw new Error("epoch_history_conflict");
-    }
-    return;
-  }
-  const result = await bucket.put(key, JSON.stringify(record), {
-    onlyIf: { etagDoesNotMatch: "*" },
-    httpMetadata: { contentType: "application/json" },
-  });
-  // A concurrent writer must be reconciled on the next call, not treated as our success.
-  if (result === null) throw new Error("epoch_history_conflict");
-}

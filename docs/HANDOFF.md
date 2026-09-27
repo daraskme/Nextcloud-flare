@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-外部CLIのBACKUPS保存を[送信受付・終了記録](BACKUP_PUBLICATION_WRITES.md)へ接続しました。publish/run/daily/maintainはpart/manifestごとにgrantを取得し、S3またはlocal bindingの実応答だけから終了を記録します。保存前後に未終了試行を照会するため、全objectが既存でもunknownを回避できません。timeout後の実応答は終了記録だけへ反映し、古い保存処理は再開しません。単独publishにもoperator設定が必要です。既存14種類の共通R2記録は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+epoch履歴の条件付きPUTを[専用の送信・終了記録](EPOCH_HISTORY_WRITES.md)へ接続しました。pending intentとreserved receiptを同時保存し、同じ予約では一度だけPUTします。実応答を失った場合は、GET一致や期限満了でも再送・epoch公開を許可しません。10秒timeout後の実成功は終了記録だけへ反映し、遅延した古い処理はD1採用を進めません。外部CLI保存の[専用記録](BACKUP_PUBLICATION_WRITES.md)と14種類の[共通R2記録](R2_WRITE_SETTLEMENT.md)も接続済みです。
 
-schema0046・通常68table・依存追加なし。Node全1,023件と関連workerd83件、型・lint428file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功。単独publishとdaily/run/maintainの実CLIドリルも成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。新規24ケースを含む関連workerd177件とNode11件、型・lint430file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はepoch履歴とnative結果不明の運用証明を含めた外部I/O全終了の確認、新epoch予約、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は復旧要求に固定した新epochの事前予約とD1採用の分離、native結果不明の運用証明を含む全終了確認、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。旧実装や全storage喪失でreceiptがない場合の終了証明、通知先・timer設置、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。世代削除0dbb5a5は4job成功・Windows分割1の移行fixture失敗で終了し、fixtureは3f2217bで修正済み。8a093f7とfa8f105は全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)はUbuntu・Windows分割2・browserの3job成功、backup・Windows分割1は実行中です。3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)は全5job成功。0dbb5a5のWindows移行fixture失敗は3f2217bで修正済みです。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 

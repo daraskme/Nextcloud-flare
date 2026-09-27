@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-外部CLIのBACKUPS保存を[送信受付・終了記録](BACKUP_PUBLICATION_WRITES.md)へ接続しました。publish/run/daily/maintainはpart/manifestごとにgrantを取得し、S3またはlocal bindingの実応答だけから終了を記録します。保存前後に未終了試行を照会するため、全objectが既存でもunknownを回避できません。timeout後の実応答は終了記録だけへ反映し、古い保存処理は再開しません。単独publishにもoperator設定が必要です。既存14種類の共通R2記録は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+epoch履歴の条件付きPUTを[専用の送信・終了記録](EPOCH_HISTORY_WRITES.md)へ接続しました。pending intentとreserved receiptを同時保存し、同じ予約では一度だけPUTします。実応答を失った場合は、GET一致や期限満了でも再送・epoch公開を許可しません。10秒timeout後の実成功は終了記録だけへ反映し、遅延した古い処理はD1採用を進めません。外部CLI保存の[専用記録](BACKUP_PUBLICATION_WRITES.md)と14種類の[共通R2記録](R2_WRITE_SETTLEMENT.md)も接続済みです。
 
-schema0046・通常68table・依存追加なし。Node全1,023件と関連workerd83件、型・lint428file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功。単独publishとdaily/run/maintainの実CLIドリルも成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。新規24ケースを含む関連workerd177件とNode11件、型・lint430file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はepoch履歴とnative結果不明の運用証明を含めた外部I/O全終了の確認、新epoch予約、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は復旧要求に固定した新epochの事前予約とD1採用の分離、native結果不明の運用証明を含む全終了確認、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。旧実装や全storage喪失でreceiptがない場合の終了証明、通知先・timer設置、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。世代削除0dbb5a5は4job成功・Windows分割1の移行fixture失敗で終了し、fixtureは3f2217bで修正済み。8a093f7とfa8f105は全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)はUbuntu・Windows分割2・browserの3job成功、backup・Windows分割1は実行中です。3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)は全5job成功。0dbb5a5のWindows移行fixture失敗は3f2217bで修正済みです。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,8 @@ schema0046・通常68table・依存追加なし。Node全1,023件と関連worker
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存は専用DO記録へ接続済み。native結果不明の運用収束とepoch履歴の最終停止統合は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
+| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と復旧用epoch予約/採用の分離は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
+| epoch履歴のnative終了記録 | DO pending intentとreserved receiptの原子的保存、1回だけの条件付きPUT、実応答のみの終了記録、古い継続の拒否 | 新規24件と停止・監査・凍結・backupの関連workerd177件、Node11件が成功 | 復旧要求に固定した事前予約、旧実装/全喪失の終了証明、live復元後採用。[詳細](EPOCH_HISTORY_WRITES.md) |
 | 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否を追加。13操作のprivate bindingドリル成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
 | 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
 | 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |

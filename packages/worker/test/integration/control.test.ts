@@ -2,8 +2,9 @@ import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloud
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { atomicBatch } from "../../src/db/primary";
-import { CONTROL_NAME } from "../../src/do/ControlDO";
-import { EPOCH_PREFIX, persistEpoch, recoverEpochFloor } from "../../src/do/epochHistory";
+import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
+import { ControlEpochHistory } from "../../src/do/controlEpochHistory";
+import { EPOCH_PREFIX, recoverEpochFloor } from "../../src/do/epochHistory";
 import { foundationFixture } from "../fixtures/foundation";
 import { grantPermit } from "../fixtures/mutationAdmission";
 
@@ -107,6 +108,10 @@ it("does not publish before an R2 write succeeds, and preserves the pending inte
     // Insert the state at the durable boundary before external I/O, as on an interrupted request.
     state.storage.sql.exec(
       "UPDATE control_state SET phase='pending',pending_epoch=31,pending_at=99,pending_reason='restore',pending_token='attempt'",
+    );
+    new ControlEpochHistory(state.storage.sql).reserve(
+      { epoch: 31, at: 99, reason: "restore" },
+      "attempt",
     );
     await env.BACKUPS.put(
       `${EPOCH_PREFIX}31.json`,
@@ -300,16 +305,35 @@ it("rejects any non-singleton ControlDO", async () => {
   });
 });
 
-it("reconciles an R2 response lost after the immutable write without overwriting it", async () => {
-  const record = { epoch: 2, at: 99, reason: "operator" as const };
+it("retains an unknown native PUT across eviction even when exact readback exists", async () => {
+  await history(1);
   const put = vi.fn(async (...args: Parameters<R2Bucket["put"]>) => {
     await env.BACKUPS.put(...args);
     throw new Error("lost_response");
   });
-  const bucket = { get: env.BACKUPS.get.bind(env.BACKUPS), put } as unknown as R2Bucket;
-  await expect(persistEpoch(bucket, record)).rejects.toThrow(/lost_response/);
-  await persistEpoch(bucket, record);
+  const get = vi.fn((key: string) => env.BACKUPS.get(key));
+  const bucket = {
+    list: (options: R2ListOptions) => env.BACKUPS.list(options),
+    get,
+    put,
+  } as unknown as R2Bucket;
+  await runInDurableObject(control(), async (_instance, state) => {
+    const custom = new ControlDO(state, { ...env, BACKUPS: bucket });
+    await expect(custom.recover()).rejects.toThrow(/lost_response/);
+    await expect(custom.recover()).rejects.toThrow(/epoch_history_write_unsettled/);
+    expect(state.storage.sql.exec("SELECT state FROM control_epoch_write").one()).toEqual({
+      state: "pending",
+    });
+  });
+  expect(await env.BACKUPS.head(`${EPOCH_PREFIX}2.json`)).not.toBeNull();
+  await evictDurableObject(control());
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.recover()).rejects.toThrow(/epoch_history_write_unsettled/);
+    await expect(instance.status()).rejects.toThrow(/control_not_ready/);
+  });
+  expect(await env.DB.prepare("SELECT epoch FROM control").first("epoch")).toBe(1);
   expect(put).toHaveBeenCalledTimes(1);
+  expect(get).not.toHaveBeenCalled();
 });
 
 it("fails closed on list failure unless the operator explicitly supplied a floor", async () => {

@@ -3,6 +3,8 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)はUbuntu・Windows分割2・browserの3job成功、backup・Windows分割1は実行中。現時点では全体成功としない。
+
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
 先行fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。
@@ -10,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- epoch履歴PUTを専用の`control_epoch_write`へ接続。pending intentとreserved receiptの同時保存、1回だけのnative PUT、実成功/null応答による終了記録、1024byte/10秒の読取りとpending tuple再検査を実装。応答喪失やGET一致でunknownを解消せず、遅延した処理からのD1採用・DO公開を拒否する。詳細は[EPOCH_HISTORY_WRITES](EPOCH_HISTORY_WRITES.md)。
+- 最初のworkerd2file/33件が成功（8.43s）。型検査で見つかったTextDecoder optionとテストfixtureの型互換を修正し、期限境界・停止本文など5ケースを追加。最終のcontrol・epoch履歴・受付・復旧監査・D1復旧・凍結・backup barrierの7file/177件が成功（129.33s）。新規24ケース。既存のPUT応答喪失試験はunknown保持へ更新し、D1失敗後のeviction再試行と全DO喪失時の数値下限を維持。/tmp/ncf-epoch-native-worker.log、/tmp/ncf-epoch-native-regression.log。
+- epoch下限・履歴走査・認証fingerprintの既存Node11件が成功（0.14s）。型・lint430file・契約/設定・Web build・Worker dry-runも成功。/tmp/ncf-epoch-native-node.log、/tmp/ncf-epoch-native-type-final.log、/tmp/ncf-epoch-native-lint.log、/tmp/ncf-epoch-native-build.log。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。実ControlDO起動、日次生成と4補充・世代回収、13復旧操作の権限拒否、D1/BLOBS/BACKUPS照合・凍結・eviction再照会・取消しを確認。S3/Time Travel応答は合成provider。/tmp/ncf-epoch-native-operator.log、.wrangler/operator-drill-p9hEGJ/report.json。
+- 今回は関連範囲をローカル検証した。全Node/workerd・Windows/browserはpush後のCIで確認する。schema0046・通常68table・依存追加なし。remote resource作成・migration・deployなし。
+- 復旧要求に固定したepoch事前予約とD1採用の分離、native不明・旧実装・receipt全喪失の運用証明、実D1上書きと全監査・段階再開は未完了。
+
+### 先行するCLI保存のnative終了記録
 
 - 外部CLIのpublish/run/daily/maintainを保存grantとnative終了記録へ接続。単独publishにもoperator descriptorを必須化。S3 HTTP 200/412、local binding PUTの成功だけから終了を記録し、正確なGETやtimeoutではunknownを解消しない。保存前後のprivate照会で全object既存の場合の再実行も保護する。
 - 新規Node22ケースを追加し、全1,023件（54file、46.97s）が成功。S3/local bindingの成功・条件競合・例外・timeout後の実応答、grant RPC応答喪失と遅延、grant項目不一致、終了RPC応答喪失、callback欠落、単独publishの必須設定を確認。既存publication/operator試験も未知結果を保持する契約へ更新。/tmp/ncf-cli-publication-unit.log。

@@ -61,6 +61,7 @@ import {
   ControlBackup,
 } from "./controlBackup";
 import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDatabaseRestore";
+import { ControlEpochHistory } from "./controlEpochHistory";
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
@@ -70,13 +71,7 @@ import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
-import {
-  type EpochReason,
-  epochNumber,
-  parseEpochFloor,
-  persistEpoch,
-  recoverEpochFloor,
-} from "./epochHistory";
+import { type EpochReason, epochNumber, parseEpochFloor, recoverEpochFloor } from "./epochHistory";
 import { type KdfRepairResult, KdfSettlements } from "./kdfSettlements";
 import {
   failStaleRecoveryOutbox,
@@ -147,6 +142,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreBackups: ControlRestoreBackups;
   readonly #restoreFreeze: ControlRestoreFreeze;
   readonly #r2Writes: ControlR2Writes;
+  readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Only local synchronous storage initialization. Never hold an input gate over R2/D1.
@@ -166,6 +162,7 @@ export class ControlDO extends DurableObject<Env> {
       after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
     )`);
     this.#databaseRestore = new ControlDatabaseRestore(ctx.storage.sql);
+    this.#epochHistory = new ControlEpochHistory(ctx.storage.sql);
     this.#kdfSettlements = new KdfSettlements(ctx.storage.sql, env.DB);
     this.#admission = new ControlAdmission(
       ctx.storage,
@@ -320,9 +317,11 @@ export class ControlDO extends DurableObject<Env> {
     if (this.ctx.id.toString() !== this.env.CONTROL.idFromName(CONTROL_NAME).toString()) {
       throw new Error("control_singleton_required");
     }
-    return this.ctx.storage.sql
+    const row = this.ctx.storage.sql
       .exec<ControlRow>("SELECT * FROM control_state WHERE singleton=1")
       .one();
+    if (row.phase !== "pending") this.#epochHistory.assertSettled();
+    return row;
   }
 
   async status(): Promise<ControlStatus> {
@@ -1106,18 +1105,38 @@ export class ControlDO extends DurableObject<Env> {
   #reserve(epoch: number, reason: EpochReason, phase: ControlRow["phase"], expected: number): void {
     this.#databaseRestore.assertInactive();
     assertNoBackup(this.ctx.storage.sql);
-    const result = this.ctx.storage.sql.exec(
-      `UPDATE control_state SET phase='pending',pending_epoch=?,pending_at=?,
-      pending_reason=?,pending_token=? WHERE singleton=1 AND phase=? AND epoch=?`,
-      epoch,
-      Date.now(),
-      reason,
-      crypto.randomUUID(),
-      phase,
-      expected,
-    );
-    if (result.rowsWritten !== 1) throw new Error("epoch_conflict");
-    this.ctx.storage.sql.exec("DELETE FROM recovery_audit_v7");
+    this.ctx.storage.transactionSync(() => {
+      const at = Date.now(),
+        token = crypto.randomUUID();
+      const result = this.ctx.storage.sql.exec(
+        `UPDATE control_state SET phase='pending',pending_epoch=?,pending_at=?,
+        pending_reason=?,pending_token=? WHERE singleton=1 AND phase=? AND epoch=?`,
+        epoch,
+        at,
+        reason,
+        token,
+        phase,
+        expected,
+      );
+      if (result.rowsWritten !== 1) throw new Error("epoch_conflict");
+      this.#epochHistory.reserve({ epoch, at, reason }, token);
+      this.ctx.storage.sql.exec("DELETE FROM recovery_audit_v7");
+    });
+  }
+
+  #assertPending(row: ControlRow): void {
+    const current = this.#row();
+    if (
+      current.phase !== "pending" ||
+      current.epoch !== row.epoch ||
+      current.pending_epoch !== row.pending_epoch ||
+      current.pending_at !== row.pending_at ||
+      current.pending_reason !== row.pending_reason ||
+      current.pending_token !== row.pending_token
+    )
+      throw new Error("epoch_conflict");
+    this.#databaseRestore.assertInactive();
+    assertNoBackup(this.ctx.storage.sql);
   }
 
   async #completePending(row: ControlRow): Promise<ControlStatus> {
@@ -1129,13 +1148,16 @@ export class ControlDO extends DurableObject<Env> {
     ) {
       throw new Error("invalid_pending_epoch");
     }
+    this.#assertPending(row);
     await this.#assertNoBackup();
-    // A lost response leaves this durable pending row. recover() rechecks the immutable R2 record.
-    await persistEpoch(this.env.BACKUPS, {
-      epoch: row.pending_epoch,
-      at: row.pending_at,
-      reason: row.pending_reason,
-    });
+    this.#assertPending(row);
+    await this.#epochHistory.persist(
+      this.env.BACKUPS,
+      { epoch: row.pending_epoch, at: row.pending_at, reason: row.pending_reason },
+      row.pending_token,
+      () => this.#assertPending(row),
+    );
+    this.#assertPending(row);
     await atomicBatch(this.env.DB, [
       {
         sql: `UPDATE control SET epoch=?,maintenance=1,gc_paused=1,gc_operator_paused=1,gc_hold_token=NULL,gc_hold_operation=NULL,gc_hold_expires_at=NULL,updated_at=?,admission_revision=0,admission_token=?
@@ -1158,19 +1180,15 @@ export class ControlDO extends DurableObject<Env> {
       },
     ]);
     this.ctx.storage.transactionSync(() => {
+      this.#assertPending(row);
       const result = this.ctx.storage.sql.exec(
         `UPDATE control_state SET epoch=pending_epoch,phase='ready',
         pending_epoch=NULL,pending_at=NULL,pending_reason=NULL,pending_token=NULL
         WHERE singleton=1 AND phase='pending' AND pending_token=?`,
         row.pending_token,
       );
-      if (result.rowsWritten === 1) {
-        this.#admission.resetEpoch(row.pending_epoch!, row.pending_token!);
-      } else {
-        const current = this.#row();
-        if (current.phase !== "ready" || current.epoch !== row.pending_epoch)
-          throw new Error("epoch_conflict");
-      }
+      if (result.rowsWritten !== 1) throw new Error("epoch_conflict");
+      this.#admission.resetEpoch(row.pending_epoch!, row.pending_token!);
     });
     // Epoch recovery always closes admission; reopening requires a new complete audit.
     return this.status();
