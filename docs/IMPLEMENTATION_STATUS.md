@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。前回53bfc16の[CI36349203224](https://github.com/daraskme/Nextcloud-flare/actions/runs/36349203224)はLinux/Windowsで旧migration数期待値（46→実際47）が失敗し、今回修正しました。前回Linuxは他2,641件成功。ほかのWindows2分割・browser・backupは成功。先行9b0f257の[CI36347414539](https://github.com/daraskme/Nextcloud-flare/actions/runs/36347414539)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行a5c7aa0の[CI36351626854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36351626854)はUbuntu・Windows3分割・browser・backupの全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [受信共有の閲覧](SHARED_WORKSPACE.md)を実装。Sharedの一覧・配下/単体file閲覧・content取得を接続。selected share id/versionを認可・cursor・ticketへ固定し、共有rootより上のparent ID/breadcrumb名を遮蔽する。schema0048・69通常table、migration/依存追加なし。共有への編集/uploadは後続。
+- 修正前の実D1テストで非共有祖先名の漏出を再現し、修正後は新規workerd14件を含む4file/73件が成功（16.00s）。share失効/version/root変更・credential/owner/recipient失効・祖先trash・maintenance/epoch競合と選択cursorを確認。/tmp/ncf-shared-read-repro.log、/tmp/ncf-shared-read-worker.log。
+- 最初のbrowser検査は2件失敗。test identityの全origin向けextra headerがcontent CORSに混入したためapp限定Cookieへ変更し、DELETE helperに必須Content-Typeを付けてCSRF通過後のowner認可を検査するよう修正した。production CORSは変更していない。共有管理3件＋受信共有2件の計5件成功（42.8s）。mobile screenshotを確認。/tmp/ncf-shared-browse-browser-2.log。
+- 全Node62file/1,311件成功（50.58s）。selected shareの複製/freeze・入力拒否16件とWeb APIの選択維持1件を追加。lint482file・型・契約/設定検査も成功。全体workerd122file/2,677件も成功（1,755.26s）。最終Web build/Worker dry-run成功、全体`pnpm check`終了コード0。/tmp/ncf-shared-workspace-check.log。
+- 全browser24件成功（6.5分）。全体checkのasset再生成と干渉しないよう、ソースとbuildを`/tmp/ncf-shared-browser-M5jroA`へ複製して`pnpm exec playwright test`を実行した。実行後にdocsを除く549fileとbuild7fileのSHA-256一致を確認。新規Sharedページの認証/unknown fallbackも既存assetシナリオへ追加。/tmp/ncf-shared-workspace-browser-final.log。
+- 最終確認はNode1,311 + workerd2,677 + browser24 = **4,012件**。新規はNode17/workerd14/browser2件。git diff --check成功。remote migration/deployは行っていない。
+
+### 先行する内部共有管理
 
 - [内部共有の管理](INTERNAL_SHARES.md)を実装。migration0048、通常69table。所有者のCRUD、受信一覧API、作成時固定mount名、相手/role/期限の更新、version照合と旧grant/session/ticket失効を共通mutation受付へ接続。配信budgetを保持。Filesの共有管理画面では応答喪失時に自動再送せず入力を維持する。受信Shared画面/DAV Shared/公開linkは後続。
 - 新規workerd21件を含む関連4file/63件成功（16.33s）。入力/共有mountのNode2file/89件成功（13.42s）。実ブラウザー新規3件成功（31.3s）。最終workerd 4file/63件も成功（20.67s）。/tmp/ncf-internal-share-worker-final.log。

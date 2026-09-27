@@ -1,10 +1,18 @@
+import { type SelectedShare, selectedShare } from "../../../shared/src/shares";
 import { assertExists, prepare, primary, type SqlStatement } from "../db/primary";
 import type { VerifiedAccessService } from "./access";
 import type { AccessSession } from "./sessions";
 
 export type Principal =
   | {
-      readonly kind: "user" | "app_password";
+      readonly kind: "user";
+      readonly selected_share?: SelectedShare;
+      readonly user_id: string;
+      readonly credential_id: string;
+      readonly epoch: number;
+    }
+  | {
+      readonly kind: "app_password";
       readonly user_id: string;
       readonly credential_id: string;
       readonly epoch: number;
@@ -173,6 +181,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
   p AS (SELECT json_extract(?3,'$.kind') AS kind,json_extract(?3,'$.user_id') AS user_id,
     json_extract(?3,'$.credential_id') AS credential_id,json_extract(?3,'$.epoch') AS epoch,
     json_extract(?3,'$.share_id') AS share_id,json_extract(?3,'$.share_version') AS share_version,
+    json_extract(?3,'$.selected_share.id') AS selected_id,json_extract(?3,'$.selected_share.version') AS selected_version,
     json_extract(?3,'$.service_principal_id') AS service_id,json_extract(?3,'$.token_expires_at') AS token_expiry,
     json_extract(?3,'$.access_iss') AS access_iss,json_extract(?3,'$.common_name') AS common_name),
   a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
@@ -202,6 +211,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
         AND (?6<>'node.rename' OR sh.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
+        AND ((SELECT selected_id FROM p) IS NULL OR EXISTS(SELECT 1 FROM p WHERE p.kind='user' AND sh.id=p.selected_id AND sh.version=p.selected_version))
   )
   SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,sp.tree_generation
     FROM nodes n JOIN spaces sp ON sp.id=n.space_id AND sp.owner_id=n.owner_id
@@ -220,7 +230,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
         (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
-          SELECT 1 FROM user_authority u WHERE u.id=n.owner_id OR EXISTS(
+          SELECT 1 FROM user_authority u WHERE (u.id=n.owner_id AND p.selected_id IS NULL) OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
         OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
@@ -254,6 +264,15 @@ export async function authorizeNode(
   principal: Principal,
   request: NodeRequest,
 ): Promise<AuthorizedNode> {
+  let selection: SelectedShare | undefined;
+  if ("selected_share" in principal) {
+    if (principal.kind !== "user") throw new Error("authorization_denied");
+    try {
+      selection = selectedShare(principal.selected_share);
+    } catch {
+      throw new Error("authorization_denied");
+    }
+  }
   const nodeId = request.operation === "node.create" ? request.parentId : request.nodeId;
   if (
     ![
@@ -287,7 +306,10 @@ export async function authorizeNode(
         principal.common_name.length > 1024))
   )
     throw new Error("authorization_denied");
-  const identity = Object.freeze({ ...principal });
+  const identity = Object.freeze({
+    ...principal,
+    ...(selection ? { selected_share: selection } : {}),
+  });
   const values = [
     nodeId,
     request.spaceId,

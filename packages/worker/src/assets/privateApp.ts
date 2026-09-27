@@ -7,7 +7,8 @@ import { MutationUnavailableError } from "../services/accountMutation";
 import { privateAssets } from "./privateManifest";
 
 const assets = new Set<string>(privateAssets);
-const pages = /^(?:\/|\/files(?:\/[A-Za-z0-9_-]{1,128})?|\/trash)$/;
+const pages =
+  /^(?:\/|\/files(?:\/[A-Za-z0-9_-]{1,128})?|\/trash|\/shared(?:\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?)?)$/;
 
 export function privateAssetRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;

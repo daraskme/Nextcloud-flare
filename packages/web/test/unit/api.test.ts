@@ -3,6 +3,32 @@ import { ApiClient, ApiError } from "../../src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("keeps the selected share on node, breadcrumb and paginated children requests", async () => {
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      urls.push(url);
+      return Response.json({});
+    }),
+  );
+  const api = new ApiClient();
+  const share = { id: "share_1", version: 3 };
+  await api.node("file", share);
+  await api.path("file", undefined, share);
+  await api.children("folder", "cursor+with/special=", undefined, share);
+  for (const url of urls) {
+    const query = new URL(url, "https://app.example.invalid").searchParams;
+    expect(query.get("shareId")).toBe("share_1");
+    expect(query.get("shareVersion")).toBe("3");
+  }
+  expect(new URL(urls[2]!, "https://app.example.invalid").searchParams.get("cursor")).toBe(
+    "cursor+with/special=",
+  );
+  await api.children("own-folder");
+  expect(urls.at(-1)).toBe("/api/v1/nodes/own-folder/children");
+});
+
 it("does not dispatch a waiting mutation after logout invalidates its CSRF flight", async () => {
   let finish!: (response: Response) => void;
   const fetcher = vi.fn(

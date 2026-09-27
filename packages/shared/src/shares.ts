@@ -1,4 +1,22 @@
 export type ShareRole = "read" | "edit";
+export interface SelectedShare {
+  readonly id: string;
+  readonly version: number;
+}
+export function selectedShare(value: unknown): SelectedShare {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("invalid_share_selection");
+  const v = value as Record<string, unknown>;
+  if (
+    Object.keys(v).sort().join(",") !== "id,version" ||
+    typeof v.id !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(v.id) ||
+    !Number.isSafeInteger(v.version) ||
+    (v.version as number) < 1
+  )
+    throw new Error("invalid_share_selection");
+  return Object.freeze({ id: v.id, version: v.version as number });
+}
 export interface InternalShareInput {
   kind: "internal";
   rootNodeId: string;

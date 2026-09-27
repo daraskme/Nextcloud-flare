@@ -145,7 +145,10 @@ it("creates through CSRF HTTP, grants read/edit, preserves the mount on rename a
       recipients: [`${f.other.ids.user}@example.invalid`],
     }),
   ).rejects.toThrow("share_unavailable");
-  expect((await f.http(`shares/${share.id}`, {}, f.viewer)).status).toBe(404);
+  expect(await (await f.http(`shares/${share.id}`, {}, f.viewer)).json()).toMatchObject({
+    id: share.id,
+    recipients: [],
+  });
   const updated = await f.http(`shares/${share.id}`, {
     method: "PATCH",
     headers: { ...f.headers, "If-Match": '"share-1"' },

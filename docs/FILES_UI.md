@@ -9,6 +9,7 @@
 - マイドライブのbreadcrumb、200件単位の署名cursor一覧、リストの仮想スクロール、グリッド、フォルダー配下の検索APIと検索結果のページ切替。ごみ箱は表示済み項目の名前絞込み。
 - フォルダー作成、改名、移動、コピー、ごみ箱移動、復元先選択、確認checkbox付き完全削除。
 - [内部共有の管理](INTERNAL_SHARES.md)。相手・閲覧/編集・期限を設定し、変更と停止を行う。応答喪失は入力を保持して一覧確認、旧versionの変更は拒否する。
+- [受信した共有](SHARED_WORKSPACE.md)の一覧・配下閲覧・共有内breadcrumb・ファイル取得。範囲外や停止後はmetadataを隠し、選択したshare ID/versionをAPIとcontent ticketへ保持する。
 - 単一・multipart upload、確認付き上書き、容量表示、進捗、中止、reload後の元ファイル再選択。上書きの詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)。
 - フォルダー情報dialogから要求時に配下のファイル数・サブフォルダー数・合計サイズを集計。上限到達とcontent不足を明示。再集計中/拒否後は旧数値を隠す。[FOLDER_STATS](FOLDER_STATS.md)参照。
 - content ticketをPOSTして別originのHttpOnly Cookieへ交換し、別タブでファイルを開く/保存。tokenをURLに置かない。
@@ -31,7 +32,7 @@ uploadのIndexedDBはID、capability、epoch、name/size/mtime、先頭・末尾
 
 ## private assets
 
-Viteのprivate entry graphから `scripts/generate-private-assets.mjs` がファイル名の完全一致allowlistを生成する。Workerは `/`、`/files`、`/files/:id`、`/trash` とそのallowlistだけをapp host・ControlDO admission・Access認証後に配信する。unknown/public/service/content hostにSPA fallbackを渡さない。`index.html`とVite manifestの直接配信も拒否する。
+Viteのprivate entry graphから `scripts/generate-private-assets.mjs` がファイル名の完全一致allowlistを生成する。Workerは `/`、`/files`、`/files/:id`、`/trash`、`/shared`、`/shared/:shareId`、`/shared/:shareId/:nodeId` とそのallowlistだけをapp host・ControlDO admission・Access認証後に配信する。unknown/public/service/content hostにSPA fallbackを渡さない。`index.html`とVite manifestの直接配信も拒否する。
 
 HTML/chunk/CSSはprivate, no-store。CSPのscriptはselfのみ、connect先はselfと設定済みhttps content originのみ。styleのinlineはReactの仮想行位置/Radix表示に必要。画像はself/data、object/frame-ancestor/baseは禁止。React側にHTML文字列の挿入はない。
 
@@ -55,10 +56,12 @@ pnpm test:browser
 
 内部共有の3件を追加し、全22件を確認した。新規シナリオはmobileでの共有作成/権限・期限変更/停止、作成応答喪失後の非再送・入力保持と一覧確認、別操作で更新されたversionへの上書き拒否。test-onlyの`POST /__test__/access-login`で新しいAccess fingerprintを明示発行する。logout済みsessionを再有効化せず、検査ファイルの順序に依存しない。
 
+受信共有の2件を追加。app host限定のtest-only Cookieで所有者と受信者を分け、実bytes取得と共有停止後のcontent Cookie拒否、単体file共有、範囲外と受信者からの管理操作拒否を確認する。production CORSは変更しない。Sharedの全private URLも未認証で401、余分な階層のURLはSPA fallbackなしと確認する。
+
 ## 残る制約
 
 - restoreは[RESTORE_GC](RESTORE_GC.md)の永続pauseを取得し、既存削除の終了後に原子的に復元する。競合・回収待ちは同じkeyで再試行する。管理者のGC停止設定は保持し、単一hold・5分期限・1,000ノード上限がある。
-- 受信者のShared画面、公開linkの管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
+- 受信者の共有編集/upload画面、公開linkの管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
 - gridの大量ページ仮想化、pagination競合の専用browser scenario、大容量/低速網/実Access/実R2/実Cookie policy/各ブラウザーのstaging試験は残る。
 - Browserの96 MiB成功は500 GiB・実R2 lifecycle・未知multipart ID閉鎖の証明ではない。既存の予約holdとrepair gateは変更していない。
 

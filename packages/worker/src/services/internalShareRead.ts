@@ -71,9 +71,15 @@ async function page(
   ]);
   return (result.at(-1)?.results ?? []) as Row[];
 }
-export async function readInternalShare(db: D1Database, session: AccessSession, id: string) {
+export async function readInternalShare(
+  db: D1Database,
+  session: AccessSession,
+  id: string,
+  allowRecipient = false,
+) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("share_unavailable");
-  const row = (await page(db, session, false, undefined, null, 1, id))[0];
+  let row = (await page(db, session, false, undefined, null, 1, id))[0];
+  if (!row && allowRecipient) row = (await page(db, session, true, undefined, null, 1, id))[0];
   if (!row || row.visible !== 1) throw new Error("share_unavailable");
   return JSON.parse(row.data) as InternalShare;
 }

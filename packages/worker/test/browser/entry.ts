@@ -8,7 +8,24 @@ import { foundationFixture } from "../fixtures/foundation";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
 
-let initialized: Promise<{ env: Env; token: string; login: () => Promise<string> }> | undefined;
+function recipientRequest(request: Request) {
+  return (
+    request.headers.get("X-Test-Access-Identity") === "recipient" ||
+    (request.headers.get("Cookie") ?? "")
+      .split(";")
+      .some((item) => item.trim() === "ncf-test-user=recipient")
+  );
+}
+
+type TestIdentity = "owner" | "recipient";
+let initialized:
+  | Promise<{
+      env: Env;
+      token: string;
+      recipientToken: string;
+      login: (identity?: TestIdentity) => Promise<string>;
+    }>
+  | undefined;
 async function initialize(bindings: Env) {
   const keys = () =>
     JSON.stringify({ browser: base64url.encode(crypto.getRandomValues(new Uint8Array(32))) });
@@ -52,11 +69,14 @@ async function initialize(bindings: Env) {
   const startedAt = Math.floor(Date.now() / 1000);
   let loginSequence = 0;
   // A fresh Access login has a different fingerprint. Keep revoked sessions revoked.
-  const login = () =>
-    new SignJWT({ type: "app", email: "local@example.invalid" })
+  const login = (identity: TestIdentity = "owner") =>
+    new SignJWT({
+      type: "app",
+      email: identity === "owner" ? "local@example.invalid" : "recipient@example.invalid",
+    })
       .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: "browser" })
       .setIssuer(env.ACCESS_ISSUER!)
-      .setSubject("local-browser-owner")
+      .setSubject(identity === "owner" ? "local-browser-owner" : "local-browser-recipient")
       .setAudience(env.ACCESS_USER_AUDIENCE!)
       .setIssuedAt(startedAt - loginSequence++)
       .setNotBefore(startedAt - 1)
@@ -83,11 +103,11 @@ async function initialize(bindings: Env) {
   await atomicBatch(env.DB, [
     ...recipient.statements,
     {
-      sql: "UPDATE users SET email='recipient@example.invalid' WHERE id=?",
-      values: [recipient.ids.user],
+      sql: "UPDATE users SET email='recipient@example.invalid',role='member',access_iss=?,access_sub='local-browser-recipient' WHERE id=?",
+      values: [env.ACCESS_ISSUER!, recipient.ids.user],
     },
   ]);
-  return { env, token, login };
+  return { env, token, recipientToken: await login("recipient"), login };
 }
 
 export default {
@@ -96,7 +116,8 @@ export default {
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
     if (path === "/__test__/access-login" && request.method === "POST") {
-      ready.token = await ready.login();
+      if (recipientRequest(request)) ready.recipientToken = await ready.login("recipient");
+      else ready.token = await ready.login();
       return Response.json({ ready: true });
     }
     if (path === "/__test__/control" && request.method === "GET") {
@@ -108,7 +129,11 @@ export default {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     const headers = new Headers(request.headers);
-    if (!headers.has("X-Test-Without-Auth")) headers.set("Cf-Access-Jwt-Assertion", ready.token);
+    if (!headers.has("X-Test-Without-Auth"))
+      headers.set(
+        "Cf-Access-Jwt-Assertion",
+        recipientRequest(request) ? ready.recipientToken : ready.token,
+      );
     return worker.fetch(new Request(request, { headers }), ready.env);
   },
 };

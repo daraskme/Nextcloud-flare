@@ -1,3 +1,5 @@
+import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
+
 export interface Account {
   id: string;
   email: string;
@@ -226,9 +228,33 @@ export class ApiClient {
   me(signal?: AbortSignal) {
     return this.request<Account>("/api/v1/me", signal ? { signal } : {});
   }
-  children(id: string, cursor?: string | null, signal?: AbortSignal) {
+  sharedWithMe(cursor?: string | null, signal?: AbortSignal) {
+    return this.request<{ items: InternalShare[]; nextCursor: string | null }>(
+      `/api/v1/shared-with-me${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+  share(id: string, signal?: AbortSignal) {
+    return this.request<InternalShare>(
+      `/api/v1/shares/${encodeURIComponent(id)}`,
+      signal ? { signal } : {},
+    );
+  }
+  node(id: string, share?: SelectedShare, signal?: AbortSignal) {
+    return this.request<
+      Omit<FileNode, "kind" | "parentId"> & {
+        kind: "root" | "folder" | "file";
+        parentId: string | null;
+        spaceId: string;
+        ownerId: string;
+      }
+    >(`/api/v1/nodes/${encodeURIComponent(id)}${shareQuery(share)}`, signal ? { signal } : {});
+  }
+  children(id: string, cursor?: string | null, signal?: AbortSignal, share?: SelectedShare) {
+    const params = new URLSearchParams(shareQuery(share));
+    if (cursor) params.set("cursor", cursor);
     return this.request<Children>(
-      `/api/v1/nodes/${encodeURIComponent(id)}/children${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      `/api/v1/nodes/${encodeURIComponent(id)}/children${params.size ? `?${params}` : ""}`,
       signal ? { signal } : {},
     );
   }
@@ -243,9 +269,9 @@ export class ApiClient {
       signal ? { signal } : {},
     );
   }
-  path(id: string, signal?: AbortSignal) {
+  path(id: string, signal?: AbortSignal, share?: SelectedShare) {
     return this.request<{ path: Breadcrumb[] }>(
-      `/api/v1/nodes/${encodeURIComponent(id)}/path`,
+      `/api/v1/nodes/${encodeURIComponent(id)}/path${shareQuery(share)}`,
       signal ? { signal } : {},
     );
   }
@@ -256,14 +282,20 @@ export class ApiClient {
     );
   }
 
-  async openFile(account: Account, node: FileNode, target: Window): Promise<void> {
+  async openFile(
+    account: Account,
+    node: FileNode,
+    target: Window,
+    shared?: { spaceId: string; share: SelectedShare },
+  ): Promise<void> {
     const lifetime = this.#lifetime;
     try {
       const origin = new URL(account.contentOrigin);
       if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
         throw new Error("invalid_content_origin");
       const issued = await this.json<{ ticket: string }>("/api/v1/content-session", "POST", {
-        targets: [{ nodeId: node.id, spaceId: account.spaceId }],
+        targets: [{ nodeId: node.id, spaceId: shared?.spaceId ?? account.spaceId }],
+        ...(shared ? { share: shared.share } : {}),
         purpose: "content",
         ttlSeconds: 300,
       });
@@ -301,6 +333,11 @@ export class ApiClient {
 }
 
 export const api = new ApiClient();
+function shareQuery(share?: SelectedShare) {
+  return share
+    ? `?${new URLSearchParams({ shareId: share.id, shareVersion: String(share.version) })}`
+    : "";
+}
 export const formatBytes = (bytes: number | null): string => {
   if (bytes === null) return "—";
   if (bytes === 0) return "0 B";

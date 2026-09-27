@@ -11,6 +11,8 @@ export interface NodeCursorClaims {
   readonly generation: number;
   readonly lastNameCi: string;
   readonly lastId: string;
+  readonly shareId?: string;
+  readonly shareVersion?: number;
   readonly iat: number;
   readonly exp: number;
 }
@@ -25,6 +27,11 @@ function valid(value: NodeCursorClaims, now: number): boolean {
     ID.test(value.userId) &&
     /^[A-Za-z0-9:_-]{1,256}$/.test(value.credentialId) &&
     ID.test(value.lastId) &&
+    ((value.shareId === undefined && value.shareVersion === undefined) ||
+      (typeof value.shareId === "string" &&
+        ID.test(value.shareId) &&
+        Number.isSafeInteger(value.shareVersion) &&
+        (value.shareVersion as number) > 0)) &&
     typeof value.lastNameCi === "string" &&
     value.lastNameCi.length <= 1024 &&
     Number.isSafeInteger(value.epoch) &&
@@ -107,7 +114,9 @@ export class NodeCursorTokens {
       const payload = body as NodeCursorClaims;
       if (
         Object.keys(payload).sort().join(",") !==
-          "credentialId,epoch,exp,generation,iat,lastId,lastNameCi,ownerId,parentId,spaceId,userId" ||
+          (payload.shareId === undefined
+            ? "credentialId,epoch,exp,generation,iat,lastId,lastNameCi,ownerId,parentId,spaceId,userId"
+            : "credentialId,epoch,exp,generation,iat,lastId,lastNameCi,ownerId,parentId,shareId,shareVersion,spaceId,userId") ||
         !valid(payload, Math.floor(this.now() / 1000)) ||
         base64url.encode(JSON.stringify(payload)) !== bodyText
       )

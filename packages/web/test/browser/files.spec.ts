@@ -257,7 +257,15 @@ test("private pages and every built chunk require Access and never fall back fro
       elements.map((element) => element.getAttribute("src") ?? element.getAttribute("href")!),
     );
   expect(chunks.length).toBeGreaterThan(3);
-  for (const path of ["/", "/files", "/trash", ...chunks]) {
+  for (const path of [
+    "/",
+    "/files",
+    "/trash",
+    "/shared",
+    "/shared/share_1",
+    "/shared/share_1/folder",
+    ...chunks,
+  ]) {
     const status = await page.evaluate(
       async (path) => (await fetch(path, { headers: { "X-Test-Without-Auth": "1" } })).status,
       path,
@@ -271,6 +279,7 @@ test("private pages and every built chunk require Access and never fall back fro
     "/unknown",
     "/public/unknown",
     "/service/unknown",
+    "/shared/share_1/folder/extra",
   ]) {
     const result = await page.evaluate(async (path) => {
       const r = await fetch(path);

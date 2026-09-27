@@ -1,4 +1,5 @@
 import { problem } from "@next-cloud-flare/shared/errors";
+import { selectedShare } from "../../../shared/src/shares";
 import type { Principal } from "../auth/authorize";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
@@ -27,8 +28,33 @@ export async function handleNodeReadHttp(
   )
     return problem(404, "not_found");
   const nodeId = match[1] ?? "";
+  const allowed = ["shareId", "shareVersion", ...(match[2] === "/children" ? ["cursor"] : [])];
+  if (
+    [...url.searchParams.keys()].some(
+      (key) => !allowed.includes(key) || url.searchParams.getAll(key).length !== 1,
+    )
+  )
+    return problem(400, "bad_request");
+  const shareId = url.searchParams.get("shareId"),
+    shareVersion = url.searchParams.get("shareVersion");
+  if (shareId !== null || shareVersion !== null) {
+    try {
+      if (
+        principal.kind !== "user" ||
+        shareId === null ||
+        shareVersion === null ||
+        !/^[1-9][0-9]{0,15}$/.test(shareVersion)
+      )
+        throw new Error("invalid_share_selection");
+      principal = {
+        ...principal,
+        selected_share: selectedShare({ id: shareId, version: Number(shareVersion) }),
+      };
+    } catch {
+      return problem(400, "bad_request");
+    }
+  }
   if (match[2] === "/path") {
-    if (url.search) return problem(400, "bad_request");
     try {
       return Response.json(await readNodePath(env.DB, principal, nodeId), {
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
@@ -38,7 +64,6 @@ export async function handleNodeReadHttp(
     }
   }
   if (!match[2]) {
-    if (url.search) return problem(400, "bad_request");
     try {
       return Response.json(await readNode(env.DB, principal, nodeId), {
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
@@ -48,11 +73,6 @@ export async function handleNodeReadHttp(
     }
   }
   if (!cursors) return problem(503, "not_ready");
-  if (
-    [...url.searchParams.keys()].some((key) => key !== "cursor") ||
-    url.searchParams.getAll("cursor").length > 1
-  )
-    return problem(400, "bad_request");
   const cursor = url.searchParams.get("cursor") ?? undefined;
   if (cursor !== undefined && (cursor.length === 0 || cursor.length > 4096))
     return problem(400, "bad_request");

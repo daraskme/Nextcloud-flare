@@ -80,7 +80,7 @@ export async function handleShareHttp(
       if (!(await hasEmptyBody(request))) throw new Error("invalid_share_request");
       if (match) {
         if (url.search) throw new Error("invalid_share_request");
-        const share = await readInternalShare(env.DB, session, match[1]!);
+        const share = await readInternalShare(env.DB, session, match[1]!, true);
         return Response.json(share, { headers: { ...HEADERS, ETag: `"share-${share.version}"` } });
       }
       const received = url.pathname === "/api/v1/shared-with-me";

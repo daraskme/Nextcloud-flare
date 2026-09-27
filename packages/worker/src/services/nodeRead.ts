@@ -26,6 +26,7 @@ interface PathRow {
 }
 
 async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
+  if (principal.kind !== "user") throw new Error("node_unavailable");
   if (!ID.test(nodeId)) throw new Error("invalid_node_id");
   const spaceId = await primary(db)
     .prepare("SELECT space_id FROM nodes WHERE id=?")
@@ -38,36 +39,75 @@ async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
     nodeId,
   });
   if (proof.operation !== "node.read") throw new Error("node_unavailable");
-  return proof;
+  // Browser metadata reads require an explicit share on another owner's tree.
+  // An unscoped read must never disclose names or parent IDs above a grant.
+  const selected = proof.principal.kind === "user" ? proof.principal.selected_share : undefined;
+  if (!selected && proof.node.owner_id !== principal.user_id) throw new Error("node_unavailable");
+  const scope = selected
+    ? await primary(db)
+        .prepare(
+          "SELECT root_node_id FROM shares WHERE id=? AND version=? AND owner_id=? AND kind='internal'",
+        )
+        .bind(selected.id, selected.version, proof.node.owner_id)
+        .first<string>("root_node_id")
+    : await primary(db)
+        .prepare("SELECT root_node_id FROM spaces WHERE id=? AND owner_id=?")
+        .bind(spaceId, principal.user_id)
+        .first<string>("root_node_id");
+  if (!scope) throw new Error("node_unavailable");
+  const fence = selected
+    ? assertExists(
+        "SELECT 1 FROM shares WHERE id=? AND version=? AND root_node_id=? AND owner_id=?",
+        [selected.id, selected.version, scope, proof.node.owner_id],
+      )
+    : assertExists("SELECT 1 FROM spaces WHERE id=? AND owner_id=? AND root_node_id=?", [
+        spaceId,
+        principal.user_id,
+        scope,
+      ]);
+  return { proof, scope, fence, selected };
 }
 
 /** Reassert current ancestry and credential immediately before returning metadata. */
 export async function readNode(db: D1Database, principal: Principal, nodeId: string) {
-  const proof = await nodeProof(db, principal, nodeId);
-  await atomicBatch(db, [
+  const { proof, scope, fence } = await nodeProof(db, principal, nodeId);
+  const result = await atomicBatch(db, [
     authorizationAssertion(proof),
+    fence,
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
       principal.epoch,
     ]),
+    {
+      sql: `SELECT n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime FROM nodes n
+      LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id AND b.state IN ('committed','gc_candidate')
+      WHERE n.id=?`,
+      values: [nodeId],
+    },
   ]);
+  const details = result.at(-1)?.results[0] as
+    | { updatedAt: number; size: number | null; mime: string | null }
+    | undefined;
+  if (!details) throw new Error("node_unavailable");
   return Object.freeze({
     id: proof.node.id,
     spaceId: proof.node.space_id,
     ownerId: proof.node.owner_id,
-    parentId: proof.node.parent_id,
+    parentId: proof.node.id === scope ? null : proof.node.parent_id,
     name: proof.node.name,
     kind: proof.node.kind,
     revision: proof.node.revision,
     currentBlobId: proof.node.current_blob_id,
     treeGeneration: proof.node.tree_generation,
+    ...details,
   });
 }
 
 /** Return a root-first breadcrumb from the same snapshot as current authorization. */
 export async function readNodePath(db: D1Database, principal: Principal, nodeId: string) {
-  const proof = await nodeProof(db, principal, nodeId);
+  const { proof, scope, fence } = await nodeProof(db, principal, nodeId);
   const result = await atomicBatch(db, [
     authorizationAssertion(proof),
+    fence,
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
       principal.epoch,
     ]),
@@ -78,26 +118,26 @@ export async function readNodePath(db: D1Database, principal: Principal, nodeId:
         UNION ALL
         SELECT n.id,n.parent_id,n.name,n.kind,n.revision,p.depth+1,p.seen||n.id||'/'
           FROM nodes n JOIN p ON n.id=p.parent_id
-          WHERE p.depth<64 AND n.space_id=? AND n.owner_id=? AND n.deleted_at IS NULL
+          WHERE p.depth<64 AND p.id<>? AND n.space_id=? AND n.owner_id=? AND n.deleted_at IS NULL
             AND instr(p.seen,'/'||n.id||'/')=0
       ) SELECT id,parent_id AS parentId,name,kind,revision,depth FROM p ORDER BY depth DESC`,
       values: [
         proof.node.id,
         proof.node.space_id,
         proof.node.owner_id,
+        scope,
         proof.node.space_id,
         proof.node.owner_id,
       ],
     },
   ]);
-  const rows = (result[2]?.results ?? []) as PathRow[];
+  const rows = (result.at(-1)?.results ?? []) as PathRow[];
   const root = rows[0];
   const leaf = rows.at(-1);
   if (
     rows.length < 1 ||
     rows.length > 65 ||
-    root?.kind !== "root" ||
-    root.parentId !== null ||
+    root?.id !== scope ||
     leaf?.id !== proof.node.id ||
     rows.some((row, index) => index > 0 && row.parentId !== rows[index - 1]?.id)
   )
@@ -118,7 +158,7 @@ export async function listNodeChildren(
   cursor?: string,
 ) {
   if (principal.kind !== "user") throw new Error("node_unavailable");
-  const proof = await nodeProof(db, principal, parentId);
+  const { proof, fence, selected } = await nodeProof(db, principal, parentId);
   const parent = proof.node;
   if (parent.kind === "file") throw new Error("node_not_folder");
   let lastNameCi: string | undefined;
@@ -132,6 +172,8 @@ export async function listNodeChildren(
       claims.userId !== principal.user_id ||
       claims.credentialId !== principal.credential_id ||
       claims.epoch !== principal.epoch ||
+      claims.shareId !== selected?.id ||
+      claims.shareVersion !== selected?.version ||
       claims.generation !== parent.tree_generation
     )
       throw new Error("invalid_node_cursor");
@@ -170,12 +212,13 @@ export async function listNodeChildren(
         };
   const result = await atomicBatch(db, [
     authorizationAssertion(proof),
+    fence,
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
       principal.epoch,
     ]),
     statement,
   ]);
-  const rows = (result[2]?.results ?? []) as ChildRow[];
+  const rows = (result.at(-1)?.results ?? []) as ChildRow[];
   const page = rows.slice(0, 200);
   const last = page.at(-1);
   const nextCursor =
@@ -190,6 +233,7 @@ export async function listNodeChildren(
           generation: parent.tree_generation,
           lastNameCi: last.nameCi,
           lastId: last.id,
+          ...(selected ? { shareId: selected.id, shareVersion: selected.version } : {}),
         })
       : null;
   return Object.freeze({

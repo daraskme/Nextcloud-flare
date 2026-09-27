@@ -27,6 +27,7 @@ import {
   Search,
   Trash2,
   Upload,
+  Users,
   X,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -34,6 +35,7 @@ import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
+import { SharedWorkspace } from "./features/shares/SharedWorkspace";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import {
@@ -590,11 +592,13 @@ export function App() {
     account.error instanceof ApiError && [401, 403].includes(account.error.status);
   const me = authExpired ? undefined : account.data;
   const trash = pathname === "/trash";
+  const shared = pathname === "/shared" || pathname.startsWith("/shared/");
+  const sharedPath = /^\/shared(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(pathname);
   const parentId = /^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
-  const searching = !trash && searchTerm?.scopeId === parentId && !!searchTerm.query;
+  const searching = !trash && !shared && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
   useEffect(() => setStatsScope(null), [pathname]);
@@ -611,7 +615,7 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && !trash && !searching,
+    enabled: !!me && !trash && !shared && !searching,
     retry: false,
   });
   const results = useInfiniteQuery({
@@ -625,7 +629,7 @@ export function App() {
   const path = useQuery({
     queryKey: ["path", me?.id, me?.epoch, parentId],
     queryFn: ({ signal }) => api.path(parentId, signal),
-    enabled: !!me && !trash,
+    enabled: !!me && !trash && !shared,
     retry: false,
   });
   const trashed = useInfiniteQuery({
@@ -712,7 +716,7 @@ export function App() {
     setAction(next);
   };
   const addFiles = async (files: FileList | null) => {
-    if (!files || !me || trash) return;
+    if (!files || !me || trash || shared) return;
     for (const file of Array.from(files)) {
       try {
         await uploads.enqueue(file, me, parentId);
@@ -789,10 +793,14 @@ export function App() {
         </Link>
         <div className="workspace-label">PERSONAL WORKSPACE</div>
         <nav aria-label="メインナビゲーション">
-          <Link to="/files" className={!trash ? "nav-link active" : "nav-link"}>
+          <Link to="/files" className={!trash && !shared ? "nav-link active" : "nav-link"}>
             <HardDrive size={19} />
             マイドライブ
             <span className="nav-dot" />
+          </Link>
+          <Link to="/shared" className={shared ? "nav-link active" : "nav-link"}>
+            <Users size={19} />
+            共有された項目
           </Link>
           <Link to="/trash" className={trash ? "nav-link active" : "nav-link"}>
             <Trash2 size={19} />
@@ -837,7 +845,7 @@ export function App() {
             </span>
             <span>パーソナルスペース</span>
             <ChevronRight size={14} />
-            <span className="muted">ファイル</span>
+            <span className="muted">{shared ? "共有された項目" : "ファイル"}</span>
           </div>
           <div className="account-menu">
             <span className="account-email">{me?.email}</span>
@@ -869,7 +877,7 @@ export function App() {
           id="main-content"
           className={dragging ? "main dragging" : "main"}
           onDragOver={(event) => {
-            if (!trash && event.dataTransfer.types.includes("Files")) {
+            if (!trash && !shared && event.dataTransfer.types.includes("Files")) {
               event.preventDefault();
               setDragging(true);
             }
@@ -891,47 +899,51 @@ export function App() {
               <span>{title}にアップロードします</span>
             </div>
           )}
-          <div className="breadcrumbs" aria-label="パンくず">
-            <Link to="/files">マイドライブ</Link>
-            {!trash &&
-              path.data?.path.slice(1).map((crumb) => (
-                <span key={crumb.id}>
-                  <ChevronRight size={13} />
-                  <Link to="/files/$folderId" params={{ folderId: crumb.id }}>
-                    {crumb.name}
-                  </Link>
-                </span>
-              ))}
-            {trash && (
-              <span>
-                <ChevronRight size={13} />
-                ごみ箱
-              </span>
-            )}
-          </div>
-          <div className="page-heading">
-            <div>
-              <p className="eyebrow">{trash ? "TRASH" : "YOUR FILES, YOUR SPACE"}</p>
-              <h1>{title}</h1>
-              <p>
-                {trash
-                  ? "不要になったファイルを確認・復元できます。"
-                  : "大切なファイルを、いつでも使いやすく。"}
-              </p>
-            </div>
-            {me && !trash && (
-              <div className="heading-actions">
-                <Button disabled={!!recovery} onClick={() => act({ kind: "create" })}>
-                  <FolderPlus size={17} />
-                  新規フォルダー
-                </Button>
-                <Button variant="primary" onClick={() => input.current?.click()}>
-                  <Upload size={17} />
-                  アップロード
-                </Button>
+          {!shared && (
+            <>
+              <div className="breadcrumbs" aria-label="パンくず">
+                <Link to="/files">マイドライブ</Link>
+                {!trash &&
+                  path.data?.path.slice(1).map((crumb) => (
+                    <span key={crumb.id}>
+                      <ChevronRight size={13} />
+                      <Link to="/files/$folderId" params={{ folderId: crumb.id }}>
+                        {crumb.name}
+                      </Link>
+                    </span>
+                  ))}
+                {trash && (
+                  <span>
+                    <ChevronRight size={13} />
+                    ごみ箱
+                  </span>
+                )}
               </div>
-            )}
-          </div>
+              <div className="page-heading">
+                <div>
+                  <p className="eyebrow">{trash ? "TRASH" : "YOUR FILES, YOUR SPACE"}</p>
+                  <h1>{title}</h1>
+                  <p>
+                    {trash
+                      ? "不要になったファイルを確認・復元できます。"
+                      : "大切なファイルを、いつでも使いやすく。"}
+                  </p>
+                </div>
+                {me && !trash && (
+                  <div className="heading-actions">
+                    <Button disabled={!!recovery} onClick={() => act({ kind: "create" })}>
+                      <FolderPlus size={17} />
+                      新規フォルダー
+                    </Button>
+                    <Button variant="primary" onClick={() => input.current?.click()}>
+                      <Upload size={17} />
+                      アップロード
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           {notice && (
             <div className="notice" role="alert">
               <span>{notice}</span>
@@ -989,6 +1001,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : shared ? (
+            <SharedWorkspace account={me} shareId={sharedPath?.[1]} nodeId={sharedPath?.[2]} />
           ) : (
             <>
               {!trash && statsScope === parentId && (

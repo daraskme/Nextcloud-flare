@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[内部共有の管理](INTERNAL_SHARES.md)を追加しました。Filesから共有の作成・権限/相手/期限の変更・停止を行えます。所有者一覧と受信一覧API、固定mount名、変更時の旧grant/session/ticket失効を接続しています。受信者のShared画面、DAV Shared、公開linkは後続です。
+[受信者のShared画面](SHARED_WORKSPACE.md)を追加しました。受信一覧からフォルダー配下を閲覧し、ファイルを開いて保存できます。選択した共有ID/versionをmetadata・cursor・content ticketへ固定し、共有より上のフォルダー名と親IDを返さないよう修正しました。[所有者の共有管理](INTERNAL_SHARES.md)と共有停止後の失効も接続済みです。
 
-schema0048・通常69table・依存追加なし。全Node62file/1,294件、関連workerd 4file/63件、全ブラウザー22件が成功しました。型・lint479file・契約/設定・69table schema生成・Web build/Worker dry-runも成功。mobile表示を確認済みです。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0048・通常69table・migration/依存追加なし。全体check成功：Node62file/1,311件、workerd122file/2,677件。全browser24件も成功し、計4,012件を確認しました。lint482file・型・契約/設定・Web build/Worker dry-runも成功。mobile表示を確認済みです。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は受信者のShared画面と、選択した共有を保つcontent/upload操作を接続します。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は選択した共有を保つfolder作成・改名・uploadを接続します。再送・operation照会・Outbox・UploadDO・復旧検査まで共有選択を保持する必要があります。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。前回53bfc16の[CI36349203224](https://github.com/daraskme/Nextcloud-flare/actions/runs/36349203224)はLinux/Windowsで旧migration数期待値（46→実際47）が失敗し、今回修正しました。前回Linuxは他2,641件成功。ほかのWindows2分割・browser・backupは成功。先行9b0f257の[CI36347414539](https://github.com/daraskme/Nextcloud-flare/actions/runs/36347414539)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行a5c7aa0の[CI36351626854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36351626854)はUbuntu・Windows3分割・browser・backupの全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,8 @@ schema0048・通常69table・依存追加なし。全Node62file/1,294件、関�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 受信Shared画面・DAV Shared・公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
+| 受信共有の閲覧 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download | 実D1で認可/失効競合/cursor、実browserで独立した受信者のmobile閲覧/bytes取得/停止後拒否 | 編集/upload・DAV Shared・公開linkは後続。[詳細](SHARED_WORKSPACE.md) |
+| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 受信側の編集/upload・DAV Shared・公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
 | Time Travel送信と実応答記録 | 永続pending・5秒の1回grant・固定APIへのPOST・実応答のDO保存・unknownの再送拒否・旧epoch停止維持 | Node34/workerd22追加、関連CLI94/workerd155、16操作の権限拒否と模擬巻戻しを含むbindingドリル成功 | 既定で無効。全I/O運用証明・snapshot照合・epoch採用・live復旧は未完了。[詳細](DATABASE_RESTORE_TIME_TRAVEL.md) |
 | probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と実復元後epoch採用は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
@@ -122,7 +123,7 @@ schema0048・通常69table・依存追加なし。全Node62file/1,294件、関�
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 受信共有を選択するUIとcontent/upload操作、DAV Shared、公開link、password/unlock、upload-only共有の完全なHTTP surface。内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)へ接続済み。
+- 受信共有の編集/upload操作、DAV Shared、公開link、password/unlock、upload-only共有の完全なHTTP surface。内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
@@ -130,7 +131,7 @@ schema0048・通常69table・依存追加なし。全Node62file/1,294件、関�
 ### UI
 
 - File System Access handle、詳細preview。
-- 受信者のShared画面、公開link管理、media metadata検索、大量gridの仮想化。
+- 受信者の共有編集/upload画面、公開link管理、media metadata検索、大量gridの仮想化。
 - Gallery/lightbox、Bookshelf/EPUB reader、Audio player。
 - AVIF/AV1/Opusの実browser再生試験とfallback。
 

@@ -10,6 +10,9 @@ const routeTree = root.addChildren([
   createRoute({ getParentRoute: () => root, path: "/files" }),
   createRoute({ getParentRoute: () => root, path: "/files/$folderId" }),
   createRoute({ getParentRoute: () => root, path: "/trash" }),
+  createRoute({ getParentRoute: () => root, path: "/shared" }),
+  createRoute({ getParentRoute: () => root, path: "/shared/$shareId" }),
+  createRoute({ getParentRoute: () => root, path: "/shared/$shareId/$nodeId" }),
 ]);
 const router = createRouter({ routeTree });
 declare module "@tanstack/react-router" {

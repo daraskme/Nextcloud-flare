@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { internalShareInput } from "../../../shared/src/shares";
+import { internalShareInput, selectedShare } from "../../../shared/src/shares";
 
 const input = {
   kind: "internal",
@@ -12,6 +12,35 @@ it("normalizes share recipients and an omitted expiry", () => {
     ...input,
     recipients: ["test@example.invalid"],
     expiresAt: null,
+  });
+});
+
+describe("selected share authority", () => {
+  it("copies and freezes the selected version so callers cannot change a proof", () => {
+    const input = { id: "share_1", version: 1 };
+    const selection = selectedShare(input);
+    input.version = 2;
+    expect(selection).toEqual({ id: "share_1", version: 1 });
+    expect(Object.isFrozen(selection)).toBe(true);
+  });
+  it.each([
+    undefined,
+    null,
+    [],
+    {},
+    { id: "share_1" },
+    { id: "share_1", version: "1" },
+    { id: "share_1", version: 0 },
+    { id: "share_1", version: -1 },
+    { id: "share_1", version: 1.5 },
+    { id: "share_1", version: Number.MAX_SAFE_INTEGER + 1 },
+    { id: "share_1", version: Number.NaN },
+    { id: "../share", version: 1 },
+    { id: "", version: 1 },
+    { id: "s".repeat(129), version: 1 },
+    { id: "share_1", version: 1, ownerId: "other" },
+  ])("rejects malformed or ambiguous authority %#", (value) => {
+    expect(() => selectedShare(value)).toThrow("invalid_share_selection");
   });
 });
 describe("bounded internal share input", () => {
