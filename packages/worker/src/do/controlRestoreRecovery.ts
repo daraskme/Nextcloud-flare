@@ -1,5 +1,10 @@
 import { restoreAdoptionChallenge } from "../../../shared/src/restoreAdoption";
+import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import { type RestoreDomainKind, restoreDomainKind } from "../../../shared/src/restoreDomain";
+import {
+  type RestoreInventoryRequest,
+  restoreInventoryRequest,
+} from "../../../shared/src/restoreInventory";
 import { assertExists, atomicBatch, primary } from "../db/primary";
 import type { ControlStatus, RecoveryAuditStatus } from "./ControlDO";
 import type {
@@ -12,6 +17,7 @@ import type { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import type { KdfRepairResult } from "./kdfSettlements";
 import { RECOVERY_FINAL_QUERY } from "./recoveryAudit";
 import type { RestoreDomainRepairStatus } from "./restoreDomainRepair";
+import type { RestoreInventoryStatus } from "./restoreInventoryRepair";
 import { RestoreNativeRepair } from "./restoreNativeRepair";
 
 interface RecoveryHost {
@@ -26,6 +32,12 @@ interface RecoveryHost {
     transition: { epoch: number; revision: number; token: string },
     current: () => void,
   ): Promise<RestoreDomainRepairStatus>;
+  inventory(
+    request: RestoreInventoryRequest,
+    target: RestoreBlobsTarget,
+    transition: { epoch: number; revision: number; token: string },
+    current: () => void,
+  ): Promise<RestoreInventoryStatus>;
   repairLive(
     limit: number,
     current: () => void,
@@ -120,6 +132,43 @@ export class ControlRestoreRecovery {
     });
     current();
     return { ...this.restore.inspect(epoch, id), repair };
+  }
+
+  async repairInventory(
+    epoch: number,
+    id: string,
+    input: RestoreInventoryRequest,
+    writeEnabled: boolean,
+  ) {
+    const request = restoreInventoryRequest(input);
+    const { selected, challenge } = this.#scope(epoch, id);
+    const current = () => {
+      if (this.#scope(epoch, id).selected.state !== "epoch_adopted")
+        throw new Error("database_restore_recovery_released");
+      this.admission.assertClosed(selected.newEpoch!);
+    };
+    current();
+    if (!writeEnabled) throw new Error("database_restore_write_disabled");
+    const inventory = await this.host.repair(selected.newEpoch!, async () => {
+      current();
+      const transition = this.admission.captureDatabaseRestore(selected.newEpoch!),
+        encoded = JSON.stringify(transition);
+      const stopped = () => {
+        current();
+        if (JSON.stringify(this.admission.captureDatabaseRestore(selected.newEpoch!)) !== encoded)
+          throw new Error("database_restore_recovery_conflict");
+      };
+      const result = await this.host.inventory(
+        request,
+        challenge.targets.blobs,
+        transition,
+        stopped,
+      );
+      stopped();
+      return result;
+    });
+    current();
+    return { ...this.restore.inspect(epoch, id), inventory };
   }
 
   #scope(epoch: number, id: string) {

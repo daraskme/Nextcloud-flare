@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前7024160の[CI36344576265](https://github.com/daraskme/Nextcloud-flare/actions/runs/36344576265)は確認時点でUbuntu・Windows分割2/3と3/3・browserが成功し、Windows分割1/3とbackupは実行中。先行981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)とdaa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前d50c58bの[CI36345681064](https://github.com/daraskme/Nextcloud-flare/actions/runs/36345681064)は確認時点でUbuntu・Windows3分割・browserの5job成功、backupは実行中。先行7024160の[CI36344576265](https://github.com/daraskme/Nextcloud-flare/actions/runs/36344576265)と981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [multipart inventory](DATABASE_RESTORE_INVENTORY.md)をprivate `repairInventory`と`inventory-restored --action verify|uploads|bucket|parts|abort`へ接続。採用済みBLOBS target、同じ停止token、native保留なし、write flagを要求し、毎回fresh probe。全体25秒、単発処理、元attempt再送時の非dispatch、容量保留と全監査の無効化を維持する。内部token/key/R2 ID/cursorをCLIへ出さない。共通source/読取りguardをrestoreRepairContextへ抽出し、既存7種domainにも使用する。
+- 新規Node59件を含む4file/190件成功（26.53s）。operator handleの重複拒否を追加後、新規file60件が成功（0.85s）。既存分と合わせ今回Node191件を確認。入力の余分なkey・bounds・action、結果の件数/状態/ID一致、秘密除去、CLI引数、unknown RPC非再送を検証。/tmp/ncf-inventory-node.log、/tmp/ncf-inventory-node-final.log。
+- workerdは初回新規20件中19成功・1失敗（21.42s）。fetch spyに前の操作の呼出しが残っていたassertionを修正。25秒timeout試験を加えた9file/193件は192成功・1失敗（255.28s）。timeout自体は成立したが、その後のDO stub呼出しが異なるI/O contextとして拒否されたため、試験全体を同じDO内へ移した。既存8file/172件は成功。
+- scoped binding fenceにもD1 revision/token/期限を直接assertする条件を追加。scope関連3file/71件は68成功・3失敗（99.48s）で、D1 token故障注入を元へ戻さず次のテストへ持ち越したfixtureが原因。後片付けで注入tokenだけを戻し、未開始のGET待機でも先行errorを観測するよう修正。既存のbinding/restore-BLOBS 2file/48件は成功。新規file全23件が再実行で成功（45.72s）。故障注入callbackの代入がTS制御フローから見えない箇所は、実行時コードを変えない型assertionで修正。今回workerdは重複を除いて10file/221件、Node191件と合わせ412件を確認（新規83件）。/tmp/ncf-inventory-worker.log、/tmp/ncf-inventory-worker-final.log、/tmp/ncf-inventory-worker-scope.log、/tmp/ncf-inventory-worker-focus-final.log。
+- 最終型・lint470file・契約/設定検査・Web build・Worker dry-run成功。/tmp/ncf-inventory-types.log、/tmp/ncf-inventory-types-final.log（この後、型assertion調整後の端末上で最終型検査成功を確認）、/tmp/ncf-inventory-build-final.log。D1 schema0046・通常68table・依存追加なし。
+- private bindingドリルは停止tokenのSQL照合追加前後とも成功。全28復旧methodの権限拒否、7種domainとmultipartのfresh照合・空upload修復、12ページ全監査、hold解除と受付/GC再開を確認。最終snapshot68table/SQL57,512bytes、元backup11,370bytes。/tmp/ncf-inventory-operator-final.log、.wrangler/operator-drill-9yTZQQ/report.json。S3/Time Travelは合成provider、D1 control巻戻しfixtureであり実Cloudflare復旧ではない。remote migration/deploy・通知・timer設置は行っていない。
+
+### 先行するGC・孤立走査の接続
 
 - 復旧要求に固定した`repair-restored`へblob-gc/orphan-gc/orphan-inventoryを追加。private operatorのmethodは27のまま。GCの新規candidate拒否、pin・35日猶予・不明native保持、LIST/HEAD前後・DELETE直前の停止照合、実遅延終了の保存を維持する。孤立走査は1ページだけを記録し、途中失敗時にcursorと容量を保持する。CLI出力は件数/状態だけへ正規化し、内部key/token/cursorを除く。
 - Node3file/131件成功（28.25s、新規19件）。GC/走査の種別・件数・状態関係・秘匿値除去・完了/保留判定と既存復旧CLIを検証。/tmp/ncf-restore-gc-node.log。

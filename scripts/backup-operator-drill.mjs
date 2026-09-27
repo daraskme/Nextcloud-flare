@@ -17,6 +17,7 @@ const { maintainBackups } = await moduleAt("scripts/backup/maintenance.mjs");
 const { pruneBackup } = await moduleAt("scripts/backup/prune.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
 const { RESTORE_DOMAIN_KINDS } = await moduleAt("packages/shared/src/restoreDomain.ts");
+const { inventoryRestored } = await moduleAt("scripts/restore/inventory.mjs");
 const { restoreControlCalls } = await moduleAt("scripts/restore/control.mjs");
 const { restoreStatus, verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
 const { verifyRestoreD1 } = await moduleAt("scripts/restore/target.mjs");
@@ -397,6 +398,7 @@ try {
       ["auditRecovery", [2, restoreId]],
       ["repairNative", [2, restoreId]],
       ["repairDomain", [2, restoreId, "single"]],
+      ["repairInventory", [2, restoreId, { action: "verify" }]],
       ["rebuildRecoveryFts", [2, restoreId]],
       ["releaseRecovery", [2, restoreId]],
       ["resumeRecovery", [2, restoreId]],
@@ -716,6 +718,17 @@ try {
     assert.equal(repair.pending, false);
     domainRepairs.push(repair);
   }
+  const multipartInventory = [];
+  for (const action of ["verify", "uploads"]) {
+    const result = await inventoryRestored({
+      epoch: 2,
+      id: epochId,
+      request: { action },
+      control: restoreControl,
+    });
+    assert.equal(result.inventory.pending, false);
+    multipartInventory.push(result.inventory);
+  }
   const recovery = await auditRestored({ epoch: 2, id: epochId, control: restoreControl });
   assert.equal(recovery.audit.completed, true);
   const resumed = await resumeRestored({ epoch: 2, id: epochId, control: restoreControl });
@@ -741,6 +754,7 @@ try {
       state: gcResumed.state,
       repair: nativeRepair.repair,
       domainRepairs,
+      multipartInventory,
       audit: recovery.audit,
       control: gcResumed.control,
     },
@@ -752,7 +766,7 @@ try {
       dataSha256: snapshot.dataSha256,
     },
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty-seven restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; bounded native repair scan and seven domain passes including empty GC and orphan inventory, restored FTS rebuild and full audit, exact hold release, service admission then GC resume with eviction, no repeat POST or cancellation.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty-eight restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; bounded native repair scan and seven domain passes including empty GC and orphan inventory, request-bound multipart binding verification and empty upload inventory, restored FTS rebuild and full audit, exact hold release, service admission then GC resume with eviction, no repeat POST or cancellation.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

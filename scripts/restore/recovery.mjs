@@ -2,7 +2,7 @@ import { restoreDomainKind } from "../../packages/shared/src/restoreDomain.ts";
 import { restoreStatus } from "./verify.mjs";
 
 const released = ["recovery_ready", "service_resumed", "gc_resumed"];
-function sameStatus(value, selected) {
+export function sameRecoveryStatus(value, selected) {
   const status = restoreStatus(value, selected.epoch, selected.id);
   if (
     status.newEpoch !== selected.newEpoch ||
@@ -98,7 +98,7 @@ export async function auditRestored({
   let result;
   for (let n = 0; n < maxPages; n++) {
     const raw = await control.auditRecovery(epoch, id, pageSize),
-      status = sameStatus(raw, selected),
+      status = sameRecoveryStatus(raw, selected),
       audit = auditStatus(raw.audit, selected.newEpoch);
     if (status.state !== "epoch_adopted") throw new Error("database_restore_recovery_conflict");
     result = { ...status, audit };
@@ -131,7 +131,7 @@ export async function repairRestoredNative({
   let result;
   for (let n = 0; n < maxPages; n++) {
     const raw = await control.repairNative(epoch, id, pageSize),
-      status = sameStatus(raw, selected),
+      status = sameRecoveryStatus(raw, selected),
       r = raw.repair;
     if (
       status.state !== "epoch_adopted" ||
@@ -178,7 +178,7 @@ export async function rebuildRestoredFts({ epoch, id, control }) {
   const selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
   if (selected.state !== "epoch_adopted") throw new Error("database_restore_recovery_unavailable");
   const raw = await control.rebuildRecoveryFts(epoch, id),
-    status = sameStatus(raw, selected);
+    status = sameRecoveryStatus(raw, selected);
   if (status.state !== "epoch_adopted") throw new Error("database_restore_recovery_conflict");
   return { ...status, audit: auditStatus(raw.audit, selected.newEpoch) };
 }
@@ -191,7 +191,7 @@ export async function repairRestoredDomain({ epoch, id, kind, limit = 20, contro
   const selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
   if (selected.state !== "epoch_adopted") throw new Error("database_restore_recovery_unavailable");
   const raw = await control.repairDomain(epoch, id, kind, limit),
-    status = sameStatus(raw, selected),
+    status = sameRecoveryStatus(raw, selected),
     r = raw.repair;
   if (status.state !== "epoch_adopted" || !r || r.kind !== kind || typeof r.pending !== "boolean")
     throw new Error("database_restore_invalid_domain_repair");
@@ -277,11 +277,11 @@ export async function resumeRestored({ epoch, id, control, gc = false }) {
   if (gc && !["service_resumed", "gc_resumed"].includes(selected.state))
     throw new Error("database_restore_recovery_not_resumed");
   if (!gc) {
-    const status = sameStatus(await control.releaseRecovery(epoch, id), selected);
+    const status = sameRecoveryStatus(await control.releaseRecovery(epoch, id), selected);
     if (!released.includes(status.state)) throw new Error("database_restore_invalid_status");
   }
   const raw = await (gc ? control.resumeRecoveryGc(epoch, id) : control.resumeRecovery(epoch, id)),
-    status = sameStatus(raw, selected);
+    status = sameRecoveryStatus(raw, selected);
   if (!(gc ? ["gc_resumed"] : ["service_resumed", "gc_resumed"]).includes(status.state))
     throw new Error("database_restore_invalid_status");
   // A replay of a completed GC step reports the current policy, including a later explicit pause.

@@ -14,7 +14,11 @@ import {
   globalMutationStatements,
 } from "../services/globalMutation";
 import type { R2WriteSource } from "../services/r2Write";
-import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
+import {
+  type BindingVerificationScope,
+  type VerifiedR2Inventory,
+  withVerifiedR2Inventory,
+} from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
 function withinBudget(deadline: number): void {
@@ -150,11 +154,17 @@ export async function scanMultipartBucket(
   inventory: R2S3Inventory,
   epoch: number,
   limit = 20,
+  scope?: BindingVerificationScope,
 ): Promise<MultipartBucketScanResult> {
   const deadline = Date.now() + 25_000;
   limits(epoch, limit);
-  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    scanPage(env, verified, epoch, limit, deadline),
+  return withVerifiedR2Inventory(
+    env,
+    bucket,
+    inventory,
+    epoch,
+    (verified) => scanPage(env, verified, epoch, limit, deadline),
+    scope,
   );
 }
 
@@ -253,13 +263,19 @@ export async function observeMultipartBucketParts(
   epoch: number,
   handleId: string,
   limit = 20,
+  scope?: BindingVerificationScope,
 ): Promise<MultipartPartObservationResult> {
   const deadline = Date.now() + 25_000;
   limits(epoch, limit);
   if (typeof handleId !== "string" || !/^[a-f\d-]{36}$/.test(handleId))
     throw new Error("invalid_multipart_bucket_handle");
-  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    observeParts(env, verified, epoch, handleId, limit, deadline),
+  return withVerifiedR2Inventory(
+    env,
+    bucket,
+    inventory,
+    epoch,
+    (verified) => observeParts(env, verified, epoch, handleId, limit, deadline),
+    scope,
   );
 }
 

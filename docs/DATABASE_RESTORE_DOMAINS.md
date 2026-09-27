@@ -56,6 +56,6 @@ GCの`pending`は該当台帳のdeleting残存を示す。若いorphan、pin付�
 
 ## 残作業
 
-multipart inventory、全bucketの未知handle、旧backup記録の修復は、復旧要求に固定した運用コマンドへ未接続。復元snapshotに元abortのD1記録がなく、履歴からも対応を再構成できない場合や、全DO storage喪失、旧実装で証拠が消えている場合をこの経路だけでは収束できない。元のD1終端記録は通常の保持期限を持つため、36日のDO履歴だけですべてのmultipart閉鎖を修復できるとは保証しない。
+[multipart inventory](DATABASE_RESTORE_INVENTORY.md)の調査・中止は別コマンドへ接続済み。未知multipart全体の閉鎖証明と予約/physicalの最終精算、旧backup記録の修復は未完了。復元snapshotに元abortのD1記録がなく、履歴からも対応を再構成できない場合や、全DO storage喪失、旧実装で証拠が消えている場合をこの経路だけでは収束できない。元のD1終端記録は通常の保持期限を持つため、36日のDO履歴だけですべてのmultipart閉鎖を修復できるとは保証しない。
 
 logical import、安全な中止、大規模DBのRTOと実Cloudflareでの復元・再開検証も未完了。D1 schema0046・通常68table・依存追加なし。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。

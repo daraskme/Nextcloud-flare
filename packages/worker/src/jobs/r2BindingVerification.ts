@@ -126,8 +126,16 @@ export async function withVerifiedR2Inventory<T>(
     assertExists(
       `SELECT 1 FROM r2_binding_probe p JOIN control c ON c.singleton=p.singleton
      WHERE p.singleton=1 AND p.epoch=? AND c.epoch=p.epoch AND c.maintenance=1 AND c.gc_paused=1
-       AND p.lease_token=? AND p.lease_expires_at>${CLOCK} AND p.nonce=? AND p.source=? AND p.phase=?`,
-      [epoch, token, nonce, source, phase],
+       AND p.lease_token=? AND p.lease_expires_at>${CLOCK} AND p.nonce=? AND p.source=? AND p.phase=?
+       ${scope ? `AND c.admission_revision=? AND c.admission_token=? AND ${CLOCK}<?` : ""}`,
+      [
+        epoch,
+        token,
+        nonce,
+        source,
+        phase,
+        ...(scope ? [scope.stop.revision, scope.stop.token, scope.stop.expiresAt] : []),
+      ],
     );
   const transition = async (from: string, sql: string, values: SqlStatement["values"] = []) => {
     scope?.current();

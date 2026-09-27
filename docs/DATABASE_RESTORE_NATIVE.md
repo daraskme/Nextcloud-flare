@@ -36,4 +36,4 @@ CLIの`pending`は未完了ページ、走査のunknown、DOまたはD1の未精
 
 ## 残作業
 
-この処理が確定するのは共通KDF/R2呼出しの終了だけである。[upload/multipart・予約・outbox・GC・孤立走査の修復](DATABASE_RESTORE_DOMAINS.md)は別コマンドへ接続済み。namespace公開、multipart inventory、旧backup記録などの全ケースの修復は残る。native不明の運用収束、旧実装/全storage喪失、logical import、安全な中止、実Cloudflare復旧・負荷試験は未完了。D1 schemaは0046・通常68table、依存追加なし。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
+この処理が確定するのは共通KDF/R2呼出しの終了だけである。[upload/multipart・予約・outbox・GC・孤立走査の修復](DATABASE_RESTORE_DOMAINS.md)は別コマンドへ接続済み。[multipart inventoryの調査・中止](DATABASE_RESTORE_INVENTORY.md)も接続済み。namespace公開、未知multipartの全体閉鎖/容量精算、旧backup記録などの全ケースの修復は残る。native不明の運用収束、旧実装/全storage喪失、logical import、安全な中止、実Cloudflare復旧・負荷試験は未完了。D1 schemaは0046・通常68table、依存追加なし。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。

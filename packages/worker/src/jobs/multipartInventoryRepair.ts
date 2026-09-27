@@ -20,7 +20,11 @@ import {
   type MultipartCleanupCandidate,
   multipartCleanupFence,
 } from "./multipartCleanup";
-import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
+import {
+  type BindingVerificationScope,
+  type VerifiedR2Inventory,
+  withVerifiedR2Inventory,
+} from "./r2BindingVerification";
 import { controlFence, observedObject } from "./uploadCleanup";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -85,6 +89,7 @@ export async function repairUnidentifiedMultipartUploads(
     maxUploads?: number;
     maxHandles?: number;
     maxWallMs?: number;
+    scope?: BindingVerificationScope;
   } = {},
 ): Promise<MultipartInventoryRepairResult> {
   const limit = options.maxUploads ?? 5;
@@ -104,8 +109,14 @@ export async function repairUnidentifiedMultipartUploads(
     wall > 25_000
   )
     throw new Error("invalid_multipart_inventory_limit");
-  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    repairVerified(env, verified, epoch, { limit, maxHandles, wall }),
+  return withVerifiedR2Inventory(
+    env,
+    bucket,
+    inventory,
+    epoch,
+    (verified) =>
+      repairVerified(env, verified, epoch, { limit, maxHandles, wall }, options.scope?.current),
+    options.scope,
   );
 }
 
@@ -114,6 +125,7 @@ async function repairVerified(
   verified: VerifiedR2Inventory,
   epoch: number,
   { limit, maxHandles, wall }: { limit: number; maxHandles: number; wall: number },
+  current?: () => void,
 ): Promise<MultipartInventoryRepairResult> {
   const { DB: db } = env;
   const { bucket, inventory } = verified;
@@ -136,6 +148,7 @@ async function repairVerified(
     .bind(epoch, epoch, epoch, maintenance ? 1 : 0, maintenance ? 1 : 0, limit)
     .all<{ id: string }>();
   for (const { id } of rows.results) {
+    current?.();
     if (Date.now() - started >= wall) break;
     const token = crypto.randomUUID();
     const row = await claimMultipartCleanup(env, id, epoch, maintenance, token, started + wall, {
@@ -143,6 +156,7 @@ async function repairVerified(
       fence: verified.fence,
     });
     if (!row) continue;
+    current?.();
     result.claimed++;
     const commit = async (kind: SystemMutationKind, statements: () => readonly SqlStatement[]) => {
       const admission = await acquireSystemMutation(env, row.owner_id, kind);
@@ -349,6 +363,7 @@ async function repairVerified(
               },
               () => bucket.resumeMultipartUpload(row.r2_key, handle.r2_upload_id).abort(),
               started + wall,
+              current,
             );
           } catch {
             uncertain = true;
@@ -411,6 +426,7 @@ async function repairVerified(
       ]).catch(() => {});
     }
   }
+  current?.();
   return result;
 }
 

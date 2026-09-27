@@ -7,6 +7,7 @@ import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreDomainKind } from "../../../shared/src/restoreDomain";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
+import type { RestoreInventoryRequest } from "../../../shared/src/restoreInventory";
 import type {
   RestoreSnapshotChallenge,
   RestoreSnapshotProof,
@@ -97,6 +98,7 @@ import {
   releaseStaleRecoveryReservations,
 } from "./recoveryAudit";
 import { repairRestoredDomain } from "./restoreDomainRepair";
+import { repairRestoredInventory } from "./restoreInventoryRepair";
 
 export { CONTROL_NAME } from "./controlName";
 
@@ -328,6 +330,12 @@ export class ControlDO extends DurableObject<Env> {
             transition,
             current,
           );
+        },
+        inventory: (request, target, transition, current) => {
+          current();
+          this.#kdfSettlements.assertEmpty();
+          this.#r2Writes.assertEmpty();
+          return repairRestoredInventory(env, this, request, target, transition, current);
         },
         repairLive: async (limit, current) => {
           const kdf = await this.#kdfSettlements.repair(limit, current);
@@ -569,6 +577,19 @@ export class ControlDO extends DurableObject<Env> {
       id,
       kind,
       limit,
+      this.env.RESTORE_WRITE_ENABLED === "true",
+    );
+  }
+  async repairDatabaseRestoreInventory(
+    expectedEpoch: number,
+    id: string,
+    request: RestoreInventoryRequest,
+  ) {
+    this.#row();
+    return this.#restoreRecovery.repairInventory(
+      expectedEpoch,
+      id,
+      request,
       this.env.RESTORE_WRITE_ENABLED === "true",
     );
   }

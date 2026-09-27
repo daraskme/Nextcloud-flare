@@ -7,7 +7,11 @@ import {
   globalMutationStatements,
 } from "../services/globalMutation";
 import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
-import { type VerifiedR2Inventory, withVerifiedR2Inventory } from "./r2BindingVerification";
+import {
+  type BindingVerificationScope,
+  type VerifiedR2Inventory,
+  withVerifiedR2Inventory,
+} from "./r2BindingVerification";
 
 const CLOCK = "strftime('%s','now')*1000";
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/;
@@ -39,7 +43,7 @@ export async function abortMultipartBucketHandle(
   epoch: number,
   handleId: string,
   attemptId: string,
-  options: { maxWaitMs?: number } = {},
+  options: { maxWaitMs?: number; scope?: BindingVerificationScope } = {},
 ): Promise<MultipartBucketAbortResult> {
   const deadline = Date.now() + 25_000;
   const wait = options.maxWaitMs ?? 10_000;
@@ -55,8 +59,23 @@ export async function abortMultipartBucketHandle(
     wait > 10_000
   )
     throw new Error("invalid_multipart_bucket_abort");
-  return withVerifiedR2Inventory(env, bucket, inventory, epoch, (verified) =>
-    abortVerified(env, verified, epoch, handleId, attemptId, wait, deadline),
+  return withVerifiedR2Inventory(
+    env,
+    bucket,
+    inventory,
+    epoch,
+    (verified) =>
+      abortVerified(
+        env,
+        verified,
+        epoch,
+        handleId,
+        attemptId,
+        wait,
+        deadline,
+        options.scope?.current,
+      ),
+    options.scope,
   );
 }
 
@@ -68,9 +87,11 @@ async function abortVerified(
   attemptId: string,
   wait: number,
   deadline: number,
+  current?: () => void,
 ): Promise<MultipartBucketAbortResult> {
   const { DB: db } = env;
   const withinBudget = () => {
+    current?.();
     if (Date.now() >= deadline) throw new Error("multipart_bucket_abort_budget");
   };
   const source = JSON.stringify(verified.observation.source);
@@ -147,6 +168,7 @@ async function abortVerified(
           },
           () => verified.bucket.resumeMultipartUpload(handle.r2_key, handle.r2_upload_id).abort(),
           deadline,
+          current,
         );
       })
       .then(
