@@ -6,13 +6,16 @@ import {
   RESTORE_BACKUPS_PROBE_KIND as KIND,
 } from "../../../shared/src/restoreBackups";
 import type { RestoreD1Challenge } from "../../../shared/src/restoreTarget";
+import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { ControlDatabaseRestore } from "../../src/do/controlDatabaseRestore";
 import { ControlRestoreBackups } from "../../src/do/controlRestoreBackups";
 import { ControlRestoreTarget } from "../../src/do/controlRestoreTarget";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { inspectRecoveryFinalFence } from "../../src/do/recoveryAudit";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import type { GlobalMutationSource } from "../../src/services/globalMutation";
+import { clearEndedR2TestWrites } from "../fixtures/mutationAdmission";
 import { inventoryEnv } from "../fixtures/s3Inventory";
 import { systemMutationFault } from "../fixtures/systemMutationFault";
 
@@ -36,6 +39,7 @@ beforeAll(async () => {
   );
 });
 beforeEach(async () => {
+  await clearEndedR2TestWrites();
   await runInDurableObject(control(), async (_instance, state) => {
     await state.storage.deleteAll();
   });
@@ -69,9 +73,17 @@ function fixture(
     beforePut?: () => Promise<void>;
     db?: D1Database;
     mutations?: GlobalMutationSource;
+    beforeGrant?: (request: R2WriteRequest) => Promise<void>;
+    afterGrant?: (grant: R2WriteGrant) => Promise<void>;
+    afterFinish?: (grant: R2WriteGrant, outcome: R2WriteTerminal) => Promise<void>;
   } = {},
 ) {
   const db = options.db ?? env.DB;
+  let request!: R2WriteRequest, grant!: R2WriteGrant;
+  const mutations =
+    options.mutations && "systemControl" in options.mutations
+      ? options.mutations.systemControl
+      : instance;
   const get = vi.fn(async (...args: Parameters<R2Bucket["get"]>) => {
     const value = await env.BACKUPS.get(...args);
     await options.get?.();
@@ -99,7 +111,24 @@ function fixture(
   );
   const service = new ControlRestoreBackups(
     state.storage,
-    options.mutations ?? { DB: db, systemControl: instance },
+    {
+      DB: db,
+      systemControl: {
+        status: () => mutations.status(),
+        acquireGlobalMutation: (request) => mutations.acquireGlobalMutation(request),
+        beginR2Write: async (input) => {
+          request = input;
+          await options.beforeGrant?.(input);
+          grant = await instance.beginR2Write(input);
+          await options.afterGrant?.(grant);
+          return grant;
+        },
+        finishR2Write: async (grant, outcome) => {
+          await instance.finishR2Write(grant, outcome);
+          await options.afterFinish?.(grant, outcome);
+        },
+      },
+    },
     { get, put } as unknown as R2Bucket,
     verifier,
   );
@@ -107,6 +136,10 @@ function fixture(
     service,
     get,
     put,
+    request: () => request,
+    grant: () => grant,
+    receipt: () =>
+      env.DB.prepare("SELECT * FROM r2_write_attempts WHERE id=?").bind(request.id).first(),
     challenge: () => service.challenge(epoch, id, c, source),
     attest: async (attemptId: string, observed?: string) =>
       service.attest(epoch, id, c, attemptId, observed ?? (await nonce())),
@@ -160,6 +193,199 @@ it("writes a fresh hidden nonce, survives eviction, and attests without exposing
   }
   expect(await control().status()).toMatchObject({ maintenance: true, gcPaused: true });
 });
+
+it("records BACKUPS native dispatch and completion before issuing its challenge", async () => {
+  await runInDurableObject(control(), async (instance, state) => {
+    const f = fixture(state, instance, {
+      beforePut: async () => {
+        expect(await f.receipt()).toMatchObject({
+          epoch,
+          owner_id: null,
+          kind: "backups.probe.put",
+          r2_key: KEY,
+          state: "pending",
+          source_ref: JSON.stringify([
+            epoch,
+            id,
+            f.request().backups!.attemptId,
+            f.request().backups!.nonce,
+          ]),
+        });
+        expect(row(state)?.phase).toBe("writing");
+      },
+    });
+    const issued = await f.challenge();
+    expect(await f.receipt()).toMatchObject({ state: "succeeded" });
+    expect(row(state)).toMatchObject({ phase: "issued", attempt_id: issued.attemptId });
+    expect(f.put).toHaveBeenCalledOnce();
+    await expect(
+      instance.beginR2Write({
+        ...f.request(),
+        id: crypto.randomUUID(),
+        deadline: Date.now() + 5000,
+      }),
+    ).rejects.toThrow();
+    expect(state.storage.sql.exec("SELECT * FROM control_r2_write_receipts").toArray()).toEqual([]);
+  });
+});
+
+it("retains a lost grant reply without sending BACKUPS PUT", async () => {
+  await runInDurableObject(control(), async (instance, state) => {
+    const f = fixture(state, instance, {
+      afterGrant: async () => {
+        throw new Error("lost_grant_ack");
+      },
+    });
+    await expect(f.challenge()).rejects.toThrow(/mutation_unavailable/);
+    expect(f.put).not.toHaveBeenCalled();
+    expect(await f.receipt()).toMatchObject({ state: "pending" });
+    expect(row(state)?.phase).toBe("writing");
+    await expect(instance.repairR2WriteSettlements(epoch)).resolves.toMatchObject({
+      unknown: 1,
+      databasePending: 1,
+    });
+  });
+});
+
+it("records not_started when restore is cancelled after receiving the dispatch grant", async () => {
+  await runInDurableObject(control(), async (instance, state) => {
+    const f = fixture(state, instance, {
+      afterGrant: async () => {
+        new ControlDatabaseRestore(state.storage.sql).cancel(epoch, id);
+      },
+    });
+    await expect(f.challenge()).rejects.toThrow(/database_restore_not_preparing/);
+    expect(f.put).not.toHaveBeenCalled();
+    expect(await f.receipt()).toMatchObject({ state: "not_started" });
+  });
+});
+
+it.each(["lease", "phase", "nonce", "etag", "source", "attempt", "D1 stop"])(
+  "rechecks the original %s while waiting for the BACKUPS write grant",
+  async (field) => {
+    await runInDurableObject(control(), async (instance, state) => {
+      const acquire = instance.acquireGlobalMutation;
+      let fired = false;
+      vi.spyOn(instance, "acquireGlobalMutation").mockImplementation(async (request) => {
+        const admission = await acquire.call(instance, request);
+        if (request.permitId.startsWith("global:r2.backups-probe-put:")) {
+          fired = true;
+          if (field === "D1 stop")
+            await env.DB.prepare(
+              "UPDATE control SET admission_revision=admission_revision+1",
+            ).run();
+          else if (field === "lease")
+            state.storage.sql.exec("UPDATE control_restore_backups_probe SET lease_expires_at=0");
+          else {
+            const [column, value] =
+              field === "phase"
+                ? ["phase", "issued"]
+                : field === "nonce"
+                  ? ["nonce", "f".repeat(64)]
+                  : field === "etag"
+                    ? ["etag", "changed-etag"]
+                    : field === "source"
+                      ? ["source_json", JSON.stringify({ ...source, bucket: "other-backups" })]
+                      : ["attempt_id", crypto.randomUUID()];
+            state.storage.sql.exec(
+              `UPDATE control_database_restore_backups SET ${column}=? WHERE id=?`,
+              value,
+              id,
+            );
+          }
+        }
+        return admission;
+      });
+      const f = fixture(state, instance);
+      await expect(f.challenge()).rejects.toThrow(/mutation_unavailable/);
+      expect(fired).toBe(true);
+      expect(f.put).not.toHaveBeenCalled();
+      if (field === "D1 stop") {
+        expect(await f.receipt()).toBeNull();
+        expect(
+          state.storage.sql
+            .exec("SELECT state FROM control_r2_write_receipts WHERE id=?", f.request().id)
+            .one(),
+        ).toMatchObject({ state: "not_started" });
+        // Restore only the injected mirror discrepancy; repair must reuse the saved fact.
+        await env.DB.prepare("UPDATE control SET admission_revision=?").bind(c.revision).run();
+        await instance.repairR2WriteSettlements(epoch);
+      }
+      expect(await f.receipt()).toMatchObject({ state: "not_started" });
+    });
+  },
+);
+
+it("settles native completion after cancellation without issuing a stale challenge", async () => {
+  await runInDurableObject(control(), async (instance, state) => {
+    const f = fixture(state, instance, {
+      put: async () => {
+        new ControlDatabaseRestore(state.storage.sql).cancel(epoch, id);
+      },
+    });
+    await expect(f.challenge()).rejects.toThrow(/database_restore_not_preparing/);
+    expect(f.put).toHaveBeenCalledOnce();
+    expect(await f.receipt()).toMatchObject({ state: "succeeded" });
+    expect(row(state)).toMatchObject({ phase: "writing", verified_at: null });
+  });
+});
+
+it.each([25000, 8000])(
+  "retains a timed out PUT and settles only its late native completion (%i ms)",
+  async (remaining) => {
+    await runInDurableObject(control(), async (instance, state) => {
+      let release!: () => void, entered!: () => void, finished!: () => void;
+      const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        started = new Promise<void>((resolve) => {
+          entered = resolve;
+        }),
+        ended = new Promise<void>((resolve) => {
+          finished = resolve;
+        });
+      if (remaining === 8000) {
+        const expiresAt = Date.now() + remaining;
+        c = { ...c, issuedAt: expiresAt - 300000, expiresAt };
+        state.storage.sql.exec(
+          "UPDATE control_database_restore_target SET issued_at=?,expires_at=? WHERE id=?",
+          c.issuedAt,
+          c.expiresAt,
+          id,
+        );
+      }
+      const f = fixture(state, instance, {
+        beforePut: async () => {
+          entered();
+          await gate;
+        },
+        afterFinish: async () => {
+          finished();
+        },
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const result = f.challenge().then(
+          (value) => ({ value, error: null }),
+          (error) => ({ value: null, error }),
+        );
+        await Promise.race([started, result]);
+        expect(f.put).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(remaining);
+        expect((await result).error?.message).toMatch(/backups_timeout|mutation_unavailable/);
+        expect(await f.receipt()).toMatchObject({ state: "pending" });
+        release();
+        await ended;
+        expect(await f.receipt()).toMatchObject({ state: "succeeded" });
+        expect(row(state)).toMatchObject({ phase: "writing", verified_at: null });
+        expect(f.get).toHaveBeenCalledOnce();
+      } finally {
+        release();
+        vi.useRealTimers();
+      }
+    });
+  },
+);
 
 it.each(["nonce", "attempt"])("rejects a wrong %s before rereading BACKUPS", async (kind) => {
   await runInDurableObject(control(), async (instance, state) => {
@@ -302,16 +528,31 @@ it("retains the allocation and lease after an unknown PUT, and rotates after exp
         throw new Error("lost_put_ack");
       },
     });
-    await expect(f.challenge()).rejects.toThrow(/lost_put_ack/);
+    await expect(f.challenge()).rejects.toThrow(/mutation_unavailable/);
     const previous = await nonce();
     expect(row(state)).toMatchObject({ phase: "writing", verified_at: null });
     expect(slot(state)).toMatchObject({ allocated_bytes: 64, calls: 2 });
+    expect(await f.receipt()).toMatchObject({
+      kind: "backups.probe.put",
+      owner_id: null,
+      state: "pending",
+    });
     await expect(fixture(state, instance).challenge()).rejects.toThrow(/backups_busy/);
     state.storage.sql.exec("UPDATE control_restore_backups_probe SET lease_expires_at=0");
     const retry = fixture(state, instance),
       next = await retry.challenge();
     expect(await nonce()).not.toBe(previous);
     expect(await retry.attest(next.attemptId)).toMatchObject({ state: "backups_verified" });
+    expect(await f.receipt()).toMatchObject({ state: "pending" });
+    await expect(inspectRecoveryFinalFence(env.DB, epoch)).rejects.toThrow(
+      /recovery_final_fence_pending/,
+    );
+    await expect(env.DB.prepare("UPDATE control SET maintenance=0").run()).rejects.toThrow(
+      /r2_write_unsettled/,
+    );
+    await expect(
+      env.DB.prepare("UPDATE control SET restore_freeze_token=?").bind(crypto.randomUUID()).run(),
+    ).rejects.toThrow(/restore_freeze_not_drained/);
   });
 });
 
@@ -352,26 +593,36 @@ it.each([false, true])(
     if (existing)
       await env.BACKUPS.put(KEY, "a".repeat(64), { customMetadata: { ncf_kind: KIND } });
     await runInDurableObject(control(), async (instance, state) => {
-      let release!: () => void, entered!: () => void;
+      let release!: () => void, entered!: () => void, finished!: () => void;
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
       const started = new Promise<void>((resolve) => {
         entered = resolve;
       });
+      const settled = new Promise<void>((resolve) => {
+        finished = resolve;
+      });
       const old = fixture(state, instance, {
         beforePut: async () => {
           entered();
           await gate;
         },
+        afterFinish: async () => {
+          finished();
+        },
       });
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
-        const failed = expect(old.challenge()).rejects.toThrow(/backups_timeout/);
-        await started;
+        const result = old.challenge().then(
+          (value) => ({ value, error: null }),
+          (error) => ({ value: null, error }),
+        );
+        await Promise.race([started, result]);
+        expect(old.put).toHaveBeenCalledOnce();
         await expect(old.challenge()).rejects.toThrow(/backups_busy/);
         await vi.advanceTimersByTimeAsync(25000);
-        await failed;
+        expect((await result).error?.message).toMatch(/backups_timeout|mutation_unavailable/);
         expect(row(state)?.phase).toBe("writing");
         state.storage.sql.exec("UPDATE control_restore_backups_probe SET lease_expires_at=0");
         const next = fixture(state, instance),
@@ -379,7 +630,8 @@ it.each([false, true])(
           value = await nonce();
         await next.attest(issued.attemptId, value);
         release();
-        await vi.advanceTimersByTimeAsync(1);
+        await settled;
+        expect(await old.receipt()).toMatchObject({ state: "succeeded" });
         expect(await nonce()).toBe(value);
         expect(row(state)).toMatchObject({ attempt_id: issued.attemptId, phase: "verified" });
       } finally {

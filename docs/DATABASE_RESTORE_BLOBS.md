@@ -26,7 +26,7 @@ pnpm database:restore verify-blobs --remote --operator-config restore-operator.j
 
 返り値は`state:blobs_verified`、`validator:r2-binding-v1`、D1/BLOBS対象、試行ID、challenge ID、revision、観測時刻、元challengeの期限。停止token・probe nonce・credentialsをCLIの成功結果に含めない。
 
-復旧要求に結び付いた観測はD1と別のDO SQLiteに保存し、eviction後も対象固定を維持する。現在のD1 schemaは0044、通常68table。既存の`r2_binding_probe`台帳とsystem容量64 bytesを再利用し、`r2_write_attempts`へ各PUTの送信と実終了も記録する。probeは恒久的に保持し、成功・失敗・取消しで削除しない。遅延した新規PUTが後から別のprobeを作ることを防ぐためである。利用者のファイルやBACKUPSのobjectは変更しない。
+復旧要求に結び付いた観測はD1と別のDO SQLiteに保存し、eviction後も対象固定を維持する。現在のD1 schemaは0045、通常68table。既存の`r2_binding_probe`台帳とsystem容量64 bytesを再利用し、`r2_write_attempts`へ各PUTの送信と実終了も記録する。probeは恒久的に保持し、成功・失敗・取消しで削除しない。遅延した新規PUTが後から別のprobeを作ることを防ぐためである。利用者のファイルやBACKUPSのobjectは変更しない。
 
 条件付きPUTの失敗ではR2 Workers APIが`null`を返す。成功した書込み後の読取りについては[公式Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)の整合性契約に依存する。jurisdictionはbucketの区分として固定し、単なるlocation hintと混同しない（[公式data location](https://developers.cloudflare.com/r2/reference/data-location/)）。
 

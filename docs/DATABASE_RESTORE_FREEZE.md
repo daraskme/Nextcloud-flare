@@ -55,8 +55,8 @@ migrationはmaintenance中かつbackupなし、open permit/claimed operation/non
 
 Node試験は全通常tableのtrigger、実INSERT拒否、control変更拒否、取消しrollback、移行前提、CLI再送・設定変更・秘密非出力を検証する。workerdは実DO/D1/R2で凍結、eviction、受付の待機競合、事前照会後のD1競合、ACK喪失、期限切れ、遅延batch、timeout、DO transaction失敗を確認する。専用bindingドリルは13操作の権限拒否と、既知の試験用予約を解放する前の拒否、凍結・再起動・取消しを確認する。実行結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-空ファイルPUT、target manifest staging、未公開manifest削除の送信・終了記録はmigration0041で接続し、0042でblob/orphan GC、0043で単一/DAV PUTとmultipart作成/part/完了/全中止、0044でBLOBS接続probeへ拡張済み。table再構築でも全pending・終端行と凍結guardを保持する。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)が正本。DOの未精算receiptと全epochのD1 pendingを検査し、応答不明・期限切れ・DO storage喪失だけで凍結を確定しない。停止中に既知の実終了をD1へ反映するrepairはあるが、native結果不明の解除は未実装。
+空ファイルPUT、target manifest staging、未公開manifest削除の送信・終了記録はmigration0041で接続し、0042でblob/orphan GC、0043で単一/DAV PUTとmultipart作成/part/完了/全中止、0044でBLOBS接続probe、0045でBACKUPS接続probeへ拡張済み。table再構築でも全pending・終端行と凍結guardを保持する。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)が正本。DOの未精算receiptと全epochのD1 pendingを検査し、応答不明・期限切れ・DO storage喪失だけで凍結を確定しない。停止中に既知の実終了をD1へ反映するrepairはあるが、native結果不明の解除は未実装。
 
-**全R2操作の最終終了証明は未完了。** BACKUPS側probe・保存/削除、epoch履歴などの送信点も個別に確認し、全ての終了条件を集約する必要がある。共通mutation枠の期限、HEAD不在、D1のterminalだけを外部処理終了へ読み替えない。
+**全R2操作の最終終了証明は未完了。** BACKUPS保存/削除、epoch履歴などの送信点も個別に確認し、全ての終了条件を集約する必要がある。共通mutation枠の期限、HEAD不在、D1のterminalだけを外部処理終了へ読み替えない。
 
 外部I/Oの全終了、新epochの事前予約、復元元の最終確認、実D1上書き後の採用、全監査・段階再開、ControlDO全storage喪失からの復旧、実Cloudflare検証は未完了。現在の`frozen`をD1の手動上書き許可として使わない。

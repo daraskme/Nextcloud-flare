@@ -135,7 +135,7 @@ export function r2WriteFixture(
               {
                 epoch,
                 deadline,
-                permitId: `global:${kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
+                permitId: `global:${kind === "backups.probe.put" ? "r2.backups-probe-put" : kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
               },
               db,
             ),

@@ -287,10 +287,12 @@ export class ControlDO extends DurableObject<Env> {
     this.#r2Writes = new ControlR2Writes(
       ctx.storage,
       env.DB,
-      (epoch, kind) =>
-        kind.endsWith(".delete") || kind.endsWith(".abort") || kind === "probe.put"
-          ? this.#admission.captureSystemMutationMode(epoch)
-          : this.#admission.assertMutationOpen(epoch),
+      (epoch, kind, request) => {
+        if (kind.endsWith(".delete") || kind.endsWith(".abort") || kind.endsWith("probe.put"))
+          this.#admission.captureSystemMutationMode(epoch);
+        else this.#admission.assertMutationOpen(epoch);
+        if (kind === "backups.probe.put") this.#restoreBackups.assertWrite(request);
+      },
       (request) => this.acquireMutation(request),
       () =>
         this.acquireGlobalMutation({
@@ -300,7 +302,7 @@ export class ControlDO extends DurableObject<Env> {
         }),
       (epoch, deadline, kind) =>
         this.acquireGlobalMutation({
-          permitId: `global:${kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
+          permitId: `global:${kind === "backups.probe.put" ? "r2.backups-probe-put" : kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
           epoch,
           deadline,
         }),

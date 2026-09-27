@@ -3,9 +3,20 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
+直前fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。
+
+先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- migration0045でBACKUPS接続probeの条件付きPUTを13種類目のR2送信・終了記録へ接続。固定key・null owner、元の復旧要求/試行/nonce/bucket/期待ETagと停止challengeを要求する。DOの原本をgrantの前後・送信直前に検査し、D1 batchでも停止revision/tokenを再検査する。25秒と元challengeの短い方を期限として保持する。
+- 全12種類の旧receipt・全状態・期限切れpendingを11列保持するNode5件を追加。0045の保存世代も追加し、2file/24件が成功（7.05s）。/tmp/ncf-backups-probe-node-targeted.log。型・lint420file・契約/設定検査も成功。
+- workerd13ケースを追加。初回5file/129件は100成功・29失敗（121.09s）。D1だけ停止revisionを変えた際の精算期待と、時刻全体を進めてD1の受付時計と乖離したfixtureを修正した。後者のtimeoutが後続27件にも影響した。再実行は39/41成功（21.93s）で、残り2件は旧timeout名の期待とその未処理assertionを修正。最終BACKUPS全41件は成功（20.64s）、初回と合わせ関連129件を確認。/tmp/ncf-backups-probe-targeted.log、/tmp/ncf-backups-probe-focus.log、/tmp/ncf-backups-probe-focus-final.log。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。13復旧操作の権限拒否、同じchallengeでのBLOBS/BACKUPS照合、D1凍結・実更新拒否・eviction・取消しを確認。S3/Time Travelは合成providerで、remote検証ではない。/tmp/ncf-backups-probe-operator.log、.wrangler/operator-drill-LmV9qJ/report.json。
+- 全体checkが成功。Node995件（52file、48.51s）＋workerd2,407件（111file、1,540.61s）、計3,402件。lint420file・型・契約/設定検査・Web build・Worker dry-runも成功。/tmp/ncf-backups-probe-check.log。停止拒否・切断fixtureのworkerdログを含むが、テスト結果と終了コードは成功。検証中のソースは固定し、開始時snapshotとの一致も確認した。
+- BACKUPSの保存/削除・epoch履歴、native結果不明の運用証明は後続。通常68table・依存追加なし、remote resource作成・migration・deployなし。
+
+### 先行するBLOBS probeの送信記録
 
 - migration0044でBLOBS接続probeの条件付きPUTを送信・終了記録へ接続。明示null owner、固定system key、元のlease token/nonce/source/期待ETagと復旧の停止revision/tokenを要求する。元の25秒期限を延長せず、grant後にscopeが閉じた場合は送信前にnot_startedを記録する。新しいprobeの成功は古いunknownを解消しない。
 - 新規workerd14件を含むprobe・共通受付・復旧先BLOBS・schemaの5file/125件が成功（57.65s）。/tmp/ncf-probe-writes-targeted.log。応答喪失、scope終了、grant待機中のlease/phase/mode/proof変更、timeout後の実成功、凍結/再開拒否を確認した。

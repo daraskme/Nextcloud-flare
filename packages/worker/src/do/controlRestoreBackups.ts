@@ -8,11 +8,14 @@ import {
 } from "../../../shared/src/restoreBackups";
 import type { RestoreD1Challenge } from "../../../shared/src/restoreTarget";
 import { atomicBatch } from "../db/primary";
+import type { R2BackupsProbeProof } from "../db/r2BackupsProbe";
+import type { R2WriteRequest } from "../db/r2Write";
 import {
   acquireGlobalMutation,
   type GlobalMutationSource,
   globalMutationStatements,
 } from "../services/globalMutation";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import type { ControlRestoreTarget } from "./controlRestoreTarget";
 
 interface BackupsRow extends Record<string, SqlStorageValue> {
@@ -52,7 +55,7 @@ export class ControlRestoreBackups {
   private readonly sql: SqlStorage;
   constructor(
     private readonly storage: DurableObjectStorage,
-    private readonly env: GlobalMutationSource,
+    private readonly env: GlobalMutationSource & R2WriteSource,
     private readonly bucket: R2Bucket,
     private readonly target: ControlRestoreTarget,
   ) {
@@ -77,6 +80,40 @@ export class ControlRestoreBackups {
       .toArray()[0];
     if (!row) throw new Error("database_restore_backups_missing");
     return row;
+  }
+
+  /** The DO remains authoritative for the pinned source, CAS and original restore attempt. */
+  assertWrite(request: Pick<R2WriteRequest, "epoch" | "deadline" | "backups">): void {
+    const p = request.backups!;
+    const scope = this.target.verifiedScope(request.epoch, p.id, p.challenge),
+      now = scope.current(),
+      row = this.#row(p.id),
+      c = scope.challenge;
+    if (
+      row.epoch !== request.epoch ||
+      row.attempt_id !== p.attemptId ||
+      row.challenge_id !== c.challengeId ||
+      row.target_json !== JSON.stringify(c.target) ||
+      row.revision !== c.revision ||
+      row.token !== c.token ||
+      row.source_json !== JSON.stringify(p.source) ||
+      row.nonce !== p.nonce ||
+      row.phase !== "writing" ||
+      row.etag !== p.expectedEtag ||
+      row.expires_at !== p.expiresAt ||
+      row.expires_at < request.deadline ||
+      now < row.issued_at ||
+      now >= row.expires_at ||
+      this.sql
+        .exec(
+          "SELECT 1 FROM control_restore_backups_probe WHERE singleton=1 AND attempt_id=? AND lease_expires_at=? AND lease_expires_at>?",
+          p.attemptId,
+          p.expiresAt,
+          now,
+        )
+        .toArray().length !== 1
+    )
+      throw new Error("database_restore_backups_conflict");
   }
 
   observation(epoch: number, id: string, input: RestoreD1Challenge, attemptId: string) {
@@ -114,6 +151,7 @@ export class ControlRestoreBackups {
       scope: ReturnType<ControlRestoreTarget["verifiedScope"]>,
       current: () => number,
       budget: () => Promise<void>,
+      deadline: number,
     ) => Promise<T>,
   ) {
     if (this.#busy) throw new Error("database_restore_backups_busy");
@@ -172,7 +210,7 @@ export class ControlRestoreBackups {
         current();
       };
       return await Promise.race([
-        action(scope, current, budget),
+        action(scope, current, budget, deadline),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => {
@@ -228,7 +266,7 @@ export class ControlRestoreBackups {
     sourceInput: RestoreBackupsTarget,
   ) {
     const source = restoreBackupsTarget(sourceInput);
-    return this.#run(epoch, id, input, async (scope, current, budget) => {
+    return this.#run(epoch, id, input, async (scope, current, budget, deadline) => {
       const c = scope.challenge;
       if (c.target.mode !== "remote" || c.target.accountId !== source.accountId)
         throw new Error("database_restore_backups_target_mismatch");
@@ -273,13 +311,52 @@ export class ControlRestoreBackups {
       await budget();
       const previous = await this.#read(current);
       await budget();
-      const object = await this.bucket.put(RESTORE_BACKUPS_PROBE_KEY, nonce, {
-        onlyIf: previous
-          ? { etagMatches: previous.object.etag }
-          : new Headers({ "If-None-Match": "*" }),
-        customMetadata: { ncf_kind: RESTORE_BACKUPS_PROBE_KIND },
-        httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
-      });
+      const expectedEtag = previous?.object.etag ?? null;
+      // In the writing phase etag is the original CAS, replaced only after native completion.
+      if (
+        this.sql
+          .exec(
+            "UPDATE control_database_restore_backups SET etag=? WHERE id=? AND attempt_id=? AND phase='writing' AND etag IS NULL RETURNING id",
+            expectedEtag,
+            id,
+            attemptId,
+          )
+          .toArray().length !== 1
+      )
+        throw new Error("database_restore_backups_conflict");
+      const backups: R2BackupsProbeProof = {
+        id,
+        attemptId,
+        challenge: c,
+        source,
+        nonce,
+        expectedEtag,
+        expiresAt,
+      };
+      const object = await trackedR2Write(
+        this.env,
+        {
+          epoch,
+          ownerId: null,
+          kind: "backups.probe.put",
+          key: RESTORE_BACKUPS_PROBE_KEY,
+          backups,
+        },
+        () =>
+          this.bucket.put(RESTORE_BACKUPS_PROBE_KEY, nonce, {
+            onlyIf:
+              expectedEtag !== null
+                ? { etagMatches: expectedEtag }
+                : new Headers({ "If-None-Match": "*" }),
+            customMetadata: { ncf_kind: RESTORE_BACKUPS_PROBE_KIND },
+            httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
+          }),
+        deadline,
+        () => {
+          current();
+          this.assertWrite({ epoch, deadline, backups });
+        },
+      );
       current();
       if (!object) throw new Error("database_restore_backups_conflict");
       validObject(object);

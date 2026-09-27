@@ -5,6 +5,7 @@ import type {
 } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { abortWriteProof, isAbortWrite } from "../db/r2Abort";
+import { backupsProbeWriteProof } from "../db/r2BackupsProbe";
 import { probeWriteProof } from "../db/r2Probe";
 import { isUploadWrite, uploadWriteProof } from "../db/r2Upload";
 import {
@@ -35,7 +36,7 @@ export class ControlR2Writes {
   constructor(
     private readonly storage: DurableObjectStorage,
     private readonly db: D1Database,
-    private readonly current: (epoch: number, kind: R2WriteKind) => void,
+    private readonly current: (epoch: number, kind: R2WriteKind, request: R2WriteRequest) => void,
     private readonly admit: (request: MutationRequest) => Promise<MutationAdmission>,
     private readonly settleAdmit: () => Promise<GlobalMutationAdmission>,
     private readonly globalAdmit: (
@@ -47,7 +48,8 @@ export class ControlR2Writes {
         | "orphan.delete"
         | "multipart.abort"
         | "bucket.abort"
-        | "probe.put",
+        | "probe.put"
+        | "backups.probe.put",
     ) => Promise<GlobalMutationAdmission>,
   ) {
     const sql = storage.sql;
@@ -92,7 +94,7 @@ export class ControlR2Writes {
     const startedAt = Date.now();
     if (deadline <= startedAt || deadline > startedAt + 5000)
       throw new Error("r2_write_unavailable");
-    this.current(epoch, kind);
+    this.current(epoch, kind, input);
     this.sql.exec(
       "DELETE FROM control_r2_write_used WHERE id IN (SELECT id FROM control_r2_write_used WHERE expires_at<=? ORDER BY expires_at LIMIT 32)",
       startedAt,
@@ -110,6 +112,7 @@ export class ControlR2Writes {
       ...(input.upload ? { upload: input.upload } : {}),
       ...(input.abort ? { abort: input.abort } : {}),
       ...(input.probe ? { probe: input.probe } : {}),
+      ...(input.backups ? { backups: input.backups } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -126,56 +129,59 @@ export class ControlR2Writes {
         kind === "blob.delete" ||
         kind === "orphan.delete" ||
         isAbortWrite(kind) ||
-        kind === "probe.put"
+        kind === "probe.put" ||
+        kind === "backups.probe.put"
       ) {
         const admission = await this.globalAdmit(epoch, deadline, kind);
-        this.current(epoch, kind);
+        this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
         const guards =
-          kind === "probe.put"
-            ? probeWriteProof(grant)
-            : isAbortWrite(kind)
-              ? await abortWriteProof(this.db, grant)
-              : kind === "manifest.delete"
-                ? [
-                    assertExists(
-                      `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
+          kind === "backups.probe.put"
+            ? backupsProbeWriteProof(grant)
+            : kind === "probe.put"
+              ? probeWriteProof(grant)
+              : isAbortWrite(kind)
+                ? await abortWriteProof(this.db, grant)
+                : kind === "manifest.delete"
+                  ? [
+                      assertExists(
+                        `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
             AND NOT EXISTS(SELECT 1 FROM target_sets WHERE manifest_ref=?)
             AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=? AND state='pending')`,
-                      [ownerId, key, key, key],
-                    ),
-                  ]
-                : kind === "blob.delete"
-                  ? [
-                      gcDispatchFence(
-                        {
-                          blobId: input.gc!.blobId!,
-                          ownerId: ownerId!,
-                          key,
-                          state: "deleting",
-                        },
-                        input.gc!.claimToken,
-                        epoch,
-                        input.gc!.mode,
-                        deadline,
+                        [ownerId, key, key, key],
                       ),
                     ]
-                  : [
-                      assertExists(
-                        "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
-                        [epoch, input.gc!.mode ? 1 : 0, input.gc!.mode ? 1 : 0],
-                      ),
-                      assertExists(
-                        "SELECT 1 FROM orphan_objects WHERE r2_key=? AND owner_key IS NOT NULL AND epoch<=? AND first_seen_at<=strftime('%s','now')*1000-?",
-                        [key, epoch, ORPHAN_GRACE_MS],
-                      ),
-                      assertExists(
-                        "SELECT 1 FROM orphan_objects WHERE r2_key=? AND claim_expires_at>=?",
-                        [key, deadline],
-                      ),
-                      objectFence({ ...input.gc!.object!, r2_key: key }, input.gc!.claimToken),
-                    ];
+                  : kind === "blob.delete"
+                    ? [
+                        gcDispatchFence(
+                          {
+                            blobId: input.gc!.blobId!,
+                            ownerId: ownerId!,
+                            key,
+                            state: "deleting",
+                          },
+                          input.gc!.claimToken,
+                          epoch,
+                          input.gc!.mode,
+                          deadline,
+                        ),
+                      ]
+                    : [
+                        assertExists(
+                          "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
+                          [epoch, input.gc!.mode ? 1 : 0, input.gc!.mode ? 1 : 0],
+                        ),
+                        assertExists(
+                          "SELECT 1 FROM orphan_objects WHERE r2_key=? AND owner_key IS NOT NULL AND epoch<=? AND first_seen_at<=strftime('%s','now')*1000-?",
+                          [key, epoch, ORPHAN_GRACE_MS],
+                        ),
+                        assertExists(
+                          "SELECT 1 FROM orphan_objects WHERE r2_key=? AND claim_expires_at>=?",
+                          [key, deadline],
+                        ),
+                        objectFence({ ...input.gc!.object!, r2_key: key }, input.gc!.claimToken),
+                      ];
         await atomicBatch(this.db, globalMutationStatements(admission, [...guards, ...statements]));
       } else {
         const spaceId = await primary(this.db)
@@ -184,7 +190,7 @@ export class ControlR2Writes {
           )
           .bind(ownerId)
           .first<string>("id");
-        this.current(epoch, kind);
+        this.current(epoch, kind, grant);
         if (!spaceId || Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
         const admission = await this.admit({
@@ -193,11 +199,11 @@ export class ControlR2Writes {
           epoch,
           deadline,
         });
-        this.current(epoch, kind);
+        this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
         const guards = isUploadWrite(kind) ? await uploadWriteProof(this.db, grant) : [];
-        this.current(epoch, kind);
+        this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
         await atomicBatch(
@@ -205,7 +211,7 @@ export class ControlR2Writes {
           accountMutationStatements(admission, ownerId!, [...guards, ...statements]),
         );
       }
-      this.current(epoch, kind);
+      this.current(epoch, kind, grant);
       if (Date.now() < startedAt || Date.now() >= deadline || this.#row(id)?.state !== "pending")
         throw new Error("r2_write_unavailable");
       return grant;

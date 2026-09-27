@@ -30,7 +30,9 @@ CLIはaccount・対象・S3設定の不一致を復旧RPCの前に拒否する�
 4. CLIが同じ固定keyをS3 GETで読み、64-byteのhex値を`attestBackups`へ渡す。S3読取りは10秒・64 bytesまで。任意keyの読取り・PUT許可を広げず、既存backup storeへ専用の固定key GETだけを追加している。
 5. Workerは保存した秘密のnonceと照合し、BACKUPSからobjectを再読取りする。本文だけでなくPUT時のETag/versionとの一致、現在のD1停止状態を確認して、観測保存とlease解放を一つのDO transactionで行う。
 
-対象と試行はDO SQLiteの`control_database_restore_backups`、共有leaseと呼出し予算は`control_restore_backups_probe`へ保存する。probeは最大1個・64 bytesのsystem枠として`allocated_bytes=64`を保持し、利用者のquotaへ混ぜない。BACKUPSの世代容量・epoch履歴と同様、運用上のbucket容量に含める。D1 schemaは0039、通常67tableを維持する。
+対象と試行はDO SQLiteの`control_database_restore_backups`、共有leaseと呼出し予算は`control_restore_backups_probe`へ保存する。probeは最大1個・64 bytesのsystem枠として`allocated_bytes=64`を保持し、利用者のquotaへ混ぜない。BACKUPSの世代容量・epoch履歴と同様、運用上のbucket容量に含める。現schemaは0045、通常68table。
+
+各PUTを`backups.probe.put`としてDO/D1へ送信前から記録する。元の復旧要求・試行・nonce・bucket・期待ETagと停止challengeを再検査し、nativeが成功して終了記録を反映してからchallengeを返す。grant応答の喪失では送信せず保留を保持する。送信直前の取消しはnot_started、送信後の取消し・timeoutでは遅れた実終了だけを反映する。条件不成立のnullもnativeの終了事実として扱う。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
 このkeyは成功・失敗・取消しで削除しない。条件付きPUTと恒久objectにより、遅れた初回createや旧ETagによる更新が、後から成功した新しい検証値を上書きすることを防ぐ。バックアップ世代と`sys/epoch/`は変更しない。R2の[条件付きPUTと整合性の契約](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)に依存する。
 
@@ -46,7 +48,7 @@ CLIはaccount・対象・S3設定の不一致を復旧RPCの前に拒否する�
 
 BACKUPSの観測・leaseは発行から60秒とD1 challenge期限の短い方に固定し、RPC一回の処理は最大25秒。GET/PUT/確認GETは通常操作と同じ32 active/256 waitingの共通受付を使い、各D1予算batchの直接ACK後だけ開始する。応答喪失後のreceipt読戻しから外部操作を許可しない。
 
-取消し・epoch/停止変更・時計逆行・対象/試行変更・timeoutがあれば、await後の再検査で後続処理を止める。保存が拒否または無視された場合も成功を返さない。結果不明ではleaseと64-byte枠を保持する。leaseが残る間の再試行は拒否し、期限後に同じ復旧要求IDで新しいchallenge/nonceを使って検査し直す。停止やGC pauseは自動解除しない。
+取消し・epoch/停止変更・時計逆行・対象/試行変更・timeoutがあれば、await後の再検査で後続処理を止める。保存が拒否または無視された場合も成功を返さない。結果不明ではleaseと64-byte枠に加え、各native PUTのpendingを保持する。leaseが残る間の再試行は拒否し、期限後に同じ復旧要求IDで新しいchallenge/nonceを使って検査し直す。新しい接続確認が成功しても古いpendingは解消せず、復旧凍結・受付再開を拒否する。停止やGC pauseは自動解除しない。
 
 ## 検証範囲と次の工程
 
