@@ -2,12 +2,9 @@ import { backupManifestKey } from "../../../shared/src/backupPublication";
 import { BACKUP_MAX_AGE_MS } from "../../../shared/src/backupRetention";
 import { pruneBackupGeneration } from "../backup/prune";
 import { primary } from "../db/primary";
+import type { BackupDeleteAuthority } from "../db/r2BackupDelete";
+import type { R2WriteSource } from "../services/r2Write";
 
-interface Authority {
-  epoch: number;
-  token: string | null;
-  phase: string | null;
-}
 interface SweepRow extends Record<string, SqlStorageValue> {
   epoch: number;
   round: string;
@@ -60,7 +57,8 @@ export class ControlBackupSweep {
     private readonly sql: SqlStorage,
     private readonly db: D1Database,
     private readonly bucket: R2Bucket,
-    private readonly authority: () => Authority,
+    private readonly authority: () => BackupDeleteAuthority,
+    private readonly writes: R2WriteSource,
   ) {}
   #row() {
     return this.sql
@@ -93,9 +91,7 @@ export class ControlBackupSweep {
       if (Date.now() < started || Date.now() - started >= 25000)
         throw new Error("backup_prune_deadline");
       if (
-        found.epoch !== epoch ||
-        found.token !== before.token ||
-        found.phase !== before.phase ||
+        JSON.stringify(found) !== JSON.stringify(before) ||
         current?.round !== row?.round ||
         current?.after_id !== row?.after_id ||
         current?.phase !== row?.phase
@@ -177,6 +173,7 @@ export class ControlBackupSweep {
             epoch,
             id: item.id,
             authority: this.authority,
+            writes: this.writes,
             startedAt: started,
           });
           if (result.state === "pending") pending = true;

@@ -3,11 +3,23 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。
+直前8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は実行中。今回の全体check/CIとは分けて扱う。
+
+先行fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。
 
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- migration0046でBACKUPS世代の部品batch DELETEと最終manifest DELETEを14種類目のR2送信・終了記録へ接続。完成receipt/hash・35日保持・元のepoch/停止mode/revision/tokenと正確なkey集合を再検査し、元の25秒全体期限と10秒I/O期限を維持する。同じ世代のpendingがある間は追加削除とabsent確定を拒否する。削除したことの観測をnative終了へ読み替えない。
+- 新規Node5ケースで全13種類・全状態・期限切れpendingの旧11列保持、元試行一意性、凍結中移行拒否を検証。保存世代0046も追加し、2file/25件が成功（8.42s）。Node全1,001件（53file、46.99s）も成功。/tmp/ncf-backups-prune-node.log、/tmp/ncf-backups-prune-unit-all.log。
+- 新規workerd9ケースを追加。初回3file/53件は51成功・2失敗（60.93s）。再送拒否試験がspyで増える配列自体を反復していたfixtureと、backup開始後の旧エラー名期待を修正し、削除/一括削除の全48件が成功（26.90s）。/tmp/ncf-backups-prune-targeted.log、/tmp/ncf-backups-prune-targeted-final.log。
+- 共通R2・backup開始/完了・inventory・daily・復旧先BACKUPSの6file/162件も成功（145.45s）。schemaの5件と合わせ、関連workerd215件を確認。/tmp/ncf-backups-prune-regression.log。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。日次生成と補充、期限切れ世代の回収、全13復旧操作の権限拒否、BLOBS/BACKUPS照合・D1凍結・取消しを確認。S3/Time Travelは合成providerで、remote検証ではない。/tmp/ncf-backups-prune-operator.log、/tmp/ncf-backups-prune.5HtfRI/.wrangler/operator-drill-QHep92/report.json。
+- 上記は直前の全体check中に分離した作業コピーで実行し、終了後に本作業ツリーへ反映した。変更17fileの内容一致を確認。本ツリーのlint422file・型・Web build・Worker dry-runも成功。/tmp/ncf-backups-prune-root-typecheck.log、/tmp/ncf-backups-prune-root-build.log。契約/設定検査も成功。今回の全workerd・Windows・browserはpush後のCIで確認する。
+- BACKUPSの外部CLI保存・epoch履歴、native結果不明の運用証明は後続。通常68table・依存追加なし、remote resource作成・migration・deployなし。
+
+### 先行するBACKUPS probeの送信記録
 
 - migration0045でBACKUPS接続probeの条件付きPUTを13種類目のR2送信・終了記録へ接続。固定key・null owner、元の復旧要求/試行/nonce/bucket/期待ETagと停止challengeを要求する。DOの原本をgrantの前後・送信直前に検査し、D1 batchでも停止revision/tokenを再検査する。25秒と元challengeの短い方を期限として保持する。
 - 全12種類の旧receipt・全状態・期限切れpendingを11列保持するNode5件を追加。0045の保存世代も追加し、2file/24件が成功（7.05s）。/tmp/ncf-backups-probe-node-targeted.log。型・lint420file・契約/設定検査も成功。

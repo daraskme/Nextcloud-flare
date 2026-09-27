@@ -7,6 +7,8 @@ import {
 } from "../../../shared/src/backupPublication";
 import { BACKUP_MAX_AGE_MS } from "../../../shared/src/backupRetention";
 import { primary } from "../db/primary";
+import type { BackupDeleteAuthority, R2BackupDeleteProof } from "../db/r2BackupDelete";
+import { type R2WriteSource, trackedR2Write } from "../services/r2Write";
 import { readBackupObject, sha256 } from "./publication";
 
 export const BACKUP_PRUNE_BATCH = 20;
@@ -26,11 +28,6 @@ interface Receipt extends BackupGeneration {
   manifestKey: string;
   manifestSha256: string;
 }
-interface Authority {
-  epoch: number;
-  token: string | null;
-  phase: string | null;
-}
 const timestamp = (n: number) => Number.isSafeInteger(n) && n >= 0;
 
 /** Delete only an expired, immutable completed identity. Remaining R2 keys are the retry cursor. */
@@ -40,46 +37,70 @@ export async function pruneBackupGeneration({
   epoch,
   id,
   authority,
+  writes,
   startedAt = Date.now(),
 }: {
   db: D1Database;
   bucket: R2Bucket;
   epoch: number;
   id: string;
-  authority: () => Authority;
+  authority: () => BackupDeleteAuthority;
+  writes: R2WriteSource;
   startedAt?: number;
 }): Promise<BackupPruneResult> {
   const key = backupManifestKey(id),
     prefix = key.slice(0, -"manifest.json".length),
     started = startedAt,
-    snapshot = authority();
+    snapshot = authority(),
+    attemptId = crypto.randomUUID();
   if (!Number.isSafeInteger(epoch) || epoch < 1 || snapshot.epoch !== epoch)
     throw new Error("invalid_backup_request");
   function current() {
     const now = Date.now(),
       found = authority();
     if (now < started || now - started >= 25000) throw new Error("backup_prune_deadline");
-    if (found.epoch !== epoch || found.token !== snapshot.token || found.phase !== snapshot.phase)
-      throw new Error("backup_conflict");
+    if (JSON.stringify(found) !== JSON.stringify(snapshot)) throw new Error("backup_conflict");
     if (found.phase !== null && found.phase !== "released") throw new Error("backup_active");
   }
   let receipt: Receipt | undefined;
   async function eligible() {
     current();
     const result = await primary(db).batch([
-      primary(db).prepare("SELECT epoch,backup_frozen,backup_token FROM control WHERE singleton=1"),
+      primary(db).prepare(
+        "SELECT epoch,backup_frozen,backup_token,maintenance,admission_revision,admission_token FROM control WHERE singleton=1",
+      ),
       primary(db)
         .prepare(`SELECT id,epoch,state,created_at AS createdAt,barrier_token AS token,watermark,
           completed_at AS completedAt,released_at AS releasedAt,manifest_key AS manifestKey,
           manifest_sha256 AS manifestSha256 FROM backup_runs WHERE id=?`)
         .bind(id),
+      primary(db)
+        .prepare(
+          "SELECT 1 FROM r2_write_attempts WHERE kind='backup.delete' AND r2_key=? AND state='pending' LIMIT 1",
+        )
+        .bind(key),
     ]);
     current();
     const mirror = result[0]?.results[0] as
-      | { epoch: number; backup_frozen: number; backup_token: string | null }
+      | {
+          epoch: number;
+          backup_frozen: number;
+          backup_token: string | null;
+          maintenance: number;
+          admission_revision: number;
+          admission_token: string | null;
+        }
       | undefined;
-    if (mirror?.epoch !== epoch || mirror.backup_frozen !== 0 || mirror.backup_token !== null)
+    if (
+      mirror?.epoch !== epoch ||
+      mirror.backup_frozen !== 0 ||
+      mirror.backup_token !== null ||
+      mirror.maintenance !== snapshot.admission.maintenance ||
+      mirror.admission_revision !== snapshot.admission.revision ||
+      mirror.admission_token !== snapshot.admission.token
+    )
       throw new Error("backup_mirror_conflict");
+    if (result[2]?.results.length !== 0) throw new Error("backup_r2_write_unsettled");
     const row = result[1]?.results[0] as unknown as Receipt | undefined;
     const now = Date.now();
     if (
@@ -148,10 +169,38 @@ export async function pruneBackupGeneration({
       deletedObjects,
     };
   }
+  async function remove(keys: string[], phase: R2BackupDeleteProof["phase"]) {
+    current();
+    const generation = receipt!,
+      prune: R2BackupDeleteProof = {
+        attemptId,
+        phase,
+        keys,
+        authority: snapshot,
+        generation: {
+          id: generation.id,
+          epoch: generation.epoch,
+          token: generation.token,
+          createdAt: generation.createdAt,
+          watermark: generation.watermark,
+          completedAt: generation.completedAt,
+          releasedAt: generation.releasedAt,
+          manifestSha256: generation.manifestSha256,
+        },
+      };
+    await trackedR2Write(
+      writes,
+      { epoch, ownerId: null, kind: "backup.delete", key, prune },
+      () => bucket.delete(phase === "manifest" ? keys[0]! : keys),
+      Math.min(started + 25000, Date.now() + 10000),
+      current,
+    );
+    current();
+  }
   await eligible();
   const bytes = await request(() => readBackupObject(bucket, key, BACKUP_MANIFEST_BYTES));
   if (bytes === null) {
-    // This also reconciles a lost final DELETE response, without any DO-local tombstone.
+    // An empty listing is usable only after eligible() proved no unknown native DELETE remains.
     const remaining = await list(1);
     await eligible();
     if (remaining.truncated || remaining.objects.length !== 0)
@@ -177,7 +226,7 @@ export async function pruneBackupGeneration({
   let deleted = 0;
   if (keys.length > 0) {
     await eligible();
-    await request(() => bucket.delete(keys));
+    await remove(keys, "parts");
     deleted = keys.length;
   }
   const remaining = await list(2);
@@ -185,7 +234,7 @@ export async function pruneBackupGeneration({
   if (remaining.truncated || remaining.objects.some((o) => o.key !== key))
     return status("pending", deleted);
   // Preserve the manifest until the entire generation contains no other object.
-  await request(() => bucket.delete(key));
+  await remove([key], "manifest");
   const final = await list(1);
   await eligible();
   if (final.truncated || final.objects.length !== 0) throw new Error("backup_prune_not_empty");

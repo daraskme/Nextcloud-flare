@@ -266,6 +266,8 @@ export class ControlDO extends DurableObject<Env> {
       },
       (snapshot, token) => this.#admission.restoreBackup(snapshot, token),
       env.BACKUPS,
+      { DB: env.DB, systemControl: this },
+      () => this.#admission.captureSystemMutationSnapshot(this.#row().epoch),
     );
     this.#mutations = new ControlMutations(
       env.DB,
@@ -292,6 +294,7 @@ export class ControlDO extends DurableObject<Env> {
           this.#admission.captureSystemMutationMode(epoch);
         else this.#admission.assertMutationOpen(epoch);
         if (kind === "backups.probe.put") this.#restoreBackups.assertWrite(request);
+        if (kind === "backup.delete") this.#backup.assertPruneWrite(request);
       },
       (request) => this.acquireMutation(request),
       () =>
@@ -302,7 +305,7 @@ export class ControlDO extends DurableObject<Env> {
         }),
       (epoch, deadline, kind) =>
         this.acquireGlobalMutation({
-          permitId: `global:${kind === "backups.probe.put" ? "r2.backups-probe-put" : kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
+          permitId: `global:${kind === "backup.delete" ? "r2.backups-delete" : kind === "backups.probe.put" ? "r2.backups-probe-put" : kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
           epoch,
           deadline,
         }),

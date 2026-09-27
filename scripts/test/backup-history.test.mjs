@@ -94,7 +94,7 @@ it("keeps current capture strict when an older migration prefix lacks new tables
   }
 });
 
-it.each([37, 38, 39, 40, 41, 42, 43, 44, 45])(
+it.each([37, 38, 39, 40, 41, 42, 43, 44, 45, 46])(
   "restores schema %s without applying later migrations or thawing the snapshot",
   async (last) => {
     const manifest = await historical(last),

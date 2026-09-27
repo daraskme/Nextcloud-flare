@@ -1,5 +1,6 @@
 import type { SqlStatement } from "./primary";
 import { isAbortWrite, type R2AbortProof, validateAbortWrite } from "./r2Abort";
+import { type R2BackupDeleteProof, validateBackupDelete } from "./r2BackupDelete";
 import { type R2BackupsProbeProof, validateBackupsProbeWrite } from "./r2BackupsProbe";
 import { type R2ProbeProof, validateProbeWrite } from "./r2Probe";
 import {
@@ -11,6 +12,7 @@ import {
 import { type RestorePause, restorePauseCondition } from "./restorePause";
 
 export type R2WriteKind =
+  | "backup.delete"
   | "backups.probe.put"
   | "probe.put"
   | "multipart.abort"
@@ -46,6 +48,7 @@ export interface R2WriteRequest {
   abort?: R2AbortProof;
   probe?: R2ProbeProof;
   backups?: R2BackupsProbeProof;
+  prune?: R2BackupDeleteProof;
 }
 export interface R2WriteGrant extends R2WriteRequest {
   token: string;
@@ -60,13 +63,16 @@ export function validateR2Write(request: R2WriteRequest): void {
     request.epoch < 1 ||
     (request.kind === "orphan.delete" ||
     request.kind === "bucket.abort" ||
+    request.kind === "backup.delete" ||
     request.kind === "backups.probe.put" ||
     request.kind === "probe.put"
       ? request.ownerId !== null
       : typeof request.ownerId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(request.ownerId)) ||
     !Number.isSafeInteger(request.deadline) ||
     typeof request.key !== "string" ||
-    (request.kind === "probe.put" || request.kind === "backups.probe.put"
+    (request.kind === "probe.put" ||
+    request.kind === "backups.probe.put" ||
+    request.kind === "backup.delete"
       ? false
       : request.kind === "blob.delete" ||
           request.kind === "orphan.delete" ||
@@ -81,6 +87,11 @@ export function validateR2Write(request: R2WriteRequest): void {
             !uuid.test(request.key.slice(12)))
   )
     throw new Error("invalid_r2_write");
+  if (request.kind === "backup.delete") {
+    validateBackupDelete(request);
+    return;
+  }
+  if (request.prune !== undefined) throw new Error("invalid_r2_write");
   if (request.kind === "backups.probe.put") {
     validateBackupsProbeWrite(request);
     return;
@@ -156,6 +167,8 @@ export function validateR2WriteGrant(grant: R2WriteGrant): void {
 export const R2_WRITE_IDENTITY =
   "id=? AND token=? AND epoch=? AND owner_id IS ? AND kind=? AND r2_key=? AND dispatch_before=? AND started_at=? AND source_ref IS ?";
 export function r2WriteSourceRef(g: R2WriteRequest): string | null {
+  if (g.prune)
+    return JSON.stringify([g.epoch, g.prune.generation.id, g.prune.attemptId, g.prune.phase]);
   if (g.backups)
     return JSON.stringify([g.epoch, g.backups.id, g.backups.attemptId, g.backups.nonce]);
   if (g.probe) return JSON.stringify([g.epoch, g.probe.token, g.probe.nonce]);

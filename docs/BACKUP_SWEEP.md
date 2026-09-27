@@ -1,6 +1,6 @@
 # 期限切れバックアップの自動走査
 
-更新: 2026-09-25。`pnpm backup sweep`はD1の完了記録を走査し、35日を厳密に超えたSQL世代を[prune](BACKUP_PRUNING.md)と同じ検証・削除経路で回収する。走査位置はControlDOのSQLiteへ保存する。CLIの再実行やDOのeviction後も未完了の走査を継続する。
+更新: 2026-09-27。`pnpm backup sweep`はD1の完了記録を走査し、35日を厳密に超えたSQL世代を[prune](BACKUP_PRUNING.md)と同じ検証・削除経路で回収する。走査位置はControlDOのSQLiteへ保存する。CLIの再実行やDOのeviction後も未完了の走査を継続する。
 
 ```sh
 pnpm backup sweep --local \
@@ -24,7 +24,7 @@ D1 receipt、元BLOBS、ローカル世代は削除しない。DOの走査台帳
 
 manifest hash・世代不一致、既知形式の破損、未知key、manifest欠落時の部品残存、不正receiptなど、限定した検証エラーはその世代を保留して後続へ進む。round内の累計`errors`と最後の`lastError:{id,code}`を保存し、eviction後やCLIの次回実行でも警告を維持する。全エラー履歴の永続保管ではないため、詳細な監査には各`backup_sweep`進捗JSONを保存する。
 
-未知の接続失敗、応答不明、timeout、epoch・バックアップ状態の変化ではcursorを進めず失敗する。同じコマンドを再実行して実際のR2状態を照合する。読取り不能など、破損と一時障害を区別できないエラーもここに含む。未完了・failed世代や記録のないobjectはこの走査で回収しない。
+未知の接続失敗、応答不明、timeout、epoch・停止状態・バックアップ状態の変化ではcursorを進めず失敗する。migration0046からDELETEを[送信・終了台帳](R2_WRITE_SETTLEMENT.md)に記録し、同じ世代のpendingがある限り再実行も保留する。R2一覧の不在だけでは進めない。遅れて返った実終了の精算後に、同じコマンドで現在条件を再検査して継続する。読取り不能など、破損と一時障害を区別できないエラーもここに含む。未完了・failed世代や記録のないobjectはこの走査で回収しない。
 
 manual pruneと同じControlDO instance内で排他し、開始・凍結・解除中のバックアップと競合する場合は拒否する。D1 mirrorとDO権威を照合し、R2要求ごとの10秒待機上限と、D1走査待ちを含むstep開始から固定25秒の開始期限を維持する。送信済みDELETEの取消しを保証するものではない。
 

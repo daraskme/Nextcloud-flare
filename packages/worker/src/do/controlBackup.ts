@@ -4,6 +4,9 @@ import { inspectBackupInventory } from "../backup/inventory";
 import { pruneBackupGeneration } from "../backup/prune";
 import { verifyPublicationPart } from "../backup/publication";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import type { BackupDeleteAuthority } from "../db/r2BackupDelete";
+import type { R2WriteRequest } from "../db/r2Write";
+import type { R2WriteSource } from "../services/r2Write";
 import { ControlBackupSweep, initializeBackupSweep } from "./controlBackupSweep";
 import { epochNumber } from "./epochHistory";
 
@@ -106,6 +109,8 @@ export class ControlBackup {
     private readonly capture: () => BackupAdmissionSnapshot,
     private readonly restore: (snapshot: BackupAdmissionSnapshot, token: string) => void,
     private readonly backups: R2Bucket,
+    private readonly writes: R2WriteSource,
+    private readonly mutationSnapshot: () => BackupDeleteAuthority["admission"],
   ) {}
 
   #row(): BackupRow | undefined {
@@ -117,6 +122,19 @@ export class ControlBackup {
     return this.storage.sql
       .exec<PublicationRow>("SELECT * FROM control_backup_publication WHERE singleton=1")
       .toArray()[0];
+  }
+  #pruneAuthority(): BackupDeleteAuthority {
+    const row = this.#row();
+    return {
+      epoch: this.currentEpoch(),
+      token: row?.token ?? null,
+      phase: row?.phase ?? null,
+      admission: this.mutationSnapshot(),
+    };
+  }
+  assertPruneWrite(request: R2WriteRequest): void {
+    if (JSON.stringify(this.#pruneAuthority()) !== JSON.stringify(request.prune!.authority))
+      throw new Error("backup_conflict");
   }
   #completionStatus(row: PublicationRow): BackupCompletionStatus {
     return {
@@ -158,14 +176,8 @@ export class ControlBackup {
         bucket: this.backups,
         epoch,
         id,
-        authority: () => {
-          const row = this.#row();
-          return {
-            epoch: this.currentEpoch(),
-            token: row?.token ?? null,
-            phase: row?.phase ?? null,
-          };
-        },
+        writes: this.writes,
+        authority: () => this.#pruneAuthority(),
       });
     } finally {
       this.#pruneInFlight = false;
@@ -176,10 +188,13 @@ export class ControlBackup {
     if (this.#pruneInFlight) throw new Error("backup_prune_busy");
     this.#pruneInFlight = true;
     try {
-      const sweep = new ControlBackupSweep(this.storage.sql, this.db, this.backups, () => {
-        const row = this.#row();
-        return { epoch: this.currentEpoch(), token: row?.token ?? null, phase: row?.phase ?? null };
-      });
+      const sweep = new ControlBackupSweep(
+        this.storage.sql,
+        this.db,
+        this.backups,
+        () => this.#pruneAuthority(),
+        this.writes,
+      );
       return round === undefined ? await sweep.plan(epoch) : await sweep.step(epoch, round);
     } finally {
       this.#pruneInFlight = false;

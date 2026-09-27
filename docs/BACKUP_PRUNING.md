@@ -1,6 +1,6 @@
 # 期限切れバックアップの回収
 
-更新: 2026-09-25。`pnpm backup prune`は、明示した1世代の期限切れSQLバックアップを、対象Workerの`BACKUPS` bindingから少量ずつ削除する。元の`BLOBS`、ローカル保存先、D1の完了記録は変更しない。
+更新: 2026-09-27。`pnpm backup prune`は、明示した1世代の期限切れSQLバックアップを、対象Workerの`BACKUPS` bindingから少量ずつ削除する。元の`BLOBS`、ローカル保存先、D1の完了記録は変更しない。
 
 ```sh
 pnpm backup prune --local \
@@ -25,11 +25,11 @@ pending/exporting/failed、記録が失われた世代、manifestが破損した
 
 1 RPCは、世代の正確なprefixを最大21件一覧し、manifestに記載された部品を最大20件削除する。part index/hashから再構成したkeyだけを受け付け、同じprefix内に未知のkeyがあれば、そのページの削除を拒否する。大きなSQL本文は読み込まない。manifestは最大16MiBで読む。
 
-削除前にはprimary D1の完了記録、期限、epochとバックアップ状態を再確認する。R2処理は各10秒の待機上限を持ち、RPC開始から固定25秒を超えた後は次の外部要求を送らない。同じControlDO instanceでは同時に1件だけ実行する。期限を超えて既に送信済みのDELETEが完了する可能性はあるが、その後のmanifest削除や成功判定へ進まない。
+migration0046で、各DELETEをDO/D1の送信・終了台帳へ接続した。世代のmanifest keyを台帳の単位とし、DO grantには実際の1〜20個の削除keyを保持する。共通受付の直接ACKに加え、primary D1の完成receipt全tuple/hash・35日保持・epoch・停止mode/revision/tokenとバックアップ状態をgrant batchで再検査する。送信直前にもDOの元状態と期限を確認する。R2処理は各10秒の待機上限を持ち、RPC開始から固定25秒を超えた後は次の外部要求を送らない。同じControlDO instanceでは同時に1件だけ実行する。期限を超えて既に送信済みのDELETEが完了する可能性はあるが、その後のmanifest削除や成功判定へ進まない。
 
 部品を削除した後、世代prefixにmanifest以外のobjectが残っていれば`pending`を返す。残りがなくなってからmanifestを最後に削除し、prefix全体の不在を再確認して`absent`を返す。R2の[強い整合性](https://developers.cloudflare.com/r2/reference/consistency/)と、bindingの[LIST/DELETE仕様](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)を前提とする。1ページの件数だけでは全件取得と判断せず、`truncated`も確認する。
 
-途中停止・応答喪失後は同じUUIDと現在のepochで再実行する。残っているR2 keyを再取得するため、進捗cursorや回収完了のDOローカル台帳を必要としない。最後のDELETEの応答を失い、manifestが既になくても、完了記録と期限を再確認したうえでprefix全体が空なら`absent`へ収束する。manifestがないのに他のobjectが残る場合は削除対象を推測せず停止する。
+途中停止後は同じUUIDと現在のepochで再実行する。実際のDELETE成功を記録してから次の一覧へ進む。応答喪失のpendingが残る間は、eviction後も`backup_r2_write_unsettled`で同じ世代の追加削除とabsent確定を拒否する。manifestやprefix全体の不在は、過去のnative終了証明にならない。遅れて実終了が返り精算された場合は、次の要求が現在の条件を再検査して継続できる。結果不明を解除する運用証明は後続。manifestがないのに他のobjectが残る場合も削除対象を推測せず停止する。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
 完了済みD1 receiptは保持する。別の管理者や手動publishが期限切れUUIDへ再アップロードすることを禁止するtombstoneではなく、`absent`は検査時点の不在を示す。稼働中バックアップのUUIDを再利用しない既存の契約を維持する。D1の復元・全喪失や外部管理者の書換えを同時に行う運用は、この回収の成功だけで安全性を証明できない。
 

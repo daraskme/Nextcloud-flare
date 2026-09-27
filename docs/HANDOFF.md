@@ -25,17 +25,17 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-BACKUPS接続確認の条件付きPUTも、送信・終了の永続記録へ接続しました。元の復旧要求・試行・nonce・bucket・期待ETagと停止challengeを固定し、grant待機後と送信直前に再検査します。新しいprobeの成功や60秒lease満了で、古い不明なPUTを終了扱いにしません。BLOBS probe・upload・multipart・空ファイル・manifest・GCを合わせて13種類が対象です。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+期限切れBACKUPS世代の部品・manifest削除も、送信・終了の永続記録へ接続しました。完成receipt・hash・35日保持期限・元の停止状態と削除対象keyを再検査し、最大20部品を一つのnative DELETEとして記録します。応答喪失では同じ世代の追加削除・凍結・再開を保留し、一覧の不在でunknownを解消しません。BLOBS/BACKUPS probe・upload・multipart・manifest・GCを合わせて14種類が対象です。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-schema0045・通常68table・依存追加なし。全体checkが成功し、Node995件＋workerd2,407件、計3,402件を確認しました。lint420file・型・契約/設定・Web build・Worker dry-runとprivate binding運用ドリルも成功。検証範囲とCIの記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。Node全1,001件と関連workerd215件、型・lint422file・契約/設定・Web build・Worker dry-runとprivate binding運用ドリルが成功。全体checkは直前のschema0045で3,402件成功済みで、今回の全体CIはpush後に確認します。検証範囲とCIの記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はBACKUPSの保存/削除・epoch履歴を含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み13種類にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はBACKUPSの外部CLI保存・epoch履歴を含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み14種類にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は実行中です。先行fa8f105のCIは全5job成功済みです。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。68通常テーブル、migration `0001`〜`0045`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。68通常テーブル、migration `0001`〜`0046`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -106,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
 
-最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。BLOBS接続probe・upload・multipart全中止・空object PUT・manifest保存/削除・blob/orphan GCの12種類を永続的な送信/終了記録へ接続済み。次はBACKUPS保存/削除、epoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
+最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart全中止・空object PUT・manifest保存/削除・blob/orphan GCの14種類を永続的な送信/終了記録へ接続済み。次はBACKUPS外部CLI保存、epoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

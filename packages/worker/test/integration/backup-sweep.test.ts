@@ -1,6 +1,6 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import {
   BACKUP_CHUNK_BYTES,
   backupManifestKey,
@@ -10,10 +10,12 @@ import { BACKUP_MAX_AGE_MS } from "../../../shared/src/backupRetention";
 import { sha256 } from "../../src/backup/publication";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { publicationFixture } from "../fixtures/backupPublication";
+import { clearEndedR2TestWrites } from "../fixtures/mutationAdmission";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
 const epoch = 2;
+beforeEach(() => clearEndedR2TestWrites());
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await env.BACKUPS.put(
@@ -195,7 +197,7 @@ it("defers a corrupt generation, visits later keys and persists the warning acro
   expect(await env.BACKUPS.head(bad.keys[0]!)).not.toBeNull();
   expect(await env.BACKUPS.head(good.keys[0]!)).toBeNull();
 });
-it("keeps the same candidate after an ambiguous DELETE, then reconciles actual R2 absence", async () => {
+it("keeps the same candidate and native hold after an ambiguous DELETE and eviction", async () => {
   const item = await seed(),
     plan = await control().sweepBackups(epoch);
   await runInDurableObject(control(), async (_, state) => {
@@ -208,15 +210,17 @@ it("keeps the same candidate after an ambiguous DELETE, then reconciles actual R
         },
       }),
     });
-    await expect(instance.sweepBackups(epoch, plan.round)).rejects.toThrow("unknown_delete");
+    await expect(instance.sweepBackups(epoch, plan.round)).rejects.toThrow("mutation_unavailable");
   });
   await evictDurableObject(control());
   expect(await control().sweepBackups(epoch)).toEqual(plan);
-  expect(await control().sweepBackups(epoch, plan.round)).toMatchObject({
-    state: "completed",
-    absent: 1,
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.sweepBackups(epoch, plan.round)).rejects.toThrow(
+      "backup_r2_write_unsettled",
+    );
   });
-  expect(await env.BACKUPS.head(backupManifestKey(item.id))).toBeNull();
+  expect(await control().sweepBackups(epoch)).toEqual(plan);
+  expect(await env.BACKUPS.head(backupManifestKey(item.id))).not.toBeNull();
 });
 it("defers keys beyond the fixed round ceiling until the next round", async () => {
   await seed({ id: idFor(1) });

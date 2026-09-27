@@ -11,7 +11,7 @@ export type R2WriteSource =
     };
 type WriteInput = Pick<
   R2WriteRequest,
-  "epoch" | "ownerId" | "kind" | "key" | "gc" | "upload" | "abort" | "probe" | "backups"
+  "epoch" | "ownerId" | "kind" | "key" | "gc" | "upload" | "abort" | "probe" | "backups" | "prune"
 >;
 
 /** Each invocation gets one grant; a rejected native call remains unknown, never replayed here. */

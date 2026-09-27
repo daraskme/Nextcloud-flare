@@ -42,6 +42,7 @@ export const GLOBAL_MUTATION_KINDS = [
   "r2.multipart-abort",
   "r2.probe-put",
   "r2.backups-probe-put",
+  "r2.backups-delete",
   "r2.probe-claim",
   "r2.probe-call",
   "r2.probe-phase",

@@ -1,6 +1,6 @@
 import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import {
   BACKUP_CHUNK_BYTES,
   backupManifestKey,
@@ -8,8 +8,11 @@ import {
 } from "../../../shared/src/backupPublication";
 import { BACKUP_MAX_AGE_MS } from "../../../shared/src/backupRetention";
 import { sha256 } from "../../src/backup/publication";
+import type { R2WriteGrant, R2WriteRequest } from "../../src/db/r2Write";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
+import { inspectRecoveryFinalFence } from "../../src/do/recoveryAudit";
 import { publicationFixture } from "../fixtures/backupPublication";
+import { clearEndedR2TestWrites } from "../fixtures/mutationAdmission";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
@@ -31,6 +34,7 @@ afterEach(async () => {
     if (active) await instance.cancelBackup(epoch, active.id);
   });
 });
+beforeEach(() => clearEndedR2TestWrites());
 async function seed({ count = 1, createdAt = 1, generationEpoch = 1, mismatch = false } = {}) {
   const id = crypto.randomUUID(),
     token = crypto.randomUUID();
@@ -79,6 +83,160 @@ const rejects = (id: string, message: string, requestedEpoch = epoch) =>
   runInDurableObject(control(), async (instance) => {
     await expect(instance.pruneBackup(requestedEpoch, id)).rejects.toThrow(message);
   });
+
+it("records each native batch before dispatch and its completion before subsequent listing", async () => {
+  const item = await seed({ count: 2 });
+  await runInDurableObject(control(), async (_, state) => {
+    const requests: R2WriteRequest[] = [];
+    const remove = vi.fn(async (keys: string | string[]) => {
+      const request = requests.at(-1)!;
+      expect(
+        await env.DB.prepare("SELECT kind,state,owner_id,r2_key FROM r2_write_attempts WHERE id=?")
+          .bind(request.id)
+          .first(),
+      ).toEqual({
+        kind: "backup.delete",
+        state: "pending",
+        owner_id: null,
+        r2_key: backupManifestKey(item.id),
+      });
+      expect(request.prune!.keys).toEqual(Array.isArray(keys) ? keys : [keys]);
+      await env.BACKUPS.delete(keys);
+    });
+    const list = async (options?: R2ListOptions) => {
+      if (requests.length)
+        expect(
+          await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE id=?")
+            .bind(requests.at(-1)!.id)
+            .first("state"),
+        ).toBe("succeeded");
+      return env.BACKUPS.list(options);
+    };
+    const instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove, list }) });
+    const begin = instance.beginR2Write;
+    vi.spyOn(instance, "beginR2Write").mockImplementation(async (request) => {
+      requests.push(request);
+      return begin.call(instance, request);
+    });
+    expect((await instance.pruneBackup(epoch, item.id)).state).toBe("absent");
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(requests.map((r) => r.prune!.phase)).toEqual(["parts", "manifest"]);
+    expect(requests[0]!.prune!.attemptId).toBe(requests[1]!.prune!.attemptId);
+    for (const request of [...requests])
+      await expect(
+        instance.beginR2Write({ ...request, id: crypto.randomUUID(), deadline: Date.now() + 5000 }),
+      ).rejects.toThrow();
+  });
+});
+
+it("never sends a DELETE when its grant reply is lost and retains that generation", async () => {
+  const item = await seed();
+  await runInDurableObject(control(), async (_, state) => {
+    const remove = vi.fn(),
+      instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
+    const begin = instance.beginR2Write;
+    let grant!: R2WriteGrant;
+    vi.spyOn(instance, "beginR2Write").mockImplementation(async (r) => {
+      grant = await begin.call(instance, r);
+      throw new Error("lost_grant_ack");
+    });
+    await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow("mutation_unavailable");
+    expect(remove).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE id=?")
+        .bind(grant.id)
+        .first("state"),
+    ).toBe("pending");
+    await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow("backup_r2_write_unsettled");
+    await expect(instance.beginBackup(epoch, crypto.randomUUID())).rejects.toThrow(
+      /recovery_r2_write_unsettled|backup_r2_write_unsettled/,
+    );
+  });
+});
+
+it.each(["receipt", "stop"])("rechecks the %s in the DELETE grant batch", async (field) => {
+  const item = await seed();
+  await runInDurableObject(control(), async (_, state) => {
+    const remove = vi.fn(),
+      instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
+    const originalRevision = await env.DB.prepare(
+      "SELECT admission_revision FROM control",
+    ).first<number>("admission_revision");
+    const acquire = instance.acquireGlobalMutation;
+    let fired = false;
+    vi.spyOn(instance, "acquireGlobalMutation").mockImplementation(async (r) => {
+      const admission = await acquire.call(instance, r);
+      if (r.permitId.startsWith("global:r2.backups-delete:")) {
+        fired = true;
+        if (field === "receipt")
+          await env.DB.prepare("DELETE FROM backup_runs WHERE id=?").bind(item.id).run();
+        else
+          await env.DB.prepare("UPDATE control SET admission_revision=admission_revision+1").run();
+      }
+      return admission;
+    });
+    try {
+      await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow("mutation_unavailable");
+      expect(fired).toBe(true);
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      await env.DB.prepare("UPDATE control SET admission_revision=?").bind(originalRevision).run();
+    }
+    await instance.repairR2WriteSettlements(epoch);
+    expect(
+      await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE r2_key=?")
+        .bind(backupManifestKey(item.id))
+        .first("state"),
+    ).toBe("not_started");
+  });
+});
+
+it("records not_started when the stop changes after a DELETE grant", async () => {
+  const item = await seed();
+  await runInDurableObject(control(), async (_, state) => {
+    const remove = vi.fn(),
+      instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
+    const begin = instance.beginR2Write;
+    let grant!: R2WriteGrant;
+    vi.spyOn(instance, "beginR2Write").mockImplementation(async (r) => {
+      grant = await begin.call(instance, r);
+      await instance.quiesce(epoch);
+      return grant;
+    });
+    await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow(/backup_conflict/);
+    expect(remove).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare("SELECT state FROM r2_write_attempts WHERE id=?")
+        .bind(grant.id)
+        .first("state"),
+    ).toBe("not_started");
+  });
+});
+
+it.each(["foreign key", "manifest in parts", "oversized batch", "owner"])(
+  "rejects %s in a DELETE proof",
+  async (field) => {
+    const item = await seed();
+    await runInDurableObject(control(), async (_, state) => {
+      const remove = vi.fn(),
+        instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
+      const begin = instance.beginR2Write;
+      vi.spyOn(instance, "beginR2Write").mockImplementation((r) => {
+        if (field === "owner") r.ownerId = "other";
+        else
+          r.prune!.keys =
+            field === "foreign key"
+              ? ["sys/epoch/1.json"]
+              : field === "manifest in parts"
+                ? [backupManifestKey(item.id)]
+                : Array.from({ length: 21 }, (_, i) => backupPartKey(item.id, i, "a".repeat(64)));
+        return begin.call(instance, r);
+      });
+      await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow("mutation_unavailable");
+      expect(remove).not.toHaveBeenCalled();
+    });
+  },
+);
 
 it("removes an expired old-epoch generation, preserves its receipt and unrelated objects, and replays after eviction", async () => {
   const item = await seed(),
@@ -185,20 +343,33 @@ it.each(["extra.txt", `parts/000000-${"0".repeat(64)}.bin`])(
     expect(await env.BACKUPS.head(item.keys[0]!)).not.toBeNull();
   },
 );
-it.each(["parts", "manifest"])("resumes after the %s DELETE response is lost", async (stage) => {
-  const item = await seed();
-  await runInDurableObject(control(), async (_, state) => {
-    const remove = vi.fn(async (key: string | string[]) => {
-      await env.BACKUPS.delete(key);
-      if (Array.isArray(key) === (stage === "parts")) throw new Error("lost_delete_ack");
+it.each(["parts", "manifest"])(
+  "retains an unknown %s DELETE after eviction despite an empty listing",
+  async (stage) => {
+    const item = await seed();
+    await runInDurableObject(control(), async (_, state) => {
+      const remove = vi.fn(async (key: string | string[]) => {
+        await env.BACKUPS.delete(key);
+        if (Array.isArray(key) === (stage === "parts")) throw new Error("lost_delete_ack");
+      });
+      const instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
+      await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow("mutation_unavailable");
+      expect(remove).toHaveBeenCalledTimes(stage === "parts" ? 1 : 2);
     });
-    const instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
-    await expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow("lost_delete_ack");
-    expect(remove).toHaveBeenCalledTimes(stage === "parts" ? 1 : 2);
-  });
-  await evictDurableObject(control());
-  expect((await control().pruneBackup(epoch, item.id)).state).toBe("absent");
-});
+    await evictDurableObject(control());
+    await rejects(item.id, "backup_r2_write_unsettled");
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM r2_write_attempts WHERE kind='backup.delete' AND r2_key=? AND state='pending'",
+      )
+        .bind(backupManifestKey(item.id))
+        .first(),
+    ).toMatchObject({ state: "pending" });
+    await expect(inspectRecoveryFinalFence(env.DB, epoch)).rejects.toThrow(
+      /recovery_final_fence_pending/,
+    );
+  },
+);
 it("retains the manifest if DELETE acknowledges but a part is still present", async () => {
   const item = await seed();
   await runInDurableObject(control(), async (_, state) => {
@@ -222,7 +393,9 @@ it("blocks overlapping prune calls and rechecks the backup barrier after delayed
       ...env,
       BACKUPS: bucket({ get: get as R2Bucket["get"], delete: remove }),
     });
-    const pending = expect(delayed.pruneBackup(epoch, item.id)).rejects.toThrow("backup_conflict");
+    const pending = expect(delayed.pruneBackup(epoch, item.id)).rejects.toThrow(
+      /backup_conflict|backup_active/,
+    );
     await entered.promise;
     await expect(delayed.pruneBackup(epoch, item.id)).rejects.toThrow("backup_prune_busy");
     await instance.beginBackup(epoch, crypto.randomUUID());
@@ -315,7 +488,8 @@ it("does not delete the manifest after a timed-out part delete eventually finish
   const item = await seed(),
     entered = gate(),
     resume = gate(),
-    finished = gate();
+    finished = gate(),
+    settled = gate();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await runInDurableObject(control(), async (_, state) => {
@@ -326,14 +500,20 @@ it("does not delete the manifest after a timed-out part delete eventually finish
         finished.resolve();
       });
       const instance = new ControlDO(state, { ...env, BACKUPS: bucket({ delete: remove }) });
+      const finish = instance.finishR2Write;
+      vi.spyOn(instance, "finishR2Write").mockImplementation(async (grant, outcome) => {
+        await finish.call(instance, grant, outcome);
+        settled.resolve();
+      });
       const pending = expect(instance.pruneBackup(epoch, item.id)).rejects.toThrow(
-        "backup_prune_timeout",
+        "mutation_unavailable",
       );
       await entered.promise;
       await vi.advanceTimersByTimeAsync(10000);
       await pending;
       resume.resolve();
       await finished.promise;
+      await settled.promise;
       expect(remove).toHaveBeenCalledTimes(1);
       expect(await env.BACKUPS.head(backupManifestKey(item.id))).not.toBeNull();
     });

@@ -30,7 +30,7 @@ CLIはaccount・対象・S3設定の不一致を復旧RPCの前に拒否する�
 4. CLIが同じ固定keyをS3 GETで読み、64-byteのhex値を`attestBackups`へ渡す。S3読取りは10秒・64 bytesまで。任意keyの読取り・PUT許可を広げず、既存backup storeへ専用の固定key GETだけを追加している。
 5. Workerは保存した秘密のnonceと照合し、BACKUPSからobjectを再読取りする。本文だけでなくPUT時のETag/versionとの一致、現在のD1停止状態を確認して、観測保存とlease解放を一つのDO transactionで行う。
 
-対象と試行はDO SQLiteの`control_database_restore_backups`、共有leaseと呼出し予算は`control_restore_backups_probe`へ保存する。probeは最大1個・64 bytesのsystem枠として`allocated_bytes=64`を保持し、利用者のquotaへ混ぜない。BACKUPSの世代容量・epoch履歴と同様、運用上のbucket容量に含める。現schemaは0045、通常68table。
+対象と試行はDO SQLiteの`control_database_restore_backups`、共有leaseと呼出し予算は`control_restore_backups_probe`へ保存する。probeは最大1個・64 bytesのsystem枠として`allocated_bytes=64`を保持し、利用者のquotaへ混ぜない。BACKUPSの世代容量・epoch履歴と同様、運用上のbucket容量に含める。現schemaは0046、通常68table。
 
 各PUTを`backups.probe.put`としてDO/D1へ送信前から記録する。元の復旧要求・試行・nonce・bucket・期待ETagと停止challengeを再検査し、nativeが成功して終了記録を反映してからchallengeを返す。grant応答の喪失では送信せず保留を保持する。送信直前の取消しはnot_started、送信後の取消し・timeoutでは遅れた実終了だけを反映する。条件不成立のnullもnativeの終了事実として扱う。詳細は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 

@@ -5,6 +5,7 @@ import type {
 } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { abortWriteProof, isAbortWrite } from "../db/r2Abort";
+import { backupDeleteProof } from "../db/r2BackupDelete";
 import { backupsProbeWriteProof } from "../db/r2BackupsProbe";
 import { probeWriteProof } from "../db/r2Probe";
 import { isUploadWrite, uploadWriteProof } from "../db/r2Upload";
@@ -44,6 +45,7 @@ export class ControlR2Writes {
       deadline: number,
       kind:
         | "manifest.delete"
+        | "backup.delete"
         | "blob.delete"
         | "orphan.delete"
         | "multipart.abort"
@@ -113,6 +115,7 @@ export class ControlR2Writes {
       ...(input.abort ? { abort: input.abort } : {}),
       ...(input.probe ? { probe: input.probe } : {}),
       ...(input.backups ? { backups: input.backups } : {}),
+      ...(input.prune ? { prune: input.prune } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -126,6 +129,7 @@ export class ControlR2Writes {
       const statements = [insertR2Write(grant, "pending"), assertOneChange];
       if (
         kind === "manifest.delete" ||
+        kind === "backup.delete" ||
         kind === "blob.delete" ||
         kind === "orphan.delete" ||
         isAbortWrite(kind) ||
@@ -137,51 +141,53 @@ export class ControlR2Writes {
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
         const guards =
-          kind === "backups.probe.put"
-            ? backupsProbeWriteProof(grant)
-            : kind === "probe.put"
-              ? probeWriteProof(grant)
-              : isAbortWrite(kind)
-                ? await abortWriteProof(this.db, grant)
-                : kind === "manifest.delete"
-                  ? [
-                      assertExists(
-                        `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
+          kind === "backup.delete"
+            ? backupDeleteProof(grant)
+            : kind === "backups.probe.put"
+              ? backupsProbeWriteProof(grant)
+              : kind === "probe.put"
+                ? probeWriteProof(grant)
+                : isAbortWrite(kind)
+                  ? await abortWriteProof(this.db, grant)
+                  : kind === "manifest.delete"
+                    ? [
+                        assertExists(
+                          `SELECT 1 FROM r2_write_attempts WHERE owner_id=? AND r2_key=? AND kind='manifest.put' AND state='succeeded'
             AND NOT EXISTS(SELECT 1 FROM target_sets WHERE manifest_ref=?)
             AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=? AND state='pending')`,
-                        [ownerId, key, key, key],
-                      ),
-                    ]
-                  : kind === "blob.delete"
-                    ? [
-                        gcDispatchFence(
-                          {
-                            blobId: input.gc!.blobId!,
-                            ownerId: ownerId!,
-                            key,
-                            state: "deleting",
-                          },
-                          input.gc!.claimToken,
-                          epoch,
-                          input.gc!.mode,
-                          deadline,
+                          [ownerId, key, key, key],
                         ),
                       ]
-                    : [
-                        assertExists(
-                          "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
-                          [epoch, input.gc!.mode ? 1 : 0, input.gc!.mode ? 1 : 0],
-                        ),
-                        assertExists(
-                          "SELECT 1 FROM orphan_objects WHERE r2_key=? AND owner_key IS NOT NULL AND epoch<=? AND first_seen_at<=strftime('%s','now')*1000-?",
-                          [key, epoch, ORPHAN_GRACE_MS],
-                        ),
-                        assertExists(
-                          "SELECT 1 FROM orphan_objects WHERE r2_key=? AND claim_expires_at>=?",
-                          [key, deadline],
-                        ),
-                        objectFence({ ...input.gc!.object!, r2_key: key }, input.gc!.claimToken),
-                      ];
+                    : kind === "blob.delete"
+                      ? [
+                          gcDispatchFence(
+                            {
+                              blobId: input.gc!.blobId!,
+                              ownerId: ownerId!,
+                              key,
+                              state: "deleting",
+                            },
+                            input.gc!.claimToken,
+                            epoch,
+                            input.gc!.mode,
+                            deadline,
+                          ),
+                        ]
+                      : [
+                          assertExists(
+                            "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
+                            [epoch, input.gc!.mode ? 1 : 0, input.gc!.mode ? 1 : 0],
+                          ),
+                          assertExists(
+                            "SELECT 1 FROM orphan_objects WHERE r2_key=? AND owner_key IS NOT NULL AND epoch<=? AND first_seen_at<=strftime('%s','now')*1000-?",
+                            [key, epoch, ORPHAN_GRACE_MS],
+                          ),
+                          assertExists(
+                            "SELECT 1 FROM orphan_objects WHERE r2_key=? AND claim_expires_at>=?",
+                            [key, deadline],
+                          ),
+                          objectFence({ ...input.gc!.object!, r2_key: key }, input.gc!.claimToken),
+                        ];
         await atomicBatch(this.db, globalMutationStatements(admission, [...guards, ...statements]));
       } else {
         const spaceId = await primary(this.db)

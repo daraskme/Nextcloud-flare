@@ -296,6 +296,13 @@ export class ControlAdmission {
     return phase === "closed" ? 1 : 0;
   }
 
+  /** A synchronous stop identity for external calls that must retain their original mode. */
+  captureSystemMutationSnapshot(epoch: number) {
+    const maintenance = this.captureSystemMutationMode(epoch),
+      row = this.#row(epoch);
+    return { maintenance, revision: row.revision, token: row.token };
+  }
+
   /** Internal facts may queue in a stable closed mode; transitional or mismatched mirrors cannot. */
   async systemMutationMode(epoch: number): Promise<0 | 1> {
     this.assertCanRepair();
