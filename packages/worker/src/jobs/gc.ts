@@ -263,7 +263,7 @@ export async function runGarbageCollection(
   env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { maxBlobs?: number; maxWallMs?: number } = {},
+  options: { maxBlobs?: number; maxWallMs?: number; current?: () => void } = {},
 ): Promise<GcResult> {
   return collect(env, bucket, epoch, options, false);
 }
@@ -273,7 +273,7 @@ export async function drainStoppedBlobGarbageCollection(
   env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { maxBlobs?: number; maxWallMs?: number } = {},
+  options: { maxBlobs?: number; maxWallMs?: number; current?: () => void } = {},
 ): Promise<GcResult> {
   return collect(env, bucket, epoch, { ...options, maxBlobs: options.maxBlobs ?? 20 }, true);
 }
@@ -283,7 +283,7 @@ export async function drainRestoreBlobGarbageCollection(
   env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   pause: RestorePause,
-  options: { maxBlobs?: number; maxWallMs?: number } = {},
+  options: { maxBlobs?: number; maxWallMs?: number; current?: () => void } = {},
 ): Promise<GcResult> {
   restorePauseCondition(pause);
   return collect(env, bucket, pause.epoch, { ...options, maxBlobs: options.maxBlobs ?? 20 }, pause);
@@ -293,7 +293,7 @@ async function collect(
   env: SystemMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { maxBlobs?: number; maxWallMs?: number },
+  options: { maxBlobs?: number; maxWallMs?: number; current?: () => void },
   stopped: GcMode,
 ): Promise<GcResult> {
   const { DB: db } = env;
@@ -315,12 +315,14 @@ async function collect(
   // Failed claims also consume the pass budget; overload/rollback must not spin on one object.
   let inspected = 0;
   while (inspected < limit && result.r2Calls + 2 <= MAX_R2_CALLS && Date.now() - started < wall) {
+    options.current?.();
     const now = Date.now();
     const candidate = await nextCandidate(db, epoch, now, stopped);
     if (!candidate) break;
     inspected++;
     const token = crypto.randomUUID();
     if (!(await claimCandidate(env, candidate, epoch, token, stopped, started + wall))) continue;
+    options.current?.();
     result.claimed++;
     const charge = async () => {
       const admission = await acquireSystemMutation(
@@ -358,7 +360,9 @@ async function collect(
         },
         () => bucket.delete(candidate.key),
         started + wall,
+        options.current,
       );
+      options.current?.();
       await charge();
       const remaining = await bucket.head(candidate.key);
       if (remaining || !(await finalizeCandidate(env, candidate, token, epoch, stopped))) {
@@ -370,5 +374,6 @@ async function collect(
       result.retried++;
     }
   }
+  options.current?.();
   return result;
 }

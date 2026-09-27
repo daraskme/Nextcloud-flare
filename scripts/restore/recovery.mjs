@@ -183,7 +183,7 @@ export async function rebuildRestoredFts({ epoch, id, control }) {
   return { ...status, audit: auditStatus(raw.audit, selected.newEpoch) };
 }
 
-/** One explicit bounded domain pass, including possible native multipart aborts. Never retry RPC. */
+/** One explicit bounded domain pass, including native abort/delete. Never retry RPC. */
 export async function repairRestoredDomain({ epoch, id, kind, limit = 20, control }) {
   restoreDomainKind(kind);
   if (!Number.isInteger(limit) || limit < 1 || limit > 20)
@@ -218,6 +218,49 @@ export async function repairRestoredDomain({ epoch, id, kind, limit = 20, contro
       r2Calls: c.r2Calls,
     };
     repair.held = r.held;
+  } else if (kind === "blob-gc" || kind === "orphan-gc") {
+    const c = r.cleanup,
+      changed = kind === "orphan-gc" ? c?.changed : 0;
+    if (
+      !c ||
+      ![c.claimed, c.deleted, c.retried, changed].every(count) ||
+      c.claimed !== c.deleted + c.retried + changed ||
+      !Number.isSafeInteger(c.r2Calls) ||
+      c.r2Calls < 0 ||
+      c.r2Calls > c.claimed * (kind === "blob-gc" ? 2 : 3)
+    )
+      throw new Error("database_restore_invalid_domain_repair");
+    repair.cleanup = {
+      claimed: c.claimed,
+      deleted: c.deleted,
+      retried: c.retried,
+      r2Calls: c.r2Calls,
+      ...(kind === "orphan-gc" ? { changed } : {}),
+    };
+  } else if (kind === "orphan-inventory") {
+    const i = r.inventory;
+    if (
+      !i ||
+      ![i.claimed, i.advanced, i.completed].every((v) => typeof v === "boolean") ||
+      ![i.examined, i.observed].every(count) ||
+      i.observed > i.examined ||
+      !Number.isSafeInteger(i.r2Calls) ||
+      i.r2Calls < 0 ||
+      i.r2Calls > i.examined + 1 ||
+      (!i.claimed && (i.examined !== 0 || i.observed !== 0 || i.r2Calls !== 0 || i.advanced)) ||
+      (i.advanced && i.r2Calls < 1) ||
+      (i.completed && !i.advanced) ||
+      r.pending !== !i.completed
+    )
+      throw new Error("database_restore_invalid_domain_repair");
+    repair.inventory = {
+      claimed: i.claimed,
+      examined: i.examined,
+      observed: i.observed,
+      advanced: i.advanced,
+      completed: i.completed,
+      r2Calls: i.r2Calls,
+    };
   } else {
     const key = kind === "reservations" ? "released" : "failed";
     if (!count(r[key])) throw new Error("database_restore_invalid_domain_repair");

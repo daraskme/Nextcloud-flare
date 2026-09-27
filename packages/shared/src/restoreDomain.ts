@@ -1,4 +1,12 @@
-export const RESTORE_DOMAIN_KINDS = ["single", "multipart", "reservations", "outbox"] as const;
+export const RESTORE_DOMAIN_KINDS = [
+  "single",
+  "multipart",
+  "reservations",
+  "outbox",
+  "blob-gc",
+  "orphan-gc",
+  "orphan-inventory",
+] as const;
 export type RestoreDomainKind = (typeof RESTORE_DOMAIN_KINDS)[number];
 
 export function restoreDomainKind(value: unknown): RestoreDomainKind {

@@ -1,6 +1,13 @@
 import type { RestoreDomainKind } from "../../../shared/src/restoreDomain";
 import { assertExists, atomicBatch, primary } from "../db/primary";
+import { drainStoppedBlobGarbageCollection, type GcResult } from "../jobs/gc";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
+import {
+  drainStoppedOrphanGarbageCollection,
+  type OrphanGcResult,
+  type OrphanScanResult,
+  scanOrphanObjects,
+} from "../jobs/orphanInventory";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import type { ControlDO } from "./ControlDO";
 import { NativeHistory } from "./nativeHistory";
@@ -9,6 +16,8 @@ import { reconcileRestoredMultipartAbort } from "./restoreMultipartAbort";
 
 type DomainRepairResult =
   | { cleanup: UploadCleanupResult; held: number }
+  | { cleanup: GcResult | OrphanGcResult }
+  | { inventory: OrphanScanResult }
   | { released: number }
   | { failed: number };
 export type RestoreDomainRepairStatus = {
@@ -17,7 +26,7 @@ export type RestoreDomainRepairStatus = {
 } & DomainRepairResult;
 export type RestoreDomainControl = Pick<
   ControlDO,
-  "status" | "acquireSystemMutation" | "beginR2Write" | "finishR2Write"
+  "status" | "acquireSystemMutation" | "acquireGlobalMutation" | "beginR2Write" | "finishR2Write"
 >;
 const REMAINING: Record<RestoreDomainKind, string> = {
   single:
@@ -26,6 +35,10 @@ const REMAINING: Record<RestoreDomainKind, string> = {
     "SELECT 1 FROM uploads WHERE mode='multipart' AND (state NOT IN ('completed','expired','aborted','failed') OR cleanup_pending=1 OR cleanup_token IS NOT NULL OR (state<>'completed' AND multipart_cleanup_closed IS NULL))",
   reservations: "SELECT 1 FROM reservations WHERE state='reserved'",
   outbox: "SELECT 1 FROM outbox WHERE state IN ('pending','dispatching','sent')",
+  "blob-gc": "SELECT 1 FROM gc_candidates WHERE state='deleting'",
+  "orphan-gc": "SELECT 1 FROM orphan_objects WHERE state='deleting'",
+  // Page completion is checked separately; quarantined objects remain charged for normal GC.
+  "orphan-inventory": "SELECT 1 WHERE 0",
 };
 
 /** One bounded maintenance pass. Unknown native execution must be resolved separately. */
@@ -73,6 +86,12 @@ export async function repairRestoredDomain(
         current();
         return result;
       },
+      acquireGlobalMutation: async (input: Parameters<ControlDO["acquireGlobalMutation"]>[0]) => {
+        current();
+        const result = await control.acquireGlobalMutation(input);
+        current();
+        return result;
+      },
       beginR2Write: async (input: Parameters<ControlDO["beginR2Write"]>[0]) => {
         current();
         const grant = await control.beginR2Write(input);
@@ -97,6 +116,12 @@ export async function repairRestoredDomain(
     },
   };
   const guardedBucket = {
+    list: async (options: R2ListOptions) => {
+      current();
+      const page = await bucket.list(options);
+      current();
+      return page;
+    },
     head: async (key: string) => {
       current();
       const object = await bucket.head(key);
@@ -104,6 +129,8 @@ export async function repairRestoredDomain(
       return object;
     },
     resumeMultipartUpload: (key: string, id: string) => bucket.resumeMultipartUpload(key, id),
+    // Dispatch is guarded by trackedR2Write; preserve actual late completion for settlement.
+    delete: (key: string) => bucket.delete(key),
   } as R2Bucket;
   let result: DomainRepairResult;
   if (kind === "single")
@@ -138,7 +165,29 @@ export async function repairRestoredDomain(
     result = { cleanup, held };
   } else if (kind === "reservations")
     result = { released: await releaseStaleRecoveryReservations(source, epoch, limit) };
-  else result = { failed: await failStaleRecoveryOutbox(source, epoch, limit) };
+  else if (kind === "outbox")
+    result = { failed: await failStaleRecoveryOutbox(source, epoch, limit) };
+  else if (kind === "blob-gc")
+    result = {
+      cleanup: await drainStoppedBlobGarbageCollection(source, guardedBucket, epoch, {
+        maxBlobs: limit,
+        current,
+      }),
+    };
+  else if (kind === "orphan-gc")
+    result = {
+      cleanup: await drainStoppedOrphanGarbageCollection(source, guardedBucket, epoch, {
+        limit,
+        current,
+      }),
+    };
+  else
+    result = {
+      inventory: await scanOrphanObjects(source, guardedBucket, epoch, {
+        limit,
+        maintenance: true,
+      }),
+    };
   current();
   const saved = await primary(db)
     .prepare(`SELECT EXISTS (${REMAINING[kind]}) AS pending FROM control
@@ -147,5 +196,8 @@ export async function repairRestoredDomain(
     .first<{ pending: 0 | 1 }>();
   current();
   if (!saved) throw new Error("database_restore_recovery_conflict");
-  return { kind, ...result, pending: saved.pending === 1 };
+  const pending =
+    saved.pending === 1 ||
+    ("inventory" in result && (!result.inventory.advanced || !result.inventory.completed));
+  return { kind, ...result, pending };
 }

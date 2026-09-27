@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)はUbuntu・Windows3分割・backup・browserの全6job成功。先行daa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)も全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前7024160の[CI36344576265](https://github.com/daraskme/Nextcloud-flare/actions/runs/36344576265)は確認時点でUbuntu・Windows分割2/3と3/3・browserが成功し、Windows分割1/3とbackupは実行中。先行981ae36の[CI36342685456](https://github.com/daraskme/Nextcloud-flare/actions/runs/36342685456)とdaa143eの[CI36341055303](https://github.com/daraskme/Nextcloud-flare/actions/runs/36341055303)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- 復旧要求に固定した`repair-restored`へblob-gc/orphan-gc/orphan-inventoryを追加。private operatorのmethodは27のまま。GCの新規candidate拒否、pin・35日猶予・不明native保持、LIST/HEAD前後・DELETE直前の停止照合、実遅延終了の保存を維持する。孤立走査は1ページだけを記録し、途中失敗時にcursorと容量を保持する。CLI出力は件数/状態だけへ正規化し、内部key/token/cursorを除く。
+- Node3file/131件成功（28.25s、新規19件）。GC/走査の種別・件数・状態関係・秘匿値除去・完了/保留判定と既存復旧CLIを検証。/tmp/ncf-restore-gc-node.log。
+- 新規workerd18件成功（28.82s）。実DELETE、physicalの一度だけの精算、candidate/pin/lease/35日保護、実体置換後の猶予更新、未知DELETE保持、最終DB応答喪失、停止直前/直後とnative終了、LIST/HEAD後の停止、途中ページ失敗と再開、eviction、事前native保留を検証。初回2file/44件は27成功・17失敗（60.79s）で、前fixtureのusersに対応するbootstrap設定が未設定のため後続の復旧準備が拒否された。テスト準備でbootstrapを既存管理者へ合わせ、前fixtureのscan leaseを片付けて再実行し、新規18件がすべて成功。既存domain fileは追加3種の空実行を含む26件が初回で成功。/tmp/ncf-restore-gc-worker.log、/tmp/ncf-restore-gc-worker-focus.log。
+- 既存GC/孤立走査/ごみ箱復元の回帰5file/122件成功（127.00s）。再実行を含む今回のworkerd7file/166件とNode131件、計297件を確認（新規40件）。/tmp/ncf-restore-gc-regression.log。
+- 型・lint464file・契約/設定検査・Web build・Worker dry-run成功。D1 schema0046・通常68table・依存追加なし。/tmp/ncf-restore-gc-types.log、/tmp/ncf-restore-gc-build.log。
+- private bindingドリル成功。全27復旧methodの権限拒否、native走査と7種類のdomain修復、12ページ全監査、hold解除と受付/GCの段階再開を確認。孤立走査は既知object1件を見て追加計上せず完了した。snapshot68table/SQL57,512bytes、元backup11,370bytes。/tmp/ncf-restore-gc-operator.log、.wrangler/operator-drill-hN9bUu/report.json。S3/Time Travelは合成provider、D1 control巻戻しfixtureであり実Cloudflare復旧ではない。remote migration/deploy・通知・timer設置は行っていない。
+
+### 先行するupload・予約・outbox修復
 
 - [復元後のupload・予約・outbox修復](DATABASE_RESTORE_DOMAINS.md)をprivate `repairDomain`と`repair-restored --kind ... --limit ...`へ接続。元要求/採用済みepoch/同じ停止token、write flag、DO/D1 native保留なしを確認して1回最大20件を修復し、監査を無効にする。単一uploadの元期限、予約のupload/DAV保護、outboxのcommitted operation/stepを維持する。内部token・keyを出力せず、未解決状態は終了code 2とする。
 - multipartの前回cleanupを、新しいtokenへ上書きする前に照合。全9列のR2識別tuple/source_refとDO履歴が一致した実abort成功からDBの閉鎖記録を補い、HEADと容量精算へ進む。未送信証明なら新しい中止が可能。不足/不一致は元tokenと容量を保持して60秒backoffし、後続対象へ進める。claimにも元tupleをassertし、停止変更前後の未送信/遅延終了を記録する。

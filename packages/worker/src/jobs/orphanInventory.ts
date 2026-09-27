@@ -349,7 +349,7 @@ export async function collectOrphanObjects(
   env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { limit?: number; maxWallMs?: number } = {},
+  options: { limit?: number; maxWallMs?: number; current?: () => void } = {},
 ): Promise<OrphanGcResult> {
   return collect(env, bucket, epoch, options, false);
 }
@@ -359,7 +359,7 @@ export async function drainStoppedOrphanGarbageCollection(
   env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { limit?: number; maxWallMs?: number } = {},
+  options: { limit?: number; maxWallMs?: number; current?: () => void } = {},
 ): Promise<OrphanGcResult> {
   if ((options.limit ?? 20) > 20) throw new Error("invalid_orphan_limit");
   return collect(env, bucket, epoch, options, true);
@@ -369,7 +369,7 @@ async function collect(
   env: GlobalMutationSource & R2WriteSource,
   bucket: R2Bucket,
   epoch: number,
-  options: { limit?: number; maxWallMs?: number },
+  options: { limit?: number; maxWallMs?: number; current?: () => void },
   stopped: boolean,
 ): Promise<OrphanGcResult> {
   const { DB: db } = env;
@@ -396,6 +396,7 @@ async function collect(
     .bind(epoch, epoch, stopped ? 1 : 0, stopped ? 1 : 0, limit)
     .all<{ r2_key: string }>();
   for (const { r2_key: key } of rows.results) {
+    options.current?.();
     if (Date.now() >= deadline) break;
     const token = crypto.randomUUID();
     try {
@@ -418,6 +419,7 @@ async function collect(
       FROM orphan_objects WHERE r2_key=? AND claim_token=? AND claim_expires_at>${CLOCK}`)
       .bind(key, token)
       .first<Orphan>();
+    options.current?.();
     if (!row) continue;
     result.claimed++;
     const charge = async () => {
@@ -472,7 +474,9 @@ async function collect(
           },
           () => bucket.delete(key),
           deadline,
+          options.current,
         );
+        options.current?.();
         await charge();
         object = await bucket.head(key);
       }
@@ -516,5 +520,6 @@ async function collect(
       result.retried++;
     }
   }
+  options.current?.();
   return result;
 }

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { beforeEach, expect, it, vi } from "vitest";
+import { RESTORE_DOMAIN_KINDS } from "../../packages/shared/src/restoreDomain.ts";
 import { repairRestoredDomain } from "../restore/recovery.mjs";
 
 let selected, control;
@@ -36,7 +37,30 @@ beforeEach(() => {
           ? { cleanup: cleanup(), held: 0 }
           : kind === "reservations"
             ? { released: 1 }
-            : { failed: 1 }),
+            : kind === "outbox"
+              ? { failed: 1 }
+              : kind === "orphan-inventory"
+                ? {
+                    inventory: {
+                      claimed: true,
+                      examined: 2,
+                      observed: 1,
+                      advanced: true,
+                      completed: false,
+                      r2Calls: 2,
+                      cursor: "private",
+                    },
+                  }
+                : {
+                    cleanup: {
+                      claimed: 1,
+                      deleted: 0,
+                      retried: 1,
+                      r2Calls: 1,
+                      ...(kind === "orphan-gc" ? { changed: 0 } : {}),
+                      token: "private",
+                    },
+                  }),
       },
     })),
     releaseRecovery: vi.fn(),
@@ -44,7 +68,7 @@ beforeEach(() => {
   };
 });
 const args = () => ({ epoch: 2, id: selected.id, kind: "single", control });
-it.each(["single", "multipart", "reservations", "outbox"])(
+it.each(RESTORE_DOMAIN_KINDS)(
   "executes one bounded %s pass and sanitizes its result",
   async (kind) => {
     const result = await repairRestoredDomain({ ...args(), kind, limit: 2 });
@@ -102,6 +126,46 @@ it.each(["reservations", "outbox"])("rejects an excessive %s repair count", asyn
   raw.repair[kind === "reservations" ? "released" : "failed"] = 21;
   control.repairDomain.mockResolvedValue(raw);
   await expect(repairRestoredDomain({ ...args(), kind })).rejects.toThrow(/invalid_/);
+});
+it.each([
+  ["blob-gc", "claimed", 21],
+  ["blob-gc", "deleted", 1],
+  ["blob-gc", "r2Calls", 3],
+  ["orphan-gc", "changed", undefined],
+  ["orphan-gc", "changed", -1],
+  ["orphan-gc", "changed", 1],
+  ["orphan-gc", "r2Calls", 4],
+])("rejects invalid GC counts %s %s=%s", async (kind, field, value) => {
+  const raw = await control.repairDomain(2, selected.id, kind);
+  raw.repair.cleanup[field] = value;
+  control.repairDomain.mockResolvedValue(raw);
+  await expect(repairRestoredDomain({ ...args(), kind })).rejects.toThrow(/invalid_/);
+});
+it.each([
+  { claimed: 1 },
+  { claimed: false },
+  { examined: 21 },
+  { observed: 3 },
+  { r2Calls: 4 },
+  { advanced: true, r2Calls: 0 },
+  { advanced: false, completed: true },
+  { completed: true },
+])("rejects inconsistent inventory replies %j", async (change) => {
+  const raw = await control.repairDomain(2, selected.id, "orphan-inventory");
+  Object.assign(raw.repair.inventory, change);
+  control.repairDomain.mockResolvedValue(raw);
+  await expect(repairRestoredDomain({ ...args(), kind: "orphan-inventory" })).rejects.toThrow(
+    /invalid_/,
+  );
+});
+it("accepts a completed inventory page with no remaining walk", async () => {
+  const raw = await control.repairDomain(2, selected.id, "orphan-inventory");
+  raw.repair.inventory.completed = true;
+  raw.repair.pending = false;
+  control.repairDomain.mockResolvedValue(raw);
+  expect((await repairRestoredDomain({ ...args(), kind: "orphan-inventory" })).repair.pending).toBe(
+    false,
+  );
 });
 it.each([
   ["--local", "--kind", "single"],

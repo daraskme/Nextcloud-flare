@@ -16,6 +16,7 @@ const { runBackup } = await moduleAt("scripts/backup/operator.mjs");
 const { maintainBackups } = await moduleAt("scripts/backup/maintenance.mjs");
 const { pruneBackup } = await moduleAt("scripts/backup/prune.mjs");
 const { controlCalls } = await moduleAt("scripts/backup/control.mjs");
+const { RESTORE_DOMAIN_KINDS } = await moduleAt("packages/shared/src/restoreDomain.ts");
 const { restoreControlCalls } = await moduleAt("scripts/restore/control.mjs");
 const { restoreStatus, verifyRestoreSelection } = await moduleAt("scripts/restore/verify.mjs");
 const { verifyRestoreD1 } = await moduleAt("scripts/restore/target.mjs");
@@ -705,7 +706,7 @@ try {
   assert.equal(nativeRepair.repair.pending, false);
   assert.deepEqual(nativeRepair.repair.databasePending, { kdf: 0, r2: 0 });
   const domainRepairs = [];
-  for (const kind of ["single", "multipart", "reservations", "outbox"]) {
+  for (const kind of RESTORE_DOMAIN_KINDS) {
     const { repair } = await repairRestoredDomain({
       epoch: 2,
       id: epochId,
@@ -751,7 +752,7 @@ try {
       dataSha256: snapshot.dataSha256,
     },
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty-seven restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; bounded native repair scan and four domain passes with no pending rows, restored FTS rebuild and full audit, exact hold release, service admission then GC resume with eviction, no repeat POST or cancellation.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all twenty-seven restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; atomic D1 adoption with independent marker readback, reserved DO epoch publication and eviction replay; bounded native repair scan and seven domain passes including empty GC and orphan inventory, restored FTS rebuild and full audit, exact hold release, service admission then GC resume with eviction, no repeat POST or cancellation.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };
