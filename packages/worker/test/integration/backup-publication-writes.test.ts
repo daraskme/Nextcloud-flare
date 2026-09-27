@@ -80,6 +80,10 @@ it("persists grants without changing any frozen D1 table and settles only the ex
   expect(grant).toEqual({ attemptId: request.attemptId, id, epoch, token: expect.any(String) });
   await evictDurableObject(control());
   await rejects(
+    (instance) => instance.checkBackupPublicationWrites(epoch, id, request.generation),
+    "backup_publication_write_unsettled",
+  );
+  await rejects(
     (instance) =>
       instance.finishBackupPublicationWrite(epoch, id, { ...grant, token: crypto.randomUUID() }),
     "backup_publication_write_conflict",
@@ -97,11 +101,34 @@ it("persists grants without changing any frozen D1 table and settles only the ex
     state: "ended",
   });
   expect(await snapshot()).toEqual(before);
+  expect(await control().checkBackupPublicationWrites(epoch, id, request.generation)).toEqual({
+    id,
+    epoch,
+    state: "settled",
+  });
   await rejects(
     (instance) => instance.grantBackupPublicationWrite(epoch, id, request),
     "backup_publication_write_replayed",
   );
   expect((await control().cancelBackup(epoch, id)).state).toBe("released");
+  expect(await control().checkBackupPublicationWrites(epoch, id, request.generation)).toEqual({
+    id,
+    epoch,
+    state: "settled",
+  });
+});
+
+it("rejects a publisher's check for a foreign frozen generation", async () => {
+  const { id, request } = await stage();
+  await rejects(
+    (instance) =>
+      instance.checkBackupPublicationWrites(epoch, id, {
+        ...request.generation,
+        token: crypto.randomUUID(),
+      }),
+    "backup_generation_conflict",
+  );
+  await frozen();
 });
 
 it("retains an unknown PUT across exact readback and eviction, blocking all release and replay paths", async () => {

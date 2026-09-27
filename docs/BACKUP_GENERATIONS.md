@@ -1,13 +1,13 @@
 # 論理バックアップ世代とオフライン復元
 
-更新: 2026-09-25。`pnpm backup`は凍結済みD1から通常67tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)で確定し、[専用bindingのrunコマンド](BACKUP_OPERATOR.md)で開始から一連に呼び出す。日次実行は[運用コマンド](BACKUP_OPERATOR.md)、保持判定は[health](BACKUP_RETENTION.md)、期限切れ指定世代の回収は[prune](BACKUP_PRUNING.md)へ接続済み。定時起動・期限切れ世代の自動回収、live D1 restore・epoch更新・全復旧監査は後続である。
+更新: 2026-09-28。`pnpm backup`は凍結済みD1から通常68tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)で確定し、[専用bindingのrunコマンド](BACKUP_OPERATOR.md)で開始から一連に呼び出す。日次実行は[運用コマンド](BACKUP_OPERATOR.md)、保持判定は[health](BACKUP_RETENTION.md)、期限切れ指定世代の回収は[prune](BACKUP_PRUNING.md)へ接続済み。期限切れ世代の自動走査は[sweep](BACKUP_SWEEP.md)に接続済み。定時起動の設置、live D1 restore・epoch更新・全復旧監査は後続である。
 
 ## コマンド
 
 ```sh
 pnpm backup capture --config CONFIG --database DB --local --id UUID --epoch EPOCH --directory GENERATIONS
 pnpm backup verify --directory GENERATIONS/UUID
-pnpm backup publish --directory GENERATIONS/UUID --local --config CONFIG
+pnpm backup publish --operator-config OPERATOR_JSON --directory GENERATIONS/UUID --local --config CONFIG
 pnpm backup download --id UUID --directory DOWNLOADED --local --config CONFIG --manifest-sha256 HASH
 pnpm backup restore-offline --directory GENERATIONS/UUID --target NEW_FILE.sqlite
 pnpm backup:drill
@@ -17,7 +17,7 @@ captureは[ControlDO.beginBackup](BACKUP_BARRIER.md)が`frozen`を返した世�
 
 captureは開始・解除のRPCを代行せず、成功時も失敗時もbarrierを保持する。全source fingerprint取得とexportの前後で同じ凍結世代・epoch・token・watermarkを確認する。途中で解除・世代変更が起きた出力は採用しない。exportのsnapshot開始点が確認できていないため、抽出前のACKだけで解除しない。
 
-`backup:drill`は`.wrangler/backup-drill-*`に専用config、local D1/R2、fixture、世代と復元先を作り、実際のcapture→verify→publish→download→restore-offlineコマンド、FTS検索、容量、元DBの凍結保持を検査する。実local R2への条件付きPUTが既存manifestの置換を拒否することも確認する。既存開発DBを消さず、remoteを呼び出さない。fixtureの凍結はこの隔離試験だけの準備であり、運用RPCや全復旧監査の実証ではない。
+`backup:drill`は`.wrangler/backup-drill-*`に専用config、local D1/R2/ControlDO、fixture、世代と復元先を作る。実private bindingのbeginと送信受付を通してcapture→verify→publish→download→restore-offlineコマンド、FTS検索、容量、元DBの凍結保持を検査する。実local R2への条件付きPUTが既存manifestの置換を拒否することも確認する。既存開発DBを消さず、remoteを呼び出さない。完了解除と全復旧監査の実証はこのドリルの範囲外。
 
 ## 世代の内容と一致検証
 
@@ -45,7 +45,9 @@ checksumだけが合っていても、元DBとの全行一致を示したこと�
 
 保存keyは`sys/backups/v1/UUID/parts/000000-SHA256.bin`と`sys/backups/v1/UUID/manifest.json`に限定する。partは順序番号・内容hash、manifestは世代IDに束縛する。transport manifest v1は元の論理manifest、固定chunkBytes、順序付きのpart byte数/SHA-256を持ち、任意のkeyやURLを含めない。JSONのobject keyは決定的な順序で保存する。
 
-保存前にGETで既存byte列を照合し、不在の場合だけ`If-None-Match: *`付きでPUTする。PUT後は必ずGETして一致を確認する。応答を失った場合も、実際に一致したobjectだけを採用する。全partとSQL全体のhashを確認した後に、manifestを最後に確定・読み戻す。既存内容が異なる世代を上書きせず、同じ世代の再実行では一致済みpartを再利用する。保存中のローカルSQL変更も検査する。
+保存前にprivate bindingで未終了の保存試行がないことを照会し、GETで既存byte列を照合する。不在の場合だけ[専用grant](BACKUP_PUBLICATION_WRITES.md)を取得し、`If-None-Match: *`付きでPUTする。元のnative応答による終了記録を確認してからGETで一致を確認する。応答喪失・timeoutはpendingを保持し、正確なobjectが見えても終了扱いにしない。全partとSQL全体のhashを確認した後にmanifestを最後に保存・読み戻し、未終了試行がないことを再照会する。既存内容が異なる世代を上書きせず、送信結果が確定した同じ世代の再実行では一致済みpartを再利用する。保存中のローカルSQL変更も検査する。
+
+単独`publish`にも`--operator-config`が必須。epochと世代は検証済みartifactから取得する。完了済み世代の欠落objectへ新しいPUTを追加することはできず、health/maintainで新しい世代を補充する。既存objectの読取りには未終了試行がない同じ世代か、読取り専用downloadを使う。
 
 `download`はmanifestの形・世代ID・part数/サイズ/順序を検査し、一つずつchecksumを照合して新規ディレクトリへ取り込む。その後、元の`verify`と同じschema/FK/FTS/全行hash検証を通った世代だけを確定する。既存のダウンロード先を置換しない。`--manifest-sha256`にはpublishの最終JSONが返す`manifestSha256`を指定できる。別途信頼できる場所に記録した値との照合であり、署名ではない。
 
@@ -63,9 +65,9 @@ remoteの接続先は上記account/bucketから生成する固定R2 S3 endpoint�
 
 APIの根拠はCloudflareの[R2 S3互換性](https://developers.cloudflare.com/r2/api/s3/api/)、[R2制限](https://developers.cloudflare.com/r2/platform/limits/)、[Wrangler API](https://developers.cloudflare.com/workers/wrangler/api/)。署名・異常応答はfake transport、条件付き書込みと一連のCLIは実local R2で検証した。remote R2の相互運用は未検証である。
 
-途中失敗のpartは残し、再実行で照合する。delete/list、保存期限、世代の自動回収はまだ実装しない。遅延したPUTがあり得るため、経過時間だけで未完了partを消さない。このCLIによる上書き拒否はbucket全体のObject Lock保証ではない。保存先の真正性はprivate bucketと運用資格情報の管理に依存する。
+途中失敗のpartは残す。未終了PUTがある間は再実行・完了・取消し・解除を保留し、経過時間だけで未完了partを消さない。期限切れの完成世代は[prune/sweep](BACKUP_SWEEP.md)で回収する。このCLIによる上書き拒否はbucket全体のObject Lock保証ではない。保存先の真正性はprivate bucketと運用資格情報の管理に依存する。
 
-保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。publish単独では元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。runは[completeBackup](BACKUP_COMPLETION.md)で実BACKUPS bindingの世代とpartを照合し、完了receiptと解除を原子的に確定する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。保持判定は[health](BACKUP_RETENTION.md)へ接続済み。期限切れ世代の自動回収、元BLOBSの独立保管、live復元は後続。
+保存対象はD1の論理SQLであり、元の`BLOBS` object本体は含まない。publish単独では元DBのbarrierを解除せず、`backup_runs.completed`を更新しない。runは[completeBackup](BACKUP_COMPLETION.md)で実BACKUPS bindingの世代とpartを照合し、完了receiptと解除を原子的に確定する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。保持判定は[health](BACKUP_RETENTION.md)へ接続済み。元BLOBSの独立保管、live復元は後続。
 
 local R2の永続先は指定configの親ディレクトリから`.wrangler/state/v3`へ固定する。getPlatformProxyの既定値は呼出しcwdを基準にするため、configを別ディレクトリに置くとWrangler devと異なる保存先になっていた。runの完了照合でこの相違を検出し修正した。従来の別cwdへのlocal保存物を自動移動せず、必要なら検証済み世代を正しいconfigで再publishする。remote保存先は変更しない。
 

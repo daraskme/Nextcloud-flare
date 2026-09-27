@@ -133,7 +133,7 @@ export class S3BackupStore {
     this.transport = transport;
     this.timeoutMs = timeoutMs;
   }
-  async #request(method, key, bytes, limit, probe = false) {
+  async #request(method, key, bytes, limit, probe = false, onNativeEnd) {
     if (probe) {
       if (
         method !== "GET" ||
@@ -164,16 +164,19 @@ export class S3BackupStore {
       });
       if (signal.aborted) throw new Error("backup_store_timeout");
       const response = await this.transport(request);
+      if (method === "PUT" && !response.redirected && [200, 412].includes(response.status)) {
+        void response.body?.cancel().catch(() => {});
+        // The provider response ends this native invocation, including a conditional no-op.
+        // Record late success before checking our deadline, but never resume expired publication.
+        await onNativeEnd();
+        if (signal.aborted) throw new Error("backup_store_timeout");
+        return response.status === 200;
+      }
       if (signal.aborted || response.redirected || response.status !== 200) {
         void response.body?.cancel().catch(() => {});
         if (signal.aborted) throw new Error("backup_store_timeout");
         if (!response.redirected && method === "GET" && response.status === 404) return null;
-        if (!response.redirected && method === "PUT" && response.status === 412) return false;
         throw new Error(`backup_store_http_${response.status}`);
-      }
-      if (method === "PUT") {
-        void response.body?.cancel().catch(() => {});
-        return true;
       }
       return boundedBody(response.body, response.headers.get("Content-Length"), limit, signal);
     }, this.timeoutMs);
@@ -184,9 +187,10 @@ export class S3BackupStore {
   readRestoreProbe() {
     return this.#request("GET", RESTORE_BACKUPS_PROBE_KEY, null, RESTORE_BACKUPS_PROBE_BYTES, true);
   }
-  put(key, bytes) {
+  put(key, bytes, onNativeEnd) {
     validatePayload(key, bytes);
-    return this.#request("PUT", key, bytes, MAX_MANIFEST_BYTES);
+    if (typeof onNativeEnd !== "function") throw new Error("backup_write_tracking_required");
+    return this.#request("PUT", key, bytes, MAX_MANIFEST_BYTES, false, onNativeEnd);
   }
   async dispose() {}
 }
@@ -207,6 +211,20 @@ export async function localBackupStore(configPath, environment) {
     await proxy.dispose();
     throw new Error("backup_store_unconfigured");
   }
+  return bindingBackupStore(bucket, { dispose: () => proxy.dispose() });
+}
+
+/** The same native completion boundary for local proxies and isolated operator drills. */
+export function bindingBackupStore(bucket, { dispose = async () => {}, timeoutMs = 60000 } = {}) {
+  if (
+    !bucket ||
+    typeof bucket.put !== "function" ||
+    typeof bucket.get !== "function" ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 120000
+  )
+    throw new Error("backup_store_unconfigured");
   return {
     get: async (key, limit) => {
       validateKey(key);
@@ -218,19 +236,21 @@ export async function localBackupStore(configPath, environment) {
           throw new Error("backup_store_timeout");
         }
         return object === null ? null : boundedBody(object.body, object.size, limit, signal);
-      }, 60000);
+      }, timeoutMs);
     },
-    put: async (key, bytes) => {
+    put: async (key, bytes, onNativeEnd) => {
       validatePayload(key, bytes);
-      return deadline(
-        async () =>
-          (await bucket.put(key, bytes, {
-            onlyIf: new Headers({ "If-None-Match": "*" }),
-            httpMetadata: { contentType: "application/octet-stream" },
-          })) !== null,
-        60000,
-      );
+      if (typeof onNativeEnd !== "function") throw new Error("backup_write_tracking_required");
+      return deadline(async (signal) => {
+        const result = await bucket.put(key, bytes, {
+          onlyIf: new Headers({ "If-None-Match": "*" }),
+          httpMetadata: { contentType: "application/octet-stream" },
+        });
+        await onNativeEnd();
+        if (signal.aborted) throw new Error("backup_store_timeout");
+        return result !== null;
+      }, timeoutMs);
     },
-    dispose: () => proxy.dispose(),
+    dispose,
   };
 }

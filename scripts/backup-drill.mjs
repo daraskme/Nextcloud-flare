@@ -3,13 +3,16 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { foundationFixture } from "../packages/worker/test/fixtures/foundation.ts";
+import { operatorControl } from "./backup/control.mjs";
 import { exportData } from "./backup/export.mjs";
 import { digest, localBackupStore } from "./backup/objectStore.mjs";
+import { trackedPublicationPut } from "./backup/publicationWrite.mjs";
 import { parseInsert, statements } from "./backup/sql.mjs";
 import { wranglerSource } from "./backup/wrangler.mjs";
 
@@ -18,18 +21,28 @@ await mkdir(join(root, ".wrangler"), { recursive: true });
 const directory = await mkdtemp(join(root, ".wrangler/backup-drill-"));
 const config = join(directory, "wrangler.json"),
   id = randomUUID(),
-  token = randomUUID();
+  name = "ncf-backup-drill-" + randomUUID(),
+  source = join(directory, "worker.ts"),
+  descriptor = join(directory, "operator.json");
+await writeFile(descriptor, JSON.stringify({ service: name, environment: "development" }));
 await writeFile(
-  join(directory, "worker.js"),
-  'export default {fetch(){return new Response("isolated backup drill")}};',
+  source,
+  `import {ControlDO,CONTROL_NAME} from ${JSON.stringify(join(root, "packages/worker/src/do/ControlDO.ts"))};
+export {BackupOperator} from ${JSON.stringify(join(root, "packages/worker/src/backup/operator.ts"))};
+export {ControlDO};
+export default {async fetch(request,env){if(request.method!=='POST')return new Response(null,{status:404});return Response.json(await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).recover());}};`,
 );
 await writeFile(
   config,
   JSON.stringify({
-    name: "ncf-backup-drill",
-    main: "worker.js",
+    name,
+    main: source,
     compatibility_date: "2026-08-15",
     workers_dev: false,
+    compatibility_flags: ["nodejs_compat", "enable_request_signal"],
+    vars: { ENVIRONMENT: "development", EPOCH_FLOOR: "2", BACKUP_OPERATOR_ENABLED: "true" },
+    durable_objects: { bindings: [{ name: "CONTROL", class_name: "ControlDO" }] },
+    migrations: [{ tag: "v1", new_sqlite_classes: ["ControlDO"] }],
     r2_buckets: [{ binding: "BACKUPS", bucket_name: "backup-drill" }],
     d1_databases: [
       {
@@ -58,190 +71,227 @@ const wrangler = fileURLToPath(
 );
 const local = (args) => run(wrangler, [...args, "--local", "--config", config]);
 await local(["d1", "migrations", "apply", "DB"]);
-const now = Date.now(),
-  fixture = foundationFixture("drill", now - 1000);
-const exactText = "\ufeff引用'😀;\r\n文字\\n\\r\0end";
-const literal = (value) =>
-  value === null
-    ? "NULL"
-    : typeof value === "number"
-      ? String(value)
-      : "'" + value.replaceAll("'", "''") + "'";
-const bound = ({ sql, values = [] }) => {
-  let index = 0;
-  const text = sql.replace(/\?/g, () => literal(values[index++]));
-  assert.equal(index, values.length);
-  return text + ";";
-};
-const seed = fixture.statements.map(bound);
-// A raw TEXT scalar exercises transport fidelity even for values that an app
-// parser would reject. Backup must not silently normalize stored database bytes.
-seed.push(
-  `INSERT INTO node_props(node_id,namespace,name,value_xml) VALUES('${fixture.ids.file}','urn:drill','exact',CAST(X'${Buffer.from(exactText).toString("hex")}' AS TEXT));`,
-);
-seed.push(
-  bound({
-    sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'local-fixture',?)",
-    values: [fixture.ids.blob, now],
-  }),
-);
-seed.push(
-  bound({
-    sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES('held',?,5,'reserved',?,1)",
-    values: [fixture.ids.user, now + 86400000],
-  }),
-);
-seed.push(
-  bound({
-    sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,'sample','sample','fixture',1)",
-    values: [fixture.ids.file, fixture.ids.space],
-  }),
-);
-seed.push("INSERT INTO search_fts(search_fts) VALUES('rebuild');");
-seed.push(
-  bound({
-    sql: "INSERT INTO backup_runs(id,epoch,state,created_at,barrier_token) VALUES(?,1,'exporting',?,?)",
-    values: [id, now, token],
-  }),
-);
-seed.push(bound({ sql: "UPDATE control SET backup_token=?,backup_frozen=1", values: [token] }));
-await writeFile(join(directory, "seed.sql"), seed.join("\n"));
-await local(["d1", "execute", "DB", "--file", join(directory, "seed.sql")]);
-// The CLI's JSON display turns BLOB arrays into strings. Exercise the real
-// transport with explicit storage types, including a lookalike TEXT value.
-const scalarSource = await wranglerSource({ config, database: "DB", mode: "local" });
-const scalarSpec = {
-  name: "scalar_probe",
-  columns: ["id", "text", "bytes", "lookalike", "absent", "number"],
-  keys: ["id"],
-};
-const scalarFile = join(directory, "scalars.sql");
-await exportData(scalarFile, [scalarSpec], (sql) =>
-  scalarSource.query(
-    `WITH scalar_probe AS (SELECT 1 AS id,CAST(X'${Buffer.from(exactText).toString("hex")}' AS TEXT) AS text,X'00ff0080' AS bytes,'[0, 255, 0, 128]' AS lookalike,NULL AS absent,-1250.125 AS number) ${sql}`,
-  ),
-);
-const scalarRows = [];
-for await (const statement of statements([await readFile(scalarFile)]))
-  scalarRows.push(parseInsert(statement));
-assert.equal(scalarRows.length, 1);
-assert.deepEqual(scalarRows[0].values, [
-  1,
-  exactText,
-  Buffer.from([0, 255, 0, 128]),
-  "[0, 255, 0, 128]",
-  null,
-  -1250.125,
-]);
-console.log(JSON.stringify({ stage: "capture", directory }));
-const cli = join(root, "scripts/backup.mjs"),
-  generations = join(directory, "generations"),
-  generation = join(generations, id);
-await run(cli, [
-  "capture",
-  "--config",
+const { unstable_dev } = createRequire(import.meta.url)("wrangler");
+const server = await unstable_dev(source, {
   config,
-  "--database",
-  "DB",
-  "--local",
-  "--id",
-  id,
-  "--epoch",
-  "1",
-  "--directory",
-  generations,
-]);
-await run(cli, ["verify", "--directory", generation]);
-const publicationOutput = await run(cli, [
-  "publish",
-  "--directory",
-  generation,
-  "--local",
-  "--config",
-  config,
-]);
-const publication = JSON.parse(
-  publicationOutput
-    .trim()
-    .split("\n")
-    .findLast((line) => line.startsWith('{"result":')),
-);
-assert.match(publication.manifestSha256, /^[a-f0-9]{64}$/);
-const store = await localBackupStore(config);
+  local: true,
+  port: 0,
+  inspectorPort: 0,
+  logLevel: "error",
+  envFiles: [],
+  experimental: {
+    disableDevRegistry: false,
+    disableExperimentalWarning: true,
+    showInteractiveDevSession: false,
+  },
+});
 try {
-  // Exercise the real local R2 conditional write, independently of the publisher's early GET.
   assert.equal(
-    await store.put(publication.objectKey, Buffer.from("must not replace manifest")),
-    false,
+    (await (await server.fetch("https://fixture.invalid/recover", { method: "POST" })).json())
+      .epoch,
+    2,
   );
-  assert.equal(
-    digest(await store.get(publication.objectKey, 1024 * 1024)),
-    publication.manifestSha256,
+  const now = Date.now(),
+    fixture = foundationFixture("drill", now - 1000);
+  const exactText = "\ufeff引用'😀;\r\n文字\\n\\r\0end";
+  const literal = (value) =>
+    value === null
+      ? "NULL"
+      : typeof value === "number"
+        ? String(value)
+        : "'" + value.replaceAll("'", "''") + "'";
+  const bound = ({ sql, values = [] }) => {
+    let index = 0;
+    const text = sql.replace(/\?/g, () => literal(values[index++]));
+    assert.equal(index, values.length);
+    return text + ";";
+  };
+  const seed = fixture.statements.map(bound);
+  // A raw TEXT scalar exercises transport fidelity even for values that an app
+  // parser would reject. Backup must not silently normalize stored database bytes.
+  seed.push(
+    `INSERT INTO node_props(node_id,namespace,name,value_xml) VALUES('${fixture.ids.file}','urn:drill','exact',CAST(X'${Buffer.from(exactText).toString("hex")}' AS TEXT));`,
   );
-} finally {
-  await store.dispose();
-}
-const download = join(directory, "download");
-await run(cli, [
-  "download",
-  "--directory",
-  download,
-  "--id",
-  id,
-  "--local",
-  "--config",
-  config,
-  "--manifest-sha256",
-  publication.manifestSha256,
-]);
-await run(cli, [
-  "restore-offline",
-  "--directory",
-  join(download, id),
-  "--target",
-  join(directory, "restored.sqlite"),
-]);
-const restored = new DatabaseSync(join(directory, "restored.sqlite"));
-try {
-  assert.deepEqual(
-    { ...restored.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get() },
-    { used_bytes: 3, reserved_bytes: 5, physical_bytes: 3 },
+  seed.push(
+    bound({
+      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'local-fixture',?)",
+      values: [fixture.ids.blob, now],
+    }),
   );
-  assert.equal(
-    restored.prepare("SELECT COUNT(*) n FROM search_fts WHERE search_fts MATCH 'sample'").get().n,
+  seed.push(
+    bound({
+      sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES('held',?,5,'reserved',?,2)",
+      values: [fixture.ids.user, now + 86400000],
+    }),
+  );
+  seed.push(
+    bound({
+      sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,'sample','sample','fixture',1)",
+      values: [fixture.ids.file, fixture.ids.space],
+    }),
+  );
+  seed.push("INSERT INTO search_fts(search_fts) VALUES('rebuild');");
+  await writeFile(join(directory, "seed.sql"), seed.join("\n"));
+  await local(["d1", "execute", "DB", "--file", join(directory, "seed.sql")]);
+  const beginControl = await operatorControl(descriptor, "local");
+  try {
+    assert.equal((await beginControl.begin(2, id)).state, "frozen");
+  } finally {
+    await beginControl.dispose();
+  }
+  // The CLI's JSON display turns BLOB arrays into strings. Exercise the real
+  // transport with explicit storage types, including a lookalike TEXT value.
+  const scalarSource = await wranglerSource({ config, database: "DB", mode: "local" });
+  const scalarSpec = {
+    name: "scalar_probe",
+    columns: ["id", "text", "bytes", "lookalike", "absent", "number"],
+    keys: ["id"],
+  };
+  const scalarFile = join(directory, "scalars.sql");
+  await exportData(scalarFile, [scalarSpec], (sql) =>
+    scalarSource.query(
+      `WITH scalar_probe AS (SELECT 1 AS id,CAST(X'${Buffer.from(exactText).toString("hex")}' AS TEXT) AS text,X'00ff0080' AS bytes,'[0, 255, 0, 128]' AS lookalike,NULL AS absent,-1250.125 AS number) ${sql}`,
+    ),
+  );
+  const scalarRows = [];
+  for await (const statement of statements([await readFile(scalarFile)]))
+    scalarRows.push(parseInsert(statement));
+  assert.equal(scalarRows.length, 1);
+  assert.deepEqual(scalarRows[0].values, [
     1,
-  );
-  assert.throws(() => restored.exec("UPDATE control SET maintenance=0"), /backup_frozen/);
-  assert.equal(
-    restored.prepare("SELECT value_xml FROM node_props WHERE name='exact'").get().value_xml,
     exactText,
-  );
-} finally {
-  restored.close();
-}
-const status = JSON.parse(
-  await local([
-    "d1",
-    "execute",
+    Buffer.from([0, 255, 0, 128]),
+    "[0, 255, 0, 128]",
+    null,
+    -1250.125,
+  ]);
+  console.log(JSON.stringify({ stage: "capture", directory }));
+  const cli = join(root, "scripts/backup.mjs"),
+    generations = join(directory, "generations"),
+    generation = join(generations, id);
+  await run(cli, [
+    "capture",
+    "--config",
+    config,
+    "--database",
     "DB",
-    "--command",
-    "SELECT backup_frozen,backup_token FROM control",
-    "--json",
-  ]),
-);
-assert.deepEqual(status[0].results, [{ backup_frozen: 1, backup_token: token }]);
-const manifest = JSON.parse(await readFile(join(generation, "manifest.json"), "utf8"));
-assert.equal(manifest.tables.length, 68);
-const report = {
-  result: "PASS",
-  directory,
-  id,
-  tables: manifest.tables.length,
-  bytes: manifest.data.bytes,
-  proof:
-    "Real local Wrangler query export including Unicode/CR/LF/literal backslash/NUL, source fingerprints, verify CLI, local BACKUPS publication/readback/conditional-conflict/download, offline restore, FTS/accounting/FK/schema and source freeze retained.",
-  limits:
-    "Fixture freeze; no ControlDO operator channel, original BLOBS content recovery, backup_runs completion, live restore, epoch recovery or remote commands.",
-};
-await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
-console.log(JSON.stringify(report));
+    "--local",
+    "--id",
+    id,
+    "--epoch",
+    "2",
+    "--directory",
+    generations,
+  ]);
+  await run(cli, ["verify", "--directory", generation]);
+  const publicationOutput = await run(cli, [
+    "publish",
+    "--operator-config",
+    descriptor,
+    "--directory",
+    generation,
+    "--local",
+    "--config",
+    config,
+  ]);
+  const publication = JSON.parse(
+    publicationOutput
+      .trim()
+      .split("\n")
+      .findLast((line) => line.startsWith('{"result":')),
+  );
+  assert.match(publication.manifestSha256, /^[a-f0-9]{64}$/);
+  const manifest = JSON.parse(await readFile(join(generation, "manifest.json"), "utf8"));
+  const store = await localBackupStore(config);
+  const publicationControl = await operatorControl(descriptor, "local");
+  try {
+    // Exercise the real local R2 conditional write, independently of the publisher's early GET.
+    assert.equal(
+      await trackedPublicationPut(
+        store,
+        publicationControl,
+        manifest.generation,
+        publication.objectKey,
+        Buffer.from("must not replace manifest"),
+      ),
+      false,
+    );
+    assert.equal(
+      digest(await store.get(publication.objectKey, 1024 * 1024)),
+      publication.manifestSha256,
+    );
+  } finally {
+    try {
+      await store.dispose();
+    } finally {
+      await publicationControl.dispose();
+    }
+  }
+  const download = join(directory, "download");
+  await run(cli, [
+    "download",
+    "--directory",
+    download,
+    "--id",
+    id,
+    "--local",
+    "--config",
+    config,
+    "--manifest-sha256",
+    publication.manifestSha256,
+  ]);
+  await run(cli, [
+    "restore-offline",
+    "--directory",
+    join(download, id),
+    "--target",
+    join(directory, "restored.sqlite"),
+  ]);
+  const restored = new DatabaseSync(join(directory, "restored.sqlite"));
+  try {
+    assert.deepEqual(
+      { ...restored.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get() },
+      { used_bytes: 3, reserved_bytes: 5, physical_bytes: 3 },
+    );
+    assert.equal(
+      restored.prepare("SELECT COUNT(*) n FROM search_fts WHERE search_fts MATCH 'sample'").get().n,
+      1,
+    );
+    assert.throws(() => restored.exec("UPDATE control SET maintenance=0"), /backup_frozen/);
+    assert.equal(
+      restored.prepare("SELECT value_xml FROM node_props WHERE name='exact'").get().value_xml,
+      exactText,
+    );
+  } finally {
+    restored.close();
+  }
+  const status = JSON.parse(
+    await local([
+      "d1",
+      "execute",
+      "DB",
+      "--command",
+      "SELECT backup_frozen,backup_token FROM control",
+      "--json",
+    ]),
+  );
+  assert.deepEqual(status[0].results, [
+    { backup_frozen: 1, backup_token: manifest.generation.token },
+  ]);
+  assert.equal(manifest.tables.length, 68);
+  const report = {
+    result: "PASS",
+    directory,
+    id,
+    tables: manifest.tables.length,
+    bytes: manifest.data.bytes,
+    proof:
+      "Real local Wrangler query export including Unicode/CR/LF/literal backslash/NUL, source fingerprints, verify CLI, local BACKUPS publication/readback/conditional-conflict/download, offline restore, FTS/accounting/FK/schema and source freeze retained.",
+    limits:
+      "Local private ControlDO begin and publication write grants; no original BLOBS content recovery, backup_runs completion, live restore or remote commands.",
+  };
+  await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(report));
+} finally {
+  await server.stop();
+}

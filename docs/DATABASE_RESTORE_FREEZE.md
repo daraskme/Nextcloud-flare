@@ -1,6 +1,6 @@
 # 復旧要求に結び付けたD1書込み凍結
 
-更新: 2026-09-27。`freeze`は現在のD1/BLOBS/BACKUPS照合を受けて、D1全通常tableへの書込みと新規repair受付を停止する。外部R2処理の全終了、新epochの予約、D1上書き許可は別工程で、まだ接続していない。
+更新: 2026-09-28。`freeze`は現在のD1/BLOBS/BACKUPS照合を受けて、D1全通常tableへの書込みと新規repair受付を停止する。外部R2処理の全終了、新epochの予約、D1上書き許可は別工程で、まだ接続していない。
 
 ## コマンド
 
@@ -57,6 +57,6 @@ Node試験は全通常tableのtrigger、実INSERT拒否、control変更拒否、
 
 空ファイルPUT、target manifest staging、未公開manifest削除の送信・終了記録はmigration0041で接続し、0042でblob/orphan GC、0043で単一/DAV PUTとmultipart作成/part/完了/全中止、0044でBLOBS接続probe、0045でBACKUPS接続probe、0046で期限切れBACKUPS世代削除へ拡張済み。table再構築でも全pending・終端行と凍結guardを保持する。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)が正本。DOの未精算receiptと全epochのD1 pendingを検査し、応答不明・期限切れ・DO storage喪失だけで凍結を確定しない。停止中に既知の実終了をD1へ反映するrepairはあるが、native結果不明の解除は未実装。
 
-**全R2操作の最終終了証明は未完了。** BACKUPS外部CLI保存、epoch履歴などの送信点も個別に確認し、全ての終了条件を集約する必要がある。共通mutation枠の期限、HEAD不在、D1のterminalだけを外部処理終了へ読み替えない。
+**全R2操作の最終終了証明は未完了。** BACKUPS外部CLI保存は[専用DO記録](BACKUP_PUBLICATION_WRITES.md)へ接続済み。epoch履歴とnative結果不明の運用証明など、残る送信点も個別に確認し、全ての終了条件を集約する必要がある。共通mutation枠の期限、HEAD不在、D1のterminalだけを外部処理終了へ読み替えない。
 
 外部I/Oの全終了、新epochの事前予約、復元元の最終確認、実D1上書き後の採用、全監査・段階再開、ControlDO全storage喪失からの復旧、実Cloudflare検証は未完了。現在の`frozen`をD1の手動上書き許可として使わない。

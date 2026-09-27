@@ -1,6 +1,6 @@
 # バックアップの完了記録
 
-更新: 2026-09-25。`ControlDO.completeBackup(epoch, id, manifestSha256)`は、凍結中の世代に対応するR2 manifestと全partを検証し、D1の完了記録と書込み停止の解除を同じbatchで確定する内部RPCである。[専用bindingの運用コマンド](BACKUP_OPERATOR.md)を接続済み。日次実行・保持管理・live復旧は後続。
+更新: 2026-09-28。`ControlDO.completeBackup(epoch, id, manifestSha256)`は、凍結中の世代に対応するR2 manifestと全partを検証し、D1の完了記録と書込み停止の解除を同じbatchで確定する内部RPCである。[専用bindingの運用コマンド](BACKUP_OPERATOR.md)を接続済み。日次実行・保持管理・live復旧は後続。
 
 ## 呼出し元と信頼境界
 
@@ -12,14 +12,14 @@ ControlDOは実際の`BACKUPS` bindingからそのhashのmanifestとpartを読�
 
 ## R2照合と中断後の継続
 
-1. epoch、世代ID、凍結状態とD1のtoken/revision/未解除のexporting行を照合する。
+1. epoch、世代ID、凍結状態とD1のtoken/revision/未解除のexporting行を照合する。[保存PUTのpending](BACKUP_PUBLICATION_WRITES.md)があれば拒否し、D1読取り後もhash固定前に再検査する。hash固定後は新しい保存grantを拒否する。
 2. 世代とmanifest hashをControlDO SQLiteへ固定する。最初の失敗後も別hashへの切替を拒否する。誤ったhashで開始した場合は、完了確定前なら明示的にcancelし、新しい世代を作る。
 3. manifestを最大16MiBで読み、その実SHA-256と共有parserで形式を検証する。generationのID/epoch/token/createdAt/watermark、通常全tableの集合を現行凍結と照合する。
 4. 1回のRPCで最大1part・8MiBを読み、実byte数/SHA-256を検査する。R2要求ごとに本文を含む10秒期限を持ち、遅延応答は完了証明に使わない。同じControlDOインスタンスで同時に複数の検証を走らせず、重複要求にはbusyを返す。
 5. もう一度D1の凍結を確認してから、同じ世代/hash/cursorの条件でSQLiteのcursorを進める。未完了なら`state: verifying`と`partsVerified/partsTotal`を返す。同じ引数で続行する。evictionでcursorやhashを失わない。
 6. 最後のpartを検証したら、後述の完了処理へ進む。遅延したR2/DB応答、cancel後や次世代開始後の要求は現在のtoken・phaseと一致しなければ反映しない。
 
-同じ生成物の再送はR2を書き換えない。既存partの破損や削除を修復した場合も、同じhashとcursorから検証を再開する。R2の外部管理者による削除・置換を将来にわたって禁止するObject Lock保証ではない。
+同じ生成物の再実行は既存R2を読み取り照合する。完了検証のhash固定後は新しいPUTを許可せず、欠落・破損をCLIで書き戻して継続することはできない。未終了PUTがなければcancel後に新しい世代を生成する。R2の外部管理者による削除・置換を将来にわたって禁止するObject Lock保証ではない。
 
 ## 完了と停止解除の原子性
 
@@ -30,6 +30,8 @@ commitの応答を失った場合は、epoch/token/revision・復元先policy・
 migration `0038_backup_completion.sql`は完成済み行の必須receipt形状と、completed/failedのmanifest key/hash/完了時刻の変更禁止を追加する。0037の世代identity、状態遷移と凍結guardを維持する。新しい通常tableは増えない。
 
 `releaseBackup`単独は従来どおり`exporting`を残す。明示的に未検証解除した世代を後からcompleteへ昇格させない。完了済み要求の再照会は現在の保存済み世代だけが対象で、新しい世代開始後の古いcomplete要求は拒否する。履歴は専用bindingの`receipt`で読み取る。
+
+保存PUTのpendingがある間はrelease/cancelも拒否する。正確なGET・CLI再起動・DO eviction・経過時間ではこのholdを解消しない。
 
 ## 検証範囲
 

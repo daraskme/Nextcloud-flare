@@ -9,6 +9,7 @@ import { manifestKey } from "../backup/objectStore.mjs";
 import { runBackup, runDailyBackup } from "../backup/operator.mjs";
 import { publishGeneration } from "../backup/publication.mjs";
 import { fixtureGeneration } from "./fixtures/backup.mjs";
+import { publicationControlFixture } from "./fixtures/backup-writes.mjs";
 
 let directory, artifact, id, control, store, objects, receipt, db, source;
 beforeEach(async () => {
@@ -18,10 +19,11 @@ beforeEach(async () => {
   objects = new Map();
   store = {
     get: vi.fn(async (key) => objects.get(key) ?? null),
-    put: vi.fn(async (key, bytes) => {
-      if (objects.has(key)) return false;
-      objects.set(key, Buffer.from(bytes));
-      return true;
+    put: vi.fn(async (key, bytes, onNativeEnd) => {
+      const created = !objects.has(key);
+      if (created) objects.set(key, Buffer.from(bytes));
+      await onNativeEnd();
+      return created;
     }),
   };
   receipt = {
@@ -35,6 +37,7 @@ beforeEach(async () => {
   };
   let partsVerified = 0;
   control = {
+    ...publicationControlFixture(),
     receipt: vi.fn(async () => receipt),
     begin: vi.fn(async () => ({ id, epoch: 1, state: "frozen" })),
     cancel: vi.fn(),
@@ -198,7 +201,7 @@ it("keeps a lost daily-planning acknowledgement uncertain without starting or ca
   expect(store.put).not.toHaveBeenCalled();
 });
 it("recovers published data after local disk loss without repeating begin or export", async () => {
-  const saved = await publishGeneration({ directory: artifact.directory, store });
+  const saved = await publishGeneration({ directory: artifact.directory, store, control });
   await rm(artifact.directory, { recursive: true });
   const result = await run();
   expect(result).toMatchObject({ state: "completed", manifestSha256: saved.sha256 });
@@ -210,7 +213,7 @@ it("recovers published data after local disk loss without repeating begin or exp
   );
 });
 it("refuses corrupt published data after local disk loss without re-capture or cancellation", async () => {
-  await publishGeneration({ directory: artifact.directory, store });
+  await publishGeneration({ directory: artifact.directory, store, control });
   await rm(artifact.directory, { recursive: true });
   const key = [...objects.keys()].find((key) => key !== manifestKey(id));
   objects.set(key, Buffer.from("corrupt"));
@@ -270,12 +273,14 @@ it("does not report success from a D1 receipt while ControlDO reconciliation sti
   control.complete.mockRejectedValue(new Error("backup_operator_unavailable"));
   await expect(run()).rejects.toThrow("backup_operator_unavailable");
 });
-it("keeps partial publication after failure and does not complete until retry verifies it", async () => {
+it("keeps an unknown native PUT pending and refuses a retry without completing or cancelling", async () => {
   store.put.mockRejectedValueOnce(new Error("offline"));
   await expect(run()).rejects.toThrow("backup_store_write_unknown");
   expect(control.complete).not.toHaveBeenCalled();
   expect(control.cancel).not.toHaveBeenCalled();
-  expect((await run()).state).toBe("completed");
+  await expect(run()).rejects.toThrow("backup_publication_write_unsettled");
+  expect(store.put).toHaveBeenCalledTimes(1);
+  expect(control.complete).not.toHaveBeenCalled();
 });
 it("does not attest a changed SQL artifact", async () => {
   await writeFile(join(artifact.directory, "data.sql"), "INSERT INTO users(id) VALUES('invalid');");

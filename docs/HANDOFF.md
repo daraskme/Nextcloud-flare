@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-27。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-28。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-外部CLIのBACKUPS保存に向け、ControlDOとprivate bindingへ[送信受付・終了記録](BACKUP_PUBLICATION_WRITES.md)を追加しました。凍結世代の全tuple・key/hash/bytesを照合して送信前にpendingを保存し、未終了の間は完了・取消し・解除を拒否します。D1全68tableの凍結を維持し、DO eviction・応答喪失・正確なobject読戻しでもpendingを解消しません。CLI実PUTとの接続は次の工程です。既存14種類のR2記録は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+外部CLIのBACKUPS保存を[送信受付・終了記録](BACKUP_PUBLICATION_WRITES.md)へ接続しました。publish/run/daily/maintainはpart/manifestごとにgrantを取得し、S3またはlocal bindingの実応答だけから終了を記録します。保存前後に未終了試行を照会するため、全objectが既存でもunknownを回避できません。timeout後の実応答は終了記録だけへ反映し、古い保存処理は再開しません。単独publishにもoperator設定が必要です。既存14種類の共通R2記録は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-schema0046・通常68table・依存追加なし。保存受付の新規18件を含むworkerd57件、CLI接続42件、移行fixture15件、型・lint425file・契約/設定・Web build・Worker dry-runとprivate binding運用ドリルが成功。世代削除の先行CIではWindowsのNode1件が失敗し、該当fixtureの秒境界依存を修正しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。Node全1,023件と関連workerd83件、型・lint428file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功。単独publishとdaily/run/maintainの実CLIドリルも成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はBACKUPSの外部CLI保存・epoch履歴を含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み14種類にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はepoch履歴とnative結果不明の運用証明を含めた外部I/O全終了の確認、新epoch予約、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。世代削除は0dbb5a5としてpush済み。[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)のWindows分割1はNode 1,000/1,001件成功・1件失敗で、integrationは未実行です。先行8a093f7はUbuntu・Windows2分割・browserが成功しbackupが実行中、fa8f105は全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。世代削除0dbb5a5は4job成功・Windows分割1の移行fixture失敗で終了し、fixtureは3f2217bで修正済み。8a093f7とfa8f105は全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
@@ -106,7 +106,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 復旧の次の具体的な接続点: ControlDO.recover()はreadyならstatusを返し、bumpEpoch()はD1のbackup_token/frozenを拒否する。論理SQLの隔離復元は生成時のfrozenなcontrol/backup_runsをそのまま保持するため、現状のRPCを単に並べても稼働系復旧にはならない。復旧前の停止・R2処理の収束と、復旧外の永続intent/新epochを先に確保し、選択世代の検証済みidentityと復元後D1を照合する専用接続が必要。凍結をSQLで無条件解除したり、既存完了operationをfailedへ変更したりしない。Time Travelは[公式仕様](https://developers.cloudflare.com/d1/reference/time-travel/)でin-place上書きとin-flight query取消しが明示されている。localはsnapshot復元のドリルで検証し、remoteの実Time Travel成功とは区別する。
 
-最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart全中止・空object PUT・manifest保存/削除・blob/orphan GCの14種類を永続的な送信/終了記録へ接続済み。次はBACKUPS外部CLI保存、epoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
+最終停止の調査結果: D1凍結とsystem/global修復の新規受付拒否を実装済み。RECOVERY_FINAL_QUERYを事前照会と凍結batchの両方で評価するが、namespace/会計の整合性まで要求するため、壊れたD1に対する外部処理終了証明としては代用しない。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart全中止・空object PUT・manifest保存/削除・blob/orphan GCの14種類を永続的な送信/終了記録へ接続済み。BACKUPS外部CLI保存も専用DO記録へ接続済み。次はepoch履歴とKDF終了記録、control_maintenance_tasksも含めて最終停止へ接続する。期限・HEAD不在・通信timeoutだけで未知結果を終了扱いにしない。詳細はDATABASE_RESTORE_FREEZEの残る作業を参照。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

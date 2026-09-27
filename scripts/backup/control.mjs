@@ -43,6 +43,7 @@ export function controlCalls(binding, timeoutMs = 60000) {
     [
       "begin",
       "grantPublicationWrite",
+      "checkPublicationWrites",
       "finishPublicationWrite",
       "complete",
       "cancel",

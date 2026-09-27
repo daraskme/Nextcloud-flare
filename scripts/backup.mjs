@@ -23,11 +23,12 @@ const usage = `Usage:
   pnpm backup capture --config PATH --database DB --local|--remote --id UUID --epoch N --directory PATH [--environment NAME]
   pnpm backup verify --directory GENERATION_PATH
   pnpm backup restore-offline --directory GENERATION_PATH --target NEW_SQLITE_FILE
-  pnpm backup publish --directory GENERATION_PATH --local --config PATH [--environment NAME]
+  pnpm backup publish --operator-config JSON --directory GENERATION_PATH --local --config PATH [--environment NAME]
   pnpm backup download --id UUID --directory GENERATIONS --local --config PATH [--manifest-sha256 HEX]
   publish/download --remote use R2_BACKUP_* environment credentials instead of --local/--config.
 
 capture requires an already-frozen generation from ControlDO.beginBackup. It never releases the barrier.
+publish requires the private operator binding; generation and epoch come from the verified artifact. Unknown PUT results retain the source freeze.
 run begins, captures, verifies, publishes and completes the same explicit generation. Re-run the same arguments after failure; no automatic cancel.
 daily uses a durable server-owned identity and UTC capture day; re-run after failure with the same configuration. A completed day re-verifies stored data.
 health verifies stored SQL generations and the 35-day / minimum-five / daily policy against server time. Exit 0: healthy; 2: unhealthy or incomplete; 1: inspection failed.
@@ -66,7 +67,7 @@ try {
       capture: ["directory", "config", "database", "local", "remote", "id", "epoch", "environment"],
       verify: ["directory"],
       "restore-offline": ["directory", "target"],
-      publish: ["directory", "local", "remote", "config", "environment"],
+      publish: ["directory", "local", "remote", "config", "environment", "operator-config"],
       download: ["directory", "local", "remote", "config", "environment", "id", "manifest-sha256"],
       run: [
         "directory",
@@ -243,17 +244,24 @@ try {
           !!values.local === !!values.remote ||
           (values.local && !values.config) ||
           (values.remote && (values.config || values.environment)) ||
+          (positionals[0] === "publish" && !values["operator-config"]) ||
           (positionals[0] === "download" && !values.id)
         )
           throw new Error("invalid_backup_arguments");
         const store = values.local
           ? await localBackupStore(values.config, values.environment)
           : new S3BackupStore(process.env);
+        let publicationControl;
         try {
+          if (positionals[0] === "publish")
+            publicationControl = await operatorControl(
+              values["operator-config"],
+              values.local ? "local" : "remote",
+            );
           const progress = (event) => console.log(JSON.stringify(event));
           receipt =
             positionals[0] === "publish"
-              ? await publishGeneration({ directory, store, progress })
+              ? await publishGeneration({ directory, store, control: publicationControl, progress })
               : await downloadGeneration({
                   directory,
                   store,
@@ -263,7 +271,11 @@ try {
                 });
           manifest = receipt.manifest;
         } finally {
-          await store.dispose();
+          try {
+            await store.dispose();
+          } finally {
+            await publicationControl?.dispose();
+          }
         }
       } else {
         if (

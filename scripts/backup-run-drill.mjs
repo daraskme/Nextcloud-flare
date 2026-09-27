@@ -264,8 +264,9 @@ try {
   const expired = expiredBackupFixture(),
     store = await localBackupStore(config);
   try {
-    await store.put(expired.partKey, expired.part);
-    await store.put(expired.key, expired.bytes);
+    // Synthetic expired fixtures predate this operator run; there is no live source generation.
+    await store.put(expired.partKey, expired.part, async () => {});
+    await store.put(expired.key, expired.bytes, async () => {});
   } finally {
     await store.dispose();
   }
@@ -301,8 +302,8 @@ try {
   const nextExpired = expiredBackupFixture(),
     nextStore = await localBackupStore(config);
   try {
-    await nextStore.put(nextExpired.partKey, nextExpired.part);
-    await nextStore.put(nextExpired.key, nextExpired.bytes);
+    await nextStore.put(nextExpired.partKey, nextExpired.part, async () => {});
+    await nextStore.put(nextExpired.key, nextExpired.bytes, async () => {});
   } finally {
     await nextStore.dispose();
   }

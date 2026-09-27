@@ -18,6 +18,7 @@ import {
   specs,
   tableDigests,
 } from "../backup/snapshot.mjs";
+import { publicationControlFixture } from "./fixtures/backup-writes.mjs";
 
 let root;
 beforeEach(async () => {
@@ -171,13 +172,18 @@ it("round-trips a historical schema through immutable publication and verified d
     async get(key) {
       return objects.get(key) ?? null;
     },
-    async put(key, bytes) {
-      if (objects.has(key)) return false;
-      objects.set(key, Buffer.from(bytes));
-      return true;
+    async put(key, bytes, onNativeEnd) {
+      const created = !objects.has(key);
+      if (created) objects.set(key, Buffer.from(bytes));
+      await onNativeEnd();
+      return created;
     },
   };
-  const published = await publishGeneration({ directory: root, store });
+  const published = await publishGeneration({
+    directory: root,
+    store,
+    control: publicationControlFixture(),
+  });
   const downloaded = await downloadGeneration({
     directory: join(root, "download"),
     id: manifest.generation.id,

@@ -14,6 +14,7 @@ import {
 import { manifestKey } from "../backup/objectStore.mjs";
 import { publishGeneration } from "../backup/publication.mjs";
 import { fixtureGeneration } from "./fixtures/backup.mjs";
+import { publicationControlFixture } from "./fixtures/backup-writes.mjs";
 
 const day = 86400000,
   now = Date.UTC(2026, 8, 25, 12);
@@ -223,17 +224,22 @@ it("verifies five real stored SQL generations and excludes a corrupted part on t
   const objects = new Map();
   const store = {
     get: async (key) => objects.get(key) ?? null,
-    put: async (key, bytes) => {
-      if (objects.has(key)) return false;
-      objects.set(key, Buffer.from(bytes));
-      return true;
+    put: async (key, bytes, onNativeEnd) => {
+      const created = !objects.has(key);
+      if (created) objects.set(key, Buffer.from(bytes));
+      await onNativeEnd();
+      return created;
     },
   };
   try {
     rows = [];
     for (let i = 0; i < 5; i++) {
       const artifact = await fixtureGeneration(join(root, String(i)));
-      const publication = await publishGeneration({ directory: artifact.directory, store });
+      const publication = await publishGeneration({
+        directory: artifact.directory,
+        store,
+        control: publicationControlFixture(),
+      });
       const { id, epoch, createdAt } = artifact.manifest.generation;
       rows.push({
         id,

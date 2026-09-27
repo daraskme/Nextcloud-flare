@@ -13,6 +13,7 @@ import {
   manifestKey,
   partKey,
 } from "./objectStore.mjs";
+import { checkPublicationWrites, trackedPublicationPut } from "./publicationWrite.mjs";
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -64,26 +65,23 @@ export async function* fileChunks(handle, size, chunkSize = CHUNK_BYTES) {
     offset += chunk.length;
   }
 }
-export async function ensureObject(store, key, bytes) {
+export async function ensureObject(store, key, bytes, control, generation) {
   const existing = await store.get(key, bytes.length);
   if (existing !== null) {
     if (!Buffer.from(existing).equals(bytes)) throw new Error("backup_object_conflict");
     return;
   }
-  try {
-    await store.put(key, bytes);
-  } catch {
-    /* A lost ACK can only be reconciled by the exact object. */
-  }
+  await trackedPublicationPut(store, control, generation, key, bytes);
   const observed = await store.get(key, bytes.length);
   if (observed === null) throw new Error("backup_store_write_unknown");
   if (!Buffer.from(observed).equals(bytes)) throw new Error("backup_object_conflict");
 }
 
 /** The manifest is committed only after every immutable part and the whole SQL hash are verified. */
-export async function publishGeneration({ directory, store, progress = () => {} }) {
+export async function publishGeneration({ directory, store, control, progress = () => {} }) {
   const manifest = await verifyGeneration(directory);
   manifestShape(manifest);
+  await checkPublicationWrites(control, manifest.generation);
   const id = generationId(manifest.generation.id),
     key = manifestKey(id);
   const existing = await store.get(key, MAX_MANIFEST_BYTES);
@@ -101,7 +99,13 @@ export async function publishGeneration({ directory, store, progress = () => {} 
     for await (const bytes of fileChunks(handle, before.size)) {
       hash.update(bytes);
       const part = { bytes: bytes.length, sha256: digest(bytes) };
-      await ensureObject(store, partKey(id, parts.length, part.sha256), bytes);
+      await ensureObject(
+        store,
+        partKey(id, parts.length, part.sha256),
+        bytes,
+        control,
+        manifest.generation,
+      );
       parts.push(part);
       progress({ stage: "part_verified", parts: parts.length });
     }
@@ -122,7 +126,8 @@ export async function publishGeneration({ directory, store, progress = () => {} 
     const bytes = encode(publication);
     if (bytes.length > MAX_MANIFEST_BYTES) throw new Error("backup_manifest_size");
     readPublication(bytes, id);
-    await ensureObject(store, key, bytes);
+    await ensureObject(store, key, bytes, control, manifest.generation);
+    await checkPublicationWrites(control, manifest.generation);
     return { id, manifest, key, sha256: digest(bytes), bytes: bytes.length, parts: parts.length };
   } finally {
     await handle.close();

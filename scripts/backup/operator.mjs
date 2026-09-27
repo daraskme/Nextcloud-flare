@@ -189,7 +189,7 @@ export async function runBackup({
       progress: (stage) => progress({ stage }),
     });
   }
-  const publication = await publishGeneration({ directory: artifact, store, progress });
+  const publication = await publishGeneration({ directory: artifact, store, control, progress });
   let verified = 0;
   for (let calls = 0; calls <= publication.parts; calls++) {
     const result = await control.complete(epoch, id, publication.sha256);

@@ -1,15 +1,26 @@
 # 実装進捗
 
-更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-世代削除0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)ではWindows分割1がNode 1,000/1,001件成功・1件失敗で、integrationは未実行。失敗fixtureは今回修正した。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)はUbuntu・Windows2分割・browserが成功、backupが実行中。今回の全体check/CIとは分けて扱う。
+先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
 先行fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。
 
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- 外部CLIのpublish/run/daily/maintainを保存grantとnative終了記録へ接続。単独publishにもoperator descriptorを必須化。S3 HTTP 200/412、local binding PUTの成功だけから終了を記録し、正確なGETやtimeoutではunknownを解消しない。保存前後のprivate照会で全object既存の場合の再実行も保護する。
+- 新規Node22ケースを追加し、全1,023件（54file、46.97s）が成功。S3/local bindingの成功・条件競合・例外・timeout後の実応答、grant RPC応答喪失と遅延、grant項目不一致、終了RPC応答喪失、callback欠落、単独publishの必須設定を確認。既存publication/operator試験も未知結果を保持する契約へ更新。/tmp/ncf-cli-publication-unit.log。
+- 保存照会の新規workerd1ケースと既存receipt試験の照会assertionを追加。保存受付・完了・barrier・dailyの4file/83件が成功（50.08s）。/tmp/ncf-cli-publication-worker.log。
+- 型・lint428file・契約/設定・Web build・Worker dry-runが成功。/tmp/ncf-cli-publication-type.log、/tmp/ncf-cli-publication-build.log。
+- private binding運用ドリルが68table・SQL11,350bytesで成功。実際のbinding storeからnative終了callbackを使い、日次生成・4補充・保持判定・回収と復旧照合を確認。保存の3操作は環境不一致・capabilityなし・無効化した接続からの拒否も確認。S3/Time Travel応答は合成provider。/tmp/ncf-cli-publication-operator.log、.wrangler/operator-drill-8WjF9f/report.json。
+- 単独publishの実CLIドリルを実ControlDO begin/private bindingへ更新し、68table・SQL9,829bytesで成功。capture→verify→publish→download→restore-offline、条件付きPUT不成立の終了、FTS/会計/FK/Unicode/NULと元D1の凍結保持を確認。/tmp/ncf-cli-publication-drill.log、.wrangler/backup-drill-2eRRhG/report.json。Wrangler proxyの未export DO警告を含むが、実対象Workerのprivate RPCと全assertion・終了コードは成功。
+- daily/run/maintainの別CLIドリルも成功（SQL9,107bytes）。実getPlatformProxyと別CLIプロセスで初回保存・同世代再実行・隔離復元・保持期間内削除拒否・期限切れ削除、4補充による5世代保持、monitor、sweep、restore prepare/verify/verify-d1/inspect/cancelを確認。期待する拒否経路のworkerdログとproxy警告を含むが、全assertion・終了コードは成功。/tmp/ncf-cli-publication-run-drill.log、.wrangler/backup-run-drill-DiYjqN/report.json。
+- schema0046・通常68table・依存追加なし。native結果不明の運用証明、epoch履歴の記録、新epoch予約・live採用は後続。remote resource作成・migration・deployなし。
+
+### 先行する保存受付API
 
 - [バックアップ保存の送信受付](BACKUP_PUBLICATION_WRITES.md)をControlDOとprivate BackupOperatorへ追加。全D1凍結中のためDO SQLiteに記録し、既存backup_tokenで停止を保持する。正確な世代tuple・key/hash/bytes、単一pending、同UUIDの再送拒否、終了token照合、完了検証・解除との競合拒否を実装。CLI実PUTへの接続は後続。migration0046・68tableのまま、依存追加なし。
 - 新規workerd18件を含む保存受付・backup完了・barrierの3file/57件が成功（37.82s）。全68table不変、実PUT後の終了、正確な読戻しでunknownを解消しないこと、grant応答喪失・eviction・並行受付・次世代への古い終了要求・D1読取り後の競合を確認。/tmp/ncf-backup-publication-grants-worker.log。

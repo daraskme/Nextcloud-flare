@@ -15,6 +15,7 @@ const config = {
 };
 const id = "12345678-1234-1234-1234-123456789012",
   key = manifestKey(id);
+const nativeEnded = async () => {};
 describe("R2 backup S3 transport", () => {
   it("signs exact conditional PUT bytes with private endpoint, length and checksums", async () => {
     const bytes = Buffer.from("export"),
@@ -31,7 +32,7 @@ describe("R2 backup S3 transport", () => {
         expect(Buffer.from(await request.arrayBuffer())).toEqual(bytes);
         return new Response("");
       });
-    expect(await new S3BackupStore(config, { fetch }).put(key, bytes)).toBe(true);
+    expect(await new S3BackupStore(config, { fetch }).put(key, bytes, nativeEnded)).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
   it.each([301, 302, 403, 429, 500, 503])(
@@ -61,12 +62,13 @@ describe("R2 backup S3 transport", () => {
     expect(
       await new S3BackupStore(config, {
         fetch: async () => new Response(null, { status: 412 }),
-      }).put(key, Buffer.from("x")),
+      }).put(key, Buffer.from("x"), nativeEnded),
     ).toBe(false);
     await expect(
       new S3BackupStore(config, { fetch: async () => new Response(null, { status: 404 }) }).put(
         key,
         Buffer.from("x"),
+        nativeEnded,
       ),
     ).rejects.toThrow("backup_store_http_404");
   });
@@ -101,7 +103,7 @@ describe("R2 backup S3 transport", () => {
       bytes = Buffer.alloc(CHUNK_BYTES + 1);
     expect(() => store.put(partKey(id, 0, digest(bytes)), bytes)).toThrow("backup_object_size");
     expect(fetch).not.toHaveBeenCalled();
-    expect(await store.put(key, bytes)).toBe(true);
+    expect(await store.put(key, bytes, nativeEnded)).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
   it.each(["declared", "streamed", "truncated"])("bounds %s object bodies", async (kind) => {

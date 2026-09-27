@@ -1,14 +1,14 @@
 # 現在の実装状態
 
-更新: 2026-09-27。直近の到達点は[PROGRESS](PROGRESS.md)。
+更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-外部CLIのBACKUPS保存に向け、ControlDOとprivate bindingへ[送信受付・終了記録](BACKUP_PUBLICATION_WRITES.md)を追加しました。凍結世代の全tuple・key/hash/bytesを照合して送信前にpendingを保存し、未終了の間は完了・取消し・解除を拒否します。D1全68tableの凍結を維持し、DO eviction・応答喪失・正確なobject読戻しでもpendingを解消しません。CLI実PUTとの接続は次の工程です。既存14種類のR2記録は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
+外部CLIのBACKUPS保存を[送信受付・終了記録](BACKUP_PUBLICATION_WRITES.md)へ接続しました。publish/run/daily/maintainはpart/manifestごとにgrantを取得し、S3またはlocal bindingの実応答だけから終了を記録します。保存前後に未終了試行を照会するため、全objectが既存でもunknownを回避できません。timeout後の実応答は終了記録だけへ反映し、古い保存処理は再開しません。単独publishにもoperator設定が必要です。既存14種類の共通R2記録は[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)。
 
-schema0046・通常68table・依存追加なし。保存受付の新規18件を含むworkerd57件、CLI接続42件、移行fixture15件、型・lint425file・契約/設定・Web build・Worker dry-runとprivate binding運用ドリルが成功。世代削除の先行CIではWindowsのNode1件が失敗し、該当fixtureの秒境界依存を修正しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。Node全1,023件と関連workerd83件、型・lint428file・契約/設定・Web build・Worker dry-run、private binding運用ドリルが成功。単独publishとdaily/run/maintainの実CLIドリルも成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次はBACKUPSの外部CLI保存・epoch履歴を含めた外部I/O全終了の証明、新epoch予約、実D1上書き後の採用・全監査・段階再開です。記録済み14種類にもnative結果不明を解消する運用証明は残ります。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次はepoch履歴とnative結果不明の運用証明を含めた外部I/O全終了の確認、新epoch予約、実D1上書き後の採用・全監査・段階再開です。現在の凍結だけでD1上書きは開始できません。通知先・timer設置、全storage喪失、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。世代削除は0dbb5a5としてpush済み。[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)のWindows分割1はNode 1,000/1,001件成功・1件失敗で、integrationは未実行です。先行8a093f7はUbuntu・Windows2分割・browserが成功しbackupが実行中、fa8f105は全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。世代削除0dbb5a5は4job成功・Windows分割1の移行fixture失敗で終了し、fixtureは3f2217bで修正済み。8a093f7とfa8f105は全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,7 +26,7 @@ schema0046・通常68table・依存追加なし。保存受付の新規18件を�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | native結果不明の運用収束とBACKUPS外部CLI保存・epoch履歴の最終停止統合は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
+| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存は専用DO記録へ接続済み。native結果不明の運用収束とepoch履歴の最終停止統合は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
 | 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否を追加。13操作のprivate bindingドリル成功 | 全外部I/Oの終了証明・新epoch予約・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
 | 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
 | 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
@@ -46,7 +46,7 @@ schema0046・通常68table・依存追加なし。保存受付の新規18件を�
 | バックアップ用GC保護 | migration0039・35日猶予・最後の参照による延長・WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 | 35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。過去schemaは0037以降の信頼済みmigration列だけを受け付けます。追加データ形式、定時起動、Time Travel・live復旧・全storage喪失からの運用復旧とremote検証は未完了です。 |
 | バックアップ運用コマンド | 専用capability、run/receipt/cancel、再実行と失敗時の停止維持 | Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。 | 専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。定時起動、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
 | バックアップ完了記録 | 内部completeBackup、R2実体/cursor照合、D1 receiptと元policyへの原子的復帰、migration0038 | Node22件・workerd18件を追加し、全体checkが成功しました。Node527件（32file、14.22s）・workerd2,009件（95file、1,085.53s）、計2,536件を検証しています。lint335file・型・契約/設定検査・Web build・Worker dry-runも成功。schema0038で実CLIのcapture→verify→local R2 publish→download→restore-offlineが67table・SQL9,599bytesで成功しました。今回commitのCI/browserはプッシュ後に確認します。 | completeBackupは内部RPCです。SQL/source/schema/FK/FTSの全検証は信頼された生成コマンドが担い、ControlDOはそのhashでR2実体を再検査します。利用者が指定したhashを転送する公開APIは追加していません。remote運用の認証・権限検証、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
-| バックアップR2保存・取得 | 条件付きpart保存、manifest最終確定、応答喪失照合、download後の全検証 | 実CLI/local R2の保存・取得・隔離復元。8MiB超の複数part、再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験 | 保存対象はD1の論理SQL。remoteの運用接続検証、BLOBS本体の独立保管、定時起動・live復旧は後続。remote S3は実装済み・実環境未検証。 |
+| バックアップR2保存・取得 | 条件付きpart保存、manifest最終確定、native終了記録、unknown保持、download後の全検証 | 実CLI/local R2の保存・取得・隔離復元。8MiB超の複数part、再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験 | 保存対象はD1の論理SQL。remoteの運用接続検証、BLOBS本体の独立保管、定時起動・live復旧は後続。remote S3は実装済み・実環境未検証。 |
 | バックアップ世代・オフライン復元 | 実Wrangler抽出、全行/hash/schema/FK/FTS照合、ローカル世代保存、新規DB復元 | schema0038・全67tableの実CLIドリルで元DBの凍結保持、容量、FTS検索を確認。欠落/内容変化、不正SQL、checksum不一致、既存出力保護、UTF-8/文上限を試験 | 旧version/全データ形式の互換性、Time Travel・live restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続。 |
 | バックアップ書込み停止 | 専用永続intent、全通常table凍結、watermark、元policyへの原子的復帰 | 全table guard、旧schema移行、確定順序、ACK/primary喪失、遅延開始/解除、全storage喪失、rollback。実ControlDOの完了記録は上記の通り検証 | 内部RPCとCLIを認証付き運用処理で接続する一連のドリル、停止中の全ControlDO喪失からの運用復旧は後続。 |
 | DAVの転送と公開の分離 | 本文後のfresh30秒permit、開始受付、未結合記録の回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
@@ -179,7 +179,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. 外部I/Oの終了記録を最終停止へ集約。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart・空ファイル・manifest・GCの14種類は接続済み。次はBACKUPS外部CLI保存、epoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
+1. 外部I/Oの終了記録を最終停止へ集約。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart・空ファイル・manifest・GCの14種類は接続済み。外部CLI保存も専用記録へ接続済み。次はepoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
 2. 復旧要求に固定した新epoch事前予約、実D1復元後の採用・全監査・段階再開、Time Travel/live restore drill。
 3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
 4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。

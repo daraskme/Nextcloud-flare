@@ -510,6 +510,14 @@ export class ControlDO extends DurableObject<Env> {
     return this.#backup.grantPublicationWrite(expectedEpoch, id, request);
   }
 
+  async checkBackupPublicationWrites(
+    expectedEpoch: number,
+    id: string,
+    generation: Parameters<ControlBackup["checkPublicationWrites"]>[2],
+  ) {
+    return this.#backup.checkPublicationWrites(expectedEpoch, id, generation);
+  }
+
   async finishBackupPublicationWrite(
     expectedEpoch: number,
     id: string,

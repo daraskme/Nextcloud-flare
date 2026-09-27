@@ -1,4 +1,4 @@
-import { backupManifestKey } from "../../../shared/src/backupPublication";
+import { type BackupGeneration, backupManifestKey } from "../../../shared/src/backupPublication";
 import {
   type BackupPublicationWrite,
   type BackupPublicationWriteGrant,
@@ -186,6 +186,26 @@ export class ControlBackup {
     if (!(await this.#prepared(row!, true))) throw new Error("backup_not_frozen");
     current();
     return new ControlBackupWrites(this.storage.sql).grant(request);
+  }
+
+  /** Read-only fence for a restarted exporter, including when all objects already exist. */
+  checkPublicationWrites(epoch: number, id: string, generation: BackupGeneration) {
+    this.#identity(epoch, id);
+    const row = this.#row();
+    if (
+      !generation ||
+      Object.keys(generation).sort().join(",") !== "createdAt,epoch,id,token,watermark" ||
+      row?.id !== id ||
+      row.epoch !== epoch ||
+      generation.id !== row.id ||
+      generation.epoch !== row.epoch ||
+      generation.token !== row.token ||
+      generation.createdAt !== row.created_at ||
+      generation.watermark !== row.watermark
+    )
+      throw new Error("backup_generation_conflict");
+    assertBackupWritesSettled(this.storage.sql);
+    return { id, epoch, state: "settled" as const };
   }
 
   /** Private exporter attestation of actual PUT completion; readback/timeout is never evidence. */

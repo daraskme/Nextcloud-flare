@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { backupManifestKey } from "../../../shared/src/backupPublication";
+import { type BackupGeneration, backupManifestKey } from "../../../shared/src/backupPublication";
 import type {
   BackupPublicationWrite,
   BackupPublicationWriteGrant,
@@ -45,6 +45,9 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
   }
   grantPublicationWrite(epoch: number, id: string, request: BackupPublicationWrite) {
     return this.#control(epoch, id).grantBackupPublicationWrite(epoch, id, request);
+  }
+  checkPublicationWrites(epoch: number, id: string, generation: BackupGeneration) {
+    return this.#control(epoch, id).checkBackupPublicationWrites(epoch, id, generation);
   }
   finishPublicationWrite(epoch: number, id: string, grant: BackupPublicationWriteGrant) {
     return this.#control(epoch, id).finishBackupPublicationWrite(epoch, id, grant);

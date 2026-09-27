@@ -12,13 +12,15 @@ import {
   publishGeneration,
 } from "../backup/publication.mjs";
 import { fixtureGeneration } from "./fixtures/backup.mjs";
+import { publicationControlFixture } from "./fixtures/backup-writes.mjs";
 
-let directory, artifact, store, objects, events;
+let directory, artifact, store, objects, events, control;
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "publication-test-"));
   artifact = await fixtureGeneration(join(directory, "source"));
   objects = new Map();
   events = [];
+  control = publicationControlFixture();
   store = {
     get: async (key, limit) => {
       events.push(["get", key]);
@@ -26,18 +28,19 @@ beforeEach(async () => {
       if (value && value.length > limit) throw new Error("backup_object_size");
       return value ? Buffer.from(value) : null;
     },
-    put: async (key, value) => {
+    put: async (key, value, onNativeEnd) => {
       events.push(["put", key]);
-      if (objects.has(key)) return false;
-      objects.set(key, Buffer.from(value));
-      return true;
+      const created = !objects.has(key);
+      if (created) objects.set(key, Buffer.from(value));
+      await onNativeEnd();
+      return created;
     },
   };
 });
 afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
-const publish = () => publishGeneration({ directory: artifact.directory, store });
+const publish = () => publishGeneration({ directory: artifact.directory, store, control });
 const download = (extra = {}) =>
   downloadGeneration({
     directory: join(directory, "download"),
@@ -67,15 +70,21 @@ it("repeated publication reads back all objects without overwriting them", async
   expect(objects).toEqual(saved);
 });
 it.each(["part", "manifest"])(
-  "reconciles a lost %s PUT acknowledgement only from matching bytes",
+  "retains a lost %s PUT acknowledgement even when the exact bytes are readable",
   async (kind) => {
     const put = store.put;
-    store.put = async (key, value) => {
-      await put(key, value);
-      if (key.endsWith("manifest.json") === (kind === "manifest")) throw new Error("lost_ack");
+    store.put = async (key, value, onNativeEnd) => {
+      if (key.endsWith("manifest.json") === (kind === "manifest")) {
+        await put(key, value, async () => {});
+        throw new Error("lost_ack");
+      }
+      return put(key, value, onNativeEnd);
     };
-    const receipt = await publish();
-    expect(objects.has(receipt.key)).toBe(true);
+    await expect(publish()).rejects.toThrow("backup_store_write_unknown");
+    const puts = events.filter(([kind]) => kind === "put").length;
+    await expect(publish()).rejects.toThrow("backup_publication_write_unsettled");
+    expect(events.filter(([kind]) => kind === "put")).toHaveLength(puts);
+    expect(objects.has(manifestKey(artifact.manifest.generation.id))).toBe(kind === "manifest");
   },
 );
 it("retains partial immutable objects on read failure and resumes without writing that part twice", async () => {
@@ -115,8 +124,8 @@ it("rejects an invalid local generation before any R2 request", async () => {
 });
 it("does not commit when the local SQL changes during upload", async () => {
   const put = store.put;
-  store.put = async (key, bytes) => {
-    const result = await put(key, bytes);
+  store.put = async (key, bytes, onNativeEnd) => {
+    const result = await put(key, bytes, onNativeEnd);
     await writeFile(join(artifact.directory, "data.sql"), "changed");
     return result;
   };
@@ -132,7 +141,7 @@ it("concurrent publications with different manifests cannot replace the winning 
   );
   const results = await Promise.allSettled([
     publish(),
-    publishGeneration({ directory: other, store }),
+    publishGeneration({ directory: other, store, control }),
   ]);
   expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
   expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);

@@ -7,7 +7,7 @@ Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node
 
 単一/DAV PUT・multipart作成/part/完了/全中止・空ファイルPUT・target manifest PUT/DELETE・blob/orphan GCのDELETEを、ControlDOのSQLiteと68番目の通常table `r2_write_attempts`へ送信前から記録する。grantは5秒以内・一度限り。uploadは元のattempt/leaseと現在認可、abortはclaim/handleとbinding proof等を再検査する。GCは元の固定期限・復元pause期限を維持する。共通mutationの直接ACK後に送信し、native実成功または確実な未送信だけを終端事実として保存する。grant待機は25秒、upload送信後は元の最大15分leaseまで。R2例外、timeout、HEAD不在、lease満了、evictionでpendingを解消しない。
 
-DO receiptと全epochのD1 pendingを凍結・監査・再開へ接続し、対象keyのblob/orphan GC再claimとdeleted精算、upload予約解放とcleanup完了を禁止する。停止中のrepairは既知の終端事実だけを再反映する。0042〜0046のtable再構築は期限切れpendingも全行保持する。0043のsource_refは元のupload/attemptまたはabort claim/handleを束縛し、新しいgrant UUIDでも同じ元試行の二重送信を拒否する。backup/restore freeze guard、オフライン復元時のpending保持と過去世代互換性を維持する。BACKUPS外部CLI保存・epoch履歴を含む最終I/O停止は別途必要。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を正本とする。
+DO receiptと全epochのD1 pendingを凍結・監査・再開へ接続し、対象keyのblob/orphan GC再claimとdeleted精算、upload予約解放とcleanup完了を禁止する。停止中のrepairは既知の終端事実だけを再反映する。0042〜0046のtable再構築は期限切れpendingも全行保持する。0043のsource_refは元のupload/attemptまたはabort claim/handleを束縛し、新しいgrant UUIDでも同じ元試行の二重送信を拒否する。backup/restore freeze guard、オフライン復元時のpending保持と過去世代互換性を維持する。BACKUPS外部CLI保存は全D1凍結を保つ専用DO記録へ接続済み。[BACKUP_PUBLICATION_WRITES](BACKUP_PUBLICATION_WRITES.md)を参照。epoch履歴・native不明の運用証明を含む最終I/O停止は別途必要。[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)を正本とする。
 
 0046で期限切れBACKUPSの部品batch/manifest DELETEも接続した。世代全tuple/hash、元の停止mode/revision/tokenと1〜20個の正確なkeyを固定し、送信・終了を共有台帳に記録する。同じ世代のpendingがあれば追加削除とabsent確定を拒否する。prune/sweep双方へ接続し、35日保持・10秒I/O・25秒全体期限を維持した。
 

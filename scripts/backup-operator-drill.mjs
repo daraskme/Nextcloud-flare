@@ -23,7 +23,7 @@ const { verifyRestoreBookmark } = await moduleAt("scripts/restore/bookmark.mjs")
 const { verifyRestoreBlobs } = await moduleAt("scripts/restore/blobs.mjs");
 const { verifyRestoreBindings } = await moduleAt("scripts/restore/bindings.mjs");
 const { freezeRestoreDatabase } = await moduleAt("scripts/restore/freeze.mjs");
-const { S3BackupStore } = await moduleAt("scripts/backup/objectStore.mjs");
+const { S3BackupStore, bindingBackupStore } = await moduleAt("scripts/backup/objectStore.mjs");
 const { RESTORE_BACKUPS_PROBE_KEY } = await moduleAt("packages/shared/src/restoreBackups.ts");
 const { RESTORE_D1_QUERY } = await moduleAt("packages/shared/src/restoreTarget.ts");
 const { exportData } = await moduleAt("scripts/backup/export.mjs");
@@ -218,6 +218,7 @@ try {
     for (const method of [
       "begin",
       "grantPublicationWrite",
+      "checkPublicationWrites",
       "finishPublicationWrite",
       "complete",
       "cancel",
@@ -241,22 +242,7 @@ try {
     query,
     export: (output, tableSpecs) => exportData(output, tableSpecs, query),
   };
-  const store = {
-    async get(key, limit) {
-      const object = await env.BACKUPS.get(key);
-      if (object === null) return null;
-      assert.ok(object.size <= limit);
-      const bytes = Buffer.from(await object.arrayBuffer());
-      assert.equal(bytes.length, object.size);
-      return bytes;
-    },
-    async put(key, bytes) {
-      return (
-        (await env.BACKUPS.put(key, bytes, { onlyIf: new Headers({ "If-None-Match": "*" }) })) !==
-        null
-      );
-    },
-  };
+  const store = bindingBackupStore(env.BACKUPS);
   const run = () =>
     runBackup({
       directory: join(directory, "generations"),

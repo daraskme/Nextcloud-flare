@@ -1,6 +1,6 @@
 # ファイル保存・multipart・配信manifest・GCのR2書込み記録
 
-更新: 2026-09-27。migration `0041`〜`0046`、通常68table。期限切れBACKUPS世代のDELETE・BLOBS/BACKUPS接続probe・空ファイルPUT・単一/DAV PUT・multipart作成/part/完了/中止・target manifest PUT/DELETE・blob/orphan GCのDELETEを送信前から記録し、結果不明のまま復旧凍結・受付再開・対象GCへ進むことを防ぐ。
+更新: 2026-09-28。migration `0041`〜`0046`、通常68table。期限切れBACKUPS世代のDELETE・BLOBS/BACKUPS接続probe・空ファイルPUT・単一/DAV PUT・multipart作成/part/完了/中止・target manifest PUT/DELETE・blob/orphan GCのDELETEを送信前から記録し、結果不明のまま復旧凍結・受付再開・対象GCへ進むことを防ぐ。
 
 ## 接続した送信点
 
@@ -64,18 +64,18 @@ migrationはmaintenance中、backup/restore freezeなし、open permit・claimed
 
 ## 残る境界
 
-外部CLI保存に向けた[専用送信受付](BACKUP_PUBLICATION_WRITES.md)をControlDOとprivate bindingへ追加した。D1全table凍結中もDO側にpendingを保持し、完了・解除・取消しを拒否する。実際のCLI PUTからこの受付を呼ぶ接続は後続であり、下記の既存送信点はまだ未統合。
+外部CLIのpart/manifest保存も[専用送信受付](BACKUP_PUBLICATION_WRITES.md)へ接続した。D1全table凍結中はDO側にpendingを保持し、既存backup_tokenで全体を停止する。S3の200/412またはlocal binding PUTの実終了後だけ終了を記録し、未終了の間は完了・解除・取消しを拒否する。単独publishにもprivate operator設定が必要。
 
-この記録は上記14種類が対象。BACKUPSの外部CLI保存、epoch履歴などを含む全R2処理の最終終了証明はまだ統合していない。native結果自体が不明な試行を解消する運用証明も未実装。
+共通DO/D1記録は上記14種類が対象で、凍結中のCLI保存は専用DO記録を使う。epoch履歴などを含む全R2処理の最終終了証明はまだ統合していない。native結果自体が不明な試行を解消する運用証明も未実装。
 
 最終停止への次の確認点は以下。通常の運用上の収束条件と、DB巻戻し前のnative終了証明を区別する。
 
 | 既存の送信点 | コードで確認した境界 | 復元前に追加確認すること |
 |---|---|---|
-| `scripts/backup/publication.mjs` / `scripts/backup/objectStore.mjs` | part/manifestを固定key・hashで照合する。CLIの保存は元D1を凍結してから開始し、PUT応答喪失後も正確なobjectを読めれば保存済みとして進める | 凍結中はr2_write_attemptsとmutation_admissionsも更新できない。全table凍結を維持した外部の送信・終了証明を追加し、objectの一致を過去のnative終了へ読み替えない |
+| `scripts/backup/publication.mjs` / `scripts/backup/objectStore.mjs` | 元の世代tuple・key/hash/bytesのgrant後に一度だけPUTし、元のnative応答から終了を記録する。保存前後の照会により全keyが既存でもunknownを回避できない | native結果不明の運用証明と、記録導入前の旧CLI処理終了確認は未実装。読戻しや再起動でpendingを消さない |
 | `do/epochHistory.ts` | 新epochの履歴は条件付きPUTと正確なrecord照合で作る | 復旧要求に固定した事前予約と復元後のD1採用を分離し、遅延した古い発行を拒否する |
 
-外部CLI保存の次の確認点は、D1凍結中に許可をどう保持するか、CLI終了・応答喪失後にどの永続記録で解除を拒否するか、遅れて返った実応答をどこで保存するか。S3BackupStoreは自動retryを無効にしているが、現在のtimeoutはAbortSignalとPromise.raceであり、外部PUT終了の証明ではない。
+S3BackupStoreは自動retryを無効にし、timeout後の実応答は終了記録だけへ反映する。AbortSignalとPromise.raceは外部PUT終了の証明ではなく、CLI停止や終了記録失敗ではpendingを保持する。
 
 uploadでは短い送信開始許可、nativeの終了事実、本文/hash検証、公開の認可を元のattemptへ対応させた。結果不明の運用上の解消と、未知multipart全体の閉鎖・容量精算は別途必要。
 

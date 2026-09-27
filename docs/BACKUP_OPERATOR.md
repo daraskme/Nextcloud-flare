@@ -1,10 +1,10 @@
 # バックアップ運用コマンド
 
-更新: 2026-09-25。`pnpm backup daily`がサーバーで管理する日次世代、`pnpm backup run`が明示した世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。`health`は[保持判定と健全性検査](BACKUP_RETENTION.md)を実行する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。期限切れ世代の自動回収は[sweep](BACKUP_SWEEP.md)に接続済み。定時起動の設置・live restoreは別工程。
+更新: 2026-09-28。`pnpm backup daily`がサーバーで管理する日次世代、`pnpm backup run`が明示した世代の開始→抽出→SQL検証→R2保存→完了記録を実行する。`receipt`は履歴照会、`cancel`は明示的な中止である。`health`は[保持判定と健全性検査](BACKUP_RETENTION.md)を実行する。元BLOBSの削除猶予は[GC保護](BACKUP_GC_PROTECTION.md)を参照。期限切れ世代の自動回収は[sweep](BACKUP_SWEEP.md)に接続済み。定時起動の設置・live restoreは別工程。
 
 ## 呼出し権限
 
-`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt/inventory/replenish/prune/sweep`と`grantPublicationWrite/finishPublicationWrite`を公開する。新しい2操作は[保存送信の受付・終了記録](BACKUP_PUBLICATION_WRITES.md)で、CLI実PUTとの接続は後続。inventoryは読取り専用、pruneは[期限切れの指定世代を回収](BACKUP_PRUNING.md)し、sweepは永続cursorを使って全世代を走査する。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
+`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt/inventory/replenish/prune/sweep`と`checkPublicationWrites/grantPublicationWrite/finishPublicationWrite`を公開する。保存の3操作は[CLI実PUTの受付・終了記録](BACKUP_PUBLICATION_WRITES.md)。inventoryは読取り専用、pruneは[期限切れの指定世代を回収](BACKUP_PRUNING.md)し、sweepは永続cursorを使って全世代を走査する。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
 
 呼出し元が持つ専用service bindingをcapabilityとして扱う。[Cloudflare RPCの権限モデル](https://developers.cloudflare.com/workers/runtime-apis/rpc/visibility/)と[named entrypoint](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/#named-entrypoints)に従い、bindingの付与を運用者に限定する。target側は`BACKUP_OPERATOR_ENABLED=true`を明示した場合だけ受け付け、bindingの`ctx.props.purpose=logical-backup-v1`と`ctx.props.environment=ENVIRONMENT`を全操作で検査する。propsは秘密鍵ではなく、環境inventoryに含むbinding設定である。このcapabilityを未信頼Workerへ渡したり、利用者入力をそのまま転送するHTTP窓口を作ったりしてはならない。
 
@@ -40,6 +40,8 @@ remote descriptorは`{"service":"<対象Worker名>","environment":"production","
 - captureの排他lockは通常終了/例外時に削除される。プロセスの強制終了で残った`<UUID>.lock`は、同じ世代の実行者が終了したと確認してから運用者が除去する。タイムアウトだけでlockを自動回収しない。
 
 manifest hashの証言とControlDOの完了判定は[BACKUP_COMPLETION](BACKUP_COMPLETION.md)を参照。保存完了はBLOBS本体の保護やlive復旧の完了を意味しない。
+
+PUTの応答喪失・timeoutでは`backup_store_write_unknown`となり、未終了のgrantを保持する。同じ世代を再実行してobjectが一致しても解除できず、`backup_publication_write_unsettled`で停止する。終了RPCの応答だけを失いサーバーには終了済みなら、再照会後に同じ世代を進められる。native結果が不明なままのcancel/thawは提供しない。単独publishも`--operator-config`を必須とする。
 
 ## 日次実行
 

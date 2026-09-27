@@ -15,6 +15,7 @@ import {
 } from "../restore/control.mjs";
 import { restoreStatus, verifyRestoreSelection } from "../restore/verify.mjs";
 import { fixtureGeneration } from "./fixtures/backup.mjs";
+import { publicationControlFixture } from "./fixtures/backup-writes.mjs";
 
 let directory, artifact, source, selected, objects, store, control, publication, id;
 beforeEach(async () => {
@@ -23,12 +24,17 @@ beforeEach(async () => {
   objects = new Map();
   store = {
     get: vi.fn(async (key) => objects.get(key) ?? null),
-    put: vi.fn(async (key, value) => {
+    put: vi.fn(async (key, value, onNativeEnd) => {
       objects.set(key, Buffer.from(value));
+      await onNativeEnd();
       return true;
     }),
   };
-  publication = await publishGeneration({ directory: artifact.directory, store });
+  publication = await publishGeneration({
+    directory: artifact.directory,
+    store,
+    control: publicationControlFixture(),
+  });
   store.get.mockClear();
   store.put.mockClear();
   id = randomUUID();
