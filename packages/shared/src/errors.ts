@@ -11,6 +11,8 @@ export type PlatformErrorCode =
   | "invalid_length"
   | "payload_too_large"
   | "precondition_failed"
+  | "precondition_required"
+  | "share_recipient_unavailable"
   | "range_not_satisfiable"
   | "rate_limited"
   | "insufficient_storage"

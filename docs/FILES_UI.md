@@ -1,6 +1,6 @@
 # Files UI とローカルブラウザー試験
 
-更新: 2026-09-24。製品全体の完了宣言ではない。実環境への配備、Access設定、remote secret登録は未実施。
+更新: 2026-09-28。製品全体の完了宣言ではない。実環境への配備、Access設定、remote secret登録は未実施。
 
 ## 接続した画面
 
@@ -8,6 +8,7 @@
 
 - マイドライブのbreadcrumb、200件単位の署名cursor一覧、リストの仮想スクロール、グリッド、フォルダー配下の検索APIと検索結果のページ切替。ごみ箱は表示済み項目の名前絞込み。
 - フォルダー作成、改名、移動、コピー、ごみ箱移動、復元先選択、確認checkbox付き完全削除。
+- [内部共有の管理](INTERNAL_SHARES.md)。相手・閲覧/編集・期限を設定し、変更と停止を行う。応答喪失は入力を保持して一覧確認、旧versionの変更は拒否する。
 - 単一・multipart upload、確認付き上書き、容量表示、進捗、中止、reload後の元ファイル再選択。上書きの詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)。
 - フォルダー情報dialogから要求時に配下のファイル数・サブフォルダー数・合計サイズを集計。上限到達とcontent不足を明示。再集計中/拒否後は旧数値を隠す。[FOLDER_STATS](FOLDER_STATS.md)参照。
 - content ticketをPOSTして別originのHttpOnly Cookieへ交換し、別タブでファイルを開く/保存。tokenをURLに置かない。
@@ -50,12 +51,14 @@ pnpm test:browser
 
 設定/状態は `.wrangler/browser-config.json` と `.wrangler/browser-tests/` のみ。起動時に後者だけを作り直し、開発DB・remote DBは変更しない。HTTPSのapp/content test hostをChromeのhost-resolverでloopbackへ向け、hosts/OS設定は変えない。port8879を専用に使い、他processが使用中なら失敗させる。
 
-19件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・app password発行と独立DAV request 8件の並行認証/取消し・実HTTPの本文なしDAV mutationとticket取消し・上書き確認/空file/確定応答喪失・確認中/PUT直前の上書き競合・分割上書きのreload/同attempt・single/multipart作成応答喪失後の対象更新/reload/receipt回収/中止・深いフォルダーの検索/上書き保存先/改名・201件検索pagination/再検索/世代競合と拒否後の非表示・要求時のfolder集計/コピー/削除後再集計/拒否時非表示/部分結果表示・複数タブlogout。filename/認証失効の応答fixtureと通信障害をPlaywrightで注入する。それ以外は実APIへ接続する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
+既存19件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・app password発行と独立DAV request 8件の並行認証/取消し・実HTTPの本文なしDAV mutationとticket取消し・上書き確認/空file/確定応答喪失・確認中/PUT直前の上書き競合・分割上書きのreload/同attempt・single/multipart作成応答喪失後の対象更新/reload/receipt回収/中止・深いフォルダーの検索/上書き保存先/改名・201件検索pagination/再検索/世代競合と拒否後の非表示・要求時のfolder集計/コピー/削除後再集計/拒否時非表示/部分結果表示・複数タブlogout。filename/認証失効の応答fixtureと通信障害をPlaywrightで注入する。それ以外は実APIへ接続する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
+
+内部共有の3件を追加し、全22件を確認した。新規シナリオはmobileでの共有作成/権限・期限変更/停止、作成応答喪失後の非再送・入力保持と一覧確認、別操作で更新されたversionへの上書き拒否。test-onlyの`POST /__test__/access-login`で新しいAccess fingerprintを明示発行する。logout済みsessionを再有効化せず、検査ファイルの順序に依存しない。
 
 ## 残る制約
 
 - restoreは[RESTORE_GC](RESTORE_GC.md)の永続pauseを取得し、既存削除の終了後に原子的に復元する。競合・回収待ちは同じkeyで再試行する。管理者のGC停止設定は保持し、単一hold・5分期限・1,000ノード上限がある。
-- 公開/内部共有の管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
+- 受信者のShared画面、公開linkの管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
 - gridの大量ページ仮想化、pagination競合の専用browser scenario、大容量/低速網/実Access/実R2/実Cookie policy/各ブラウザーのstaging試験は残る。
 - Browserの96 MiB成功は500 GiB・実R2 lifecycle・未知multipart ID閉鎖の証明ではない。既存の予約holdとrepair gateは変更していない。
 

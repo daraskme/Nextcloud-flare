@@ -54,6 +54,7 @@ export async function listTrash(
   if (cursor !== undefined) {
     const claims = await tokens.verify(cursor);
     if (
+      claims.aud !== "trash" ||
       claims.scopeId !== spaceId ||
       claims.userId !== principal.user_id ||
       claims.credentialId !== principal.credential_id ||

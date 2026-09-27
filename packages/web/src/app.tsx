@@ -33,6 +33,7 @@ import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } fro
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
+import { ShareDialog } from "./features/shares/ShareDialog";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import {
@@ -49,6 +50,7 @@ type Action =
   | { kind: "create" }
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
   | { kind: "overwrite"; node: FileNode }
+  | { kind: "share"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
   accountId: string;
@@ -263,7 +265,7 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Exclude<Action, { kind: "overwrite" }>;
+  action: Exclude<Action, { kind: "overwrite" | "share" }>;
   account: Account;
   parentId: string;
   onClose: () => void;
@@ -459,6 +461,7 @@ function NodeMenu({
           <Menu.Item onSelect={() => act({ kind: "rename", node })}>名前を変更</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "move", node })}>移動</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "copy", node })}>コピー</Menu.Item>
+          <Menu.Item onSelect={() => act({ kind: "share", node })}>共有を管理</Menu.Item>
           <Menu.Separator />
           <Menu.Item className="danger-text" onSelect={() => act({ kind: "trash", node })}>
             ごみ箱に移動
@@ -1214,7 +1217,15 @@ export function App() {
           onClose={() => setAction(null)}
         />
       )}
-      {action && action.kind !== "overwrite" && me && (
+      {action?.kind === "share" && me && (
+        <ShareDialog
+          key={action.node.id}
+          node={action.node}
+          account={me}
+          close={() => setAction(null)}
+        />
+      )}
+      {action && action.kind !== "overwrite" && action.kind !== "share" && me && (
         <OperationDialog
           key={JSON.stringify(action)}
           action={action}

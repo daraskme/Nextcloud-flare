@@ -828,6 +828,52 @@ h1 {
   font-size: 13px;
   line-height: 1.8;
 }
+.share-dialog {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.share-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 0;
+  border-bottom: 1px solid #e6e8ec;
+}
+.share-row > div {
+  flex: 1 0 100%;
+  overflow-wrap: anywhere;
+}
+.share-row p {
+  color: #657184;
+  margin: 4px 0;
+}
+.share-form {
+  display: grid;
+  gap: 8px;
+}
+.share-form legend {
+  font-weight: 650;
+  margin-bottom: 14px;
+}
+.share-form input,
+.share-form select,
+.share-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dce1e8;
+  border-radius: 7px;
+  font: inherit;
+}
+.share-form textarea {
+  resize: vertical;
+}
+.share-form:disabled {
+  opacity: 0.65;
+}
+.share-form .dialog-actions {
+  margin-top: 12px;
+}
 .confirm-delete {
   display: flex;
   align-items: center;

@@ -30,6 +30,29 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
+it("preserves legacy shares and freezes new internal mount names without blocking revocation", () => {
+  const insert = db.prepare(
+    "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at,mount_name,mount_name_ci) VALUES(?,'f-u','f-d',?,1,?,?)",
+  );
+  insert.run("legacy", "internal", null, null);
+  insert.run("current", "internal", "Unique-Folder", "unique-folder");
+  expect(() => insert.run("duplicate", "internal", "Unique-Folder", "unique-folder")).toThrow();
+  expect(() => insert.run("partial", "internal", "Incomplete", null)).toThrow(
+    "invalid_share_mount",
+  );
+  expect(() => insert.run("link", "link", "Link", "link")).toThrow("invalid_share_mount");
+  expect(() => db.exec("UPDATE shares SET mount_name='Renamed' WHERE id='current'")).toThrow(
+    "immutable_share_mount",
+  );
+  expect(() =>
+    db.exec("UPDATE shares SET mount_name='Invented',mount_name_ci='invented' WHERE id='legacy'"),
+  ).toThrow("immutable_share_mount");
+  db.exec("UPDATE shares SET disabled_at=1,version=version+1,root_node_id=NULL WHERE id='current'");
+  expect(db.prepare("SELECT mount_name FROM shares WHERE id='current'").get()).toEqual({
+    mount_name: "Unique-Folder",
+  });
+});
+
 it("bounds the durable admission revision and transition token without opening legacy control rows", () => {
   expect(
     db

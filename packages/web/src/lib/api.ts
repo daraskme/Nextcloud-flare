@@ -113,6 +113,8 @@ export function errorMessage(error: unknown): string {
     return "削除が進行済みのデータを含むため、この項目は復元できません。";
   if (error.code === "commit_unknown")
     return "処理結果を確認中です。同じ操作のまま再確認してください。";
+  if (error.code === "share_recipient_unavailable")
+    return "共有相手を確認できません。登録済みのメールアドレスを指定してください。自分自身には共有できません。";
   if (error.status === 401) return "ログインの有効期限が切れました。もう一度ログインしてください。";
   if (error.status === 403) return "この操作の権限、またはセッションの有効期限を確認してください。";
   if (error.status === 404)

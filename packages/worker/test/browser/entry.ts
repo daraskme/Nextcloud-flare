@@ -1,12 +1,14 @@
 // Local browser-test entry only. Never imported by src/index.ts or the deployed bundle.
 import { base64url, exportJWK, generateKeyPair, SignJWT } from "jose";
+import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
+import { foundationFixture } from "../fixtures/foundation";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
 
-let initialized: Promise<{ env: Env; token: string }> | undefined;
+let initialized: Promise<{ env: Env; token: string; login: () => Promise<string> }> | undefined;
 async function initialize(bindings: Env) {
   const keys = () =>
     JSON.stringify({ browser: base64url.encode(crypto.getRandomValues(new Uint8Array(32))) });
@@ -47,15 +49,20 @@ async function initialize(bindings: Env) {
       },
     }),
   );
-  const token = await new SignJWT({ type: "app", email: "local@example.invalid" })
-    .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: "browser" })
-    .setIssuer(env.ACCESS_ISSUER!)
-    .setSubject("local-browser-owner")
-    .setAudience(env.ACCESS_USER_AUDIENCE!)
-    .setIssuedAt()
-    .setNotBefore(Math.floor(Date.now() / 1000) - 1)
-    .setExpirationTime("1h")
-    .sign(pair.privateKey);
+  const startedAt = Math.floor(Date.now() / 1000);
+  let loginSequence = 0;
+  // A fresh Access login has a different fingerprint. Keep revoked sessions revoked.
+  const login = () =>
+    new SignJWT({ type: "app", email: "local@example.invalid" })
+      .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: "browser" })
+      .setIssuer(env.ACCESS_ISSUER!)
+      .setSubject("local-browser-owner")
+      .setAudience(env.ACCESS_USER_AUDIENCE!)
+      .setIssuedAt(startedAt - loginSequence++)
+      .setNotBefore(startedAt - 1)
+      .setExpirationTime(startedAt + 3600)
+      .sign(pair.privateKey);
+  const token = await login();
   const control = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
   const { epoch } = await control.recover();
   await control.beginRecoveryAudit(epoch);
@@ -72,7 +79,15 @@ async function initialize(bindings: Env) {
     env,
   );
   if (!response.ok) throw new Error("browser_bootstrap_failed");
-  return { env, token };
+  const recipient = foundationFixture("browser-share-recipient", Date.now() - 1000);
+  await atomicBatch(env.DB, [
+    ...recipient.statements,
+    {
+      sql: "UPDATE users SET email='recipient@example.invalid' WHERE id=?",
+      values: [recipient.ids.user],
+    },
+  ]);
+  return { env, token, login };
 }
 
 export default {
@@ -80,6 +95,10 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    if (path === "/__test__/access-login" && request.method === "POST") {
+      ready.token = await ready.login();
+      return Response.json({ ready: true });
+    }
     if (path === "/__test__/control" && request.method === "GET") {
       const control = ready.env.CONTROL.get(ready.env.CONTROL.idFromName(CONTROL_NAME));
       return Response.json(await control.status());

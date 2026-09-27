@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。直前9b0f257の[CI36347414539](https://github.com/daraskme/Nextcloud-flare/actions/runs/36347414539)はUbuntu・Windows3分割・browser・backupの全6job成功。先行d50c58bの[CI36345681064](https://github.com/daraskme/Nextcloud-flare/actions/runs/36345681064)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。前回53bfc16の[CI36349203224](https://github.com/daraskme/Nextcloud-flare/actions/runs/36349203224)はLinux/Windowsで旧migration数期待値（46→実際47）が失敗し、今回修正しました。前回Linuxは他2,641件成功。ほかのWindows2分割・browser・backupは成功。先行9b0f257の[CI36347414539](https://github.com/daraskme/Nextcloud-flare/actions/runs/36347414539)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,17 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [内部共有の管理](INTERNAL_SHARES.md)を実装。migration0048、通常69table。所有者のCRUD、受信一覧API、作成時固定mount名、相手/role/期限の更新、version照合と旧grant/session/ticket失効を共通mutation受付へ接続。配信budgetを保持。Filesの共有管理画面では応答喪失時に自動再送せず入力を維持する。受信Shared画面/DAV Shared/公開linkは後続。
+- 新規workerd21件を含む関連4file/63件成功（16.33s）。入力/共有mountのNode2file/89件成功（13.42s）。実ブラウザー新規3件成功（31.3s）。最終workerd 4file/63件も成功（20.67s）。/tmp/ncf-internal-share-worker-final.log。
+- 前回CIのintegration/schema.test.tsがmigration件数を46に固定していた不備を修正。適用済み件数と読み込んだmigration列の長さを比較し、FK graph照合を保持する。
+
+- 全Node62file/1,294件成功（56.93s）、新規17件。初回はsandboxの子プロセス/loopback制限で39件失敗・1未処理例外が発生し、必要な権限で全体を再実行して成功。/tmp/ncf-internal-share-unit-final.log。lint479file・型・契約/設定・69table schema生成・Web build/Worker dry-runが成功。
+- 全browserの初回は既存19件成功後、固定JWTを使うtest fixtureがlogout済みになり、後続の共有検査を開始できず中断。test-onlyの明示Access再ログインを追加し、旧sessionの失効は保持する。共有検査はbeforeEachで新fingerprintを取得する。最終の全browser22件が成功（4.2分）。共有管理のmobile画面と横はみ出しなしを確認。/tmp/ncf-internal-share-browser-final.log、test-results/shares-internal-shares-cre-38dbd-ough-the-real-API-on-mobile/share-management-mobile.png。
+
+- 最終lint479file・型検査成功。契約/設定検査、69table schema生成成功。最終Web build/Worker dry-run成功（/tmp/ncf-internal-share-build-complete.log）。全Node1,294 + 関連workerd63 + 全browser22 = **1,379件**を確認。全workerd suiteとremote検証は今回ローカルでは実行していない。新規テストはNode17/workerd21/browser3件。remote migration/deployなし。
+
+### 先行するmultipart中止成功記録の回復
 
 - [multipart中止の実成功記録の回復](MULTIPART_ABORT_RECONCILIATION.md)を実装。migration0047・69通常table。元native tupleの9項目と独立DO履歴を照合し、upload handle成功の回復とbucketの補足成功記録を保存する。既存28method・CLI引数を維持し、全体閉鎖/容量holdは未解除。
 - Nodeのschema/backup生成/復旧inventory 3file174件が成功（15.58s）。初回workerd38件は37成功・1失敗（73.67s）。停止故障注入後に残るprobe leaseを同じ試験内で満了させるfixtureへ修正。型検査の部分R2 mockのassertionも修正後、型・lint471file・契約/設定検査とWeb build/Worker dry-runが成功。
