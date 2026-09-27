@@ -2,7 +2,7 @@
 
 更新: 2026-09-28
 
-`apply-time-travel`をprivate operatorとCLIへ接続した。復旧要求に固定したDB/bookmarkへ1回だけPOSTし、実際の成功応答をD1の巻戻し対象外にあるControlDOへ記録する。これは復元内容の検証や新epochの採用を完了するコマンドではない。成功後も旧epochとmaintenance/GC停止を保持する。
+`apply-time-travel`をprivate operatorとCLIへ接続した。復旧要求に固定したDB/bookmarkへ1回だけPOSTし、実際の成功応答をD1の巻戻し対象外にあるControlDOへ記録する。これは復元内容の検証や新epochの採用を完了するコマンドではない。成功後も旧epochとmaintenance/GC停止を保持する。後続の[verify-restored](DATABASE_RESTORE_SNAPSHOT.md)は全通常tableの隔離検証と観測保存まで接続済み。
 
 既定では`RESTORE_WRITE_ENABLED`を設定せず、送信を拒否する。今回の接続はローカルfixtureで検証する開発段階である。native結果不明・旧実装・DO全storage喪失時を含む外部I/O全終了の運用証明、snapshot照合・epoch採用・全監査・段階再開、実Cloudflareドリルは未完了。これらのrelease gateを閉じるまで実環境で有効化しない。フラグの設定自体はI/O終了証明にならない。
 
@@ -47,4 +47,4 @@ CLI出力にはtoken、認証情報、providerの自由形式message/bodyを含�
 
 ローカル試験は実workerdのD1/R2/DOと、合成provider応答を使う。実private service bindingの運用ドリルではD1 control行の巻戻しを模擬し、旧DO epoch・停止維持・結果記録・再送拒否を確認する。これは実CloudflareのTime Travelでも、全snapshotの復元でもない。remote resource、migration、deploy、実POSTは行っていない。
 
-復元後snapshotの照合、元snapshotのbackup/restore token処理、予約epochの採用、全監査と再開は後続。検証件数と実行結果の正本は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+復元後snapshotの読取り照合は接続済みだが、その結果は継続した書込み障壁ではない。元snapshotのbackup/restore token処理、予約epochの採用、全監査と再開は後続。検証件数と実行結果の正本は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。

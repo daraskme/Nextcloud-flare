@@ -54,7 +54,7 @@ DOで閉鎖完了が確定している場合、次のquiesceはD1の同じepoch/
 1. 信頼できる世代・bookmark・対象bindingの検証。logicalの完了記録・R2部品照合と、CLIによる保存時schema/全table/hash/FKの再検証・DOへの証言は接続済み。D1対象、Time Travel bookmarkの時刻検索、BLOBSのfresh probe照合も接続済み（[対象](DATABASE_RESTORE_TARGET.md)・[bookmark](DATABASE_RESTORE_BOOKMARK.md)・[BLOBS](DATABASE_RESTORE_BLOBS.md)）。BACKUPSと同じ停止状態での[BLOBS/BACKUPS一括照合](DATABASE_RESTORE_BINDINGS.md)も接続済み。最終停止とremote検証を続ける。
 2. R2 delete・upload・multipart・KDF・job・repairの終了証明を集める。D1書込みと新規repair受付の永続的な凍結に加え、[BACKUPS世代削除・BLOBS/BACKUPS接続probe・upload・multipart全中止・空ファイルPUT・配信manifest・blob/orphan GC](R2_WRITE_SETTLEMENT.md)の14種類の永続記録を接続済み。[BACKUPS外部CLI保存](BACKUP_PUBLICATION_WRITES.md)と[通常/復旧用epoch履歴](EPOCH_HISTORY_WRITES.md)も専用DO記録へ接続済み。native不明の運用証明、全storage喪失を含む全終了確認は未統合。
 3. D1上書き前に新epochをDO/R2履歴へ予約する。[reserve-epoch](DATABASE_RESTORE_EPOCH.md)へ接続済み。応答不明でも要求・番号を固定し、重複発行・再使用を拒否する。予約後の安全な中止手順は後続。
-4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。Time Travelの1回送信・結果不明保持・実応答記録は接続済み。logical import、復元snapshotの照合とliveドリルは後続。
+4. 外部のTime Travelまたはlogical importを実行し、選択した状態と実際の復元先を照合する。Time Travelの1回送信・結果不明保持・実応答記録と、[復元後snapshotの読取り・隔離SQL照合](DATABASE_RESTORE_SNAPSHOT.md)は接続済み。採用用の新しい停止障壁、logical importとliveドリルは後続。
 5. 復元されたbackup freeze/tokenを正確な要求に結び付けて解消し、新epochをD1へ採用する。snapshotのcommitted/failed operationは保持する。
 6. FTS再構築、D1/R2の全監査、段階再開、再開後CRUD、実Cloudflareでの復旧ドリル。
 

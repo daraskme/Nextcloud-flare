@@ -4,6 +4,10 @@ import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
+import type {
+  RestoreSnapshotChallenge,
+  RestoreSnapshotProof,
+} from "../../../shared/src/restoreSnapshot";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type {
   RestoreTimeTravelGrant,
@@ -80,6 +84,17 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   }
   reserveEpoch(epoch: number, id: string, targets: RestoreFreezeTargets) {
     return this.#control(epoch, id).reserveDatabaseRestoreEpoch(epoch, id, targets);
+  }
+  challengeSnapshot(epoch: number, id: string, targets: RestoreFreezeTargets) {
+    return this.#control(epoch, id).challengeDatabaseRestoreSnapshot(epoch, id, targets);
+  }
+  attestSnapshot(
+    epoch: number,
+    id: string,
+    challenge: RestoreSnapshotChallenge,
+    proof: RestoreSnapshotProof,
+  ) {
+    return this.#control(epoch, id).attestDatabaseRestoreSnapshot(epoch, id, challenge, proof);
   }
   beginTimeTravel(
     epoch: number,

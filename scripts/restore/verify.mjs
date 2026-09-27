@@ -36,11 +36,22 @@ export function restoreStatus(value, epoch, id) {
       "epoch_reserved",
       "restore_pending",
       "restore_written",
+      "snapshot_checking",
+      "snapshot_verified",
     ].includes(value.state) ||
     (value.newEpoch !== undefined && (!integer(value.newEpoch, 1) || value.newEpoch <= epoch)) ||
-    (["epoch_reserved", "restore_pending", "restore_written"].includes(value.state) &&
+    ([
+      "epoch_reserved",
+      "restore_pending",
+      "restore_written",
+      "snapshot_checking",
+      "snapshot_verified",
+    ].includes(value.state) &&
       value.newEpoch === undefined) ||
-    (value.state !== "restore_written" && value.restoreResult !== undefined) ||
+    (!["restore_written", "snapshot_checking", "snapshot_verified"].includes(value.state) &&
+      value.restoreResult !== undefined) ||
+    (value.state === "snapshot_verified" &&
+      (!integer(value.snapshotVerifiedAt) || value.snapshotVerifiedAt < value.createdAt)) ||
     !integer(value.createdAt)
   )
     throw new Error("database_restore_invalid_status");
@@ -54,7 +65,12 @@ export function restoreStatus(value, epoch, id) {
   )
     source = { kind: "time_travel", bookmark: value.source.bookmark };
   else throw new Error("database_restore_invalid_status");
-  if (["restore_pending", "restore_written"].includes(value.state) && source.kind !== "time_travel")
+  if (
+    ["restore_pending", "restore_written", "snapshot_checking", "snapshot_verified"].includes(
+      value.state,
+    ) &&
+    source.kind !== "time_travel"
+  )
     throw new Error("database_restore_invalid_status");
   return {
     id,
@@ -63,8 +79,11 @@ export function restoreStatus(value, epoch, id) {
     createdAt: value.createdAt,
     source,
     ...(value.newEpoch === undefined ? {} : { newEpoch: value.newEpoch }),
-    ...(value.state === "restore_written"
+    ...(["restore_written", "snapshot_checking", "snapshot_verified"].includes(value.state)
       ? { restoreResult: restoreTimeTravelResult(value.restoreResult) }
+      : {}),
+    ...(value.state === "snapshot_verified"
+      ? { snapshotVerifiedAt: value.snapshotVerifiedAt }
       : {}),
   };
 }

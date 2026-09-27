@@ -26,10 +26,13 @@ export interface DatabaseRestoreStatus {
     | "epoch_reserving"
     | "epoch_reserved"
     | "restore_pending"
-    | "restore_written";
+    | "restore_written"
+    | "snapshot_checking"
+    | "snapshot_verified";
   createdAt: number;
   newEpoch?: number;
   restoreResult?: RestoreTimeTravelResult;
+  snapshotVerifiedAt?: number;
 }
 
 // Match the existing logical-backup generation identity contract, including imported UUIDs.
@@ -98,6 +101,12 @@ export class ControlDatabaseRestore {
     sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_execution_delete
       BEFORE DELETE ON control_database_restore_execution
       BEGIN SELECT RAISE(ABORT,'database_restore_execution_conflict'); END`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_snapshot(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),challenge_id TEXT NOT NULL,
+      issued_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,challenge_json TEXT,
+      proof_json TEXT,verified_at INTEGER,
+      CHECK((proof_json IS NULL)=(verified_at IS NULL))
+    )`);
   }
 
   active(): boolean {
@@ -139,6 +148,12 @@ export class ControlDatabaseRestore {
   }
 
   #status(row: RestoreRow): DatabaseRestoreStatus {
+    const snapshot = this.sql
+      .exec<{ verified_at: number | null }>(
+        "SELECT verified_at FROM control_database_restore_snapshot WHERE id=?",
+        row.id,
+      )
+      .toArray()[0];
     const execution = this.sql
       .exec<{ state: string; result_json: string | null }>(
         "SELECT state,result_json FROM control_database_restore_execution WHERE id=?",
@@ -162,22 +177,29 @@ export class ControlDatabaseRestore {
       id: row.id,
       epoch: row.epoch,
       source: JSON.parse(row.source_json) as DatabaseRestoreSource,
-      state: execution
-        ? execution.state === "ended"
-          ? "restore_written"
-          : "restore_pending"
-        : reservation
-          ? reservation.phase === "reserved"
-            ? "epoch_reserved"
-            : "epoch_reserving"
-          : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
-            ? row.phase
-            : freeze.phase,
+      state: snapshot
+        ? snapshot.verified_at === null
+          ? "snapshot_checking"
+          : "snapshot_verified"
+        : execution
+          ? execution.state === "ended"
+            ? "restore_written"
+            : "restore_pending"
+          : reservation
+            ? reservation.phase === "reserved"
+              ? "epoch_reserved"
+              : "epoch_reserving"
+            : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
+              ? row.phase
+              : freeze.phase,
       createdAt: row.created_at,
       ...(reservation?.new_epoch ? { newEpoch: reservation.new_epoch } : {}),
       ...(execution?.result_json
         ? { restoreResult: JSON.parse(execution.result_json) as RestoreTimeTravelResult }
         : {}),
+      ...(snapshot?.verified_at === null || snapshot?.verified_at === undefined
+        ? {}
+        : { snapshotVerifiedAt: snapshot.verified_at }),
     };
   }
 

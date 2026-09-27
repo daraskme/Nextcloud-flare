@@ -24,6 +24,7 @@ const { verifyRestoreBlobs } = await moduleAt("scripts/restore/blobs.mjs");
 const { verifyRestoreBindings } = await moduleAt("scripts/restore/bindings.mjs");
 const { freezeRestoreDatabase } = await moduleAt("scripts/restore/freeze.mjs");
 const { reserveRestoreEpoch } = await moduleAt("scripts/restore/epoch.mjs");
+const { verifyRestoredSnapshot } = await moduleAt("scripts/restore/snapshot.mjs");
 const { applyRestoreTimeTravel, timeTravelProvider } = await moduleAt(
   "scripts/restore/timeTravel.mjs",
 );
@@ -384,6 +385,8 @@ try {
       ["reserveEpoch", [2, restoreId, {}]],
       ["beginTimeTravel", [2, restoreId, {}, {}]],
       ["finishTimeTravel", [2, restoreId, {}, {}]],
+      ["challengeSnapshot", [2, restoreId, {}]],
+      ["attestSnapshot", [2, restoreId, {}, {}]],
       ["cancel", [2, restoreId]],
     ])
       await assert.rejects(
@@ -641,14 +644,39 @@ try {
   assert.equal(stopped.gcPaused, true);
   assert.equal((await query("SELECT epoch FROM control"))[0].epoch, 1);
   await assert.rejects(restoreControl.cancel(2, epochId), /database_restore_epoch_reserved/);
+  const beforeSnapshot = await query("SELECT * FROM control");
+  const snapshot = await verifyRestoredSnapshot({
+    epoch: 2,
+    id: epochId,
+    control: restoreControl,
+    reader: { ...bindingReader, snapshotQuery: query },
+  });
+  assert.equal(snapshot.state, "snapshot_verified");
+  assert.equal(snapshot.tables, 68);
+  assert.equal(snapshot.newEpoch, 3);
+  await worker.evictDurableObject("CONTROL", { name: "singleton" });
+  assert.equal(
+    (await restoreControl.inspect(2, epochId)).snapshotVerifiedAt,
+    snapshot.snapshotVerifiedAt,
+  );
+  assert.equal((await apply()).state, "snapshot_verified");
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(await query("SELECT * FROM control"), beforeSnapshot);
   const report = {
     result: "PASS",
     directory,
     id,
     tables: download.manifest.tables.length,
     bytes: download.manifest.data.bytes,
+    snapshot: {
+      state: snapshot.state,
+      tables: snapshot.tables,
+      bytes: snapshot.bytes,
+      schemaSha256: snapshot.schemaSha256,
+      dataSha256: snapshot.dataSha256,
+    },
     proof:
-      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all sixteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; persisted native response and stopped old DO epoch after eviction; no repeat POST, cancellation or epoch adoption.",
+      "Private BackupOperator and separate DatabaseRestoreOperator capability, including denial for all eighteen restore methods with backup-only grants; real daily capture plus four replenishments; maintenance expiry sweep and corruption warnings; restore preparation, isolated SQL verification and durable attestation, independent D1 observation, Time Travel bookmark observation and D1/BLOBS/BACKUPS verification with simulated provider responses; D1 freeze, rejected writes, eviction replay and cancellation with a fresh closed token; request-bound future epoch reservation in DO/R2; one-shot Time Travel dispatch and completion with a simulated control-row rollback; restored snapshot schema/all-table/isolated SQL/FK/FTS verification with a durable DO attestation and eviction replay; stopped old DO epoch and unchanged D1 snapshot; no repeat POST, cancellation or epoch adoption.",
     limits:
       "Local service-binding capability only; bookmark and S3 provider responses are simulated. Remote Time Travel/R2, credentials/getPlatformProxy transport and separate Wrangler CLI are not exercised here. No scheduler installation, external notification, independent BLOBS copy or live restore.",
   };

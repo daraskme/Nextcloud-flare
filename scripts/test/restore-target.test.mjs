@@ -272,3 +272,29 @@ it("redacts child process errors and provider payloads", async () => {
     await source.dispose();
   }
 });
+
+it("allows verifier-owned snapshot reads only when explicitly requested, with bounded output", async () => {
+  const options = await configuration("remote"),
+    run = vi.fn(async () => ({
+      stdout: JSON.stringify([{ success: true, results: [{ name: "users" }] }]),
+    }));
+  const ordinary = await restoreD1Reader(options, run);
+  expect(ordinary.snapshotQuery).toBeUndefined();
+  await ordinary.dispose();
+  const source = await restoreD1Reader({ ...options, snapshot: true }, run);
+  try {
+    expect(await source.snapshotQuery("PRAGMA table_list")).toEqual([{ name: "users" }]);
+    expect(run.mock.calls[0][1]).toContain("--remote");
+    expect(run.mock.calls[0][2]).toMatchObject({ timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
+    await expect(source.snapshotQuery("DELETE FROM users")).rejects.toThrow(
+      /invalid_snapshot_query/,
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    run.mockResolvedValue({ stdout: JSON.stringify([{ success: false, results: [] }]) });
+    await expect(source.snapshotQuery("SELECT * FROM users")).rejects.toThrow(
+      /snapshot_read_failed/,
+    );
+  } finally {
+    await source.dispose();
+  }
+});

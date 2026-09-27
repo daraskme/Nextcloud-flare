@@ -24,7 +24,7 @@ const execute = promisify(execFile),
 
 /** Resolve DB once, then query with a minimal pinned configuration and a fixed SELECT only. */
 export async function restoreD1Reader(
-  { config, environment, operatorConfig, mode, blobs = false, backups = false },
+  { config, environment, operatorConfig, mode, blobs = false, backups = false, snapshot = false },
   run = execute,
 ) {
   if (!["local", "remote"].includes(mode) || typeof config !== "string" || !config)
@@ -98,7 +98,7 @@ export async function restoreD1Reader(
       )
         throw new Error("database_restore_target_config_changed");
     }
-    async function read(args, error) {
+    async function read(args, error, maxBuffer = 1024 * 1024) {
       await unchanged();
       let result;
       try {
@@ -109,7 +109,7 @@ export async function restoreD1Reader(
             cwd: directory,
             encoding: "utf8",
             timeout: 30000,
-            maxBuffer: 1024 * 1024,
+            maxBuffer,
             env: {
               ...process.env,
               CI: "true",
@@ -131,6 +131,41 @@ export async function restoreD1Reader(
       ...(blobsTarget ? { blobsTarget } : {}),
       ...(backupsTarget ? { backupsTarget } : {}),
       assertUnchanged: unchanged,
+      ...(snapshot
+        ? {
+            snapshotQuery: async (sql) => {
+              // Only the trusted snapshot verifier supplies these reads; no CLI SQL option or RPC.
+              if (
+                typeof sql !== "string" ||
+                !(sql.startsWith("SELECT ") || sql === "PRAGMA table_list")
+              )
+                throw new Error("database_restore_invalid_snapshot_query");
+              const result = await read(
+                [
+                  "d1",
+                  "execute",
+                  "DB",
+                  `--${mode}`,
+                  "--command",
+                  sql,
+                  ...(mode === "local"
+                    ? ["--persist-to", join(dirname(path), ".wrangler/state")]
+                    : []),
+                ],
+                "database_restore_snapshot_read_failed",
+                64 * 1024 * 1024,
+              );
+              if (
+                !Array.isArray(result) ||
+                result.length !== 1 ||
+                result[0]?.success !== true ||
+                !Array.isArray(result[0].results)
+              )
+                throw new Error("database_restore_snapshot_read_failed");
+              return result[0].results;
+            },
+          }
+        : {}),
       async readMirror() {
         const result = await read(
           [

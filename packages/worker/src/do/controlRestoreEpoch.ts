@@ -37,6 +37,51 @@ export class ControlRestoreEpoch {
       .toArray()[0];
   }
 
+  /** Read-only history verification after physical restore; the old D1 mirror no longer applies. */
+  async verifyHistory(
+    epoch: number,
+    id: string,
+    input: RestoreFreezeTargets,
+    assertCurrent: () => void,
+  ) {
+    const targets = restoreFreezeTargets(input),
+      row = this.#row(id),
+      selected = this.restore.inspect(epoch, id);
+    const current = () => {
+      assertCurrent();
+      if (
+        !row ||
+        row.phase !== "reserved" ||
+        row.epoch !== epoch ||
+        row.new_epoch !== selected.newEpoch ||
+        row.source_json !== JSON.stringify(selected.source) ||
+        row.targets_json !== JSON.stringify(targets) ||
+        JSON.stringify(this.#row(id)) !== JSON.stringify(row)
+      )
+        throw new Error("database_restore_epoch_conflict");
+      const receipt = this.storage.sql
+        .exec("SELECT * FROM control_restore_epoch_write")
+        .toArray()[0];
+      if (
+        !receipt ||
+        receipt.state !== "ended" ||
+        receipt.token !== row.history_token ||
+        receipt.epoch !== row.new_epoch ||
+        receipt.at !== row.history_at ||
+        receipt.reason !== "restore"
+      )
+        throw new Error("epoch_history_write_unsettled");
+    };
+    current();
+    await this.#history.persist(
+      this.bucket,
+      { epoch: row!.new_epoch!, at: row!.history_at!, reason: "restore" },
+      row!.history_token,
+      current,
+    );
+    current();
+  }
+
   #sourceProof(
     epoch: number,
     id: string,

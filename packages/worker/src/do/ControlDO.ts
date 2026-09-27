@@ -5,6 +5,10 @@ import type { RestoreBackupsTarget } from "../../../shared/src/restoreBackups";
 import type { RestoreBlobsTarget } from "../../../shared/src/restoreBlobs";
 import type { RestoreBookmarkObservation } from "../../../shared/src/restoreBookmark";
 import type { RestoreFreezeTargets } from "../../../shared/src/restoreFreeze";
+import type {
+  RestoreSnapshotChallenge,
+  RestoreSnapshotProof,
+} from "../../../shared/src/restoreSnapshot";
 import type { RestoreD1Challenge, RestoreD1Target } from "../../../shared/src/restoreTarget";
 import type {
   RestoreTimeTravelGrant,
@@ -74,6 +78,7 @@ import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
+import { ControlRestoreSnapshot } from "./controlRestoreSnapshot";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
 import { ControlRestoreTimeTravel } from "./controlRestoreTimeTravel";
@@ -149,6 +154,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreFreeze: ControlRestoreFreeze;
   readonly #restoreEpoch: ControlRestoreEpoch;
   readonly #restoreTimeTravel: ControlRestoreTimeTravel;
+  readonly #restoreSnapshot: ControlRestoreSnapshot;
   readonly #r2Writes: ControlR2Writes;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -215,23 +221,22 @@ export class ControlDO extends DurableObject<Env> {
       env.BACKUPS,
       this.#restoreTarget,
     );
+    const restoreReady = (epoch: number) => {
+      const row = this.#row();
+      if (row.phase !== "ready" || row.epoch !== epoch)
+        throw new Error("database_restore_epoch_conflict");
+      assertNoBackup(ctx.storage.sql);
+      this.#kdfSettlements.assertEmpty();
+      this.#r2Writes.assertEmpty();
+      if (ctx.storage.sql.exec("SELECT 1 FROM control_maintenance_tasks LIMIT 1").toArray().length)
+        throw new Error("database_restore_maintenance_active");
+    };
     this.#restoreFreeze = new ControlRestoreFreeze(
       ctx.storage,
       env.DB,
       this.#databaseRestore,
       this.#admission,
-      (epoch) => {
-        const row = this.#row();
-        if (row.phase !== "ready" || row.epoch !== epoch)
-          throw new Error("database_restore_epoch_conflict");
-        assertNoBackup(ctx.storage.sql);
-        this.#kdfSettlements.assertEmpty();
-        this.#r2Writes.assertEmpty();
-        if (
-          ctx.storage.sql.exec("SELECT 1 FROM control_maintenance_tasks LIMIT 1").toArray().length
-        )
-          throw new Error("database_restore_maintenance_active");
-      },
+      restoreReady,
       (epoch, id, input) => {
         const { challenge, blobsAttempt, backupsAttempt } = input;
         const scope = this.#restoreTarget.verifiedScope(epoch, id, challenge);
@@ -259,6 +264,13 @@ export class ControlDO extends DurableObject<Env> {
       this.#databaseRestore,
       this.#restoreEpoch,
       this.#restoreFreeze,
+    );
+    this.#restoreSnapshot = new ControlRestoreSnapshot(
+      ctx.storage.sql,
+      env.DB,
+      this.#databaseRestore,
+      this.#restoreEpoch,
+      restoreReady,
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -419,6 +431,25 @@ export class ControlDO extends DurableObject<Env> {
     this.#row();
     // Turning off dispatch must not discard a late native completion for an issued grant.
     return this.#restoreTimeTravel.finish(expectedEpoch, id, grant, result);
+  }
+
+  async challengeDatabaseRestoreSnapshot(
+    expectedEpoch: number,
+    id: string,
+    targets: RestoreFreezeTargets,
+  ) {
+    this.#row();
+    return this.#restoreSnapshot.challenge(expectedEpoch, id, targets);
+  }
+
+  async attestDatabaseRestoreSnapshot(
+    expectedEpoch: number,
+    id: string,
+    challenge: RestoreSnapshotChallenge,
+    proof: RestoreSnapshotProof,
+  ) {
+    this.#row();
+    return this.#restoreSnapshot.attest(expectedEpoch, id, challenge, proof);
   }
 
   /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */

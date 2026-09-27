@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-Time Travelの[一度限りの送信と実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)をControlDO・private operator・CLIへ接続しました。要求・予約epoch・DB/BLOBS/BACKUPS・bookmark・元の時刻を固定し、送信前にDOへpendingを保存します。結果不明は再送せず、成功応答もD1の巻戻し対象外へ記録します。成功後も旧DO epochと停止を維持し、snapshot照合・予約epoch採用は後続です。送信は既定で無効です。
+復元後の[全テーブル照合と隔離SQL検証](DATABASE_RESTORE_SNAPSHOT.md)をprivate operator・CLIへ接続しました。元の復旧要求・予約epoch・対象3binding・実行結果に観測を束縛し、信頼済みschema、全行のhash、外部キー、隔離FTS再構築を検証します。古いschemaのsnapshotも自動移行せず照合でき、D1の内容と旧DO epoch・停止を維持します。結果はDOへ保存しますが、epoch採用の許可には使いません。
 
-schema0046・通常68table・依存追加なし。新規Node34/workerd22ケースを追加し、CLI関連94件・workerd関連155件を確認しました。型・lint439file・契約/設定・Web build・Worker dry-runと、全16復旧操作の権限拒否を含むprivate binding運用ドリルが成功。Windows CIで見つかった既存multipart試験の待機競合も修正し、その19件が成功しました。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0046・通常68table・依存追加なし。新規Node17/workerd16ケースを含むCLI関連150件・workerd関連138件、型・lint445file・契約/設定・Web build・Worker dry-runが成功しました。全18復旧操作の権限拒否と、復元後68table・SQL57,492bytesの隔離検証を含むprivate bindingドリルも成功。今回の全体CIはpush後に確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
 
-次は外部I/O全終了の運用証明、復元後snapshot照合・予約epoch採用・全監査・段階再開です。結果不明や予約後の安全な中止、logical importも残ります。RESTORE_WRITE_ENABLEDの設定は終了証明の代替になりません。旧実装や全storage喪失時の終了証明、通知先・timer設置、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
+次は復元後D1を採用用の停止tokenへ正確に束縛し、旧backup/restore token・permit/claimを処理して予約epochを採用する工程です。今回の読取り証言は、検証後の全行不変性や新しいbinding identityを保証しません。外部I/O全終了の運用証明、全監査・段階再開、安全な中止、logical import、旧実装/全storage喪失からの復旧も残ります。通知先・timer設置、未知multipart、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開も未完了です。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)と86d4b6eの[CI36331228499](https://github.com/daraskme/Nextcloud-flare/actions/runs/36331228499)で、Windows分割1の同じmultipart試験がタイムアウトしました。今回、native送信開始後にタイマーを進めるfixtureへ修正しています。86d4b6eはUbuntu・Windows分割2・browser成功、記録時点でbackup実行中。以前の77623a7と3f2217bは全5job成功済み。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。記録時点でfe736b6の[CI36333077770](https://github.com/daraskme/Nextcloud-flare/actions/runs/36333077770)はUbuntu・Windows2分割・browser成功、backup実行中。先行5269505/86d4b6eで失敗したmultipart待機fixtureはfe736b6で修正し、Windows分割1の成功を確認しました。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,6 +26,7 @@ schema0046・通常68table・依存追加なし。新規Node34/workerd22ケー�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
 | Time Travel送信と実応答記録 | 永続pending・5秒の1回grant・固定APIへのPOST・実応答のDO保存・unknownの再送拒否・旧epoch停止維持 | Node34/workerd22追加、関連CLI94/workerd155、16操作の権限拒否と模擬巻戻しを含むbindingドリル成功 | 既定で無効。全I/O運用証明・snapshot照合・epoch採用・live復旧は未完了。[詳細](DATABASE_RESTORE_TIME_TRAVEL.md) |
 | probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と実復元後epoch採用は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
 | epoch履歴のnative終了記録 | DO pending intentとreserved receiptの原子的保存、1回だけの条件付きPUT、実応答のみの終了記録、古い継続の拒否 | 新規24件と停止・監査・凍結・backupの関連workerd177件、Node11件が成功 | 旧実装/全喪失の終了証明、live復元後採用。[詳細](EPOCH_HISTORY_WRITES.md) |
@@ -183,7 +184,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 ### 次の優先順
 
 1. 外部I/Oの終了記録を最終停止へ集約。BLOBS/BACKUPS接続probe・BACKUPS世代削除・upload・multipart・空ファイル・manifest・GCの14種類は接続済み。外部CLI保存も専用記録へ接続済み。次はepoch履歴を[R2_WRITE_SETTLEMENT](R2_WRITE_SETTLEMENT.md)の送信点ごとに確認する。
-2. 実D1復元・snapshot照合と予約epoch採用、予約後の安全な中止、全監査・段階再開、Time Travel/live restore drill。復旧要求に固定した事前予約は接続済み。
+2. 復元後の採用用停止障壁と予約epoch採用、予約後の安全な中止、全監査・段階再開、Time Travel/live restore drill。復旧要求に固定した事前予約・1回送信・snapshot読取り照合は接続済み。
 3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
 4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。
 5. Files UIの残り、共有/公開link、media metadata検索、ZIP/reader/media配信。

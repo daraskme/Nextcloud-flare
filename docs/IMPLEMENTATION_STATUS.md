@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-先行5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)は4job成功・Windows分割1失敗。86d4b6eの[CI36331228499](https://github.com/daraskme/Nextcloud-flare/actions/runs/36331228499)もWindows分割1で同じmultipart試験が失敗し、Ubuntu・Windows分割2・browserは成功、記録時点でbackup実行中。両方ともintegrationは1,307件中1,306成功、待機試験1件が90秒timeout。今回fixtureを修正した。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)は全5job成功済み。
+記録時点でfe736b6の[CI36333077770](https://github.com/daraskme/Nextcloud-flare/actions/runs/36333077770)はUbuntu・Windows2分割・browser成功、backup実行中。先行5269505の[CI36329896475](https://github.com/daraskme/Nextcloud-flare/actions/runs/36329896475)と86d4b6eの[CI36331228499](https://github.com/daraskme/Nextcloud-flare/actions/runs/36331228499)はいずれも4job成功・Windows分割1失敗。同じmultipart試験の90秒timeoutをfe736b6で修正し、Windowsでの成功を確認した。先行77623a7の[CI36328691585](https://github.com/daraskme/Nextcloud-flare/actions/runs/36328691585)も全5job成功済み。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,15 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [復元後snapshotの隔離検証](DATABASE_RESTORE_SNAPSHOT.md)をControlDO/private operator/verify-restored CLIへ接続。実成功済みのTime Travel要求・予約epoch・3bindingへchallengeを束縛する。DOと独立CLIのcontrol/schema/catalogueを照合し、信頼済みmigration prefix・全table hash・隔離SQL/FK/FTS検証の証言をDOへ保存する。D1の内容と旧DO epoch、停止を維持し、epoch採用や受付再開は許可しない。
+- 新規Nodeは隔離検証16件と読取りadapter1件。最初の3file/89件は88成功・1失敗で、FK異常fixtureが既存のimmutable session triggerに止められていた。FK違反のnode_propsを作るfixtureへ修正し、CLI/target/Time Travel/epoch/復旧準備の5file/150件が成功（27.60s）。古い0037 schema、NUL/引用符を含む値、committed/failed terminal保持、未知schema、FK違反、読取り中の変更、設定/期限/ACK喪失を確認。/tmp/ncf-restored-snapshot-node.log、/tmp/ncf-restored-snapshot-node-final.log。
+- 初回workerd3file/50件が成功（46.44s）。未終了の履歴PUTと遅延D1照会を追加し、snapshot/凍結/復旧要求/epoch履歴の4file/100件が成功（99.81s）。最後に実行grantと選択bookmark/epochの一致を明示検査し、snapshot全16ケースも成功（24.88s）。重複を除く関連は6file/138件。/tmp/ncf-restored-snapshot-worker.log、/tmp/ncf-restored-snapshot-regression.log、/tmp/ncf-restored-snapshot-worker-final.log。
+- private bindingドリル成功。全18復旧操作の権限拒否、Time Travel合成応答・control行巻戻し後の全68table/SQL57,492bytesの隔離検証、DO証言保存、eviction照会、再送拒否、D1不変を確認。元のbackup世代は68table/SQL11,350bytes。/tmp/ncf-restored-snapshot-operator-final.log、.wrangler/operator-drill-cCdnbH/report.json。これは実remote Time Travelではない。
+- 型・lint445file・契約/設定・Web build・Worker dry-run成功。/tmp/ncf-restored-snapshot-types-complete.log、/tmp/ncf-restored-snapshot-lint-final.log、/tmp/ncf-restored-snapshot-build.log。schema0046・通常68table・依存追加なし。remote resource作成・migration・deployなし。全Node/workerd・Windows/browserはpush後のCIで確認する。
+- 検証結果は読取り時の観測で、採用用の持続したD1停止障壁でも、新しいbinding書込みchallengeでもない。復元snapshotの旧token/permit/claimを処理する原子的epoch採用、外部I/O全終了の運用証明、全監査・段階再開、logical import、安全な中止、大規模検証の再開/RTOは未完了。
+
+### 先行するTime Travel送信と実応答記録
 
 - [Time Travelの一度限りの送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)をprivate RPC/CLIへ接続。RESTORE_WRITE_ENABLEDは既定で無効。要求・予約epoch・3binding・bookmark・元の時刻を固定し、pendingをDOに保存してからgrantを返す。新しい観測・native履歴終了・D1凍結・最終停止条件を再確認する。実成功応答だけをD1にアクセスせず記録し、旧DO epochと停止を維持する。timeout/ACK喪失/再起動で再送しない。
 - 新規Node34ケースを含む3file/94件が成功（26.63s）。provider応答の欠落/異常/秘密非出力、本文16KiB/10秒、redirect拒否、期限/設定/対象変更、遅延成功、結果不明と再送拒否を検証。最終34件も成功（0.25s）。/tmp/ncf-time-travel-node.log、/tmp/ncf-time-travel-node-final.log。

@@ -65,6 +65,8 @@ export function restoreControlCalls(binding, timeoutMs = 60000) {
       "reserveEpoch",
       "beginTimeTravel",
       "finishTimeTravel",
+      "challengeSnapshot",
+      "attestSnapshot",
       "cancel",
     ].map((method) => [
       method,
