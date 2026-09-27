@@ -6,6 +6,7 @@ import type { RestoreSnapshotChallenge } from "../../../shared/src/restoreSnapsh
 import type { RestoreTimeTravelGrant } from "../../../shared/src/restoreTimeTravel";
 import { RESTORE_SNAPSHOT_CONTROL_QUERY } from "../../src/db/restoreSnapshot";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
+import { ControlDatabaseRestore } from "../../src/do/controlDatabaseRestore";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import { BINDING_PROBE_KEY } from "../../src/r2/bindingProbe";
 import { inventoryEnv } from "../fixtures/s3Inventory";
@@ -107,6 +108,234 @@ const adopt = () =>
     configured(state).beginDatabaseRestoreAdoption(epoch, id, targets),
   );
 const verifySnapshot = async () => attest(await challenge());
+const adopted = async () => {
+  await verifySnapshot();
+  await control().attestDatabaseRestoreAdoption(epoch, id, await adopt());
+};
+const auditedRestore = async () => {
+  for (let i = 0; i < 30; i++) {
+    const result = await control().auditDatabaseRestoreRecovery(epoch, id, 20);
+    if (result.audit.completed) return result;
+  }
+  throw new Error("recovery_fixture_incomplete");
+};
+const releaseRecovery = () =>
+  runInDurableObject(control(), (_instance, state) =>
+    configured(state).releaseDatabaseRestoreRecovery(epoch, id),
+  );
+
+it("audits the restored epoch, releases its exact hold, then resumes admission and GC in separate steps", async () => {
+  await adopted();
+  const audited = await auditedRestore();
+  expect(audited.audit).toMatchObject({ epoch: epoch + 1, stage: "complete", completed: true });
+  expect((await control().recover()).maintenance).toBe(true);
+  expect((await releaseRecovery()).state).toBe("recovery_ready");
+  expect(await control().recover()).toEqual({
+    epoch: epoch + 1,
+    maintenance: true,
+    gcPaused: true,
+  });
+  await evictDurableObject(control());
+  expect((await control().releaseDatabaseRestoreRecovery(epoch, id)).state).toBe("recovery_ready");
+  const resumed = await control().resumeDatabaseRestoreRecovery(epoch, id);
+  expect(resumed).toMatchObject({
+    state: "service_resumed",
+    control: { epoch: epoch + 1, maintenance: false, gcPaused: true },
+  });
+  await evictDurableObject(control());
+  expect((await control().resumeDatabaseRestoreRecovery(epoch, id)).state).toBe("service_resumed");
+  const finished = await control().resumeDatabaseRestoreGc(epoch, id);
+  expect(finished).toMatchObject({
+    state: "gc_resumed",
+    control: { epoch: epoch + 1, maintenance: false, gcPaused: false },
+  });
+  await control().pauseGarbageCollection(epoch + 1);
+  expect((await control().resumeDatabaseRestoreGc(epoch, id)).control.gcPaused).toBe(true);
+  expect((await control().recover()).gcPaused).toBe(true);
+});
+
+it("keeps the restore hold until the full audit and restored FTS rebuild are proved", async () => {
+  await adopted();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const instance = configured(state);
+    await expect(instance.releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /audit_incomplete/,
+    );
+    await expect(instance.resumeDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(/unreleased/);
+    await expect(instance.resumeDatabaseRestoreGc(epoch, id)).rejects.toThrow(/not_resumed/);
+  });
+  await auditedRestore();
+  await runInDurableObject(control(), async (_instance, state) => {
+    state.storage.sql.exec("DELETE FROM control_database_restore_recovery_fts WHERE id=?", id);
+    await expect(configured(state).releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /recovery_conflict/,
+    );
+  });
+  expect((await control().auditDatabaseRestoreRecovery(epoch, id)).audit).toMatchObject({
+    stage: "users",
+    pages: 0,
+  });
+  expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+});
+
+it("restarts the request's FTS proof and audit after a maintenance repair", async () => {
+  await adopted();
+  await auditedRestore();
+  await control().rebuildRecoveryFts(epoch + 1);
+  await runInDurableObject(control(), async (_instance, state) => {
+    await expect(configured(state).releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /audit_incomplete/,
+    );
+  });
+  const restarted = await control().auditDatabaseRestoreRecovery(epoch, id);
+  expect(restarted.audit).toMatchObject({ stage: "users", pages: 0, completed: false });
+  await auditedRestore();
+  expect((await releaseRecovery()).state).toBe("recovery_ready");
+});
+
+it("refuses to release a hold while an interrupted maintenance task remains", async () => {
+  await adopted();
+  await auditedRestore();
+  await runInDurableObject(control(), async (_instance, state) => {
+    state.storage.sql.exec(
+      "INSERT INTO control_maintenance_tasks VALUES(?,?)",
+      crypto.randomUUID(),
+      epoch + 1,
+    );
+    await expect(configured(state).releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /maintenance_active/,
+    );
+  });
+  expect((await control().recover()).maintenance).toBe(true);
+});
+
+it("rechecks restored pending native writes in the final release transaction", async () => {
+  await adopted();
+  await auditedRestore();
+  await env.DB.prepare(`INSERT INTO r2_write_attempts(id,token,epoch,owner_id,kind,r2_key,dispatch_before,started_at,state)
+    VALUES(?,?,?,'fixture','manifest.delete','fixture',strftime('%s','now')*1000+5000,strftime('%s','now')*1000,'pending')`)
+    .bind(crypto.randomUUID(), crypto.randomUUID(), epoch + 1)
+    .run();
+  try {
+    await runInDurableObject(control(), async (_instance, state) => {
+      await expect(configured(state).releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow();
+      expect(
+        state.storage.sql.exec("SELECT 1 FROM control_database_restore_release").toArray(),
+      ).toHaveLength(0);
+    });
+    expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+  } finally {
+    // This fixture inserted only a dispatch row; no native request was actually sent.
+    await env.DB.prepare(
+      "UPDATE r2_write_attempts SET state='not_started',finished_at=strftime('%s','now')*1000 WHERE r2_key='fixture' AND state='pending'",
+    ).run();
+  }
+});
+
+it("migrates an existing DO restore journal without erasing its active selection", async () => {
+  await runInDurableObject(control(), async (_instance, state) => {
+    await state.storage.deleteAll();
+    state.storage.sql.exec(`CREATE TABLE control_database_restore(
+      id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,source_json TEXT NOT NULL,
+      phase TEXT NOT NULL CHECK(phase IN ('preparing','cancelled')),created_at INTEGER NOT NULL)`);
+    state.storage.sql.exec(
+      "CREATE UNIQUE INDEX control_database_restore_active ON control_database_restore((1)) WHERE phase='preparing'",
+    );
+    state.storage.sql.exec(
+      "INSERT INTO control_database_restore VALUES(?,2,?,'preparing',1)",
+      id,
+      JSON.stringify({ kind: "time_travel", bookmark: "legacy" }),
+    );
+    const restore = new ControlDatabaseRestore(state.storage.sql);
+    expect(restore.inspect(2, id)).toMatchObject({
+      state: "preparing",
+      source: { kind: "time_travel", bookmark: "legacy" },
+    });
+    expect(restore.active()).toBe(true);
+    expect(() =>
+      restore.begin(2, crypto.randomUUID(), { kind: "time_travel", bookmark: "other" }),
+    ).toThrow(/database_restore_active/);
+    expect(
+      state.storage.sql.exec("SELECT released_at FROM control_database_restore").one().released_at,
+    ).toBeNull();
+  });
+});
+
+it("requires the write flag for first release but retains a released receipt when disabled", async () => {
+  await adopted();
+  await auditedRestore();
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /write_disabled/,
+    );
+  });
+  await releaseRecovery();
+  expect((await control().releaseDatabaseRestoreRecovery(epoch, id)).state).toBe("recovery_ready");
+});
+
+it("does not use a released request to reopen a newer stop and audit", async () => {
+  await adopted();
+  await auditedRestore();
+  await releaseRecovery();
+  await control().resumeDatabaseRestoreRecovery(epoch, id);
+  await control().beginRecoveryAudit(epoch + 1);
+  for (let i = 0; i < 30; i++)
+    if ((await control().nextRecoveryAuditPage(epoch + 1, 20)).completed) break;
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.resumeDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /audit_incomplete|recovery_conflict/,
+    );
+    await expect(instance.resumeDatabaseRestoreGc(epoch, id)).rejects.toThrow(/recovery_conflict/);
+  });
+  expect((await control().recover()).maintenance).toBe(true);
+});
+
+it("allows another restore request after release and refuses the old request while it is active", async () => {
+  await adopted();
+  await auditedRestore();
+  await releaseRecovery();
+  const nextId = crypto.randomUUID();
+  expect(
+    (
+      await control().prepareDatabaseRestore(epoch + 1, nextId, {
+        kind: "time_travel",
+        bookmark: "next",
+      })
+    ).state,
+  ).toBe("preparing");
+  await runInDurableObject(control(), async (instance) => {
+    await expect(instance.resumeDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /recovery_unavailable/,
+    );
+  });
+});
+
+it("does not release on a late final D1 observation", async () => {
+  await adopted();
+  await auditedRestore();
+  await runInDurableObject(control(), async (_instance, state) => {
+    const at = Date.now();
+    const db = new Proxy(env.DB, {
+      get: (target, key) =>
+        key === "batch"
+          ? async (statements: D1PreparedStatement[]) => {
+              const result = await target.batch(statements);
+              vi.spyOn(Date, "now").mockReturnValue(at + 30000);
+              return result;
+            }
+          : typeof Reflect.get(target, key) === "function"
+            ? Reflect.get(target, key).bind(target)
+            : Reflect.get(target, key),
+    });
+    const instance = new ControlDO(state, { ...env, DB: db, RESTORE_WRITE_ENABLED: "true" });
+    await expect(instance.releaseDatabaseRestoreRecovery(epoch, id)).rejects.toThrow(
+      /recovery_timeout/,
+    );
+    vi.restoreAllMocks();
+    expect((await instance.inspectDatabaseRestore(epoch, id)).state).toBe("epoch_adopted");
+  });
+  expect((await releaseRecovery()).state).toBe("recovery_ready");
+});
 
 it("adopts exactly the reserved epoch after a fresh D1 marker, retaining maintenance and the restore hold", async () => {
   await verifySnapshot();

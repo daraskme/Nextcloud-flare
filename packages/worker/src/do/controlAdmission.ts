@@ -30,6 +30,11 @@ export interface AdmissionTransition {
   token: string | null;
 }
 
+export interface RecoveryReleaseProof extends AdmissionTransition {
+  token: string;
+  auditToken: string;
+}
+
 const clock = "strftime('%s','now')*1000";
 const closedWork = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
   AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
@@ -189,8 +194,7 @@ export class ControlAdmission {
     this.storage.sql.exec("DELETE FROM control_maintenance_tasks WHERE token=?", token);
   }
 
-  #audit(epoch: number, token?: string | null): string {
-    this.assertCanOpen();
+  #auditProof(epoch: number, token?: string | null): string {
     this.assertKdfQuiescent();
     const busy = this.storage.sql
       .exec("SELECT 1 FROM control_maintenance_tasks WHERE epoch=? LIMIT 1", epoch)
@@ -205,6 +209,67 @@ export class ControlAdmission {
     if (!audit || (token !== undefined && audit.token !== token))
       throw new Error("recovery_audit_incomplete");
     return audit.token;
+  }
+
+  #audit(epoch: number, token?: string | null): string {
+    this.assertCanOpen();
+    return this.#auditProof(epoch, token);
+  }
+
+  /** Capture a completed audit without releasing a database restore hold. */
+  captureRecovery(epoch: number): RecoveryReleaseProof {
+    this.assertClosed(epoch);
+    const row = this.#row(epoch),
+      auditToken = this.#auditProof(epoch);
+    if (!row.token || row.gc_paused !== 1 || row.operator_paused !== 1 || row.hold_token !== null)
+      throw new Error("recovery_admission_not_closed");
+    return { epoch, revision: row.revision, token: row.token, auditToken };
+  }
+
+  /** A delayed restore request must not reopen a newer stop, even after a new audit. */
+  async resumeRecovery(proof: RecoveryReleaseProof): Promise<ControlStatus> {
+    const row = this.#row(proof.epoch);
+    if (row.phase !== "open") this.#audit(proof.epoch, proof.auditToken);
+    if (
+      !(
+        (row.phase === "closed" && row.revision === proof.revision && row.token === proof.token) ||
+        (row.phase === "opening" &&
+          row.revision === proof.revision + 1 &&
+          row.prior_token === proof.token &&
+          row.audit_token === proof.auditToken) ||
+        (row.phase === "open" && row.audit_token === proof.auditToken)
+      )
+    )
+      throw new Error("database_restore_recovery_conflict");
+    return this.resume(proof.epoch);
+  }
+
+  captureRecoveryGc(epoch: number, auditToken: string): AdmissionTransition {
+    this.assertCanOpen();
+    const row = this.#row(epoch);
+    if (row.phase !== "open" || row.audit_token !== auditToken || row.hold_token !== null)
+      throw new Error("database_restore_recovery_conflict");
+    return { epoch, revision: row.revision, token: row.token };
+  }
+
+  /** The first GC request pins its own transition, so replay cannot undo a later GC pause. */
+  async resumeRecoveryGc(proof: AdmissionTransition, auditToken: string): Promise<ControlStatus> {
+    const row = this.#row(proof.epoch);
+    this.assertCanOpen();
+    if (
+      row.audit_token !== auditToken ||
+      row.hold_token !== null ||
+      !(
+        (row.phase === "open" && row.revision === proof.revision && row.token === proof.token) ||
+        (row.phase === "gc_changing" &&
+          row.revision === proof.revision + 1 &&
+          row.prior_token === proof.token &&
+          row.operator_paused === 0) ||
+        (row.phase === "open" && row.revision === proof.revision + 1 && row.gc_paused === 0)
+      )
+    )
+      throw new Error("database_restore_recovery_conflict");
+    return this.setGcPaused(proof.epoch, false);
   }
 
   #transition(

@@ -41,6 +41,9 @@ export function restoreStatus(value, epoch, id) {
       "adoption_pending",
       "adoption_written",
       "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
     ].includes(value.state) ||
     (value.newEpoch !== undefined && (!integer(value.newEpoch, 1) || value.newEpoch <= epoch)) ||
     ([
@@ -52,6 +55,9 @@ export function restoreStatus(value, epoch, id) {
       "adoption_pending",
       "adoption_written",
       "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
     ].includes(value.state) &&
       value.newEpoch === undefined) ||
     (![
@@ -61,12 +67,24 @@ export function restoreStatus(value, epoch, id) {
       "adoption_pending",
       "adoption_written",
       "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
     ].includes(value.state) &&
       value.restoreResult !== undefined) ||
-    (["snapshot_verified", "adoption_pending", "adoption_written", "epoch_adopted"].includes(
-      value.state,
-    ) &&
+    ([
+      "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
+    ].includes(value.state) &&
       (!integer(value.snapshotVerifiedAt) || value.snapshotVerifiedAt < value.createdAt)) ||
+    (["recovery_ready", "service_resumed", "gc_resumed"].includes(value.state) &&
+      (!integer(value.recoveryReleasedAt) ||
+        value.recoveryReleasedAt < value.snapshotVerifiedAt)) ||
     !integer(value.createdAt)
   )
     throw new Error("database_restore_invalid_status");
@@ -89,6 +107,9 @@ export function restoreStatus(value, epoch, id) {
       "adoption_pending",
       "adoption_written",
       "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
     ].includes(value.state) &&
     source.kind !== "time_travel"
   )
@@ -98,6 +119,9 @@ export function restoreStatus(value, epoch, id) {
     epoch,
     state: value.state,
     createdAt: value.createdAt,
+    ...(["recovery_ready", "service_resumed", "gc_resumed"].includes(value.state)
+      ? { recoveryReleasedAt: value.recoveryReleasedAt }
+      : {}),
     source,
     ...(value.newEpoch === undefined ? {} : { newEpoch: value.newEpoch }),
     ...([
@@ -107,12 +131,21 @@ export function restoreStatus(value, epoch, id) {
       "adoption_pending",
       "adoption_written",
       "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
     ].includes(value.state)
       ? { restoreResult: restoreTimeTravelResult(value.restoreResult) }
       : {}),
-    ...(["snapshot_verified", "adoption_pending", "adoption_written", "epoch_adopted"].includes(
-      value.state,
-    )
+    ...([
+      "snapshot_verified",
+      "adoption_pending",
+      "adoption_written",
+      "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
+    ].includes(value.state)
       ? { snapshotVerifiedAt: value.snapshotVerifiedAt }
       : {}),
   };

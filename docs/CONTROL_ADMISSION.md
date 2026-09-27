@@ -1,8 +1,8 @@
 # ControlDOの停止・監査・再開
 
-`ControlDO`のsingletonが受付状態の正本で、D1 `control`はSQL mutation用のmirrorである。migration `0025`で`admission_revision`と`admission_token`を追加した。通常tableは61のまま。以下はWorker内部のoperator RPCであり、公開HTTP endpointは追加していない。
+`ControlDO`のsingletonが受付状態の正本で、D1 `control`はSQL mutation用のmirrorである。migration `0025`で`admission_revision`と`admission_token`を追加した。現在のD1はmigration0046・通常68table。以下はWorker内部のoperator RPCであり、公開HTTP endpointは追加していない。
 
-D1を過去へ戻す前の要求と停止保持は[DATABASE_RESTORE](DATABASE_RESTORE.md)へ追加した。復旧準備中は監査済みでも再開できない。正確な要求の取消し後にも新しい全監査が必要で、D1の上書き・新epochへの採用はまだ接続していない。
+D1を過去へ戻す前の要求と停止保持は[DATABASE_RESTORE](DATABASE_RESTORE.md)へ追加した。復旧準備中は監査済みでも再開できない。正確な要求の取消し後にも新しい全監査が必要。[D1復元後のepoch採用](DATABASE_RESTORE_ADOPTION.md)と[監査・hold解除・段階再開](DATABASE_RESTORE_RECOVERY.md)はprivate operator・CLIへ接続済み。
 
 ## 順序
 
@@ -43,6 +43,6 @@ isolateが失われ、finallyが実行されなかった処理tokenは期限だ�
 - Worker entryからAccess JWT/JWKS、allowlist bootstrap、`/me`、停止503・無認証401・対象外403を検証。
 - open/stop/GC pause/resumeのcommit前後の応答喪失、readback障害、eviction、同時再開、遅延dispatch/ack、状態照会と停止の競合を検証。
 - 監査完了後の予約・permit・bootstrap変化、進行中/中断repair、epoch更新、DO全喪失、遅延したepoch publicationを検証。
-- 実Cloudflareへの配備・実サービス受付再開・完全restore drillは未実施。account単位のmutation同時数/待ちqueue、KDF admission、backup専用barrier、operator HTTP/管理UIは別の未実装範囲。
+- 実Cloudflareへの配備・実サービス受付再開・完全restore drillは未実施。共通mutation admission、KDF実行記録、backup専用barrierは接続済み。operator HTTP/管理UIは未実装。
 
 未知multipart全体閉鎖・予約精算、他prefixのinventory、残るQueue event修復はこの変更で解決したと扱わない。各未解決状態は引き続き再開gateを閉じる。

@@ -131,6 +131,9 @@ export async function applyRestoreTimeTravel({ epoch, id, control, reader, times
       "adoption_pending",
       "adoption_written",
       "epoch_adopted",
+      "recovery_ready",
+      "service_resumed",
+      "gc_resumed",
     ].includes(selected.state)
   )
     return selected;

@@ -38,4 +38,4 @@ DO SQLiteの`control_database_restore_epoch`に予約を保存し、`control_res
 
 予約の再送は固定した予約を再照会するもので、期限を過ぎた復旧元証言を更新するものではない。実上書きの直前にはソース有効性・外部I/O全終了・実対象を別途確認する必要がある。
 
-Time Travel送信と復元後snapshotの隔離照合はローカルfixtureで検証する段階であり、実環境の復旧は未検証。logical import、採用後の全監査・段階再開と復旧holdの解除は未実装。native結果不明・旧実装・DO全喪失時の終了証明も残る。ローカル試験を実Time Travel成功とは扱わない。通常68table・migration0046のままで、remote migration・配備は行っていない。
+Time Travel送信と復元後snapshotの隔離照合はローカルfixtureで検証する段階であり、実環境の復旧は未検証。[採用後の全監査・段階再開と復旧holdの解除](DATABASE_RESTORE_RECOVERY.md)は接続済み。logical importと未終了処理の全ケースの修復は未実装。native結果不明・旧実装・DO全喪失時の終了証明も残る。ローカル試験を実Time Travel成功とは扱わない。通常68table・migration0046のままで、remote migration・配備は行っていない。

@@ -12,6 +12,7 @@ interface RestoreRow extends Record<string, SqlStorageValue> {
   source_json: string;
   phase: "preparing" | "cancelled";
   created_at: number;
+  released_at: number | null;
 }
 
 export interface DatabaseRestoreStatus {
@@ -31,11 +32,15 @@ export interface DatabaseRestoreStatus {
     | "snapshot_verified"
     | "adoption_pending"
     | "adoption_written"
-    | "epoch_adopted";
+    | "epoch_adopted"
+    | "recovery_ready"
+    | "service_resumed"
+    | "gc_resumed";
   createdAt: number;
   newEpoch?: number;
   restoreResult?: RestoreTimeTravelResult;
   snapshotVerifiedAt?: number;
+  recoveryReleasedAt?: number;
 }
 
 // Match the existing logical-backup generation identity contract, including imported UUIDs.
@@ -74,8 +79,18 @@ export class ControlDatabaseRestore {
       id TEXT PRIMARY KEY,epoch INTEGER NOT NULL CHECK(epoch>0),source_json TEXT NOT NULL,
       phase TEXT NOT NULL CHECK(phase IN ('preparing','cancelled')),created_at INTEGER NOT NULL
     )`);
-    sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS control_database_restore_active
-      ON control_database_restore((1)) WHERE phase='preparing'`);
+    if (
+      !sql
+        .exec("PRAGMA table_info(control_database_restore)")
+        .toArray()
+        .some((c) => c.name === "released_at")
+    )
+      sql.exec(
+        "ALTER TABLE control_database_restore ADD COLUMN released_at INTEGER CHECK(released_at IS NULL OR released_at>=created_at)",
+      );
+    sql.exec("DROP INDEX IF EXISTS control_database_restore_active");
+    sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS control_database_restore_active_v2
+      ON control_database_restore((1)) WHERE phase='preparing' AND released_at IS NULL`);
     sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_freeze(
       id TEXT PRIMARY KEY REFERENCES control_database_restore(id),epoch INTEGER NOT NULL,
       token TEXT NOT NULL UNIQUE,phase TEXT NOT NULL CHECK(phase IN ('freezing','frozen','cancelling','cancelled')),
@@ -122,12 +137,38 @@ export class ControlDatabaseRestore {
     sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_adoption_delete
       BEFORE DELETE ON control_database_restore_adoption
       BEGIN SELECT RAISE(ABORT,'database_restore_adoption_conflict'); END`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_release(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),proof_json TEXT NOT NULL,
+      released_at INTEGER NOT NULL,resumed_at INTEGER,gc_proof_json TEXT,gc_resumed_at INTEGER,
+      CHECK(resumed_at IS NULL OR resumed_at>=released_at),
+      CHECK(gc_resumed_at IS NULL OR (resumed_at IS NOT NULL AND gc_proof_json IS NOT NULL AND gc_resumed_at>=resumed_at))
+    )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS control_database_restore_recovery_fts(
+      id TEXT PRIMARY KEY REFERENCES control_database_restore(id),epoch INTEGER NOT NULL,audit_token TEXT NOT NULL
+    )`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_release_immutable
+      BEFORE UPDATE ON control_database_restore_release
+      WHEN NEW.id<>OLD.id OR NEW.proof_json<>OLD.proof_json OR NEW.released_at<>OLD.released_at
+        OR (OLD.resumed_at IS NOT NULL AND NEW.resumed_at IS NOT OLD.resumed_at)
+        OR (OLD.gc_proof_json IS NOT NULL AND NEW.gc_proof_json IS NOT OLD.gc_proof_json)
+        OR (OLD.gc_resumed_at IS NOT NULL AND NEW.gc_resumed_at IS NOT OLD.gc_resumed_at)
+      BEGIN SELECT RAISE(ABORT,'database_restore_recovery_conflict'); END`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_release_delete
+      BEFORE DELETE ON control_database_restore_release
+      BEGIN SELECT RAISE(ABORT,'database_restore_recovery_conflict'); END`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS control_database_restore_released_immutable
+      BEFORE UPDATE ON control_database_restore
+      WHEN OLD.released_at IS NOT NULL AND NEW.released_at IS NOT OLD.released_at
+      BEGIN SELECT RAISE(ABORT,'database_restore_recovery_conflict'); END`);
   }
 
   active(): boolean {
     return (
-      this.sql.exec("SELECT 1 FROM control_database_restore WHERE phase='preparing'").toArray()
-        .length > 0
+      this.sql
+        .exec(
+          "SELECT 1 FROM control_database_restore WHERE phase='preparing' AND released_at IS NULL",
+        )
+        .toArray().length > 0
     );
   }
 
@@ -164,6 +205,12 @@ export class ControlDatabaseRestore {
   }
 
   #status(row: RestoreRow): DatabaseRestoreStatus {
+    const release = this.sql
+      .exec(
+        "SELECT resumed_at,gc_resumed_at FROM control_database_restore_release WHERE id=?",
+        row.id,
+      )
+      .toArray()[0];
     const adoption = this.sql
       .exec("SELECT state FROM control_database_restore_adoption WHERE id=?", row.id)
       .toArray()[0];
@@ -196,28 +243,36 @@ export class ControlDatabaseRestore {
       id: row.id,
       epoch: row.epoch,
       source: JSON.parse(row.source_json) as DatabaseRestoreSource,
-      state: adoption
-        ? adoption.state === "adopted"
-          ? "epoch_adopted"
-          : adoption.state === "written"
-            ? "adoption_written"
-            : "adoption_pending"
-        : snapshot
-          ? snapshot.verified_at === null
-            ? "snapshot_checking"
-            : "snapshot_verified"
-          : execution
-            ? execution.state === "ended"
-              ? "restore_written"
-              : "restore_pending"
-            : reservation
-              ? reservation.phase === "reserved"
-                ? "epoch_reserved"
-                : "epoch_reserving"
-              : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
-                ? row.phase
-                : freeze.phase,
+      state:
+        row.released_at !== null
+          ? release?.gc_resumed_at != null
+            ? "gc_resumed"
+            : release?.resumed_at != null
+              ? "service_resumed"
+              : "recovery_ready"
+          : adoption
+            ? adoption.state === "adopted"
+              ? "epoch_adopted"
+              : adoption.state === "written"
+                ? "adoption_written"
+                : "adoption_pending"
+            : snapshot
+              ? snapshot.verified_at === null
+                ? "snapshot_checking"
+                : "snapshot_verified"
+              : execution
+                ? execution.state === "ended"
+                  ? "restore_written"
+                  : "restore_pending"
+                : reservation
+                  ? reservation.phase === "reserved"
+                    ? "epoch_reserved"
+                    : "epoch_reserving"
+                  : row.phase === "cancelled" || !freeze || freeze.phase === "cancelled"
+                    ? row.phase
+                    : freeze.phase,
       createdAt: row.created_at,
+      ...(row.released_at === null ? {} : { recoveryReleasedAt: row.released_at }),
       ...(reservation?.new_epoch ? { newEpoch: reservation.new_epoch } : {}),
       ...(execution?.result_json
         ? { restoreResult: JSON.parse(execution.result_json) as RestoreTimeTravelResult }
@@ -248,7 +303,7 @@ export class ControlDatabaseRestore {
     if (existing) return existing;
     this.assertInactive();
     this.sql.exec(
-      "INSERT INTO control_database_restore VALUES(?,?,?,'preparing',?)",
+      "INSERT INTO control_database_restore(id,epoch,source_json,phase,created_at) VALUES(?,?,?,'preparing',?)",
       id,
       epoch,
       sourceJson(source),

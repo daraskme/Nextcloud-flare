@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行fe736b6の[CI36333077770](https://github.com/daraskme/Nextcloud-flare/actions/runs/36333077770)は全5job成功。直前1e2207fの[CI36334806558](https://github.com/daraskme/Nextcloud-flare/actions/runs/36334806558)は記録時点でUbuntu・Windows分割2・browser成功、backup・Windows分割1実行中。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みのGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。1e2207fの[CI36334806558](https://github.com/daraskme/Nextcloud-flare/actions/runs/36334806558)は全5job成功。直前422bea3の[CI36336294169](https://github.com/daraskme/Nextcloud-flare/actions/runs/36336294169)は記録時点でUbuntu・Windows分割1・browser成功、Windows分割2・backup実行中。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [復元後の監査と段階再開](DATABASE_RESTORE_RECOVERY.md)をprivate operator・CLIへ接続しました。FTS再構築と同じtokenの全監査を完了し、D1最終fence・DO未終了処理・予約履歴を再確認して復旧holdを解除します。受付とGCは別操作で順に再開し、後の停止やGC pauseを古い復旧要求が上書きしないよう、解除と再開の証拠を保存します。
+- Node4file/110件成功（26.90s）、うち新規22件。監査のpage予算、出力の正規化、失敗時の再送/解除拒否、GCの別操作化、CLI引数境界を確認。/tmp/ncf-recovery-node.log。
+- 初回workerd3file/110件は78成功・32失敗。未終了R2を模したfixture行が残り、後続testのbeforeEachが正しくfreeze_pendingを返していた。実際にはnative送信していないfixtureをfinallyでnot_startedへ記録する後片付けを追加。既存DO台帳の移行テストも追加し、最終4file/144件成功（167.21s）、新規10件。FTS再構築と監査tokenの束縛、未終了処理/maintenance holdの拒否、古い再開要求の拒否、GC再送が後のpauseを上書きしないこと、次の復旧要求作成、遅延fenceで解除しないことを確認。/tmp/ncf-recovery-worker.log、/tmp/ncf-recovery-worker-final.log。
+- private binding通し試験成功。全25復旧操作の権限拒否、68table/SQL57,512bytesのsnapshot検証、停止中epoch採用、実R2ファイルを含む12ページ全監査、hold解除、受付再開後のeviction、GC再開まで確認。元backup世代はSQL11,370bytes。従来fixtureはfake ETagとSQLだけでR2実体を持たなかったため初回監査が失敗し、実blob PUTの結果をledgerへ記録するfixtureへ修正。/tmp/ncf-recovery-operator.log、/tmp/ncf-recovery-operator-final.log、.wrangler/operator-drill-sQqDSC/report.json。
+- 型・lint453file・契約/設定・Web build・Worker dry-run成功。/tmp/ncf-recovery-types-final.log、/tmp/ncf-recovery-lint.log、/tmp/ncf-recovery-build.log。schema0046・通常68table・依存追加なし。実環境の復旧・再開・migration/deploy・通知・timer設置は行っていない。
+
+### 先行する予約epochの停止中採用
 
 - [復元後の予約epoch採用](DATABASE_RESTORE_ADOPTION.md)をprivate operator・adopt-epoch CLIへ接続しました。検証済みcontrolの全列を比較する原子的D1 batchで旧凍結/tokenを解消し、予約epoch・新しい停止tokenを設定します。独立CLIがそのtokenを指定先から読み返した後、DOへ同じepochを採用します。完了済みoperationと未終了KDF/R2記録を保持し、採用後もmaintenance・GC停止・復旧holdを維持します。
 - 初回Node4file/100件は91成功・9失敗。D1のepochトリガーによるKDF待機期限延長を期待hashに反映できていなかったため、同列の下限以上を許容し、他のcontrol全列を厳密照合する形へ修正。最終4file/104件成功（26.82s）、うち新規20件。schema0037/0039/0040/0046、backup/restore凍結の原子的解除とrollback、terminal保持、KDF/R2保留保持、mutation admission閉鎖、設定変更・読戻し不一致・秘密非出力を確認。/tmp/ncf-adoption-node.log、/tmp/ncf-adoption-node-final.log。

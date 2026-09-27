@@ -37,7 +37,7 @@ export function restoreOperatorConfig(input, mode) {
 
 export const restoreErrorCode = (error) => {
   const message = error instanceof Error ? error.message : "";
-  return /^(?:(?:database_restore|restore_source|epoch_history|backup|invalid_backup)_[a-z_]+|invalid_database_restore)$/.test(
+  return /^(?:(?:database_restore|restore_source|epoch_history|backup|invalid_backup|recovery)_[a-z_]+|invalid_database_restore|invalid_recovery_limit)$/.test(
     message,
   )
     ? message
@@ -69,6 +69,11 @@ export function restoreControlCalls(binding, timeoutMs = 60000) {
       "attestSnapshot",
       "beginAdoption",
       "attestAdoption",
+      "auditRecovery",
+      "rebuildRecoveryFts",
+      "releaseRecovery",
+      "resumeRecovery",
+      "resumeRecoveryGc",
       "cancel",
     ].map((method) => [
       method,

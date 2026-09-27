@@ -80,6 +80,7 @@ import { ControlRestoreBackups } from "./controlRestoreBackups";
 import { ControlRestoreBlobs } from "./controlRestoreBlobs";
 import { ControlRestoreEpoch } from "./controlRestoreEpoch";
 import { ControlRestoreFreeze, type RestoreFreezeInput } from "./controlRestoreFreeze";
+import { ControlRestoreRecovery } from "./controlRestoreRecovery";
 import { ControlRestoreSnapshot } from "./controlRestoreSnapshot";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
@@ -158,6 +159,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreTimeTravel: ControlRestoreTimeTravel;
   readonly #restoreSnapshot: ControlRestoreSnapshot;
   readonly #restoreAdoption: ControlRestoreAdoption;
+  readonly #restoreRecovery: ControlRestoreRecovery;
   readonly #r2Writes: ControlR2Writes;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -291,6 +293,24 @@ export class ControlDO extends DurableObject<Env> {
         );
         if (saved.toArray().length !== 1) throw new Error("database_restore_adoption_conflict");
         this.#admission.resetEpoch(next, token);
+      },
+    );
+    this.#restoreRecovery = new ControlRestoreRecovery(
+      ctx.storage,
+      env.DB,
+      this.#databaseRestore,
+      this.#restoreEpoch,
+      this.#admission,
+      {
+        current: (epoch) => {
+          const row = this.#row();
+          if (row.phase !== "ready" || row.epoch !== epoch)
+            throw new Error("database_restore_recovery_conflict");
+          assertNoBackup(ctx.storage.sql);
+        },
+        next: (epoch, limit) => this.nextRecoveryAuditPage(epoch, limit),
+        rebuild: (epoch) => this.rebuildRecoveryFts(epoch),
+        status: () => this.status(),
       },
     );
     this.#kdf = new ControlKdf(
@@ -494,6 +514,31 @@ export class ControlDO extends DurableObject<Env> {
   ) {
     this.#row();
     return this.#restoreAdoption.attest(expectedEpoch, id, challenge);
+  }
+
+  async auditDatabaseRestoreRecovery(expectedEpoch: number, id: string, limit = 10) {
+    this.#row();
+    return this.#restoreRecovery.audit(expectedEpoch, id, limit);
+  }
+  async rebuildDatabaseRestoreFts(expectedEpoch: number, id: string) {
+    this.#row();
+    return this.#restoreRecovery.rebuild(expectedEpoch, id);
+  }
+  async releaseDatabaseRestoreRecovery(expectedEpoch: number, id: string) {
+    this.#row();
+    return this.#restoreRecovery.release(
+      expectedEpoch,
+      id,
+      this.env.RESTORE_WRITE_ENABLED === "true",
+    );
+  }
+  async resumeDatabaseRestoreRecovery(expectedEpoch: number, id: string) {
+    this.#row();
+    return this.#restoreRecovery.resume(expectedEpoch, id);
+  }
+  async resumeDatabaseRestoreGc(expectedEpoch: number, id: string) {
+    this.#row();
+    return this.#restoreRecovery.resumeGc(expectedEpoch, id);
   }
 
   /** Verify one immutable SQL part; this neither attests the SQL nor authorizes an overwrite. */

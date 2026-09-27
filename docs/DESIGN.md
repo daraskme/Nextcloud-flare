@@ -965,7 +965,7 @@ journal は廃止する。第一の復旧手段は D1 **Time Travel point-in-tim
 5. §12 の base `search_index` から FTS external-content index を再構築し、R2 existence、quota/ref、root/owner、bootstrap、share version、credential、permit/claim、outbox を検査する。旧 UploadDO は stale epoch failed、LockDO/BudgetDO は old epoch lease を無効化する。
 6. 検証後に maintenance を解除し、最後に GC pause を解除する。月1回 staging restore drill を行う。
 
-[D1書込み凍結](DATABASE_RESTORE_FREEZE.md)として修復の新規受付拒否・全通常table guardを接続済み。[復元専用epoch予約](DATABASE_RESTORE_EPOCH.md)、既定で無効のTime Travel送信・実応答記録、[復元後snapshotの読取り・隔離検証](DATABASE_RESTORE_SNAPSHOT.md)も接続した。[採用用D1停止batch・独立marker照合・DO epoch採用](DATABASE_RESTORE_ADOPTION.md)も接続済み。外部I/Oの全終了を証明する運用条件、全監査・復旧hold解除・再開は未完了。通常の`bumpEpoch()`はD1採用まで行うため、上記の復元専用予約へそのまま流用しない。実装済みの準備・照合と次工程の境界は[DATABASE_RESTORE](DATABASE_RESTORE.md)に記録する。
+[D1書込み凍結](DATABASE_RESTORE_FREEZE.md)として修復の新規受付拒否・全通常table guardを接続済み。[復元専用epoch予約](DATABASE_RESTORE_EPOCH.md)、既定で無効のTime Travel送信・実応答記録、[復元後snapshotの読取り・隔離検証](DATABASE_RESTORE_SNAPSHOT.md)も接続した。[採用用D1停止batch・独立marker照合・DO epoch採用](DATABASE_RESTORE_ADOPTION.md)も接続済み。[FTS再構築・全監査・復旧hold解除・段階再開](DATABASE_RESTORE_RECOVERY.md)も接続済み。外部I/Oの全終了を証明する運用条件と未終了処理の全ケースの修復、実環境での復旧は未完了。通常の`bumpEpoch()`はD1採用まで行うため、上記の復元専用予約へそのまま流用しない。実装済みの準備・照合と次工程の境界は[DATABASE_RESTORE](DATABASE_RESTORE.md)に記録する。
 
 保持は Time Travel 30日 + logical export を **日次、最大年齢35日、最少5世代**の両条件で満たす。すなわち5世代を残しても35日超の export は復旧対象にせず、失敗時は alert して新しい5世代を再確保する。R2だけから namespace を再構築できるとは主張しない。
 

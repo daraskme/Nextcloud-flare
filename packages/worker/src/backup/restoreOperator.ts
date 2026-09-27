@@ -95,6 +95,21 @@ export class DatabaseRestoreOperator extends WorkerEntrypoint<Env, RestoreOperat
   attestAdoption(epoch: number, id: string, challenge: RestoreAdoptionChallenge) {
     return this.#control(epoch, id).attestDatabaseRestoreAdoption(epoch, id, challenge);
   }
+  auditRecovery(epoch: number, id: string, limit = 10) {
+    return this.#control(epoch, id).auditDatabaseRestoreRecovery(epoch, id, limit);
+  }
+  rebuildRecoveryFts(epoch: number, id: string) {
+    return this.#control(epoch, id).rebuildDatabaseRestoreFts(epoch, id);
+  }
+  releaseRecovery(epoch: number, id: string) {
+    return this.#control(epoch, id).releaseDatabaseRestoreRecovery(epoch, id);
+  }
+  resumeRecovery(epoch: number, id: string) {
+    return this.#control(epoch, id).resumeDatabaseRestoreRecovery(epoch, id);
+  }
+  resumeRecoveryGc(epoch: number, id: string) {
+    return this.#control(epoch, id).resumeDatabaseRestoreGc(epoch, id);
+  }
   attestSnapshot(
     epoch: number,
     id: string,

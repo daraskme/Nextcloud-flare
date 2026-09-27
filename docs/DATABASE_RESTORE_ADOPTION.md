@@ -40,4 +40,4 @@ intent保存直後の停止、SQL拒否、markerの不一致ではpendingを自�
 
 この処理は停止状態でのepoch採用であり、検証後の全行不変性や全外部I/O終了を新たに証明するものではない。旧epochのSQLをfenceするが、過去に開始したR2/暗号処理の終了を捏造しない。保留中のKDF/R2記録を残したまま監査・修復へ進め、全監査と運用証明がそろうまでサービスを再開しない。
 
-復旧holdの最終解除、全監査・R2実体/会計照合・段階再開へのoperator接続、native不明/旧実装/全DO喪失時の終了証明、安全な中止、logical import、大規模DBの再開cursor/RTO、実Cloudflare復旧ドリルは未完了。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照する。
+後続の[FTS再構築・全監査・復旧hold解除・段階再開](DATABASE_RESTORE_RECOVERY.md)はprivate operatorとCLIへ接続した。未終了処理の全ケースの収束、native不明/旧実装/全DO喪失時の終了証明、安全な中止、logical import、大規模DBの再開cursor/RTO、実Cloudflare復旧ドリルは未完了。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照する。

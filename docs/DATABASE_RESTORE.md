@@ -1,6 +1,6 @@
 # D1復旧要求の準備と停止保持
 
-更新: 2026-09-28。Time Travel / logical exportからの稼働系復旧に向けた準備・世代照合・SQL検証証言・対象照合・凍結と、[要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)を実装した。[Time Travelの一度限りの送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)も接続済みだが既定で無効で、local fixtureの検証段階。[新epochへの停止中採用](DATABASE_RESTORE_ADOPTION.md)も接続済みで、全監査と復旧hold解除は後続。準備・検証・予約の成功や機能フラグを、R2処理の全終了証明として扱わない。
+更新: 2026-09-28。Time Travel / logical exportからの稼働系復旧に向けた準備・世代照合・SQL検証証言・対象照合・凍結と、[要求に固定したepoch事前予約](DATABASE_RESTORE_EPOCH.md)を実装した。[Time Travelの一度限りの送信・実応答記録](DATABASE_RESTORE_TIME_TRAVEL.md)も接続済みだが既定で無効で、local fixtureの検証段階。[新epochへの停止中採用](DATABASE_RESTORE_ADOPTION.md)も接続済みで、[全監査・復旧hold解除・段階再開](DATABASE_RESTORE_RECOVERY.md)も接続済み。準備・検証・予約の成功や機能フラグを、R2処理の全終了証明として扱わない。
 
 ## 内部RPC
 

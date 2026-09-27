@@ -15,7 +15,8 @@ export async function adoptRestoreEpoch({ epoch, id, control, reader }) {
   });
   await reader.assertUnchanged();
   const selected = restoreStatus(await control.inspect(epoch, id), epoch, id);
-  if (selected.state === "epoch_adopted") return selected;
+  if (["epoch_adopted", "recovery_ready", "service_resumed", "gc_resumed"].includes(selected.state))
+    return selected;
   if (
     !["snapshot_verified", "adoption_pending", "adoption_written"].includes(selected.state) ||
     typeof reader.snapshotQuery !== "function"

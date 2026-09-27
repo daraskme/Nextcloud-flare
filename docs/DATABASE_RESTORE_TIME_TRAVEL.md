@@ -4,7 +4,7 @@
 
 `apply-time-travel`をprivate operatorとCLIへ接続した。復旧要求に固定したDB/bookmarkへ1回だけPOSTし、実際の成功応答をD1の巻戻し対象外にあるControlDOへ記録する。これは復元内容の検証や新epochの採用を完了するコマンドではない。成功後も旧epochとmaintenance/GC停止を保持する。後続の[verify-restored](DATABASE_RESTORE_SNAPSHOT.md)は全通常tableの隔離検証と観測保存まで接続済み。
 
-既定では`RESTORE_WRITE_ENABLED`を設定せず、送信を拒否する。今回の接続はローカルfixtureで検証する開発段階である。[snapshot照合](DATABASE_RESTORE_SNAPSHOT.md)と[停止中epoch採用](DATABASE_RESTORE_ADOPTION.md)は接続済み。native結果不明・旧実装・DO全storage喪失時を含む外部I/O全終了の運用証明、全監査・復旧hold解除・段階再開、実Cloudflareドリルは未完了。これらのrelease gateを閉じるまで実環境で有効化しない。フラグの設定自体はI/O終了証明にならない。
+既定では`RESTORE_WRITE_ENABLED`を設定せず、送信を拒否する。今回の接続はローカルfixtureで検証する開発段階である。[snapshot照合](DATABASE_RESTORE_SNAPSHOT.md)と[停止中epoch採用](DATABASE_RESTORE_ADOPTION.md)は接続済み。native結果不明・旧実装・DO全storage喪失時を含む外部I/O全終了の運用証明、未終了処理の全ケースの修復、実Cloudflareドリルは未完了。[全監査・hold解除・段階再開](DATABASE_RESTORE_RECOVERY.md)はローカル検証用に接続済み。これらのrelease gateを閉じるまで実環境で有効化しない。フラグの設定自体はI/O終了証明にならない。
 
 ## 呼出しと前提
 
