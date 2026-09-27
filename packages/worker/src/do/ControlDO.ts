@@ -502,6 +502,22 @@ export class ControlDO extends DurableObject<Env> {
     return this.#backup.begin(expectedEpoch, id);
   }
 
+  async grantBackupPublicationWrite(
+    expectedEpoch: number,
+    id: string,
+    request: Parameters<ControlBackup["grantPublicationWrite"]>[2],
+  ) {
+    return this.#backup.grantPublicationWrite(expectedEpoch, id, request);
+  }
+
+  async finishBackupPublicationWrite(
+    expectedEpoch: number,
+    id: string,
+    grant: Parameters<ControlBackup["finishPublicationWrite"]>[2],
+  ) {
+    return this.#backup.finishPublicationWrite(expectedEpoch, id, grant);
+  }
+
   async planDailyBackup(expectedEpoch: number, replaceCompletedId?: string) {
     return this.#backup.daily(expectedEpoch, replaceCompletedId);
   }

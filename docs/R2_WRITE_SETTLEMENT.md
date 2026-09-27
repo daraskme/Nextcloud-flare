@@ -64,6 +64,8 @@ migrationはmaintenance中、backup/restore freezeなし、open permit・claimed
 
 ## 残る境界
 
+外部CLI保存に向けた[専用送信受付](BACKUP_PUBLICATION_WRITES.md)をControlDOとprivate bindingへ追加した。D1全table凍結中もDO側にpendingを保持し、完了・解除・取消しを拒否する。実際のCLI PUTからこの受付を呼ぶ接続は後続であり、下記の既存送信点はまだ未統合。
+
 この記録は上記14種類が対象。BACKUPSの外部CLI保存、epoch履歴などを含む全R2処理の最終終了証明はまだ統合していない。native結果自体が不明な試行を解消する運用証明も未実装。
 
 最終停止への次の確認点は以下。通常の運用上の収束条件と、DB巻戻し前のnative終了証明を区別する。

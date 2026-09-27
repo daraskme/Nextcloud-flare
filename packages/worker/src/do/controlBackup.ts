@@ -1,4 +1,10 @@
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import {
+  type BackupPublicationWrite,
+  type BackupPublicationWriteGrant,
+  validateBackupPublicationWrite,
+  validateBackupPublicationWriteGrant,
+} from "../../../shared/src/backupPublicationWrite";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
 import { inspectBackupInventory } from "../backup/inventory";
 import { pruneBackupGeneration } from "../backup/prune";
@@ -8,6 +14,12 @@ import type { BackupDeleteAuthority } from "../db/r2BackupDelete";
 import type { R2WriteRequest } from "../db/r2Write";
 import type { R2WriteSource } from "../services/r2Write";
 import { ControlBackupSweep, initializeBackupSweep } from "./controlBackupSweep";
+import {
+  assertBackupWritesSettled,
+  ControlBackupWrites,
+  initializeBackupWrites,
+  pendingBackupWrite,
+} from "./controlBackupWrites";
 import { epochNumber } from "./epochHistory";
 
 export interface BackupAdmissionSnapshot {
@@ -73,6 +85,7 @@ const drained = `NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
 
 export function initializeBackupState(sql: SqlStorage): void {
   initializeBackupSweep(sql);
+  initializeBackupWrites(sql);
   sql.exec(`CREATE TABLE IF NOT EXISTS control_backup(
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),id TEXT NOT NULL,epoch INTEGER NOT NULL,
     phase TEXT NOT NULL CHECK(phase IN ('preparing','frozen','releasing','released')),
@@ -92,7 +105,10 @@ export function initializeBackupState(sql: SqlStorage): void {
   )`);
 }
 export function backupActive(sql: SqlStorage): boolean {
-  return sql.exec("SELECT 1 FROM control_backup WHERE phase<>'released'").toArray().length > 0;
+  return (
+    sql.exec("SELECT 1 FROM control_backup WHERE phase<>'released'").toArray().length > 0 ||
+    pendingBackupWrite(sql)
+  );
 }
 export function assertNoBackup(sql: SqlStorage): void {
   if (backupActive(sql)) throw new Error("backup_active");
@@ -145,6 +161,41 @@ export class ControlBackup {
       partsVerified: row.cursor,
       partsTotal: row.total,
     };
+  }
+
+  async grantPublicationWrite(epoch: number, id: string, request: BackupPublicationWrite) {
+    this.#identity(epoch, id);
+    validateBackupPublicationWrite(request);
+    const row = this.#row();
+    const current = () => {
+      if (!row || row.id !== id || row.phase !== "frozen") throw new Error("backup_not_frozen");
+      this.#current(row);
+      const generation = request.generation;
+      if (
+        generation.id !== row.id ||
+        generation.epoch !== row.epoch ||
+        generation.token !== row.token ||
+        generation.createdAt !== row.created_at ||
+        generation.watermark !== row.watermark
+      )
+        throw new Error("backup_generation_conflict");
+      if (this.#publication()?.id === id) throw new Error("backup_completion_in_progress");
+      assertBackupWritesSettled(this.storage.sql);
+    };
+    current();
+    if (!(await this.#prepared(row!, true))) throw new Error("backup_not_frozen");
+    current();
+    return new ControlBackupWrites(this.storage.sql).grant(request);
+  }
+
+  /** Private exporter attestation of actual PUT completion; readback/timeout is never evidence. */
+  finishPublicationWrite(epoch: number, id: string, grant: BackupPublicationWriteGrant) {
+    this.#identity(epoch, id);
+    validateBackupPublicationWriteGrant(grant);
+    const row = this.#row();
+    if (grant.epoch !== epoch || grant.id !== id || row?.id !== id || row.epoch !== epoch)
+      throw new Error("backup_publication_write_conflict");
+    return new ControlBackupWrites(this.storage.sql).finish(grant, row.token);
   }
 
   inventory(epoch: number, cursor?: BackupInventoryCursor) {
@@ -327,6 +378,7 @@ export class ControlBackup {
 
   async #complete(epoch: number, id: string, hash: string): Promise<BackupCompletionStatus> {
     this.#identity(epoch, id);
+    assertBackupWritesSettled(this.storage.sql);
     if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))
       throw new Error("backup_invalid_manifest_hash");
     const row = this.#row();
@@ -357,6 +409,7 @@ export class ControlBackup {
       throw new Error("backup_not_frozen");
     this.#current(row);
     // The D1 read yielded: another verifier may already have pinned this generation's hash.
+    assertBackupWritesSettled(this.storage.sql);
     publication = this.#publication();
     if (publication?.id === id && (publication.hash !== hash || publication.epoch !== epoch))
       throw new Error("backup_publication_conflict");
@@ -451,6 +504,7 @@ export class ControlBackup {
   }
   async begin(epoch: number, id: string): Promise<BackupBarrierStatus> {
     this.#identity(epoch, id);
+    assertBackupWritesSettled(this.storage.sql);
     let row = this.#row();
     if (row?.id === id) {
       if (row.epoch !== epoch || row.phase === "releasing") throw new Error("backup_conflict");
@@ -482,18 +536,22 @@ export class ControlBackup {
       this.#identity(epoch, id);
       const prior = this.capture();
       epochNumber(prior.revision + 2);
-      this.storage.sql.exec(
-        `INSERT INTO control_backup VALUES(1,?,?,'preparing',?,?,0,?,?,NULL)
+      this.storage.transactionSync(() => {
+        assertBackupWritesSettled(this.storage.sql);
+        this.storage.sql.exec("DELETE FROM control_backup_writes WHERE state='ended'");
+        this.storage.sql.exec(
+          `INSERT INTO control_backup VALUES(1,?,?,'preparing',?,?,0,?,?,NULL)
         ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,epoch=excluded.epoch,phase=excluded.phase,
         token=excluded.token,release_token=excluded.release_token,cancelled=0,prior_json=excluded.prior_json,
         created_at=excluded.created_at,watermark=NULL`,
-        id,
-        epoch,
-        crypto.randomUUID(),
-        crypto.randomUUID(),
-        JSON.stringify(prior),
-        Date.now(),
-      );
+          id,
+          epoch,
+          crypto.randomUUID(),
+          crypto.randomUUID(),
+          JSON.stringify(prior),
+          Date.now(),
+        );
+      });
       row = this.#row()!;
     }
     const frozen = await this.#prepared(row, true);
@@ -584,6 +642,7 @@ export class ControlBackup {
     completionHash?: string,
   ): Promise<BackupBarrierStatus> {
     this.#identity(epoch, id);
+    assertBackupWritesSettled(this.storage.sql);
     let row = this.#row();
     if (!row || row.id !== id || row.epoch !== epoch) throw new Error("backup_conflict");
     const publication = this.#publication();

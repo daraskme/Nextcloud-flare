@@ -1,5 +1,9 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { backupManifestKey } from "../../../shared/src/backupPublication";
+import type {
+  BackupPublicationWrite,
+  BackupPublicationWriteGrant,
+} from "../../../shared/src/backupPublicationWrite";
 import type { BackupInventoryCursor } from "../../../shared/src/backupRetention";
 import { primary } from "../db/primary";
 import { CONTROL_NAME } from "../do/controlName";
@@ -38,6 +42,12 @@ export class BackupOperator extends WorkerEntrypoint<Env, OperatorProps> {
   }
   begin(epoch: number, id: string) {
     return this.#control(epoch, id).beginBackup(epoch, id);
+  }
+  grantPublicationWrite(epoch: number, id: string, request: BackupPublicationWrite) {
+    return this.#control(epoch, id).grantBackupPublicationWrite(epoch, id, request);
+  }
+  finishPublicationWrite(epoch: number, id: string, grant: BackupPublicationWriteGrant) {
+    return this.#control(epoch, id).finishBackupPublicationWrite(epoch, id, grant);
   }
   daily(epoch: number) {
     this.#authorize(epoch);

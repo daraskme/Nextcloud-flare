@@ -10,7 +10,6 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 function attempt(kind, state = "pending", source = null) {
-  const now = Math.floor(Date.now() / 1000) * 1000;
   const owner = [
     "orphan.delete",
     "bucket.abort",
@@ -33,13 +32,17 @@ function attempt(kind, state = "pending", source = null) {
         : kind === "probe.put"
           ? "system/r2-binding-probe-v1"
           : `u/${owner ?? "missing"}/b/${randomUUID()}`,
-    now + 2000,
-    now - 3000,
     state,
-    state === "pending" ? null : now,
+    state,
     source,
   ];
-  db.prepare("INSERT INTO r2_write_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(...values);
+  // Use the trigger's SQLite clock in this same statement. A JavaScript timestamp
+  // captured just before a second boundary can exhaust the fixture's dispatch margin.
+  db.prepare(
+    `INSERT INTO r2_write_attempts VALUES(?,?,?,?,?,?,
+    strftime('%s','now')*1000+2000,strftime('%s','now')*1000-3000,?,
+    CASE WHEN ?='pending' THEN NULL ELSE strftime('%s','now')*1000 END,?)`,
+  ).run(...values);
   return values;
 }
 it("preserves all thirteen kinds and expired pending/terminal receipts without changing any field", async () => {

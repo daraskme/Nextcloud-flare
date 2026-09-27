@@ -4,7 +4,7 @@
 
 ## 呼出し権限
 
-`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt/inventory/replenish/prune/sweep`を公開する。inventoryは読取り専用、pruneは[期限切れの指定世代を回収](BACKUP_PRUNING.md)し、sweepは永続cursorを使って全世代を走査する。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
+`BackupOperator`はmain Workerのnamed entrypointで、`daily/begin/complete/cancel/receipt/inventory/replenish/prune/sweep`と`grantPublicationWrite/finishPublicationWrite`を公開する。新しい2操作は[保存送信の受付・終了記録](BACKUP_PUBLICATION_WRITES.md)で、CLI実PUTとの接続は後続。inventoryは読取り専用、pruneは[期限切れの指定世代を回収](BACKUP_PRUNING.md)し、sweepは永続cursorを使って全世代を走査する。通常のHTTP handlerにはrouteを追加せず、entrypoint自身のfetchは404を返す。任意SQLやControlDOのrecover/resume/repairは提供しない。一般のAccess service principalやapp passwordの権限は変更しない。
 
 呼出し元が持つ専用service bindingをcapabilityとして扱う。[Cloudflare RPCの権限モデル](https://developers.cloudflare.com/workers/runtime-apis/rpc/visibility/)と[named entrypoint](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/#named-entrypoints)に従い、bindingの付与を運用者に限定する。target側は`BACKUP_OPERATOR_ENABLED=true`を明示した場合だけ受け付け、bindingの`ctx.props.purpose=logical-backup-v1`と`ctx.props.environment=ENVIRONMENT`を全操作で検査する。propsは秘密鍵ではなく、環境inventoryに含むbinding設定である。このcapabilityを未信頼Workerへ渡したり、利用者入力をそのまま転送するHTTP窓口を作ったりしてはならない。
 

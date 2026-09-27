@@ -217,6 +217,8 @@ try {
   for (const binding of ["WRONG_ENV", "NO_GRANT", "DISABLED"]) {
     for (const method of [
       "begin",
+      "grantPublicationWrite",
+      "finishPublicationWrite",
       "complete",
       "cancel",
       "receipt",

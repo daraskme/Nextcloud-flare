@@ -3,13 +3,23 @@
 更新: 2026-09-27。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は実行中。今回の全体check/CIとは分けて扱う。
+世代削除0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)ではWindows分割1がNode 1,000/1,001件成功・1件失敗で、integrationは未実行。失敗fixtureは今回修正した。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)はUbuntu・Windows2分割・browserが成功、backupが実行中。今回の全体check/CIとは分けて扱う。
 
 先行fa8f105の[CI36323261376](https://github.com/daraskme/Nextcloud-flare/actions/runs/36323261376)はUbuntu・Windows2分割・backup・browserの全5jobが成功しました。
 
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [バックアップ保存の送信受付](BACKUP_PUBLICATION_WRITES.md)をControlDOとprivate BackupOperatorへ追加。全D1凍結中のためDO SQLiteに記録し、既存backup_tokenで停止を保持する。正確な世代tuple・key/hash/bytes、単一pending、同UUIDの再送拒否、終了token照合、完了検証・解除との競合拒否を実装。CLI実PUTへの接続は後続。migration0046・68tableのまま、依存追加なし。
+- 新規workerd18件を含む保存受付・backup完了・barrierの3file/57件が成功（37.82s）。全68table不変、実PUT後の終了、正確な読戻しでunknownを解消しないこと、grant応答喪失・eviction・並行受付・次世代への古い終了要求・D1読取り後の競合を確認。/tmp/ncf-backup-publication-grants-worker.log。
+- private binding adapterに2操作を追加し、既存CLI接続のNode42件が成功（44.27s）。/tmp/ncf-backup-publication-grants-node.log。
+- 先行0dbb5a5のWindows CIは既存probe移行試験の最初のINSERTがr2_write_unavailableで失敗。時刻をJavaScriptで秒単位に丸めてからINSERTしており、秒境界を跨ぐとtriggerの必要余裕を失うfixtureだった。probe/BACKUPS probe/世代削除の同型3fixtureを同じSQL文内の時刻計算へ変更。15件成功（2.89s）。production期限やtriggerは変更していない。/tmp/ncf-0dbb5a5-windows1.log、/tmp/ncf-backup-publication-grants-schema.log。
+- 型・lint425file・契約/設定・Web build・Worker dry-runが成功。共有validatorはNodeの直接importも確認。/tmp/ncf-backup-publication-grants-types.log、/tmp/ncf-backup-publication-grants-build.log。
+- private binding運用ドリルも68table・SQL11,350bytesで成功。新規2操作の環境不一致・capabilityなし・無効化時の拒否を追加し、既存の日次生成/補充・回収・13復旧操作・D1/BLOBS/BACKUPS照合・凍結・取消しを確認。S3/Time Travelは合成provider。/tmp/ncf-backup-publication-grants-operator.log、.wrangler/operator-drill-TNYH6g/report.json。
+- 今回は関連検査の範囲で、全Node/workerd・Windows/browserはpush後のCIで確認する。外部CLI native PUT、epoch履歴、unknown運用証明、新epoch予約・live採用は未完了。remote resource作成・migration・deployなし。
+
+### 先行するBACKUPS世代削除の送信記録
 
 - migration0046でBACKUPS世代の部品batch DELETEと最終manifest DELETEを14種類目のR2送信・終了記録へ接続。完成receipt/hash・35日保持・元のepoch/停止mode/revision/tokenと正確なkey集合を再検査し、元の25秒全体期限と10秒I/O期限を維持する。同じ世代のpendingがある間は追加削除とabsent確定を拒否する。削除したことの観測をnative終了へ読み替えない。
 - 新規Node5ケースで全13種類・全状態・期限切れpendingの旧11列保持、元試行一意性、凍結中移行拒否を検証。保存世代0046も追加し、2file/25件が成功（8.42s）。Node全1,001件（53file、46.99s）も成功。/tmp/ncf-backups-prune-node.log、/tmp/ncf-backups-prune-unit-all.log。

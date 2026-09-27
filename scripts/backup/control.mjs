@@ -42,6 +42,8 @@ export function controlCalls(binding, timeoutMs = 60000) {
   return Object.fromEntries(
     [
       "begin",
+      "grantPublicationWrite",
+      "finishPublicationWrite",
       "complete",
       "cancel",
       "receipt",
