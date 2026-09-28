@@ -3,7 +3,15 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { type Account, ApiError, api, errorMessage, formatBytes } from "../../lib/api";
-import { COPY_RECORDS_CHANGED, type CopyRecord, forgetCopy, readCopyRecords } from "./records";
+import {
+  beginCopyRetry,
+  COPY_RECORDS_CHANGED,
+  type CopyRecord,
+  clearCopyRetry,
+  forgetCopy,
+  readCopyRecords,
+  rememberCopyRetry,
+} from "./records";
 
 function CopyProgress({
   account,
@@ -47,6 +55,25 @@ function CopyProgress({
       onCompleted();
     }
   }, [status?.state, onCompleted]);
+  useEffect(() => {
+    if (status?.retryJobId && status.retryJobId !== record.retriedJobId) {
+      try {
+        rememberCopyRetry(account, record.id, status.retryJobId);
+        setFailure("");
+      } catch (error) {
+        setFailure(errorMessage(error));
+      }
+    }
+    // The status can be unchanged after storage becomes available again. Each
+    // successful refresh must retry saving the accepted successor in that case.
+  }, [
+    account.id,
+    account.epoch,
+    record.id,
+    record.retriedJobId,
+    status?.retryJobId,
+    job.dataUpdatedAt,
+  ]);
   const terminal = status && ["completed", "cancelled", "failed"].includes(status.state);
   const dismiss = () => {
     try {
@@ -60,7 +87,12 @@ function CopyProgress({
       <div className="copy-job-heading">
         <strong>{record.name}</strong>
         {(terminal || (job.error instanceof ApiError && job.error.status === 404)) && (
-          <Button size="small" variant="ghost" disabled={busy} onClick={dismiss}>
+          <Button
+            size="small"
+            variant="ghost"
+            disabled={busy || !!record.retryKey}
+            onClick={dismiss}
+          >
             表示を閉じる
           </Button>
         )}
@@ -96,6 +128,13 @@ function CopyProgress({
           {!!status.cleanupPending && (
             <p>容量の精算を待っています。保持中: {formatBytes(status.heldBytes)}</p>
           )}
+          {record.retriedJobId && (
+            <p>再試行を受け付けました。新しいコピーの項目で進捗を確認できます。</p>
+          )}
+          {["cancelled", "failed"].includes(status.state) &&
+            !status.cleanupPending &&
+            !record.retriedJobId &&
+            !status.retryJobId && <p>再試行すると、現在の内容を同じ保存先へ新しくコピーします。</p>}
           {status.state === "completed" &&
             (record.destinationShare ? (
               <Link
@@ -117,6 +156,40 @@ function CopyProgress({
         </p>
       )}
       <div className="copy-job-actions">
+        {status &&
+          ["cancelled", "failed"].includes(status.state) &&
+          !status.cleanupPending &&
+          !record.retriedJobId &&
+          !status.retryJobId && (
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setFailure("");
+                try {
+                  const key = beginCopyRetry(account, record.id);
+                  const operation = await api.retryCopyJob(record.id, key);
+                  if (!operation.result?.jobId) throw new Error("invalid_copy_receipt");
+                  rememberCopyRetry(account, record.id, operation.result.jobId);
+                } catch (error) {
+                  if (error instanceof ApiError && [400, 409, 413, 423].includes(error.status)) {
+                    try {
+                      clearCopyRetry(account, record.id);
+                    } catch {
+                      /* Keep the original key. */
+                    }
+                  }
+                  setFailure(errorMessage(error));
+                } finally {
+                  setBusy(false);
+                  void query.invalidateQueries({ queryKey });
+                }
+              }}
+            >
+              {record.retryKey ? "再試行の結果を確認" : "コピーを再試行"}
+            </Button>
+          )}
         <Button
           size="small"
           variant="ghost"

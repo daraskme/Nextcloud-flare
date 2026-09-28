@@ -35,7 +35,10 @@ const statusQuery = (id: string): SqlStatement => ({
   sql: `SELECT j.id,j.state,j.checkpoint,j.node_count AS nodeCount,j.blob_count AS blobCount,
     CASE WHEN j.state IN ('cancelled','failed') THEN (SELECT COUNT(*) FROM copy_job_blobs WHERE job_id=j.id) ELSE 0 END AS cleanupPending,
     COALESCE((SELECT SUM(r.bytes) FROM copy_job_blobs cb JOIN reservations r ON r.id=cb.reservation_id WHERE cb.job_id=j.id),0) AS heldBytes,
-    j.error_code AS errorCode,j.published_root_id AS publishedRootId FROM bulk_jobs j WHERE j.id=? AND j.kind='node.copy'`,
+    j.error_code AS errorCode,j.published_root_id AS publishedRootId,
+    (SELECT json_extract(result_json,'$.jobId') FROM operations WHERE kind='copy.enqueue'
+      AND state='committed' AND json_extract(operands_json,'$.retryOf')=j.id) AS retryJobId
+    FROM bulk_jobs j WHERE j.id=? AND j.kind='node.copy'`,
   values: [id],
 });
 async function authority(db: D1Database, principal: Principal, id: string) {

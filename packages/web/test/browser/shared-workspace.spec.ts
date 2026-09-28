@@ -727,7 +727,7 @@ test("cross-owner copy from a read-only shared root survives lost acceptance, st
   }
 });
 
-test("copy into a selected edit share keeps its destination and cancels the same job after a lost reply", async ({
+test("copy into an edit share cancels and retries once across lost replies and reload", async ({
   page: owner,
   browser,
 }, info) => {
@@ -772,6 +772,7 @@ test("copy into a selected edit share keeps its destination and cancels the same
     await panel.getByRole("button", { name: "コピーを取り消す" }).click();
     await expect(panel.getByText("コピーを取り消しました", { exact: true })).toBeVisible();
     await expect(panel.getByText(/容量の精算を待っています/)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "コピーを再試行", exact: true })).toHaveCount(0);
     await page.reload();
     await expect(panel.getByText("コピーを取り消しました", { exact: true })).toBeVisible();
     expect(bodies).toHaveLength(1);
@@ -779,6 +780,70 @@ test("copy into a selected edit share keeps its destination and cancels the same
     await panel.getByRole("button", { name: "進捗を更新" }).click();
     await expect(panel.getByText(/容量の精算を待っています/)).toHaveCount(0);
     expect(bodies).toHaveLength(1);
+    const retries: string[] = [];
+    let successor = "",
+      blockRead = true;
+    await page.route(`**/api/v1/jobs/${jobId}`, (route) =>
+      blockRead ? route.abort("connectionfailed") : route.continue(),
+    );
+    await page.route(`**/api/v1/jobs/${jobId}/retry`, async (route) => {
+      retries.push(route.request().headers()["idempotency-key"]!);
+      expect(route.request().postDataJSON()).toEqual({});
+      const response = await localFetch(route);
+      expect(response.status()).toBe(202);
+      successor = (await response.json()).result.jobId;
+      await route.abort("connectionfailed");
+    });
+    await panel.getByRole("button", { name: "コピーを再試行", exact: true }).click();
+    await expect.poll(() => successor).toMatch(/^copy_[a-f0-9]{64}$/);
+    expect(successor).not.toBe(jobId);
+    expect(
+      await page.evaluate(
+        (id) =>
+          JSON.parse(sessionStorage.getItem("ncf-copy-jobs")!).find(
+            (r: { id: string }) => r.id === id,
+          ).retryKey,
+        jobId,
+      ),
+    ).toBe(retries[0]);
+    // Reload can discover the accepted job even if saving its receipt is still
+    // denied. Restoring storage and refreshing unchanged status must retry save.
+    await page.addInitScript((originalId) => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (
+          key === "ncf-copy-jobs" &&
+          JSON.parse(value).some((r: { id: string }) => r.id !== originalId)
+        )
+          throw new Error("tracking_storage_denied");
+        return set.call(this, key, value);
+      };
+      (window as unknown as { restoreCopyStorage: () => void }).restoreCopyStorage = () => {
+        Storage.prototype.setItem = set;
+      };
+    }, jobId);
+    blockRead = false;
+    await page.reload();
+    const child = panel.locator(`article[data-job-id="${successor}"]`);
+    await expect(panel.getByRole("alert")).toContainText("コピー状況を保存できません");
+    await expect(child).toHaveCount(0);
+    await page.evaluate(() =>
+      (window as unknown as { restoreCopyStorage: () => void }).restoreCopyStorage(),
+    );
+    await panel.getByRole("button", { name: "進捗を更新" }).click();
+    await expect(child.getByText("コピーの開始を待っています", { exact: true })).toBeVisible();
+    await expect(panel.getByText(/再試行を受け付けました/)).toBeVisible();
+    expect(retries).toHaveLength(1);
+    expect(bodies).toHaveLength(1);
+    await page.screenshot({ path: info.outputPath("copy-retry-recovery.png"), fullPage: true });
+    expect(await deliverCopy(page, successor)).toBe("completed");
+    await child.getByRole("button", { name: "進捗を更新" }).click();
+    await expect(child.getByText("コピー完了", { exact: true })).toBeVisible();
+    await child.getByRole("link", { name: "保存先を開く" }).click();
+    await expect(
+      page.getByRole("button").filter({ hasText: name }).filter({ hasText: "開く・保存" }),
+    ).toBeVisible();
+    expect(retries).toHaveLength(1);
   } finally {
     await context.close();
   }

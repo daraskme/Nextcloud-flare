@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  beginCopyRetry,
   COPY_RECORDS_KEY,
   clearCopyRecords,
+  clearCopyRetry,
   forgetCopy,
   readCopyRecords,
   rememberCopy,
+  rememberCopyRetry,
 } from "../../src/features/copy/records";
 import type { Operation } from "../../src/lib/api";
 
@@ -79,4 +82,47 @@ it("rejects an incomplete accepted receipt before the pending intent can be clea
     rememberCopy(account, operation, { ...body, destination: { spaceId: "space" } }),
   ).toThrow();
   expect(values.has(COPY_RECORDS_KEY)).toBe(false);
+});
+
+it("keeps one retry key through reload and atomically replaces uncertainty with the successor", () => {
+  rememberCopy(account, operation, body);
+  const key = beginCopyRetry(account, job);
+  expect(beginCopyRetry(account, job)).toBe(key);
+  expect(readCopyRecords(account)[0]?.retryKey).toBe(key);
+  const child = "copy_" + "b".repeat(64);
+  const storage = vi.spyOn(sessionStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
+  expect(() => rememberCopyRetry(account, job, child)).toThrow("copy_tracking_unavailable");
+  expect(readCopyRecords(account)).toHaveLength(1);
+  expect(readCopyRecords(account)[0]?.retryKey).toBe(key);
+  storage.mockRestore();
+  rememberCopyRetry(account, job, child);
+  const [next, original] = readCopyRecords(account);
+  expect(next).toMatchObject({ id: child, destinationShare: body.destination.share });
+  expect(next).not.toHaveProperty("retryKey");
+  expect(original).toMatchObject({ id: job, retriedJobId: child });
+  expect(original).not.toHaveProperty("retryKey");
+  forgetCopy(account, child);
+  rememberCopyRetry(account, job, child);
+  expect(readCopyRecords(account)).toHaveLength(1);
+});
+it("clears a definitively rejected retry without changing the original job", () => {
+  rememberCopy(account, operation, body);
+  const key = beginCopyRetry(account, job);
+  clearCopyRetry(account, job);
+  expect(readCopyRecords(account)[0]).not.toHaveProperty("retryKey");
+  expect(beginCopyRetry(account, job)).not.toBe(key);
+  expect(() => rememberCopyRetry(account, job, job)).toThrow("invalid_copy_receipt");
+  expect(() =>
+    rememberCopyRetry({ id: "other", epoch: 1 }, job, "copy_" + "b".repeat(64)),
+  ).toThrow();
+});
+it("does not start a retry unless its intent can be saved", () => {
+  rememberCopy(account, operation, body);
+  vi.spyOn(sessionStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
+  expect(() => beginCopyRetry(account, job)).toThrow("copy_tracking_unavailable");
+  expect(readCopyRecords(account)[0]).not.toHaveProperty("retryKey");
 });

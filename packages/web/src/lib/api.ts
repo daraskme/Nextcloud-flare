@@ -114,6 +114,8 @@ export function errorMessage(error: unknown): string {
     return "コピー状況を保存できません。ブラウザーの保存設定を確認し、同じ操作の結果を確認してください。";
   if (error.code === "copy_tracking_full")
     return "コピー状況の保存上限です。完了した項目の表示を閉じてから、同じ操作の結果を確認してください。";
+  if (error.code === "copy_retry_cleanup_pending")
+    return "前のコピーの容量精算を待っています。精算が終わると再試行できます。";
   if (error.code === "gc_quiescing")
     return "削除処理の完了を待っています。少し待ってから同じ操作を再確認してください。";
   if (error.code === "blob_unrecoverable")
@@ -241,6 +243,9 @@ export class ApiClient {
   }
   cancelCopyJob(id: string) {
     return this.json<CopyJobStatus>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, "POST", {});
+  }
+  retryCopyJob(id: string, key: string) {
+    return this.mutation(`/api/v1/jobs/${encodeURIComponent(id)}/retry`, "POST", {}, key);
   }
   sharedWithMe(cursor?: string | null, signal?: AbortSignal) {
     return this.request<{ items: InternalShare[]; nextCursor: string | null }>(

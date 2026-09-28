@@ -3,7 +3,9 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、確認時点でUbuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4実行中です。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。今回の画面接続のCIはpush後に確認します。
+直前060b66bの[CI36408876941](https://github.com/daraskme/Nextcloud-flare/actions/runs/36408876941)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功して終了しました。今回の再試行実装のCIはpush後に確認します。
+
+先行45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、Ubuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4はcancelledで終了しました。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。
 
 先行0b85355の[CI36400478502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36400478502)は終了しました。Ubuntu・Windows分割1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4はcopy-executorの2件で書込み許可取得に失敗しました（workerd813/815件成功）。以前の固定件数assertionとは異なります。残り3秒で次転送へ進む経路をローカルで再現し、6秒の事前余裕を追加しましたが、CIの元例外が隠れていたため、2件の根本原因を確定したとは扱いません。内部causeを保持して次回CIで確認します。
 
@@ -26,6 +28,20 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- 停止済みコピーの明示的retryを既存REST routeと画面へ接続。migration0061、通常75table・147 route。元のactor/credential/両側share選択/operandを維持し、現在の内容から新jobを受付。operationsの一意索引と確定triggerで元jobの全精算と後継1件を検査し、manifest読戻し・operation照会・復旧監査でも証拠を再確認する。
+- タブへretry keyを送信前に保存し、後継記録と未確認印の解除を単一保存にした。GETのretryJobIdからreload後に同じ後継を発見する。旧jobの予算・保持・native記録は変更せず、未精算時の自動retryを行わない。
+- 対象Node3file/22件成功（1.36秒、/tmp/ncf-copy-retry-focused-unit.log）、コピーHTTP38件成功（32.07秒、/tmp/ncf-copy-retry-http.log）。その後、予算停止からのretry chainとquota回復後の新keyを2件追加し、HTTP・受付・精算・復旧監査のworkerd4file/111件が全成功（85.75秒、/tmp/ncf-copy-retry-native-final.log）。
+- 再試行browser1件成功（36.3秒、/tmp/ncf-copy-retry-browser.log）。edit共有へのcopy、cancel応答喪失、精算待ち、retry受付の応答喪失とGET障害、reload後の後継追跡、追加POSTなし、実consumerでの公開、共有保存先表示を確認。コピー2件の画面画像を確認済み。
+
+- 全Node82file/1,483件成功（78.60秒、/tmp/ncf-copy-retry-node-full.log）。schema generatorは75table・FK index・operation catalogueの検査に成功し、生成contractに差分なし（/tmp/ncf-copy-retry-schema.log）。
+
+- 全browser32件成功（5.8分、/tmp/ncf-copy-retry-browser-full.log）。その後、追跡情報の保存失敗から設定復旧後の再保存ケースを追加し、修正前は進捗GETに成功しても後継が表示されず失敗した（/tmp/ncf-copy-retry-storage-baseline.log）。同じretryJobIdでもGETの成功時刻を使って再保存し、保存復旧後の「進捗を更新」で回復するよう修正した。
+
+- 修正後の同じbrowserケース1件は成功（36.8秒、/tmp/ncf-copy-retry-browser-release.log）。保存設定の復旧→同じGET結果→後継保存→実公開まで追加POSTなしで確認し、再撮影も確認済み。重複を除いて**全Node1,483 + 関連workerd111 + browser32 = 1,626件成功**。
+- 最終型・lint557file・契約/設定・Web build/Worker dry-run成功。ログは/tmp/ncf-copy-retry-types-release.log、/tmp/ncf-copy-retry-lint-release.log、/tmp/ncf-copy-retry-contracts.log、/tmp/ncf-copy-retry-config.log、/tmp/ncf-copy-retry-build-release.log。更新資料9fileのlocal link281件とgit diff --check成功。全workerd・実Wrangler backupドリルは今回ローカルでは再実行していない。remote migration/deployなし。
+
+### 先行するコピー画面の接続
 
 - コピー元の共有選択と保存先を分離し、My Drive/受信edit共有フォルダーを選択可能にした。read共有・直接file共有・共有rootのcopyを接続。同一spaceの同期COWは既存経路を使う。REST schema0060/75table/147 route、依存は変更なし。
 - 202 receiptからjob IDとaccount/epoch/保存先をタブのsessionStorageへ保存してからpending操作を消す。保存失敗でも同じkeyの操作確認を残し、復旧成功時は古いエラーを消す。ジョブ照会/取消は固定IDだけで行い、現在の認可エラー時に古い公開先/取消を隠す。別jobの自動作成はしない。最大100件保存、5件ずつ表示・照会。logoutで全タブの追跡情報を消す。

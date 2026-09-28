@@ -24,6 +24,7 @@ import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 
 import { copyPublicationAuthority } from "./copyPublicationAuthority";
+import { verifyCopyRetry } from "./copyRetryProof";
 
 export interface OperationIntent {
   readonly id: string;
@@ -672,6 +673,8 @@ export async function lookupOperation(
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (row.kind === "copy.enqueue") {
       if (!destination || row.principal_kind !== "user" || destination.spaceId === row.space_id)
+        return null;
+      if (result && Object.hasOwn(operands, "retryOf") && !(await verifyCopyRetry(db, row.op_id)))
         return null;
       if (result) {
         const jobId = "copy_" + row.op_id.slice(3);

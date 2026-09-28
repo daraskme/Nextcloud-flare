@@ -29,6 +29,7 @@ import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 export interface CreateCopyJobRequest extends CopyPreparationInput {
   readonly requestId: string;
   readonly lockTokens: readonly string[];
+  readonly retryOf?: string;
 }
 /** Async acceptance shared by private REST and internal calls; publication has its own receipt. */
 export async function createCopyJob(
@@ -47,6 +48,8 @@ export async function createCopyJob(
     input.destination.spaceId === input.sourceSpaceId
   )
     throw new Error("cross_owner_copy_required");
+  if (input.retryOf !== undefined && !/^copy_[a-f0-9]{64}$/.test(input.retryOf))
+    throw new Error("invalid_copy_retry");
   const principal = input.principal,
     destination = input.destination,
     name = portableName(input.name);
@@ -58,6 +61,7 @@ export async function createCopyJob(
     depth: input.depth,
     overwriteTargetId: input.overwriteTargetId ?? null,
     lockHashes: hashes,
+    ...(input.retryOf ? { retryOf: input.retryOf } : {}),
   };
   const intent = await operationIntent(
     principal,
@@ -71,6 +75,7 @@ export async function createCopyJob(
       name: name.name,
       depth: input.depth,
       ...(input.overwriteTargetId ? { overwriteTargetId: input.overwriteTargetId } : {}),
+      ...(input.retryOf ? { retryOf: input.retryOf } : {}),
     },
     destination,
   );

@@ -128,3 +128,28 @@ it("a still-claimed operation remains uncertain", async () => {
     new ApiClient().mutation("/api/v1/nodes", "POST", {}, "original-key"),
   ).rejects.toEqual(new ApiError(503, "commit_unknown", "op_fixture"));
 });
+
+it("sends the persisted copy retry key and reconciles an uncertain receipt by operation ID", async () => {
+  const job = "copy_" + "a".repeat(64),
+    child = "copy_" + "b".repeat(64);
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(
+      Response.json(
+        { title: "commit_unknown" },
+        { status: 503, headers: { "Operation-Id": "op_retry" } },
+      ),
+    )
+    .mockResolvedValueOnce(
+      Response.json({ id: "op_retry", state: "committed", result: { status: 202, jobId: child } }),
+    );
+  vi.stubGlobal("fetch", fetcher);
+  const result = await new ApiClient().retryCopyJob(job, "saved-retry-key");
+  expect(result.result?.jobId).toBe(child);
+  expect(fetcher.mock.calls[1]![0]).toBe(`/api/v1/jobs/${job}/retry`);
+  expect(fetcher.mock.calls[1]![1].headers["Idempotency-Key"]).toBe("saved-retry-key");
+  expect(fetcher.mock.calls[1]![1].body).toBe("{}");
+  expect(fetcher.mock.calls[2]![0]).toBe("/api/v1/operations/op_retry");
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});

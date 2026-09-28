@@ -4,6 +4,7 @@ import {
   type PreparedCopy,
   preparedCopyBlobs,
 } from "../services/copyPreparation";
+import { verifyCopyRetry } from "./copyRetryProof";
 
 export const COPY_MANIFEST_CHUNK_BYTES = 65_536;
 export const COPY_JOB_STEPS = 4;
@@ -130,6 +131,11 @@ export async function loadCopyJobManifest(db: D1Database, id: string): Promise<S
     row.chunks !== Math.ceil(row.bytes / COPY_MANIFEST_CHUNK_BYTES)
   )
     throw new Error("copy_manifest_unavailable");
+  if (
+    Object.hasOwn(JSON.parse(row.operands_json), "retryOf") &&
+    !(await verifyCopyRetry(db, row.op_id))
+  )
+    throw new Error("copy_retry_unproven");
   const bytes = new Uint8Array(row.bytes);
   // D1 represents BLOBs as number arrays. Do not materialize all 8 MiB in that form at once.
   for (let start = 0; start < row.chunks; start += 8) {

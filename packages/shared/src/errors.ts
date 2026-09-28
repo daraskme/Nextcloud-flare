@@ -20,6 +20,7 @@ export type PlatformErrorCode =
   | "method_not_allowed"
   | "locked"
   | "blob_unrecoverable"
+  | "copy_retry_cleanup_pending"
   | "gc_quiescing";
 
 export function problem(status: number, code: PlatformErrorCode): Response {

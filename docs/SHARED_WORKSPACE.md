@@ -60,4 +60,4 @@ schema0049・69通常tableを維持し、migration追加はない。移動・コ
 
 ## 次の実装
 
-同じ所有者の異なる共有間のDAV転送は[DAV Shared](DAV_SHARED.md)へ接続済み。Access画面のコピー先選択とcross-owner jobの受付/照会/取消も接続済み。copyのretry/DLQ・未知native修復・最大規模検証、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。
+同じ所有者の異なる共有間のDAV転送は[DAV Shared](DAV_SHARED.md)へ接続済み。Access画面のコピー先選択とcross-owner jobの受付/照会/取消も接続済み。copyのDLQ運用・未知native修復・最大規模検証、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。

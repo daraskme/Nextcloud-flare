@@ -11,4 +11,5 @@ export interface CopyJobStatus {
   heldBytes: number;
   errorCode: string | null;
   publishedRootId: string | null;
+  retryJobId: string | null;
 }

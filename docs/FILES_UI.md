@@ -30,7 +30,7 @@ uploadのIndexedDBはID、capability、epoch、name/size/mtime、先頭・末尾
 - 完了時とlogout時に記録を削除する。scope変更/認証失効では旧送信を止め、遅れて戻るCSRF/create結果で保存情報を復活させない。
 - logoutはサーバー失効を先に確認し、BroadcastChannel→memory/Query/IndexedDB/sessionStorage削除→Access logoutへ進む。アプリ専用Cache Storageは現在作成していない。
 
-非同期コピーは[コピー画面と追跡情報](COPY_JOBS.md#コピー画面と追跡情報)へ接続した。コピー先をマイドライブ/編集可能な共有フォルダーから選び、受付後のjob ID保存が成功してからpending操作を消す。進捗・公開完了・取消・精算待ちを表示し、タブのreloadでは同じjobを追跡する。logoutは追跡情報も全タブから消す。タブを閉じた後・別端末の追跡復元とretryは後続。
+非同期コピーは[コピー画面と追跡情報](COPY_JOBS.md#コピー画面と追跡情報)へ接続した。コピー先をマイドライブ/編集可能な共有フォルダーから選び、受付後のjob ID保存が成功してからpending操作を消す。進捗・公開完了・取消・精算待ちを表示し、タブのreloadでは同じjobを追跡する。logoutは追跡情報も全タブから消す。停止と全精算後の明示的retry、応答喪失/reload後の同じ後継追跡も接続済み。タブを閉じた後・別端末の追跡復元は後続。
 
 ## private assets
 

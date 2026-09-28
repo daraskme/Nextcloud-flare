@@ -11,8 +11,11 @@ import type { Principal } from "../../src/auth/authorize";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { executeCopyJob } from "../../src/jobs/copyExecutor";
+import { stopExpiredCopyJob } from "../../src/jobs/copyLifecycle";
 import { dispatchOutbox } from "../../src/jobs/outbox";
 import { handleOutboxBatch } from "../../src/jobs/queue";
+import { createCopyJob } from "../../src/services/createCopyJob";
+import { createFolder } from "../../src/services/createFolder";
 import { createInternalShare, updateInternalShare } from "../../src/services/internalShares";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { accessFixture } from "../fixtures/access";
@@ -144,6 +147,7 @@ it("accepts a read-share copy over REST, publishes through Queue and returns dur
     heldBytes: 3,
     errorCode: null,
     publishedRootId: null,
+    retryJobId: null,
   });
   expect(
     await env.DB.prepare("SELECT COUNT(*) AS n FROM nodes WHERE owner_id=? AND name='HTTP copy'")
@@ -285,7 +289,7 @@ it("enforces CSRF, JSON bounds and host/path constraints before creating or stop
   for (const body of ["[]", "null", "{", '{"share":null}', " ".repeat(8193)])
     expect((await f.call(job.path + "/cancel", { method: "POST", body })).status).toBe(400);
   expect((await f.call(job.path + "?share=other")).status).toBe(404);
-  expect((await f.call(job.path + "/retry", { method: "POST", body: "{}" })).status).toBe(404);
+  expect((await f.call(job.path + "/retry", { method: "POST", body: "{}" })).status).toBe(409);
   expect(
     (
       await handleCopyJobHttp(
@@ -344,6 +348,9 @@ it.each(["missing", "actor", "credential", "source_revoke", "destination_revoke"
     expect((await f.call(path, {}, env.DB, actor)).status).toBe(404);
     const response = await f.call(path + "/cancel", { method: "POST", body: "{}" }, env.DB, actor);
     expect([403, 404]).toContain(response.status);
+    expect([403, 404]).toContain(
+      (await f.call(path + "/retry", { method: "POST", body: "{}" }, env.DB, actor)).status,
+    );
     expect(
       await env.DB.prepare("SELECT state FROM bulk_jobs WHERE id=?").bind(job.id).first("state"),
     ).toBe("pending");
@@ -617,5 +624,228 @@ it("routes creation, read and cancel through real Access login and CSRF verifica
   );
   // The fixture's other Access credential for the same user is not the initiating session.
   expect((await f.call(job.path)).status).toBe(404);
-  expect(copyJobRoute(new Request(origin + job.path + "/retry", { method: "POST" }))).toBe(false);
+  expect(copyJobRoute(new Request(origin + job.path + "/retry", { method: "POST" }))).toBe(true);
+  expect(await consume(job.outboxId)).toEqual({ acked: 1, retried: 0 });
+  const retried = await accepted(
+    await call(job.path + "/retry", {
+      method: "POST",
+      body: "{}",
+      headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+    }),
+  );
+  expect(retried.id).not.toBe(job.id);
+  expect((await f.call(retried.path)).status).toBe(404);
+});
+
+const retry = (f: Fixture, path: string, key = crypto.randomUUID(), db = env.DB) =>
+  f.call(path + "/retry", { method: "POST", body: "{}", headers: { "Idempotency-Key": key } }, db);
+async function stopped(f: Fixture, job: Awaited<ReturnType<typeof accepted>>) {
+  expect((await f.call(job.path + "/cancel", { method: "POST", body: "{}" })).status).toBe(200);
+  expect(await consume(job.outboxId)).toEqual({ acked: 1, retried: 0 });
+}
+
+it("retries a closed copy with fresh contents and keys, retaining exactly one accepted successor", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  expect((await retry(f, original.path)).status).toBe(409);
+  expect((await f.call(original.path + "/cancel", { method: "POST", body: "{}" })).status).toBe(
+    200,
+  );
+  const held = await retry(f, original.path);
+  expect(held.status).toBe(409);
+  expect(await held.json()).toMatchObject({ title: "copy_retry_cleanup_pending" });
+  expect(await jobCount(f.target.ids.user)).toBe(1);
+  await consume(original.outboxId);
+  const extra = await createFolder(app(), {
+    principal: {
+      kind: "user",
+      user_id: f.source.ids.user,
+      credential_id: f.source.ids.credential,
+      epoch: 1,
+    },
+    idempotencyKey: crypto.randomUUID(),
+    spaceId: f.source.ids.space,
+    parentId: f.source.ids.folder,
+    name: "Added after original acceptance",
+    lockTokens: [],
+  });
+  expect(extra.kind).toBe("terminal");
+  const key = crypto.randomUUID(),
+    child = await accepted(await retry(f, original.path, key));
+  expect(child.id).not.toBe(original.id);
+  expect((await accepted(await retry(f, original.path, key))).id).toBe(child.id);
+  expect((await accepted(await retry(f, original.path))).id).toBe(child.id);
+  expect(await status(f, original.path)).toMatchObject({
+    state: "cancelled",
+    nodeCount: 2,
+    heldBytes: 0,
+    retryJobId: child.id,
+  });
+  expect(await status(f, child.path)).toMatchObject({
+    state: "pending",
+    nodeCount: 3,
+    heldBytes: 3,
+    retryJobId: null,
+  });
+  expect(await jobCount(f.target.ids.user)).toBe(2);
+  await dispatch(child.outboxId);
+  expect(await consume(child.outboxId)).toEqual({ acked: 1, retried: 0 });
+  expect((await accepted(await retry(f, original.path))).id).toBe(child.id);
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+    used_bytes: 6,
+    reserved_bytes: 0,
+    physical_bytes: 3,
+    incorrect_refs: 0,
+  });
+  expect(
+    await env.BLOBS.get(`u/${f.target.ids.user}/b/${child.id}_b00001`).then((o) => o?.text()),
+  ).toBe("abc");
+});
+
+it("recovers a lost retry commit acknowledgement without accepting a second successor", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  await stopped(f, original);
+  const db = injectBatch(
+    (s) => s.startsWith("INSERT INTO bulk_jobs"),
+    async () => {
+      throw new Error("lost_retry_ack");
+    },
+    true,
+  );
+  const key = crypto.randomUUID(),
+    child = await accepted(await retry(f, original.path, key, db));
+  expect((await accepted(await retry(f, original.path, key))).id).toBe(child.id);
+  expect(await jobCount(f.target.ids.user)).toBe(2);
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({ reserved_bytes: 3 });
+});
+
+it("converges concurrent retry requests with different keys onto one accepted job", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  await stopped(f, original);
+  const keys = [crypto.randomUUID(), crypto.randomUUID()];
+  const results = await Promise.all(keys.map((key) => retry(f, original.path, key)));
+  for (const response of results) expect([202, 503]).toContain(response.status);
+  const first = await accepted(await retry(f, original.path, keys[0]!));
+  expect((await accepted(await retry(f, original.path, keys[1]!))).id).toBe(first.id);
+  expect(await jobCount(f.target.ids.user)).toBe(2);
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({ reserved_bytes: 3 });
+});
+
+it.each(["name", "parent", "depth", "held", "duplicate"])(
+  "fences invalid retry %s in the acceptance transaction",
+  async (mode) => {
+    const f = await fixture(),
+      original = await accepted(await f.create());
+    if (mode !== "held") await stopped(f, original);
+    let child: Awaited<ReturnType<typeof accepted>> | undefined;
+    if (mode === "duplicate") child = await accepted(await retry(f, original.path));
+    const outcome = await createCopyJob(app(), {
+      ...f.request,
+      name: mode === "name" ? "Different" : f.body.name,
+      destinationParentId: mode === "parent" ? f.target.ids.root : f.request.destinationParentId,
+      depth: mode === "depth" ? "0" : "infinity",
+      requestId: crypto.randomUUID(),
+      retryOf: original.id,
+    });
+    expect(outcome.kind === "terminal" && outcome.operation.state === "committed").toBe(false);
+    expect(await jobCount(f.target.ids.user)).toBe(child ? 2 : 1);
+    expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+      reserved_bytes: mode === "held" || child ? 3 : 0,
+    });
+  },
+);
+
+it("rejects authorization revocation immediately before retry acceptance", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  await stopped(f, original);
+  const db = injectBatch(
+    (s) => s.startsWith("INSERT INTO bulk_jobs"),
+    async () => {
+      await f.revoke();
+    },
+    false,
+  );
+  expect((await retry(f, original.path, crypto.randomUUID(), db)).status).not.toBe(202);
+  expect(await jobCount(f.target.ids.user)).toBe(1);
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({ reserved_bytes: 0 });
+});
+
+it("requires CSRF, an idempotency key and an empty bounded JSON body for retry", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  await stopped(f, original);
+  for (const headers of [{ "X-CSRF-Token": "" }, { Origin: "https://elsewhere.invalid" }])
+    expect(
+      (await f.call(original.path + "/retry", { method: "POST", body: "{}", headers })).status,
+    ).toBe(403);
+  for (const body of ["null", "[]", "{", '{"destination":{}}', " ".repeat(8193)])
+    expect((await f.call(original.path + "/retry", { method: "POST", body })).status).toBe(400);
+  for (const key of ["", "x,y", "x".repeat(201)])
+    expect((await retry(f, original.path, key)).status).toBe(400);
+  expect(await jobCount(f.target.ids.user)).toBe(1);
+});
+
+it("replays an accepted overwrite retry after the old target was trashed by publication", async () => {
+  const f = await fixture();
+  await observeTarget(f);
+  const original = await accepted(
+    await f.call(`/api/v1/nodes/${f.source.ids.file}/copy`, {
+      method: "POST",
+      body: JSON.stringify({ ...f.body, name: "File", overwriteTargetId: f.target.ids.file }),
+    }),
+  );
+  await stopped(f, original);
+  const child = await accepted(await retry(f, original.path));
+  await dispatch(child.outboxId);
+  expect(await consume(child.outboxId)).toEqual({ acked: 1, retried: 0 });
+  expect((await accepted(await retry(f, original.path))).id).toBe(child.id);
+  expect(await jobCount(f.target.ids.user)).toBe(2);
+});
+
+it("retries a budget-stopped job and permits another retry only from its stopped successor", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  await env.DB.prepare("UPDATE bulk_jobs SET invocation_count=200 WHERE id=?")
+    .bind(original.id)
+    .run();
+  expect(await stopExpiredCopyJob(mutationEnv(), original.id)).toBe(true);
+  expect(await consume(original.outboxId)).toEqual({ acked: 1, retried: 0 });
+  const child = await accepted(await retry(f, original.path));
+  await stopped(f, child);
+  const next = await accepted(await retry(f, child.path));
+  expect((await accepted(await retry(f, original.path))).id).toBe(child.id);
+  expect(next.id).not.toBe(child.id);
+  expect(
+    await env.DB.prepare("SELECT invocation_count FROM bulk_jobs WHERE id=?")
+      .bind(original.id)
+      .first("invocation_count"),
+  ).toBe(200);
+  expect(await status(f, original.path)).toMatchObject({
+    state: "failed",
+    errorCode: "copy_budget_exhausted",
+    retryJobId: child.id,
+  });
+  expect(await jobCount(f.target.ids.user)).toBe(3);
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({ reserved_bytes: 3 });
+});
+
+it("allows a fresh key after a rejected retry without changing an uncertain or accepted successor", async () => {
+  const f = await fixture(),
+    original = await accepted(await f.create());
+  await stopped(f, original);
+  await env.DB.prepare("UPDATE users SET quota_bytes=3 WHERE id=?").bind(f.target.ids.user).run();
+  const key = crypto.randomUUID();
+  expect((await retry(f, original.path, key)).status).toBe(409);
+  expect(await jobCount(f.target.ids.user)).toBe(1);
+  expect((await status(f, original.path)).retryJobId).toBeNull();
+  await env.DB.prepare("UPDATE users SET quota_bytes=1000000 WHERE id=?")
+    .bind(f.target.ids.user)
+    .run();
+  expect((await retry(f, original.path, key)).status).toBe(409);
+  const child = await accepted(await retry(f, original.path));
+  expect((await accepted(await retry(f, original.path, key))).id).toBe(child.id);
+  expect(await jobCount(f.target.ids.user)).toBe(2);
 });
