@@ -4,6 +4,9 @@ import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
+import { executeCopyJob } from "../../src/jobs/copyExecutor";
+import { consumeCopyOutbox } from "../../src/jobs/copyQueue";
+import { dispatchOutbox } from "../../src/jobs/outbox";
 import { foundationFixture } from "../fixtures/foundation";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
@@ -115,6 +118,30 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    // Explicit local delivery lets browser tests observe pending/partial/terminal
+    // states through real HTTP, D1, R2 and DOs without enabling a background cron.
+    const copy = /^\/__test__\/copy\/(copy_[a-f0-9]{64})$/.exec(path);
+    if (copy && request.method === "POST") {
+      const outbox = await ready.env.DB.prepare(
+        "SELECT outbox_id,epoch FROM outbox WHERE kind='copy.requested' AND payload_ref=?",
+      )
+        .bind(copy[1])
+        .first<{ outbox_id: string; epoch: number }>();
+      if (!outbox) return new Response(null, { status: 404 });
+      await dispatchOutbox(
+        ready.env,
+        {
+          send: async () => ({ metadata: { metrics: { backlogCount: 1, backlogBytes: 0 } } }),
+        },
+        outbox.outbox_id,
+        outbox.epoch,
+      );
+      const steps = new URL(request.url).searchParams.get("steps");
+      const result = steps
+        ? await executeCopyJob(ready.env, outbox.outbox_id, { maxSteps: Number(steps) })
+        : await consumeCopyOutbox(ready.env, outbox.outbox_id, Date.now() + 25_000);
+      return Response.json(result);
+    }
     if (path === "/__test__/access-login" && request.method === "POST") {
       if (recipientRequest(request)) ready.recipientToken = await ready.login("recipient");
       else ready.token = await ready.login();

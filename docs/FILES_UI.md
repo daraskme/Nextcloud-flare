@@ -30,6 +30,8 @@ uploadのIndexedDBはID、capability、epoch、name/size/mtime、先頭・末尾
 - 完了時とlogout時に記録を削除する。scope変更/認証失効では旧送信を止め、遅れて戻るCSRF/create結果で保存情報を復活させない。
 - logoutはサーバー失効を先に確認し、BroadcastChannel→memory/Query/IndexedDB/sessionStorage削除→Access logoutへ進む。アプリ専用Cache Storageは現在作成していない。
 
+非同期コピーは[コピー画面と追跡情報](COPY_JOBS.md#コピー画面と追跡情報)へ接続した。コピー先をマイドライブ/編集可能な共有フォルダーから選び、受付後のjob ID保存が成功してからpending操作を消す。進捗・公開完了・取消・精算待ちを表示し、タブのreloadでは同じjobを追跡する。logoutは追跡情報も全タブから消す。タブを閉じた後・別端末の追跡復元とretryは後続。
+
 ## private assets
 
 Viteのprivate entry graphから `scripts/generate-private-assets.mjs` がファイル名の完全一致allowlistを生成する。Workerは `/`、`/files`、`/files/:id`、`/trash`、`/shared`、`/shared/:shareId`、`/shared/:shareId/:nodeId` とそのallowlistだけをapp host・ControlDO admission・Access認証後に配信する。unknown/public/service/content hostにSPA fallbackを渡さない。`index.html`とVite manifestの直接配信も拒否する。
@@ -61,7 +63,7 @@ pnpm test:browser
 ## 残る制約
 
 - restoreは[RESTORE_GC](RESTORE_GC.md)の永続pauseを取得し、既存削除の終了後に原子的に復元する。競合・回収待ちは同じkeyで再試行する。管理者のGC停止設定は保持し、単一hold・5分期限・1,000ノード上限がある。
-- 受信者の共有編集/upload画面、公開linkの管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
+- 公開linkの管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
 - gridの大量ページ仮想化、pagination競合の専用browser scenario、大容量/低速網/実Access/実R2/実Cookie policy/各ブラウザーのstaging試験は残る。
 - Browserの96 MiB成功は500 GiB・実R2 lifecycle・未知multipart ID閉鎖の証明ではない。既存の予約holdとrepair gateは変更していない。
 

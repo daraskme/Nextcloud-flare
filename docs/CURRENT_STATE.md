@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[所有者間コピー](COPY_JOBS.md)で、実行期限直前に次の書込みを準備してしまう経路を修正しました。25秒期限を維持し、次の転送前に6秒の余裕を要求します。時間が足りなければ未着手blobをpendingのまま残し、次回に続行します。書込み許可・native・終了記録の元例外も内部causeとして保持します。REST受付・進捗照会・取消APIは実装済みですが、画面の宛先選択/ジョブ表示、retry/DLQ運用、未知nativeの全修復と最大規模の実環境検証は未完了です。全Node1,466件・関連workerd152件・全browser28件、計1,646件と静的検査/buildが成功しました。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[所有者間コピー](COPY_JOBS.md)の保存先選択・進捗・取消を画面へ接続しました。read共有と共有rootからもマイドライブへコピーでき、保存先にはedit共有フォルダーも選べます。受付後のjob IDを保存してからpending操作を消し、応答喪失・保存失敗・reloadでも同じjobを追跡します。転送済み量と公開完了、取消と容量精算待ちを区別します。retry/DLQ運用、未知nativeの全修復、最大規模の実環境検証、タブ終了後や別端末の追跡復元は未完了です。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
-今回の修正ではschema/route追加はなく、migration0060・通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+今回の画面接続ではschema/route追加はなく、migration0060・通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はcopyの明示的な再試行・DLQ運用、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-直前810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)は、確認時点でUbuntu・Windows分割2/4と3/4・backup bindings/cliの5job成功、browserは27/28件成功で上書き応答喪失試験1件失敗、Windows1/4と4/4は実行中です。browserの通信記録から待機順序の問題を確認し、今回修正しました。今回の変更のCIはpush後に確認します。
+直前45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、確認時点でUbuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4実行中です。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。今回の画面接続のCIはpush後に確認します。
 
 先行0b85355の[CI36400478502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36400478502)は終了しました。Ubuntu・Windows分割1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4はcopy-executorの2件で書込み許可取得に失敗しました（workerd813/815件成功）。以前の固定件数assertionとは異なります。残り3秒で次転送へ進む経路をローカルで再現し、6秒の事前余裕を追加しましたが、CIの元例外が隠れていたため、2件の根本原因を確定したとは扱いません。内部causeを保持して次回CIで確認します。
 
@@ -40,8 +40,8 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
-| 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算、停止/照会・未着手/未送信証明/保存済み/既知multipart中止後の失敗精算、実成功後のobject観測修復 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | Queue実行/再開と限定精算は接続済み。停止後巡回は接続済み。上限内の規模検証・未知/未送信修復・中止attemptの再試行管理・DLQ運用・画面は後続。REST受付/read/cancelは接続済み。[詳細](COPY_JOBS.md) |
+| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link、copyのretry/DLQ・最大規模検証は後続。[詳細](SHARED_WORKSPACE.md) |
+| 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算、停止/照会・未着手/未送信証明/保存済み/既知multipart中止後の失敗精算、実成功後のobject観測修復 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | Queue実行/再開と限定精算は接続済み。停止後巡回は接続済み。上限内の規模検証・未知/未送信修復・中止attemptの再試行管理・DLQ運用は後続。REST受付/read/cancelと画面は接続済み。[詳細](COPY_JOBS.md) |
 | 内部共有DAV | 固定mount一覧/解決、read/edit操作、同一ownerの別mount間COPY/MOVE、両側の選択とロック・Outbox・復旧 | 実D1の権限停止競合、再送・応答喪失・照会・上書き、schema移行と破損復旧記録の拒否。関連回帰はIMPLEMENTATION_STATUS | cross-owner copy、実OS/staging。[詳細](DAV_SHARED.md) |
 | 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
@@ -139,7 +139,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- cross-owner copy、公開link、password/unlock、upload-only共有の完全なHTTP surface。内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
+- copyの明示的な再試行、公開link、password/unlock、upload-only共有の完全なHTTP surface。内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
@@ -147,7 +147,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 ### UI
 
 - File System Access handle、詳細preview。
-- 受信者の共有編集/upload画面、公開link管理、media metadata検索、大量gridの仮想化。
+- コピー追跡のタブ終了後・別端末での復元、公開link管理、media metadata検索、大量gridの仮想化。
 - Gallery/lightbox、Bookshelf/EPUB reader、Audio player。
 - AVIF/AV1/Opusの実browser再生試験とfallback。
 

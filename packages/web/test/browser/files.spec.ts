@@ -1172,12 +1172,13 @@ test("logout clears saved uploads and pending operations in all open tabs", asyn
   await other.goto("/files");
   await expect(other.getByRole("button", { name: "新規フォルダー", exact: true })).toBeVisible();
   for (const tab of [page, other])
-    await tab.evaluate(() =>
+    await tab.evaluate(() => {
       sessionStorage.setItem(
         "ncf-pending-operation",
         JSON.stringify({ sensitive: "saved mutation" }),
-      ),
-    );
+      );
+      sessionStorage.setItem("ncf-copy-jobs", JSON.stringify({ sensitive: "saved copy" }));
+    });
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const r = indexedDB.open("ncf-uploads", 1);
@@ -1197,6 +1198,7 @@ test("logout clears saved uploads and pending operations in all open tabs", asyn
   for (const tab of [page, other]) {
     await expect(tab).toHaveURL(/\/cdn-cgi\/access\/logout$/);
     expect(await tab.evaluate(() => sessionStorage.getItem("ncf-pending-operation"))).toBeNull();
+    expect(await tab.evaluate(() => sessionStorage.getItem("ncf-copy-jobs"))).toBeNull();
   }
   const count = await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve) => {

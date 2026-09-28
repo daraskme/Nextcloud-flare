@@ -1,3 +1,4 @@
+import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 
 export interface Account {
@@ -109,6 +110,10 @@ export class ApiError extends Error {
 export function errorMessage(error: unknown): string {
   if (!(error instanceof ApiError))
     return "接続を確認できませんでした。しばらくしてから再試行してください。";
+  if (error.code === "copy_tracking_unavailable")
+    return "コピー状況を保存できません。ブラウザーの保存設定を確認し、同じ操作の結果を確認してください。";
+  if (error.code === "copy_tracking_full")
+    return "コピー状況の保存上限です。完了した項目の表示を閉じてから、同じ操作の結果を確認してください。";
   if (error.code === "gc_quiescing")
     return "削除処理の完了を待っています。少し待ってから同じ操作を再確認してください。";
   if (error.code === "blob_unrecoverable")
@@ -227,6 +232,15 @@ export class ApiClient {
 
   me(signal?: AbortSignal) {
     return this.request<Account>("/api/v1/me", signal ? { signal } : {});
+  }
+  copyJob(id: string, signal?: AbortSignal) {
+    return this.request<CopyJobStatus>(
+      `/api/v1/jobs/${encodeURIComponent(id)}`,
+      signal ? { signal } : {},
+    );
+  }
+  cancelCopyJob(id: string) {
+    return this.json<CopyJobStatus>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, "POST", {});
   }
   sharedWithMe(cursor?: string | null, signal?: AbortSignal) {
     return this.request<{ items: InternalShare[]; nextCursor: string | null }>(

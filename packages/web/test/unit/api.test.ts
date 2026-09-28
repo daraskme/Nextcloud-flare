@@ -3,6 +3,30 @@ import { ApiClient, ApiError } from "../../src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("reads and cancels the same accepted copy job, without creating a second copy", async () => {
+  const fetcher = vi.fn(async (url: string) =>
+    Response.json(
+      url.endsWith("/csrf") ? { token: "csrf" } : { id: "copy_job", state: "cancelled" },
+    ),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  const api = new ApiClient();
+  await api.copyJob("copy_job");
+  await api.cancelCopyJob("copy_job");
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+    "/api/v1/jobs/copy_job",
+    "/api/v1/csrf",
+    "/api/v1/jobs/copy_job/cancel",
+  ]);
+  const cancel = vi.mocked(fetch).mock.calls.at(-1)![1]!;
+  expect(cancel.method).toBe("POST");
+  expect(cancel.headers).toMatchObject({
+    "X-CSRF-Token": "csrf",
+    "Content-Type": "application/json",
+  });
+  expect(cancel.body).toBe("{}");
+});
+
 it("keeps the selected share on node, breadcrumb and paginated children requests", async () => {
   const urls: string[] = [];
   vi.stubGlobal(

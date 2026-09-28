@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。実保存成功後に失ったobject観測の修復も内部実装した。Queueからの実行・再開と証明済み精算を接続した。停止後の自動巡回・既知中止/観測修復も接続した。RESTでの受付・進捗照会・取消を接続した。未知結果やpart/handle観測の修復、再試行管理、画面での宛先選択とジョブ表示は後続。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。実保存成功後に失ったobject観測の修復も内部実装した。Queueからの実行・再開と証明済み精算を接続した。停止後の自動巡回・既知中止/観測修復も接続した。RESTでの受付・進捗照会・取消と、画面での宛先選択・ジョブ表示・同一タブreload後の追跡を接続した。未知結果やpart/handle観測の修復、再試行管理とタブ終了後の追跡復元は後続。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -40,7 +40,17 @@ manifest本文は最大8 MiB、64 KiBずつ最大128個のBLOB行へ保存する
 
 公開済みの照会では成功receiptを検証し、コピー元、保存先親、公開したnodeの現在の権限を再検査する。公開によってごみ箱へ移した旧overwrite対象をliveなoperandとして要求しない。statusのstate/rootと認可を同じbatchで照合し、途中で公開された場合は未検証の公開先IDを返さず503で再照会を求める。
 
-`POST /api/v1/jobs/:jobId/cancel`はCSRF付きの空JSON objectを受け付け、停止状態を200で返す。同じjobの取消は再認可付きで再送でき、別のidempotency keyを必要としない。停止はpin/予約/physicalの解放を意味せず、cleanupPending/heldBytesで残る保持を示す。公開済み、または取消と競合して公開が先に確定した場合は409。存在しないjob、別actor/credential、権限失効は404（CSRF検証失敗は403）、D1や記録の照合不能は503。全応答はprivate/no-storeで、内部manifest、R2 key、native attempt、lock tokenを返さない。`/retry`と画面のジョブ管理は後続。
+`POST /api/v1/jobs/:jobId/cancel`はCSRF付きの空JSON objectを受け付け、停止状態を200で返す。同じjobの取消は再認可付きで再送でき、別のidempotency keyを必要としない。停止はpin/予約/physicalの解放を意味せず、cleanupPending/heldBytesで残る保持を示す。公開済み、または取消と競合して公開が先に確定した場合は409。存在しないjob、別actor/credential、権限失効は404（CSRF検証失敗は403）、D1や記録の照合不能は503。全応答はprivate/no-storeで、内部manifest、R2 key、native attempt、lock tokenを返さない。`/retry`は後続。画面からの受付・進捗照会・取消は以下へ接続した。
+
+## コピー画面と追跡情報
+
+マイドライブとSharedのコピー操作で、保存先を本人のドライブまたは受信したedit共有フォルダーから選ぶ。共有一覧はページを追加読取りできる。コピー元のshareと保存先のshareは別々のid/versionとして固定し、版が変わっても元の要求を黙って別grantへ切り替えない。read共有、直接共有されたfile、共有フォルダー自体からもコピーできる。既存の共有内copyは同期COWを維持し、共有rootの改名・移動・削除は追加しない。
+
+202の受付からjob ID・account/epoch・名前・保存先をタブのsessionStorageへ保存し、その成功後だけ元のpending操作を消す。保存に失敗した場合も同じ要求/keyによる再確認を残す。応答喪失・operation照会・reload後の再確認にも同じ保存順序を使う。追跡は最大100件、初回5件を表示・照会し、5件ずつ追加表示する。異なるaccount/epochの記録は表示せず、logoutはBroadcastChannelで全タブの記録を消す。タブ終了・保存領域削除・別端末後のjob一覧復元は未対応。
+
+コピー状況は転送済みbytesと公開完了を区別する。取消は同じjob IDへ送信し、応答を失ってもGETで状態を再確認する。取消後の保持容量と精算待ちを表示し、完了時は保存先へ移動できる。401/403/404では自動照会を止めて現在のエラーを表示し、古い公開先や取消操作を隠す。照会不能を理由に新しいコピーを自動作成しない。成功した再確認・取消照会では古いエラー表示を消す。
+
+ブラウザ試験の専用entryに、jobを明示的にOutbox dispatch→executor/consumerへ渡すローカル専用経路を設けた。自動cronを無効のまま、実Access/CSRF・D1/R2/DO・HTTPでpending、部分転送、公開、取消と精算を検査する。通常のWorkerへこの経路をimportしない。最大規模・実Queue/DLQ・stagingの完了証拠とはしない。
 
 ## 実行claimと固定sourceの読取り
 
@@ -99,7 +109,7 @@ schemaでも、staging blob・実在bytes/hash/ETag・single PUTまたはmultipa
 - 既知multipartは下記の専用abortで先行nativeの終了と実中止が証明された場合に、`aborted` receiptから予約・pin・part/handle保持を解除する。objectのphysical記録がある場合はこの精算を拒否する。
 - unknown native、未知handle、prepare ACK喪失後の記録なしattemptは保留を返す。complete観測欠落は、native実成功と下記object照合が揃うまで保留する。HEAD不在・期限満了・abort応答だけでは精算しない。不明結果修復は後続。
 
-停止と精算はDB-only receiptでACK喪失を照合し、R2送信許可として使わない。共有失効・owner無効化後でも、停止済みjobの証明できる精算はsystem admissionで可能。停止履歴は不変とし、同じjobをpendingへ戻す再試行は許可しない。停止後の巡回は下記へ接続した。新規jobを含むretry設計と画面接続は未実装。REST read/cancelは以下の経路へ接続済み。
+停止と精算はDB-only receiptでACK喪失を照合し、R2送信許可として使わない。共有失効・owner無効化後でも、停止済みjobの証明できる精算はsystem admissionで可能。停止履歴は不変とし、同じjobをpendingへ戻す再試行は許可しない。停止後の巡回は下記へ接続した。新規jobを含むretry設計は未実装。画面の照会・取消は接続済み。REST read/cancelは以下の経路へ接続済み。
 
 ## 停止済みコピーの既知multipart中止
 
@@ -129,7 +139,7 @@ HEAD前のsystem admissionを直接ACKした場合だけ読み、記録時にも
 
 claim付き修復HEADも、元のclaim/権限とcall数の増加を同じsystem batchで確定し、直接ACKを得た場合だけ送信する。ACK喪失分を返さず、結果不明の書込みは再送しない。prepared状態のhandle/partが未解決ならheldを返す。通常の終了・yield・例外では自分の実行leaseだけを返し、別実行のclaimには触れない。完了済みの再配信はimmutable manifestと公開receiptを照合し、追加のclaimやnamespace変更を作らない。
 
-期限・旧epoch・予算超過は既存の停止処理で判定する。stoppedという内部結果は保持の解放やQueue ACKを意味しない。精算・中止・修復に残った保持は既存の専用処理へ渡す必要がある。Queueからの実行は下記へ接続した。停止後のcleanup巡回も接続した。画面、再試行管理・DLQ運用・上限内の最大規模検証は引き続き仕上げる。小さいblobを56個ずつ進められる場合は10,000個を179 invocationに収められる計算だが、実時間・metadata・multipart geometry・失敗分の予算も必要であり、最大規模の完走を検証済みとはしない。多数のmultipartで必要回数の下限が全体上限を超える場合は、以下の予算停止を行う。
+期限・旧epoch・予算超過は既存の停止処理で判定する。stoppedという内部結果は保持の解放やQueue ACKを意味しない。精算・中止・修復に残った保持は既存の専用処理へ渡す必要がある。Queueからの実行は下記へ接続した。停止後のcleanup巡回も接続した。再試行管理・DLQ運用・上限内の最大規模検証は引き続き仕上げる。小さいblobを56個ずつ進められる場合は10,000個を179 invocationに収められる計算だが、実時間・metadata・multipart geometry・失敗分の予算も必要であり、最大規模の完走を検証済みとはしない。多数のmultipartで必要回数の下限が全体上限を超える場合は、以下の予算停止を行う。
 
 Cloudflareの[D1制限](https://developers.cloudflare.com/d1/platform/limits/)はPaidで1 invocationあたり1,000 queriesをsubrequest上限へ関連付け、各SQLの長さ/bind数とbatch全体30秒も制限する。[公式workerdのD1 binding実装](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/d1-api.ts)ではbatchを一つのquery配列のfetch/RPCで送るため、上記counterはbinding呼出しを数える。repoの各batch最大1,000 SQL文・100 bind/文・100 KB/文の検査は別に維持する。Freeの50回上限への適合や実Cloudflare上での最大規模・遅延をローカル試験の成功から推定しない。
 
@@ -202,6 +212,6 @@ copy用reservationは汎用の旧epoch回収から除外する。公開batchま�
 1. 大量blob・大容量multipartのbatch化と、最大規模の完走予算を検証する。
 2. ACK喪失/未送信/結果不明/観測欠落の照合と中止attemptの再試行管理を接続し、停止後の自動回収へ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
 3. Queueと停止後巡回を基に、未解決attemptの管理とDLQからの再開を完成させる。
-4. 接続済みのREST受付/read/cancelへShared画面の宛先選択・進捗・取消を接続し、reload後のjob照会とretryの導線を完成させる。
+4. 接続済みの画面へ明示的なretryを接続し、タブを閉じた後や別端末からのjob追跡を仕上げる。
 
 同期DAVは引き続き同一owner・1,000 node・10 GiBまでで、cross-owner要求をREST jobへ自動fallbackしない。[DAV Shared](DAV_SHARED.md)を参照。検証結果と残る全体要件は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。

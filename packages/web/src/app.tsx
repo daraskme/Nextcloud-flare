@@ -31,9 +31,16 @@ import {
   X,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { SelectedShare } from "../../shared/src/shares";
+import type { InternalShare, SelectedShare } from "../../shared/src/shares";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
+import {
+  CopyDestinationSelect,
+  ownDestination,
+  sharedDestination,
+} from "./features/copy/CopyDestination";
+import { CopyJobsPanel } from "./features/copy/CopyJobsPanel";
+import { clearCopyRecords, rememberCopy } from "./features/copy/records";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
 import { type SharedActionScope, SharedWorkspace } from "./features/shares/SharedWorkspace";
@@ -270,6 +277,8 @@ function FolderPicker({
 function OperationDialog({
   action,
   account,
+  homeAccount,
+  sourceShare,
   parentId,
   share,
   onClose,
@@ -277,13 +286,25 @@ function OperationDialog({
 }: {
   action: Exclude<Action, { kind: "overwrite" | "share" }>;
   account: Account;
+  homeAccount: Account;
+  sourceShare?: InternalShare;
   parentId: string;
   share?: SelectedShare;
   onClose: () => void;
   refresh: () => void;
 }) {
   const [name, setName] = useState("node" in action ? action.node.name : "");
-  const [destination, setDestination] = useState(account.rootNodeId);
+  const [copyDestination, setCopyDestination] = useState(() =>
+    sourceShare?.role === "edit" &&
+    sourceShare.nodeKind !== "file" &&
+    "node" in action &&
+    action.node.id !== sourceShare.rootNodeId
+      ? sharedDestination(sourceShare)
+      : ownDestination(homeAccount),
+  );
+  const [destination, setDestination] = useState(
+    action.kind === "copy" ? copyDestination.rootNodeId : account.rootNodeId,
+  );
   const [key, setKey] = useState(crypto.randomUUID());
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
@@ -321,7 +342,12 @@ function OperationDialog({
           ...body,
           destinationParentId: destination,
           name,
-          ...(action.kind === "copy" ? { depth: "infinity" } : {}),
+          ...(action.kind === "copy"
+            ? {
+                depth: "infinity",
+                destination: { spaceId: copyDestination.spaceId, share: copyDestination.share },
+              }
+            : {}),
         };
       }
     } else {
@@ -338,7 +364,8 @@ function OperationDialog({
     };
     try {
       sessionStorage.setItem(PENDING_KEY, JSON.stringify(intent));
-      await api.mutation(path, method, body, key);
+      const operation = await api.mutation(path, method, body, key);
+      rememberCopy(homeAccount, operation, body);
       sessionStorage.removeItem(PENDING_KEY);
       refresh();
       onClose();
@@ -392,9 +419,35 @@ function OperationDialog({
         {["move", "copy", "restore"].includes(action.kind) && (
           <fieldset disabled={pending || uncertain}>
             <legend className="field-label">保存先</legend>
+            {action.kind === "copy" && (
+              <CopyDestinationSelect
+                account={homeAccount}
+                {...(sourceShare ? { source: sourceShare } : {})}
+                value={copyDestination}
+                onChange={(scope) => {
+                  setCopyDestination(scope);
+                  setDestination(scope.rootNodeId);
+                  setKey(crypto.randomUUID());
+                }}
+              />
+            )}
             <FolderPicker
-              account={account}
-              {...(share ? { share } : {})}
+              account={
+                action.kind === "copy"
+                  ? {
+                      ...homeAccount,
+                      spaceId: copyDestination.spaceId,
+                      rootNodeId: copyDestination.rootNodeId,
+                    }
+                  : account
+              }
+              {...(action.kind === "copy"
+                ? copyDestination.share
+                  ? { share: copyDestination.share }
+                  : {}
+                : share
+                  ? { share }
+                  : {})}
               value={destination}
               onChange={(id) => {
                 setDestination(id);
@@ -660,6 +713,7 @@ export function App() {
       "search",
       "stats",
       "received-shares",
+      "copy-destinations",
       "received-share",
       "shared-node",
       "shared-path",
@@ -676,6 +730,7 @@ export function App() {
       api.clear();
       void uploads.clear();
       sessionStorage.removeItem(PENDING_KEY);
+      clearCopyRecords();
       setRecovery(null);
       query.removeQueries({ predicate: (entry) => entry.queryKey[0] !== "account" });
     }
@@ -724,6 +779,7 @@ export function App() {
         api.clear();
         query.clear();
         sessionStorage.removeItem(PENDING_KEY);
+        clearCopyRecords();
         void uploads.clear().finally(() => location.assign("/cdn-cgi/access/logout"));
       }
     };
@@ -772,6 +828,7 @@ export function App() {
       api.clear();
       query.clear();
       sessionStorage.removeItem(PENDING_KEY);
+      clearCopyRecords();
       await uploads.clear();
       location.assign("/cdn-cgi/access/logout");
     } catch (error) {
@@ -843,9 +900,7 @@ export function App() {
               <strong>{formatBytes(me?.usedBytes ?? 0)}</strong> /{" "}
               {formatBytes(me?.quotaBytes ?? 0)}
             </p>
-            {!!me?.reservedBytes && (
-              <small>{formatBytes(me.reservedBytes)} をアップロード用に予約中</small>
-            )}
+            {!!me?.reservedBytes && <small>{formatBytes(me.reservedBytes)} を保存用に予約中</small>}
           </section>
           <div className="sidebar-note">
             <span className="online-dot" />
@@ -991,9 +1046,20 @@ export function App() {
                 onClick={async () => {
                   setRecovering(true);
                   try {
-                    await api.mutation(recovery.path, recovery.method, recovery.body, recovery.key);
+                    const operation = await api.mutation(
+                      recovery.path,
+                      recovery.method,
+                      recovery.body,
+                      recovery.key,
+                    );
+                    rememberCopy(
+                      { id: recovery.accountId, epoch: recovery.epoch },
+                      operation,
+                      recovery.body,
+                    );
                     sessionStorage.removeItem(PENDING_KEY);
                     setRecovery(null);
+                    setNotice("");
                     refresh();
                   } catch (error) {
                     setNotice(errorMessage(error));
@@ -1010,6 +1076,7 @@ export function App() {
               </Button>
             </div>
           )}
+          {me && <CopyJobsPanel key={`${me.id}:${me.epoch}`} account={me} onCompleted={refresh} />}
           {!me ? (
             <div className="empty-state">
               <Cloud size={40} />
@@ -1282,6 +1349,8 @@ export function App() {
         <OperationDialog
           key={JSON.stringify(action)}
           action={action}
+          homeAccount={me}
+          {...(actionScope ? { sourceShare: actionScope.share } : {})}
           account={
             actionScope
               ? {

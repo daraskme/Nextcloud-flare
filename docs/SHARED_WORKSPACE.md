@@ -44,6 +44,10 @@ UIの未確認操作は共有付きの元body/keyをsessionStorageへ保存す�
 
 schema0049・69通常tableを維持し、migration追加はない。移動・コピー・削除の確定直前の共有停止では全変更をrollbackする。share root削除、read共有からの削除、範囲外の宛先、元source/parentが共有外へ移った後の照会・Outbox、所有者以外によるtrash一覧/restore/purgeを回帰試験で検査する。browserではmobileのfolder COPY・file MOVE、削除ACK喪失後の同じkey/body再送、所有者の復元まで確認する。
 
+## 所有者をまたぐコピー
+
+[コピーjob](COPY_JOBS.md)の受付・進捗・取消を接続した。read共有と共有rootからもマイドライブへコピーでき、保存先には別のedit共有フォルダーも選べる。元の共有選択は保存先を変えても維持する。受付応答喪失と追跡保存失敗は同じ操作として確認し、reload後は同じjobを照会する。転送済み量と公開完了、取消済みと保持容量の精算待ちを別に表示する。共有失効後は現在の照会エラーを表示し、新しいcopyへ代替しない。
+
 ## 検証
 
 従来のpathが共有ファイルより上の非共有フォルダー名を返すことを、実D1テストで修正前に再現した。新規workerd14件は共有ルートでのparent遮蔽、read共有から別edit共有への権限代替拒否、停止/version/root/credential/recipient/owner/祖先trash/maintenance/epochのbatch直前競合、201件paginationとcursor選択束縛、HTTP query境界を検証する。
@@ -56,4 +60,4 @@ schema0049・69通常tableを維持し、migration追加はない。移動・コ
 
 ## 次の実装
 
-同じ所有者の異なる共有間のDAV転送は[DAV Shared](DAV_SHARED.md)へ接続済み。Access画面での共有間宛先選択、cross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。
+同じ所有者の異なる共有間のDAV転送は[DAV Shared](DAV_SHARED.md)へ接続済み。Access画面のコピー先選択とcross-owner jobの受付/照会/取消も接続済み。copyのretry/DLQ・未知native修復・最大規模検証、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。

@@ -2,6 +2,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   ChevronRight,
+  Copy,
   File,
   Folder,
   FolderPlus,
@@ -239,6 +240,22 @@ function SharedContent({
       ) : (
         <>
           <p className="shared-access">共有の権限：{share.role === "read" ? "閲覧" : "編集"}</p>
+          {folder && node.data && (
+            <Button
+              className="copy-current-folder"
+              disabled={writesBlocked}
+              onClick={() => {
+                const { parentId: originalParent, ...current } = node.data!;
+                onAction(
+                  { kind: "copy", node: { ...current, kind: "folder" } },
+                  { share, parentId: originalParent },
+                );
+              }}
+            >
+              <Copy size={16} />
+              このフォルダーをコピー
+            </Button>
+          )}
           {editable && folder && (
             <div className="shared-actions">
               <Button
@@ -290,73 +307,89 @@ function SharedContent({
                     <span>{formatBytes(file.size)} · 開く・保存</span>
                   </button>
                 )}
-                {editable ? (
-                  <div className="shared-row-actions">
-                    {file.id !== share.rootNodeId && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`${file.name}の名前を変更`}
-                        disabled={writesBlocked}
-                        onClick={() =>
-                          onAction(
-                            { kind: "rename", node: file },
-                            { share, parentId: folder ? id : (file.parentId ?? null) },
-                          )
-                        }
-                      >
-                        <Pencil size={16} />
-                      </Button>
-                    )}
-                    {file.kind === "file" && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`${file.name}を上書き`}
-                        disabled={writesBlocked}
-                        onClick={() =>
-                          onAction(
-                            { kind: "overwrite", node: file },
-                            { share, parentId: folder ? id : (file.parentId ?? null) },
-                          )
-                        }
-                      >
-                        <Upload size={16} />
-                      </Button>
-                    )}
-                    {file.id !== share.rootNodeId && (
-                      <details className="shared-more">
-                        <summary aria-label={`${file.name}のその他の操作`}>
-                          <MoreHorizontal size={18} />
-                        </summary>
-                        <div className="shared-more-items">
-                          {(["move", "copy", "trash"] as const).map((kind) => (
-                            <Button
-                              key={kind}
-                              variant="ghost"
-                              disabled={writesBlocked}
-                              onClick={(event) => {
-                                event.currentTarget.closest("details")?.removeAttribute("open");
-                                onAction(
-                                  { kind, node: file },
-                                  { share, parentId: folder ? id : (file.parentId ?? null) },
-                                );
-                              }}
-                            >
-                              {kind === "move"
-                                ? "移動"
-                                : kind === "copy"
-                                  ? "コピー"
-                                  : "ごみ箱に移動"}
-                            </Button>
-                          ))}
-                        </div>
-                      </details>
-                    )}
-                  </div>
-                ) : (
-                  <ChevronRight aria-hidden="true" size={18} />
-                )}
+                <div className="shared-row-actions">
+                  {(!editable || file.id === share.rootNodeId) && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`${file.name}をコピー`}
+                      disabled={writesBlocked}
+                      onClick={() =>
+                        onAction(
+                          { kind: "copy", node: file },
+                          { share, parentId: folder ? id : (file.parentId ?? null) },
+                        )
+                      }
+                    >
+                      <Copy size={16} />
+                    </Button>
+                  )}
+                  {editable && (
+                    <>
+                      {file.id !== share.rootNodeId && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`${file.name}の名前を変更`}
+                          disabled={writesBlocked}
+                          onClick={() =>
+                            onAction(
+                              { kind: "rename", node: file },
+                              { share, parentId: folder ? id : (file.parentId ?? null) },
+                            )
+                          }
+                        >
+                          <Pencil size={16} />
+                        </Button>
+                      )}
+                      {file.kind === "file" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`${file.name}を上書き`}
+                          disabled={writesBlocked}
+                          onClick={() =>
+                            onAction(
+                              { kind: "overwrite", node: file },
+                              { share, parentId: folder ? id : (file.parentId ?? null) },
+                            )
+                          }
+                        >
+                          <Upload size={16} />
+                        </Button>
+                      )}
+                      {file.id !== share.rootNodeId && (
+                        <details className="shared-more">
+                          <summary aria-label={`${file.name}のその他の操作`}>
+                            <MoreHorizontal size={18} />
+                          </summary>
+                          <div className="shared-more-items">
+                            {(["move", "copy", "trash"] as const).map((kind) => (
+                              <Button
+                                key={kind}
+                                variant="ghost"
+                                disabled={writesBlocked}
+                                onClick={(event) => {
+                                  event.currentTarget.closest("details")?.removeAttribute("open");
+                                  onAction(
+                                    { kind, node: file },
+                                    { share, parentId: folder ? id : (file.parentId ?? null) },
+                                  );
+                                }}
+                              >
+                                {kind === "move"
+                                  ? "移動"
+                                  : kind === "copy"
+                                    ? "コピー"
+                                    : "ごみ箱に移動"}
+                              </Button>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </>
+                  )}
+                </div>
               </article>
             ))}
           </div>

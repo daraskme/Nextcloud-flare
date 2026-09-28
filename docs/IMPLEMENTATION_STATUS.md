@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)は、確認時点でUbuntu・Windows分割2/4と3/4・backup bindings/cliの5job成功、browserは27/28件成功で上書き応答喪失試験1件失敗、Windows1/4と4/4は実行中です。browserの通信記録から待機順序の問題を確認し、今回修正しました。今回の変更のCIはpush後に確認します。
+直前45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、確認時点でUbuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4実行中です。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。今回の画面接続のCIはpush後に確認します。
 
 先行0b85355の[CI36400478502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36400478502)は終了しました。Ubuntu・Windows分割1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4はcopy-executorの2件で書込み許可取得に失敗しました（workerd813/815件成功）。以前の固定件数assertionとは異なります。残り3秒で次転送へ進む経路をローカルで再現し、6秒の事前余裕を追加しましたが、CIの元例外が隠れていたため、2件の根本原因を確定したとは扱いません。内部causeを保持して次回CIで確認します。
 
@@ -26,6 +26,16 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- コピー元の共有選択と保存先を分離し、My Drive/受信edit共有フォルダーを選択可能にした。read共有・直接file共有・共有rootのcopyを接続。同一spaceの同期COWは既存経路を使う。REST schema0060/75table/147 route、依存は変更なし。
+- 202 receiptからjob IDとaccount/epoch/保存先をタブのsessionStorageへ保存してからpending操作を消す。保存失敗でも同じkeyの操作確認を残し、復旧成功時は古いエラーを消す。ジョブ照会/取消は固定IDだけで行い、現在の認可エラー時に古い公開先/取消を隠す。別jobの自動作成はしない。最大100件保存、5件ずつ表示・照会。logoutで全タブの追跡情報を消す。
+- 実ブラウザの新規3件の初回は2件成功、1件はfixtureの作成receiptに含まれないnameをPlaywrightへ渡したため失敗（52.3秒、/tmp/ncf-copy-ui-browser-new.log）。既知の作成名へ修正。成功した試験では受付応答喪失・保存失敗・同じkey/jobの再確認、部分転送、reload、全件公開、実bytes、read共有/共有root、共有失効後の照会拒否と新規enqueueなしを検証。
+- 全Node81file/1,475件成功（82.91秒、/tmp/ncf-copy-ui-node-full.log）。コピーHTTPのworkerd27件成功（31.39秒、/tmp/ncf-copy-ui-native-http.log）。全browser初回は29/31件成功（5.9分、/tmp/ncf-copy-ui-browser-full.log）。追加したcopyボタンが既存閲覧テスト2件の曖昧な名前selectorに一致したため、開く・保存の操作を明示した。ログイン変更ケースを追加し、共有画面の10件を再実行して全成功（2.2分、/tmp/ncf-copy-ui-browser-shared.log）。他のFiles19件とShares3件は初回全体実行で成功済み。重複を除いたbrowser32件と合わせて**1,534件成功**。
+
+- 実行中のmobile390pxと保存先選択のdesktop画像を確認。回復成功後の古いエラーと共有rootボタンの余白を修正し、再撮影で確認した。保存先一覧の読込みを待ってread共有が選択肢に含まれないことも検証。取消応答喪失後は同じjobの停止状態を照会し、容量保持の精算を待つ。テスト用手動consumerはbrowser専用entryに限定し、実ControlDO/D1/R2/Queue consumerを通す。
+- 最終の型・lint554file・契約/設定検査、Web build/Worker dry-run成功。ログは/tmp/ncf-copy-ui-types-release.log、/tmp/ncf-copy-ui-lint-release.log、/tmp/ncf-copy-ui-contracts-release.log、/tmp/ncf-copy-ui-config-release.log、/tmp/ncf-copy-ui-build-release.log。資料8fileのlocal link275件とgit diff --checkも成功。全workerd・実Wrangler backupドリルは今回ローカルでは再実行していない。remote migration/deployなし。
+
+### 先行するコピーの期限前中断と診断
 
 - copy-executorは次の段階を始める前と段階照会後に6秒の余裕を確認する。5秒の書込み許可窓とcheckpoint/lease解放のためで、25秒の実行期限、200 invocation、20,000 R2 call、900 D1 callは維持する。入口ですでに時間不足ならclaimを消費しない。全blob保存後の最終公開は既存どおり同じclaimで試みる。
 - 遅いcheckpoint ACKにより残り3秒になる試験を実時計/D1で実行したところ、修正前は次のblobまで転送してcompletedとなった（期待yieldedに失敗、/tmp/ncf-copy-wall-baseline.log）。修正後は次blobのtransfer_attemptが空のpendingのまま中断し、次回の1回のPUTで完了する。CIの2件のgrant取得失敗と同一原因かは未確定。元エラーを消していた共通R2処理にError.causeを追加し、grant/native/settlementの診断と公開エラー維持を検証した。最初の単体fixtureではmanifest keyのUUIDが不足して2/3件失敗したため、有効UUIDへ修正した。
