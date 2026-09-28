@@ -398,6 +398,7 @@ it("holds a DB-only abort assertion, preserves its old token, and advances to an
   const token = await stoppedMultipart(held);
   await env.DB.prepare("UPDATE uploads SET cleanup_next_at=1 WHERE id=?").bind(next.id).run();
   await restored.adopted();
+  const startedAt = Date.now();
   const grant: R2WriteGrant = {
     id: crypto.randomUUID(),
     token: crypto.randomUUID(),
@@ -405,8 +406,8 @@ it("holds a DB-only abort assertion, preserves its old token, and advances to an
     ownerId: held.ids.user,
     kind: "multipart.abort",
     key: held.key,
-    startedAt: Date.now(),
-    deadline: Date.now() + 5000,
+    startedAt,
+    deadline: startedAt + 5000,
     abort: {
       source: "cleanup",
       uploadId: held.id,
@@ -458,6 +459,7 @@ it.each(["d1", "kdf", "r2"])(
   "refuses domain repair before native holds are resolved: %s",
   async (where) => {
     await restored.adopted();
+    const startedAt = Date.now();
     const grant: R2WriteGrant = {
       id: crypto.randomUUID(),
       token: crypto.randomUUID(),
@@ -465,8 +467,8 @@ it.each(["d1", "kdf", "r2"])(
       ownerId: "fixture",
       kind: "manifest.delete",
       key: `target-sets/${crypto.randomUUID()}`,
-      startedAt: Date.now(),
-      deadline: Date.now() + 5000,
+      startedAt,
+      deadline: startedAt + 5000,
     };
     if (where === "d1") await atomicBatch(env.DB, [insertR2Write(grant, "pending")]);
     else

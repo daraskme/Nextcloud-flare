@@ -10,6 +10,8 @@ import { globalKdf } from "./auth/globalKdf";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
+import { repairStoppedCopyJobs } from "./jobs/copyMaintenance";
+import { COPY_MAINTENANCE_CRON } from "./jobs/copyMaintenanceClaim";
 import { runGarbageCollection } from "./jobs/gc";
 import { repairMultipartUploads } from "./jobs/multipartCleanup";
 import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
@@ -121,8 +123,13 @@ export default {
     await handleOutboxBatch(env, batch);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+    const deadline = Date.now() + 25_000;
     const epoch = await admittedEpoch(env);
     if (epoch === null) return;
+    if (_event.cron === COPY_MAINTENANCE_CRON) {
+      if (Date.now() < deadline) await repairStoppedCopyJobs(env, epoch, { deadline });
+      return;
+    }
     await dispatchPendingOutbox(env, env.JOBS, epoch);
     await repairSingleUploads(env, env.BLOBS, epoch);
     await repairMultipartUploads(env, env.BLOBS, epoch);

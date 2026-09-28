@@ -103,6 +103,9 @@ function globalScope(admission: GlobalMutationAdmission): void {
 export const SYSTEM_MUTATION_KINDS = [
   "copy.stop",
   "copy.cleanup",
+  "copy.maintenance-claim",
+  "copy.maintenance-progress",
+  "copy.maintenance-release",
   "copy.multipart-abort",
   "copy.reconcile-object",
   "copy.claim",

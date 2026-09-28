@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は終了しました。Ubuntu・Windows分割2/4・4/4・browser・backupのbindings/cliは成功、Windows分割1/4は30分のjob上限でcancelled（annotation確認）、3/4はcopy-executionのepoch変更試験の準備中にfixture_copy_failedで失敗しました（Node1,431件成功、integration717/718件成功）。SQLエラーと受付outcomeの診断はef5ee58へ追加済みですが、原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はUbuntu・Windows3分割・browser・backupの全6job成功です。ef5ee58の[CI36389252207](https://github.com/daraskme/Nextcloud-flare/actions/runs/36389252207)は最終確認時にbrowser・backup(bindings)成功、他jobは実行中です。
+CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は終了しました。Ubuntu・Windows分割2/4・4/4・browser・backupのbindings/cliは成功、Windows分割1/4は30分のjob上限でcancelled（annotation確認）、3/4はcopy-executionのepoch変更試験の準備中にfixture_copy_failedで失敗しました（Node1,431件成功、integration717/718件成功）。SQLエラーと受付outcomeの診断はef5ee58へ追加済みですが、原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はUbuntu・Windows3分割・browser・backupの全6job成功です。ef5ee58の[CI36389252207](https://github.com/daraskme/Nextcloud-flare/actions/runs/36389252207)は終了し、Windows4分割・browser・backupのbindings/cliが成功しました。Ubuntuは全Node1,431件成功、integration3,046/3,047件成功で、control-restore-domainのfixtureがdispatch_before<=started_at+5000制約に違反しました。開始と期限でDate.now()を別々に取得していたため、今回同じ開始値へ統一しました。製品の期限・assertionは維持しています。fdc7abaの[CI36390929822](https://github.com/daraskme/Nextcloud-flare/actions/runs/36390929822)は終了し、Windows4分割・browser・backupのbindings/cli成功、Ubuntu失敗です。UbuntuはNode1,431件成功、integration3,066/3,067件成功で、control-restore-gcの同じ時刻fixture問題でした。今回こちらも同じ開始値へ統一しました。
 
 先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)はUbuntu・Windows分割2/3・3/3・browser・backup成功、Windows分割1/3は30分のjob上限でcancelledです（GitHub annotationで確認）。上記4分割化後のCIで完走を確認します。
 
@@ -20,6 +20,17 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [停止後のコピー自動回収](COPY_JOBS.md)を専用2分Cronへ接続。migration0059でbulk_jobsへ7columnを追加し、通常75tableを維持。1回1job・25秒・8修復候補/8精算・8 R2 call、保存token/epoch/lease、60秒の待ち時間、外部処理前のcursor保存と終端wrap、累積call保持を実装。元jobの転送checkpoint・実行予算・native終了証明は維持する。
+- Queue配信がない停止job、旧epoch・期限/予算超過を拾い、既知multipartの実中止とnative成功後の観測修復を既存の証明済み精算/35日GCへ渡す。HEAD/abortの直接ACK喪失は消費済みのまま再送しない。DB-onlyのclaim/cursor/精算/解放はexact receiptで照合する。未知native・記録のないprepare・part/handle観測不足・中止attempt再試行、最大コピーの完走とHTTP/UI・DLQ運用は未完了。
+- 初回の新規workerd19件成功（21.59秒、/tmp/ncf-copy-maintenance-worker-initial.log）、schema関連Node3file/84件成功（23.29秒、/tmp/ncf-copy-maintenance-node-initial.log）。Node URLの型importを既存fixtureと同じnode:urlへ修正した。
+- 全Node76file/1,435件成功（79.86秒、/tmp/ncf-copy-maintenance-node-full.log）。0059の旧全column/行・既存R2記録保持、FK、移行前提と、現行75tableのbackup/export/import/freezeを確認した。schema契約生成も75table/索引/operation catalogueで成功。
+- 関連workerd10file/285件成功（382.07秒、/tmp/ncf-copy-maintenance-worker-regression.log）。停止処理でもclaim内の検証済みmanifestを再利用し、Cron入口の時間を含む期限を追加検証。修正後の回収/停止/復旧GCの3file/79件成功（90.01秒、/tmp/ncf-copy-maintenance-worker-final.log）。入口期限fixtureは1ms差への依存をなくし、対象1件成功（3.80秒、/tmp/ncf-copy-maintenance-entry-deadline.log）。新規回収26件を含む関連workerdは重複を除き11file/304件、後続の索引1件も含めNodeは1,436件、合計 **1,740件成功**。
+- ef5ee58のUbuntu CIはcontrol-restore-domain、fdc7abaのUbuntu CIはcontrol-restore-gcのfixtureで、開始時刻/期限の別々のDate.now()取得によりdispatch_before<=started_at+5000を破った。同じ開始値から正確に5秒後を作るよう両fileの該当fixtureを修正し、26件+18件を上記回帰で確認。製品の上限やassertionは変更しない。/tmp/ncf-copy-maintenance-prior-ubuntu.log、/tmp/ncf-copy-maintenance-queue-ubuntu.log。
+- 最後に実SQL計画を確認し、従来kind索引と一時ソートが選ばれていたため、専用索引の先頭へkindを追加し、候補SQLの状態集合を明示した。最終schema5件成功（1.77秒、/tmp/ncf-copy-maintenance-index-final.log）で専用索引の範囲検索・一時ソートなしを確認し、回収26件も成功（29.66秒、/tmp/ncf-copy-maintenance-complete.log）。初回の索引assertion失敗はこの変更で解消し、全体テストへ重複加算しない。
+- 型・lint538file・契約/設定・git diff --check成功。/tmp/ncf-copy-maintenance-types-complete2.log。Web build/Worker dry-run成功（/tmp/ncf-copy-maintenance-build-final.log）。更新資料のlocal link196件も確認。browser・全workerd・実Wrangler運用ドリルは今回ローカルで再実行せず、push後CIで確認する。remote migration/deployなし。
+
+### 先行するコピーQueue接続
 
 - [コピーQueue consumer](COPY_JOBS.md)を接続。保存済みmanifest/checkpointから転送・再開し、公開receiptでACKする。停止済みは32blobの証拠付き精算と全保持0を確認するまでretryする。通常eventのfailed判定からcopyを分離し、失敗OutboxだけでACKしない。未知attemptを飛ばして後続の精算を進める。停止・精算へbatch共通25秒期限を伝播する。
 - 1 invocationでcopyを単独実行し、通常eventや別copyとD1/R2予算を重ねない。Queue本文でなくD1の不変kindから判定する。後続はretryし、稼働jobは従来のsent Outbox再送も利用する。停止後のabort/観測修復・巡回、未配信停止job、DLQ運用、最大規模の完走とHTTP/UIは後続。schema0058・75table、依存を維持。

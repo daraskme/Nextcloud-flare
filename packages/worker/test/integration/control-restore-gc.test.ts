@@ -329,6 +329,7 @@ it.each(["blob-gc", "orphan-gc", "orphan-inventory"] as const)(
   "blocks %s before any native work when D1 contains a pending attempt",
   async (kind) => {
     await restored.adopted();
+    const startedAt = Date.now();
     const grant: R2WriteGrant = {
       id: crypto.randomUUID(),
       token: crypto.randomUUID(),
@@ -336,8 +337,8 @@ it.each(["blob-gc", "orphan-gc", "orphan-inventory"] as const)(
       ownerId: "fixture",
       kind: "manifest.delete",
       key: `target-sets/${crypto.randomUUID()}`,
-      startedAt: Date.now(),
-      deadline: Date.now() + 5000,
+      startedAt,
+      deadline: startedAt + 5000,
     };
     await atomicBatch(env.DB, [insertR2Write(grant, "pending")]);
     const list = vi.fn(),

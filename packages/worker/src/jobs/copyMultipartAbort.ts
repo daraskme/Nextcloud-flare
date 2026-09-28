@@ -7,6 +7,11 @@ import {
   type SystemMutationSource,
   systemMutationStatements,
 } from "../services/systemMutation";
+import {
+  type CopyMaintenanceClaim,
+  chargeCopyMaintenance,
+  checkCopyMaintenance,
+} from "./copyMaintenanceClaim";
 import { loadCopyJobManifest } from "./copyManifest";
 
 interface AbortRow {
@@ -25,11 +30,21 @@ export async function abortStoppedCopyMultipart(
   env: SystemMutationSource & R2WriteSource & Pick<Env, "BLOBS">,
   jobId: string,
   sourceBlobId: string,
+  options: { deadline?: number; maintenance?: CopyMaintenanceClaim } = {},
 ): Promise<"confirmed" | "held"> {
-  const deadline = Date.now() + 25_000;
+  const started = Date.now(),
+    deadline = options.deadline ?? options.maintenance?.deadline ?? started + 25_000;
+  if (
+    !Number.isSafeInteger(deadline) ||
+    deadline <= started ||
+    deadline > started + 25_000 ||
+    (options.maintenance && deadline > options.maintenance.deadline)
+  )
+    throw new Error("invalid_copy_abort");
+  if (options.maintenance) checkCopyMaintenance(options.maintenance, jobId);
   if (!/^copy_[a-f0-9]{64}$/.test(jobId) || !/^[A-Za-z0-9_-]{1,128}$/.test(sourceBlobId))
     throw new Error("invalid_copy_abort");
-  const { plan } = await loadCopyJobManifest(env.DB, jobId);
+  const plan = options.maintenance?.plan ?? (await loadCopyJobManifest(env.DB, jobId)).plan;
   const stopped = await primary(env.DB)
     .prepare(
       "SELECT 1 FROM bulk_jobs WHERE id=? AND state IN ('cancelled','failed') AND stopped_at IS NOT NULL",
@@ -72,6 +87,7 @@ export async function abortStoppedCopyMultipart(
   await atomicBatch(
     env.DB,
     systemMutationStatements(admission, plan.destinationOwnerId, [
+      ...(options.maintenance ? chargeCopyMaintenance(options.maintenance) : []),
       {
         sql: `UPDATE copy_multipart_uploads SET abort_attempt=?,abort_epoch=?,abort_started_at=?,abort_deadline=?
         WHERE destination_blob_id=? AND r2_upload_id=? AND abort_attempt IS NULL`,

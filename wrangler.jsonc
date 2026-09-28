@@ -54,7 +54,7 @@
       }
     ]
   },
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": { "crons": ["* * * * *", "*/2 * * * *"] },
   "images": { "binding": "IMAGES" },
   "ratelimits": [
     {

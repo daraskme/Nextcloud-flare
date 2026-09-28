@@ -13,6 +13,11 @@ import {
   type SystemMutationSource,
 } from "../services/systemMutation";
 import { COPY_EXECUTION_LIMITS, copyAuthorityStatements } from "./copyClaim";
+import {
+  type CopyMaintenanceClaim,
+  checkCopyMaintenance,
+  copyMaintenanceFence,
+} from "./copyMaintenanceClaim";
 import { loadCopyJobManifest } from "./copyManifest";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -121,9 +126,14 @@ export async function stopExpiredCopyJob(
   env: SystemMutationSource,
   id: string,
   deadline = Date.now() + 25_000,
+  maintenance?: CopyMaintenanceClaim,
 ): Promise<boolean> {
   if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 25_000)
     throw new Error("invalid_copy_stop");
+  if (maintenance) {
+    checkCopyMaintenance(maintenance, id);
+    if (deadline > maintenance.deadline) throw new Error("invalid_copy_stop");
+  }
   const row = await primary(env.DB)
     .prepare(`SELECT j.state,
     CASE WHEN j.epoch<c.epoch THEN 'stale_epoch' WHEN m.expires_at<=${CLOCK} THEN 'copy_expired'
@@ -138,19 +148,17 @@ export async function stopExpiredCopyJob(
     )
     .first<{ state: string; reason: StopReason | null }>();
   if (!row?.reason || !["pending", "running"].includes(row.state)) return false;
-  const { plan } = await loadCopyJobManifest(env.DB, id);
+  const plan = maintenance?.plan ?? (await loadCopyJobManifest(env.DB, id)).plan;
   const admission = await acquireSystemMutation(
     env,
     plan.destinationOwnerId,
     "copy.stop",
     deadline,
   );
-  await commitSystemMutation(
-    env.DB,
-    admission,
-    plan.destinationOwnerId,
-    stopStatements(id, row.reason, admission.epoch),
-  );
+  await commitSystemMutation(env.DB, admission, plan.destinationOwnerId, [
+    ...(maintenance ? [copyMaintenanceFence(maintenance, false)] : []),
+    ...stopStatements(id, row.reason, admission.epoch),
+  ]);
   return true;
 }
 
@@ -174,15 +182,22 @@ export interface CopyCleanupResult {
 export async function cleanupStoppedCopyJob(
   env: SystemMutationSource,
   id: string,
-  options: { after?: string; limit?: number; deadline?: number; readyOnly?: boolean } = {},
+  options: {
+    after?: string;
+    limit?: number;
+    deadline?: number;
+    readyOnly?: boolean;
+    maintenance?: CopyMaintenanceClaim;
+  } = {},
 ): Promise<CopyCleanupResult> {
   const started = Date.now(),
-    deadline = options.deadline ?? started + 25_000;
+    deadline = options.deadline ?? options.maintenance?.deadline ?? started + 25_000;
   const { after = "", limit = 32 } = options;
   if (
     !Number.isSafeInteger(deadline) ||
     deadline <= started ||
     deadline > started + 25_000 ||
+    (options.maintenance && deadline > options.maintenance.deadline) ||
     (options.readyOnly !== undefined && typeof options.readyOnly !== "boolean") ||
     !Number.isInteger(limit) ||
     limit < 1 ||
@@ -190,7 +205,8 @@ export async function cleanupStoppedCopyJob(
     (after && !/^[A-Za-z0-9_-]{1,128}$/.test(after))
   )
     throw new Error("invalid_copy_cleanup");
-  const { plan } = await loadCopyJobManifest(env.DB, id);
+  if (options.maintenance) checkCopyMaintenance(options.maintenance, id);
+  const plan = options.maintenance?.plan ?? (await loadCopyJobManifest(env.DB, id)).plan;
   const terminal = await primary(env.DB)
     .prepare(
       "SELECT 1 FROM bulk_jobs WHERE id=? AND state IN ('cancelled','failed') AND stopped_at IS NOT NULL",
@@ -241,6 +257,7 @@ export async function cleanupStoppedCopyJob(
       );
       const stored = row.disposition === "stored";
       await commitSystemMutation(env.DB, admission, plan.destinationOwnerId, [
+        ...(options.maintenance ? [copyMaintenanceFence(options.maintenance)] : []),
         {
           sql: `INSERT INTO copy_cleanup_receipts(job_id,source_blob_id,destination_blob_id,pin_id,reservation_id,bytes,disposition,epoch,settled_at)
             VALUES(?,?,?,?,?,?,?,?,MAX(${CLOCK},(SELECT stopped_at FROM bulk_jobs WHERE id=?)))`,

@@ -15,6 +15,11 @@ import {
   copyClaimFence,
   copyClaimPosition,
 } from "./copyClaim";
+import {
+  type CopyMaintenanceClaim,
+  chargeCopyMaintenance,
+  checkCopyMaintenance,
+} from "./copyMaintenanceClaim";
 import { loadCopyJobManifest } from "./copyManifest";
 import { type CopyObjectIdentity, copyObjectStatements } from "./copyObject";
 
@@ -66,7 +71,10 @@ export async function reconcileCopyObject(
   jobId: string,
   sourceBlobId: string,
   claim?: CopyJobClaim,
+  options: { deadline?: number; maintenance?: CopyMaintenanceClaim } = {},
 ): Promise<"stored" | "held"> {
+  if (claim && options.maintenance) throw new Error("invalid_copy_reconciliation");
+  if (options.maintenance) checkCopyMaintenance(options.maintenance, jobId);
   if (claim) {
     checkCopyClaim(claim);
     if (
@@ -75,10 +83,19 @@ export async function reconcileCopyObject(
     )
       throw new Error("invalid_copy_reconciliation");
   }
-  const deadline = Math.min(Date.now() + 25_000, claim?.expiresAt ?? Infinity);
+  const started = Date.now(),
+    requested = options.deadline ?? started + 25_000;
+  if (!Number.isSafeInteger(requested) || requested <= started || requested > started + 25_000)
+    throw new Error("invalid_copy_reconciliation");
+  const deadline = Math.min(
+    requested,
+    claim?.expiresAt ?? Infinity,
+    options.maintenance?.deadline ?? Infinity,
+  );
   if (!/^copy_[a-f0-9]{64}$/.test(jobId) || !/^[A-Za-z0-9_-]{1,128}$/.test(sourceBlobId))
     throw new Error("invalid_copy_reconciliation");
-  const plan = claim?.plan ?? (await loadCopyJobManifest(env.DB, jobId)).plan;
+  const plan =
+    claim?.plan ?? options.maintenance?.plan ?? (await loadCopyJobManifest(env.DB, jobId)).plan;
   const source = plan.source.blobs.find((b) => b.id === sourceBlobId);
   if (!source) throw new Error("invalid_copy_reconciliation");
   const row = await primary(env.DB)
@@ -129,7 +146,9 @@ export async function reconcileCopyObject(
         },
         assertOneChange,
       ]
-    : [];
+    : options.maintenance
+      ? chargeCopyMaintenance(options.maintenance)
+      : [];
   if (claim) checkCopyClaim(claim);
   // A recovered DB-only receipt does not authorize this HEAD. A lost ACK consumes its budget.
   await atomicBatch(env.DB, systemMutationStatements(admission, owner, [...proof, ...charged]));
