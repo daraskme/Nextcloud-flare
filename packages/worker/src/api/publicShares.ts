@@ -90,10 +90,13 @@ export async function handlePublicShareHttp(
     );
     if (!(await env.EDGE_LIMITER.limit({ key: `public:${ip}` })).success) return limited(60);
     let session: ShareSession | null = null;
+    let previousSessionNonce: string | undefined;
     const existing = shareCookieValue(request.headers.get("Cookie"), id);
     if (existing) {
       try {
-        session = await readShareSession(env.DB, await tokens.verify(existing, id, epoch));
+        const claims = await tokens.verify(existing, id, epoch);
+        previousSessionNonce = claims.nonce;
+        session = await readShareSession(env.DB, claims);
       } catch (error) {
         if (
           !(error instanceof Error) ||
@@ -144,10 +147,14 @@ export async function handlePublicShareHttp(
       if (prior) {
         try {
           const challenge = await tokens.verifyChallenge(prior, id, epoch);
-          return Response.json(
-            { token: prior, expiresAt: challenge.exp * 1000 },
-            { headers: HEADERS },
-          );
+          // A challenge belonging to an unavailable credential cannot revive it.
+          // Keep a newer challenge stable even while the old session cookie remains:
+          // its successful unlock response may have been lost.
+          if (challenge.nonce !== previousSessionNonce)
+            return Response.json(
+              { token: prior, expiresAt: challenge.exp * 1000 },
+              { headers: HEADERS },
+            );
         } catch {
           /* issue a fresh challenge after expiry/key removal */
         }

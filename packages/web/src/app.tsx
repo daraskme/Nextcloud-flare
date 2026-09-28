@@ -43,6 +43,7 @@ import {
 import { CopyJobsPanel } from "./features/copy/CopyJobsPanel";
 import { clearCopyRecords, rememberCopy } from "./features/copy/records";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
+import { LinkShareDialog } from "./features/shares/LinkShareDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
 import { type SharedActionScope, SharedWorkspace } from "./features/shares/SharedWorkspace";
 import { type UploadTask, uploads } from "./features/uploads/manager";
@@ -62,6 +63,7 @@ type Action =
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
   | { kind: "overwrite"; node: FileNode }
   | { kind: "share"; node: FileNode }
+  | { kind: "link-share"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
   accountId: string;
@@ -285,7 +287,7 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Exclude<Action, { kind: "overwrite" | "share" }>;
+  action: Exclude<Action, { kind: "overwrite" | "share" | "link-share" }>;
   account: Account;
   homeAccount: Account;
   sourceShare?: InternalShare;
@@ -528,6 +530,7 @@ function NodeMenu({
           <Menu.Item onSelect={() => act({ kind: "move", node })}>移動</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "copy", node })}>コピー</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "share", node })}>共有を管理</Menu.Item>
+          <Menu.Item onSelect={() => act({ kind: "link-share", node })}>公開リンクを管理</Menu.Item>
           <Menu.Separator />
           <Menu.Item className="danger-text" onSelect={() => act({ kind: "trash", node })}>
             ごみ箱に移動
@@ -1350,35 +1353,47 @@ export function App() {
           close={() => setAction(null)}
         />
       )}
-      {action && action.kind !== "overwrite" && action.kind !== "share" && me && (
-        <OperationDialog
-          key={JSON.stringify(action)}
-          action={action}
-          homeAccount={me}
-          {...(actionScope ? { sourceShare: actionScope.share } : {})}
-          account={
-            actionScope
-              ? {
-                  ...me,
-                  spaceId: actionScope.share.spaceId,
-                  rootNodeId: actionScope.share.rootNodeId,
-                }
-              : me
-          }
-          parentId={actionScope?.parentId ?? parentId}
-          {...(actionScope
-            ? { share: { id: actionScope.share.id, version: actionScope.share.version } }
-            : {})}
-          onClose={() => {
-            setAction(null);
-            try {
-              const saved = sessionStorage.getItem(PENDING_KEY);
-              if (saved) setRecovery(JSON.parse(saved) as Pending);
-            } catch {}
-          }}
-          refresh={refresh}
+      {action?.kind === "link-share" && me && (
+        <LinkShareDialog
+          key={action.node.id}
+          node={action.node}
+          account={me}
+          close={() => setAction(null)}
         />
       )}
+      {action &&
+        action.kind !== "overwrite" &&
+        action.kind !== "share" &&
+        action.kind !== "link-share" &&
+        me && (
+          <OperationDialog
+            key={JSON.stringify(action)}
+            action={action}
+            homeAccount={me}
+            {...(actionScope ? { sourceShare: actionScope.share } : {})}
+            account={
+              actionScope
+                ? {
+                    ...me,
+                    spaceId: actionScope.share.spaceId,
+                    rootNodeId: actionScope.share.rootNodeId,
+                  }
+                : me
+            }
+            parentId={actionScope?.parentId ?? parentId}
+            {...(actionScope
+              ? { share: { id: actionScope.share.id, version: actionScope.share.version } }
+              : {})}
+            onClose={() => {
+              setAction(null);
+              try {
+                const saved = sessionStorage.getItem(PENDING_KEY);
+                if (saved) setRecovery(JSON.parse(saved) as Pending);
+              } catch {}
+            }}
+            refresh={refresh}
+          />
+        )}
       {deadLettersOpen && me?.role === "app_admin" && (
         <DeadLettersDialog account={me} close={() => setDeadLettersOpen(false)} />
       )}

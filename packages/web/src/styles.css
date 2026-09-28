@@ -833,6 +833,42 @@ h1 {
   font-size: 14px;
   line-height: 1.7;
 }
+.share-issued,
+.share-confirm {
+  padding: 16px;
+  margin: 18px 0;
+  border: 1px solid #ccdcd0;
+  border-radius: 9px;
+  background: #f6faf6;
+}
+.share-issued label {
+  display: block;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+.share-issued input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #c5d2c8;
+  border-radius: 6px;
+  font: inherit;
+  background: white;
+}
+.share-issued .dialog-actions {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.share-issued a {
+  color: #315f44;
+  font-size: 13px;
+}
+.share-confirm p {
+  color: #657184;
+}
+.share-row small {
+  color: #657184;
+}
 .shared-list {
   display: grid;
   gap: 10px;

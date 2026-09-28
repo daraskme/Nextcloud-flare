@@ -392,6 +392,40 @@ it("invalidates issued cookies and CSRF when the owner changes the share", async
   expect((await f.http(f.request("logout", {}, cookie, token.token))).status).toBe(401);
   await expect(readShareSession(env.DB, s.claims)).rejects.toThrow();
 });
+it("replaces only the unavailable session's challenge and preserves a newer unlock after a lost reply", async () => {
+  const f = await fixture(),
+    first = await f.begin();
+  const unlocked = await f.http(
+    f.request("unlock", { secret: f.saved.secret }, first.cookie, first.token),
+  );
+  expect(unlocked.status).toBe(200);
+  const oldCookie = unlocked.headers.get("Set-Cookie")!.split(";")[0]!;
+  await updateLinkShare(f.app, f.owner, f.saved.id, 1, f.input);
+  const refreshed = await f.http(
+    f.request("unlock", { step: "challenge" }, `${oldCookie}; ${first.cookie}`),
+  );
+  expect(refreshed.status).toBe(200);
+  const { token } = await refreshed.json<{ token: string }>();
+  expect(token).not.toBe(first.token);
+  const cookies = `${oldCookie}; ${refreshed.headers.get("Set-Cookie")!.split(";")[0]!}`;
+  expect(f.rate).toHaveBeenCalledTimes(1);
+  const beginAgain = () => f.http(f.request("unlock", { step: "challenge" }, cookies));
+  expect(await (await beginAgain()).json()).toMatchObject({ token });
+  const renewed = await f.http(f.request("unlock", { secret: f.saved.secret }, cookies, token));
+  expect(renewed.status).toBe(200);
+  // Discard its Set-Cookie; a retry still carries the previous, now-invalid credential.
+  expect(await (await beginAgain()).json()).toMatchObject({ token });
+  const replay = await f.http(f.request("unlock", { secret: f.saved.secret }, cookies, token));
+  expect(replay.status).toBe(200);
+  expect(replay.headers.get("Set-Cookie")!.split(";")[0]).toBe(
+    renewed.headers.get("Set-Cookie")!.split(";")[0],
+  );
+  expect(await f.count()).toBe(2);
+  const states = await env.DB.prepare("SELECT revoked_at FROM share_sessions WHERE share_id=?")
+    .bind(f.saved.id)
+    .all<{ revoked_at: number | null }>();
+  expect(states.results.filter((row) => row.revoked_at === null)).toHaveLength(1);
+});
 it.each(["ack", "rollback", "reads"] as const)(
   "keeps logout, derived revocation and budget preservation atomic after %s loss",
   async (mode) => {

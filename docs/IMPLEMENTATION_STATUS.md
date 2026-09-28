@@ -1,6 +1,18 @@
 # 実装進捗
 
-## 公開リンクの閲覧・保存画面（今回）
+## 公開リンクの所有者管理画面（今回）
+
+Filesの操作メニューへ公開リンク管理を追加。新規閲覧リンク、1回だけ表示するURLのコピー/公開画面への導線、期限、passwordの維持/変更/解除、確認付き再発行・停止に対応する。秘密値はcomponent内だけに保持し、storage/query cacheへ保存しない。応答不明とversion競合では更新を止め、一覧確認と現行versionの再発行を案内する。既存edit linkの設定更新はroleを維持する。公開編集・権限切替は後続で、schema0063・通常76table・147 route、依存追加なし。
+
+同じdocument内のfragment変更でも旧clientを中止して公開画面を作り直す。秘密値をhistoryから消去し、古いpassword/root/一覧を引き継がない。失効済み共有Cookieと同じnonceのchallengeだけを新しくし、すでに別nonceへ進んだchallengeは、古い共有Cookieが残っていても保持する。新しいunlock応答が失われてもcredentialを重複作成せず、旧credentialを復活させない。
+
+- Web Node2file/18件成功（/tmp/ncf-owner-link-web-unit.log）。型検査、lint603file、契約/設定、Web build、Worker dry-runも成功（/tmp/ncf-owner-link-types-final.log、/tmp/ncf-owner-link-lint-final.log、/tmp/ncf-owner-link-contracts-final.log、/tmp/ncf-owner-link-config-final.log、/tmp/ncf-owner-link-build-final.log、/tmp/ncf-owner-link-worker-build-final.log）。
+- 関連workerd3file/62件成功（20.80秒、/tmp/ncf-owner-link-native-final.log）。新規1件で失効Cookieのchallenge更新、新challenge保持、unlock応答喪失後のcredential再利用と旧sessionの失効維持を検証。share-unlock/public-share-read/link-sharesの既存ケースも回帰確認。
+- 関連browser4file/10件成功（2.1分、/tmp/ncf-owner-link-browser-verified.log）。新規3件で390px幅の所有者管理、実clipboard、秘密値のstorage非保存、期限/passwordの維持・変更・解除、再発行前後のURLと匿名再認証、同じdocument内のfragment除去、停止、閉じた後のURL非再表示、POST/PATCH応答喪失後の一覧確認、version競合を検証。既存internal shares/public-auth/public-shareも成功。/tmp/ncf-owner-link-mobile.pngを目視確認。
+- 初回と再確認のbrowserはそれぞれ7/8件成功（/tmp/ncf-owner-link-browser.log、/tmp/ncf-owner-link-browser-final.log）。同じpathnameでfragmentだけを変更したときにdocumentが再読込みされず、古い公開表示が残る問題を検出し、hashchangeの処理を追加した。調査中に、設定変更後の失効challengeを再利用する経路も修正した。認証・rate上限・失効条件は緩めていない。
+- **Web Node18 + 関連workerd62 + 関連browser10 = 90件成功**。全Node/全workerd/全browser、backup drill、remote Access/CORSは今回ローカル再実行していない。リモートresource・secret・migration・deployなし。
+
+## 公開リンクの閲覧・保存画面（前回）
 
 独立したpublic buildとSRI付き`/s/:id`、匿名root/children、public ticket/content-session/取消しを接続した。fragmentはメモリーへ取り込み直ちにhistoryから除去し、認証成功後に破棄する。初回タブはWeb Locksで直列化し、同じCookie・unlock credentialを再利用する。画面はpassword・Retry-After・folder移動・追加ページ・保存・reload・logoutを扱い、公開配信は既存のcontent hostとBudgetDOを使う。共有の現在の認可をmetadata batchと配信時に検証する。schema0063・通常76table・147 route、依存追加なし。所有者UI、公開編集/upload-only・直接content/thumb・ZIP・media、stagingは未完了。
 
