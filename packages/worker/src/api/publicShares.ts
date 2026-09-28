@@ -51,7 +51,8 @@ export const publicShareRoute = (request: Request) => {
         (request.method === "POST" &&
           ["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action)) ||
         (request.method === "PATCH" && action.startsWith("nodes/")) ||
-        (request.method === "DELETE" && action.startsWith("tickets/"))))
+        (request.method === "DELETE" &&
+          (action.startsWith("tickets/") || action.startsWith("nodes/")))))
   );
 };
 const csrfSession = (s: ShareSession) => ({

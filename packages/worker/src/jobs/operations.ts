@@ -604,10 +604,26 @@ export async function lookupOperation(
     } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
       if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
       await prove(principal, {
-        operation: "node.read",
+        operation: principal.kind === "link_share" ? "node.props.write" : "node.read",
         nodeId: operands.parentId,
         spaceId: row.space_id,
       });
+      if (principal.kind === "link_share") {
+        if (row.kind !== "node.trash") return null;
+        if (row.state === "committed")
+          publication.push(
+            assertExists(
+              "SELECT 1 FROM trash_ops WHERE op_id=? AND actor_id IS NULL AND space_id=? AND root_node_id=? AND epoch=? AND reason='node.trash'",
+              [row.op_id, row.space_id, operands.nodeId, row.epoch],
+            ),
+          );
+        else
+          await prove(principal, {
+            operation: "node.trash",
+            nodeId: operands.nodeId,
+            spaceId: row.space_id,
+          });
+      }
     } else if (row.kind === "dav.put" || row.kind === "upload.complete") {
       if (typeof operands.nodeId === "string") {
         const authorized = await prove(principal, {

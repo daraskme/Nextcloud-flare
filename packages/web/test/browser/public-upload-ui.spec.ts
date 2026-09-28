@@ -316,7 +316,9 @@ test("an interrupted transfer can be cancelled, and logout clears pending local 
 test("read-only public links expose no upload or overwrite controls", async ({ page, browser }) => {
   const t = await setup(page, browser, true, "read");
   try {
-    await expect(t.guest.getByRole("button", { name: /アップロード|上書き/ })).toHaveCount(0);
+    await expect(t.guest.getByRole("button", { name: /アップロード|上書き|ごみ箱/ })).toHaveCount(
+      0,
+    );
   } finally {
     await t.context.close();
   }

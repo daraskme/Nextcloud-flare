@@ -219,7 +219,10 @@ export async function nodeEventAuthority(
       row.kind === "node.trashed" || row.kind === "node.purged"
         ? await authorizeNode(db, targetPrincipal, {
             ownerOnly: targetOwnerOnly,
-            operation: "node.read",
+            operation:
+              row.kind === "node.trashed" && targetPrincipal.kind === "link_share"
+                ? "node.props.write"
+                : "node.read",
             nodeId: parentId,
             spaceId: row.space_id,
           })

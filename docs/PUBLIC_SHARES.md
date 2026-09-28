@@ -1,10 +1,10 @@
 # 公開リンク共有
 
-更新: 2026-09-29。schema0064・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。公開削除、upload-only・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-29。schema0065・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。upload-only・ZIP・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
-Filesのファイル・フォルダー操作メニューから「公開リンクを管理」を開く。新規は閲覧を初期選択とし、閲覧/編集の権限、期限と任意のpasswordを設定できる。設定変更でも現在のroleを初期表示して切り替えられる。編集権限は共有内容の変更を許可する設定で、現在の公開画面ではフォルダー作成・名前変更・アップロード・上書きに対応する。作成・再発行の応答に含まれるURLはcomponent内だけに保持し、clipboardへのコピーと公開画面を開く操作を提供する。storage・query cacheへ保存せず、dialogを閉じると再表示できない。設定変更はpasswordの維持/新規設定/解除を区別し、期限切れは期限を更新してから再発行する。
+Filesのファイル・フォルダー操作メニューから「公開リンクを管理」を開く。新規は閲覧を初期選択とし、閲覧/編集の権限、期限と任意のpasswordを設定できる。設定変更でも現在のroleを初期表示して切り替えられる。編集権限は共有内容の変更を許可する設定で、現在の公開画面ではフォルダー作成・名前変更・アップロード・上書き・ごみ箱への移動に対応する。作成・再発行の応答に含まれるURLはcomponent内だけに保持し、clipboardへのコピーと公開画面を開く操作を提供する。storage・query cacheへ保存せず、dialogを閉じると再表示できない。設定変更はpasswordの維持/新規設定/解除を区別し、期限切れは期限を更新してから再発行する。
 
 再発行・停止は旧URLと閲覧sessionの失効を画面内で説明し、対象操作を確認する。結果不明とversion競合では更新操作を無効化し、一覧更新後に最新のリンクを選び直す。POST/PATCHを自動で再送せず、受け取れなかった秘密値は再発行で取得する。secretを一覧から復元したように表示しない。独立したlink一覧queryを使い、内部共有の操作は従来どおり利用できる。
 
@@ -64,6 +64,18 @@ public CSRF付き`POST .../:id/tickets`と`POST .../:id/content-session`はnodeI
 
 root GETの`permissions.createFolder/rename`で編集操作を表示するが、APIの現在の認可が常に正となる。画面は送信中の重複操作を防ぎ、結果不明なら名前・key・元sessionをメモリーに固定する。「結果を確認」でOperation-IdがあればGET照会し、ID自体を受信できなかった場合だけ同じ要求を同じkeyで明示的に再送する。自動再送しない。401/403/404/412では新credentialや新keyへ切り替えず、共有内容の再確認を案内する。編集フォームを閉じると追跡は終了し、実行の取消しにはならない。reload/タブ終了後の追跡復元は未対応で、再度作成する前に一覧確認を案内する。
 
+## 公開編集リンクからの削除
+
+`DELETE .../:id/nodes/:nodeId`を既存のtrash処理へ接続した。現在の編集権限、同一origin/public CSRF、元の`Share-Session`、`Idempotency-Key`を必須にし、JSON本文には一覧で確認した`revision`だけを受ける。space/owner/credentialやDAV lock tokenを指定できない。親を含む現在の共有範囲、対象revision、元session/version/epoch、owner状態を取得時・LockDO・確定batchで再検査する。共有rootそのものはfileでもfolderでも削除できない。
+
+公開画面の「ごみ箱へ移動」は対象名とフォルダー内の項目も移動すること、復元を共有した方に依頼することを説明して確認する。root permissionsのdeleteに従って表示し、選択時のrevisionを固定する。内容が変わった対象は412で拒否して一覧の再確認を案内する。同期処理の上限はfolder自身を含め1,000 live nodeで、超過は413。子孫や祖先のDAV lockにも従う。
+
+既存の13-step transactionでtrash membership・node不可視化・親/tree更新・内部のlock終了・子孫に設定された共有とsessionの失効・ownerの短期ticket/content session失効・activity/outboxを同時に確定する。別のtrashに属する削除済み子を今回のmembershipへ含めない。namespaceの削除はR2実体の削除や容量の返金ではなく、所有者の既存restore/purge/GCへ引き継ぐ。公開利用者へごみ箱の一覧・復元・完全削除権限は与えない。
+
+migration0065は既存trashのactorと被参照IDを保ったままactor_idをnullableにする。匿名操作ではtrash/activityのactorはnull、operationsの元link/credential/versionで帰属を記録し、所有者へ置き換えない。actor/space/root/reason/epochを後から変更できず、匿名trash作成時に元operationとcredential/shareの対応を要求する。復旧監査は失効済みの元sessionも履歴として照合し、不正な帰属を拒否する。既存のbackup/restore書込み凍結を優先する。migrationは停止・未処理受付なしで適用する。
+
+成功はHTTP200のoperation receipt（result.statusは204）。削除後のnode内容は返さず、元と同じsession/key/revisionで終端を読み戻す。既知のOperation-IdはGETで確認する。公開receiptと後続eventは元の親に対する現在の編集権限も確認し、別sessionや編集権限を失った共有へ渡さない。編集画面の追跡はメモリー内に限られ、reload/タブ終了後は一覧を確認する。
+
 ## 公開アップロードと上書きAPI
 
 編集linkの`POST .../:id/uploads`は`mode:"single"|"multipart"`、`parentId`、`name`、`declared_size`、任意の`targetId/targetRevision`を受ける。space/owner/share/credentialは本文から指定できない。直接共有したfileの上書きはparentIdを省略でき、認可したtargetから内部で親を解決する。閲覧linkと共有範囲外は拒否する。
@@ -90,7 +102,7 @@ root GETの`permissions.upload/overwrite`に従ってファイル選択と上書
 
 ## 次の接続と完了条件
 
-1. 公開削除を接続する。削除は既存のlink認可対象外であり、trashのactor/operation/復旧契約も整備する。
+1. 残る専用配信経路とupload-onlyを接続する。公開create/rename/deleteのreload後の操作追跡も残る。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側の直接content/thumbなど、未接続の専用配信経路を契約へつなぐ。現在の画面の保存経路はcontent ticket/session経由である。
 4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。

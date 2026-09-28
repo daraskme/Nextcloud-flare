@@ -30,9 +30,8 @@ jobs:
             name: local (windows-latest, 4/4)
             shard: "4/4"
     runs-on: ${{ matrix.os }}
-    # Keep all four integration shards and one full Node suite on Windows.
-    # Run 36425378826 spent 6m44s repeating Node tests on shard 4, then hit 30m
-    # during integration. Run that same platform-wide suite on shard 1 only.
+    # Keep all four integration shards; the full Windows Node suite has its own job.
+    # Run 36444362854 spent 8m46s on Node tests before shard 1 hit the 30m limit.
     # Ubuntu still runs every gate; application deadlines and job budgets stay unchanged.
     timeout-minutes: 30
     env:
@@ -55,12 +54,26 @@ jobs:
         run: pnpm verify:contracts
       - if: matrix.shard != ''
         run: pnpm verify:config
-      - if: matrix.shard == '1/4'
-        run: pnpm test:unit
       - if: matrix.shard != ''
         run: pnpm test:integration --shard=${{ matrix.shard }}
       - if: matrix.shard != ''
         run: pnpm build
+
+  windows-unit:
+    name: unit (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@12.4.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:unit
 
   backup:
     name: backup (${{ matrix.kind }})

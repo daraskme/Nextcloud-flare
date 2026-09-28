@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { searchFiles } from "./fileHelpers";
 
 test.beforeEach(async ({ page }) => {
   // Earlier browser scenarios may have logged out. Issue a fresh Access fingerprint;
@@ -15,6 +16,7 @@ async function openShare(page: Page, name: string) {
   await page.getByLabel("名前", { exact: true }).fill(name);
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await searchFiles(page, name);
   await page.getByRole("button", { name: `${name}の操作` }).click();
   await page.getByRole("menuitem", { name: "共有を管理" }).click();
   await expect(page.getByText("設定済みの共有はありません。", { exact: true })).toBeVisible();
@@ -49,6 +51,7 @@ test("internal shares: create, update and revoke through the real API on mobile"
     .toBe(true);
   await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
   await page.reload();
+  await searchFiles(page, "共有するフォルダー");
   await page.getByRole("button", { name: "共有するフォルダーの操作" }).click();
   await page.getByRole("menuitem", { name: "共有を管理" }).click();
   await expect(dialog.locator(".share-row")).toContainText("編集");

@@ -4,6 +4,7 @@ import { lookupOperation } from "../jobs/operations";
 import { createFolder } from "../services/createFolder";
 import { renameNode } from "../services/renameNode";
 import type { ShareSession } from "../services/shareUnlock";
+import { trashNode } from "../services/trashNode";
 import { hasEmptyBody } from "./emptyBody";
 import { publicPrincipal } from "./publicShareRead";
 import { readShareBody } from "./shares";
@@ -44,28 +45,42 @@ export async function publicShareMutation(
   try {
     const body = (await readShareBody(request)) as Record<string, unknown>;
     const folder = action === "nodes";
+    const remove = request.method === "DELETE";
     if (
-      Object.keys(body).some(
-        (k) => !(folder ? ["kind", "parentId", "name"] : ["name"]).includes(k),
-      ) ||
-      typeof body.name !== "string" ||
-      (folder &&
-        (body.kind !== "folder" ||
-          typeof body.parentId !== "string" ||
-          !/^[A-Za-z0-9_-]{1,128}$/.test(body.parentId)))
+      remove
+        ? Object.keys(body).some((k) => k !== "revision") ||
+          !Number.isSafeInteger(body.revision) ||
+          (body.revision as number) < 1
+        : Object.keys(body).some(
+            (k) => !(folder ? ["kind", "parentId", "name"] : ["name"]).includes(k),
+          ) ||
+          typeof body.name !== "string" ||
+          (folder &&
+            (body.kind !== "folder" ||
+              typeof body.parentId !== "string" ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(body.parentId)))
     )
       return problem(400, "bad_request");
     const common = {
       principal: publicPrincipal(session),
       spaceId: session.spaceId,
       idempotencyKey: key,
-      name: body.name,
+      name: body.name as string,
       // Anonymous links cannot own or impersonate a DAV lock creator.
       lockTokens: [],
     };
-    const outcome = folder
-      ? await createFolder(env, { ...common, parentId: body.parentId as string })
-      : await renameNode(env, { ...common, nodeId: action.slice(6) });
+    const outcome = remove
+      ? await trashNode(env, {
+          principal: common.principal,
+          spaceId: common.spaceId,
+          requestId: key,
+          nodeId: action.slice(6),
+          expectedRevision: body.revision as number,
+          lockTokens: [],
+        })
+      : folder
+        ? await createFolder(env, { ...common, parentId: body.parentId as string })
+        : await renameNode(env, { ...common, nodeId: action.slice(6) });
     if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
       const response = problem(503, "commit_unknown");
       response.headers.set(
@@ -84,6 +99,8 @@ export async function publicShareMutation(
     if (["invalid_share_request", "invalid_name", "name_too_long", "reserved_name"].includes(code))
       return problem(400, "bad_request");
     if (code === "authorization_denied") return problem(404, "not_found");
+    if (code === "precondition_failed") return problem(412, "precondition_failed");
+    if (code === "dav_delete_too_large") return problem(413, "payload_too_large");
     if (code === "dav_locked") return problem(423, "locked");
     if (["idempotency_conflict", "name_conflict"].includes(code)) return problem(409, "conflict");
     const response = problem(503, "not_ready");

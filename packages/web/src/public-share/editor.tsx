@@ -6,6 +6,7 @@ export function PublicEditor({
   sessionId,
   parentId,
   node,
+  remove = false,
   close,
   done,
   failed,
@@ -14,6 +15,7 @@ export function PublicEditor({
   sessionId: string;
   parentId: string;
   node?: SharedNode | undefined;
+  remove?: boolean | undefined;
   close: () => void;
   done: () => void;
   failed: (error: unknown) => void;
@@ -27,6 +29,7 @@ export function PublicEditor({
   const [message, setMessage] = useState("");
   const active = useRef(false),
     input = useRef<HTMLInputElement>(null);
+  const title = remove ? "ごみ箱へ移動" : node ? "名前を変更" : "新規フォルダー";
   useEffect(() => {
     input.current?.focus();
     input.current?.select();
@@ -37,8 +40,12 @@ export function PublicEditor({
       key: crypto.randomUUID(),
       sessionId,
       suffix: node ? `/nodes/${encodeURIComponent(node.id)}` : "/nodes",
-      method: node ? ("PATCH" as const) : ("POST" as const),
-      body: node ? { name } : { kind: "folder" as const, parentId, name },
+      method: remove ? ("DELETE" as const) : node ? ("PATCH" as const) : ("POST" as const),
+      body: remove
+        ? { revision: node!.revision }
+        : node
+          ? { name }
+          : { kind: "folder" as const, parentId, name },
     };
     active.current = true;
     setBusy(true);
@@ -59,7 +66,7 @@ export function PublicEditor({
         done();
       } else {
         setPending(null);
-        setMessage("操作は完了しませんでした。名前やフォルダーの状態を確認してください。");
+        setMessage("操作は完了しませんでした。一覧を更新し、現在の内容を確認してください。");
       }
     } catch (error) {
       if (client.lifetime.signal.aborted) return;
@@ -81,11 +88,15 @@ export function PublicEditor({
         setMessage(
           error.status === 423
             ? "この項目はロックされています。解除後にお試しください。"
-            : error.status === 409
-              ? "同じ名前の項目があるか、別の操作と競合しています。名前を確認してください。"
-              : error.status === 429
-                ? "しばらく待ってから、もう一度お試しください。"
-                : "名前を確認してください。使用できない文字や長すぎる名前は保存できません。",
+            : remove && error.status === 413
+              ? "項目が多すぎます。一度に移動できるのは、フォルダー自身を含め1,000件までです。小分けにしてお試しください。"
+              : remove && error.status === 409
+                ? "別の操作と競合しています。一覧を更新し、現在の内容を確認してください。"
+                : error.status === 409
+                  ? "同じ名前の項目があるか、別の操作と競合しています。名前を確認してください。"
+                  : error.status === 429
+                    ? "しばらく待ってから、もう一度お試しください。"
+                    : "名前を確認してください。使用できない文字や長すぎる名前は保存できません。",
         );
       }
     } finally {
@@ -94,28 +105,37 @@ export function PublicEditor({
     }
   }
   return (
-    <section className="public-editor" aria-label={node ? "名前を変更" : "新規フォルダー"}>
+    <section className="public-editor" aria-label={title}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <h2>{node ? "名前を変更" : "新規フォルダー"}</h2>
-        <label htmlFor="edit-name">名前</label>
-        <input
-          id="edit-name"
-          ref={input}
-          value={name}
-          required
-          maxLength={255}
-          disabled={busy || !!pending}
-          onChange={(event) => setName(event.target.value)}
-        />
+        <h2>{title}</h2>
+        {remove ? (
+          <p>
+            「{node!.name}」{node!.kind === "folder" ? "と中の項目" : ""}
+            を共有した方のごみ箱へ移動します。復元は共有した方に依頼してください。
+          </p>
+        ) : (
+          <>
+            <label htmlFor="edit-name">名前</label>
+            <input
+              id="edit-name"
+              ref={input}
+              value={name}
+              required
+              maxLength={255}
+              disabled={busy || !!pending}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </>
+        )}
         {message && <p role="alert">{message}</p>}
         {pending && (
           <p>
-            この画面を閉じると結果の確認を終了します。操作は取り消されません。再度作成する前に、フォルダーの内容を確認してください。
+            この画面を閉じると結果の確認を終了します。操作は取り消されません。次の操作をする前に、フォルダーの内容を確認してください。
           </p>
         )}
         <div className="editor-actions">
@@ -123,7 +143,15 @@ export function PublicEditor({
             {pending ? "確認を終了" : "キャンセル"}
           </button>
           <button className="primary" type="submit" disabled={busy}>
-            {busy ? "確認中…" : pending ? "結果を確認" : node ? "名前を保存" : "フォルダーを作成"}
+            {busy
+              ? "確認中…"
+              : pending
+                ? "結果を確認"
+                : remove
+                  ? "ごみ箱へ移動する"
+                  : node
+                    ? "名前を保存"
+                    : "フォルダーを作成"}
           </button>
         </div>
       </form>

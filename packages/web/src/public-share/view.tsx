@@ -25,7 +25,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
   const [password, setPassword] = useState(""),
     [retry, setRetry] = useState(0);
   const [closed, setClosed] = useState(false);
-  const [editing, setEditing] = useState<{ node?: SharedNode } | null>(null);
+  const [editing, setEditing] = useState<{ node?: SharedNode; remove?: boolean } | null>(null);
   const [uploading, setUploading] = useState<{ node?: SharedNode } | null>(null);
   const [transferBusy, setTransferBusy] = useState(false);
   const locked = busy || editing !== null || uploading !== null || transferBusy;
@@ -258,6 +258,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 sessionId={root.sessionId}
                 parentId={current.id}
                 node={editing.node}
+                remove={editing.remove}
                 close={() => setEditing(null)}
                 done={() => {
                   setEditing(null);
@@ -377,6 +378,19 @@ export function PublicApp({ client }: { client: PublicClient }) {
                       }}
                     >
                       上書き
+                    </button>
+                  )}
+                  {root.permissions.delete && node.id !== root.root.id && (
+                    <button
+                      className="rename"
+                      disabled={locked}
+                      aria-label={`${node.name}をごみ箱へ移動`}
+                      onClick={() => {
+                        setMessage("");
+                        setEditing({ node, remove: true });
+                      }}
+                    >
+                      ごみ箱へ移動
                     </button>
                   )}
                   {node.kind === "file" && (

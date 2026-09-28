@@ -239,7 +239,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE (?6<>'node.trash' OR p.selected_id IS NOT NULL)
                 AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
-        OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
+        OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
             WHERE c.id=p.credential_id AND c.kind='share' AND sh.kind='link'

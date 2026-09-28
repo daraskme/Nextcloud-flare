@@ -8,7 +8,13 @@ export interface SharedNode {
 }
 export interface SharedRoot {
   sessionId: string;
-  permissions: { createFolder: boolean; rename: boolean; upload: boolean; overwrite: boolean };
+  permissions: {
+    createFolder: boolean;
+    rename: boolean;
+    upload: boolean;
+    overwrite: boolean;
+    delete: boolean;
+  };
   root: SharedNode;
   contentOrigin: string;
   expiresAt: number;
@@ -226,8 +232,8 @@ export interface EditIntent {
   key: string;
   sessionId: string;
   suffix: string;
-  method: "POST" | "PATCH";
-  body: { name: string; kind?: "folder"; parentId?: string };
+  method: "POST" | "PATCH" | "DELETE";
+  body: { name: string; kind?: "folder"; parentId?: string } | { revision: number };
 }
 export interface EditOperation {
   id: string;

@@ -37,7 +37,13 @@ export interface ShareSession {
   ownerId: string;
   rootNodeId: string;
   spaceId: string;
-  permissions: { createFolder: boolean; rename: boolean; upload: boolean; overwrite: boolean };
+  permissions: {
+    createFolder: boolean;
+    rename: boolean;
+    upload: boolean;
+    overwrite: boolean;
+    delete: boolean;
+  };
 }
 // Pre-authentication proof: inspect only this share's bounded ancestry, without fabricating a user credential.
 const ACTIVE_LINK = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
@@ -111,6 +117,7 @@ export async function readShareSession(
     permissions: {
       createFolder: row.can_create === 1,
       rename: row.can_rename === 1,
+      delete: row.can_rename === 1,
       upload: row.can_upload === 1 && row.can_create === 1,
       overwrite: row.can_upload === 1 && row.can_rename === 1,
     },

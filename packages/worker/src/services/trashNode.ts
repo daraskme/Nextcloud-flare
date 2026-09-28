@@ -32,6 +32,7 @@ export interface TrashNodeRequest {
   readonly nodeId: string;
   readonly lockTokens: readonly string[];
   readonly operation?: "node.trash" | "dav.delete";
+  readonly expectedRevision?: number;
 }
 
 interface MemberRow {
@@ -75,9 +76,8 @@ function trashStatements(
     throw new Error("invalid_mutation_plan");
   const op = claim.intent.id;
   const node = authorized.node;
-  if (authorized.principal.kind !== "user" && authorized.principal.kind !== "app_password")
-    throw new Error("invalid_mutation_plan");
-  const actorId = authorized.principal.user_id;
+  if (authorized.principal.kind === "service") throw new Error("invalid_mutation_plan");
+  const actorId = authorized.principal.kind === "link_share" ? null : authorized.principal.user_id;
   const clock = "strftime('%s','now')*1000";
   const membership = "SELECT node_id FROM trash_members WHERE trash_op_id=?";
   const steps: Array<MutationStep & { assertion: SqlStatement }> = [
@@ -262,8 +262,16 @@ export async function trashNode(
 ): Promise<MutationOutcome> {
   request = { ...request, principal: freezePrincipal(request.principal) };
   const share = principalSelection(request.principal);
-  if (request.principal.kind !== "user" && request.principal.kind !== "app_password")
+  if (
+    request.principal.kind === "service" ||
+    (request.principal.kind === "link_share" && request.operation === "dav.delete")
+  )
     throw new Error("authorization_denied");
+  if (
+    request.expectedRevision !== undefined &&
+    (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 1)
+  )
+    throw new Error("precondition_failed");
   const operationKind = request.operation ?? "node.trash";
   const slotIntent = await operationIntent(
     request.principal,
@@ -285,11 +293,15 @@ export async function trashNode(
       terminalSlot.selected_share_id !== (share?.id ?? null) ||
       terminalSlot.selected_share_version !== (share?.version ?? null) ||
       terminalSlot.principal_kind !== request.principal.kind ||
+      terminalSlot.credential_version !==
+        (request.principal.kind === "link_share" ? request.principal.share_version : null) ||
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||
       terminalSlot.kind !== operationKind ||
       terminalSlot.expected_steps !== TRASH_NODE_STEPS ||
-      operands.nodeId !== request.nodeId
+      operands.nodeId !== request.nodeId ||
+      operands.expectedRevision !==
+        (request.expectedRevision === undefined ? undefined : String(request.expectedRevision))
     )
       throw new Error("idempotency_conflict");
     const operation = await lookupOperation(env.DB, request.principal, terminalSlot.op_id);
@@ -302,6 +314,8 @@ export async function trashNode(
     spaceId: request.spaceId,
   });
   if (initial.operation !== "node.trash") throw new Error("invalid_trash_authorization");
+  if (request.expectedRevision !== undefined && initial.node.revision !== request.expectedRevision)
+    throw new Error("precondition_failed");
   const members = await liveMembers(env.DB, request.nodeId, request.spaceId);
   const intent = await operationIntent(
     request.principal,
@@ -312,8 +326,17 @@ export async function trashNode(
       nodeId: request.nodeId,
       memberCount: members.length,
       memberDigest: await digestJson(members),
+      ...(request.expectedRevision === undefined
+        ? {}
+        : { expectedRevision: request.expectedRevision }),
     },
-    { nodeId: request.nodeId, parentId: initial.parentId },
+    {
+      nodeId: request.nodeId,
+      parentId: initial.parentId,
+      ...(request.expectedRevision === undefined
+        ? {}
+        : { expectedRevision: String(request.expectedRevision) }),
+    },
   );
   const existing = await findOperationIntent(env.DB, intent, TRASH_NODE_STEPS);
   if (existing && existing.state !== "claimed") {
@@ -338,6 +361,11 @@ export async function trashNode(
     });
     if (authorized.operation !== "node.trash" || authorized.parentId !== initial.parentId)
       throw new Error("authorization_denied");
+    if (
+      request.expectedRevision !== undefined &&
+      authorized.node.revision !== request.expectedRevision
+    )
+      throw new Error("precondition_failed");
     const currentMembers = await liveMembers(env.DB, request.nodeId, request.spaceId);
     if ((await digestJson(currentMembers)) !== (await digestJson(members)))
       throw new Error("authorization_denied");

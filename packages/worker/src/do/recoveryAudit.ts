@@ -4,6 +4,7 @@ import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import { loadCopyJobManifest } from "../jobs/copyManifest";
 import { COPY_PUBLICATION_BINDING_SQL } from "../jobs/copyPublicationAuthority";
+import { ANONYMOUS_TRASH_PROVENANCE } from "../jobs/trashProvenance";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
 import {
   acquireGlobalMutation,
@@ -255,7 +256,10 @@ export async function rebuildRecoverySearchFts(
  * expression-depth limit after callers wrap this query in an assertion and add stop fences. */
 export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=1 AND c.epoch=?
       AND c.maintenance=1 AND c.gc_paused=1
-      AND (NOT EXISTS(SELECT 1 FROM operations o
+      AND ((NOT EXISTS(SELECT 1 FROM trash_ops t WHERE
+        (t.actor_id IS NULL OR EXISTS(SELECT 1 FROM operations o WHERE o.op_id=t.op_id AND o.principal_kind='link_share'))
+        AND NOT EXISTS(${ANONYMOUS_TRASH_PROVENANCE}))
+      AND NOT EXISTS(SELECT 1 FROM operations o
         WHERE (o.selected_share_id IS NOT NULL OR o.selected_share_version IS NOT NULL)
         AND (o.selected_share_id IS NULL OR o.selected_share_version IS NULL OR o.principal_kind NOT IN ('user','app_password')
           OR length(o.selected_share_id) NOT BETWEEN 1 AND 128 OR o.selected_share_id GLOB '*[^A-Za-z0-9_-]*'
@@ -269,8 +273,8 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=
           OR length(u.selected_share_id) NOT BETWEEN 1 AND 128 OR u.selected_share_id GLOB '*[^A-Za-z0-9_-]*'
           OR u.selected_share_version NOT BETWEEN 1 AND 9007199254740991
           OR NOT EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.selected_share_id AND sh.kind='internal'
-            AND sh.owner_id=u.owner_id AND u.selected_share_version BETWEEN 1 AND sh.version)))
-      AND NOT EXISTS(SELECT 1 FROM uploads u
+            AND sh.owner_id=u.owner_id AND u.selected_share_version BETWEEN 1 AND sh.version))))
+      AND (NOT EXISTS(SELECT 1 FROM uploads u
         WHERE (u.link_share_id IS NULL)<>(u.link_share_version IS NULL)
           OR (u.source='private' AND u.link_share_id IS NULL AND EXISTS(
             SELECT 1 FROM credentials WHERE id=u.credential_id AND kind='share'))
@@ -294,7 +298,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=
             OR o.credential_id<>u.credential_id OR o.epoch<>u.epoch OR o.space_id<>u.space_id
             OR json_extract(o.operands_json,'$.uploadId') IS NOT u.id
             OR json_extract(o.operands_json,'$.parentId') IS NOT u.parent_id
-            OR json_extract(o.operands_json,'$.nodeId') IS NOT u.target_id))))
+            OR json_extract(o.operands_json,'$.nodeId') IS NOT u.target_id)))))
       AND ((NOT EXISTS(SELECT 1 FROM operations o WHERE
         ((o.destination_share_id IS NULL)<>(o.destination_share_version IS NULL))
         OR (o.destination_space_id IS NULL AND o.destination_share_id IS NOT NULL)

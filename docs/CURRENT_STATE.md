@@ -1,6 +1,6 @@
 # 現在の実装状態
 
-[公開リンク](PUBLIC_SHARES.md)の画面へ、単一・分割アップロード、確認付き上書き、進捗、一時停止・中止と結果確認を追加しました。元のshare/session・受付/確定key・capability・ファイルの照合情報を専用IndexedDBへ保存し、再読み込み後も元の操作を確認・再開します。単一PUTの結果不明時は再送せず、分割は完了部分を除いて最大4並列で送信します。直接共有fileの上書きでも親情報を返しません。公開削除、upload-only・ZIP・media、実環境検証は未完了です。schema0064・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンク](PUBLIC_SHARES.md)の編集画面へ、確認付きのごみ箱移動を追加しました。確認時点の対象revision、元share/session/keyを固定し、共有root・共有範囲外・read権限・DAV lockを拒否します。匿名の削除者を所有者へ置き換えず、元のoperationで記録し、所有者だけが既存のごみ箱から復元・完全削除します。単一/分割アップロード・上書き・IndexedDB再開も接続済みです。schema0065・通常76table・147 route。upload-only・ZIP・media、実環境検証と復旧側の残件は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-29。直近の到達点は[PROGRESS](PROGRESS.md)。
 
@@ -8,7 +8,9 @@
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開削除と、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は残る専用配信経路とupload-onlyを接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行837cfedの[CI36444362854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36444362854)は、Ubuntu・Windows2/4〜4/4・backup bindings/cliの6job成功、browser失敗、Windows1/4が30分上限でcancelledでした。browserの4件は仮想スクロールの表示範囲外を直接操作していたため、検索してから操作する形へ修正しました。Windows全Node（1,573件成功、約9分）を独立jobへ分け、全4integration shardの検査と30分上限を維持します。今回のCIはpush後に確認します。
 
 先行2d34118の[CI36440037128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36440037128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。下記の先行Windows失敗の根本原因が特定されたことを意味しません。
 
@@ -59,7 +61,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
 | 公開リンクの所有者管理API/画面 | CRUD、閲覧/編集切替、期限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効、URLコピー | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替、mobile browser操作 | 実環境。[詳細](PUBLIC_SHARES.md) |
-| 公開閲覧・フォルダー作成・名前変更・upload | 独立public build/SRI、root/children、ticket配信、現行edit権限でのcreate/rename、元session/key固定の再送とoperation照会、単一/分割upload・上書きAPI/画面、IndexedDB再開・中止 | 匿名複数tab、共有境界、保存直前の失効、DAV lock、ACK喪失、権限切替、mobile browser | 公開削除、専用配信・ZIP/media、reload後のcreate/rename追跡、staging。[詳細](PUBLIC_SHARES.md) |
+| 公開閲覧・フォルダー作成・名前変更・削除・upload | 独立public build/SRI、root/children、ticket配信、現行edit権限でのcreate/rename、元session/key固定の再送とoperation照会、単一/分割upload・上書きAPI/画面、IndexedDB再開・中止、確認付きtrashと所有者の復元 | 匿名複数tab、共有境界、保存直前の失効、DAV lock、ACK喪失、権限切替、mobile browser | 専用配信・upload-only・ZIP/media、reload後のcreate/rename/delete追跡、staging。[詳細](PUBLIC_SHARES.md) |
 | 公開リンクの匿名認証 | challenge/Cookie、秘密値/password照合、共有sessionの発行/再利用、public CSRF/logout、ControlDOの共有10/IP30回のrolling制限 | JWT用途/鍵切替、D1の失効競合・応答喪失、DO並行制限/eviction/喪失・停止。結果はIMPLEMENTATION_STATUS | 未接続の公開API、staging。[詳細](PUBLIC_SHARES.md) |
 | DLQ記録・管理者再投入 | 配信単位の観測、50件ページ、同じOutboxへの再配信予約、監査と一度限りの受付、現行管理者と元actorの認可 | 同時要求、応答喪失、失効/停止、copy途中再開、成功済みPUT/completeの再送防止、未知native保留。詳細はIMPLEMENTATION_STATUS | 保持期限・通知・実Queue/DLQ運用。[詳細](DEAD_LETTERS.md) |
 | 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link、copyのDLQ・最大規模検証は後続。[詳細](SHARED_WORKSPACE.md) |
@@ -161,7 +163,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 公開linkの削除・専用配信、upload-only共有の完全なHTTP surface。所有者管理API/画面・password保存・匿名unlock/CSRF/logout・独立公開bundle・閲覧/保存・create/rename・upload/overwrite APIと画面は[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
+- 公開linkの専用配信、upload-only共有の完全なHTTP surface。所有者管理API/画面・password保存・匿名unlock/CSRF/logout・独立公開bundle・閲覧/保存・create/rename/delete・upload/overwrite APIと画面は[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。

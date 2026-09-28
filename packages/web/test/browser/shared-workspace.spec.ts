@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import { type Browser, expect, type Page, type Route, test } from "@playwright/test";
+import { searchFiles } from "./fileHelpers";
 import { fileContent, writeTestFile } from "./uploadHelpers";
 
 async function setup(
@@ -589,6 +590,7 @@ test("recipient copies and moves within its share, recovers a lost trash respons
       .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.goto("/files");
+    await searchFiles(page, "共有で移動したメモ.txt");
     await expect(
       page.getByRole("button", { name: "共有で移動したメモ.txtの操作", exact: true }),
     ).toBeVisible();

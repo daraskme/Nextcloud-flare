@@ -1,6 +1,20 @@
 # 実装進捗
 
-## 公開アップロード画面・上書き確認・再読み込み後の再開（今回）
+## 公開共有からのごみ箱移動と所有者復元（今回）
+
+公開DELETEと確認画面を既存13段階のtrash mutationへ接続した。確認時のrevision、元share/session/epoch/keyを固定し、共有root・範囲外・read権限・DAV lock・1,000件超を拒否する。匿名activityとtrashのactorはnullで、元のoperation/credentialへ帰属を保存する。所有者の既存ごみ箱から一覧・復元・完全削除できる。応答不明時は自動再送せず、Operation-IdがあればGET、なければ元の要求を明示的に再送する。編集操作の追跡は画面内だけで、reload後の復元は未実装。migration0065で既存trashのデータ・参照・凍結guardを保持してactorをnullableにした。通常76table・147 route、依存追加なし。
+
+- populated D1の移行と凍結・復旧snapshotの3file/80件成功（132.22秒、/tmp/ncf-public-delete-native-freeze.log）。新たな履歴検査を既存の凍結assertionへ包んだ際、D1式深度100を超えることを実queryで再現し、条件を括弧で分けて修正した。検査条件は維持し、移行テストにも実際のassertExists wrapperを含めた。初回の関連13file試験は共通凍結準備の失敗後に停止したため成功数へ加算しない。
+- 公開削除の13件は成功（/tmp/ncf-public-delete-native-diagnose2.log）。匿名帰属・同一key・元session限定receipt・read/CSRF/body・revision・root/範囲・権限取消し・競合・D1 ACK喪失・DAV lock・1,000件制限・所有者の復元/完全削除を検証。初回の所有者復元失敗は、fixtureにControlDOのrestore pauseとsearch_index/FTSが不足していたため修正した。製品の復元条件は維持している。
+- 認可・公開編集・削除・既存共有書込み・operation・outbox・復旧監査・公開assetの10file/179件成功（105.55秒、/tmp/ncf-public-delete-native-verified.log）。上記の移行/凍結/snapshotを合わせ、重複を除く関連workerdは13file/259件成功。
+- 全Node90fileは1,581/1,585件成功（132.65秒、/tmp/ncf-public-delete-unit-final.log）。browserと同時実行した際、既存backup generation/health/operator/publicationの4件が時間切れになった。検査内容と期限を変えず1 workerで対象4件を再実行し、すべて成功（20.11秒、/tmp/ncf-public-delete-unit-timeouts.log）。この確認で重複を除く1,585件が成功したが、全suiteの単一実行成功とは扱わない。先行のsandbox内実行ではlocalhostのlisten EPERM等で39件が失敗したため、通常のローカル実行環境へ切り替えた（/tmp/ncf-public-delete-unit-verified.log）。
+- 型、lint624file、契約/設定、Web build/Worker dry-run成功。/tmp/ncf-public-delete-types-final.log、/tmp/ncf-public-delete-lint-final.log、/tmp/ncf-public-delete-contracts.log、/tmp/ncf-public-delete-config.log、/tmp/ncf-public-delete-build-final.log。
+- 全browser11file/59件成功（9.7分、/tmp/ncf-public-delete-browser-full.log）。新規4件は390pxの確認/取消し/削除と所有者復元、応答喪失後の同一key/session/revision再送、既知Operation-IdのGET限定照会、確認後の子追加に対する412を検証。前回CIの内部共有3件と所有者復元1件も成功した。初回の関連18件では共通helper抽出時のopen import漏れが1件失敗し、修正後の全体実行で再確認した。390pxの削除確認画像を目視し、横のはみ出しなし。
+- 先行837cfedの[CI36444362854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36444362854)はUbuntu・Windows2/4〜4/4・backup bindings/cliの6job成功、browser失敗、Windows1/4が30分上限でcancelled。browserは4件の操作対象が仮想スクロールの表示範囲外にあった。APIでは44件中20番目の作成済みfolderを確認し、検索してから操作する試験へ修正した。Windows全Nodeは1,573件成功したが8分46秒を使ったため、全Nodeを独立したWindows jobへ分け、全4integration shardと30分上限を維持した。先行の別のWindows失敗の原因解消を意味しない。
+
+**Node1,585 + 関連workerd259 + 全browser59 = 重複を除き1,903件成功**。Nodeの4件は上記の個別再確認を含む。全workerdとbackup drillは今回ローカル再実行していない。upload-only、専用配信、ZIP/media、未知native/partの全体閉鎖、最大規模と実環境検証は後続。remote resource/secret/migration/deployなし。
+
+## 公開アップロード画面・上書き確認・再読み込み後の再開（前回）
 
 公開画面へ単一/分割upload、確認付き上書き、確認済みbyte進捗、一時停止/中止/結果確認を追加した。元share/session・受付/確定key・capability・part attempt・上書きrevision/blobとファイル照合情報を専用IndexedDBへ保存する。秘密URL・password・file本体は保存しない。名前/サイズ/mtimeと先頭/末尾各64 KiBのSHA-256で元ファイルを照合し、単一PUTの結果不明時は再送しない。分割は整合するpart一覧の完了分を除き最大4並列で送る。root permissionsでupload actionも反映する。logout時の記録削除とclosed session保存を同一transactionで行い、通知が遅れた別タブからの再保存を拒否する。schema0064・通常76table・147 route、依存追加なし。
 
