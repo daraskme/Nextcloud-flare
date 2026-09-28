@@ -1,6 +1,8 @@
 # セッション引き継ぎ
 
-[画像変換の費用・終了記録](IMAGE_COSTS.md)を追加しました。同じblob・サイズ・生成versionの重複変換を防ぎ、実際の終了証拠をD1とは独立したControlDOに保存します。応答喪失やD1復元後も変換を再実行せず記録を修復し、未確定ならbackup・復旧完了・受付再開を止めます。schema0068・通常77table・147 route、依存追加なし。既知のImages失敗の終了証明、生成物のR2保存、Queue・配信・Gallery UIは後続です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[画像変換の失敗記録](IMAGE_COSTS.md)を接続しました。Imagesの明示的な拒否と、EOFまで取得した生成物の検査失敗を終了として記録します。timeout後の遅い拒否、応答喪失、D1復元後も同じ記録を修復します。失敗の費用キーを保持し、再実行を許可しません。schema0069・通常77table・147 route。生成物のR2保存・配信、Queue、Gallery UIが次の接続対象です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+
+[画像変換の費用・終了記録](IMAGE_COSTS.md)を追加しました。同じblob・サイズ・生成versionの重複変換を防ぎ、実際の終了証拠をD1とは独立したControlDOに保存します。応答喪失やD1復元後も変換を再実行せず記録を修復し、未確定ならbackup・復旧完了・受付再開を止めます。schema0068・通常77table・147 route、依存追加なし。既知のImages失敗の終了証明は後続の0069で接続済みです。生成物のR2保存、Queue・配信・Gallery UIは後続です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 Git送信は承認待ちです。5854920の通常pushが自動承認審査で「外部宛先へのコード送信の明示承認がない」と拒否され、宛先daraskme/Nextcloud-flare・codex/database-restoreと対象5854920を明示した質問を提示済みです。未回答のまま再送せず、後続変更もローカルで進めます。5854920だけの承認なら、そのcommitだけを送信対象にします。
 

@@ -1,4 +1,5 @@
 import { nodeEventAuthority, readOutboxEvent } from "../jobs/outboxAuthority";
+import { type ImageTransformFailureReceipt, imageFailureJson } from "../media/images/failure";
 import {
   IMAGE_OUTPUT_BYTES,
   IMAGE_TRANSFORM_GENERATOR,
@@ -39,7 +40,7 @@ export interface ImageTransformReceipt {
   height: number;
   sha256: string;
 }
-export type ImageTransformTerminal = "succeeded" | "not_started";
+export type ImageTransformTerminal = "succeeded" | "not_started" | "failed";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -105,6 +106,20 @@ export function imageOutputJson(g: ImageTransformGrant, output: ImageTransformRe
     sha256: output.sha256,
   });
 }
+export function imageTerminalJson(
+  grant: ImageTransformGrant,
+  state: ImageTransformTerminal,
+  output: ImageTransformReceipt | null,
+  failure: ImageTransformFailureReceipt | null,
+) {
+  if (
+    !["succeeded", "not_started", "failed"].includes(state) ||
+    (state === "succeeded") !== (output !== null) ||
+    (state === "failed") !== (failure !== null)
+  )
+    throw new Error("invalid_image_transform_outcome");
+  return { output: imageOutputJson(grant, output), failure: imageFailureJson(failure) };
+}
 export const IMAGE_TRANSFORM_IDENTITY = `id=? AND token=? AND epoch=? AND owner_id=? AND blob_id=?
  AND outbox_id=? AND variant=? AND generator_version=? AND claim_token=? AND source_json=?
  AND started_at=? AND dispatch_before=? AND expires_at=?`;
@@ -138,15 +153,17 @@ export function insertImageTransform(
   g: ImageTransformGrant,
   state: "pending" | ImageTransformTerminal,
   output: string | null,
+  failure: string | null = null,
 ): SqlStatement {
   return {
-    sql: `INSERT INTO image_transform_attempts(id,token,epoch,owner_id,blob_id,outbox_id,variant,generator_version,claim_token,source_json,started_at,dispatch_before,expires_at,state,finished_at,output_json)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,${state === "pending" ? "NULL" : "MAX(?,strftime('%s','now')*1000)"},?)`,
+    sql: `INSERT INTO image_transform_attempts(id,token,epoch,owner_id,blob_id,outbox_id,variant,generator_version,claim_token,source_json,started_at,dispatch_before,expires_at,state,finished_at,output_json,failure_json)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,${state === "pending" ? "NULL" : "MAX(?,strftime('%s','now')*1000)"},?,?)`,
     values: [
       ...imageTransformValues(g),
       state,
       ...(state === "pending" ? [] : [g.startedAt]),
       output,
+      failure,
     ],
   };
 }
@@ -155,13 +172,14 @@ export async function confirmImageTransform(
   g: ImageTransformGrant,
   state: ImageTransformTerminal,
   output: string | null,
+  failure: string | null = null,
 ) {
   return (
     (await primary(db)
       .prepare(
-        `SELECT 1 FROM image_transform_attempts WHERE ${IMAGE_TRANSFORM_IDENTITY} AND state=? AND output_json IS ?`,
+        `SELECT 1 FROM image_transform_attempts WHERE ${IMAGE_TRANSFORM_IDENTITY} AND state=? AND output_json IS ? AND failure_json IS ?`,
       )
-      .bind(...imageTransformValues(g), state, output)
+      .bind(...imageTransformValues(g), state, output, failure)
       .first()) !== null
   );
 }

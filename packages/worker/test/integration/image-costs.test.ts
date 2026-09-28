@@ -4,11 +4,16 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import {
   type ImageTransformGrant,
   type ImageTransformRequest,
+  type ImageTransformTerminal,
   imageOutputJson,
 } from "../../src/db/imageTransform";
 import { atomicBatch } from "../../src/db/primary";
 import { ControlImageTransforms } from "../../src/do/controlImageTransforms";
 import { CONTROL_NAME } from "../../src/do/controlName";
+import {
+  type ImageTransformFailureReceipt,
+  imageFailureJson,
+} from "../../src/media/images/failure";
 import { openImageObject } from "../../src/media/images/objectStream";
 import {
   IMAGE_TRANSFORM_GENERATOR,
@@ -54,9 +59,10 @@ const invoke = <T>(action: (l: ControlImageTransforms) => Promise<T>, db = env.D
 const begin = (r: ImageTransformRequest) => invoke((l) => l.begin(r));
 const finish = (
   g: ImageTransformGrant,
-  state: "succeeded" | "not_started",
+  state: ImageTransformTerminal,
   out = state === "succeeded" ? receipt() : null,
-) => invoke((l) => l.finish(g, state, out));
+  failure: ImageTransformFailureReceipt | null = null,
+) => invoke((l) => l.finish(g, state, out, failure));
 const app = () => ({
   ...env,
   CONTROL: {
@@ -134,7 +140,7 @@ async function rewind(
   await atomicBatch(env.DB, [
     { sql: "DROP TRIGGER image_attempt_immutable" },
     {
-      sql: `UPDATE image_transform_attempts SET state='pending',finished_at=NULL,output_json=NULL${Object.keys(
+      sql: `UPDATE image_transform_attempts SET state='pending',finished_at=NULL,output_json=NULL,failure_json=NULL${Object.keys(
         changes,
       )
         .map((k) => `,${k}=?`)
@@ -500,4 +506,204 @@ it("records a late actual result after caller timeout without returning it for p
   await vi.waitFor(async () => expect(await row(saved!.id)).toMatchObject({ state: "succeeded" }));
   await expect(begin(f.request())).rejects.toThrow();
   expect(action).toHaveBeenCalledTimes(1);
+});
+
+const rejection: ImageTransformFailureReceipt = { kind: "binding_rejected", code: 9520 };
+it("settles an explicit failure without releasing its cost or allowing a changed result", async () => {
+  const f = await fixture(),
+    g = await begin(f.request());
+  await finish(g, "failed", null, rejection);
+  await finish(g, "failed", null, rejection);
+  expect(await row(g.id)).toMatchObject({
+    state: "failed",
+    output_json: null,
+    failure_json: imageFailureJson(rejection),
+  });
+  await invoke(async (l) => l.assertEmpty());
+  await expect(begin(f.request())).rejects.toThrow();
+  await expect(finish(g, "not_started")).rejects.toThrow("conflict");
+  await expect(finish(g, "failed", null, { kind: "binding_rejected", code: 9412 })).rejects.toThrow(
+    "conflict",
+  );
+  await expect(
+    env.DB.prepare("DELETE FROM image_transform_attempts WHERE id=?").bind(g.id).run(),
+  ).rejects.toThrow();
+});
+it("repairs a failed result after eviction and D1 rollback without starting native work", async () => {
+  const f = await fixture(),
+    g = await begin(f.request());
+  await finish(g, "failed", null, rejection);
+  await rewind(g);
+  await evictDurableObject(control());
+  expect(await invoke((l) => l.repair())).toMatchObject({ reconciled: 1, pending: 0, unknown: 0 });
+  expect(await row(g.id)).toMatchObject({
+    state: "failed",
+    failure_json: imageFailureJson(rejection),
+  });
+  await expect(begin(f.request())).rejects.toThrow();
+});
+it("keeps failure evidence during a D1 outage and mirrors it after repair", async () => {
+  const f = await fixture(),
+    g = await begin(f.request());
+  await env.DB.prepare(
+    "CREATE TRIGGER fixture_failure_receipt BEFORE UPDATE ON image_transform_attempts BEGIN SELECT RAISE(ABORT,'offline'); END",
+  ).run();
+  await expect(finish(g, "failed", null, rejection)).rejects.toThrow("unsettled");
+  await evictDurableObject(control());
+  await invoke(async (l) => expect(() => l.assertEmpty()).toThrow("unsettled"));
+  await env.DB.prepare("DROP TRIGGER fixture_failure_receipt").run();
+  expect(await invoke((l) => l.repair())).toMatchObject({ reconciled: 1, pending: 0 });
+  expect(await row(g.id)).toMatchObject({
+    state: "failed",
+    failure_json: imageFailureJson(rejection),
+  });
+});
+it("rejects failure reports without a permitted terminal fact", async () => {
+  const f = await fixture(),
+    g = await begin(f.request());
+  await expect(finish(g, "failed")).rejects.toThrow("invalid_image_transform_outcome");
+  await expect(finish(g, "failed", null, { kind: "binding_rejected", code: 9529 })).rejects.toThrow(
+    "invalid_image_transform_failure",
+  );
+  expect(await row(g.id)).toMatchObject({ state: "pending" });
+  await finish(g, "not_started");
+});
+it("records a real offline Images rejection through the native failure observer", async () => {
+  const f = await fixture(),
+    bytes = imageBytes("red.png");
+  const plan = await planImageTransform(
+    { size: bytes.length, read: async (o, n) => bytes.slice(o, o + n) },
+    "sm",
+  );
+  // Ask the actual offline service for an unsupported output to observe a genuine 9520 response.
+  const binding = {
+    input: (body: ReadableStream<Uint8Array>) => ({
+      transform: (options: ImageTransform) => ({
+        output: () => env.IMAGES.input(body).transform(options).output({ format: "image/gif" }),
+      }),
+    }),
+  } as unknown as ImagesBinding;
+  await expect(
+    trackedImageTransform(
+      app(),
+      f.request(),
+      async (signal, onFailure) => {
+        const input = await openImageObject(env.BLOBS, f.node, signal, async () => {});
+        return transformImage(binding, plan, input, signal, onFailure);
+      },
+      async () => {},
+    ),
+  ).rejects.toThrow("binding_rejected");
+  expect(
+    await env.DB.prepare("SELECT state,failure_json FROM image_transform_attempts WHERE blob_id=?")
+      .bind(f.node.blob)
+      .first(),
+  ).toEqual({ state: "failed", failure_json: imageFailureJson(rejection) });
+  await invoke(async (l) => l.assertEmpty());
+  await expect(begin(f.request())).rejects.toThrow();
+});
+it("reads back a failed result when its completion acknowledgement is lost", async () => {
+  const f = await fixture(),
+    configured = app();
+  configured.CONTROL.get = (() => ({
+    beginImageTransform: begin,
+    finishImageTransform: async (...args: Parameters<typeof finish>) => {
+      await finish(...args);
+      throw new Error("lost ACK");
+    },
+  })) as unknown as typeof configured.CONTROL.get;
+  await expect(
+    trackedImageTransform(
+      configured,
+      f.request(),
+      async (_, onFailure) => {
+        await onFailure(rejection);
+        throw new Error("known rejection");
+      },
+      async () => {},
+    ),
+  ).rejects.toThrow("known rejection");
+  expect(
+    await env.DB.prepare("SELECT state FROM image_transform_attempts WHERE blob_id=?")
+      .bind(f.node.blob)
+      .first(),
+  ).toEqual({ state: "failed" });
+});
+it("keeps observing a real transform's late rejection after the tracked caller expires", async () => {
+  const f = await fixture(),
+    bytes = imageBytes("red.png");
+  const plan = await planImageTransform(
+    { size: bytes.length, read: async (o, n) => bytes.slice(o, o + n) },
+    "sm",
+  );
+  let reject!: (error: Error) => void;
+  const binding = {
+    input: (body: ReadableStream<Uint8Array>) => ({
+      transform: () => ({
+        output: async () => {
+          await new Response(body).arrayBuffer();
+          return new Promise((_, no) => {
+            reject = no;
+          });
+        },
+      }),
+    }),
+  } as unknown as ImagesBinding;
+  const pending = trackedImageTransform(
+    app(),
+    { ...f.request(), expiresAt: Date.now() + 1500 },
+    async (signal, onFailure) =>
+      transformImage(binding, plan, new Blob([bytes]).stream(), signal, onFailure),
+    async () => {},
+  );
+  const rejected = expect(pending).rejects.toThrow("deadline");
+  await vi.waitFor(() => expect(reject).toBeDefined());
+  await rejected;
+  reject(Object.assign(new Error("IMAGES_TRANSFORM_ERROR late refusal"), { code: 9520 }));
+  await vi.waitFor(async () =>
+    expect(
+      await env.DB.prepare(
+        "SELECT state,failure_json FROM image_transform_attempts WHERE blob_id=?",
+      )
+        .bind(f.node.blob)
+        .first(),
+    ).toEqual({ state: "failed", failure_json: imageFailureJson(rejection) }),
+  );
+});
+it("upgrades the old DO table without losing pending, spent or never-started receipts", async () => {
+  const grants: ImageTransformGrant[] = [];
+  for (let n = 0; n < 3; n++) grants.push(await begin((await fixture()).request()));
+  await finish(grants[0]!, "succeeded");
+  await finish(grants[1]!, "not_started");
+  const before = await runInDurableObject(control(), (_, state) => {
+    const sql = state.storage.sql;
+    const rows = sql
+      .exec(
+        "SELECT id,hex(identity) AS identity,hex(cost_key) AS cost_key,grant_json,state,output_json,mirrored FROM control_image_transforms ORDER BY id",
+      )
+      .toArray();
+    sql.exec(`CREATE TABLE fixture_old_image_ledger(id TEXT PRIMARY KEY,identity BLOB NOT NULL UNIQUE,cost_key BLOB NOT NULL,grant_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','succeeded','not_started')),output_json TEXT,mirrored INTEGER NOT NULL)`);
+    sql.exec(
+      "INSERT INTO fixture_old_image_ledger SELECT id,identity,cost_key,grant_json,state,output_json,mirrored FROM control_image_transforms",
+    );
+    sql.exec("DROP TABLE control_image_transforms");
+    sql.exec("ALTER TABLE fixture_old_image_ledger RENAME TO control_image_transforms");
+    return rows;
+  });
+  await evictDurableObject(control());
+  const after = await runInDurableObject(control(), (_, state) => ({
+    rows: state.storage.sql
+      .exec(
+        "SELECT id,hex(identity) AS identity,hex(cost_key) AS cost_key,grant_json,state,output_json,mirrored FROM control_image_transforms ORDER BY id",
+      )
+      .toArray(),
+    entries: state.storage.sql
+      .exec<{ entries: number }>("SELECT entries FROM control_image_transform_usage")
+      .one().entries,
+  }));
+  expect(after).toEqual({ rows: before, entries: 3 });
+  await invoke(async (l) => expect(() => l.assertEmpty()).toThrow("unsettled"));
+  await finish(grants[2]!, "failed", null, rejection);
+  await invoke(async (l) => l.assertEmpty());
 });

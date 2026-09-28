@@ -1,10 +1,13 @@
 import { expect, it } from "vitest";
 import {
   type ImageTransformGrant,
+  type ImageTransformTerminal,
   imageOutputJson,
+  imageTerminalJson,
   imageTransformValues,
   validateImageTransformGrant,
 } from "../../src/db/imageTransform";
+import type { ImageTransformFailureReceipt } from "../../src/media/images/failure";
 
 const grant = (): ImageTransformGrant => ({
   id: crypto.randomUUID(),
@@ -99,4 +102,36 @@ it.each([
       ...change,
     }),
   ).toThrow("invalid_image_transform_output");
+});
+
+it.each([
+  ["failed", null, null],
+  ["failed", null, { kind: "binding_rejected", code: 9529 }],
+  ["failed", null, { kind: "binding_rejected", code: "9520" }],
+  ["failed", null, { kind: "output_rejected", code: 9520 }],
+  ["failed", null, { kind: "invented", code: null }],
+  ["not_started", null, { kind: "binding_rejected", code: 9520 }],
+  ["succeeded", null, { kind: "output_rejected", code: null }],
+  ["unknown", null, null],
+])("rejects invalid terminal failure %j %j %j", (state, output, failure) => {
+  expect(() =>
+    imageTerminalJson(
+      grant(),
+      state as ImageTransformTerminal,
+      output as null,
+      failure as ImageTransformFailureReceipt,
+    ),
+  ).toThrow();
+});
+it("canonicalizes only bounded failure facts, excluding native error bodies", () => {
+  expect(
+    imageTerminalJson(grant(), "failed", null, {
+      kind: "binding_rejected",
+      code: 9520,
+      message: "PRIVATE",
+    } as ImageTransformFailureReceipt),
+  ).toEqual({ output: null, failure: '{"kind":"binding_rejected","code":9520}' });
+  expect(
+    imageTerminalJson(grant(), "failed", null, { kind: "output_rejected", code: null }),
+  ).toEqual({ output: null, failure: '{"kind":"output_rejected","code":null}' });
 });

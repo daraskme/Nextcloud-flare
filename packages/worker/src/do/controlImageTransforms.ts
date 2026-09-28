@@ -6,7 +6,7 @@ import {
   type ImageTransformRequest,
   type ImageTransformTerminal,
   imageGrantFromRow,
-  imageOutputJson,
+  imageTerminalJson,
   imageTransformAuthority,
   imageTransformValues,
   insertImageTransform,
@@ -19,6 +19,7 @@ import type {
   MutationRequest,
 } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import type { ImageTransformFailureReceipt } from "../media/images/failure";
 import { accountMutationStatements } from "../services/accountMutation";
 import { globalMutationStatements } from "../services/globalMutation";
 
@@ -28,9 +29,17 @@ interface Receipt extends Record<string, SqlStorageValue> {
   grant_json: string;
   state: "pending" | ImageTransformTerminal;
   output_json: string | null;
+  failure_json: string | null;
   mirrored: number;
 }
 const HELD = "state='pending' OR mirrored=0";
+const table = (name: string) => `CREATE TABLE IF NOT EXISTS ${name}(
+  id TEXT PRIMARY KEY,identity BLOB NOT NULL UNIQUE CHECK(length(identity)=32),
+  cost_key BLOB NOT NULL CHECK(length(cost_key)=32),grant_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending','succeeded','not_started','failed')),
+  output_json TEXT,mirrored INTEGER NOT NULL CHECK(mirrored IN (0,1)),failure_json TEXT,
+  CHECK((state='succeeded')=(output_json IS NOT NULL)),CHECK(state<>'pending' OR mirrored=0),
+  CHECK((state='failed')=(failure_json IS NOT NULL)))`;
 const digest = (value: unknown) =>
   crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
 const sameGrant = (encoded: string, grant: ImageTransformGrant) =>
@@ -47,12 +56,25 @@ export class ControlImageTransforms {
     private readonly settleAdmit: () => Promise<GlobalMutationAdmission>,
   ) {
     const sql = storage.sql;
-    sql.exec(`CREATE TABLE IF NOT EXISTS control_image_transforms(
-      id TEXT PRIMARY KEY,identity BLOB NOT NULL UNIQUE CHECK(length(identity)=32),
-      cost_key BLOB NOT NULL CHECK(length(cost_key)=32),grant_json TEXT NOT NULL,
-      state TEXT NOT NULL CHECK(state IN ('pending','succeeded','not_started')),
-      output_json TEXT,mirrored INTEGER NOT NULL CHECK(mirrored IN (0,1)),
-      CHECK((state='succeeded')=(output_json IS NOT NULL)),CHECK(state<>'pending' OR mirrored=0))`);
+    storage.transactionSync(() => {
+      sql.exec(table("control_image_transforms"));
+      const columns = sql.exec("PRAGMA table_info(control_image_transforms)").toArray();
+      if (columns.some((c) => c.name === "failure_json")) return;
+      sql.exec(table("control_image_transforms_next"));
+      sql.exec(
+        "INSERT INTO control_image_transforms_next SELECT *,NULL FROM control_image_transforms",
+      );
+      if (
+        sql
+          .exec(`SELECT 1 WHERE
+          EXISTS(SELECT *,NULL FROM control_image_transforms EXCEPT SELECT * FROM control_image_transforms_next)
+          OR EXISTS(SELECT * FROM control_image_transforms_next EXCEPT SELECT *,NULL FROM control_image_transforms)`)
+          .toArray().length
+      )
+        throw new Error("image_transform_history_migration_failed");
+      sql.exec("DROP TABLE control_image_transforms");
+      sql.exec("ALTER TABLE control_image_transforms_next RENAME TO control_image_transforms");
+    });
     sql.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS control_image_cost ON control_image_transforms(cost_key) WHERE state<>'not_started'",
     );
@@ -70,7 +92,7 @@ export class ControlImageTransforms {
     sql.exec(`CREATE TRIGGER IF NOT EXISTS control_image_immutable BEFORE UPDATE ON control_image_transforms
       WHEN NEW.id IS NOT OLD.id OR NEW.identity IS NOT OLD.identity OR NEW.cost_key IS NOT OLD.cost_key
         OR NEW.grant_json IS NOT OLD.grant_json OR NEW.state='pending'
-        OR (OLD.state<>'pending' AND (NEW.state IS NOT OLD.state OR NEW.output_json IS NOT OLD.output_json))
+        OR (OLD.state<>'pending' AND (NEW.state IS NOT OLD.state OR NEW.output_json IS NOT OLD.output_json OR NEW.failure_json IS NOT OLD.failure_json))
         OR NEW.mirrored<OLD.mirrored
       BEGIN SELECT RAISE(ABORT,'immutable_image_transform_receipt'); END`);
     sql.exec(`CREATE TRIGGER IF NOT EXISTS control_image_keep BEFORE DELETE ON control_image_transforms
@@ -117,7 +139,7 @@ export class ControlImageTransforms {
     if (Date.now() >= grant.deadline) throw new Error("image_transform_unavailable");
     // Unique cost and all completion evidence live outside the database being backed up/restored.
     this.sql.exec(
-      "INSERT INTO control_image_transforms VALUES(?,?,?,?,'pending',NULL,0)",
+      "INSERT INTO control_image_transforms VALUES(?,?,?,?,'pending',NULL,0,NULL)",
       grant.id,
       identity,
       cost,
@@ -164,53 +186,54 @@ export class ControlImageTransforms {
     grant: ImageTransformGrant,
     state: ImageTransformTerminal,
     output: ImageTransformReceipt | null,
+    failure: ImageTransformFailureReceipt | null = null,
   ) {
     validateImageTransformGrant(grant);
-    if (
-      !["succeeded", "not_started"].includes(state) ||
-      (state === "succeeded") !== (output !== null)
-    )
-      throw new Error("invalid_image_transform_outcome");
-    const encoded = imageOutputJson(grant, output),
+    const encoded = imageTerminalJson(grant, state, output, failure),
       saved = this.#row(grant.id);
     if (
       !saved ||
       !sameGrant(saved.grant_json, grant) ||
-      (saved.state !== "pending" && (saved.state !== state || saved.output_json !== encoded))
+      (saved.state !== "pending" &&
+        (saved.state !== state ||
+          saved.output_json !== encoded.output ||
+          saved.failure_json !== encoded.failure))
     )
       throw new Error("image_transform_receipt_conflict");
     if (saved.state === "pending")
       this.sql.exec(
-        "UPDATE control_image_transforms SET state=?,output_json=? WHERE id=? AND state='pending'",
+        "UPDATE control_image_transforms SET state=?,output_json=?,failure_json=? WHERE id=? AND state='pending'",
         state,
-        encoded,
+        encoded.output,
+        encoded.failure,
         grant.id,
       );
-    await this.#reconcile(grant, state, encoded);
+    await this.#reconcile(grant, state, encoded.output, encoded.failure);
   }
   async #reconcile(
     grant: ImageTransformGrant,
     state: ImageTransformTerminal,
     output: string | null,
+    failure: string | null,
     current: () => void = () => {},
   ) {
     current();
     try {
       const admission = await this.settleAdmit(),
-        insert = insertImageTransform(grant, state, output);
+        insert = insertImageTransform(grant, state, output, failure);
       current();
       await atomicBatch(
         this.db,
         globalMutationStatements(admission, [
           {
-            sql: `UPDATE image_transform_attempts SET state=?,output_json=?,finished_at=MAX(started_at,strftime('%s','now')*1000)
+            sql: `UPDATE image_transform_attempts SET state=?,output_json=?,failure_json=?,finished_at=MAX(started_at,strftime('%s','now')*1000)
           WHERE ${IMAGE_TRANSFORM_IDENTITY} AND state='pending'`,
-            values: [state, output, ...imageTransformValues(grant)],
+            values: [state, output, failure, ...imageTransformValues(grant)],
           },
           { ...insert, sql: insert.sql.replace("INSERT INTO", "INSERT OR IGNORE INTO") },
           assertExists(
-            `SELECT 1 FROM image_transform_attempts WHERE ${IMAGE_TRANSFORM_IDENTITY} AND state=? AND output_json IS ?`,
-            [...imageTransformValues(grant), state, output],
+            `SELECT 1 FROM image_transform_attempts WHERE ${IMAGE_TRANSFORM_IDENTITY} AND state=? AND output_json IS ? AND failure_json IS ?`,
+            [...imageTransformValues(grant), state, output, failure],
           ),
         ]),
       );
@@ -218,7 +241,7 @@ export class ControlImageTransforms {
       /* Read back an exact terminal fact after an ambiguous commit. */
     }
     current();
-    if (!(await confirmImageTransform(this.db, grant, state, output)))
+    if (!(await confirmImageTransform(this.db, grant, state, output, failure)))
       throw new Error("image_transform_unsettled");
     current();
     const row = this.#row(grant.id);
@@ -226,7 +249,8 @@ export class ControlImageTransforms {
       !row ||
       !sameGrant(row.grant_json, grant) ||
       row.state !== state ||
-      row.output_json !== output
+      row.output_json !== output ||
+      row.failure_json !== failure
     )
       throw new Error("image_transform_receipt_conflict");
     this.sql.exec(
@@ -254,6 +278,7 @@ export class ControlImageTransforms {
           JSON.parse(row.grant_json),
           row.state as ImageTransformTerminal,
           row.output_json,
+          row.failure_json,
           current,
         );
         reconciled++;
@@ -284,6 +309,7 @@ export class ControlImageTransforms {
           grant,
           receipt.state as ImageTransformTerminal,
           receipt.output_json,
+          receipt.failure_json,
           current,
         );
         reconciled++;

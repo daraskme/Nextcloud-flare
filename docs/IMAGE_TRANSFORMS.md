@@ -16,7 +16,7 @@
 
 次は次の順に接続する。
 
-1. 費用claimと成功/not_startedの終了記録は接続済み。既知のImages失敗の終了証明とunknownの運用修復を追加する。timeoutだけでは未確定費用を解放せず、Images変換をR2 PUT成功として記録しない。
+1. 費用claimと成功/not_started/明示失敗の終了記録は接続済み。unknownの運用修復と失敗後の明示的な再試行予算は後続。timeoutだけでは未確定費用を解放せず、Images変換をR2 PUT成功として記録しない。
 2. 生成物の不変key、tracked R2保存、physical容量・終了記録、結果公開のcurrent node/blob/actor/claim/epoch fence、停止・backup・復旧監査。
 3. upload Outboxのsm/md生成、lgの要求時生成、thumb ticket/配信、Gallery API/UIと共有閲覧。AVIF入力が実環境で非対応なら原本detailとgrid placeholderへ分岐する。
 

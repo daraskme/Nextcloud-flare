@@ -1,6 +1,21 @@
 # 実装進捗
 
-## 画像変換の費用・終了記録（今回）
+## 画像変換失敗の終了証拠（今回）
+
+[画像変換の費用・終了記録](IMAGE_COSTS.md)にfailed状態を追加した。native .output()の明示拒否と、入出力EOF後の出力検査失敗だけを終了として記録する。入力から伝播した例外、内部/接続/timeout、EOF前の中断は未確定を維持する。callbackでcaller期限後の実拒否も観測し、DOへの終了保存とD1の完全なidentity/failure照合を行う。nativeのエラー本文は記録しない。failedも費用キーを保持するため、同じ変換の再実行を許可しない。
+
+migration0069は停止・未凍結・未終了処理なしを要求し、0068の全列が一致することを照合して77tableを維持する。DOの旧台帳も同期transactionで移行し、pending/succeeded/not_startedのgrant・identity・費用・mirror・件数を保持する。大量履歴の移行時間は未測定。
+
+- Node4file/180件成功（29.09秒、/tmp/ncf-image-failure-unit.log）。新規16件は明示拒否6code、曖昧5code、偽装した入力例外、EOF検査、不完全出力、遅い拒否、mirror障害。新規9件はterminal組合せと安全なfailure JSON、新規3件は旧schema履歴保存・pending拒否・停止条件。既存schema/image/費用も含む。
+- native2file/46件成功（28.89秒、/tmp/ncf-image-failure-native.log）。既存38件に、失敗の費用保持/不変性、巻戻し、D1障害、偽終了拒否、実Images拒否、ACK喪失、timeout後の拒否、旧DO移行の8件を追加した。実Images拒否はoffline serviceへ未対応GIF出力を要求して9520を観測し、callbackからD1 terminalまで確認した。productionのAVIF拒否を実証する試験ではない。
+- 初回型検査は移行テストのWorker/Node URL型衝突と汎用BindValue型で失敗した。node:urlのURLとfixtureの値型を指定して最終型検査成功（/tmp/ncf-image-failure-types-final.log）。修正後の移行3件も成功（1.30秒、/tmp/ncf-image-failure-migration-final.log）。
+- 既存backup barrier/restore snapshotの2file/68件成功（117.93秒、/tmp/ncf-image-failure-recovery.log）。Node180 + native114 = 重複を除き294件成功。
+- backup:operator-drill成功（/tmp/ncf-image-failure-operator-drill.log）。0069の77tableでsnapshot照合、epoch採用、native/domain/inventory修復、監査、受付・GC再開まで成功。Time Travel/S3 provider応答は模擬で、実Cloudflareの復元試験ではない。
+- lint675file・契約/設定・Web build/Worker dry-run成功（/tmp/ncf-image-failure-{lint,contracts,config,build}.log）。
+
+schema0069・通常77table・147 route、依存追加なし。Queue/R2生成物保存・thumb配信/Gallery、unknownの運用修復、失敗後の明示的再試行予算は後続。全Node/workerd/browser再実行とremote resource/secret/migration/deployは行っていない。pushは自動承認審査による前回拒否後の承認待ちで、再送していない。
+
+## 画像変換の費用・終了記録（先行9793368）
 
 [画像変換の費用・終了記録](IMAGE_COSTS.md)を追加した。元upload/DAV PUTのactor・credential・parent・blob・Outbox claimをaccount mutationと同じbatchで照合し、ControlDOの独立台帳でblob×variant×generatorの重複変換を防ぐ。成功/not_startedの実終了だけを精算し、ACK喪失・遅い結果・D1復元後も再変換せずに照合する。未確定8件・履歴100万件で受付を制限する。停止後の精算、backup/restore freeze・受付再開・原本GC・復旧監査の保留、復旧CLIのimages件数を接続した。
 

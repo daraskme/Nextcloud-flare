@@ -14,6 +14,8 @@ schema contract generator は適用済み migration を再生成せず、今後�
 テストは `readD1Migrations` + `applyD1Migrations` で隔離 D1 に適用する。
 既存の Phase 0 probe schema は別 test file の隔離 DB を使い、混在させない。
 
+`0069` は画像変換のfailed状態とboundedなfailure記録を追加する。0068の全既存列を照合して保持し、費用の一意性・不変性・freeze/再開/GC guardを再作成する。0068の移行条件に加え、pending画像変換なしを要求する。独立DO側の未精算も適用前に確認する。DO旧台帳は同期transactionでidentity・cost・結果・件数を保持して移行する。大量履歴の移行時間は未検証。rollbackは停止を維持し、対応schema/コードを整合させる。詳細は[IMAGE_COSTS](../../../docs/IMAGE_COSTS.md)を参照。
+
 `0068` は画像変換の費用・終了記録を追加する（通常77table）。停止・未凍結・open permit/claimed operation/未閉鎖admission/未終了KDF/R2なしで適用する。未確定変換はbackup/restore freeze・受付再開・原本GCを止め、ControlDOの独立した終了証拠で修復する。履歴の時刻だけでの削除は許可しない。旧Workerへのrollbackは停止を維持し、対応schema/コードを整合させる。詳細は[IMAGE_COSTS](../../../docs/IMAGE_COSTS.md)を参照。
 
 `0067` はZIP pinの期限切れを上限付きで走査する部分索引だけを追加する（通常76table）。既存pinと参照会計は変更せず、期限後もfenced cleanupまでは保持する。詳細は[ZIP_DOWNLOADS](../../../docs/ZIP_DOWNLOADS.md)を参照。

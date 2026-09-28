@@ -1,5 +1,11 @@
 import { assertImageInput } from "../../platform/images";
 import { hex } from "../../platform/stream";
+import {
+  type ImageFailureObserver,
+  ImageTransformFailed,
+  type ImageTransformFailureReceipt,
+  imageBindingRejection,
+} from "./failure";
 import { type ImageMetadata, inspectImage } from "./inspect";
 import { ascii, type ImageSource, view } from "./reader";
 
@@ -122,6 +128,7 @@ export async function transformImage(
   plan: ImageTransformPlan,
   input: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  onFailure?: ImageFailureObserver,
 ): Promise<ImageTransformOutput> {
   let output: ReadableStream<Uint8Array> | undefined,
     reader: ReadableStreamDefaultReader<Uint8Array> | undefined,
@@ -129,7 +136,17 @@ export async function transformImage(
     inputController: ReadableStreamDefaultController<Uint8Array> | undefined,
     consumed = 0,
     inputChunks = 0,
-    inputComplete = false;
+    inputComplete = false,
+    inputFault = false;
+  const failed = async (receipt: ImageTransformFailureReceipt, message: string): Promise<never> => {
+    try {
+      // This also runs when a genuine native rejection arrives after the caller's timeout.
+      await onFailure?.(receipt);
+    } catch {
+      /* Failure to mirror a known end leaves the durable hold/proof for repair. */
+    }
+    throw new ImageTransformFailed(receipt, message);
+  };
   let rejectStop!: (error: unknown) => void;
   const stopped = new Promise<never>((_, reject) => {
     rejectStop = reject;
@@ -180,6 +197,7 @@ export async function transformImage(
             if (consumed > plan.sourceBytes) throw new Error("image_source_length_mismatch");
             controller.enqueue(next.value);
           } catch (error) {
+            inputFault = true;
             controller.error(error);
             cancel(error);
           }
@@ -190,13 +208,21 @@ export async function transformImage(
       },
       { highWaterMark: 0 },
     );
-    const result = await binding
+    const pending = binding
       .input(bounded)
       .transform({ width: plan.width, height: plan.height, fit: "contain" })
       .output({ format: "image/webp", quality: 85, anim: false });
+    let result: ImageTransformationResult;
+    try {
+      result = await pending;
+    } catch (error) {
+      const receipt = !inputFault && imageBindingRejection(error);
+      if (receipt) return failed(receipt, "image_transform_binding_rejected");
+      throw error;
+    }
     output = result.image();
     signal.throwIfAborted();
-    if (result.contentType() !== "image/webp") throw new Error("image_transform_output_format");
+    const contentType = result.contentType();
     reader = output.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0,
@@ -227,7 +253,16 @@ export async function transformImage(
       bytes.set(chunk.subarray(0, count), offset);
       offset += count;
     }
-    await validateImageOutput(bytes, plan);
+    try {
+      if (contentType !== "image/webp") throw new Error("image_transform_output_format");
+      await validateImageOutput(bytes, plan);
+    } catch (error) {
+      // Both streams reached EOF; rejecting these bytes does not leave native work running.
+      return failed(
+        { kind: "output_rejected", code: null },
+        error instanceof Error ? error.message : "image_transform_output_invalid",
+      );
+    }
     const sha256 = hex(await crypto.subtle.digest("SHA-256", bytes));
     signal.throwIfAborted();
     return { bytes, sha256, mime: "image/webp" as const, width: plan.width, height: plan.height };

@@ -69,6 +69,7 @@ import {
 } from "../jobs/orphanInventory";
 import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2BindingVerification";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
+import type { ImageTransformFailureReceipt } from "../media/images/failure";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
 import {
@@ -881,9 +882,10 @@ export class ControlDO extends DurableObject<Env> {
     grant: ImageTransformGrant,
     outcome: ImageTransformTerminal,
     output: ImageTransformReceipt | null,
+    failure: ImageTransformFailureReceipt | null = null,
   ) {
     this.#row();
-    return this.#imageTransforms.finish(grant, outcome, output);
+    return this.#imageTransforms.finish(grant, outcome, output, failure);
   }
   async repairImageTransforms(expectedEpoch: number, limit = 20) {
     return this.#maintenance(expectedEpoch, () => this.#imageTransforms.repair(limit));

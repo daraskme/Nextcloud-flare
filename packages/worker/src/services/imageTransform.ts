@@ -9,13 +9,14 @@ import {
 } from "../db/imageTransform";
 import { CONTROL_NAME } from "../do/controlName";
 import type { Env } from "../env";
+import { type ImageFailureObserver, imageFailureJson } from "../media/images/failure";
 import type { ImageTransformOutput } from "../media/images/transform";
 
 /** Cost admission only; every R2 publication still needs its separate current proof and write grant. */
 export async function trackedImageTransform(
   env: Pick<Env, "DB" | "CONTROL">,
   input: Omit<ImageTransformRequest, "id" | "deadline">,
-  action: (signal: AbortSignal) => Promise<ImageTransformOutput>,
+  action: (signal: AbortSignal, onFailure: ImageFailureObserver) => Promise<ImageTransformOutput>,
   beforeDispatch: () => Promise<void>,
 ): Promise<ImageTransformOutput> {
   if (
@@ -62,7 +63,14 @@ export async function trackedImageTransform(
       }
       throw error;
     }
-    const output = await action(controller.signal);
+    const output = await action(controller.signal, async (failure) => {
+      const encoded = imageFailureJson(failure);
+      try {
+        await control.finishImageTransform(grant, "failed", null, failure);
+      } catch (error) {
+        if (!(await confirmImageTransform(env.DB, grant, "failed", null, encoded))) throw error;
+      }
+    });
     const receipt: ImageTransformReceipt = {
       bytes: output.bytes.length,
       width: output.width,

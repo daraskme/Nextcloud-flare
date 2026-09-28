@@ -388,3 +388,121 @@ it("does not hide an unavailable R2 response as an unsupported image", async () 
     ),
   ).rejects.toBe(failure);
 });
+
+it.each([9401, 9412, 9413, 9422, 9432, 9520])(
+  "records explicit native rejection %s without leaking its body",
+  async (code) => {
+    const onFailure = vi.fn(async () => {});
+    const b = binding(async (input) => {
+      await consume(input);
+      throw Object.assign(new Error("IMAGES_TRANSFORM_ERROR private body"), { code });
+    });
+    await expect(
+      transformImage(b.native, await plan(), stream(imageBytes("red.png")), signal(), onFailure),
+    ).rejects.toThrow("image_transform_binding_rejected");
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({ kind: "binding_rejected", code });
+    expect(b.input).toHaveBeenCalledTimes(1);
+  },
+);
+it.each([9402, 9523, 9529, 9999, "9520"])(
+  "keeps ambiguous native code %s unknown",
+  async (code) => {
+    const onFailure = vi.fn(async () => {});
+    const error = Object.assign(new Error("IMAGES_TRANSFORM_ERROR response"), { code });
+    const b = binding(async (input) => {
+      await consume(input);
+      throw error;
+    });
+    await expect(
+      transformImage(b.native, await plan(), stream(imageBytes("red.png")), signal(), onFailure),
+    ).rejects.toBe(error);
+    expect(onFailure).not.toHaveBeenCalled();
+  },
+);
+it("does not turn an input stream error shaped like a binding rejection into terminal proof", async () => {
+  const onFailure = vi.fn(async () => {});
+  const error = Object.assign(new Error("IMAGES_TRANSFORM_ERROR forged"), { code: 9520 });
+  const input = new ReadableStream<Uint8Array>({
+    pull() {
+      throw error;
+    },
+  });
+  const b = binding(async (input) => {
+    await consume(input);
+    return result();
+  });
+  await expect(transformImage(b.native, await plan(), input, signal(), onFailure)).rejects.toBe(
+    error,
+  );
+  expect(onFailure).not.toHaveBeenCalled();
+});
+it("records invalid output only after both streams reached EOF", async () => {
+  const onFailure = vi.fn(async () => {});
+  const b = binding(async (input) => {
+    await consume(input);
+    return result(imageBytes("red.png"));
+  });
+  await expect(
+    transformImage(b.native, await plan(), stream(imageBytes("red.png")), signal(), onFailure),
+  ).rejects.toThrow("output_format");
+  expect(onFailure).toHaveBeenCalledExactlyOnceWith({ kind: "output_rejected", code: null });
+});
+it("does not mistake a cancelled oversized output or broken output stream for EOF", async () => {
+  for (const broken of [true, false]) {
+    const onFailure = vi.fn(async () => {});
+    const b = binding(async (input) => {
+      await consume(input);
+      return {
+        contentType: () => "image/webp",
+        image: () =>
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (broken) throw new Error("connection lost");
+              controller.enqueue(new Uint8Array(IMAGE_OUTPUT_BYTES + 1));
+            },
+          }),
+      };
+    });
+    await expect(
+      transformImage(b.native, await plan(), stream(imageBytes("red.png")), signal(), onFailure),
+    ).rejects.toThrow();
+    expect(onFailure).not.toHaveBeenCalled();
+  }
+});
+it("keeps observing a late native rejection after the caller has timed out", async () => {
+  const controller = new AbortController(),
+    onFailure = vi.fn(async () => {});
+  let reject!: (error: Error) => void;
+  const b = binding(async (input) => {
+    await consume(input);
+    return new Promise((_, no) => {
+      reject = no;
+    });
+  });
+  const pending = transformImage(
+    b.native,
+    await plan(),
+    stream(imageBytes("red.png")),
+    controller.signal,
+    onFailure,
+  );
+  const rejected = expect(pending).rejects.toThrow("expired");
+  await vi.waitFor(() => expect(reject).toBeDefined());
+  controller.abort(new Error("expired"));
+  await rejected;
+  expect(onFailure).not.toHaveBeenCalled();
+  reject(Object.assign(new Error("IMAGES_TRANSFORM_ERROR rejected"), { code: 9520 }));
+  await vi.waitFor(() =>
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({ kind: "binding_rejected", code: 9520 }),
+  );
+});
+it("retains a failed settlement for repair while returning the safe native failure", async () => {
+  const b = binding(async () => {
+    throw Object.assign(new Error("IMAGES_TRANSFORM_ERROR private"), { code: 9520 });
+  });
+  await expect(
+    transformImage(b.native, await plan(), stream(imageBytes("red.png")), signal(), async () => {
+      throw new Error("DB unavailable");
+    }),
+  ).rejects.toThrow("image_transform_binding_rejected");
+});
