@@ -199,6 +199,8 @@ it.each([false, true])(
           .run(JSON.stringify({ v: 1, blob: 0, offset: 8388608 }), job);
         source.exec("UPDATE control SET maintenance=1");
       }
+      for (const version of versions.filter((m) => m.name > "0055_copy_multipart.sql"))
+        source.exec(version.sql);
       // An expired invocation is exported with its spent budget and retry count intact.
       // The native backup barrier refuses a live invocation; expiry never settles its holds.
       source

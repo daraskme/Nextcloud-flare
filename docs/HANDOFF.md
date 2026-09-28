@@ -25,13 +25,13 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[所有者間コピーの分割保存](COPY_JOBS.md)を追加しました。固定sourceをstreamでpartへ送り、upload ID・part hash/ETag・進捗を保存して途中から再開します。実completeの結果を容量台帳へ記録し、遅延応答やACK喪失時も同じ送信を繰り返しません。最大規模の完走予算、結果不明/未送信照合、一括公開、取消し・精算、Queue/HTTP/画面は未完成です。
+[所有者間コピーの一括公開](COPY_JOBS.md)を追加しました。全blobの保存・native終了を照合し、コピー先のpermitで全node・属性・検索・容量・参照数を一括確定します。上書き先はtrashへ移し、成功したjobのpin/予約/転送情報を同じbatchで精算します。結果不明/未送信照合、取消し・失敗時の精算、最大転送規模の完走予算、Queue/HTTP/画面は未完成です。
 
-schema0055・通常74table。copy用multipartのupload/part記録を追加し、既存15種のnative receiptを保持しています。全Node1,396件・関連workerd336件の計1,732件が成功しました（修正後の対象file再実行を含む）。型・lint515file・契約/設定・buildと、5世代の保存・補充・復元を行う実Wrangler運用ドリルも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0056・通常74table。bulk_jobsの公開receiptと成功時の精算guardを追加しました。全Node1,404件・関連workerd286件の計1,690件が成功しました（修正後の対象file再実行を含む）。型・lint519file・契約/設定・Web/Worker build・SQL backup往復・D1復旧/backup barrierも成功。先行0604da2のCIは全6job成功です。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-copy受付は`services/createCopyJob.ts`、保存/読戻しは`jobs/copyManifest.ts`。内部`copy.enqueue`をLockDO/common admissionへ接続し、成功receipt 202は受付の確定だけを表す。`bulk_jobs.op_id`はその受付operationを参照する。実行claimは`jobs/copyClaim.ts`、固定sourceの読取りは`jobs/copyRead.ts`。owner同時2claim、25秒、8MiB/Range、16 read/invocationを上限とする。単一保存は`jobs/copyPut.ts`、ControlDOでの送信証明は`db/r2Copy.ts`。転送先staging/physical/native完了を照合してcheckpointを進める。次はmultipart、結果不明/未送信/観測欠落の照合、別のnamespace公開operation、取消し/精算を接続する。保存済みmanifestを読んでもrequest-local authorization proofは再発行しない。0052は保持情報の削除と予約の変更を拒否しており、R2終了証拠を伴う精算の実装前にguardだけを外さない。詳細は[COPY_JOBS](COPY_JOBS.md)。JSON ID集合→主キーのCROSS JOINも保つ。
+copy受付は`services/createCopyJob.ts`、保存/読戻しは`jobs/copyManifest.ts`。内部`copy.enqueue`をLockDO/common admissionへ接続し、成功receipt 202は受付の確定だけを表す。`bulk_jobs.op_id`はその受付operationを参照する。実行claimは`jobs/copyClaim.ts`、固定sourceの読取りは`jobs/copyRead.ts`。owner同時2claim、25秒、8MiB/Range、16 read/invocationを上限とする。単一保存は`jobs/copyPut.ts`、ControlDOでの送信証明は`db/r2Copy.ts`。転送先staging/physical/native完了を照合してcheckpointを進める。multipartはjobs/copyMultipart.ts、一括公開はjobs/copyPublication.ts。0056のcopy.publishはコピー先spaceのpermitを取り、namespace・容量・保持を一括確定する。次は結果不明/未送信/観測欠落の照合、取消し/失敗時の精算、Queue/HTTP/UIを接続する。保存済みmanifestを読んでもrequest-local authorization proofは再発行しない。0056では公開成功に伴う精算以外の保持情報削除と予約変更を拒否しており、R2終了証拠を伴う精算の実装前にguardだけを外さない。詳細は[COPY_JOBS](COPY_JOBS.md)。JSON ID集合→主キーのCROSS JOINも保つ。
 
 DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration0050はDAV保存元のowner一致条件を選択付き受信者へ広げ、0049の不変pair/completion照合を維持する。migration0051のdestination tupleとauth/transferScope.tsで転送先選択を独立に保存する。省略はlegacy、share:nullは明示的なactor所有spaceであり相互に代替しない。same-ownerの別mount転送だけを許可し、cross-owner COPYの非同期jobは後続。直接file mount上書きでは保存名と非公開parentを内部proofから使い、返却しない。0050/0051適用後の旧Workerへのrollbackはmaintenanceを維持し、対応版で再検証する。ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
 

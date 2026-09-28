@@ -2,9 +2,9 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[所有者間コピーの分割保存](COPY_JOBS.md)を追加しました。固定sourceをstreamでpartへ送り、upload ID・part hash/ETag・進捗を保存して途中から再開します。実completeの結果を容量台帳へ記録し、遅延応答やACK喪失時も同じ送信を繰り返しません。最大規模の完走予算、結果不明/未送信照合、一括公開、取消し・精算、Queue/HTTP/画面は未完成です。
+[所有者間コピーの一括公開](COPY_JOBS.md)を追加しました。全blobの保存・native終了を照合し、コピー先のpermitで全node・属性・検索・容量・参照数を一括確定します。上書き先はtrashへ移し、成功したjobのpin/予約/転送情報を同じbatchで精算します。結果不明/未送信照合、取消し・失敗時の精算、最大転送規模の完走予算、Queue/HTTP/画面は未完成です。
 
-schema0055・通常74table。copy用multipartのupload/part記録を追加し、既存15種のnative receiptを保持しています。全Node1,396件・関連workerd336件の計1,732件が成功しました（修正後の対象file再実行を含む）。型・lint515file・契約/設定・buildと、5世代の保存・補充・復元を行う実Wrangler運用ドリルも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0056・通常74table。bulk_jobsの公開receiptと成功時の精算guardを追加しました。全Node1,404件・関連workerd286件の計1,690件が成功しました（修正後の対象file再実行を含む）。型・lint519file・契約/設定・Web/Worker build・SQL backup往復・D1復旧/backup barrierも成功。先行0604da2のCIは全6job成功です。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
@@ -27,7 +27,7 @@ schema0055・通常74table。copy用multipartのupload/part記録を追加し、
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
 | 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
-| 所有者間copyの受付・実行・単一/分割保存 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | 完走予算・未知/未送信修復・公開・取消し/精算・Queue/HTTP/UIは後続。[詳細](COPY_JOBS.md) |
+| 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | 完走予算・未知/未送信修復・取消し/失敗時精算・Queue/HTTP/UIは後続。[詳細](COPY_JOBS.md) |
 | 内部共有DAV | 固定mount一覧/解決、read/edit操作、同一ownerの別mount間COPY/MOVE、両側の選択とロック・Outbox・復旧 | 実D1の権限停止競合、再送・応答喪失・照会・上書き、schema移行と破損復旧記録の拒否。関連回帰はIMPLEMENTATION_STATUS | cross-owner copy、実OS/staging。[詳細](DAV_SHARED.md) |
 | 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |

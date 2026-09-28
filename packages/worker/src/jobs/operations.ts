@@ -23,6 +23,8 @@ import {
 import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 
+import { copyPublicationAuthority } from "./copyPublicationAuthority";
+
 export interface OperationIntent {
   readonly id: string;
   readonly principal: Principal;
@@ -244,9 +246,14 @@ export function validateClaimAuthorization(
     sourceParentId?: unknown;
     nodeId?: unknown;
   };
-  const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put", "upload.complete"].includes(
-    intent.kind,
-  );
+  const create = [
+    "node.create",
+    "dav.mkcol",
+    "dav.lock",
+    "dav.put",
+    "upload.complete",
+    "copy.publish",
+  ].includes(intent.kind);
   const contentWrite =
     ["dav.put", "upload.complete"].includes(intent.kind) &&
     authorized.operation === "node.content.write";
@@ -444,6 +451,7 @@ export async function lookupOperation(
       row.kind !== "dav.move" &&
       row.kind !== "node.copy" &&
       row.kind !== "copy.enqueue" &&
+      row.kind !== "copy.publish" &&
       row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
       row.kind !== "node.restore" &&
@@ -478,7 +486,9 @@ export async function lookupOperation(
       sourceParentId?: unknown;
       nodeId?: unknown;
     };
-    const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
+    const create = ["node.create", "dav.mkcol", "dav.lock", "copy.publish"].includes(row.kind);
+    const publication =
+      row.kind === "copy.publish" ? await copyPublicationAuthority(db, id, principal) : [];
     if (row.kind === "upload.complete") {
       if (typeof operands.uploadId !== "string" || typeof operands.parentId !== "string")
         return null;
@@ -643,7 +653,7 @@ export async function lookupOperation(
                   ? typeof operands.overwriteTargetId === "string"
                     ? 204
                     : 201
-                  : ["node.copy", "dav.copy"].includes(row.kind)
+                  : ["node.copy", "dav.copy", "copy.publish"].includes(row.kind)
                     ? typeof operands.overwriteTargetId === "string"
                       ? 204
                       : 201
@@ -701,7 +711,8 @@ export async function lookupOperation(
             ].includes(row.error_code)
           ? row.error_code
           : "operation_failed";
-    if (destination) await atomicBatch(db, proofs.map(authorizationAssertion));
+    if (destination || publication.length)
+      await atomicBatch(db, [...proofs.map(authorizationAssertion), ...publication]);
     return { id: row.op_id, state: row.state, errorCode, result: visible };
   } catch {
     return null;

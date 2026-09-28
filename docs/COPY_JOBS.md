@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一保存に、multipart転送とpart進捗からの再開を追加した。結果不明の修復、HTTP受付、Queue consumer、一括公開、取消し・再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。結果不明の修復、HTTP受付、Queue consumer、取消し・再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -62,21 +62,35 @@ part進捗は`{v:1,blob,offset}`として確定し、leaseを取り直しても�
 
 送信前ACK喪失後の未送信照合、native結果不明や観測記録欠落の修復、失敗/取消しの精算は未接続。現在はreadとwriteを合わせたcall数で次のreadを制限する。最大10,000件・500 GiBの受付を完走させるには、batch化とD1/200 invocation/20,000 R2 callの全体予算検証も必要。現段階ではこれらを推測で解放せず、HTTP/Queue consumerを有効化しない。
 
+## 転送済みコピーの一括公開
+
+`jobs/copyPublication.ts` の `publishCopyJob` は内部完了処理。全blobのcheckpointが確定した実行claimだけを受け付ける。受付の`copy.enqueue`とは別に、**コピー先spaceのLockDO/common mutation admissionで`copy.publish`を確定する**。両側の資格情報・固定したshare pair、実行lease、source配下の全memberの現行所属、転送先parent/overwrite lock、名前衝突を同じbatchで検査する。上書き対象は受付時の構成・名前・親・revision・blob・属性との一致が必要。
+
+schemaでも、staging blob・実在bytes/hash/ETag・single PUTまたはmultipart completeのnative成功receipt・pending native不在・元pin・転送先予約・現在のpermit/claimを照合する。native結果が不明なkeyや未転送blobを完了へ進めない。コピー元の内容・名前・属性が受付後に変わっても、公開する値は固定manifestから構築する。memberが元subtree外へ移動・削除された場合は公開を拒否し、保持を残す。
+
+公開batchでは予約をused quotaへ変換し、親から子の順に全node、dead properties、検索index/FTSを作り、親revision・tree generation・activity・node.created Outbox・10 step・完了receiptを確定する。コピー元rootは通常folderへ変換する。aliasはコピー先でも一つのblobを共有し、unique bytesだけを計上する。上書き対象はtrashへ移し、配下lock/shared session・関連content session/ticketを停止する。trashの元blob参照と使用量は保持する。
+
+同じbatchの中でjobとcopy.requested Outboxをcompletedにし、成功が証明されたmultipart情報・保持対応・元pin・実行leaseを除去する。失敗時には公開node、予約解除、source ref減算もすべてrollbackする。応答を失ってもDB receiptから照合し、再送でnodeやactivityを増やさない。完了後の照会とnode.created consumerも、元のsource選択とコピー先選択で再認可する。成功時のlease解放は完了receiptに対して冪等。受付202と公開201/204の意味は変えない。
+
+完了後もimmutable manifestは保持する。manifest読戻し・復旧Outbox監査は、保持対応の代わりに公開operationとjobの束縛を確認する。公開先nodeが後から通常操作で変更・trash・purgeされても、履歴を現在のnode状態に書き換えない。
+
 ## 移行と復旧
 
 migration0052で通常72tableとなり、0053は既存job_leasesへinvocationのR2 call数を追加する。0054は全native receiptと既存のcopy保持情報を維持し、copy.putと転送状態・attempt・hashを追加する（72tableのまま）。既存のtoken・epoch・期限・試行回数は保持する。0052の追加3tableはSTRICT/FK/index、backup/restore freeze、export/purge順序の契約へ含める。旧catalogueに未解決の`node.copy` bulk jobが残る場合は0052移行を拒否し、元処理の個別照合を要求する。
 
 0055はmultipart用の2tableを追加して74通常tableとし、既存15種のnative記録を全field維持してcreate/part/completeの3種を追加する。旧copy保持行はsingle modeを保つ。新tableもSTRICT/FK/index・backup/restore freeze・export/purge順序へ含め、保存済みpartと途中checkpointをSQL backup/restoreで保持する。移行はmaintenance中・未凍結・open permit/claimed operation/未閉鎖admissionなしで実施する。
 
-copy用reservationは汎用の旧epoch回収から除外する。保持対応の存在中はreservationの変更とpinの変更/削除を拒否する。pending/running jobまたは保持対応が残る間は復旧後の再開を許可しない。Outbox監査は保存済みmanifestのhashと受付receiptを検査するが、成功しても実転送の終了証明にはならない。24時間の受付期限やepoch変更だけで保持を解放しない。
+0056は74tableを維持し、bulk_jobsにpublish_op_id/published_root_idとFK索引、copy.publish catalogueと確定/精算guardを追加する。旧job・保持・native記録は変更せず、backup/restore freezeを維持する。移行はmaintenance・未凍結・permit/operation/admission排出後に行う。
 
-取消しと転送後の精算はまだ未実装で、現時点のschemaはmanifest/保持対応の削除を拒否する。R2-awareな精算を実装する際にはforward migrationで対応する。guardだけを外して容量を返す運用は行わない。この段階の内部serviceはHTTP経路へ公開しない。
+copy用reservationは汎用の旧epoch回収から除外する。公開batchによる証明済みの成功精算以外は、保持対応の存在中にreservationの変更とpinの変更/削除を拒否する。pending/running jobまたは保持対応が残る間は復旧後の再開を許可しない。Outbox監査は保存済みmanifestのhashと受付receiptを検査するが、成功しても実転送の終了証明にはならない。24時間の受付期限やepoch変更だけで保持を解放しない。
+
+取消しと失敗時の精算はまだ未実装で、成功した公開以外の保持対応削除は拒否する。manifestは完了後も削除を拒否する。取消しのR2-awareな精算を実装する際にはforward migrationで対応する。guardだけを外して容量を返す運用は行わない。この段階の内部serviceはHTTP経路へ公開しない。
 
 ## 次に接続する処理
 
 1. 大量blob・大容量multipartのbatch化と、最大規模の完走予算を検証する。
 2. ACK喪失/未送信/結果不明/観測欠落の照合と取消し時の精算を接続し、Queue consumerへ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
-3. 全blobを検証してから、固定manifest・衝突方針・dead propertiesをnamespaceの原子的な公開へ接続する。フォルダーの一部だけを公開しない。
+3. 内部の一括公開処理へexecutorを接続し、途中の失敗・取消しを含めたjob状態遷移を完成させる。
 4. job read/cancel/retry、停止・recovery・Outbox、pin/予約/physicalの精算、Shared画面の宛先選択と進捗を接続する。
 
 同期DAVは引き続き同一owner・1,000 node・10 GiBまでで、cross-owner要求をREST jobへ自動fallbackしない。[DAV Shared](DAV_SHARED.md)を参照。検証結果と残る全体要件は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。

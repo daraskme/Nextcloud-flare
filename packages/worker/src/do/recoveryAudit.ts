@@ -3,6 +3,7 @@ import { storedDestination, type TransferDestinationRecord } from "../auth/trans
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import { loadCopyJobManifest } from "../jobs/copyManifest";
+import { COPY_PUBLICATION_BINDING_SQL } from "../jobs/copyPublicationAuthority";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
 import {
   acquireGlobalMutation,
@@ -47,6 +48,7 @@ interface BlobRow {
 }
 
 interface OutboxRow extends SelectedShareRecord, TransferDestinationRecord {
+  op_id: string;
   outbox_id: string;
   kind: string;
   payload_ref: string;
@@ -271,7 +273,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
         WHERE o.selected_share_id IS NOT u.selected_share_id
           OR o.selected_share_version IS NOT u.selected_share_version))
-      AND NOT EXISTS(SELECT 1 FROM operations o WHERE
+      AND ((NOT EXISTS(SELECT 1 FROM operations o WHERE
         ((o.destination_share_id IS NULL)<>(o.destination_share_version IS NULL))
         OR (o.destination_space_id IS NULL AND o.destination_share_id IS NOT NULL)
         OR (o.kind='copy.enqueue' AND o.destination_space_id IS NULL)
@@ -291,6 +293,11 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
             AND j.credential_id=o.credential_id AND j.epoch=o.epoch AND b.epoch=o.epoch
             AND b.kind='copy.requested' AND b.payload_ref=j.id
             AND json_extract(o.result_json,'$.status')=202 AND json_extract(o.result_json,'$.jobId')=j.id))
+      ) AND (NOT EXISTS(SELECT 1 FROM operations published WHERE published.kind='copy.publish' AND published.state='committed'
+        AND NOT EXISTS(${COPY_PUBLICATION_BINDING_SQL.replace("p.op_id=?", "p.op_id=published.op_id")}))
+      AND NOT EXISTS(SELECT 1 FROM bulk_jobs j WHERE j.kind='node.copy' AND j.state='completed'
+        AND NOT EXISTS(SELECT 1 FROM operations p WHERE p.op_id=j.publish_op_id AND p.kind='copy.publish' AND p.state='committed'))
+      ))
       AND (c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM bulk_jobs WHERE kind='node.copy' AND state IN ('pending','running'))
       AND NOT EXISTS(SELECT 1 FROM copy_job_blobs)
@@ -355,7 +362,7 @@ export async function failStaleRecoveryOutbox(
   const rows = await primary(db)
     .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.epoch,o.space_id,s.owner_id
       FROM outbox b JOIN operations o ON o.op_id=b.op_id LEFT JOIN spaces s ON s.id=o.space_id
-      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
+      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','node.copy','copy.publish','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
         (b.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
         (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
         (b.kind='node.restored' AND o.kind='node.restore') OR
@@ -399,7 +406,7 @@ export async function failStaleRecoveryOutbox(
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
                 (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id AND o.space_id=?
-                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
+                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','copy.publish','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
                   (outbox.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
                   (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
                   (outbox.kind='node.restored' AND o.kind='node.restore') OR
@@ -669,7 +676,7 @@ export async function inspectRecoveryPage(
   }
   if (cursor.stage === "outbox") {
     const rows = await primary(db)
-      .prepare(`SELECT b.outbox_id,b.kind,b.payload_ref,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
+      .prepare(`SELECT b.op_id,b.outbox_id,b.kind,b.payload_ref,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
         b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch,
         o.kind AS operation_kind,o.principal_kind,o.selected_share_id,o.selected_share_version,o.destination_space_id,o.destination_share_id,o.destination_share_version,o.operands_json,o.result_json,
         (SELECT s.affected_id FROM operation_steps s WHERE s.op_id=o.op_id
@@ -685,6 +692,11 @@ export async function inspectRecoveryPage(
       if (
         ["pending", "dispatching", "sent", "completed"].includes(row.state) &&
         row.operation_state !== "committed"
+      )
+        throw new Error("recovery_outbox_provenance_mismatch");
+      if (
+        row.operation_kind === "copy.publish" &&
+        !(await primary(db).prepare(COPY_PUBLICATION_BINDING_SQL).bind(row.op_id).first())
       )
         throw new Error("recovery_outbox_provenance_mismatch");
       if (row.kind === "copy.requested") {
@@ -714,6 +726,7 @@ export async function inspectRecoveryPage(
             [
               "node.create",
               "node.copy",
+              "copy.publish",
               "dav.mkcol",
               "dav.lock",
               "dav.put",
@@ -768,7 +781,7 @@ export async function inspectRecoveryPage(
           result.nodeId !== row.payload_ref ||
           result.status !==
             (row.kind === "node.created"
-              ? ["node.copy", "dav.copy"].includes(row.operation_kind ?? "") &&
+              ? ["node.copy", "dav.copy", "copy.publish"].includes(row.operation_kind ?? "") &&
                 typeof operands.overwriteTargetId === "string"
                 ? 204
                 : 201

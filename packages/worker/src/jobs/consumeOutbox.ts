@@ -16,6 +16,7 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { copyPublicationAuthority } from "./copyPublicationAuthority";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
@@ -101,6 +102,7 @@ export async function consumeOutbox(
         [
           "node.create",
           "node.copy",
+          "copy.publish",
           "dav.mkcol",
           "dav.lock",
           "dav.put",
@@ -158,7 +160,7 @@ export async function consumeOutbox(
       result.nodeId !== row.payload_ref ||
       result.status !==
         (row.kind === "node.created"
-          ? ["node.copy", "dav.copy"].includes(row.op_kind) &&
+          ? ["node.copy", "dav.copy", "copy.publish"].includes(row.op_kind) &&
             typeof operands.overwriteTargetId === "string"
             ? 204
             : 201
@@ -200,6 +202,11 @@ export async function consumeOutbox(
   } catch {
     return "retry";
   }
+  const publicationAuthorities =
+    row.op_kind === "copy.publish"
+      ? await copyPublicationAuthority(db, row.op_id, principal).catch(() => null)
+      : [];
+  if (!publicationAuthorities) return "retry";
   let authorized: Awaited<ReturnType<typeof authorizeNode>>;
   const originalAuthorities: Awaited<ReturnType<typeof authorizeNode>>[] = [];
   try {
@@ -264,6 +271,7 @@ export async function consumeOutbox(
     await commitSystemMutation(db, claim, row.owner_id, [
       authorizationAssertion(authorized),
       ...originalAuthorities.map(authorizationAssertion),
+      ...publicationAuthorities,
       {
         sql: `UPDATE outbox SET claim_token=?,claim_expires_at=${clock}+?,updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND epoch=? AND state IN ('dispatching','sent')
@@ -292,6 +300,7 @@ export async function consumeOutbox(
     await commitSystemMutation(db, completion, row.owner_id, [
       authorizationAssertion(authorized),
       ...originalAuthorities.map(authorizationAssertion),
+      ...publicationAuthorities,
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}

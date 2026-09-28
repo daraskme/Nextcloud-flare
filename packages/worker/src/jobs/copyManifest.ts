@@ -87,7 +87,7 @@ export interface StoredCopyManifest {
 export async function loadCopyJobManifest(db: D1Database, id: string): Promise<StoredCopyManifest> {
   if (!/^copy_[a-f0-9]{64}$/.test(id)) throw new Error("invalid_copy_job");
   const row = await primary(db)
-    .prepare(`SELECT m.*,(SELECT COUNT(*) FROM copy_job_chunks WHERE job_id=m.job_id) AS stored_chunks,j.op_id,j.owner_id,j.credential_id,j.epoch,j.node_count,j.blob_count,j.grant_snapshot,
+    .prepare(`SELECT m.*,j.state,j.publish_op_id,j.published_root_id,(SELECT COUNT(*) FROM copy_job_chunks WHERE job_id=m.job_id) AS stored_chunks,j.op_id,j.owner_id,j.credential_id,j.epoch,j.node_count,j.blob_count,j.grant_snapshot,
       o.space_id,o.destination_space_id,o.destination_share_id,o.destination_share_version,o.principal_id,o.selected_share_id,o.selected_share_version,o.operands_json,o.result_json,source.owner_id AS source_owner_id
     FROM copy_job_manifests m JOIN bulk_jobs j ON j.id=m.job_id JOIN operations o ON o.op_id=j.op_id
       JOIN spaces source ON source.id=o.space_id JOIN spaces target ON target.id=o.destination_space_id AND target.owner_id=j.owner_id
@@ -96,6 +96,9 @@ export async function loadCopyJobManifest(db: D1Database, id: string): Promise<S
       AND o.principal_kind='user' AND j.id='copy_'||substr(o.op_id,4)`)
     .bind(id)
     .first<{
+      state: string;
+      publish_op_id: string | null;
+      published_root_id: string | null;
       sha256: string;
       bytes: number;
       chunks: number;
@@ -188,6 +191,16 @@ export async function loadCopyJobManifest(db: D1Database, id: string): Promise<S
       result.jobId !== id
     )
       throw new Error("copy_manifest_unavailable");
+    if (row.state === "completed") {
+      const completed = await primary(db)
+        .prepare(`SELECT 1 FROM operations p WHERE p.op_id=? AND p.kind='copy.publish' AND p.state='committed'
+        AND json_extract(p.operands_json,'$.jobId')=? AND json_extract(p.operands_json,'$.manifestDigest')=?
+        AND json_extract(p.result_json,'$.nodeId')=? AND NOT EXISTS(SELECT 1 FROM copy_job_blobs WHERE job_id=?)`)
+        .bind(row.publish_op_id, id, hash, row.published_root_id, id)
+        .first();
+      if (!completed) throw new Error("copy_manifest_unavailable");
+      return Object.freeze({ plan: freeze({ ...plan, digest: hash }), expiresAt: row.expires_at });
+    }
     const holds = await primary(db)
       .prepare(`SELECT cb.source_blob_id,cb.destination_blob_id,cb.pin_id,cb.reservation_id,b.size
       FROM copy_job_blobs cb JOIN blobs b ON b.id=cb.source_blob_id

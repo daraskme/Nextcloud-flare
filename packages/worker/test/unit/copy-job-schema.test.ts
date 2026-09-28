@@ -104,6 +104,10 @@ it.each([
 });
 it("blocks recovery for a pending folder-only copy even without reservations or leases", () => {
   migrate();
+  for (const name of readdirSync(directory)
+    .filter((n) => n.endsWith(".sql") && n > "0052_copy_jobs.sql")
+    .sort())
+    db.exec(readFileSync(new URL(name, directory), "utf8"));
   expect(db.prepare(RECOVERY_FINAL_QUERY).get(1)).toBeTruthy();
   pending();
   for (const [i, kind] of ["copy_job", "copy_manifest", "copy_holds", "copy_outbox"].entries())

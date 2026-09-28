@@ -284,6 +284,11 @@ export async function releaseCopyJobClaim(
         AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?)`,
       values: [claim.id, claim.token, claim.epoch, claim.epoch],
     },
-    assertOneChange,
+    assertExists(
+      `SELECT 1 WHERE changes()=1 OR EXISTS(SELECT 1 FROM bulk_jobs j JOIN operations o ON o.op_id=j.publish_op_id
+      WHERE j.id=? AND j.epoch=? AND j.state='completed' AND o.kind='copy.publish' AND o.state='committed'
+        AND json_extract(o.operands_json,'$.claimToken')=?)`,
+      [claim.id, claim.epoch, claim.token],
+    ),
   ]);
 }

@@ -181,7 +181,10 @@ function grouped<T>(
   }
   return result;
 }
-function snapshotAssertions(value: CopySnapshot, depth: "0" | "infinity"): SqlStatement[] {
+export function copySnapshotAssertions(
+  value: CopySnapshot,
+  depth: "0" | "infinity",
+): SqlStatement[] {
   // Drive each join from the bounded ID set. A space-first plan rescans all nodes per group.
   return [
     assertExists(
@@ -339,8 +342,8 @@ export async function prepareCrossOwnerCopy(
       `SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM nodes WHERE parent_id=? AND name_ci=? AND deleted_at IS NULL AND id<>COALESCE(?,''))`,
       [target.parent.id, name.nameCi, overwrite && "node" in overwrite ? overwrite.node.id : null],
     ),
-    ...snapshotAssertions(tree, input.depth),
-    ...(replaced ? snapshotAssertions(replaced, "infinity") : []),
+    ...copySnapshotAssertions(tree, input.depth),
+    ...(replaced ? copySnapshotAssertions(replaced, "infinity") : []),
   ]);
   await atomicBatch(db, assertions);
   proofs.set(plan, assertions);
