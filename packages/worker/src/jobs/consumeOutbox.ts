@@ -1,11 +1,13 @@
-import { assertOneChange } from "../db/primary";
+import { assertExists, assertOneChange } from "../db/primary";
 import type { Env } from "../env";
+import type { ImageReadBudget } from "../media/images/r2Source";
 import {
   acquireSystemMutation,
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
 import { consumeCopyOutbox } from "./copyQueue";
+import { imageMetadataStatements } from "./imageMetadata";
 import { nodeEventAuthority, readOutboxEvent } from "./outboxAuthority";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
@@ -17,6 +19,7 @@ export async function consumeOutbox(
   env: OutboxConsumerEnv,
   outboxId: string,
   deadline = Date.now() + 25_000,
+  imageBudget: ImageReadBudget = { reads: 0, bytes: 0 },
 ): Promise<ConsumeResult> {
   const { DB: db } = env;
   if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 25_000)
@@ -66,10 +69,26 @@ export async function consumeOutbox(
       },
       assertOneChange,
     ]);
+    const claimFence = assertExists(
+      `SELECT 1 FROM outbox b JOIN control c ON c.singleton=1 AND c.epoch=b.epoch AND c.maintenance=0
+       WHERE b.outbox_id=? AND b.claim_token=? AND b.claim_expires_at>${clock}
+         AND b.epoch=? AND b.state IN ('dispatching','sent')`,
+      [outboxId, token, row.epoch],
+    );
+    const metadata = await imageMetadataStatements(
+      env,
+      row,
+      claimFence,
+      authority,
+      deadline,
+      imageBudget,
+    );
     const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
       ...authority,
+      claimFence,
+      ...metadata,
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}

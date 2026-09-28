@@ -1,5 +1,9 @@
 # セッション引き継ぎ
 
+[画像メタデータ](IMAGE_METADATA.md)を通常upload・WebDAV PUTの完了Outboxへ接続しました。JPEG/PNG/WebP/AVIFの寸法と許可したEXIFだけをbounded Rangeで抽出し、元blob・parent・actor・claimを確認してMIMEと同じbatchで保存します。新しいDAV PUTは利用者申告だけでinline mediaにしません。サムネイル生成・Gallery画面・既存データ再抽出と動画/音声は後続です。
+
+先行472e682の[CI36473189569](https://github.com/daraskme/Nextcloud-flare/actions/runs/36473189569)は公開編集再開後の全10job成功。今回の画像処理は後続の変更です。
+
 [公開編集の再開](PUBLIC_EDIT_RECOVERY.md)を実装しました。フォルダー作成・改名・削除の元intentを送信前に保存し、再読み込み後は同じsession/keyで明示確認します。別タブの同時実行、記録の差替え、ログアウト後の遅い応答による再保存を拒否します。サーバーAPI・schema・依存の追加はありません。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [ZIPダウンロード](ZIP_DOWNLOADS.md)を所有者・内部共有・公開リンクのAPIと画面へ接続しました。固定snapshot、日本語名・空フォルダー、正確なサイズ会計、期限付きblob保持に対応し、共有停止・内容変更・元credentialを各取得時に検査します。schema0067・通常76table・147 routeを維持し、今回のmigration/依存追加はありません。thumb/page/track・media、復旧側の残件、実環境検証は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。

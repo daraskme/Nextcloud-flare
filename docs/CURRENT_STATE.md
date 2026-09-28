@@ -1,5 +1,9 @@
 # 現在の実装状態
 
+[画像メタデータ](IMAGE_METADATA.md)を通常upload・WebDAV PUTの完了Outboxへ接続しました。JPEG/PNG/WebP/AVIFの寸法と許可したEXIFだけをbounded Rangeで抽出し、元blob・parent・actor・claimを確認してMIMEと同じbatchで保存します。新しいDAV PUTは利用者申告だけでinline mediaにしません。サムネイル生成・Gallery画面・既存データ再抽出と動画/音声は後続です。
+
+先行472e682の[CI36473189569](https://github.com/daraskme/Nextcloud-flare/actions/runs/36473189569)は公開編集再開後の全10job成功。今回の画像処理は後続の変更です。
+
 [公開編集の再開](PUBLIC_EDIT_RECOVERY.md)を実装しました。フォルダー作成・改名・削除の元intentを送信前に保存し、再読み込み後は同じsession/keyで明示確認します。別タブの同時実行、記録の差替え、ログアウト後の遅い応答による再保存を拒否します。サーバーAPI・schema・依存の追加はありません。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [ZIPダウンロード](ZIP_DOWNLOADS.md)を所有者・内部共有・公開リンクのAPIと画面へ接続しました。固定snapshot、日本語名・空フォルダー、正確なサイズ会計、期限付きblob保持に対応し、共有停止・内容変更・元credentialを各取得時に検査します。schema0067・通常76table・147 routeを維持し、今回のmigration/依存追加はありません。thumb/page/track・media、復旧側の残件、実環境検証は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
@@ -72,6 +76,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| 画像メタデータと原本MIME | 新しい通常/匿名upload・DAV PUTのOutbox、JPEG/PNG/WebP/AVIF header、EXIF whitelist、current blob/parent/claim、元uploadを確認した受け取り専用認可 | Nodeの破損/上限、実D1/R2の原子確定/応答喪失/失効、Chromeの6形式と匿名AVIF実decode | Images/サムネイル・Gallery API/UI、既存データ/copy/move、動画/音声、他browser・実環境。[詳細](IMAGE_METADATA.md) |
 | 公開リンクの所有者管理API/画面 | CRUD、閲覧/編集切替、期限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効、URLコピー | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替、mobile browser操作 | 実環境。[詳細](PUBLIC_SHARES.md) |
 | 受け取り専用共有 | 所有者管理、password/期限/容量上限、匿名receipt/単一・分割送信、衝突時自動改名、owner/share原子予約、reload再開 | 実D1/R2、既存移行、失敗/中止精算、型・関連Node、390px browser・96 MiB再開・ACK喪失 | 実環境・最大規模。[詳細](UPLOAD_ONLY_SHARES.md) |
 | 公開閲覧・フォルダー作成・名前変更・削除・upload | 独立public build/SRI、root/children、ticket配信、現行edit権限でのcreate/rename、元session/key固定の再送とoperation照会、単一/分割upload・上書きAPI/画面、IndexedDB再開・中止、確認付きtrashと所有者の復元 | 匿名複数tab、共有境界、保存直前の失効、DAV lock、ACK喪失、権限切替、mobile browser | thumb/page/track・media、staging。[詳細](PUBLIC_SHARES.md) |
@@ -176,9 +181,9 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 - upload行自体が失われたincomplete multipartの全体閉鎖・容量精算。全`u/`のhandle走査・中止receipt・part容量保留は接続済み（[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)）。未知の完成済み`u/` objectの隔離・35日回収も接続済み。
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
-- media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
+- 動画/音声のmetadata parser、metadata検索索引同期、索引version再構築運用。新しいupload・DAV PUTの画像抽出は[IMAGE_METADATA](IMAGE_METADATA.md)へ接続済みで、既存データ再抽出とcopy/move引継ぎは残る。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
 - 公開linkのthumb/page/track配信。ZIPは[ZIPダウンロード](ZIP_DOWNLOADS.md)へ接続済み。受け取り専用共有のHTTP/画面は[UPLOAD_ONLY_SHARES](UPLOAD_ONLY_SHARES.md)へ接続済み。所有者管理API/画面・password保存・匿名unlock/CSRF/logout・独立公開bundle・閲覧/保存・create/rename/delete・upload/overwrite APIと画面は[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
-- ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
+- archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。ZIP downloadは所有者・内部共有・匿名readリンクへ接続済み（[ZIP_DOWNLOADS](ZIP_DOWNLOADS.md)）。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 

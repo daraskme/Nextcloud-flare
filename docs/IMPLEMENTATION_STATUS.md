@@ -1,6 +1,20 @@
 # 実装進捗
 
-## 公開編集の永続追跡と再読み込み後の確認（今回）
+## 画像メタデータ・原本MIMEと受け取り専用Outbox（今回）
+
+[画像メタデータ](IMAGE_METADATA.md)を通常/匿名upload・WebDAV PUTの完了Outboxへ接続した。JPEG/PNG/WebP/AVIFのheaderと許可したEXIFだけを抽出し、元blob・parent・現在のactor/credential・claim/epochを各Range前後と確定batchで検査する。R2はetag条件付き、元size/range/実bytesも照合し、画像/Queue invocationごと2MiB・64 GETに制限する。node_media・判別済みMIME・Outbox completedを一括確定し、原本や参照会計を変えない。WebDAVの利用者申告MIMEはinline許可にせず、判別前は添付として扱う。schema0067・通常76table・147 route、migration/依存追加なし。
+
+- Node3file/92件成功（/tmp/ncf-images-unit-final.log）。画像53件、既存media20件、Range/Images上限19件。FFmpegによる実JPEG/PNG/WebP/AVIF静止画・10-bit・sequence、AVIF主画像/grid参照/向き、EXIF whitelist/UTC offset、偽装/truncation/CRC/構造・読取り上限、巨大payloadのoffset skip、R2範囲/長さ/etag・取消・遅い応答を検証した。BMFF boxのsize=0は終端までを表すため、初回の不正長fixtureをsize=7へ修正した。
+- 実D1/R2/DOの新規画像25件と既存Outbox・upload・公開/受け取り専用共有・DAV保存/認証・blob readを検証。/tmp/ncf-images-native.logの既存4file/112件、/tmp/ncf-images-native-2.logの公開upload25件、/tmp/ncf-images-native-3.logの新規23件+既存3file/44件、/tmp/ncf-images-native-5.logの5file/137件が成功。重複を除く関連nativeは10file/216件。新規25件にはprivate/匿名edit/upload-onlyの実保存、現在認可・元parent/claim/epoch/停止の変更、原子的rollback・ACK喪失、古いblobイベントの非採用、元画像のRangeとMIME、偽装DAV MIME6種の添付配信を含む。
+- native初回の8件はfixtureが同じlast_op_idを持つ親folderをfileと誤認したため失敗し、kind=fileへ限定した。続く1件はfixtureが不変physical receiptの変更を試みてDBに拒否され、native条件不一致の応答を使う検証へ修正した。追加のupload-only試験では既存Outboxが一般create権限を要求して完了できないことを確認した。元のcompleted upload/operation/credential/share/予約履歴を照合してupload用途だけを認可するよう修正し、上記5file/137件で成功した。一般create/read権限は広げていない。
+- browser1file/2件成功（1.4分、/tmp/ncf-images-browser.log）。所有者の実upload→Outbox→content ticket/session→原本GETで6形式をChromeが16×12として実decodeし、匿名readリンクからのAVIFも成功した。image MIME/inline/no-store、元画像の表示を検証。Gallery UIや他のブラウザーの対応証明ではない。
+- 最後にproducerからの実配信と、別upload/credential versionへの差替え拒否を追加し、新規native25件成功（15.41秒、/tmp/ncf-images-native-final.log）。同じ25件なので加算しない。
+- 型・lint663file・契約/設定・Web build/Worker dry-run成功。最終検証ログは/tmp/ncf-images-types-final-3.log、/tmp/ncf-images-lint-final.log、/tmp/ncf-images-contracts.log、/tmp/ncf-images-config.log、/tmp/ncf-images-build-final.log。
+- 先行472e682の[CI36473189569](https://github.com/daraskme/Nextcloud-flare/actions/runs/36473189569)は公開編集再開後の全10job成功。
+
+**関連Node92 + native216 + browser2 = 重複を除き310件成功**。Images変換と費用/physical/終了記録、thumb配信、Gallery UI、既存データ再抽出/copy・move引継ぎ、AV1/Opus track/tag・Bookshelf/Audioは後続。全Node・全workerd・全browser・backup drillは今回ローカルで再実行していない。remote resource/secret/migration/deployなし。
+
+## 公開編集の永続追跡と再読み込み後の確認（先行472e682）
 
 [公開編集の再開](PUBLIC_EDIT_RECOVERY.md)を追加した。作成・改名・削除の元intentを送信前にIndexedDBへ保存し、再読み込み後も同じ共有session・key・対象・bodyで明示確認する。既知のoperation IDは照会だけを行う。共有/session単位のWeb Lock、保存済みintentとの照合、別タブ通知、ログアウト時のclosed markerで重複実行・記録の差替え・遅い応答による再保存を拒否する。別sessionの操作は引き継がず、古いタブから新sessionの記録も消さない。サーバーAPI・schema0067・通常76table・147 route・依存は変更していない。
 

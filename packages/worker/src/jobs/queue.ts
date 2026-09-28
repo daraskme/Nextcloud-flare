@@ -29,6 +29,7 @@ export async function handleOutboxBatch(
   let nodeBatch = false;
   let copyBatch = false;
   const deadline = Date.now() + 25_000;
+  const imageBudget = { reads: 0, bytes: 0 };
   for (const message of batch.messages) {
     try {
       const id = outboxMessageId(message.body);
@@ -45,7 +46,7 @@ export async function handleOutboxBatch(
           if (!nodeBatch) result = await consumeOutbox(env, id, deadline);
         } else {
           nodeBatch = true;
-          result = await consumeOutbox(env, id, deadline);
+          result = await consumeOutbox(env, id, deadline, imageBudget);
         }
       }
       if (result === "completed" || result === "failed") {

@@ -119,7 +119,17 @@ function blobSteps(
       statement: {
         sql: `UPDATE blobs SET state='committed',mime_sniffed=?,last_op_id=?
           WHERE id=? AND owner_id=? AND r2_key=? AND size=? AND sha256_verified=? AND r2_etag=? AND state='staging' AND ref_count=0`,
-        values: [mime, op, blob, ownerId, key, size, stored.sha256, stored.object.etag],
+        // A DAV Content-Type is a client declaration, not proof permitting inline media.
+        values: [
+          mime === "text/plain" ? mime : "application/octet-stream",
+          op,
+          blob,
+          ownerId,
+          key,
+          size,
+          stored.sha256,
+          stored.object.etag,
+        ],
       },
     },
     {

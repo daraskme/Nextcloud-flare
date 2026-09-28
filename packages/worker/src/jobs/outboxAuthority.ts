@@ -10,7 +10,8 @@ import {
   type TransferDestination,
   type TransferDestinationRecord,
 } from "../auth/transferScope";
-import { primary, type SqlStatement } from "../db/primary";
+import { UPLOAD_OPERATION_PRINCIPAL } from "../auth/uploadPrincipal";
+import { assertExists, primary, type SqlStatement } from "../db/primary";
 import { copyPublicationAuthority } from "./copyPublicationAuthority";
 
 export interface EventRow extends SelectedShareRecord, TransferDestinationRecord {
@@ -124,6 +125,7 @@ export async function nodeEventAuthority(
   let nodeId: string | undefined;
   let sourceNodeId: string | undefined;
   let sourceParentId: string | undefined;
+  let uploadId: string | undefined;
   try {
     const operands = JSON.parse(row.operands_json) as {
       parentId?: unknown;
@@ -131,6 +133,7 @@ export async function nodeEventAuthority(
       nodeId?: unknown;
       sourceNodeId?: unknown;
       sourceParentId?: unknown;
+      uploadId?: unknown;
     };
     const result = JSON.parse(row.result_json ?? "null") as {
       status?: unknown;
@@ -158,6 +161,7 @@ export async function nodeEventAuthority(
     )
       return null;
     parentId = operands.parentId;
+    if (typeof operands.uploadId === "string") uploadId = operands.uploadId;
     if (principalSelection(principal) || destination) {
       if (["node.copy", "dav.copy"].includes(row.op_kind)) {
         if (typeof operands.sourceNodeId !== "string") return null;
@@ -182,6 +186,40 @@ export async function nodeEventAuthority(
     }
   } catch {
     return null;
+  }
+  let uploadOnly = false;
+  const uploadAuthority: SqlStatement[] = [];
+  if (row.op_kind === "upload.complete" && principal.kind === "link_share") {
+    if (!uploadId) return null;
+    const sql = `SELECT u.upload_only FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
+      WHERE u.id=? AND o.op_id=? AND u.state='completed' AND u.credential_id=?
+        AND u.owner_id=? AND u.space_id=? AND u.parent_id=? AND u.epoch=?
+        AND u.link_share_id=? AND u.link_share_version=?
+        AND o.kind='upload.complete' AND o.state='committed' AND o.epoch=u.epoch
+        AND o.credential_id=u.credential_id AND o.space_id=u.space_id
+        AND o.operands_json=? AND o.result_json=? AND ${UPLOAD_OPERATION_PRINCIPAL}`;
+    const values = [
+      uploadId,
+      row.op_id,
+      row.credential_id,
+      row.owner_id,
+      row.space_id,
+      parentId,
+      row.epoch,
+      principal.share_id,
+      principal.share_version,
+      row.operands_json,
+      row.result_json,
+    ];
+    const stored = await primary(db)
+      .prepare(sql)
+      .bind(...values)
+      .first<{ upload_only: number }>();
+    if (!stored || ![0, 1].includes(stored.upload_only)) return null;
+    uploadOnly = stored.upload_only === 1;
+    uploadAuthority.push(
+      assertExists(sql + " AND u.upload_only=?", [...values, stored.upload_only]),
+    );
   }
   const publicationAuthorities =
     row.op_kind === "copy.publish"
@@ -238,6 +276,7 @@ export async function nodeEventAuthority(
               operation: "node.create",
               parentId,
               spaceId: row.space_id,
+              ...(uploadOnly ? { upload: true } : {}),
             });
     if (
       (authorized.operation === "node.rename" || authorized.operation === "node.content.write") &&
@@ -251,5 +290,6 @@ export async function nodeEventAuthority(
     authorizationAssertion(authorized),
     ...originalAuthorities.map(authorizationAssertion),
     ...publicationAuthorities,
+    ...uploadAuthority,
   ];
 }
