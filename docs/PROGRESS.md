@@ -1,6 +1,6 @@
 # 開発進捗
 
-[公開リンクのフォルダー作成・名前変更](PUBLIC_SHARES.md)をAPIと独立した公開画面へ接続しました。所有者は閲覧/編集のリンクを作成し、権限を切り替えられます。応答喪失時は同じkey・元sessionの操作を明示的に再確認し、別credentialへの切替や自動再送を行いません。保存時も現在の共有範囲・権限・ロックを検証します。公開upload/overwrite/delete、upload-only・ZIP・media、実環境検証は未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンク](PUBLIC_SHARES.md)の単一・分割アップロードと上書きをAPIへ接続しました。元の共有ID・version・匿名credentialを保存し、受付・R2転送・確定・receipt照会で現在のupload権限も検査します。既存の所有者容量予約・操作記録・中止/清掃を共有し、migration0064で保存済みの共有情報を変更できなくしました。公開アップロード画面と削除、upload-only・ZIP・media、実環境検証は未完了です。通常76table・147 routeは維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-28
 
@@ -10,7 +10,9 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開upload/overwrite/deleteと、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開アップロード/上書きの画面、削除と、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行4cf6153の[CI36435508999](https://github.com/daraskme/Nextcloud-flare/actions/runs/36435508999)は、Ubuntu・Windows1/4/2/4/4/4・browser・backup bindings/cliの7job成功、Windows3/4失敗で終了しました。3/4はmultipart-bucket-control-admissionのscan-page試験でr2_binding_verification_failedとなり、773/774件成功でした。保存ログでは根本原因を特定できず、解決済みとは扱いません。
 
 先行1cee05dの[CI36430025491](https://github.com/daraskme/Nextcloud-flare/actions/runs/36430025491)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。Windows全Nodeを1/4に集約後の全shard完走を確認しています。
 

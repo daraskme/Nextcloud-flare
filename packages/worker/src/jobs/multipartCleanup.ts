@@ -33,21 +33,21 @@ const DRAINED = `(u.r2_upload_id IS NOT NULL OR COALESCE(u.write_lease_expires_a
   AND COALESCE(u.multipart_complete_lease,0)<=${CLOCK}
   AND NOT EXISTS(SELECT 1 FROM upload_parts p WHERE p.upload_id=u.id
     AND p.state IN ('in_flight','unknown') AND p.lease_expires_at>${CLOCK})`;
-export const MULTIPART_CLEANUP_ELIGIBLE = `u.mode='multipart' AND u.state<>'completed' AND u.upload_name IS NOT NULL
+const STOPPABLE = `u.mode='multipart' AND u.state<>'completed' AND u.upload_name IS NOT NULL
   AND u.cleanup_next_at<=${CLOCK}
   AND (u.cleanup_token IS NULL OR u.cleanup_lease_expires_at<=${CLOCK})
   AND (u.epoch<? OR u.expires_at<=${CLOCK} OR u.last_progress_at<=${CLOCK}-86400000
     OR (u.state IN ('aborting',${TERMINAL}) AND u.cleanup_pending=1)
     OR (u.state IN ('created','uploading') AND EXISTS(SELECT 1 FROM upload_parts p
       WHERE p.upload_id=u.id AND p.state IN ('in_flight','unknown') AND p.lease_expires_at<=${CLOCK})))
-  AND ${DRAINED}
+  AND (${DRAINED})
   AND b.state IN ('staging','orphan') AND b.ref_count=0
-  AND ${UNPUBLISHED}
   AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)
   AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)`;
-const ELIGIBLE = `${MULTIPART_CLEANUP_ELIGIBLE}
+export const MULTIPART_CLEANUP_ELIGIBLE = `(${STOPPABLE}) AND (${UNPUBLISHED})`;
+const ELIGIBLE = `(${MULTIPART_CLEANUP_ELIGIBLE})
   AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id)`;
-export const MULTIPART_INVENTORY_ELIGIBLE = `${MULTIPART_CLEANUP_ELIGIBLE}
+export const MULTIPART_INVENTORY_ELIGIBLE = `(${MULTIPART_CLEANUP_ELIGIBLE})
   AND u.multipart_cleanup_closed IS NULL
   AND (u.r2_upload_id IS NULL OR EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id))`;
 
@@ -63,7 +63,7 @@ export function multipartCleanupFence(
       AND u.mode='multipart' AND u.state IN (${TERMINAL}) AND u.cleanup_pending=1
       AND u.multipart_cleanup_started_at IS NOT NULL
       ${closed ? "AND u.multipart_cleanup_closed IS NOT NULL" : ""}
-      AND b.state='orphan' AND b.ref_count=0 AND ${UNPUBLISHED}
+      AND b.state='orphan' AND b.ref_count=0 AND (${UNPUBLISHED})
       AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)
       AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)`,
     [row.id, row.blob_id, row.r2_upload_id, token],
@@ -93,9 +93,19 @@ export async function claimMultipartCleanup(
       controlFence(epoch, maintenance),
       ...(previous ? [previous] : []),
       ...(inventory ? [inventory.fence()] : []),
+      // Keep both guards in this atomic batch; one combined assertion exceeds D1 expression depth.
       assertExists(
-        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.owner_id=? AND u.epoch<=? AND ${inventory === undefined ? ELIGIBLE : MULTIPART_INVENTORY_ELIGIBLE}`,
+        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND u.owner_id=? AND u.epoch<=? AND (${STOPPABLE})
+          AND ${
+            inventory === undefined
+              ? "NOT EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id)"
+              : "u.multipart_cleanup_closed IS NULL AND (u.r2_upload_id IS NULL OR EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE upload_id=u.id))"
+          }`,
         [id, ownerId, epoch, epoch],
+      ),
+      assertExists(
+        `SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE u.id=? AND (${UNPUBLISHED})`,
+        [id],
       ),
       {
         sql: `UPDATE operations SET state='failed',error_code='upload_expired',updated_at=MAX(updated_at,${CLOCK})
@@ -178,7 +188,7 @@ export async function repairMultipartUploads(
   const result: UploadCleanupResult = { claimed: 0, absent: 0, queued: 0, retried: 0, r2Calls: 0 };
   const rows = await primary(db)
     .prepare(`SELECT u.id FROM uploads u JOIN blobs b ON b.id=u.blob_id
-      WHERE u.epoch<=? AND ${ELIGIBLE}
+      WHERE u.epoch<=? AND (${ELIGIBLE})
       AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND (?=0 OR gc_paused=1))
       ORDER BY u.cleanup_next_at,u.expires_at,u.id LIMIT ?`)
     .bind(epoch, epoch, epoch, maintenance ? 1 : 0, maintenance ? 1 : 0, limit)

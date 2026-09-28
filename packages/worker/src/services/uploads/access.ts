@@ -1,10 +1,10 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../../auth/authorize";
-import { type SelectedShareRecord, storedPrincipal } from "../../auth/selectedShare";
 import type { UploadCapabilities } from "../../auth/uploadCapability";
+import { type UploadAuthorityRecord, uploadPrincipal } from "../../auth/uploadPrincipal";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../../db/primary";
 import { digestJson } from "../../jobs/operations";
 
-export interface UploadRow extends SelectedShareRecord {
+export interface UploadRow extends UploadAuthorityRecord {
   id: string;
   owner_id: string;
   space_id: string;
@@ -68,6 +68,7 @@ export function uploadFence(
       WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
         AND u.state IN (SELECT value FROM json_each(?))
         AND u.selected_share_id IS ? AND u.selected_share_version IS ?
+        AND u.link_share_id IS ? AND u.link_share_version IS ?
         AND u.expires_at>strftime('%s','now')*1000
         AND u.last_progress_at>strftime('%s','now')*1000-86400000
         ${
@@ -84,11 +85,13 @@ export function uploadFence(
       JSON.stringify(states),
       row.selected_share_id,
       row.selected_share_version,
+      row.link_share_id,
+      row.link_share_version,
     ],
   );
 }
 
-/** Private Access uploads first. Public upload-only policy is connected separately. */
+/** Access and edit-link transfers share the same protocol. Upload-only is a separate policy. */
 export async function uploadAuthority(
   db: D1Database,
   principal: Principal,
@@ -96,22 +99,23 @@ export async function uploadAuthority(
   checkTargetRevision = true,
 ) {
   if (
-    principal.kind !== "user" ||
+    (principal.kind !== "user" && principal.kind !== "link_share") ||
     principal.credential_id !== row.credential_id ||
     principal.epoch !== row.epoch
   )
     throw new Error("upload_authorization_denied");
-  principal = storedPrincipal(principal, row);
+  principal = uploadPrincipal(principal, row);
   const authorized = await authorizeNode(
     db,
     principal,
     row.target_id
       ? {
           operation: "node.content.write",
+          upload: true,
           nodeId: row.target_id,
           spaceId: row.space_id,
         }
-      : { operation: "node.create", parentId: row.parent_id, spaceId: row.space_id },
+      : { operation: "node.create", parentId: row.parent_id, spaceId: row.space_id, upload: true },
   );
   if (authorized.operation === "node.content.write") {
     if (
@@ -157,8 +161,17 @@ export function uploadReceiptFence(row: UploadRow): SqlStatement {
   return assertExists(
     `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
       WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
-        AND u.selected_share_id IS ? AND u.selected_share_version IS ?`,
-    [row.id, row.credential_id, row.epoch, row.selected_share_id, row.selected_share_version],
+        AND u.selected_share_id IS ? AND u.selected_share_version IS ?
+        AND u.link_share_id IS ? AND u.link_share_version IS ?`,
+    [
+      row.id,
+      row.credential_id,
+      row.epoch,
+      row.selected_share_id,
+      row.selected_share_version,
+      row.link_share_id,
+      row.link_share_version,
+    ],
   );
 }
 

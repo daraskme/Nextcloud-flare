@@ -497,6 +497,7 @@ export async function lookupOperation(
         .prepare(`SELECT 1 FROM uploads WHERE id=? AND completion_op_id=?
         AND credential_id=? AND epoch=? AND space_id=? AND parent_id=? AND target_id IS ?
         AND selected_share_id IS ? AND selected_share_version IS ?
+        AND link_share_id IS ? AND link_share_version IS ?
         AND (?<>'committed' OR state='completed')`)
         .bind(
           operands.uploadId,
@@ -508,6 +509,8 @@ export async function lookupOperation(
           typeof operands.nodeId === "string" ? operands.nodeId : null,
           row.selected_share_id,
           row.selected_share_version,
+          principal.kind === "link_share" ? principal.share_id : null,
+          principal.kind === "link_share" ? principal.share_version : null,
           row.state,
         )
         .first();
@@ -609,6 +612,7 @@ export async function lookupOperation(
       if (typeof operands.nodeId === "string") {
         const authorized = await prove(principal, {
           operation: "node.content.write",
+          upload: row.kind === "upload.complete",
           nodeId: operands.nodeId,
           spaceId: row.space_id,
         });
@@ -623,6 +627,7 @@ export async function lookupOperation(
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
+          upload: row.kind === "upload.complete",
         });
       }
     } else {

@@ -49,3 +49,36 @@ it("rejects signature tampering, invalid encoding, extra segments, and another k
     await expect(capabilities.verify(identity, value)).rejects.toThrow("invalid_upload_capability");
   await expect(changed.verify(identity, token)).rejects.toThrow("invalid_upload_capability");
 });
+
+it("binds anonymous upload capabilities to the original link version without changing private tokens", async () => {
+  const capabilities = new UploadCapabilities(await contentKeyRing("old", { old: oldKey }));
+  expect(
+    await capabilities.issue({ ...identity, link_share_id: null, link_share_version: null }),
+  ).toBe(await capabilities.issue(identity));
+  const link = {
+    ...identity,
+    credential_id: "ss:unlock",
+    link_share_id: "link",
+    link_share_version: 1,
+  };
+  const token = await capabilities.issue(link);
+  await capabilities.verify(link, token);
+  for (const change of [
+    { link_share_id: "other" },
+    { link_share_version: 2 },
+    { link_share_id: null, link_share_version: null },
+    { credential_id: "ss:other" },
+  ])
+    await expect(capabilities.verify({ ...link, ...change }, token)).rejects.toThrow(
+      "invalid_upload_capability",
+    );
+  for (const change of [
+    { link_share_id: "../bad" },
+    { link_share_version: 0 },
+    { link_share_version: null },
+    { link_share_id: null },
+  ])
+    await expect(capabilities.issue({ ...link, ...change })).rejects.toThrow(
+      "invalid_upload_capability",
+    );
+});

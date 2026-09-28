@@ -7,6 +7,8 @@ export interface UploadCapabilityIdentity {
   readonly epoch: number;
   readonly expires_at: number;
   readonly capability_kid: string;
+  readonly link_share_id?: string | null;
+  readonly link_share_version?: number | null;
 }
 
 /** Dedicated HMAC ring; deterministic issuance permits recovery of a lost create response. */
@@ -20,7 +22,12 @@ export class UploadCapabilities {
       !Number.isSafeInteger(row.epoch) ||
       row.epoch < 1 ||
       !Number.isSafeInteger(row.expires_at) ||
-      row.expires_at <= 0
+      row.expires_at <= 0 ||
+      (row.link_share_id == null) !== (row.link_share_version == null) ||
+      (row.link_share_id != null &&
+        (!/^[A-Za-z0-9_-]{1,128}$/.test(row.link_share_id) ||
+          !Number.isSafeInteger(row.link_share_version) ||
+          row.link_share_version! < 1))
     )
       throw new Error("invalid_upload_capability");
     return new TextEncoder().encode(
@@ -30,6 +37,7 @@ export class UploadCapabilities {
         row.credential_id,
         row.epoch,
         row.expires_at,
+        ...(row.link_share_id == null ? [] : [row.link_share_id, row.link_share_version]),
       ]),
     );
   }

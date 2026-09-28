@@ -1,6 +1,19 @@
 # 実装進捗
 
-## 公開リンクのフォルダー作成・名前変更（今回）
+## 公開リンクの単一・分割uploadと上書きAPI（今回）
+
+公開uploadの受付・binary転送・確定・status・中止を既存のUploadDO/R2/予約/operationへ接続した。migration0064でuploadsに変更不可のlink_share_id/versionを追加し、元share/session/epochとHMACを照合する。現在のcreate/editに加えてupload actionを受付・R2実行・確定・receipt照会で検査する。編集linkは所有者予約を使用し、匿名activityのactorはnull。直接共有されたfileの親を返さず上書きできる。通常76table・147 route、依存追加なし。
+
+- 全Node88file/1,548件成功（100.48秒、/tmp/ncf-public-upload-unit-full.log）。新規schema17件で既存private行の移行、停止条件、元session/version、変更・不正復旧の拒否を確認。capabilityの共有/credential差替え拒否と既存private入力の互換性も検証した。
+- 公開uploadの新規workerd25件を確認。単一/0byte/分割、新規/直接共有file上書き、CSRF/session/key/capability、所有者quota、共有範囲・失効、upload actionだけの取消し、受付/確定直前の競合、同一key再送とD1 ACK喪失、operation照会、中止、失敗後の容量精算を含む。
+- 初回workerd4file/123件は120件成功（/tmp/ncf-public-upload-native.log）。中止2件は追加した共有identity証明でD1の式深度100を超えたため、履歴証明の一度の評価と同一batch内の停止/publication別assertionへ変更。ancestor試験はdeleted_atだけを変える不正fixtureを実trash操作へ変更した。その後のcleanup関連4file/95件は93件成功（47.27秒、/tmp/ncf-public-upload-native-cleanup.log）。追加fixtureのcreateFolder引数を既存のidempotencyKeyへ修正し、失敗精算2件が成功（7.47秒、/tmp/ncf-public-upload-failed-completion.log）。製品の認可・終了証明・容量保持条件は緩めていない。
+- 関連workerd13file/336件は335件成功（211.80秒、/tmp/ncf-public-upload-native-final.log）。復旧監査を凍結batchへ包む1件も式深度100に達したため、同じcredential/share/reservation条件を括弧で分けて深さを抑えた。修正後のrecovery-audit/control-recovery-audit/control-restore-freezeの3file/57件すべて成功（42.43秒、/tmp/ncf-public-upload-recovery-final.log）。不正復旧データを扱うNode23件も再確認して成功（6.72秒、/tmp/ncf-public-upload-recovery-unit-final.log）。既存単一/分割/内部共有、認可、operation、R2 write、失敗精算、multipart inventory、復旧監査と書込み凍結を含む。cleanup関連70件を合わせ、重複を除くworkerdは17file/439件成功。
+- 関連browser2file/4件成功（2.1分、/tmp/ncf-public-upload-browser.log）。新規1件でAccessなしのCookieから実HTTP・ControlDO/D1/R2を通じた単一/分割upload、同一keyの受付/確定receipt、匿名operation照会、所有者側の実byte読取りを確認。既存公開create/renameの3件も成功した。公開アップロード画面の検証ではない。
+- 型、lint611file、契約/設定、Web build/Worker dry-run成功。/tmp/ncf-public-upload-types-final.log、/tmp/ncf-public-upload-lint-final.log、/tmp/ncf-public-upload-contracts.log、/tmp/ncf-public-upload-config.log、/tmp/ncf-public-upload-build.log。公開upload/overwrite画面、削除、upload-only、ZIP/media、実環境検証は後続。remote resource/secret/migration/deployなし。
+- 先行4cf6153の[CI36435508999](https://github.com/daraskme/Nextcloud-flare/actions/runs/36435508999)は7job成功、Windows3/4失敗で終了。multipart-bucket-control-admissionのscan-page試験がr2_binding_verification_failedとなり773/774件成功。保存ログでは根本原因は未確定。
+- **全Node1,548 + 関連workerd439 + 関連browser4 = 1,991件成功**。先行Windows失敗のmultipart-bucket-control-admissionも今回ローカルでは成功したが、原因解消とは扱わない。全workerd/全browserとbackup drillは今回ローカルで再実行していない。
+
+## 公開リンクのフォルダー作成・名前変更（前回）
 
 public POST nodes/PATCH nodeを既存のnamespace mutation/LockDOへ接続し、公開画面へフォルダー作成・名前変更を追加した。所有者UIから閲覧/編集リンクの作成と権限切替も行える。root GETの非秘密sessionIdをShare-Sessionへ指定し、応答喪失後も元のcredential/keyへ固定する。既存GET operationsはX-Share-Id指定時に共有認証で処理し、同じcredentialと現在の元operandへの権限がある場合だけreceiptを返す。画面は結果不明時に自動再送せず、Operation-IdがあればGET、未受信なら同じ要求の明示的再送を行う。schema0063・通常76table・147 route、依存追加なし。
 

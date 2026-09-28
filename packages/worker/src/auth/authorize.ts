@@ -213,6 +213,8 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
         AND (?6 NOT IN ('node.rename','node.trash') OR sh.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
+        AND (json_extract(?3,'$.upload_action') IS NOT 1
+          OR EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload'))
         AND ((SELECT selected_id FROM p) IS NULL OR EXISTS(SELECT 1 FROM p WHERE p.kind IN ('user','app_password') AND sh.id=p.selected_id AND sh.version=p.selected_version))
   )
   SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,sp.tree_generation
@@ -265,7 +267,7 @@ function validId(value: unknown, max = 128): value is string {
 }
 function nodeAuthorization(
   principal: Principal,
-  request: NodeRequest & { readonly ownerOnly?: boolean },
+  request: NodeRequest & { readonly ownerOnly?: boolean; readonly upload?: boolean },
 ) {
   let selection: SelectedShare | undefined;
   if ("selected_share" in principal) {
@@ -317,7 +319,11 @@ function nodeAuthorization(
   const values = [
     nodeId,
     request.spaceId,
-    JSON.stringify({ ...identity, owner_only: request.ownerOnly === true }),
+    JSON.stringify({
+      ...identity,
+      owner_only: request.ownerOnly === true,
+      upload_action: request.upload === true,
+    }),
     request.operation === "node.create"
       ? "node:create"
       : request.operation === "node.trash"
@@ -407,7 +413,7 @@ function authorizedNode(
 export async function authorizeNode(
   db: D1Database,
   principal: Principal,
-  request: NodeRequest & { readonly ownerOnly?: boolean },
+  request: NodeRequest & { readonly ownerOnly?: boolean; readonly upload?: boolean },
 ): Promise<AuthorizedNode> {
   const context = nodeAuthorization(principal, request);
   const node = await prepare(primary(db), {
@@ -422,7 +428,7 @@ export async function authorizeNodes(
   db: D1Database,
   requests: readonly {
     principal: Principal;
-    request: NodeRequest & { readonly ownerOnly?: boolean };
+    request: NodeRequest & { readonly ownerOnly?: boolean; readonly upload?: boolean };
   }[],
 ): Promise<AuthorizedNode[]> {
   if (requests.length < 1 || requests.length > 16) throw new Error("authorization_denied");

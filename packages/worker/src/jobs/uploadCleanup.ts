@@ -1,3 +1,4 @@
+import { UPLOAD_OPERATION_PRINCIPAL } from "../auth/uploadPrincipal";
 import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import {
   assertExists,
@@ -43,7 +44,7 @@ export function controlFence(epoch: number, maintenance: boolean): SqlStatement 
 
 // Include the gap between operation claim and recording completion_op_id.
 export const COMPLETION = `((u.source='private' AND o.kind='upload.complete'
-    AND json_extract(o.operands_json,'$.uploadId')=u.id)
+    AND ${UPLOAD_OPERATION_PRINCIPAL} AND json_extract(o.operands_json,'$.uploadId')=u.id)
   OR (u.source='dav' AND o.kind='dav.put' AND o.principal_kind='app_password'
     AND (u.completion_op_id IS NULL OR o.op_id=u.completion_op_id)
     AND u.id='dav_'||o.op_id AND o.request_digest=u.request_digest
@@ -54,18 +55,25 @@ export const COMPLETION = `((u.source='private' AND o.kind='upload.complete'
   AND json_extract(o.operands_json,'$.parentId')=u.parent_id
   AND json_extract(o.operands_json,'$.nodeId') IS u.target_id`;
 
-export const UNPUBLISHED = `b.owner_id=u.owner_id AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id
+// Materialize each candidate's historical proof once. Repeating the nested principal
+// proof in all three checks exceeds D1's expression-depth limit inside a batch guard.
+export const UNPUBLISHED = `EXISTS(WITH completions AS MATERIALIZED (
+  SELECT o.op_id,o.state,(${COMPLETION}) AS matches FROM operations o
+  WHERE o.op_id=u.completion_op_id
+    OR (o.kind='upload.complete' AND json_extract(o.operands_json,'$.uploadId')=u.id)
+    OR u.id='dav_'||o.op_id
+  ) SELECT 1 WHERE b.owner_id=u.owner_id AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id
   AND (u.source='private' OR (u.mode='single' AND u.capability_hash='internal:dav' AND u.capability_kid IS NULL
     AND EXISTS(SELECT 1 FROM reservations r JOIN spaces s ON s.id=u.space_id
       JOIN credentials c ON c.id=u.credential_id AND c.kind='app_password'
       WHERE r.id=u.reservation_id AND r.owner_id=u.owner_id AND s.owner_id=u.owner_id
         AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at
         AND r.share_id IS NULL AND r.op_id IS u.completion_op_id)
-    AND NOT EXISTS(SELECT 1 FROM operations o WHERE u.id='dav_'||o.op_id AND (${COMPLETION}) IS NOT 1)))
-  AND (u.completion_op_id IS NULL OR EXISTS(SELECT 1 FROM operations o
-    WHERE o.op_id=u.completion_op_id AND ${COMPLETION}))
-  AND NOT EXISTS(SELECT 1 FROM operations o WHERE ${COMPLETION}
-    AND (o.state='committed' OR EXISTS(SELECT 1 FROM operation_steps WHERE op_id=o.op_id)))`;
+    AND NOT EXISTS(SELECT 1 FROM completions o WHERE u.id='dav_'||o.op_id AND o.matches IS NOT 1)))
+  AND (u.completion_op_id IS NULL OR EXISTS(SELECT 1 FROM completions o
+    WHERE o.op_id=u.completion_op_id AND o.matches=1))
+  AND NOT EXISTS(SELECT 1 FROM completions o WHERE o.matches=1
+    AND (o.state='committed' OR EXISTS(SELECT 1 FROM operation_steps WHERE op_id=o.op_id))))`;
 
 async function claim(
   env: SystemMutationSource,
@@ -92,7 +100,7 @@ async function claim(
           AND (u.cleanup_token IS NULL OR u.cleanup_lease_expires_at<=${CLOCK})
           AND (u.state IN ('created','receiving','completing') OR (u.state IN (${TERMINAL}) AND u.cleanup_pending=1))
           AND b.state IN ('staging','orphan') AND b.ref_count=0
-          AND ${UNPUBLISHED}
+          AND (${UNPUBLISHED})
           AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)
           AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)`,
         [row.id, row.owner_id, epoch],
@@ -334,7 +342,7 @@ export async function repairSingleUploads(
       AND (u.cleanup_token IS NULL OR u.cleanup_lease_expires_at<=${CLOCK})
       AND (u.state IN ('created','receiving','completing') OR (u.state IN (${TERMINAL}) AND u.cleanup_pending=1))
       AND b.state IN ('staging','orphan') AND b.ref_count=0
-      AND ${UNPUBLISHED}
+      AND (${UNPUBLISHED})
       AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=b.id)
       AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)
       AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND (?=0 OR gc_paused=1))

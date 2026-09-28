@@ -1,6 +1,6 @@
 # 公開リンク共有
 
-更新: 2026-09-28。schema0063・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更と権限切替を接続済み。公開upload/delete、upload-only・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-28。schema0064・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更と権限切替、公開upload/overwrite APIを接続済み。公開アップロード画面・削除、upload-only・ZIP・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
@@ -64,9 +64,21 @@ public CSRF付き`POST .../:id/tickets`と`POST .../:id/content-session`はnodeI
 
 root GETの`permissions.createFolder/rename`で編集操作を表示するが、APIの現在の認可が常に正となる。画面は送信中の重複操作を防ぎ、結果不明なら名前・key・元sessionをメモリーに固定する。「結果を確認」でOperation-IdがあればGET照会し、ID自体を受信できなかった場合だけ同じ要求を同じkeyで明示的に再送する。自動再送しない。401/403/404/412では新credentialや新keyへ切り替えず、共有内容の再確認を案内する。編集フォームを閉じると追跡は終了し、実行の取消しにはならない。reload/タブ終了後の追跡復元は未対応で、再度作成する前に一覧確認を案内する。
 
+## 公開アップロードと上書きAPI
+
+編集linkの`POST .../:id/uploads`は`mode:"single"|"multipart"`、`parentId`、`name`、`declared_size`、任意の`targetId/targetRevision`を受ける。space/owner/share/credentialは本文から指定できない。直接共有したfileの上書きはparentIdを省略でき、認可したtargetから内部で親を解決する。閲覧linkと共有範囲外は拒否する。公開画面からのファイル選択・進捗・再開はまだ未接続である。
+
+全upload経路は現在の共有Cookieと元の`Share-Session`を要求する。JSON変更にはpublic CSRF、受付と確定には`Idempotency-Key`も必要。binary PUTは`Upload-Capability`、exact Origin、既知のContent-Lengthを要求し、partには`Upload-Attempt-Id`、上書きには現行blobの`If-Match`を要求する。`PUT .../uploads/:uploadId/content`または`parts/:number`、空JSONの`POST .../complete`、capability付き`GET .../:uploadId`と空JSONの`DELETE .../:uploadId`を既存の転送・確定・中止処理へ接続する。GETは厳格なafter/limitによるpart一覧を扱う。
+
+migration0064でuploadsへ変更不可のlink_share_id/versionを追加した。既存のsource=privateはDAV以外のcapability転送形式として維持し、内部共有のselected_shareとは区別する。HMACと受付digestへ共有情報を含め、元の匿名credential・epochと照合する。従来のprivate capability入力は変えない。移行はmaintenance中かつopen permit・claimed operation・未閉鎖admissionがない場合だけ行う。
+
+受付、R2実行許可、公開確定、status/operation照会はcreate/editに加えてupload actionを検査する。共有・credentialの失効、owner停止、祖先trash、quota超過、別unlock sessionへの差替えを拒否する。匿名activityのactorはnull、operationは元のlink principalを保存する。停止や失効で未確定のR2処理を終了済みとせず、既存のnative終了・実体確認に従って容量を精算する。確定済み/失敗済みoperationの内部修復では元の共有情報を照合し、失効後の新規転送権限は与えない。
+
+編集linkは所有者の容量予約を使う。share単位の追加予約上限と情報非開示receiptは後続のupload-only専用契約であり、既存編集linkのreservation_limit=0を容量ゼロとして扱わない。未確定の受付応答は同じkey・元sessionで照会/再送し、credentialやkeyを差し替えない。multipart中止の容量解放はnative handleの終了が証明された後になる。
+
 ## 次の接続と完了条件
 
-1. 公開編集のupload/overwriteと削除を接続する。削除は既存のlink認可対象外であり、trashのactor/operation/復旧契約も整備する。
+1. 公開upload/overwriteの画面と削除を接続する。削除は既存のlink認可対象外であり、trashのactor/operation/復旧契約も整備する。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側の直接content/thumbなど、未接続の専用配信経路を契約へつなぐ。現在の画面の保存経路はcontent ticket/session経由である。
 4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。

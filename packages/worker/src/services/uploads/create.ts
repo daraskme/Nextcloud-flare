@@ -52,8 +52,12 @@ async function reserveUpload(
   const db = env.DB;
   input = { ...input, principal: freezePrincipal(input.principal) };
   const share = principalSelection(input.principal);
+  const link =
+    input.principal.kind === "link_share"
+      ? { id: input.principal.share_id, version: input.principal.share_version }
+      : undefined;
   if (
-    input.principal.kind !== "user" ||
+    (input.principal.kind !== "user" && input.principal.kind !== "link_share") ||
     !/^[\x21-\x7e]{1,200}$/.test(input.requestId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(input.spaceId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(input.parentId) ||
@@ -77,6 +81,7 @@ async function reserveUpload(
     targetId: input.targetId ?? null,
     targetRevision: input.targetRevision ?? null,
     ...(share ? { share } : {}),
+    ...(link ? { link } : {}),
   });
   const replay = async () => {
     const row = await uploadRow(db, id);
@@ -103,10 +108,16 @@ async function reserveUpload(
     input.targetId
       ? {
           operation: "node.content.write",
+          upload: true,
           spaceId: input.spaceId,
           nodeId: input.targetId,
         }
-      : { operation: "node.create", spaceId: input.spaceId, parentId: input.parentId },
+      : {
+          operation: "node.create",
+          spaceId: input.spaceId,
+          parentId: input.parentId,
+          upload: true,
+        },
   );
   if (
     authorized.operation === "node.content.write" &&
@@ -126,6 +137,7 @@ async function reserveUpload(
     epoch: input.principal.epoch,
     expires_at: now + (plan ? UPLOAD_LIMITS.lifetimeMs : 86400000),
     capability_kid: capabilities.ring.activeKid,
+    ...(link ? { link_share_id: link.id, link_share_version: link.version } : {}),
   };
   const capability = await capabilities.issue(identity);
   const capabilityHash = await digestJson(capability);
@@ -156,8 +168,9 @@ async function reserveUpload(
       {
         sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,target_id,blob_id,credential_id,reservation_id,
         mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,
-        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count,selected_share_id,selected_share_version)
-        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count,selected_share_id,selected_share_version,
+        link_share_id,link_share_version)
+        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         values: [
           id,
           owner,
@@ -182,6 +195,8 @@ async function reserveUpload(
           plan?.partCount ?? null,
           share?.id ?? null,
           share?.version ?? null,
+          link?.id ?? null,
+          link?.version ?? null,
         ],
       },
       assertExists("SELECT 1 FROM uploads WHERE id=? AND request_digest=?", [id, digest]),

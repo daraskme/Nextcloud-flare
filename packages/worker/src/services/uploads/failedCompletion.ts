@@ -1,3 +1,4 @@
+import { UPLOAD_OPERATION_PRINCIPAL } from "../../auth/uploadPrincipal";
 import {
   assertExists,
   assertOneChange,
@@ -30,7 +31,7 @@ function source(row: UploadRow, operationId: string): SqlStatement {
         AND r.expires_at=u.expires_at AND r.share_id IS NULL AND r.op_id IS NULL)
         AND (b.owner_id=u.owner_id AND b.size=u.declared_size AND b.ref_count=0
         AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id)
-        AND (o.kind='upload.complete' AND o.state='failed' AND o.principal_kind='user'
+        AND (o.kind='upload.complete' AND o.state='failed' AND ${UPLOAD_OPERATION_PRINCIPAL}
         AND o.credential_id=u.credential_id AND o.epoch=u.epoch AND o.space_id=u.space_id
         AND o.selected_share_id IS u.selected_share_id AND o.selected_share_version IS u.selected_share_version
         AND json_extract(o.operands_json,'$.uploadId')=u.id

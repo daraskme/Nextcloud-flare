@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
 import { authorizationAssertion, type Principal } from "../auth/authorize";
 import { storedSelection } from "../auth/selectedShare";
+import { UPLOAD_OPERATION_PRINCIPAL } from "../auth/uploadPrincipal";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { digestJson, operationDigest } from "../jobs/operations";
@@ -269,9 +270,7 @@ export class UploadDO extends DurableObject<Env> {
         WHERE u.id=? AND u.mode='multipart' AND u.state='completed'
           AND u.multipart_object_etag IS NOT NULL AND u.multipart_complete_attempt IS NOT NULL
           AND o.kind='upload.complete' AND o.state='committed'
-          AND o.request_digest=? AND o.principal_kind='user' AND o.credential_version IS NULL
-          AND EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
-            WHERE c.id=u.credential_id AND s.user_id=o.principal_id)
+          AND o.request_digest=? AND ${UPLOAD_OPERATION_PRINCIPAL}
           AND o.credential_id=u.credential_id AND o.epoch=u.epoch AND o.space_id=u.space_id
           AND o.selected_share_id IS u.selected_share_id AND o.selected_share_version IS u.selected_share_version
           AND json_extract(o.operands_json,'$.uploadId')=u.id

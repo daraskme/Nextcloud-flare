@@ -4,6 +4,7 @@ import type { CsrfTokens } from "../auth/csrf";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { SharePasswordRing } from "../auth/shareSecrets";
 import { type ShareTokens, shareCookieHeader, shareCookieValue } from "../auth/shareTokens";
+import type { UploadCapabilities } from "../auth/uploadCapability";
 import { CONTROL_NAME } from "../do/controlName";
 import { canonicalClientIp } from "../do/controlShareUnlock";
 import type { Env } from "../env";
@@ -20,11 +21,12 @@ import {
   publicShareMutation,
   publicShareOperation,
 } from "./publicShareMutations";
-import { publicShareRead, publicShareTicket } from "./publicShareRead";
+import { publicPrincipal, publicShareRead, publicShareTicket } from "./publicShareRead";
 import { readShareBody } from "./shares";
+import { handleUploadHttp, publicUploadRoute } from "./uploads";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -36,12 +38,14 @@ export interface PublicShareDependencies {
   passwords?: SharePasswordRing;
   cursors?: NodeCursorTokens;
   contentTokens?: ContentTokens;
+  uploads?: UploadCapabilities;
 }
 export const publicShareRoute = (request: Request) => {
   const match = ROUTE.exec(new URL(request.url).pathname),
     action = match?.[2] ?? "";
   return (
     publicOperationRoute(request) ||
+    publicUploadRoute(request) ||
     (!!match &&
       ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
         (request.method === "POST" &&
@@ -86,7 +90,11 @@ export async function handlePublicShareHttp(
     { tokens, csrf, passwords } = dependencies;
   try {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return problem(400, "bad_request");
-    if ((url.search && !action.startsWith("children/")) || url.hash)
+    const upload = publicUploadRoute(request);
+    if (
+      (url.search && !action.startsWith("children/") && !(upload && request.method === "GET")) ||
+      url.hash
+    )
       return problem(400, "bad_request");
     if (
       (request.headers.get("Origin") !== env.APP_ORIGIN &&
@@ -115,12 +123,21 @@ export async function handlePublicShareHttp(
           throw error;
       }
     }
-    if (operation || action === "nodes" || action.startsWith("nodes/")) {
+    if (operation || upload || action === "nodes" || action.startsWith("nodes/")) {
       if (!session) return problem(401, "unauthorized");
       // Bind retries to the original unlock credential even if another tab replaces the cookie.
       if (request.headers.get("Share-Session") !== session.claims.session_id)
         return problem(412, "precondition_failed");
       if (operation) return await publicShareOperation(request, env, session, operation[1]!);
+      if (upload)
+        return handleUploadHttp(
+          request,
+          env,
+          publicPrincipal(session),
+          csrf,
+          dependencies.uploads,
+          session,
+        );
       await csrf.verify(env.DB, request, csrfSession(session));
       return publicShareMutation(request, env, session, action);
     }

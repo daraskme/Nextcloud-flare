@@ -1,5 +1,5 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { storedPrincipal } from "../auth/selectedShare";
+import { uploadPrincipal } from "../auth/uploadPrincipal";
 import type { UploadRow } from "../services/uploads/access";
 import { multipartPartsProof } from "../services/uploads/multipartProof";
 import { assertExists, primary, type SqlStatement } from "./primary";
@@ -34,7 +34,7 @@ export function validateUploadWrite(request: R2WriteRequest): void {
     upload.expiresAt < request.deadline ||
     !upload.principal ||
     upload.principal.epoch !== request.epoch ||
-    !["user", "app_password", "service"].includes(upload.principal.kind) ||
+    !["user", "app_password", "service", "link_share"].includes(upload.principal.kind) ||
     (upload.r2UploadId !== undefined &&
       (typeof upload.r2UploadId !== "string" ||
         !upload.r2UploadId ||
@@ -66,16 +66,26 @@ export async function uploadWriteProof(
     row.owner_id !== request.ownerId ||
     row.credential_id !== proof.principal.credential_id ||
     request.key !== `u/${row.owner_id}/b/${row.blob_id}` ||
-    (row.source === "private" && proof.principal.kind !== "user") ||
+    (row.source === "private" && !["user", "link_share"].includes(proof.principal.kind)) ||
     (row.source === "dav" && request.kind !== "upload.put")
   )
     throw new Error("r2_upload_unavailable");
   const authorized = await authorizeNode(
     db,
-    storedPrincipal(proof.principal, row),
+    uploadPrincipal(proof.principal, row),
     row.target_id
-      ? { operation: "node.content.write", nodeId: row.target_id, spaceId: row.space_id }
-      : { operation: "node.create", parentId: row.parent_id, spaceId: row.space_id },
+      ? {
+          operation: "node.content.write",
+          nodeId: row.target_id,
+          spaceId: row.space_id,
+          upload: row.source === "private",
+        }
+      : {
+          operation: "node.create",
+          parentId: row.parent_id,
+          spaceId: row.space_id,
+          upload: row.source === "private",
+        },
   );
   if (authorized.operation === "node.content.write") {
     if (
@@ -101,6 +111,7 @@ export async function uploadWriteProof(
       JOIN reservations r ON r.id=u.reservation_id
       WHERE u.id=? AND u.owner_id=? AND u.credential_id=? AND u.epoch=? AND u.source=?
       AND u.selected_share_id IS ? AND u.selected_share_version IS ?
+      AND u.link_share_id IS ? AND u.link_share_version IS ?
       AND b.owner_id=u.owner_id AND b.r2_key=? AND b.state='staging' AND b.ref_count=0
       AND c.epoch=u.epoch AND c.maintenance=0 AND u.cleanup_pending=0
       AND u.expires_at>=? AND u.last_progress_at>strftime('%s','now')*1000-86400000
@@ -117,6 +128,8 @@ export async function uploadWriteProof(
         row.source,
         row.selected_share_id,
         row.selected_share_version,
+        row.link_share_id,
+        row.link_share_version,
         request.key,
         request.deadline,
         request.deadline,

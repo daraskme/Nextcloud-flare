@@ -3,6 +3,7 @@ import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { globalKdf } from "../auth/globalKdf";
 import { NodeCursorTokens } from "../auth/nodeCursor";
 import { ShareTokens } from "../auth/shareTokens";
+import { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 import type { PublicShareDependencies } from "./publicShares";
 
@@ -58,5 +59,15 @@ export async function publicShareDependencies(
     ...(passwords ? { passwords } : {}),
     ...(cursors ? { cursors } : {}),
     ...(contentTokens ? { contentTokens } : {}),
+    ...(env.UPLOAD_CAPABILITY_KEYS && env.UPLOAD_CAPABILITY_ACTIVE_KID
+      ? {
+          uploads: new UploadCapabilities(
+            await contentKeyRing(
+              env.UPLOAD_CAPABILITY_ACTIVE_KID,
+              JSON.parse(env.UPLOAD_CAPABILITY_KEYS),
+            ),
+          ),
+        }
+      : {}),
   };
 }

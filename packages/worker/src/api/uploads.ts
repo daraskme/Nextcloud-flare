@@ -4,6 +4,7 @@ import { authorizeNode, type Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
 import type { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
+import type { ShareSession } from "../services/shareUnlock";
 import { abortMultipartUpload, abortSingleUpload } from "../services/uploads/abort";
 import { accessUpload } from "../services/uploads/access";
 import { completeSingleUpload } from "../services/uploads/complete";
@@ -12,22 +13,32 @@ import { createSingleUpload } from "../services/uploads/create";
 import { createMultipartUploadReceipt, writeMultipartPart } from "../services/uploads/multipart";
 import { completeMultipartUpload } from "../services/uploads/multipartComplete";
 import { readUpload } from "../services/uploads/read";
+import { hasEmptyBody } from "./emptyBody";
+import { readShareBody } from "./shares";
 
 const UPLOAD =
   /^\/api\/v1\/uploads\/(up_[a-f0-9]{64})(?:\/(content|complete|parts\/([1-9][0-9]{0,4})))?$/;
 const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
 
 export function uploadRoute(request: Request): boolean {
-  const path = new URL(request.url).pathname;
-  if (path === "/api/v1/uploads") return request.method === "POST";
+  return route(new URL(request.url).pathname, request.method);
+}
+export function publicUploadRoute(request: Request): boolean {
+  const match = /^\/api\/v1\/public\/shares\/[A-Za-z0-9_-]{1,128}(\/uploads(?:\/.*)?)$/.exec(
+    new URL(request.url).pathname,
+  );
+  return !!match && route(`/api/v1${match[1]}`, request.method);
+}
+function route(path: string, method: string): boolean {
+  if (path === "/api/v1/uploads") return method === "POST";
   const match = UPLOAD.exec(path);
   return (
     !!match &&
     (match[2] === "content" || match[3] !== undefined
-      ? request.method === "PUT"
+      ? method === "PUT"
       : match[2] === "complete"
-        ? request.method === "POST"
-        : ["GET", "DELETE"].includes(request.method))
+        ? method === "POST"
+        : ["GET", "DELETE"].includes(method))
   );
 }
 
@@ -91,16 +102,31 @@ export async function handleUploadHttp(
   principal: Principal,
   csrf: Pick<CsrfTokens, "verify">,
   capabilities?: UploadCapabilities,
+  publicSession?: ShareSession,
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (publicSession) {
+    const prefix = `/api/v1/public/shares/${publicSession.claims.share_id}`;
+    if (!url.pathname.startsWith(`${prefix}/`) || !publicUploadRoute(request))
+      return problem(404, "not_found");
+    url.pathname = `/api/v1${url.pathname.slice(prefix.length)}`;
+  }
   if (
     url.origin !== env.APP_ORIGIN ||
-    (url.search && !uploadReadRoute(request)) ||
+    (url.search && request.method !== "GET") ||
     url.hash ||
-    !uploadRoute(request)
+    !route(url.pathname, request.method)
   )
     return problem(404, "not_found");
-  if (principal.kind !== "user") return problem(403, "forbidden");
+  if (
+    publicSession
+      ? principal.kind !== "link_share" ||
+        principal.share_id !== publicSession.claims.share_id ||
+        principal.share_version !== publicSession.claims.share_version ||
+        principal.credential_id !== `ss:${publicSession.claims.session_id}`
+      : principal.kind !== "user"
+  )
+    return problem(403, "forbidden");
   if (!capabilities) return problem(503, "not_ready");
   const match = UPLOAD.exec(url.pathname);
   const id = match?.[1];
@@ -110,20 +136,32 @@ export async function handleUploadHttp(
   const capability = request.headers.get("Upload-Capability") ?? "";
   if (request.method !== "GET" && request.headers.get("Origin") !== env.APP_ORIGIN)
     return problem(403, "forbidden");
-  // The binary profile uses current Access credentials plus a dedicated capability and exact Origin.
+  // Binary requests use the current authenticated credential, capability and exact Origin.
   if (request.method !== "GET" && !binary) {
     try {
-      await csrf.verify(env.DB, request, {
-        kind: "access",
-        credentialId: principal.credential_id,
-        epoch: principal.epoch,
-      });
+      await csrf.verify(
+        env.DB,
+        request,
+        publicSession
+          ? {
+              kind: "share",
+              credentialId: principal.credential_id,
+              epoch: principal.epoch,
+              shareId: publicSession.claims.share_id,
+            }
+          : {
+              kind: "access",
+              credentialId: principal.credential_id,
+              epoch: principal.epoch,
+            },
+      );
     } catch {
       return problem(403, "forbidden");
     }
   }
   try {
     if (id && request.method === "GET") {
+      if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
       return Response.json(
         await readUpload(env.DB, principal, id, capability, capabilities, pageQuery(url)),
         { headers: HEADERS },
@@ -191,7 +229,9 @@ export async function handleUploadHttp(
         { headers: HEADERS },
       );
     }
-    const body = await jsonBody(request);
+    const body = publicSession
+      ? ((await readShareBody(request)) as Record<string, unknown>)
+      : await jsonBody(request);
     if (id && request.method === "DELETE") {
       if (Object.keys(body).length) return problem(400, "bad_request");
       const { row } = await accessUpload(
@@ -218,6 +258,7 @@ export async function handleUploadHttp(
     if (!key || key.includes(",") || !/^[\x21-\x7e]{1,200}$/.test(key))
       return problem(400, "bad_request");
     if (id && action === "complete") {
+      if (publicSession && Object.keys(body).length) return problem(400, "bad_request");
       const tokens = body.lockTokens ?? [];
       if (
         Object.keys(body).some((key) => key !== "lockTokens") ||
@@ -249,6 +290,18 @@ export async function handleUploadHttp(
       if (outcome.operation.state !== "committed") return problem(409, "conflict");
       return Response.json(outcome.operation, { headers: HEADERS });
     }
+    if (publicSession) {
+      if (
+        Object.keys(body).some(
+          (key) =>
+            !["mode", "parentId", "name", "declared_size", "targetId", "targetRevision"].includes(
+              key,
+            ),
+        )
+      )
+        return problem(400, "bad_request");
+      body.spaceId = publicSession.spaceId;
+    }
     if (
       Object.keys(body).some(
         (key) =>
@@ -265,7 +318,11 @@ export async function handleUploadHttp(
       ) ||
       typeof body.spaceId !== "string" ||
       (typeof body.parentId !== "string" &&
-        !(body.parentId === undefined && "share" in body && typeof body.targetId === "string")) ||
+        !(
+          body.parentId === undefined &&
+          (publicSession || "share" in body) &&
+          typeof body.targetId === "string"
+        )) ||
       typeof body.name !== "string" ||
       typeof body.declared_size !== "number" ||
       (body.targetId !== undefined && typeof body.targetId !== "string") ||
@@ -273,7 +330,10 @@ export async function handleUploadHttp(
     )
       return problem(400, "bad_request");
     if (body.mode !== "single" && body.mode !== "multipart") return problem(400, "bad_request");
-    if ("share" in body) principal = { ...principal, selected_share: selectedShare(body.share) };
+    if ("share" in body) {
+      if (principal.kind !== "user") return problem(400, "bad_request");
+      principal = { ...principal, selected_share: selectedShare(body.share) };
+    }
     // A directly shared file hides its parent ID. Resolve that operand under the selected grant.
     let parentId = body.parentId as string | undefined;
     if (parentId === undefined) {

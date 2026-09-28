@@ -30,7 +30,7 @@ function steps(
   row: UploadRow,
   claim: OperationClaim,
   authority: AuthorizedNode,
-  actor: string,
+  actor: string | null,
 ): MutationStep[] {
   const op = claim.intent.id;
   const create = authority.operation === "node.create";
@@ -241,7 +241,8 @@ async function completeUpload(
     "receipt",
   );
   principal = authorized.principal;
-  if (principal.kind !== "user" || row.mode !== mode) throw new Error("invalid_upload_complete");
+  if ((principal.kind !== "user" && principal.kind !== "link_share") || row.mode !== mode)
+    throw new Error("invalid_upload_complete");
   if (row.completion_op_id) {
     const saved = await lookupOperation(env.DB, principal, row.completion_op_id);
     if (saved && saved.state !== "claimed") {
@@ -327,7 +328,12 @@ async function completeUpload(
     )
       throw new Error("upload_object_mismatch");
     const hashes = await lockTokenHashes(lockTokens);
-    const planSteps = steps(row, claimed.claim, authorized, principal.user_id);
+    const planSteps = steps(
+      row,
+      claimed.claim,
+      authorized,
+      principal.kind === "link_share" ? null : principal.user_id,
+    );
     const guards: SqlStatement[] = [
       uploadFence(row, ["completing"]),
       ...(mode === "multipart" ? [multipartPartsProof(row), multipartObjectProof(row)] : []),

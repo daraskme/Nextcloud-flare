@@ -270,9 +270,31 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=
           OR u.selected_share_version NOT BETWEEN 1 AND 9007199254740991
           OR NOT EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.selected_share_id AND sh.kind='internal'
             AND sh.owner_id=u.owner_id AND u.selected_share_version BETWEEN 1 AND sh.version)))
+      AND NOT EXISTS(SELECT 1 FROM uploads u
+        WHERE (u.link_share_id IS NULL)<>(u.link_share_version IS NULL)
+          OR (u.source='private' AND u.link_share_id IS NULL AND EXISTS(
+            SELECT 1 FROM credentials WHERE id=u.credential_id AND kind='share'))
+          OR (u.link_share_id IS NOT NULL AND (u.source<>'private'
+            OR u.selected_share_id IS NOT NULL OR u.selected_share_version IS NOT NULL
+            OR length(u.link_share_id) NOT BETWEEN 1 AND 128 OR u.link_share_id GLOB '*[^A-Za-z0-9_-]*'
+            OR u.link_share_version NOT BETWEEN 1 AND 9007199254740991
+            OR NOT EXISTS(SELECT 1 FROM credentials cr JOIN share_sessions ss ON ss.id=cr.share_session_id
+              JOIN shares sh ON sh.id=ss.share_id JOIN reservations r ON r.id=u.reservation_id
+              WHERE (cr.id=u.credential_id AND cr.kind='share' AND ss.share_id=u.link_share_id
+                AND ss.share_version=u.link_share_version AND ss.epoch=u.epoch)
+                AND (sh.kind='link' AND sh.owner_id=u.owner_id AND sh.version>=u.link_share_version)
+                AND (r.owner_id=u.owner_id AND r.share_id IS NULL AND r.op_id IS NULL
+                AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at)))))
       AND NOT EXISTS(SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
         WHERE o.selected_share_id IS NOT u.selected_share_id
-          OR o.selected_share_version IS NOT u.selected_share_version))
+          OR o.selected_share_version IS NOT u.selected_share_version
+          OR ((u.link_share_id IS NULL)<>(o.principal_kind<>'link_share'))
+          OR (u.link_share_id IS NOT NULL AND (o.kind<>'upload.complete' OR o.principal_kind<>'link_share'
+            OR o.principal_id<>u.link_share_id OR o.credential_version IS NOT u.link_share_version
+            OR o.credential_id<>u.credential_id OR o.epoch<>u.epoch OR o.space_id<>u.space_id
+            OR json_extract(o.operands_json,'$.uploadId') IS NOT u.id
+            OR json_extract(o.operands_json,'$.parentId') IS NOT u.parent_id
+            OR json_extract(o.operands_json,'$.nodeId') IS NOT u.target_id))))
       AND ((NOT EXISTS(SELECT 1 FROM operations o WHERE
         ((o.destination_share_id IS NULL)<>(o.destination_share_version IS NULL))
         OR (o.destination_space_id IS NULL AND o.destination_share_id IS NOT NULL)
