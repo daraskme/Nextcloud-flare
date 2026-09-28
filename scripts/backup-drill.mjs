@@ -278,7 +278,7 @@ try {
   assert.deepEqual(status[0].results, [
     { backup_frozen: 1, backup_token: manifest.generation.token },
   ]);
-  assert.equal(manifest.tables.length, 77);
+  assert.equal(manifest.tables.length, 78);
   const report = {
     result: "PASS",
     directory,

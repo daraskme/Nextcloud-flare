@@ -482,9 +482,10 @@ export async function releaseStaleRecoveryReservations(
     throw new Error("invalid_recovery_limit");
   await assertQuiesced(db, epoch);
   const rows = await primary(db)
-    .prepare(`SELECT r.id,r.owner_id,r.epoch,r.bytes,r.expires_at,r.share_id,r.op_id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
+    .prepare(`SELECT r.id,r.owner_id,r.epoch,r.bytes,r.expires_at,r.share_id,r.op_id FROM reservations r WHERE r.state='reserved' AND r.physical_only=0 AND r.epoch<?
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id)
       AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb WHERE cb.reservation_id=r.id)
+      AND NOT EXISTS(SELECT 1 FROM image_derivative_objects x WHERE x.reservation_id=r.id)
       AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.op_id=r.op_id AND o.kind='dav.put')
       ORDER BY r.id LIMIT ?`)
     .bind(epoch, limit)
@@ -520,10 +521,11 @@ export async function releaseStaleRecoveryReservations(
         repairFence(epoch, admission),
         {
           sql: `UPDATE reservations SET state='released' WHERE id=? AND owner_id=? AND epoch=? AND bytes=?
-            AND expires_at=? AND share_id IS ? AND op_id IS ? AND state='reserved' AND epoch<?
+            AND expires_at=? AND share_id IS ? AND op_id IS ? AND state='reserved' AND physical_only=0 AND epoch<?
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1)
             AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id)
             AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb WHERE cb.reservation_id=reservations.id)
+            AND NOT EXISTS(SELECT 1 FROM image_derivative_objects x WHERE x.reservation_id=reservations.id)
             AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.op_id=reservations.op_id AND o.kind='dav.put')`,
           values: [id, owner_id, sourceEpoch, bytes, expires_at, share_id, op_id, epoch, epoch],
         },
@@ -584,6 +586,7 @@ export async function inspectRecoveryPage(
         !audit ||
         audit.used_bytes !== audit.actual_used_bytes ||
         audit.reserved_bytes !== audit.actual_reserved_bytes ||
+        audit.image_reserved_bytes !== audit.actual_image_reserved_bytes ||
         audit.physical_bytes !== audit.observed_physical_bytes ||
         audit.incorrect_refs !== 0
       )

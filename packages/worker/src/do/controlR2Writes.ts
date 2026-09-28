@@ -8,6 +8,7 @@ import { abortWriteProof, isAbortWrite } from "../db/r2Abort";
 import { backupDeleteProof } from "../db/r2BackupDelete";
 import { backupsProbeWriteProof } from "../db/r2BackupsProbe";
 import { copyWriteProof, isCopyWrite } from "../db/r2Copy";
+import { imageWriteProof } from "../db/r2Image";
 import { probeWriteProof } from "../db/r2Probe";
 import { isUploadWrite, uploadWriteProof } from "../db/r2Upload";
 import {
@@ -121,6 +122,7 @@ export class ControlR2Writes {
       ...(input.backups ? { backups: input.backups } : {}),
       ...(input.prune ? { prune: input.prune } : {}),
       ...(input.copy ? { copy: input.copy } : {}),
+      ...(input.image ? { image: input.image } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -213,11 +215,14 @@ export class ControlR2Writes {
         this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        const guards = isCopyWrite(kind)
-          ? await copyWriteProof(this.db, grant)
-          : isUploadWrite(kind)
-            ? await uploadWriteProof(this.db, grant)
-            : [];
+        const guards =
+          kind === "image.put"
+            ? await imageWriteProof(this.db, grant)
+            : isCopyWrite(kind)
+              ? await copyWriteProof(this.db, grant)
+              : isUploadWrite(kind)
+                ? await uploadWriteProof(this.db, grant)
+                : [];
         this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
@@ -298,6 +303,8 @@ export class ControlR2Writes {
           WHERE state<>'pending' AND id<>? AND finished_at<=strftime('%s','now')*1000-86400000
             AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb JOIN bulk_jobs j ON j.id=cb.job_id
               WHERE r2_write_attempts.r2_key='u/'||j.owner_id||'/b/'||cb.destination_blob_id)
+            AND NOT EXISTS(SELECT 1 FROM image_derivative_objects x JOIN blobs b ON b.id=x.output_blob_id
+              WHERE b.r2_key=r2_write_attempts.r2_key)
           ORDER BY finished_at LIMIT 32)`,
             values: [grant.id],
           },

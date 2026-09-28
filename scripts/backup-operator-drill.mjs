@@ -421,7 +421,7 @@ try {
   });
   assert.equal(sqlVerified.state, "sql_verified");
   assert.equal(sqlVerified.bytes, download.manifest.data.bytes);
-  assert.equal(sqlVerified.tables, 77);
+  assert.equal(sqlVerified.tables, 78);
   const d1Reader = {
     target: { mode: "local", databaseId: "00000000-0000-0000-0000-000000000000" },
     readMirror: () => query(RESTORE_D1_QUERY),
@@ -668,7 +668,7 @@ try {
     reader: { ...bindingReader, snapshotQuery: query },
   });
   assert.equal(snapshot.state, "snapshot_verified");
-  assert.equal(snapshot.tables, 77);
+  assert.equal(snapshot.tables, 78);
   assert.equal(snapshot.newEpoch, 3);
   await worker.evictDurableObject("CONTROL", { name: "singleton" });
   assert.equal(

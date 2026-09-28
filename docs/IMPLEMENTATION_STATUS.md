@@ -1,6 +1,23 @@
 # 実装進捗
 
-## 画像変換失敗の終了証拠（今回）
+## サムネイルの保存・公開記録（今回）
+
+[生成物の保存](IMAGE_DERIVATIVES.md)を内部処理として追加した。成功済みImages receiptのWebP bytes/dimensions/SHA-256を確認し、不変keyへ条件付きPUTする。元のactor/credential・現在node/blob/parent・Outbox claim・epochを準備、native grant、公開batchで再検査する。実保存の観測は失効後もphysicalへ計上し、size/checksum不一致なら公開しない。result ready、blob committed、予約解放は一括確定し、公開ACK喪失はexact receiptで回収する。
+
+画像の予約はphysical_only=1としてimage_reserved_bytesへ分離し、通常upload/copyの論理reserved_bytesを増やさない。全予約でphysical + reserved + image_reservedの物理予算を検査する。生成物pinとR2成功記録を保持し、一般の旧epoch reservation修復から画像を除外する。専用の修復・回収とpin解放は未接続で、自動生成は有効化していない。
+
+migration0070は78tableへ追加し、既存R2 writeの全値、全既存trigger（予約会計の2個を除く）、通常reservationのcounterを保持する。停止・未凍結・未終了処理なしを要求する。D1のSQL分割に適合する算術式を使い、参照triggerの再作成後にfreeze guardを再設定する。依存追加なし、147 routeを維持する。
+
+- 最終全Node101file/1,881件成功（210.85秒、/tmp/ncf-image-store-unit-complete.log）。新規11件はR2 proof拒否7件、既存receipt・全既存triggerの保存、通常予約counter保存、稼働中/pending移行拒否4件。最初の全Nodeでは復元freezeの拒否理由がdomain guardへ変わる1件が失敗し、freeze guard再設定後に解消した。
+- 新規native18件成功（16.22秒、/tmp/ncf-image-store-native-corrected.log）。実WebP保存・一度だけのPUT、bytes改変、quota、失効/parent/claim/epoch変更、prepare/native/publicationのACK喪失、key衝突、偽公開・予約/pin/native証拠削除拒否、競合、grant直前失効、論理満杯/物理余裕、通常予約との競合、実R2のsize/checksum不一致を検証した。
+- 既存copy-put/recovery-audit/control-r2-writesの3file/70件も成功（/tmp/ncf-image-store-native-final.log）。同runの画像fixture2件はControlDO未初期化と続くhook timeoutで失敗したため、通常DAV用の既存admission fixtureへ修正して上記18件を再検証した。画像保存用fixtureは即時admissionを使い、Queue製品経路の証明ではない。
+- backup barrier/restore snapshotの2file/68件成功（90.49秒、/tmp/ncf-image-store-recovery.log）。重複を除くnativeは6file/156件、Nodeと合わせて2,037件成功。D1 migration初回のSQL分割失敗は、trigger内のsimple CASEを同値の算術式へ修正して解消した。
+- backup:operator-drill成功（/tmp/ncf-image-store-operator-drill.log）。0070の78tableでsnapshot照合、epoch採用、native/domain/inventory修復、監査、受付・GC再開を確認。Time Travel/S3 provider応答は模擬で、画像未確定出力の専用修復や実Cloudflare復元を証明するものではない。
+- 最終型検査成功（/tmp/ncf-image-store-types-complete.log）。途中のテスト用R2 overloadとSQLite列型のエラーはfixtureの型を修正した。lint680file・契約/設定検査も成功（/tmp/ncf-image-store-lint-final.log、/tmp/ncf-image-store-contracts.log、/tmp/ncf-image-store-config.log）。Web build/Worker dry-runも成功（/tmp/ncf-image-store-build.log）。
+
+全workerd/browser再実行とremote resource/secret/migration/deployは未実施。pushは自動承認審査による前回拒否後の承認待ちで、再送していない。
+
+## 画像変換失敗の終了証拠（先行f8fc7ef）
 
 [画像変換の費用・終了記録](IMAGE_COSTS.md)にfailed状態を追加した。native .output()の明示拒否と、入出力EOF後の出力検査失敗だけを終了として記録する。入力から伝播した例外、内部/接続/timeout、EOF前の中断は未確定を維持する。callbackでcaller期限後の実拒否も観測し、DOへの終了保存とD1の完全なidentity/failure照合を行う。nativeのエラー本文は記録しない。failedも費用キーを保持するため、同じ変換の再実行を許可しない。
 

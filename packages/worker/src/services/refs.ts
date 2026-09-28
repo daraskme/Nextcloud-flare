@@ -52,6 +52,8 @@ export interface LedgerAudit {
   actual_used_bytes: number;
   reserved_bytes: number;
   actual_reserved_bytes: number;
+  image_reserved_bytes: number;
+  actual_image_reserved_bytes: number;
   physical_bytes: number;
   observed_physical_bytes: number;
   incorrect_refs: number;
@@ -63,10 +65,11 @@ export async function auditOwnerLedger(
   ownerId: string,
 ): Promise<LedgerAudit | null> {
   return primary(db)
-    .prepare(`SELECT u.used_bytes,u.reserved_bytes,u.physical_bytes,
+    .prepare(`SELECT u.used_bytes,u.reserved_bytes,u.physical_bytes,u.image_reserved_bytes,
     COALESCE((SELECT SUM(b.size) FROM blobs b WHERE b.owner_id=u.id AND
       (EXISTS(SELECT 1 FROM nodes WHERE current_blob_id=b.id) OR EXISTS(SELECT 1 FROM node_versions WHERE blob_id=b.id))),0) AS actual_used_bytes,
-    COALESCE((SELECT SUM(bytes) FROM reservations WHERE owner_id=u.id AND state='reserved'),0) AS actual_reserved_bytes,
+    COALESCE((SELECT SUM(bytes) FROM reservations WHERE owner_id=u.id AND state='reserved' AND physical_only=0),0) AS actual_reserved_bytes,
+    COALESCE((SELECT SUM(bytes) FROM reservations WHERE owner_id=u.id AND state='reserved' AND physical_only=1),0) AS actual_image_reserved_bytes,
     COALESCE((SELECT SUM(s.bytes) FROM blobs b JOIN blob_storage s ON s.blob_id=b.id WHERE b.owner_id=u.id AND s.removed_at IS NULL),0)
       +COALESCE((SELECT SUM(o.bytes) FROM orphan_objects o WHERE o.owner_id=u.id AND o.state<>'deleted'),0)
       +COALESCE((SELECT SUM(h.held_bytes) FROM multipart_bucket_handles h WHERE h.owner_id=u.id),0) AS observed_physical_bytes,
