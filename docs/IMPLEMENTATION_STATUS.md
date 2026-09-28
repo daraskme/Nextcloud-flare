@@ -13,6 +13,14 @@
 
 ## 今回の検証記録
 
+- [所有者間copyの準備](COPY_JOBS.md)を追加。source/overwriteの全metadataとblob storage receiptを固定し、両側の選択・資格情報・構成・属性・衝突を確定batchで再検査する。unique source blobごとのpinとdestination reservationを同じbatchで取得し、COW aliasは一度だけ転送・予約する。まだ永続job/Queue/R2転送/一括公開/取消し/再試行/HTTP/UIへ未接続。schema0051・69table、schema/依存追加なし。
+- 新規workerd初回24件は21件成功。immutable storage/depth guardを無視したfixture2件を修正。1万件は30秒timeoutし、診断実行で1件91.31秒。SQLite実行計画がspaceの全nodeをJSON groupごとに反復走査していたため、ID集合から主キーへCROSS JOINする形へ修正。同じ24件は5.44秒、runner全体7.89秒で成功。/tmp/ncf-copy-preparation-worker-first.log、/tmp/ncf-copy-preparation-large-diagnostic.log、/tmp/ncf-copy-preparation-worker-second.log。
+- 先行8dbdcc6の[CI36363511416](https://github.com/daraskme/Nextcloud-flare/actions/runs/36363511416)はUbuntu・Windows1/3と2/3・browser成功、backupは最終確認時に実行中。Windows3/3はNode1,360/1,361件成功。r2-write-schemaの期限経過前のpending INSERTが、秒単位のdispatch guardで拒否され失敗。SQLite試験用のstrftime時計を固定し、明示的な3秒経過後にもunknownが閉じないことを実triggerで検証する。productionの条件は不変。修正後の関連Node12件成功（2.30秒）。/tmp/ncf-transfer-scope-ci-win3.log、/tmp/ncf-r2-schema-clock.log。
+- 最終の全Node66file/1,361件成功（54.21秒）。関連workerd初回6file/130件は128件成功で、追加chunk検証のLIKE patternがD1の長さ制限に触れた2件をfixtureのprefix範囲照合へ修正した。変更対象fileの最終29件は成功（8.44秒）。先に成功した共有認可・検索・集計・upload ledgerの5file/101件と合わせ、関連workerd130件成功。/tmp/ncf-copy-preparation-node-final.log、/tmp/ncf-copy-preparation-worker-final.log、/tmp/ncf-copy-preparation-worker-final-2.log。
+- 型・lint496file・契約/設定・Web build/Worker dry-run・資料local link・git diff --check成功。今回の合計は **全Node1,361 + 関連workerd130 = 1,491件成功**。HTTP/UIの変更はなくbrowserは再実行していない。全workerd/Windowsはpush後のCIで確認する。/tmp/ncf-copy-preparation-types-final.log、/tmp/ncf-copy-preparation-build.log。
+
+### 先行する共有間DAV転送
+
 - [共有間のDAV転送](DAV_SHARED.md)を同一owner/spaceの別mountへ拡張。転送元と転送先の選択をoperation・digest・LockDO permit・claim・確定・結果照会・Outboxへ保持。COPYはread→edit、MOVEはedit→editを要求し、上書きも転送先で認可する。明示的な個人領域はactor所有に限定し、別grantへの暗黙の代替はしない。cross-owner COPYの非同期jobとAccessの共有間pickerは後続。
 - migration0051でdestination space/share ID/versionを追加し、不変tuple・種別・同一space・所有者の整合性を検査。旧データとNULL履歴・legacy digestを保つ。復旧では停止後の正常な過去versionを許可し、破損tupleを拒否する。69通常table、依存追加なし。
 - 新規workerd25ケースは両側の選択、再送の省略/差替え拒否、いずれかの共有停止、確定直前の停止、元/先のlock token、第三mountのIf拒否、permit差替え、claim proof、確定ACK喪失、COPY/MOVE上書きを対象にする。初回追加分は未完了claimの解放とR2未保存fixtureのHEADで2件失敗。操作をfailedへ片付け、実PUTから上書きを検証するfixtureに修正した。

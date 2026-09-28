@@ -25,17 +25,19 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[内部共有のWebDAV](DAV_SHARED.md)で、同じ所有者の異なるmount間のCOPY/MOVEと上書きに対応しました。転送元と転送先のshare ID/versionを別々に保存し、再送・ロック許可・結果照会・Outbox・復旧監査まで引き継ぎます。COPYは転送元readと転送先edit、MOVEは両側editを要求し、停止した共有を別の広い共有で補いません。所有者をまたぐCOPYは非同期jobが後続で、cross-space MOVEは非対応です。
+[所有者間コピーの準備](COPY_JOBS.md)を実装しました。コピー元と上書き対象の構成・blob・属性を固定し、両側の権限と変更の有無を開始確定のbatchで再検査します。COW aliasは実体ごとにまとめ、コピー元pinと転送先の容量予約を原子的に取得します。永続job・Queue・R2転送・一括公開・取消し/再試行・画面はこれから接続するため、所有者間コピー全体は未完成です。
 
-schema0051・通常69table、依存追加なし。全Node1,361件・関連workerd339件・共有画面browser6件の計1,706件成功。型・lint・契約/設定・buildも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0051・通常69table、schema/依存追加なし。全Node1,361件・関連workerd130件の計1,491件成功。型・lint・契約/設定・buildも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+copy準備の入口は`services/copyPreparation.ts`。返却planのrequest-local proofはWeakMapで保持し、JSON読戻しは認可にならない。準備SQLだけをHTTPからdispatchせず、次に永続job/manifest・idempotency digest・Outboxと共通受付を同じbatchへ接続する。詳しくは[COPY_JOBS](COPY_JOBS.md)。SQLのJSON ID集合→主キーのCROSS JOINを保つ。通常JOINではspace側からの反復走査となり1万件ケースが約91秒に悪化した。
 
 DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration0050はDAV保存元のowner一致条件を選択付き受信者へ広げ、0049の不変pair/completion照合を維持する。migration0051のdestination tupleとauth/transferScope.tsで転送先選択を独立に保存する。省略はlegacy、share:nullは明示的なactor所有spaceであり相互に代替しない。same-ownerの別mount転送だけを許可し、cross-owner COPYの非同期jobは後続。直接file mount上書きでは保存名と非公開parentを内部proofから使い、返却しない。0050/0051適用後の旧Workerへのrollbackはmaintenanceを維持し、対応版で再検証する。ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
 
 今回のmultipart入口は`restoreInventoryRepair.ts`/`restoreInventory.ts`/`scripts/restore/inventory.mjs`。private `repairInventory`は28番目のmethod。共有の`restoreRepairContext.ts`がsystem/global受付とBLOBS読取りを同じ停止へ固定し、実完了のfinishだけは停止後も保存する。各inventory jobへBindingVerificationScopeを渡し、S3 sourceを採用済みBLOBS対象と照合する。全体25秒のtimeoutでactiveを失わせ、遅延GETから新たなnativeを送らない。既知multipartの元abort照合は`restoreMultipartAbort.ts`。DO履歴はhashだけなので、元D1 tuple欠落はそれだけで修復できない。
 
-送信先は承認済み専用`codex/database-restore`です。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗jobの再実行後に全6job成功しました。初回Windows分割2/3のorphan-admission受付回数不一致と、先行21cd396のR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行8dbdcc6の[CI36363511416](https://github.com/daraskme/Nextcloud-flare/actions/runs/36363511416)はWindows分割3/3の全Node1,361件中1件が失敗。r2-write-schemaのpending作成が、秒単位時計の境界でdispatch期限不足として拒否されました。SQLiteの実triggerを使う試験用時計を固定し、期限経過を明示的に進める形へ修正。productionの期限や検査は変更していません。先行f953d43のCI全6job成功、a9af702も再実行後全6job成功です。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。最新CI状態はgh run listで確認します。
 
 ## 現在動いている範囲
 
