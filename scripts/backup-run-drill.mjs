@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,6 +13,7 @@ const { foundationFixture } = await import(
   pathToFileURL(join(repo, "packages/worker/test/fixtures/foundation.ts"))
 );
 const { DatabaseSync } = await import("node:sqlite");
+await mkdir(join(repo, ".wrangler"), { recursive: true });
 const directory = await mkdtemp(join(repo, ".wrangler/backup-run-drill-")),
   source = join(directory, "worker.ts"),
   config = join(directory, "wrangler.json");

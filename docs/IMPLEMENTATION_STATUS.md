@@ -3,9 +3,11 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+コピー実行処理はb7a32abで専用ブランチへpush済み。[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)で全体回帰を確認中です。CIの30分打切り対策として、Windows integrationを4分割し、backup:run-drillを通常/専用bindingドリルから別runnerへ分離しました。独立起動に必要な.wrangler初期化も追加しています。全135 integration/spikeファイルを34/34/34/33へ重複・欠落なく分割できることを確認し、変更後のWindows/ドリルの実完走は次のpushのCIで確認します。
+
 先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。同じrun IDで完了結果を確認します。
 
-先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、CIの実行単位を見直します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
+先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、上記のCI実行単位へ分割します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
 
 先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
 
@@ -18,6 +20,8 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- CI分割変更: 36384106965のWindows分割2はNode1,431件とintegration30file/865件まで成功し、後続の試験中にjob上限で停止した。4分割化とbackup CLI分離でも各jobの30分枠・個別試験/アプリの期限・全assertionを維持する。Vitest 4.1.11の実BaseSequencerで135fileの完全分割を確認。lint531file、ドリルのNode構文検査、git diff --check成功。実Windows/新runnerの結果はCI待ちで、製品の追加試験数には加算しない。
 
 - [一回分のコピー実行](COPY_JOBS.md)を追加。Outbox IDからclaim・転送・object観測修復・checkpoint・一括公開までを接続し、最大32段階/25秒でyieldする。nativeの開始前にGET+PUT/part=2、init/complete/修復HEAD=1という必要数を確認する。200 invocation/20,000 R2 callと実行中16 callの枠は維持する。停止/完了の再配信はreceiptを照合し、精算前のstoppedをQueue ACKと扱わない。
 - claim付き修復は現在のblob/元claim/現行権限と、job/leaseのcall加算を直接ACKした後だけHEADする。ACK喪失分を返さない。通常実行ではclaim取得時の一度だけmanifestを読み、停止判定の候補がない場合に8 MiBのmanifestを重複読込みしない。
