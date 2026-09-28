@@ -6,7 +6,9 @@ import type { Env } from "../../src/env";
 import worker from "../../src/index";
 import { executeCopyJob } from "../../src/jobs/copyExecutor";
 import { consumeCopyOutbox } from "../../src/jobs/copyQueue";
+import { handleDeadLetterBatch } from "../../src/jobs/deadLetters";
 import { dispatchOutbox } from "../../src/jobs/outbox";
+import { handleOutboxBatch } from "../../src/jobs/queue";
 import { foundationFixture } from "../fixtures/foundation";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
@@ -118,6 +120,62 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    const deadLetterNode = /^\/__test__\/dead-letter-node\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+    if (deadLetterNode && request.method === "POST") {
+      const outbox = await ready.env.DB.prepare(
+        "SELECT outbox_id,epoch FROM outbox WHERE payload_ref=? AND kind='node.created' ORDER BY created_at DESC LIMIT 1",
+      )
+        .bind(deadLetterNode[1])
+        .first<{ outbox_id: string; epoch: number }>();
+      if (!outbox) return new Response(null, { status: 404 });
+      await dispatchOutbox(
+        ready.env,
+        { send: async () => ({ metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } } }) },
+        outbox.outbox_id,
+        outbox.epoch,
+      );
+      await ready.env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
+        .bind(outbox.outbox_id)
+        .run();
+      const messageId = crypto.randomUUID();
+      const result = await handleDeadLetterBatch(ready.env, {
+        messages: [
+          {
+            id: messageId,
+            timestamp: new Date(),
+            body: { outboxId: outbox.outbox_id },
+            ack: () => {},
+            retry: () => {},
+          },
+        ],
+      });
+      return Response.json({ ...result, messageId, outboxId: outbox.outbox_id });
+    }
+    const deadLetterDispatch = /^\/__test__\/dead-letter-dispatch\/([A-Za-z0-9_-]{1,128})$/.exec(
+      path,
+    );
+    if (deadLetterDispatch && request.method === "POST") {
+      const id = deadLetterDispatch[1]!;
+      const epoch = await ready.env.DB.prepare("SELECT epoch FROM outbox WHERE outbox_id=?")
+        .bind(id)
+        .first<number>("epoch");
+      if (!epoch) return new Response(null, { status: 404 });
+      await dispatchOutbox(
+        ready.env,
+        { send: async () => ({ metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } } }) },
+        id,
+        epoch,
+      );
+      const result = await handleOutboxBatch(ready.env, {
+        messages: [{ body: { outboxId: id }, ack: () => {}, retry: () => {} }],
+      });
+      const audits = await ready.env.DB.prepare(
+        "SELECT COUNT(*) n FROM activity WHERE kind='admin.dlq' AND affected_id IN (SELECT message_id FROM queue_dead_letters WHERE outbox_id=?)",
+      )
+        .bind(id)
+        .first<number>("n");
+      return Response.json({ ...result, audits });
+    }
     if (path === "/__test__/dead-letters" && request.method === "POST") {
       let acked = 0,
         retried = 0;

@@ -9,6 +9,16 @@ export interface DeadLetter {
   eventEpoch: number | null;
   jobId: string | null;
   jobState: "pending" | "running" | "completed" | "failed" | "cancelled" | null;
+  requeueId: string | null;
+  requeuedAt: number | null;
+}
+
+export interface DeadLetterRequeue {
+  messageId: string;
+  outboxId: string;
+  requeueId: string;
+  requeuedAt: number;
+  epoch: number;
 }
 
 export interface DeadLetterPage {

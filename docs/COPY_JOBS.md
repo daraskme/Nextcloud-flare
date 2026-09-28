@@ -175,7 +175,7 @@ migration0060は停止triggerをこの条件へ更新し、通常75tableと全ro
 
 completedは公開receiptを照合する。failed/cancelledはDB-onlyの証拠付き精算を最大32blob行い、全元blobがimmutable精算receiptへ移り、保持が0で、正確なOutbox/job/opの終端tupleを再確認した場合だけACKする。精算の`readyOnly`選択は未知attemptを飛ばすので、先頭に保留があっても後続を32件ずつ精算できる。精算候補の選択自体を閉鎖証明にせず、従来のtransaction/triggerでnative終了証拠を再検査する。
 
-未完了multipartのabort、停止後の観測修復、旧epoch・未配信停止jobの精算は下記の専用巡回へ接続した。失敗Outboxは通常Cronの再送対象外なので、Queue consumerと独立して拾う。[DLQ観測の保存と管理者一覧](DEAD_LETTERS.md)は接続済み。DLQからの運用再開は後続。HTTP受付/read/cancelは上記へ接続済み。112 call/claimとD1実測yieldに、残作業の下限による早期停止を追加した。上限内の最大規模、実環境の速度と障害時の収束は別途検証する。
+未完了multipartのabort、停止後の観測修復、旧epoch・未配信停止jobの精算は下記の専用巡回へ接続した。失敗Outboxは通常Cronの再送対象外なので、Queue consumerと独立して拾う。[DLQ観測の保存・管理者一覧・再投入](DEAD_LETTERS.md)は接続済み。同じjobのcheckpointと予算を維持し、現行認可と再開可能性の確認後に通常producerへ戻す。未知nativeや記録のないprepare/partは拒否する。HTTP受付/read/cancelは上記へ接続済み。112 call/claimとD1実測yieldに、残作業の下限による早期停止を追加した。上限内の最大規模、実環境の速度と障害時の収束は別途検証する。
 
 ## 停止後の自動巡回
 
@@ -221,7 +221,7 @@ copy用reservationは汎用の旧epoch回収から除外する。公開batchま�
 
 1. 大量blob・大容量multipartのbatch化と、最大規模の完走予算を検証する。
 2. ACK喪失/未送信/結果不明/観測欠落の照合と中止attemptの再試行管理を接続し、停止後の自動回収へ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
-3. Queueと停止後巡回を基に、未解決attemptの管理とDLQからの再開を完成させる。
+3. Queueと停止後巡回を基に、未解決attemptの管理、DLQの保持期限管理・通知・実Queue検証を進める。
 4. 接続済みの明示的retryを基に、タブを閉じた後や別端末からのjob追跡を仕上げる。
 
 同期DAVは引き続き同一owner・1,000 node・10 GiBまでで、cross-owner要求をREST jobへ自動fallbackしない。[DAV Shared](DAV_SHARED.md)を参照。検証結果と残る全体要件は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。

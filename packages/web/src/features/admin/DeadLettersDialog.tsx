@@ -1,8 +1,9 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import type { DeadLetter } from "../../../../shared/src/deadLetters";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/ui/dialog";
-import { type Account, api, errorMessage } from "../../lib/api";
+import { type Account, ApiError, api, errorMessage } from "../../lib/api";
 
 function state(item: DeadLetter): string {
   if (!item.outboxId) return "メッセージ形式が不正";
@@ -20,6 +21,8 @@ function state(item: DeadLetter): string {
 }
 
 export function DeadLettersDialog({ account, close }: { account: Account; close: () => void }) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
   const listing = useInfiniteQuery({
     queryKey: ["admin-dlq", account.id, account.epoch],
     queryFn: ({ pageParam, signal }) => api.deadLetters(pageParam, signal),
@@ -32,6 +35,24 @@ export function DeadLettersDialog({ account, close }: { account: Account; close:
   // A failed refresh may mean role/session revocation. Hide all cached operational metadata.
   const pages = !listing.error && !listing.isFetching ? listing.data?.pages : undefined;
   const items = pages?.flatMap((page) => page.items);
+  const requeue = async (item: DeadLetter) => {
+    if (!item.outboxId || pending) return;
+    setPending(item.messageId);
+    setNotice("");
+    try {
+      await api.requeueDeadLetter(item.outboxId, item.messageId);
+      setNotice("再配信を受け付けました。処理が完了するまで状態を更新して確認してください。");
+      await listing.refetch();
+    } catch (error) {
+      setNotice(
+        error instanceof ApiError && error.status === 409
+          ? "実行中、停止済み、または受付済みなどの理由で再投入できません。更新して状態を確認してください。"
+          : "受付を確認できませんでした。更新して受付済みか確認してください。再度押した場合も同じ要求を照合します。",
+      );
+    } finally {
+      setPending(null);
+    }
+  };
   return (
     <Dialog
       title="配信失敗の記録"
@@ -43,6 +64,11 @@ export function DeadLettersDialog({ account, close }: { account: Account; close:
     >
       {listing.isFetching && <p role="status">記録を読み込んでいます</p>}
       {listing.error && <p role="alert">{errorMessage(listing.error)}</p>}
+      {notice && (
+        <p role="status" className="notice">
+          {notice}
+        </p>
+      )}
       {items?.length === 0 && <p>配信失敗の記録はありません。</p>}
       {!!items?.length && (
         <>
@@ -79,7 +105,25 @@ export function DeadLettersDialog({ account, close }: { account: Account; close:
                       <dd>世代 {item.eventEpoch}</dd>
                     </div>
                   )}
+                  {item.requeuedAt !== null && (
+                    <div>
+                      <dt>再配信受付</dt>
+                      <dd>{new Date(item.requeuedAt).toLocaleString("ja-JP")}</dd>
+                    </div>
+                  )}
                 </dl>
+                {item.requeuedAt === null &&
+                  item.outboxId &&
+                  item.eventEpoch === account.epoch &&
+                  ["pending", "dispatching", "sent"].includes(item.eventState ?? "") &&
+                  (item.jobState === null || ["pending", "running"].includes(item.jobState)) && (
+                    <Button
+                      disabled={pending !== null || listing.isFetching}
+                      onClick={() => void requeue(item)}
+                    >
+                      {pending === item.messageId ? "受付中…" : "再配信を予約"}
+                    </Button>
+                  )}
               </li>
             ))}
           </ol>

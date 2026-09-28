@@ -1,4 +1,5 @@
 import type { DeadLetter, DeadLetterPage } from "@next-cloud-flare/shared/deadLetters";
+import { LIVE_ADMIN_ACCESS } from "../auth/admin";
 import type { ListCursorClaims, ListCursorTokens } from "../auth/listCursor";
 import type { AccessSession } from "../auth/sessions";
 import { primary } from "../db/primary";
@@ -28,19 +29,15 @@ export async function listDeadLetters(
   // The sentinel distinguishes an authorized empty list from a revoked/demoted session.
   // This same D1 statement checks live authority while reading the page.
   const result = await primary(db)
-    .prepare(`WITH administrator AS (
-    SELECT u.id FROM credentials c JOIN sessions s ON s.id=c.session_id JOIN users u ON u.id=s.user_id
-    JOIN control ctl ON ctl.singleton=1 WHERE c.id=?1 AND c.kind='access' AND s.kind='access'
-      AND u.id=?2 AND u.role='app_admin' AND u.disabled_at IS NULL AND s.revoked_at IS NULL
-      AND s.expires_at>strftime('%s','now')*1000 AND s.epoch=?3 AND ctl.epoch=?3 AND ctl.maintenance=0
-  ), page AS (
+    .prepare(`WITH administrator AS (${LIVE_ADMIN_ACCESS}), page AS (
     SELECT * FROM queue_dead_letters WHERE (received_at,message_id)<(?4,?5)
     ORDER BY received_at DESC,message_id DESC LIMIT 51
   ) SELECT d.message_id AS messageId,d.outbox_id AS outboxId,d.sent_at AS sentAt,
     d.received_at AS receivedAt,d.epoch AS recordedEpoch,
     CASE WHEN b.kind IN ('copy.requested','node.created','node.updated','node.trashed','node.restored','node.purged','node.renamed')
       THEN b.kind WHEN b.outbox_id IS NOT NULL THEN 'unknown' END AS eventKind,
-    b.state AS eventState,b.epoch AS eventEpoch,j.id AS jobId,j.state AS jobState
+    b.state AS eventState,b.epoch AS eventEpoch,j.id AS jobId,j.state AS jobState,
+    d.requeue_id AS requeueId,d.requeued_at AS requeuedAt
     FROM administrator a LEFT JOIN page d ON 1 LEFT JOIN outbox b ON b.outbox_id=d.outbox_id
     LEFT JOIN bulk_jobs j ON b.kind='copy.requested' AND j.id=b.payload_ref AND j.op_id=b.op_id AND j.kind='node.copy'
     ORDER BY d.received_at DESC,d.message_id DESC`)

@@ -22,6 +22,7 @@ export async function acquireAccountMutation(
   ownerId: string,
   epoch: number,
   kind:
+    | "queue.requeue"
     | "app-password.create"
     | "app-password.revoke"
     | "app-password.rotate"

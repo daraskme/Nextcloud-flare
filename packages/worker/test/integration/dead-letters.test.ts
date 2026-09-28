@@ -36,7 +36,10 @@ const message = (body: unknown = { outboxId: "missing" }) => ({
 });
 const deliver = (m: ReturnType<typeof message>, app: GlobalMutationSource = mutationEnv()) =>
   handleDeadLetterBatch(app, { messages: [m] });
-const rows = () => env.DB.prepare("SELECT * FROM queue_dead_letters ORDER BY message_id").all();
+const rows = () =>
+  env.DB.prepare(
+    "SELECT message_id,outbox_id,sent_at,received_at,epoch FROM queue_dead_letters ORDER BY message_id",
+  ).all();
 async function admin() {
   const f = await outboxFixture();
   await env.DB.prepare("UPDATE users SET role='app_admin' WHERE id=?").bind(f.ids.user).run();
@@ -258,7 +261,7 @@ it("lists private operational metadata with bounded signed pagination and live j
   await atomicBatch(
     env.DB,
     Array.from({ length: 53 }, (_, i) => ({
-      sql: "INSERT INTO queue_dead_letters VALUES(?,?,1,?,1)",
+      sql: "INSERT INTO queue_dead_letters(message_id,outbox_id,sent_at,received_at,epoch) VALUES(?,?,1,?,1)",
       values: [
         `receipt_${String(i).padStart(3, "0")}`,
         i === 52 ? f.id : null,
@@ -279,6 +282,8 @@ it("lists private operational metadata with bounded signed pagination and live j
     eventEpoch: 1,
     jobId: null,
     jobState: null,
+    requeueId: null,
+    requeuedAt: null,
   });
   expect(first.nextCursor).toBeTruthy();
   const second = await listDeadLetters(env.DB, f.session, f.cursors, first.nextCursor!);

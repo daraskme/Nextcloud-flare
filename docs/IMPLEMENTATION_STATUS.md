@@ -1,6 +1,18 @@
 # 実装進捗
 
-## DLQ記録と管理者一覧（今回）
+## 管理者によるDLQ再投入（今回）
+
+[DLQ](DEAD_LETTERS.md)の再投入APIと画面を接続。migration0063、通常76table・147 route。管理者の現行権限と元operationの認可を確定時にも検査し、同じOutboxの再配信待ち・監査・受付を一括保存する。元copyのcheckpoint・予算・容量保持を変更しない。受付応答の喪失は同一actor/credential/keyで照合する。
+
+- 全Node84file/1,501件を実行し、1,500件成功・新規role fixtureの1件がlast_admin制約で失敗（83.44秒、/tmp/ncf-dlq-requeue-node.log）。別管理者を追加して対象12件成功。最終SQL変更後も12件成功（4.00秒、/tmp/ncf-dlq-requeue-node-final.log）。重複を除くNode1,501件成功。再投入受付・監査を含むSQL backup/importも全Node実行に含む。
+- 初回workerd12file/325件は312件成功・13件失敗（230.49秒、/tmp/ncf-dlq-requeue-native.log）。複合条件をassert内へ入れるとD1の式深度100を超えたため、同じ条件をmaterialized CTEへ分けた。step欠落は事前拒否し、世代変更fixtureはセッション更新ではなく新規発行に修正。再投入36件すべて成功（22.73秒、/tmp/ncf-dlq-requeue-native-fix.log）。
+- 結果不明の単一PUT/multipart partを保留したまま拒否する2件を追加。再投入38件とcontrol-restore-inventory42件の計80件成功（104.05秒、/tmp/ncf-dlq-requeue-native-final.log）。関連workerdは重複を除き13file/369件成功。既存Queue・選択共有・DAV・コピー・budgetを含む。先行Windows CIの失敗はbudgetとrestore inventoryともローカルでは再現していないが、原因解消とは扱わない。
+- 型検査・lint571file・契約/設定・schema generator76table/FK索引・Web build/Worker dry-run成功。/tmp/ncf-dlq-requeue-types-final.log、/tmp/ncf-dlq-requeue-lint-final.log、/tmp/ncf-dlq-requeue-contracts-final.log、/tmp/ncf-dlq-requeue-config-final.log、/tmp/ncf-dlq-requeue-build-final.log。
+- DLQのbrowser4件は成功。実Access/CSRF・ControlDO・D1・HTTPを使い、送信前の切断と受付後の応答喪失からreloadし、受付/監査1件・同じkey・通常producer/consumerでの完了を検証。390px幅の再投入受付/完了画像も目視確認済み。全browser36件成功（6.1分、/tmp/ncf-dlq-requeue-browser.log）。
+
+- **全Node1,501 + 関連workerd369 + 全browser36 = 1,906件成功**。更新資料8fileのlocal link287件とgit diff --checkも成功。全workerd・実Wrangler backup drillは今回ローカルで再実行していない。remote migration/deployなし。
+
+## DLQ記録と管理者一覧（前回）
 
 [DLQ](DEAD_LETTERS.md)の観測保存・管理者限定API・画面を追加。migration0062で通常76table、147 route。元outbox/jobを変更しない。再投入・保持期限管理・外部通知・実Queue試験は残る。
 
@@ -13,7 +25,9 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前f2e4788の[CI36411992220](https://github.com/daraskme/Nextcloud-flare/actions/runs/36411992220)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功して終了しました。今回のDLQ変更のCIはpush後に確認します。
+先行19622b8の[CI36415056432](https://github.com/daraskme/Nextcloud-flare/actions/runs/36415056432)は、Ubuntu・Windows1/4と2/4・browser・backup bindings/cliの6job成功、Windows3/4と4/4失敗で終了しました。3/4はbudget.test.tsの準備中にR2 grantのD1 triggerがr2_write_unavailableで拒否し、729/730件成功。4/4はcontrol-restore-inventoryのsame_round試験でdatabase_restore_inventory_unconfirmedとなり、839/840件成功。保存ログでは詳細原因を特定できず、解決済みとは扱いません。今回の再投入変更のCIはpush後に確認します。
+
+先行f2e4788の[CI36411992220](https://github.com/daraskme/Nextcloud-flare/actions/runs/36411992220)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功して終了しました。
 
 先行45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、Ubuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4はcancelledで終了しました。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。
 

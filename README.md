@@ -1,6 +1,6 @@
 # Next-cloud-flare
 
-[配信失敗の記録](docs/DEAD_LETTERS.md)を追加しました。DLQ consumerの観測保存、管理者限定の50件ページ一覧、画面の確認経路を接続しています。migration0062・通常76table・147 route。元jobの状態や容量保持を変更せず、管理者からの再投入・保持期限管理・実Queue検証は引き続き未完了です。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
+[配信失敗の記録](docs/DEAD_LETTERS.md)から管理者が再配信を予約できるようにしました。元の権限・世代・実行状況を確認し、同じOutboxを通常の配信処理へ戻します。二重受付を防ぎ、コピーの進捗・予算・容量保持を維持します。migration0063・通常76table・147 route。保持期限管理・通知・実Queue検証は未完了です。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
 
 Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。

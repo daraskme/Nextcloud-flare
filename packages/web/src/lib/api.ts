@@ -1,5 +1,5 @@
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
-import type { DeadLetterPage } from "../../../shared/src/deadLetters";
+import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 
 export interface Account {
@@ -240,6 +240,15 @@ export class ApiClient {
     return this.request<DeadLetterPage>(
       `/api/v1/admin/dlq${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       signal ? { signal } : {},
+    );
+  }
+  requeueDeadLetter(outboxId: string, messageId: string) {
+    // The immutable observation identifies the entire intent, including after reload.
+    return this.json<DeadLetterRequeue>(
+      `/api/v1/admin/dlq/${encodeURIComponent(outboxId)}/requeue`,
+      "POST",
+      { messageId },
+      `dlq:${messageId}`,
     );
   }
   copyJob(id: string, signal?: AbortSignal) {

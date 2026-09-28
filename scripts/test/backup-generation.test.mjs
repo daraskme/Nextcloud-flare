@@ -43,7 +43,7 @@ beforeEach(async () => {
   const fixture = foundationFixture("backup", Date.now() - 1000);
   for (const s of fixture.statements) db.prepare(s.sql).run(...(s.values ?? []));
   db.exec(
-    "INSERT INTO queue_dead_letters VALUES('malformed',NULL,1,2,1),('unknown','missing-outbox',1,3,1)",
+    "INSERT INTO queue_dead_letters(message_id,outbox_id,sent_at,received_at,epoch) VALUES('malformed',NULL,1,2,1),('unknown','missing-outbox',1,3,1)",
   );
   db.prepare(
     "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'stored',?)",
@@ -74,6 +74,19 @@ beforeEach(async () => {
   }
   // Compact terminal fixtures test exact data preservation, not operation provenance or live recovery.
   db.exec("UPDATE control SET maintenance=0");
+  const requeueId = "dlq_" + "a".repeat(64);
+  db.prepare(
+    "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES('requeued-event','committed-history','node.created',?,'pending',1,1,1)",
+  ).run(fixture.ids.folder);
+  db.exec(
+    "INSERT INTO queue_dead_letters(message_id,outbox_id,sent_at,received_at,epoch) VALUES('requeued-observation','requeued-event',1,2,1)",
+  );
+  db.prepare(
+    "INSERT INTO activity(id,op_id,actor_id,kind,affected_id,created_at) VALUES(?,'committed-history',?,'admin.dlq','requeued-observation',3)",
+  ).run(requeueId, fixture.ids.user);
+  db.prepare(
+    "UPDATE queue_dead_letters SET requeue_id=?,requeue_actor_id=?,requeue_credential_id=?,requeue_epoch=1,requeued_at=3 WHERE message_id='requeued-observation'",
+  ).run(requeueId, fixture.ids.user, fixture.ids.credential);
   const started = Date.now();
   for (const state of ["pending", "succeeded", "not_started"])
     db.prepare(
