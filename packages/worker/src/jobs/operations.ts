@@ -130,11 +130,13 @@ export async function operationIntent(
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new Error("invalid_idempotency_key");
   principal = freezePrincipal(principal);
   destination = transferDestination(destination);
+  if (kind === "copy.enqueue" && !destination) throw new Error("invalid_transfer_scope");
   if (
     destination &&
-    (!["node.copy", "node.move", "dav.copy", "dav.move"].includes(kind) ||
+    (!["node.copy", "node.move", "dav.copy", "dav.move", "copy.enqueue"].includes(kind) ||
       !["user", "app_password"].includes(principal.kind) ||
-      destination.spaceId !== spaceId)
+      (kind !== "copy.enqueue" && destination.spaceId !== spaceId) ||
+      (kind === "copy.enqueue" && (principal.kind !== "user" || destination.spaceId === spaceId)))
   )
     throw new Error("invalid_transfer_scope");
   const actor = principalId(principal);
@@ -250,7 +252,7 @@ export function validateClaimAuthorization(
     authorized.operation === "node.content.write";
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
   const move = ["node.move", "dav.move"].includes(intent.kind);
-  const copy = ["node.copy", "dav.copy"].includes(intent.kind);
+  const copy = ["node.copy", "dav.copy", "copy.enqueue"].includes(intent.kind);
   const restore = intent.kind === "node.restore";
   const purge = intent.kind === "node.purge";
   const targetMatches =
@@ -416,7 +418,7 @@ export interface VisibleOperation {
   id: string;
   state: OperationRow["state"];
   errorCode: string | null;
-  result: { status: number; nodeId?: string; revision?: number } | null;
+  result: { status: number; nodeId?: string; jobId?: string; revision?: number } | null;
 }
 
 /** R6 operation lookup uses the exact initiating credential, then current original-operand authorization. */
@@ -441,6 +443,7 @@ export async function lookupOperation(
       row.kind !== "dav.copy" &&
       row.kind !== "dav.move" &&
       row.kind !== "node.copy" &&
+      row.kind !== "copy.enqueue" &&
       row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
       row.kind !== "node.restore" &&
@@ -460,8 +463,8 @@ export async function lookupOperation(
     const destination = storedDestination(row);
     if (
       destination &&
-      (!["node.copy", "node.move", "dav.copy", "dav.move"].includes(row.kind) ||
-        destination.spaceId !== row.space_id)
+      (!["node.copy", "node.move", "dav.copy", "dav.move", "copy.enqueue"].includes(row.kind) ||
+        (row.kind !== "copy.enqueue" && destination.spaceId !== row.space_id))
     )
       return null;
     const targetPrincipal = destinationPrincipal(principal, destination);
@@ -499,7 +502,7 @@ export async function lookupOperation(
         .first();
       if (!bound) return null;
     }
-    if (row.kind === "dav.copy" || row.kind === "node.copy") {
+    if (row.kind === "dav.copy" || row.kind === "node.copy" || row.kind === "copy.enqueue") {
       if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
         return null;
       await prove(principal, {
@@ -512,7 +515,7 @@ export async function lookupOperation(
         ownerOnly: targetOwnerOnly,
         operation: "node.create",
         parentId: operands.parentId,
-        spaceId: row.space_id,
+        spaceId: destination?.spaceId ?? row.space_id,
       });
     } else if (
       create ||
@@ -621,32 +624,34 @@ export async function lookupOperation(
     }
     const result =
       row.state === "committed" && row.result_json
-        ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
+        ? (JSON.parse(row.result_json) as { status: number; nodeId?: string; jobId?: string })
         : null;
     const expectedStatus =
-      row.kind === "dav.put" || row.kind === "upload.complete"
-        ? typeof operands.nodeId === "string"
-          ? 204
-          : 201
-        : row.kind === "dav.delete" || row.kind === "node.trash"
-          ? 204
-          : row.kind === "node.restore"
-            ? 200
-            : row.kind === "node.purge"
+      row.kind === "copy.enqueue"
+        ? 202
+        : row.kind === "dav.put" || row.kind === "upload.complete"
+          ? typeof operands.nodeId === "string"
+            ? 204
+            : 201
+          : row.kind === "dav.delete" || row.kind === "node.trash"
+            ? 204
+            : row.kind === "node.restore"
               ? 200
-              : ["node.move", "dav.move"].includes(row.kind)
-                ? typeof operands.overwriteTargetId === "string"
-                  ? 204
-                  : 201
-                : ["node.copy", "dav.copy"].includes(row.kind)
+              : row.kind === "node.purge"
+                ? 200
+                : ["node.move", "dav.move"].includes(row.kind)
                   ? typeof operands.overwriteTargetId === "string"
                     ? 204
                     : 201
-                  : create
-                    ? 201
-                    : row.kind === "dav.proppatch"
-                      ? 207
-                      : 200;
+                  : ["node.copy", "dav.copy"].includes(row.kind)
+                    ? typeof operands.overwriteTargetId === "string"
+                      ? 204
+                      : 201
+                    : create
+                      ? 201
+                      : row.kind === "dav.proppatch"
+                        ? 207
+                        : 200;
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&
@@ -655,6 +660,20 @@ export async function lookupOperation(
     )
       return null;
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
+    if (row.kind === "copy.enqueue") {
+      if (!destination || row.principal_kind !== "user" || destination.spaceId === row.space_id)
+        return null;
+      if (result) {
+        const jobId = "copy_" + row.op_id.slice(3);
+        if (result.jobId !== jobId || result.nodeId !== undefined) return null;
+        const bound = assertExists(
+          "SELECT 1 FROM bulk_jobs j JOIN spaces s ON s.id=? JOIN copy_job_manifests m ON m.job_id=j.id WHERE j.id=? AND j.op_id=? AND j.kind='node.copy' AND j.owner_id=s.owner_id AND j.credential_id=? AND j.epoch=?",
+          [destination.spaceId, jobId, row.op_id, row.credential_id, row.epoch],
+        );
+        await atomicBatch(db, [...proofs.map(authorizationAssertion), bound]);
+        visible = { status: 202, jobId };
+      }
+    }
     if (result && typeof result.nodeId === "string") {
       try {
         const proof = await prove(targetPrincipal, {

@@ -74,6 +74,8 @@ export const OPERATIONS = {
   "node.rename": ["node:write"],
   "node.move": ["node:write"],
   "node.copy": ["node:read", "node:create"],
+  // Internal acceptance receipt; namespace publication is a later operation.
+  "copy.enqueue": ["node:read", "node:create"],
   "node.trash": ["node:delete"],
   "node.restore": ["node:create"],
   "node.purge": ["node:delete"],

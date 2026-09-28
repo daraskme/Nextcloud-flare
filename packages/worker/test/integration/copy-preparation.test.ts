@@ -371,7 +371,7 @@ it.each([false, true])(
     const f = await fixture();
     await atomicBatch(env.DB, [
       {
-        sql: "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM r WHERE i<130) INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) SELECT ?1||'_'||i,?2,'u/'||?2||'/b/'||?1||'_'||i,1,'etag','committed',1 FROM r",
+        sql: "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM r WHERE i<258) INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) SELECT ?1||'_'||i,?2,'u/'||?2||'/b/'||?1||'_'||i,1,'etag','committed',1 FROM r",
         values: [f.owner.ids.blob, f.owner.ids.user],
       },
       {
@@ -391,10 +391,10 @@ it.each([false, true])(
     ]);
     const plan = await prepareCrossOwnerCopy(env.DB, f.input),
       id = jobId();
-    expect(plan).toMatchObject({ transferBytes: 133, logicalBytes: 133 });
-    expect(preparedCopyBlobs(plan, id)).toHaveLength(131);
+    expect(plan).toMatchObject({ transferBytes: 261, logicalBytes: 261 });
+    expect(preparedCopyBlobs(plan, id)).toHaveLength(259);
     if (fail)
-      await env.DB.prepare("UPDATE users SET quota_bytes=133 WHERE id=?")
+      await env.DB.prepare("UPDATE users SET quota_bytes=261 WHERE id=?")
         .bind(f.recipient.ids.user)
         .run();
     const pending = atomicBatch(
@@ -407,14 +407,14 @@ it.each([false, true])(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM blob_pins WHERE pin_id>=? AND pin_id<?")
         .bind(id + "_p", id + "_q")
         .first("n"),
-    ).toBe(fail ? 0 : 131);
+    ).toBe(fail ? 0 : 259);
     expect(await auditOwnerLedger(env.DB, f.recipient.ids.user)).toMatchObject({
       used_bytes: 3,
-      reserved_bytes: fail ? 0 : 133,
+      reserved_bytes: fail ? 0 : 261,
       incorrect_refs: 0,
     });
     expect(await auditOwnerLedger(env.DB, f.owner.ids.user)).toMatchObject({
-      used_bytes: 133,
+      used_bytes: 261,
       reserved_bytes: 0,
       incorrect_refs: 0,
     });

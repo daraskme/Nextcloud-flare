@@ -31,9 +31,9 @@ beforeEach(() => {
       VALUES('legacy','user','owner-u','as:owner-session','owner-s','node.copy','failed','digest',1,'permit',10000,10000,0,1,1);`);
 });
 afterEach(() => db.close());
-function migrate() {
+function migrate(all = true) {
   for (const file of readdirSync(directory)
-    .filter((f) => f.endsWith(".sql") && f >= "0051_")
+    .filter((f) => f.endsWith(".sql") && f >= "0051_" && (all || f < "0052_"))
     .sort())
     db.exec(readFileSync(new URL(file, directory), "utf8"));
 }
@@ -73,7 +73,7 @@ it("adds nullable destinations without changing legacy data or foreign keys", ()
       tables.map((t) => [t, db.prepare(`SELECT ${columns[t]} FROM ${t} ORDER BY 1`).all()]),
     );
   const before = snapshot();
-  migrate();
+  migrate(false);
   expect(snapshot()).toEqual(before);
   expect(
     db
@@ -87,6 +87,10 @@ it("adds nullable destinations without changing legacy data or foreign keys", ()
     destination_share_version: null,
   });
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  for (const file of readdirSync(directory)
+    .filter((f) => f.endsWith(".sql") && f >= "0052_")
+    .sort())
+    db.exec(readFileSync(new URL(file, directory), "utf8"));
   expect(ready()).toBeTruthy();
 });
 it("accepts stopped historical grants and makes the destination immutable", () => {

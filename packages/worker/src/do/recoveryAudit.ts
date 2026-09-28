@@ -2,6 +2,7 @@ import { type SelectedShareRecord, storedSelection } from "../auth/selectedShare
 import { storedDestination, type TransferDestinationRecord } from "../auth/transferScope";
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
+import { loadCopyJobManifest } from "../jobs/copyManifest";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
 import {
   acquireGlobalMutation,
@@ -273,15 +274,26 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM operations o WHERE
         ((o.destination_share_id IS NULL)<>(o.destination_share_version IS NULL))
         OR (o.destination_space_id IS NULL AND o.destination_share_id IS NOT NULL)
+        OR (o.kind='copy.enqueue' AND o.destination_space_id IS NULL)
         OR (o.destination_space_id IS NOT NULL AND (
-          o.kind NOT IN ('node.copy','node.move','dav.copy','dav.move') OR o.principal_kind NOT IN ('user','app_password')
-          OR o.destination_space_id<>o.space_id
+          o.kind NOT IN ('node.copy','node.move','dav.copy','dav.move','copy.enqueue') OR o.principal_kind NOT IN ('user','app_password')
+          OR (o.kind<>'copy.enqueue' AND o.destination_space_id<>o.space_id)
+          OR (o.kind='copy.enqueue' AND (o.principal_kind<>'user' OR o.destination_space_id=o.space_id))
           OR (o.destination_share_id IS NOT NULL AND (length(o.destination_share_id) NOT BETWEEN 1 AND 128 OR o.destination_share_id GLOB '*[^A-Za-z0-9_-]*'))
           OR NOT EXISTS(SELECT 1 FROM spaces sp WHERE sp.id=o.destination_space_id AND (
             (o.destination_share_id IS NULL AND sp.owner_id=o.principal_id)
             OR EXISTS(SELECT 1 FROM shares sh WHERE sh.id=o.destination_share_id AND sh.kind='internal' AND sh.owner_id=sp.owner_id
               AND o.destination_share_version BETWEEN 1 AND sh.version AND o.destination_share_version<=9007199254740991))))))
+      AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.kind='copy.enqueue' AND o.state='committed'
+        AND NOT EXISTS(SELECT 1 FROM bulk_jobs j JOIN copy_job_manifests m ON m.job_id=j.id
+          JOIN outbox b ON b.outbox_id=o.op_id||'_copy' AND b.op_id=o.op_id
+          WHERE j.op_id=o.op_id AND j.id='copy_'||substr(o.op_id,4) AND j.kind='node.copy'
+            AND j.credential_id=o.credential_id AND j.epoch=o.epoch AND b.epoch=o.epoch
+            AND b.kind='copy.requested' AND b.payload_ref=j.id
+            AND json_extract(o.result_json,'$.status')=202 AND json_extract(o.result_json,'$.jobId')=j.id))
       AND (c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM bulk_jobs WHERE kind='node.copy' AND state IN ('pending','running'))
+      AND NOT EXISTS(SELECT 1 FROM copy_job_blobs)
       AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))
@@ -432,6 +444,7 @@ export async function releaseStaleRecoveryReservations(
   const rows = await primary(db)
     .prepare(`SELECT r.id,r.owner_id,r.epoch,r.bytes,r.expires_at,r.share_id,r.op_id FROM reservations r WHERE r.state='reserved' AND r.epoch<?
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=r.id)
+      AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb WHERE cb.reservation_id=r.id)
       AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.op_id=r.op_id AND o.kind='dav.put')
       ORDER BY r.id LIMIT ?`)
     .bind(epoch, limit)
@@ -470,6 +483,7 @@ export async function releaseStaleRecoveryReservations(
             AND expires_at=? AND share_id IS ? AND op_id IS ? AND state='reserved' AND epoch<?
             AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=1 AND gc_paused=1)
             AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.reservation_id=reservations.id)
+            AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb WHERE cb.reservation_id=reservations.id)
             AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.op_id=reservations.op_id AND o.kind='dav.put')`,
           values: [id, owner_id, sourceEpoch, bytes, expires_at, share_id, op_id, epoch, epoch],
         },
@@ -673,6 +687,27 @@ export async function inspectRecoveryPage(
         row.operation_state !== "committed"
       )
         throw new Error("recovery_outbox_provenance_mismatch");
+      if (row.kind === "copy.requested") {
+        if (
+          row.operation_kind !== "copy.enqueue" ||
+          row.operation_state !== "committed" ||
+          row.principal_kind !== "user" ||
+          (row.claim_token === null) !== (row.claim_expires_at === null) ||
+          (["dispatching", "sent"].includes(row.state) &&
+            (!row.dispatch_token || row.dispatch_expires_at === null))
+        )
+          throw new Error("recovery_outbox_provenance_mismatch");
+        await loadCopyJobManifest(db, row.payload_ref);
+        const receipt = await primary(db)
+          .prepare(`SELECT 1 FROM outbox b JOIN bulk_jobs j ON j.id=b.payload_ref
+          JOIN operations o ON o.op_id=j.op_id WHERE b.outbox_id=? AND b.op_id=j.op_id AND b.epoch=j.epoch
+            AND o.expected_steps=4 AND (SELECT COUNT(*) FROM operation_steps s WHERE s.op_id=o.op_id AND s.affected_id=j.id
+              AND s.kind IN ('copy_job','copy_manifest','copy_holds','copy_outbox'))=4`)
+          .bind(row.outbox_id)
+          .first();
+        if (!receipt) throw new Error("recovery_outbox_provenance_mismatch");
+        continue;
+      }
       if (
         !(
           (row.kind === "node.created" &&

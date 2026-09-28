@@ -96,7 +96,7 @@ it("downloads the pinned source, verifies actual SQL and records its hash only a
     source,
     state: "sql_verified",
     complete: true,
-    tables: 69,
+    tables: 72,
     bytes: artifact.manifest.data.bytes,
     schemaSha256: artifact.manifest.schema.sha256,
     dataSha256: artifact.manifest.data.sha256,

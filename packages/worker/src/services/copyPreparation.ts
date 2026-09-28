@@ -403,8 +403,8 @@ export function reservePreparedCopyStatements(
       [plan.principal.epoch, expiresAt],
     ),
   ];
-  for (let start = 0; start < allocations.length; start += 128) {
-    const group = allocations.slice(start, start + 128),
+  for (let start = 0; start < allocations.length; start += 256) {
+    const group = allocations.slice(start, start + 256),
       json = JSON.stringify(group);
     statements.push(
       {

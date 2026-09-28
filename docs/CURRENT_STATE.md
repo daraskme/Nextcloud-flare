@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[所有者間コピーの準備](COPY_JOBS.md)を実装しました。コピー元と上書き対象の構成・blob・属性を固定し、両側の権限と変更の有無を開始確定のbatchで再検査します。COW aliasは実体ごとにまとめ、コピー元pinと転送先の容量予約を原子的に取得します。永続job・Queue・R2転送・一括公開・取消し/再試行・画面はこれから接続するため、所有者間コピー全体は未完成です。
+[所有者間コピーの永続受付](COPY_JOBS.md)を追加しました。内部受付operationとコピー完了を分け、固定manifest・job・pin・容量予約・Outboxを一括確定します。同じ要求への再送は同じjob IDを返し、両側の資格情報・選択grant・権限を再確認します。R2転送・一括公開・取消し/再試行・HTTP/画面はまだ未接続で、所有者間コピー全体は未完成です。
 
-schema0051・通常69table、schema/依存追加なし。全Node1,361件・関連workerd130件の計1,491件成功。型・lint・契約/設定・buildも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0052・通常72table。マニフェスト・分割データ・blob保持対応の3tableと内部operationを追加し、依存変更はありません。全Node1,375件・関連workerd451件の計1,826件成功（修正後の対象file再実行を含む）。型・lint・契約/設定・buildも成功しました。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-送信先は承認済み専用`codex/database-restore`です。先行8dbdcc6の[CI36363511416](https://github.com/daraskme/Nextcloud-flare/actions/runs/36363511416)はWindows分割3/3の全Node1,361件中1件が失敗。r2-write-schemaのpending作成が、秒単位時計の境界でdispatch期限不足として拒否されました。SQLiteの実triggerを使う試験用時計を固定し、期限経過を明示的に進める形へ修正。productionの期限や検査は変更していません。先行f953d43のCI全6job成功、a9af702も再実行後全6job成功です。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。最新CI状態はgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。最新CI状態はgh run listで確認します。
 
 ## 状態の意味
 
@@ -27,7 +27,7 @@ schema0051・通常69table、schema/依存追加なし。全Node1,361件・関�
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
 | 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
-| 所有者間copyの準備 | 両側の選択、source/overwrite manifest、属性・blob固定、重複排除、pin/予約の原子的なSQL | 実D1で共有停止・metadata競合・quota・chunk rollback・1万件境界を検証 | 永続job・R2転送・公開・取消し/再開・HTTP/UIは後続。[詳細](COPY_JOBS.md) |
+| 所有者間copyの永続受付 | 両側の選択、固定manifest、job/Outbox、pin/予約、202受付receiptと再送照合 | 実D1で応答喪失・同時再送・共有停止・quota rollback・分割保存を検証。回帰結果はIMPLEMENTATION_STATUS | R2転送・公開・取消し/再開・HTTP/UIは後続。[詳細](COPY_JOBS.md) |
 | 内部共有DAV | 固定mount一覧/解決、read/edit操作、同一ownerの別mount間COPY/MOVE、両側の選択とロック・Outbox・復旧 | 実D1の権限停止競合、再送・応答喪失・照会・上書き、schema移行と破損復旧記録の拒否。関連回帰はIMPLEMENTATION_STATUS | cross-owner copy、実OS/staging。[詳細](DAV_SHARED.md) |
 | 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |

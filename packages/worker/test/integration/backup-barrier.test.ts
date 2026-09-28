@@ -593,7 +593,7 @@ it("waits for a live job lease before allowing the export snapshot", async () =>
   });
   expect(result).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
   await env.DB.prepare(
-    "INSERT INTO bulk_jobs(id,owner_id,credential_id,op_id,kind,state,epoch,grant_snapshot,created_at,updated_at) VALUES(?,?,?,?,'node.copy','pending',?,'{}',1,1)",
+    "INSERT INTO bulk_jobs(id,owner_id,credential_id,op_id,kind,state,epoch,grant_snapshot,created_at,updated_at) VALUES(?,?,?,?,'node.create','pending',?,'{}',1,1)",
   )
     .bind(
       job,

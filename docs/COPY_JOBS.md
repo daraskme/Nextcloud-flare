@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。非同期copy jobに必要な対象固定・保持・容量予約の内部処理を実装した。HTTP受付、ジョブの永続記録、Queue、R2転送、一括公開、取消し・再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-28。対象固定・保持・容量予約を、永続job/manifest/Outboxの内部受付へ接続した。HTTP受付、Queue consumerによるR2転送、一括公開、取消し・再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -8,7 +8,7 @@
 
 対象にはノード構成、保存名と正規化名、revision、client mtime、hidden、現在のblob、dead propertiesを含める。blobは保存キー・サイズ・保存済みETag・content ETag・hash・MIMEを保持し、記録済みの物理サイズとownerの一致を検査する。コピー元rootの外のparent IDは結果に含めない。Depth 0はcollectionとその属性だけ、Depth infinityは全配下を固定する。上書き対象も別のsnapshotとして固定する。
 
-コピー元と上書き対象を合わせて10,000 node・10,000 property、UTF-8で8 MiBまでのメタデータを扱う。走査には索引付きsuccessor walkと10,001件目の検出を使い、上限超過を切り捨てて成功扱いにしない。大きすぎる属性は値をWorkerへ読み出す前に検出する。深さは絶対depth 64まで。さらに大きいmanifestの分割保存は未実装で、この準備の成功をジョブ完了とはしない。
+コピー元と上書き対象を合わせて10,000 node・10,000 property、UTF-8で8 MiBまでのメタデータを扱う。走査には索引付きsuccessor walkと10,001件目の検出を使い、上限超過を切り捨てて成功扱いにしない。大きすぎる属性は値をWorkerへ読み出す前に検出する。深さは絶対depth 64まで。8 MiBを超える対象はまだ受け付けず、この準備の成功をジョブ完了とはしない。
 
 返却するplanと全配下は凍結し、SHA-256 digestを付ける。`copyPreparationAssertions` は生成元のrequest-local proofだけを受け付け、複製・JSON読戻し・偽造したobjectを認可の代わりにできない。開始を確定する同じD1 batchで、両側の資格情報・共有・世代・全メタデータ・現在の名前衝突を再検査する。構成追加、属性の同じ長さでの置換、content変更、共有停止も拒否する。
 
@@ -16,13 +16,31 @@
 
 `preparedCopyBlobs` はsource blobごとに転送先blob ID、pin ID、reservation IDを割り当てる。コピー元にCOW aliasが複数あっても同じblobの転送・予約・pinは一つ。画面上の合計サイズを表すlogical bytesと、実際に転送・予約するunique bytesを分ける。folder全体を単一uploadのサイズ上限へ押し込まず、各blobについて既存の予約上限を使う。
 
-`reservePreparedCopyStatements` は、上記の再認可と一意なblobごとの予約・pinをまとめたSQLを返す。**呼出側は、永続job/manifest・idempotency digest・Outboxの記録と、適切なmutation admissionを同じbatchに入れる必要がある。このSQLだけを単独で実行するHTTP経路は設けていない。**
+`reservePreparedCopyStatements` は、上記の再認可と一意なblobごとの予約・pinをまとめたSQLを返す。**`createCopyJob` が、永続job/manifest・idempotency digest・Outboxの記録と、LockDO/common mutation admissionを同じbatchに入れる。このSQLだけを単独で実行するHTTP経路は設けていない。** 256 blobごとにSQLをまとめ、manifest保存と全再検査を含めてD1の1,000 statement上限を維持する。
 
 予約は転送先owner、pinはコピー元blobへ付ける。namespaceや実在R2 bytesはまだ増やさない。quota不足やsource ref上限で最後のchunkが失敗しても、先に入れたpinと予約を含めて全rollbackする。既存のpinを期限だけで消すことはせず、後続のjob終了・取消し・復旧処理が実際の転送終了を確認して精算する。
 
+## 永続受付と再送
+
+`services/createCopyJob.ts` はAccess userだけを受け付ける内部service。内部operation `copy.enqueue` の成功はjob受付だけを表し、namespace公開のoperationとは別に扱う。source spaceのLockDOと共通mutation受付で両側の現行認可を検査し、転送先のcreate/overwrite lockも確定batchで再確認する。同期`node.copy`/`dav.copy`の同一space制限は広げない。
+
+同じbatchで `bulk_jobs`、`copy_job_manifests`、`copy_job_chunks`、`copy_job_blobs`、pin、予約、4個のstep、`copy.requested` Outboxとoperation成功receiptを確定する。`bulk_jobs.op_id`は受付operationを指す。manifest/保持対応が欠ける場合はDB triggerも202 receiptの確定を拒否する。jobの`node_count`/`blob_count`は固定manifestの対象数で、転送の進捗とは分ける。Queueへ送るのは既存OutboxのIDだけ。consumerはまだ転送せず、完了ACKもしない。
+
+job IDは元credentialとidempotency keyに対応するoperation IDから固定する。要求内容には両側の選択share、親、source、保存名、depth、上書き対象、lock token hashを束縛する。再送では現在のcredentialと元/先の権限を検査し、元のjob IDを返す。途中でsourceの内容が変わっても新しいmanifestや追加予約を作らない。異なる要求へのkey再利用は拒否する。応答喪失は既存のoperation照合へ接続し、記録を確認できない間は`commit_unknown`を維持する。
+
+manifest本文は最大8 MiB、64 KiBずつ最大128個のBLOB行へ保存する。`jobs/copyManifest.ts` は8行ずつ読み、サイズ・連番・SHA-256・operation/owner/credential/選択・保持対応を照合する。D1のBLOBがnumber配列として返ることを考慮し、全chunkを同時に配列化しない。読戻したobjectは凍結するが、request-local authorization proofは与えない。次の実行段階では現行権限を改めて検査する。
+
+## 移行と復旧
+
+migration0052で通常72tableとなる。追加3tableはSTRICT/FK/index、backup/restore freeze、export/purge順序の契約へ含める。旧catalogueに未解決の`node.copy` bulk jobが残る場合は移行を拒否し、元処理の個別照合を要求する。
+
+copy用reservationは汎用の旧epoch回収から除外する。保持対応の存在中はreservationの変更とpinの変更/削除を拒否する。pending/running jobまたは保持対応が残る間は復旧後の再開を許可しない。Outbox監査は保存済みmanifestのhashと受付receiptを検査するが、成功しても実転送の終了証明にはならない。24時間の受付期限やepoch変更だけで保持を解放しない。
+
+取消しと転送後の精算はまだ未実装で、現時点のschemaはmanifest/保持対応の削除を拒否する。R2-awareな精算を実装する際にはforward migrationで対応する。guardだけを外して容量を返す運用は行わない。この段階の内部serviceはHTTP経路へ公開しない。
+
 ## 次に接続する処理
 
-1. 永続job・manifest、要求の再送照合、actor/credential/選択grant/epochを保存し、QueueにはIDだけを送る。
+1. 永続jobにclaim/checkpointと実行予算を追加し、Queue consumerから固定manifestと両側の現行認可を検査する。
 2. 固定したsource blobをpinしたままRangeで読み、転送先の単一/分割uploadへ流す。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
 3. 全blobを検証してから、固定manifest・衝突方針・dead propertiesをnamespaceの原子的な公開へ接続する。フォルダーの一部だけを公開しない。
 4. job read/cancel/retry、停止・recovery・Outbox、pin/予約/physicalの精算、Shared画面の宛先選択と進捗を接続する。

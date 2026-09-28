@@ -56,7 +56,7 @@ export interface CopyPermitRequest extends CreatePermitRequest {
   destination?: TransferDestination | undefined;
   sourceNodeId: string;
   overwriteTargetId?: string;
-  operation?: "node.copy" | "dav.copy";
+  operation?: "node.copy" | "dav.copy" | "copy.enqueue";
 }
 export interface NodeWritePermitRequest {
   requestId: string;
@@ -487,8 +487,17 @@ export class LockDO extends DurableObject<Env> {
       principal: freezePrincipal(request.principal),
       destination: transferDestination(request.destination),
     };
-    if (request.destination && request.destination.spaceId !== request.spaceId)
+    const enqueue = request.operation === "copy.enqueue";
+    if (
+      enqueue &&
+      (request.principal.kind !== "user" ||
+        !request.destination ||
+        request.destination.spaceId === request.spaceId)
+    )
       throw new Error("invalid_transfer_scope");
+    if (!enqueue && request.destination && request.destination.spaceId !== request.spaceId)
+      throw new Error("invalid_transfer_scope");
+    const targetSpace = request.destination?.spaceId ?? request.spaceId;
     const targetPrincipal = destinationPrincipal(request.principal, request.destination);
     const sourceOwnerOnly = !!request.destination && !principalSelection(request.principal);
     const targetOwnerOnly = !!request.destination && !request.destination.share;
@@ -508,19 +517,20 @@ export class LockDO extends DurableObject<Env> {
       ownerOnly: targetOwnerOnly,
       operation: "node.create",
       parentId: request.parentId,
-      spaceId: request.spaceId,
+      spaceId: targetSpace,
     });
     const overwrite = request.overwriteTargetId
       ? await authorizeNode(this.env.DB, targetPrincipal, {
           ownerOnly: targetOwnerOnly,
           operation: "node.trash",
           nodeId: request.overwriteTargetId,
-          spaceId: request.spaceId,
+          spaceId: targetSpace,
         })
       : null;
     if (
       source.operation !== "node.read" ||
       destination.operation !== "node.create" ||
+      (enqueue && source.node.owner_id === destination.parent.owner_id) ||
       (overwrite &&
         (overwrite.operation !== "node.trash" || overwrite.parentId !== request.parentId))
     )
@@ -530,16 +540,16 @@ export class LockDO extends DurableObject<Env> {
       (await hasBlockingLocks(
         this.env.DB,
         request.parentId,
-        request.spaceId,
-        request.principal,
+        targetSpace,
+        targetPrincipal,
         hashes,
       )) ||
       (request.overwriteTargetId !== undefined &&
         (await hasBlockingTrashLocks(
           this.env.DB,
           request.overwriteTargetId,
-          request.spaceId,
-          request.principal,
+          targetSpace,
+          targetPrincipal,
           hashes,
         )))
     )
@@ -579,9 +589,9 @@ export class LockDO extends DurableObject<Env> {
       authorizationAssertion(source),
       authorizationAssertion(destination),
       ...(overwrite ? [authorizationAssertion(overwrite)] : []),
-      assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+      assertCreateLocks(request.parentId, targetSpace, targetPrincipal, hashes),
       ...(request.overwriteTargetId
-        ? [assertTrashLocks(request.overwriteTargetId, request.spaceId, request.principal, hashes)]
+        ? [assertTrashLocks(request.overwriteTargetId, targetSpace, targetPrincipal, hashes)]
         : []),
     ]);
   }
