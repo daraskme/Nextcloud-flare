@@ -6,6 +6,7 @@ import {
   type SharedNode,
   type SharedRoot,
 } from "./client";
+import { PublicEditor } from "./editor";
 
 function size(bytes: number | null) {
   if (bytes === null) return "サイズ不明";
@@ -22,12 +23,15 @@ export function PublicApp({ client }: { client: PublicClient }) {
   const [password, setPassword] = useState(""),
     [retry, setRetry] = useState(0);
   const [closed, setClosed] = useState(false);
+  const [editing, setEditing] = useState<{ node?: SharedNode } | null>(null);
+  const locked = busy || editing !== null;
   const channel = useRef<BroadcastChannel | null>(null);
   const clear = useCallback(() => {
     client.close();
     setRoot(null);
     setTrail([]);
     setPage(null);
+    setEditing(null);
     setPassword("");
     setClosed(true);
     setBusy(false);
@@ -170,7 +174,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
           Nextcloud Flare<small>共有リンク</small>
         </span>
         {root && (
-          <button className="quiet" disabled={busy} onClick={() => void logout()}>
+          <button className="quiet" disabled={locked} onClick={() => void logout()}>
             共有を閉じる
           </button>
         )}
@@ -180,7 +184,10 @@ export function PublicApp({ client }: { client: PublicClient }) {
         <h1>{root ? current?.name || "共有ファイル" : "共有ファイル"}</h1>
         <p className="description">
           {root
-            ? "共有されたファイルを閲覧・保存できます。"
+            ? root.root.kind !== "file" &&
+              (root.permissions.createFolder || root.permissions.rename)
+              ? "共有されたファイルの閲覧・保存、フォルダー作成と名前変更ができます。"
+              : "共有されたファイルを閲覧・保存できます。"
             : "リンクを受け取った方のためのファイル共有です。"}
         </p>
         {message && (
@@ -224,7 +231,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 <span key={node.id}>
                   {index > 0 && <span aria-hidden="true"> / </span>}
                   <button
-                    disabled={busy || index === trail.length - 1}
+                    disabled={locked || index === trail.length - 1}
                     onClick={() => void browse(trail.slice(0, index + 1))}
                   >
                     {node.name || "共有フォルダー"}
@@ -232,9 +239,44 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 </span>
               ))}
             </nav>
+            {editing && current && (
+              <PublicEditor
+                client={client}
+                sessionId={root.sessionId}
+                parentId={current.id}
+                node={editing.node}
+                close={() => setEditing(null)}
+                done={() => {
+                  setEditing(null);
+                  void browse(trail);
+                }}
+                failed={(error) => {
+                  setEditing(null);
+                  setRoot(null);
+                  setTrail([]);
+                  setPage(null);
+                  failed(error);
+                  setMessage(
+                    "共有の状態が変わったため、操作を確認できませんでした。共有リンクを開き直し、フォルダーの内容を確認してください。",
+                  );
+                }}
+              />
+            )}
             <div className="list-header">
               <span>{current?.kind === "file" ? "ファイル" : "フォルダー内の項目"}</span>
-              <button className="quiet" disabled={busy} onClick={() => void open("")}>
+              {current?.kind !== "file" && root.permissions.createFolder && (
+                <button
+                  className="quiet"
+                  disabled={locked}
+                  onClick={() => {
+                    setMessage("");
+                    setEditing({});
+                  }}
+                >
+                  新規フォルダー
+                </button>
+              )}
+              <button className="quiet" disabled={locked} onClick={() => void open("")}>
                 更新
               </button>
             </div>
@@ -253,7 +295,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
                     ) : (
                       <button
                         className="folder-name"
-                        disabled={busy}
+                        disabled={locked}
                         onClick={() => void browse([...trail, node])}
                       >
                         {node.name}
@@ -261,10 +303,23 @@ export function PublicApp({ client }: { client: PublicClient }) {
                     )}
                     <small>{node.kind === "file" ? size(node.size) : "フォルダー"}</small>
                   </div>
+                  {root.permissions.rename && node.id !== root.root.id && (
+                    <button
+                      className="rename"
+                      disabled={locked}
+                      aria-label={`${node.name}の名前を変更`}
+                      onClick={() => {
+                        setMessage("");
+                        setEditing({ node });
+                      }}
+                    >
+                      名前を変更
+                    </button>
+                  )}
                   {node.kind === "file" && (
                     <button
                       className="download"
-                      disabled={busy || !node.currentBlobId}
+                      disabled={locked || !node.currentBlobId}
                       onClick={() => void download(node)}
                       aria-label={`${node.name}を開く・保存`}
                     >
@@ -280,7 +335,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
             {page?.nextCursor && (
               <button
                 className="load-more"
-                disabled={busy}
+                disabled={locked}
                 onClick={() => void browse(trail, page.nextCursor)}
               >
                 続きを表示

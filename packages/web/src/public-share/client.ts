@@ -6,6 +6,8 @@ export interface SharedNode {
   size: number | null;
 }
 export interface SharedRoot {
+  sessionId: string;
+  permissions: { createFolder: boolean; rename: boolean };
   root: SharedNode;
   contentOrigin: string;
   expiresAt: number;
@@ -18,6 +20,7 @@ export class PublicError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfter = 0,
+    readonly operationId?: string,
   ) {
     super("public_request_failed");
   }
@@ -32,14 +35,25 @@ export class PublicClient {
     this.secret = null;
     this.lifetime.abort();
   }
-  async request<T>(suffix: string, method = "GET", body?: unknown, token?: string): Promise<T> {
-    const response = await fetch(`/api/v1/public/shares/${this.id}${suffix}`, {
+  async request<T>(
+    suffix: string,
+    method = "GET",
+    body?: unknown,
+    token?: string,
+    headers: Record<string, string> = {},
+    operationId?: string,
+  ): Promise<T> {
+    const path = operationId
+      ? `/api/v1/operations/${operationId}`
+      : `/api/v1/public/shares/${this.id}${suffix}`;
+    const response = await fetch(path, {
       method,
       credentials: "same-origin",
       redirect: "error",
       cache: "no-store",
       signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30000)]),
       headers: {
+        ...headers,
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         ...(token ? { "X-CSRF-Token": token } : {}),
       },
@@ -49,6 +63,9 @@ export class PublicClient {
       throw new PublicError(
         response.status,
         Math.min(60, Math.max(1, Number(response.headers.get("Retry-After")) || 60)),
+        /^op_[a-f0-9]{64}$/.test(response.headers.get("Operation-Id") ?? "")
+          ? response.headers.get("Operation-Id")!
+          : undefined,
       );
     const value = response.status === 204 ? undefined : await response.json();
     this.lifetime.signal.throwIfAborted();
@@ -88,6 +105,27 @@ export class PublicClient {
     const { token } = await this.request<{ token: string }>("/csrf", "POST");
     return this.request<T>(suffix, "POST", body, token);
   }
+  async edit(intent: EditIntent): Promise<EditOperation> {
+    const { token } = await this.request<{ token: string }>("/csrf", "POST");
+    return this.request<EditOperation>(intent.suffix, intent.method, intent.body, token, {
+      "Idempotency-Key": intent.key,
+      "Share-Session": intent.sessionId,
+    });
+  }
+  operation(id: string, sessionId: string) {
+    if (!/^op_[a-f0-9]{64}$/.test(id)) throw new Error("invalid_operation_id");
+    return this.request<EditOperation>(
+      "",
+      "GET",
+      undefined,
+      undefined,
+      {
+        "X-Share-Id": this.id,
+        "Share-Session": sessionId,
+      },
+      id,
+    );
+  }
   async download(root: SharedRoot, node: SharedNode, target: Window) {
     try {
       const origin = new URL(root.contentOrigin);
@@ -120,4 +158,17 @@ export class PublicClient {
       throw error;
     }
   }
+}
+
+export interface EditIntent {
+  key: string;
+  sessionId: string;
+  suffix: string;
+  method: "POST" | "PATCH";
+  body: { name: string; kind?: "folder"; parentId?: string };
+}
+export interface EditOperation {
+  id: string;
+  state: "claimed" | "committed" | "failed";
+  result: { status: number; nodeId?: string } | null;
 }

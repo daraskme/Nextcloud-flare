@@ -1,6 +1,18 @@
 # 実装進捗
 
-## 公開リンクの所有者管理画面（今回）
+## 公開リンクのフォルダー作成・名前変更（今回）
+
+public POST nodes/PATCH nodeを既存のnamespace mutation/LockDOへ接続し、公開画面へフォルダー作成・名前変更を追加した。所有者UIから閲覧/編集リンクの作成と権限切替も行える。root GETの非秘密sessionIdをShare-Sessionへ指定し、応答喪失後も元のcredential/keyへ固定する。既存GET operationsはX-Share-Id指定時に共有認証で処理し、同じcredentialと現在の元operandへの権限がある場合だけreceiptを返す。画面は結果不明時に自動再送せず、Operation-IdがあればGET、未受信なら同じ要求の明示的再送を行う。schema0063・通常76table・147 route、依存追加なし。
+
+- 全Node87file/1,530件成功（83.75秒、/tmp/ncf-public-edit-unit.log）。
+- 関連workerd5file/76件を確認。初回は75/76件成功（28.05秒、/tmp/ncf-public-edit-native.log）。新規試験で既存receiptのrevisionを期待値に含めていなかったため修正し、対象public-share-editの10件が成功（12.31秒、/tmp/ncf-public-edit-native-recheck.log）。新規10件でcreate/renameの再送・別payload拒否、現在の範囲/権限、CSRF/Origin/session/key、root改名禁止、credential別receipt非公開、Cookie差替え拒否、保存直前のshare/session/祖先/owner失効、D1 ACK喪失、DAV lockを検証。share-unlock/link-shares/public-share-read/public-assetsの66件は初回成功。
+- 関連browser3file/8件成功（2.1分、/tmp/ncf-public-edit-browser.log）。新規3件で所有者の編集リンク作成、390px幅の匿名create/rename/下位folder、閲覧権限への変更と旧editor拒否、POST応答喪失後の同一key再送、Operation-Id受信時のGET照会を確認。既存公開閲覧/保存と所有者管理5件も成功。/tmp/ncf-public-edit-mobile.pngを目視確認。
+- 単体file rootでは編集操作を表示しないことに合わせて画面の説明も調整し、最終アセットでpublic-edit/public-shareのbrowser5件（1.8分、/tmp/ncf-public-edit-browser-final.log）とpublic-assetsのworkerd4件（2.42秒、/tmp/ncf-public-edit-assets-final.log）を再確認した。
+- lint607file、型、契約/設定、Web build、Worker dry-run成功。ログは/tmp/ncf-public-edit-lint-final.log、/tmp/ncf-public-edit-types-final.log、/tmp/ncf-public-edit-contracts.log、/tmp/ncf-public-edit-config.log、/tmp/ncf-public-edit-build-final.log、/tmp/ncf-public-edit-worker-build-final.log。
+- **全Node1,530 + 関連workerd76 + 関連browser8 = 1,614件成功**。全workerd/全browser、backup drill、remote設定は今回ローカル再実行していない。公開upload/overwrite/delete、upload-only・ZIP/media、操作追跡のreload復元、実環境検証は後続。remote resource/secret/migration/deployなし。
+- 先行1cee05dの[CI36430025491](https://github.com/daraskme/Nextcloud-flare/actions/runs/36430025491)はUbuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了した。Windows全Nodeを1/4へ集約後の全shard完走を確認した。
+
+## 公開リンクの所有者管理画面（前回）
 
 Filesの操作メニューへ公開リンク管理を追加。新規閲覧リンク、1回だけ表示するURLのコピー/公開画面への導線、期限、passwordの維持/変更/解除、確認付き再発行・停止に対応する。秘密値はcomponent内だけに保持し、storage/query cacheへ保存しない。応答不明とversion競合では更新を止め、一覧確認と現行versionの再発行を案内する。既存edit linkの設定更新はroleを維持する。公開編集・権限切替は後続で、schema0063・通常76table・147 route、依存追加なし。
 

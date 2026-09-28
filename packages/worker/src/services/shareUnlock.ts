@@ -28,12 +28,15 @@ interface ActiveLink {
   kdf: "PBKDF2-SHA256" | null;
   kdf_params: string | null;
   kid: string | null;
+  can_create: number;
+  can_rename: number;
 }
 export interface ShareSession {
   claims: ShareCookieClaims;
   ownerId: string;
   rootNodeId: string;
   spaceId: string;
+  permissions: { createFolder: boolean; rename: boolean };
 }
 // Pre-authentication proof: inspect only this share's bounded ancestry, without fabricating a user credential.
 const ACTIVE_LINK = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
@@ -42,7 +45,10 @@ const ACTIVE_LINK = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,delete
   UNION ALL SELECT n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,a.depth+1,a.path||n.id||'/'
   FROM a JOIN nodes n ON n.id=a.parent_id AND n.space_id=a.space_id AND n.owner_id=a.owner_id
   WHERE a.depth<64 AND instr(a.path,'/'||n.id||'/')=0
-  ) SELECT sh.*,n.space_id FROM shares sh JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
+  ) SELECT sh.*,n.space_id,
+  EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='create') AS can_create,
+  EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='edit') AS can_rename
+  FROM shares sh JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
   JOIN users owner ON owner.id=sh.owner_id JOIN control ctl ON ctl.singleton=1
   WHERE sh.id=?1 AND sh.kind='link' AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
   AND ctl.epoch=?2 AND ctl.maintenance=0 AND (sh.expires_at IS NULL OR sh.expires_at>${CLOCK})
@@ -95,7 +101,13 @@ export async function readShareSession(
     .bind(...query.values)
     .first<ActiveLink>();
   if (!row) throw new Error("share_session_unavailable");
-  return { claims, ownerId: row.owner_id, rootNodeId: row.root_node_id, spaceId: row.space_id };
+  return {
+    claims,
+    ownerId: row.owner_id,
+    rootNodeId: row.root_node_id,
+    spaceId: row.space_id,
+    permissions: { createFolder: row.can_create === 1, rename: row.can_rename === 1 },
+  };
 }
 
 /** The signed challenge supplies a stable identity across concurrent submission and lost replies. */

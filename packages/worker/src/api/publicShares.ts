@@ -14,11 +14,17 @@ import {
   unlockShare,
 } from "../services/shareUnlock";
 import { hasEmptyBody } from "./emptyBody";
+import {
+  PUBLIC_OPERATION,
+  publicOperationRoute,
+  publicShareMutation,
+  publicShareOperation,
+} from "./publicShareMutations";
 import { publicShareRead, publicShareTicket } from "./publicShareRead";
 import { readShareBody } from "./shares";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|tickets(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -35,11 +41,13 @@ export const publicShareRoute = (request: Request) => {
   const match = ROUTE.exec(new URL(request.url).pathname),
     action = match?.[2] ?? "";
   return (
-    !!match &&
-    ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
-      (request.method === "POST" &&
-        ["unlock", "csrf", "logout", "tickets", "content-session"].includes(action)) ||
-      (request.method === "DELETE" && action.startsWith("tickets/")))
+    publicOperationRoute(request) ||
+    (!!match &&
+      ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
+        (request.method === "POST" &&
+          ["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action)) ||
+        (request.method === "PATCH" && action.startsWith("nodes/")) ||
+        (request.method === "DELETE" && action.startsWith("tickets/"))))
   );
 };
 const csrfSession = (s: ShareSession) => ({
@@ -69,13 +77,15 @@ export async function handlePublicShareHttp(
   dependencies: PublicShareDependencies,
 ): Promise<Response> {
   const url = new URL(request.url),
-    match = ROUTE.exec(url.pathname);
-  if (!match || !publicShareRoute(request) || url.origin !== env.APP_ORIGIN)
+    match = ROUTE.exec(url.pathname),
+    operation = publicOperationRoute(request) ? PUBLIC_OPERATION.exec(url.pathname) : null;
+  if ((!match && !operation) || !publicShareRoute(request) || url.origin !== env.APP_ORIGIN)
     return problem(404, "not_found");
-  const id = match[1]!,
-    action = match[2] ?? "",
+  const id = operation ? request.headers.get("X-Share-Id")! : match![1]!,
+    action = match?.[2] ?? "",
     { tokens, csrf, passwords } = dependencies;
   try {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return problem(400, "bad_request");
     if ((url.search && !action.startsWith("children/")) || url.hash)
       return problem(400, "bad_request");
     if (
@@ -104,6 +114,15 @@ export async function handlePublicShareHttp(
         )
           throw error;
       }
+    }
+    if (operation || action === "nodes" || action.startsWith("nodes/")) {
+      if (!session) return problem(401, "unauthorized");
+      // Bind retries to the original unlock credential even if another tab replaces the cookie.
+      if (request.headers.get("Share-Session") !== session.claims.session_id)
+        return problem(412, "precondition_failed");
+      if (operation) return await publicShareOperation(request, env, session, operation[1]!);
+      await csrf.verify(env.DB, request, csrfSession(session));
+      return publicShareMutation(request, env, session, action);
     }
     if (request.method === "GET") {
       if (!session) return problem(401, "unauthorized");

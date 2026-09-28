@@ -1,6 +1,6 @@
 # 開発進捗
 
-[公開リンクの所有者管理画面](PUBLIC_SHARES.md)を接続しました。閲覧リンクの作成・URLコピー、期限、passwordの維持/変更/解除、秘密値の再発行、停止をFilesメニューから操作できます。応答喪失時は自動再送せず一覧確認を案内し、秘密値をブラウザーstorageやquery cacheへ保存しません。公開閲覧/保存画面への導線も接続しています。公開編集と権限切替、upload-only・ZIP・media、実環境検証は未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンクのフォルダー作成・名前変更](PUBLIC_SHARES.md)をAPIと独立した公開画面へ接続しました。所有者は閲覧/編集のリンクを作成し、権限を切り替えられます。応答喪失時は同じkey・元sessionの操作を明示的に再確認し、別credentialへの切替や自動再送を行いません。保存時も現在の共有範囲・権限・ロックを検証します。公開upload/overwrite/delete、upload-only・ZIP・media、実環境検証は未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-28
 
@@ -10,7 +10,9 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開編集・権限切替と、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開upload/overwrite/deleteと、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行1cee05dの[CI36430025491](https://github.com/daraskme/Nextcloud-flare/actions/runs/36430025491)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。Windows全Nodeを1/4に集約後の全shard完走を確認しています。
 
 先行67be478の[CI36425378826](https://github.com/daraskme/Nextcloud-flare/actions/runs/36425378826)は、Ubuntu・Windows1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4は30分のjob上限でcancelledとなりました（GitHub annotation確認）。4/4の全Nodeは成功し、integration中に打ち切られています。先行backupのEBADF修正はUbuntuの全checkでも成功しました。Windowsの未完走を成功扱いにはしません。Windows全Nodeを1/4で一度実行し、残るshardでの重複を取り除きます。全integration shardと検証範囲は維持し、次のCIで完走を確認します。
 

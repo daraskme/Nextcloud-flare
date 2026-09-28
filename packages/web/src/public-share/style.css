@@ -228,7 +228,8 @@ h1 {
   font-size: 11px;
   color: #748377;
 }
-.download {
+.download,
+.rename {
   background: white;
   border: 1px solid #d4dfd2;
   border-radius: 8px;
@@ -236,6 +237,42 @@ h1 {
   padding: 9px 12px;
   font-size: 12px;
   flex-shrink: 0;
+}
+.public-editor {
+  padding: 24px;
+  margin: 24px 0;
+  background: white;
+  border: 1px solid #c1d0c4;
+  border-radius: 12px;
+  max-width: 540px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.public-editor h2 {
+  font-size: 18px;
+  margin: 0 0 16px;
+}
+.public-editor label {
+  display: block;
+}
+.public-editor input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #c1d0c4;
+  border-radius: 8px;
+}
+.editor-actions {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 16px;
+}
+.editor-actions .primary {
+  width: auto;
+}
+.list-header {
+  flex-wrap: wrap;
 }
 .load-more {
   display: block;

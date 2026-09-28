@@ -1,10 +1,10 @@
 # 公開リンク共有
 
-更新: 2026-09-28。schema0063・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信を接続済み。公開編集と権限切替、upload-only・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-28。schema0063・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更と権限切替を接続済み。公開upload/delete、upload-only・ZIP・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
-Filesのファイル・フォルダー操作メニューから「公開リンクを管理」を開く。新規は閲覧リンクを作成し、期限と任意のpasswordを設定できる。作成・再発行の応答に含まれるURLはcomponent内だけに保持し、clipboardへのコピーと公開画面を開く操作を提供する。storage・query cacheへ保存せず、dialogを閉じると再表示できない。設定変更はpasswordの維持/新規設定/解除を区別し、期限切れは期限を更新してから再発行する。既存edit linkの設定を変更する場合はroleを維持する。編集用の新規リンクと権限切替は公開編集機能と合わせて後続で接続する。
+Filesのファイル・フォルダー操作メニューから「公開リンクを管理」を開く。新規は閲覧を初期選択とし、閲覧/編集の権限、期限と任意のpasswordを設定できる。設定変更でも現在のroleを初期表示して切り替えられる。編集権限は共有内容の変更を許可する設定で、現在の公開画面ではフォルダー作成・名前変更に対応する。作成・再発行の応答に含まれるURLはcomponent内だけに保持し、clipboardへのコピーと公開画面を開く操作を提供する。storage・query cacheへ保存せず、dialogを閉じると再表示できない。設定変更はpasswordの維持/新規設定/解除を区別し、期限切れは期限を更新してから再発行する。
 
 再発行・停止は旧URLと閲覧sessionの失効を画面内で説明し、対象操作を確認する。結果不明とversion競合では更新操作を無効化し、一覧更新後に最新のリンクを選び直す。POST/PATCHを自動で再送せず、受け取れなかった秘密値は再発行で取得する。secretを一覧から復元したように表示しない。独立したlink一覧queryを使い、内部共有の操作は従来どおり利用できる。
 
@@ -54,12 +54,22 @@ public CSRF付き`POST .../:id/tickets`と`POST .../:id/content-session`はnodeI
 
 同じタブで末尾だけが異なるURLを開く場合、ブラウザーはdocumentを再読込みしないことがある。hashchangeでもfragmentを消去し、進行中の旧clientを中止してpassword・root・一覧を新しいcomponentへ切り替える。再発行前後のリンクを開き直す際も、古い認証表示を流用しない。
 
+## 公開フォルダー作成と名前変更
+
+`POST .../:id/nodes`は`{kind:"folder",parentId,name}`、`PATCH .../:id/nodes/:nodeId`は`{name}`だけを受ける。space/owner/share/credentialやDAV lock tokenを本文から指定できない。8KiB/5秒以内のJSON、exact Origin/same-origin、現行Cookieとpublic CSRF、`Idempotency-Key`を必須とする。さらにroot GETが返す非秘密の`sessionId`を`Share-Session`ヘッダーへ指定する。別タブの再認証でCookieが別credentialへ変わったら412として、旧keyを新credentialの新規操作にしない。
+
+既存のcreateFolder/renameNode、LockDO、operation/permit、原子的D1 batchをそのまま使う。共有範囲・actions・version・credential・祖先・owner・epochを保存時にも検証する。閲覧link、範囲外、共有root自体の名前変更は404。DAV lockは423で、匿名者がlock creatorを偽装する経路はない。activityのactorはnullで、operationへ匿名credentialとshareを記録する。成功時は内部operandやowner情報を含まない既存のoperation receiptを返す。
+
+既存`GET /api/v1/operations/:operationId`に`X-Share-Id`を付けると公開認証経路を選ぶ。`Share-Session`、当該Cookie、same-originを要求し、Accessや他の共有Cookieへfallbackしない。元と同じcredential/version/epochと、現在の元operandへの権限がある場合だけreceiptを返す。別credentialや権限を失ったoperandは404、失効Cookieは401。不明なDB結果は503。
+
+root GETの`permissions.createFolder/rename`で編集操作を表示するが、APIの現在の認可が常に正となる。画面は送信中の重複操作を防ぎ、結果不明なら名前・key・元sessionをメモリーに固定する。「結果を確認」でOperation-IdがあればGET照会し、ID自体を受信できなかった場合だけ同じ要求を同じkeyで明示的に再送する。自動再送しない。401/403/404/412では新credentialや新keyへ切り替えず、共有内容の再確認を案内する。編集フォームを閉じると追跡は終了し、実行の取消しにはならない。reload/タブ終了後の追跡復元は未対応で、再度作成する前に一覧確認を案内する。
+
 ## 次の接続と完了条件
 
-1. 公開編集API/画面と所有者側の編集リンク・権限切替を接続する。
+1. 公開編集のupload/overwriteと削除を接続する。削除は既存のlink認可対象外であり、trashのactor/operation/復旧契約も整備する。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側の直接content/thumbなど、未接続の専用配信経路を契約へつなぐ。現在の画面の保存経路はcontent ticket/session経由である。
-4. edit/upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。
+4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。
 5. stagingでAccess Bypass、Cookie、CORS、鍵切替、KDF予算、実配信を検証する。
 
 検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。全体の残件は[CURRENT_STATE](CURRENT_STATE.md)。

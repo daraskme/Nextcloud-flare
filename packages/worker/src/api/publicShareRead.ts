@@ -59,6 +59,8 @@ export async function publicShareRead(
       {
         id: session.claims.share_id,
         version: session.claims.share_version,
+        sessionId: session.claims.session_id,
+        permissions: session.permissions,
         expiresAt: session.claims.exp * 1000,
         root,
         contentOrigin: env.CONTENT_ORIGIN,

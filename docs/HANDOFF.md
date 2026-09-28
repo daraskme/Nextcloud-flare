@@ -1,10 +1,10 @@
 # セッション引き継ぎ
 
-[公開リンクの所有者管理画面](PUBLIC_SHARES.md)を接続しました。閲覧リンクの作成・URLコピー、期限、passwordの維持/変更/解除、秘密値の再発行、停止をFilesメニューから操作できます。応答喪失時は自動再送せず一覧確認を案内し、秘密値をブラウザーstorageやquery cacheへ保存しません。公開閲覧/保存画面への導線も接続しています。公開編集と権限切替、upload-only・ZIP・media、実環境検証は未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンクのフォルダー作成・名前変更](PUBLIC_SHARES.md)をAPIと独立した公開画面へ接続しました。所有者は閲覧/編集のリンクを作成し、権限を切り替えられます。応答喪失時は同じkey・元sessionの操作を明示的に再確認し、別credentialへの切替や自動再送を行いません。保存時も現在の共有範囲・権限・ロックを検証します。公開upload/overwrite/delete、upload-only・ZIP・media、実環境検証は未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-28。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
-公開リンク管理の入口はservices/linkShares.ts・linkShareRead.ts、auth/shareSecrets.ts、api/shares.ts。専用SHARE_PASSWORD_KEYS/SHARE_PASSWORD_ACTIVE_KIDと既存global KDFを使う。所有者POSTのreceipt照会まで失われたら再送せず一覧から確定済みlinkを探し、現行versionで秘密値を更新する。匿名側はapi/publicShares.ts・publicShareConfig.ts、services/shareUnlock.ts、auth/shareTokens.ts、do/controlShareUnlock.ts。専用SHARE_COOKIE_KEYS/SHARE_COOKIE_ACTIVE_KIDとpublic CSRF鍵を設定する。unlock POSTのchallenge段階は5分のHttpOnly Cookieと本文tokenを返し、続く秘密値送信で一致を要求する。同じchallengeの再送は同じsessionへ収束し、有効な共有Cookieがあれば新規登録せず再利用する。rate ledgerは新規/喪失後60秒待機。公開閲覧はapi/publicShareRead.ts・web/src/public-share・assets/publicApp.tsへ接続済み。所有者UIはweb/src/features/shares/LinkShareDialog.tsx。新規は閲覧リンクで、既存edit linkの設定更新では現在のroleを維持する。次は公開編集・権限切替と専用配信経路を接続する。公開budgetはs:<shareId>:c:<unlockId>なので、同じ有効なunlock sessionを別tabや更新で使い回し、budgetを作り直さない。公開機能全体を完成扱いにしない。
+公開リンク管理の入口はservices/linkShares.ts・linkShareRead.ts、auth/shareSecrets.ts、api/shares.ts。専用SHARE_PASSWORD_KEYS/SHARE_PASSWORD_ACTIVE_KIDと既存global KDFを使う。所有者POSTのreceipt照会まで失われたら再送せず一覧から確定済みlinkを探し、現行versionで秘密値を更新する。匿名側はapi/publicShares.ts・publicShareConfig.ts、services/shareUnlock.ts、auth/shareTokens.ts、do/controlShareUnlock.ts。専用SHARE_COOKIE_KEYS/SHARE_COOKIE_ACTIVE_KIDとpublic CSRF鍵を設定する。unlock POSTのchallenge段階は5分のHttpOnly Cookieと本文tokenを返し、続く秘密値送信で一致を要求する。同じchallengeの再送は同じsessionへ収束し、有効な共有Cookieがあれば新規登録せず再利用する。rate ledgerは新規/喪失後60秒待機。公開閲覧はapi/publicShareRead.ts・web/src/public-share・assets/publicApp.tsへ接続済み。所有者UIはweb/src/features/shares/LinkShareDialog.tsx。閲覧/編集の新規リンクと権限切替に対応した。公開編集はapi/publicShareMutations.ts・web/src/public-share/editor.tsxへ接続し、POST nodes/PATCH nodeと元credentialのoperation照会を扱う。Share-Sessionで元unlock credentialを固定し、lookupにはX-Share-Idを付ける。次は公開upload/overwrite/deleteと専用配信経路を接続する。公開budgetはs:<shareId>:c:<unlockId>なので、同じ有効なunlock sessionを別tabや更新で使い回し、budgetを作り直さない。公開機能全体を完成扱いにしない。
 
 再開時のDLQ入口はjobs/deadLetters.ts、api/deadLetters.ts、services/deadLetterRead.ts、web/src/features/admin/DeadLettersDialog.tsx。queue_dead_lettersはmessage単位の観測で、outbox/jobの停止やnative終了を証明しない。0063で一度だけ追記する再投入受付を追加した。services/requeueDeadLetter.tsとjobs/outboxRequeue.tsが元operand/current authority・epoch・lease/native保持・既存予算を確定時にも検査する。APIはDBの受付だけを行い、Queue送信は通常producerが担当する。応答喪失時は同じactor/credential/keyの受付を読み戻す。通常Cronは観測保存後も同じoutboxを再送するため、古いDLQを新しい失敗や停止と解釈しない。未知参照はFKなしで保持し、本文は保存しない。
 
@@ -35,7 +35,9 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開編集・権限切替と、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開upload/overwrite/deleteと、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行1cee05dの[CI36430025491](https://github.com/daraskme/Nextcloud-flare/actions/runs/36430025491)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。Windows全Nodeを1/4に集約後の全shard完走を確認しています。
 
 先行c0ed70aの[CI36421891215](https://github.com/daraskme/Nextcloud-flare/actions/runs/36421891215)は、Windows4分割・browser・backup bindings/cliの7job成功、Ubuntu失敗で終了しました。backup-generationの不正SQL拒否試験で、期待したbackup_invalid_data_sqlがEBADFに置き換わりました。借用fdのReadStreamがparser中断時にfdを閉じ、FileHandleのfinally closeと競合する経路を一時ファイル100回中1回で再現しました。今回は64KiBのFileHandle.readに統一し、handleをfinallyだけで閉じます。修正後のローカル全Node1,528件が成功し、CIでの再確認はpush後に行います。
 
@@ -138,7 +140,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-製品側の直近は[Shared閲覧](SHARED_WORKSPACE.md)に続く編集/upload。選択した共有のid/versionをnamespace canonical request・再送/照会・OutboxのsavedPrincipal・upload保存行/要求digest/UploadDO・復旧監査まで明示的に保持する。現状の操作保存/復元はselected_shareを保持しないため、UIから書込みを接続する前に修正し、別の広いgrantへの代替を拒否する。共有ルート改名不可・read権限の書込み拒否も維持する。その後に固定mount名によるDAV Sharedの解決と公開linkへ進む。
+製品側の直近は[公開リンク](PUBLIC_SHARES.md)のupload/overwrite/delete。内部Sharedの編集/upload・選択shareの保存/再送/監査とDAV mountは接続済み。公開create/renameと元credentialのoperation照会も接続した。upload APIはprivateのstreaming/capability/予約/complete/abort契約を確認し、link principalと元unlock sessionに限定して接続する。DELETEは現行link認可に含まれず、trashNodeのactorはuser/app_password前提なので、監査・trash/operation/復旧契約を整備してから開く。共有rootの改名・削除禁止、read権限の書込み拒否、別credential/grantへの代替禁止を維持する。
+
+公開uploadの調査入口はservices/uploads/{create,access,complete,multipart,multipartComplete}.tsとapi/uploads.ts。create・access・completeは現在principal.kind=userだけを許可する。uploadRow/fenceとdb/r2Upload.tsにもsource=privateの条件があり、0035のsource CHECKはprivate/davだけである。APIのkind判定だけを外して公開しない。share/session/versionの不変保存、share/owner予約、UploadDO・native/R2証明・repair・backup監査まで確認し、元のShare-Sessionを継続して束縛する。upload-onlyは別途、衝突を開示しないreceiptと自動命名の契約が必要。
 
 共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。非0終了・長時間実行・24時間超の成功欠落を扱う運用通知も接続済み。次はTime Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
 

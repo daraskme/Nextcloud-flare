@@ -57,6 +57,7 @@ export function LinkShareDialog({
   });
   const [editing, setEditing] = useState<LinkShare | null>(null);
   const [expires, setExpires] = useState("");
+  const [role, setRole] = useState<"read" | "edit">("read");
   const [password, setPassword] = useState("");
   const [passwordMode, setPasswordMode] = useState<"keep" | "set" | "remove">("keep");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -69,6 +70,7 @@ export function LinkShareDialog({
   const reset = () => {
     setEditing(null);
     setExpires("");
+    setRole("read");
     setPassword("");
     setPasswordMode("keep");
     setConfirmation(null);
@@ -102,7 +104,7 @@ export function LinkShareDialog({
           {
             kind: "link",
             rootNodeId: node.id,
-            role: selected?.role ?? "read",
+            role: confirmed ? selected!.role : role,
             expiresAt: confirmed
               ? selected!.expiresAt
               : expires
@@ -250,6 +252,7 @@ export function LinkShareDialog({
                 disabled={locked || !!confirmation}
                 onClick={() => {
                   setEditing(share);
+                  setRole(share.role);
                   setExpires(localDate(share.expiresAt));
                   setPassword("");
                   setPasswordMode("keep");
@@ -344,9 +347,20 @@ export function LinkShareDialog({
         ) : (
           <form onSubmit={(event) => void save(event)}>
             <fieldset className="share-form" disabled={locked}>
-              <legend>{editing ? "リンク設定を変更" : "新しい閲覧リンク"}</legend>
-              {editing?.role === "edit" && (
-                <p className="muted">このリンクの編集権限を維持して設定を更新します。</p>
+              <legend>{editing ? "リンク設定を変更" : "新しい公開リンク"}</legend>
+              <label htmlFor="link-role">共有権限</label>
+              <select
+                id="link-role"
+                value={role}
+                onChange={(event) => setRole(event.target.value as typeof role)}
+              >
+                <option value="read">閲覧</option>
+                <option value="edit">編集</option>
+              </select>
+              {role === "edit" && (
+                <p className="muted">
+                  リンクを受け取った人が共有内容を変更できます。現在の共有画面はフォルダー作成と名前変更に対応しています。
+                </p>
               )}
               <label htmlFor="link-expires">有効期限（任意）</label>
               <input
@@ -400,7 +414,13 @@ export function LinkShareDialog({
                   </Button>
                 )}
                 <Button type="submit" variant="primary">
-                  {pending ? "保存中…" : editing ? "リンク設定を保存" : "閲覧リンクを作成"}
+                  {pending
+                    ? "保存中…"
+                    : editing
+                      ? "リンク設定を保存"
+                      : role === "read"
+                        ? "閲覧リンクを作成"
+                        : "編集リンクを作成"}
                 </Button>
               </div>
             </fieldset>
