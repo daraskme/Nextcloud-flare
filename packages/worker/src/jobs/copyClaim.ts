@@ -153,7 +153,7 @@ export function copyClaimFence(claim: CopyJobClaim): SqlStatement {
   );
 }
 
-/** Internal executor entry. Queue delivery is connected only after transfer and cleanup exist. */
+/** Executor entry shared by internal calls and durable Queue delivery. */
 export async function claimCopyJob(
   env: SystemMutationSource,
   outboxId: string,

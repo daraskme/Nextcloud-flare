@@ -11,15 +11,18 @@ import {
   type TransferDestinationRecord,
 } from "../auth/transferScope";
 import { assertOneChange, primary } from "../db/primary";
+import type { Env } from "../env";
 import {
   acquireSystemMutation,
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
 import { copyPublicationAuthority } from "./copyPublicationAuthority";
+import { consumeCopyOutbox } from "./copyQueue";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
+export type OutboxConsumerEnv = SystemMutationSource & Partial<Pick<Env, "BLOBS" | "LOCKS">>;
 
 interface EventRow extends SelectedShareRecord, TransferDestinationRecord {
   state: string;
@@ -84,7 +87,7 @@ function savedPrincipal(row: EventRow): Principal | null {
 
 /** Complete a node event only after a fenced D1 claim and current authorization. */
 export async function consumeOutbox(
-  env: SystemMutationSource,
+  env: OutboxConsumerEnv,
   outboxId: string,
   deadline = Date.now() + 25_000,
 ): Promise<ConsumeResult> {
@@ -93,6 +96,14 @@ export async function consumeOutbox(
     return "retry";
   if (!outboxId || outboxId.length > 128) return "retry";
   const row = await eventRow(db, outboxId);
+  if (row?.kind === "copy.requested") {
+    if (!("CONTROL" in env) || !env.BLOBS || !env.LOCKS) return "retry";
+    return consumeCopyOutbox(
+      { DB: db, CONTROL: env.CONTROL, BLOBS: env.BLOBS, LOCKS: env.LOCKS },
+      outboxId,
+      deadline,
+    );
+  }
   if (row?.state === "completed") return "completed";
   if (row?.state === "failed") return "failed";
   if (

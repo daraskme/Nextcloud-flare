@@ -109,7 +109,7 @@ export async function executeCopyJob(
     await loadCopyJobManifest(env.DB, row.id);
     return { ...result, state: row.state === "completed" ? "completed" : "stopped" };
   }
-  if (await stopExpiredCopyJob(env, row.id)) return { ...result, state: "stopped" };
+  if (await stopExpiredCopyJob(env, row.id, deadline)) return { ...result, state: "stopped" };
   const claim = await claimCopyJob(env, outboxId, deadline);
   try {
     for (; result.steps < maxSteps; ) {

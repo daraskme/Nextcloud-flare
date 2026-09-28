@@ -117,7 +117,13 @@ export async function cancelCopyJob(
 }
 
 /** Internal bounded executor/recovery entry; eligibility is rechecked by SQL in the stop batch. */
-export async function stopExpiredCopyJob(env: SystemMutationSource, id: string): Promise<boolean> {
+export async function stopExpiredCopyJob(
+  env: SystemMutationSource,
+  id: string,
+  deadline = Date.now() + 25_000,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 25_000)
+    throw new Error("invalid_copy_stop");
   const row = await primary(env.DB)
     .prepare(`SELECT j.state,
     CASE WHEN j.epoch<c.epoch THEN 'stale_epoch' WHEN m.expires_at<=${CLOCK} THEN 'copy_expired'
@@ -133,7 +139,12 @@ export async function stopExpiredCopyJob(env: SystemMutationSource, id: string):
     .first<{ state: string; reason: StopReason | null }>();
   if (!row?.reason || !["pending", "running"].includes(row.state)) return false;
   const { plan } = await loadCopyJobManifest(env.DB, id);
-  const admission = await acquireSystemMutation(env, plan.destinationOwnerId, "copy.stop");
+  const admission = await acquireSystemMutation(
+    env,
+    plan.destinationOwnerId,
+    "copy.stop",
+    deadline,
+  );
   await commitSystemMutation(
     env.DB,
     admission,
@@ -163,11 +174,16 @@ export interface CopyCleanupResult {
 export async function cleanupStoppedCopyJob(
   env: SystemMutationSource,
   id: string,
-  options: { after?: string; limit?: number } = {},
+  options: { after?: string; limit?: number; deadline?: number; readyOnly?: boolean } = {},
 ): Promise<CopyCleanupResult> {
-  const deadline = Date.now() + 25_000;
+  const started = Date.now(),
+    deadline = options.deadline ?? started + 25_000;
   const { after = "", limit = 32 } = options;
   if (
+    !Number.isSafeInteger(deadline) ||
+    deadline <= started ||
+    deadline > started + 25_000 ||
+    (options.readyOnly !== undefined && typeof options.readyOnly !== "boolean") ||
     !Number.isInteger(limit) ||
     limit < 1 ||
     limit > 32 ||
@@ -183,7 +199,7 @@ export async function cleanupStoppedCopyJob(
     .first();
   if (!terminal) throw new Error("copy_not_stopped");
   const rows = await primary(env.DB)
-    .prepare(`SELECT cb.source_blob_id,cb.destination_blob_id,cb.pin_id,cb.reservation_id,source.size,
+    .prepare(`SELECT * FROM (SELECT cb.source_blob_id,cb.destination_blob_id,cb.pin_id,cb.reservation_id,source.size,
     CASE WHEN EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key='u/'||j.owner_id||'/b/'||cb.destination_blob_id AND w.state='pending') THEN NULL
       WHEN m.abort_attempt IS NOT NULL AND EXISTS(SELECT 1 FROM r2_write_attempts w INDEXED BY r2_write_source
         WHERE w.kind='multipart.abort' AND w.source_ref=json_array('copy',cb.job_id,cb.source_blob_id,m.abort_attempt)
@@ -200,8 +216,9 @@ export async function cleanupStoppedCopyJob(
     END AS disposition
     FROM copy_job_blobs cb JOIN bulk_jobs j ON j.id=cb.job_id JOIN blobs source ON source.id=cb.source_blob_id
     LEFT JOIN copy_multipart_uploads m ON m.destination_blob_id=cb.destination_blob_id
-    WHERE cb.job_id=? AND cb.source_blob_id>? ORDER BY cb.source_blob_id LIMIT ?`)
-    .bind(id, after, limit + 1)
+    WHERE cb.job_id=? AND cb.source_blob_id>?) WHERE (?=0 OR disposition IS NOT NULL)
+    ORDER BY source_blob_id LIMIT ?`)
+    .bind(id, after, Number(options.readyOnly ?? false), limit + 1)
     .all<CleanupBlob>();
   const result: CopyCleanupResult = {
     examined: 0,

@@ -290,7 +290,7 @@ it("holds reservations and source pins through elapsed time and an epoch change"
   ).resolves.toMatchObject({ examined: 1 });
   expect((await loadCopyJobManifest(env.DB, result.id)).plan.principal.epoch).toBe(1);
 });
-it("dispatches only the durable ID and does not acknowledge an unimplemented transfer", async () => {
+it("dispatches only the durable ID and retains a transfer without its required bindings", async () => {
   const f = await fixture(),
     result = await accepted(f),
     messages: OutboxMessage[] = [];
@@ -306,19 +306,22 @@ it("dispatches only the durable ID and does not acknowledge an unimplemented tra
   let acked = 0,
     retried = 0;
   expect(
-    await handleOutboxBatch(mutationEnv(), {
-      messages: [
-        {
-          body: messages[0],
-          ack() {
-            acked++;
+    await handleOutboxBatch(
+      { DB: env.DB, CONTROL: mutationEnv().CONTROL },
+      {
+        messages: [
+          {
+            body: messages[0],
+            ack() {
+              acked++;
+            },
+            retry() {
+              retried++;
+            },
           },
-          retry() {
-            retried++;
-          },
-        },
-      ],
-    }),
+        ],
+      },
+    ),
   ).toEqual({ acked: 0, retried: 1 });
   expect([acked, retried]).toEqual([0, 1]);
   expect(

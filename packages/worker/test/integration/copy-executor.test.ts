@@ -1,14 +1,13 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { atomicBatch } from "../../src/db/primary";
 import { claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
 import { executeCopyJob } from "../../src/jobs/copyExecutor";
 import { cancelCopyJob, cleanupStoppedCopyJob } from "../../src/jobs/copyLifecycle";
 import { copyNextBlob } from "../../src/jobs/copyMultipart";
 import { reconcileCopyObject } from "../../src/jobs/copyReconcile";
 import { auditOwnerLedger } from "../../src/services/refs";
-import { copyJobCounters, copyJobFixture } from "../fixtures/copyJob";
+import { copyJobCounters, copyJobFixture, copyJobWithBlobs } from "../fixtures/copyJob";
 import { measureD1 } from "../fixtures/d1Calls";
 import { clearEndedR2TestWrites, mutationEnv } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
@@ -62,41 +61,8 @@ it("resumes from each multipart checkpoint without repeating create or part call
   expect(await run(f)).toMatchObject({ state: "completed", steps: 0 });
   expect(await stored(f.job.id)).toMatchObject({ invocation_count: 5, r2_calls: 6 });
 });
-async function many() {
-  const f = await copyJobFixture();
-  await cancelCopyJob(mutationEnv(), f.request.principal, f.job.id);
-  await cleanupStoppedCopyJob(mutationEnv(), f.job.id);
-  for (let i = 0; i < 8; i++) {
-    const id = crypto.randomUUID(),
-      key = `u/${f.source.ids.user}/b/${id}`;
-    const object = await env.BLOBS.put(key, "abc");
-    await atomicBatch(env.DB, [
-      {
-        sql: "INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) VALUES(?,?,?,3,?,'committed',1)",
-        values: [id, f.source.ids.user, key, '"b-' + id + '"'],
-      },
-      {
-        sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,1)",
-        values: [id, object!.etag],
-      },
-      {
-        sql: "INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at) VALUES(?,?,?,?,?,?,'file',?,1,1)",
-        values: [
-          crypto.randomUUID(),
-          f.source.ids.space,
-          f.source.ids.user,
-          f.source.ids.folder,
-          "file" + i,
-          "file" + i,
-          id,
-        ],
-      },
-    ]);
-  }
-  return { ...f, job: await f.enqueue() };
-}
 it("yields before a native pair would exceed the invocation budget and finishes the rest", async () => {
-  const f = await many();
+  const f = await copyJobWithBlobs(9);
   const measured = measureD1(env.DB);
   const a = { ...mutationEnv(measured.db), LOCKS: admitted().LOCKS };
   expect(await run(f, {}, a)).toMatchObject({ state: "yielded", steps: 8 });

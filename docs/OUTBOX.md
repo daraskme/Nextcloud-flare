@@ -1,6 +1,6 @@
 # OutboxとQueueの更新受付
 
-更新日: 2026-09-25。schema0033、migration・依存追加なし。
+更新日: 2026-09-28。schema0058、今回のmigration・依存追加なし。
 
 Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
 
@@ -16,7 +16,9 @@ Queue sendの応答喪失ではleaseを保持する。期限後に新しいclaim
 
 `consumeOutbox`はnode.created/updated/renamed/trashed/restored/purgedについて、元operationのkind、保存済みparent/node/result、node step、committed状態、current credential/権限を検査する。claimとcompletedを別々の共通枠で確定し、どちらも待機後の最終batchで認可とepoch/maintenanceを再確認する。credential失効・親変更・claim置換・lease切れでは完了を保存しない。
 
-同じIDのcompleted/failedは読取りだけで再利用する。`handleOutboxBatch`はdurable terminalだけをackし、malformed・不存在・混雑・結果不明はretryする。ack自体が失われても再配信は同じterminalで収束する。batch全体で25秒期限を共有し、残りメッセージは処理開始せずretryする。実行中のQueue送信やDB I/Oを強制終了する保証ではない。
+通常node eventの同じIDのcompleted/failedは読取りだけで再利用する。copy.requestedはこの共通terminal判定の前に専用consumerへ渡し、公開receiptまたは全保持の精算receiptが必要になる。`handleOutboxBatch`はdurable terminalだけをackし、malformed・不存在・混雑・結果不明はretryする。ack自体が失われても再配信は同じterminalで収束する。batch全体で25秒期限を共有し、残りメッセージは処理開始せずretryする。実行中のQueue送信やDB I/Oを強制終了する保証ではない。
+
+所有者間copyは[コピーQueue consumer](COPY_JOBS.md)へ接続した。コピーは1 invocationを単独で使い、同じbatchの他配信をretryする。通常node eventは従来どおりbatch処理する。yield/heldはretryし、sent Outboxは従来のCronで再送する。停止済みcopyは証明済み32blobまでをbatch共通期限内で精算し、保持が残る間はfailed OutboxでもACKしない。停止後の外部修復・定期巡回・DLQ運用は後続である。
 
 ## 検証と残作業
 

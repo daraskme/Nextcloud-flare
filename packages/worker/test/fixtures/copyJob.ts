@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, vi } from "vitest";
 import { atomicBatch } from "../../src/db/primary";
+import { cancelCopyJob, cleanupStoppedCopyJob } from "../../src/jobs/copyLifecycle";
 import { dispatchOutbox } from "../../src/jobs/outbox";
 import { createCopyJob } from "../../src/services/createCopyJob";
 import { createInternalShare, updateInternalShare } from "../../src/services/internalShares";
@@ -127,4 +128,39 @@ export async function copyJobCounters(id: string) {
   )
     .bind(id)
     .first();
+}
+
+export async function copyJobWithBlobs(count: number) {
+  if (!Number.isInteger(count) || count < 1 || count > 64) throw new Error("invalid_fixture_count");
+  const f = await copyJobFixture();
+  await cancelCopyJob(mutationEnv(), f.request.principal, f.job.id);
+  await cleanupStoppedCopyJob(mutationEnv(), f.job.id);
+  for (let i = 1; i < count; i++) {
+    const id = crypto.randomUUID(),
+      key = `u/${f.source.ids.user}/b/${id}`;
+    const object = await env.BLOBS.put(key, "abc");
+    await atomicBatch(env.DB, [
+      {
+        sql: "INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) VALUES(?,?,?,3,?,'committed',1)",
+        values: [id, f.source.ids.user, key, '"b-' + id + '"'],
+      },
+      {
+        sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,1)",
+        values: [id, object!.etag],
+      },
+      {
+        sql: "INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at) VALUES(?,?,?,?,?,?,'file',?,1,1)",
+        values: [
+          crypto.randomUUID(),
+          f.source.ids.space,
+          f.source.ids.user,
+          f.source.ids.folder,
+          "file" + i,
+          "file" + i,
+          id,
+        ],
+      },
+    ]);
+  }
+  return { ...f, job: await f.enqueue() };
 }

@@ -4,13 +4,13 @@
 
 Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV、認証・会計・復旧・共通受付、バックアップの停止・生成・R2保存/取得・完了記録と専用運用コマンドをローカル実装済みです。製品全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。
 
-[所有者間コピー](COPY_JOBS.md)の認可を同じprimary batchで照会し、保存結果の重複記録と進捗/予算の別照会を減らしました。実R2で8blobを保存してyieldする同一fixtureのWorker側D1呼出しは222→132回、SQL文は705→600本です。各operandの現在権限・元の選択・確定batchでの再検査を維持し、観測書込みが失敗した場合の再試行も残します。全Node1,431件と関連workerd294件、合計1,725件の回帰試験が成功しました。最大規模の完走・停止後のcleanup巡回・Queue/HTTP/UIは引き続き未完了です。
+[所有者間コピー](COPY_JOBS.md)をQueue consumerへ接続しました。保存済み進捗から実行・再開し、完了receiptを確認してACKします。取消し・失敗は保留が残る間retryし、証拠の揃う最大32blobずつを精算し、全保持がなくなった後だけACKします。先頭の未知attemptを飛ばして後続の精算を進めます。最大規模の完走、停止後の自動修復・巡回、DLQからの運用再開、HTTP/UIは引き続き未完了です。全Node1,431件と関連workerd184件、計1,615件の回帰試験が成功しました。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 schema0058・通常75tableを維持しています。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は最終確認時にUbuntu・Windows分割2/4・4/4・browser・backup(bindings)成功、Windows分割1/4・backup(cli)実行中です。Windows分割3/4はNode1,431件成功、integration717/718件成功で、copy-executionのepoch変更試験の準備中にfixture_copy_failedとなりました。231msでの失敗で、30分のjob上限とは別です。SQLエラーと受付outcomeを残すfixture診断を追加し、local対象40件は成功しましたが原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はbrowser・Windows分割2/3成功、他jobは実行中です。それぞれ同じrun IDで完了を確認します。
+CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は終了しました。Ubuntu・Windows分割2/4・4/4・browser・backupのbindings/cliは成功、Windows分割1/4は30分のjob上限でcancelled（annotation確認）、3/4はcopy-executionのepoch変更試験の準備中にfixture_copy_failedで失敗しました（Node1,431件成功、integration717/718件成功）。SQLエラーと受付outcomeの診断はef5ee58へ追加済みですが、原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はUbuntu・Windows3分割・browser・backupの全6job成功です。ef5ee58の[CI36389252207](https://github.com/daraskme/Nextcloud-flare/actions/runs/36389252207)は最終確認時にbrowser・backup(bindings)成功、他jobは実行中です。
 
 先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)はUbuntu・Windows分割2/3・3/3・browser・backup成功、Windows分割1/3は30分のjob上限でcancelledです（GitHub annotationで確認）。上記4分割化後のCIで完走を確認します。
 

@@ -1,5 +1,5 @@
-import type { SystemMutationSource } from "../services/systemMutation";
-import { consumeOutbox } from "./consumeOutbox";
+import { primary } from "../db/primary";
+import { consumeOutbox, type OutboxConsumerEnv } from "./consumeOutbox";
 
 export interface OutboxDelivery {
   readonly body: unknown;
@@ -21,16 +21,33 @@ function outboxId(body: unknown): string | null {
 
 /** Call only after ControlDO admission. Cloudflare moves exhausted retries to the configured DLQ. */
 export async function handleOutboxBatch(
-  env: SystemMutationSource,
+  env: OutboxConsumerEnv,
   batch: OutboxBatch,
 ): Promise<{ acked: number; retried: number }> {
   let acked = 0;
   let retried = 0;
+  let nodeBatch = false;
+  let copyBatch = false;
   const deadline = Date.now() + 25_000;
   for (const message of batch.messages) {
     try {
       const id = outboxId(message.body);
-      const result = id && Date.now() < deadline ? await consumeOutbox(env, id, deadline) : "retry";
+      let result = "retry";
+      if (id && Date.now() < deadline && !copyBatch) {
+        const kind = await primary(env.DB)
+          .prepare("SELECT kind FROM outbox WHERE outbox_id=?")
+          .bind(id)
+          .first<string>("kind");
+        if (kind === "copy.requested") {
+          // A copy's D1/native allowance belongs to this entire Worker invocation.
+          // Never multiply it across deliveries, including terminal cleanup pages.
+          copyBatch = true;
+          if (!nodeBatch) result = await consumeOutbox(env, id, deadline);
+        } else {
+          nodeBatch = true;
+          result = await consumeOutbox(env, id, deadline);
+        }
+      }
       if (result === "completed" || result === "failed") {
         message.ack();
         acked++;
