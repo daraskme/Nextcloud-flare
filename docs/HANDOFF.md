@@ -25,23 +25,23 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[所有者間コピーの永続受付](COPY_JOBS.md)を追加しました。内部受付operationとコピー完了を分け、固定manifest・job・pin・容量予約・Outboxを一括確定します。同じ要求への再送は同じjob IDを返し、両側の資格情報・選択grant・権限を再確認します。R2転送・一括公開・取消し/再試行・HTTP/画面はまだ未接続で、所有者間コピー全体は未完成です。
+[所有者間コピーの実行基盤](COPY_JOBS.md)を追加しました。永続受付に加え、同時取得を防ぐ期限付きclaim、owner別上限、保存済み元blobのRange読取りを接続しました。読取り前後で両側の現行権限を再確認し、応答喪失・期限切れ・遅延応答を扱います。転送先への保存・一括公開・取消し/再試行・HTTP/画面は未接続で、所有者間コピー全体は未完成です。
 
-schema0052・通常72table。マニフェスト・分割データ・blob保持対応の3tableと内部operationを追加し、依存変更はありません。全Node1,375件・関連workerd451件の計1,826件成功（修正後の対象file再実行を含む）。型・lint・契約/設定・buildも成功しました。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0053・通常72table。既存job leaseへinvocationのR2 call数を追加し、以前のtoken・epoch・期限・試行回数を保持します。依存変更はありません。全Node1,376件・関連workerd281件の計1,657件が成功しました。型・lint505file・契約/設定・schema72table/FK graph・Web build/Worker dry-runも成功しました。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-copy受付は`services/createCopyJob.ts`、保存/読戻しは`jobs/copyManifest.ts`。内部`copy.enqueue`をLockDO/common admissionへ接続し、成功receipt 202は受付の確定だけを表す。`bulk_jobs.op_id`はその受付operationを参照する。次は永続claim/checkpoint、現行認可とRange/multipart、別のnamespace公開operation、取消し/精算を接続する。保存済みmanifestを読んでもrequest-local authorization proofは再発行しない。0052は保持情報の削除と予約の変更を拒否しており、R2終了証拠を伴う精算の実装前にguardだけを外さない。詳細は[COPY_JOBS](COPY_JOBS.md)。JSON ID集合→主キーのCROSS JOINも保つ。
+copy受付は`services/createCopyJob.ts`、保存/読戻しは`jobs/copyManifest.ts`。内部`copy.enqueue`をLockDO/common admissionへ接続し、成功receipt 202は受付の確定だけを表す。`bulk_jobs.op_id`はその受付operationを参照する。実行claimは`jobs/copyClaim.ts`、固定sourceの読取りは`jobs/copyRead.ts`。owner同時2claim、25秒、8MiB/Range、16 read/invocationを上限とする。初期checkpoint以外はまだ受け付けず、次は転送先のnative write/receipt/checkpoint、別のnamespace公開operation、取消し/精算を接続する。保存済みmanifestを読んでもrequest-local authorization proofは再発行しない。0052は保持情報の削除と予約の変更を拒否しており、R2終了証拠を伴う精算の実装前にguardだけを外さない。詳細は[COPY_JOBS](COPY_JOBS.md)。JSON ID集合→主キーのCROSS JOINも保つ。
 
 DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration0050はDAV保存元のowner一致条件を選択付き受信者へ広げ、0049の不変pair/completion照合を維持する。migration0051のdestination tupleとauth/transferScope.tsで転送先選択を独立に保存する。省略はlegacy、share:nullは明示的なactor所有spaceであり相互に代替しない。same-ownerの別mount転送だけを許可し、cross-owner COPYの非同期jobは後続。直接file mount上書きでは保存名と非公開parentを内部proofから使い、返却しない。0050/0051適用後の旧Workerへのrollbackはmaintenanceを維持し、対応版で再検証する。ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
 
 今回のmultipart入口は`restoreInventoryRepair.ts`/`restoreInventory.ts`/`scripts/restore/inventory.mjs`。private `repairInventory`は28番目のmethod。共有の`restoreRepairContext.ts`がsystem/global受付とBLOBS読取りを同じ停止へ固定し、実完了のfinishだけは停止後も保存する。各inventory jobへBindingVerificationScopeを渡し、S3 sourceを採用済みBLOBS対象と照合する。全体25秒のtimeoutでactiveを失わせ、遅延GETから新たなnativeを送らない。既知multipartの元abort照合は`restoreMultipartAbort.ts`。DO履歴はhashだけなので、元D1 tuple欠落はそれだけで修復できない。
 
-送信先は承認済み専用`codex/database-restore`です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。最新CI状態はgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は最終確認時にUbuntu・Windows1/3と2/3・browser成功、Windows3/3とbackupは実行中です。最新CI状態はgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。72通常テーブル、migration `0001`〜`0052`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。72通常テーブル、migration `0001`〜`0053`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

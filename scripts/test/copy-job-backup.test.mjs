@@ -126,6 +126,13 @@ it("round-trips a frozen copy job, binary manifest chunks and live holds through
     source
       .prepare("UPDATE operations SET state='committed',result_json=? WHERE op_id=?")
       .run(JSON.stringify({ status: 202, jobId: job }), op);
+    // An expired invocation is exported with its spent budget and retry count intact.
+    // The native backup barrier refuses a live invocation; expiry never settles its holds.
+    source
+      .prepare(
+        "INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt,r2_calls) VALUES(?,'expired-claim',1,0,4,9)",
+      )
+      .run(job);
     const token = randomUUID();
     source
       .prepare(
@@ -152,6 +159,11 @@ it("round-trips a frozen copy job, binary manifest chunks and live holds through
         .map((r) => r.data),
     );
     expect(saved.equals(body)).toBe(true);
+    expect(
+      target
+        .prepare("SELECT claim_token,expires_at,attempt,r2_calls FROM job_leases WHERE job_id=?")
+        .get(job),
+    ).toEqual({ claim_token: "expired-claim", expires_at: 0, attempt: 4, r2_calls: 9 });
     expect(target.prepare("SELECT reserved_bytes FROM users WHERE id='target-u'").get()).toEqual({
       reserved_bytes: 3,
     });

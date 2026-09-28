@@ -21,3 +21,5 @@ maintenance / GC pause / epoch bump を含む承認済み restore 手順で行�
 FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` を参照。
 
 `0052` は非同期copyの受付operationと、固定manifest・分割BLOB・保持対応の3tableを追加する（72通常table）。同期DAVの同一space制限は維持する。既存`bulk_jobs(kind='node.copy')`があれば、元実装と転送・保持状態の個別照合が必要なため移行を拒否する。受付だけを公開せず、転送と精算を接続してからHTTPを有効化する。旧Workerへのrollbackはmaintenanceを保持して対応schema/コードを再検証する。[所有者間コピー](../../../docs/COPY_JOBS.md)を参照。
+
+`0053` は既存job leaseへinvocationのR2 call counterを追加する（通常72tableのまま）。既存token/epoch/期限/試行回数を保持し、新columnは0から開始する。copy claimと読取りは内部serviceのみで、checkpoint進行・転送先保存・精算は後続。

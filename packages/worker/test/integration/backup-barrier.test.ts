@@ -603,7 +603,9 @@ it("waits for a live job lease before allowing the export snapshot", async () =>
       epoch,
     )
     .run();
-  await env.DB.prepare("INSERT INTO job_leases VALUES(?,?,?, ?,1)")
+  await env.DB.prepare(
+    "INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt) VALUES(?,?,?, ?,1)",
+  )
     .bind(job, crypto.randomUUID(), epoch, Date.now() + 60000)
     .run();
   await runInDurableObject(control(), async (instance) => {
