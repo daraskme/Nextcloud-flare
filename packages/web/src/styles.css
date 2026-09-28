@@ -1348,3 +1348,38 @@ h1 {
 .copy-job-actions {
   margin-top: 8px;
 }
+
+.dead-letter-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.dead-letter-list > li {
+  padding: 14px 0;
+  border-bottom: 1px solid #e5e9ef;
+}
+.dead-letter-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+}
+.dead-letter-heading time {
+  font-size: 12px;
+}
+.dead-letter-list dl {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+.dead-letter-list dl > div {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.dead-letter-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

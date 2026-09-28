@@ -15,6 +15,7 @@ import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
+import { deadLetterReadRoute, handleDeadLetterReadHttp } from "./deadLetters";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -45,6 +46,7 @@ export function privateAppRoute(request: Request): boolean {
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     copyJobRoute(request) ||
+    deadLetterReadRoute(request) ||
     appPasswordRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
@@ -69,6 +71,7 @@ export async function handlePrivateAppHttp(
     (url.search &&
       !nodeReadRoute(request) &&
       !trashRoute(request) &&
+      !deadLetterReadRoute(request) &&
       !uploadReadRoute(request) &&
       !searchRoute(request) &&
       !statsRoute(request) &&
@@ -85,6 +88,7 @@ export async function handlePrivateAppHttp(
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const copyJob = copyJobRoute(request);
+  const deadLetters = deadLetterReadRoute(request);
   const appPassword = appPasswordRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
@@ -101,6 +105,7 @@ export async function handlePrivateAppHttp(
     !trashRead &&
     !nodeMutation &&
     !copyJob &&
+    !deadLetters &&
     !appPassword &&
     !share &&
     !upload &&
@@ -143,6 +148,7 @@ export async function handlePrivateAppHttp(
     }
   }
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
+  if (deadLetters) return handleDeadLetterReadHttp(request, env, session, dependencies.listCursors);
   if (copyJob)
     return handleCopyJobHttp(
       request,

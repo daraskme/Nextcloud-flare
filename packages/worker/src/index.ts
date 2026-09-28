@@ -12,6 +12,7 @@ import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
 import { repairStoppedCopyJobs } from "./jobs/copyMaintenance";
 import { COPY_MAINTENANCE_CRON } from "./jobs/copyMaintenanceClaim";
+import { handleDeadLetterBatch } from "./jobs/deadLetters";
 import { runGarbageCollection } from "./jobs/gc";
 import { repairMultipartUploads } from "./jobs/multipartCleanup";
 import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
@@ -120,7 +121,13 @@ export default {
       batch.retryAll();
       return;
     }
-    await handleOutboxBatch(env, batch);
+    if (!env.JOBS_QUEUE_NAME || !env.JOBS_DLQ_NAME || env.JOBS_QUEUE_NAME === env.JOBS_DLQ_NAME) {
+      batch.retryAll();
+      return;
+    }
+    if (batch.queue === env.JOBS_DLQ_NAME) await handleDeadLetterBatch(env, batch);
+    else if (batch.queue === env.JOBS_QUEUE_NAME) await handleOutboxBatch(env, batch);
+    else batch.retryAll();
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const deadline = Date.now() + 25_000;

@@ -1,4 +1,5 @@
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
+import type { DeadLetterPage } from "../../../shared/src/deadLetters";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 
 export interface Account {
@@ -234,6 +235,12 @@ export class ApiClient {
 
   me(signal?: AbortSignal) {
     return this.request<Account>("/api/v1/me", signal ? { signal } : {});
+  }
+  deadLetters(cursor: string | null, signal?: AbortSignal) {
+    return this.request<DeadLetterPage>(
+      `/api/v1/admin/dlq${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
   }
   copyJob(id: string, signal?: AbortSignal) {
     return this.request<CopyJobStatus>(

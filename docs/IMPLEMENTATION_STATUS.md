@@ -1,9 +1,19 @@
 # 実装進捗
 
+## DLQ記録と管理者一覧（今回）
+
+[DLQ](DEAD_LETTERS.md)の観測保存・管理者限定API・画面を追加。migration0062で通常76table、147 route。元outbox/jobを変更しない。再投入・保持期限管理・外部通知・実Queue試験は残る。
+
+- 全Node83file/1,489件成功（79.50秒、/tmp/ncf-dlq-node-full.log）。新schemaの移行条件・不変性・freeze・索引と、DLQ行を含むSQL backup/importを確認。
+- 型検査・lint565file・契約/設定・schema generator76table/FK索引・Web build/Worker dry-run成功。/tmp/ncf-dlq-types.log、/tmp/ncf-dlq-lint.log、/tmp/ncf-dlq-contracts.log、/tmp/ncf-dlq-config.log、/tmp/ncf-dlq-build.log。
+- workerd7file/188件の初回は187件成功・1件失敗（118.08秒、/tmp/ncf-dlq-native.log）。既存Queue fixtureの省略されていたqueue名を設定に合わせ、同時重複配信を追加。対象2file/61件が成功（14.67秒、/tmp/ncf-dlq-native-final.log）。重複を除く関連workerdは189件成功。
+- 全browser34件成功（6.0分、/tmp/ncf-dlq-browser-full.log）。新管理者画面では実ControlDO/D1/HTTPで52観測の記録・50件ページ送り、mobile幅、非管理者拒否、再取得失敗後の古い情報非表示を確認。mobile screenshotも目視確認済み。
+- **全Node1,489 + 関連workerd189 + 全browser34 = 1,712件成功**。最終型・lint565file成功（/tmp/ncf-dlq-types-final.log、/tmp/ncf-dlq-lint-final.log）。資料8fileのlocal link285件、git diff --checkも成功。全workerd・実Wrangler backup drillは今回ローカルで再実行していない。remote migration/deployなし。
+
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-直前060b66bの[CI36408876941](https://github.com/daraskme/Nextcloud-flare/actions/runs/36408876941)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功して終了しました。今回の再試行実装のCIはpush後に確認します。
+直前f2e4788の[CI36411992220](https://github.com/daraskme/Nextcloud-flare/actions/runs/36411992220)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功して終了しました。今回のDLQ変更のCIはpush後に確認します。
 
 先行45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、Ubuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4はcancelledで終了しました。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。
 

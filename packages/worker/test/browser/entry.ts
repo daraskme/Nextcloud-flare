@@ -118,6 +118,43 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    if (path === "/__test__/dead-letters" && request.method === "POST") {
+      let acked = 0,
+        retried = 0;
+      const ids = Array.from({ length: 52 }, () => crypto.randomUUID());
+      for (let offset = 0; offset < ids.length; offset += 10) {
+        const messages = ids.slice(offset, offset + 10).map((id, index) => ({
+          id,
+          timestamp: new Date(1000),
+          attempts: 1,
+          body:
+            (offset + index) % 2
+              ? { outboxId: "missing-browser-event" }
+              : { privateFileName: "secret-dlq-document.txt" },
+          ack: () => {
+            acked++;
+          },
+          retry: () => {
+            retried++;
+          },
+        }));
+        await worker.queue(
+          {
+            queue: ready.env.JOBS_DLQ_NAME!,
+            metadata: { metrics: { backlogCount: messages.length, backlogBytes: 0 } },
+            messages,
+            ackAll: () => {
+              acked += messages.length;
+            },
+            retryAll: () => {
+              retried += messages.length;
+            },
+          },
+          ready.env,
+        );
+      }
+      return Response.json({ acked, retried });
+    }
     // Explicit local delivery lets browser tests observe pending/partial/terminal
     // states through real HTTP, D1, R2 and DOs without enabling a background cron.
     const copy = /^\/__test__\/copy\/(copy_[a-f0-9]{64})$/.exec(path);

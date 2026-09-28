@@ -175,7 +175,7 @@ migration0060は停止triggerをこの条件へ更新し、通常75tableと全ro
 
 completedは公開receiptを照合する。failed/cancelledはDB-onlyの証拠付き精算を最大32blob行い、全元blobがimmutable精算receiptへ移り、保持が0で、正確なOutbox/job/opの終端tupleを再確認した場合だけACKする。精算の`readyOnly`選択は未知attemptを飛ばすので、先頭に保留があっても後続を32件ずつ精算できる。精算候補の選択自体を閉鎖証明にせず、従来のtransaction/triggerでnative終了証拠を再検査する。
 
-未完了multipartのabort、停止後の観測修復、旧epoch・未配信停止jobの精算は下記の専用巡回へ接続した。失敗Outboxは通常Cronの再送対象外なので、Queue consumerと独立して拾う。DLQからの運用再開は後続。HTTP受付/read/cancelは上記へ接続済み。112 call/claimとD1実測yieldに、残作業の下限による早期停止を追加した。上限内の最大規模、実環境の速度と障害時の収束は別途検証する。
+未完了multipartのabort、停止後の観測修復、旧epoch・未配信停止jobの精算は下記の専用巡回へ接続した。失敗Outboxは通常Cronの再送対象外なので、Queue consumerと独立して拾う。[DLQ観測の保存と管理者一覧](DEAD_LETTERS.md)は接続済み。DLQからの運用再開は後続。HTTP受付/read/cancelは上記へ接続済み。112 call/claimとD1実測yieldに、残作業の下限による早期停止を追加した。上限内の最大規模、実環境の速度と障害時の収束は別途検証する。
 
 ## 停止後の自動巡回
 

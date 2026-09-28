@@ -36,6 +36,18 @@ assert.equal(config.queues.producers[0].binding, "JOBS");
 assert.equal(config.queues.consumers[0].max_retries, 10);
 assert.equal(config.queues.consumers[0].max_concurrency, 8);
 assert.equal(config.queues.consumers[0].dead_letter_queue, "ncf-local-jobs-dlq");
+assert.equal(config.vars.JOBS_QUEUE_NAME, config.queues.consumers[0].queue);
+assert.equal(config.vars.JOBS_QUEUE_NAME, config.queues.producers[0].queue);
+assert.equal(config.vars.JOBS_DLQ_NAME, config.queues.consumers[0].dead_letter_queue);
+assert.notEqual(config.vars.JOBS_QUEUE_NAME, config.vars.JOBS_DLQ_NAME);
+assert.deepEqual(config.queues.consumers[1], {
+  queue: config.vars.JOBS_DLQ_NAME,
+  max_batch_size: 10,
+  max_batch_timeout: 5,
+  max_retries: 100,
+  retry_delay: 3600,
+  max_concurrency: 1,
+});
 assert.deepEqual(config.triggers.crons, ["* * * * *", "*/2 * * * *"]);
 assert.equal(config.ratelimits[0].name, "EDGE_LIMITER");
 assert.equal(config.ratelimits[0].simple.period, 60);

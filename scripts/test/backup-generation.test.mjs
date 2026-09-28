@@ -42,6 +42,9 @@ beforeEach(async () => {
   id = randomUUID();
   const fixture = foundationFixture("backup", Date.now() - 1000);
   for (const s of fixture.statements) db.prepare(s.sql).run(...(s.values ?? []));
+  db.exec(
+    "INSERT INTO queue_dead_letters VALUES('malformed',NULL,1,2,1),('unknown','missing-outbox',1,3,1)",
+  );
   db.prepare(
     "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'stored',?)",
   ).run(fixture.ids.blob, Date.now());
@@ -128,7 +131,7 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   const saved = snapshot(db),
     schema = schemaDigest(db.prepare(schemaQuery).all());
   const { directory: artifact, manifest } = await capture();
-  expect(manifest.tables).toHaveLength(75);
+  expect(manifest.tables).toHaveLength(76);
   expect(manifest.generation.watermark).toBe("committed-history");
   expect(await readdir(artifact)).toEqual(["data.sql", "manifest.json"]);
   expect(await verifyGeneration(artifact)).toEqual(manifest);

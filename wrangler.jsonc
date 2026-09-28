@@ -51,6 +51,14 @@
         "max_retries": 10,
         "dead_letter_queue": "ncf-local-jobs-dlq",
         "max_concurrency": 8
+      },
+      {
+        "queue": "ncf-local-jobs-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 100,
+        "retry_delay": 3600,
+        "max_concurrency": 1
       }
     ]
   },
@@ -65,6 +73,8 @@
   ],
   "vars": {
     "ENVIRONMENT": "development",
+    "JOBS_QUEUE_NAME": "ncf-local-jobs",
+    "JOBS_DLQ_NAME": "ncf-local-jobs-dlq",
     "APP_ORIGIN": "http://localhost:8787",
     "CONTENT_ORIGIN": "http://localhost:8788",
     "PBKDF2_ITERATIONS": "100000"

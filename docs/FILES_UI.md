@@ -1,5 +1,7 @@
 # Files UI とローカルブラウザー試験
 
+[配信失敗の記録](DEAD_LETTERS.md)を追加しました。DLQ consumerの観測保存、管理者限定の50件ページ一覧、画面の確認経路を接続しています。migration0062・通常76table・147 route。元jobの状態や容量保持を変更せず、管理者からの再投入・保持期限管理・実Queue検証は引き続き未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+
 更新: 2026-09-28。製品全体の完了宣言ではない。実環境への配備、Access設定、remote secret登録は未実施。
 
 ## 接続した画面

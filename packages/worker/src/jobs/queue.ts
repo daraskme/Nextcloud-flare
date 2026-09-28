@@ -11,7 +11,7 @@ export interface OutboxBatch {
   readonly messages: readonly OutboxDelivery[];
 }
 
-function outboxId(body: unknown): string | null {
+export function outboxMessageId(body: unknown): string | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   const fields = Object.keys(body);
   if (fields.length !== 1 || fields[0] !== "outboxId") return null;
@@ -31,7 +31,7 @@ export async function handleOutboxBatch(
   const deadline = Date.now() + 25_000;
   for (const message of batch.messages) {
     try {
-      const id = outboxId(message.body);
+      const id = outboxMessageId(message.body);
       let result = "retry";
       if (id && Date.now() < deadline && !copyBatch) {
         const kind = await primary(env.DB)

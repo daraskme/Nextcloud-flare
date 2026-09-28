@@ -13,6 +13,8 @@ export interface Env {
   UPLOADS: DurableObjectNamespace<UploadDO>;
   BUDGETS: DurableObjectNamespace<BudgetDO>;
   JOBS: Queue;
+  JOBS_QUEUE_NAME?: string;
+  JOBS_DLQ_NAME?: string;
   IMAGES: ImagesBinding;
   EDGE_LIMITER: RateLimit;
   ASSETS: Fetcher;

@@ -34,6 +34,7 @@ import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } fro
 import type { InternalShare, SelectedShare } from "../../shared/src/shares";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
+import { DeadLettersDialog } from "./features/admin/DeadLettersDialog";
 import {
   CopyDestinationSelect,
   ownDestination,
@@ -665,6 +666,7 @@ export function App() {
   const [action, setAction] = useState<Action | null>(null);
   const [actionScope, setActionScope] = useState<SharedActionScope | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
+  const [deadLettersOpen, setDeadLettersOpen] = useState(false);
   useEffect(() => setStatsScope(null), [pathname]);
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -939,6 +941,9 @@ export function App() {
                 <Menu.Content className="context-menu" align="end">
                   <Menu.Label>{me?.email ?? "未接続"}</Menu.Label>
                   <Menu.Separator />
+                  {me?.role === "app_admin" && (
+                    <Menu.Item onSelect={() => setDeadLettersOpen(true)}>配信失敗の記録</Menu.Item>
+                  )}
                   <Menu.Item
                     disabled={loggingOut || !me}
                     onSelect={() => {
@@ -1373,6 +1378,9 @@ export function App() {
           }}
           refresh={refresh}
         />
+      )}
+      {deadLettersOpen && me?.role === "app_admin" && (
+        <DeadLettersDialog account={me} close={() => setDeadLettersOpen(false)} />
       )}
     </div>
   );

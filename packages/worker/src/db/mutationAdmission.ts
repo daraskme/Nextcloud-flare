@@ -36,6 +36,7 @@ export type AnyMutationRequest =
   | SystemMutationRequest
   | GlobalMutationRequest;
 export const GLOBAL_MUTATION_KINDS = [
+  "queue.dead-letter",
   "r2.write-settle",
   "r2.manifest-delete",
   "r2.gc-delete",
