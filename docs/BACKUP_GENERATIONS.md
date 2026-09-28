@@ -1,6 +1,6 @@
 # 論理バックアップ世代とオフライン復元
 
-更新: 2026-09-28。`pnpm backup`は凍結済みD1から通常68tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)で確定し、[専用bindingのrunコマンド](BACKUP_OPERATOR.md)で開始から一連に呼び出す。日次実行は[運用コマンド](BACKUP_OPERATOR.md)、保持判定は[health](BACKUP_RETENTION.md)、期限切れ指定世代の回収は[prune](BACKUP_PRUNING.md)へ接続済み。期限切れ世代の自動走査は[sweep](BACKUP_SWEEP.md)に接続済み。定時起動の設置、live D1 restore・epoch更新・全復旧監査は後続である。
+更新: 2026-09-28。`pnpm backup`は凍結済みD1から通常76tableをWranglerで抽出し、同一versionの隔離SQLiteへ復元・照合して、ローカルの世代ディレクトリへ保存する。検証済み世代のR2保存・ダウンロードも接続した。D1の完了記録と停止解除は[内部ControlDO RPC](BACKUP_COMPLETION.md)で確定し、[専用bindingのrunコマンド](BACKUP_OPERATOR.md)で開始から一連に呼び出す。日次実行は[運用コマンド](BACKUP_OPERATOR.md)、保持判定は[health](BACKUP_RETENTION.md)、期限切れ指定世代の回収は[prune](BACKUP_PRUNING.md)へ接続済み。期限切れ世代の自動走査は[sweep](BACKUP_SWEEP.md)に接続済み。定時起動の設置、live D1 restore・epoch更新・全復旧監査は後続である。
 
 ## コマンド
 
@@ -20,6 +20,8 @@ captureは開始・解除のRPCを代行せず、成功時も失敗時もbarrier
 `backup:drill`は`.wrangler/backup-drill-*`に専用config、local D1/R2/ControlDO、fixture、世代と復元先を作る。実private bindingのbeginと送信受付を通してcapture→verify→publish→download→restore-offlineコマンド、FTS検索、容量、元DBの凍結保持を検査する。実local R2への条件付きPUTが既存manifestの置換を拒否することも確認する。既存開発DBを消さず、remoteを呼び出さない。完了解除と全復旧監査の実証はこのドリルの範囲外。
 
 ## 世代の内容と一致検証
+
+SQLファイルの読込みは64KiBのFileHandle.readで行い、同じhandleで前後のstatとhash/byte数を照合する。終了時はfinallyだけがhandleを閉じる。不正SQLでparserが中断した際、借用fdのReadStream破棄とFileHandle.closeが競合し、本来の検証エラーをEBADFへ置き換える経路を2026-09-28に修正した。元のSQL拒否・hash・schema・table照合は維持する。
 
 世代ディレクトリには`data.sql`と`manifest.json`を保存する。manifest v1はgeneration UUID/epoch/token/作成時刻/watermark、捕捉時刻、全migrationの名前とSHA-256、schema digest、SQLのbyte数/SHA-256、通常全tableの行数/SHA-256を含む。SQLやmanifestにbearer token・ダウンロードURLを追加しない。SQL自体には利用者情報と認証recordが含まれるため、作成先はprivate directoryを使い、ファイルを0600で保存する。
 

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import {
   chmod,
   lstat,
@@ -69,7 +68,13 @@ async function importFile(db, path, tableSpecs) {
     const before = await handle.stat();
     if (!before.isFile()) throw new Error("backup_not_regular_file");
     async function* chunks() {
-      for await (const chunk of createReadStream(path, { fd: handle.fd, autoClose: false })) {
+      // A ReadStream iterator destroys itself on parser rejection and can close a borrowed fd,
+      // racing the FileHandle's finally. Keep this handle's lifetime under one owner instead.
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) return;
+        const chunk = buffer.subarray(0, bytesRead);
         hash.update(chunk);
         bytes += chunk.length;
         yield chunk;
