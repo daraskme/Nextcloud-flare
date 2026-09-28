@@ -91,6 +91,16 @@ export async function privateAppDependencies(
           ),
         )
       : undefined;
+  const sharePasswords =
+    env.SHARE_PASSWORD_KEYS && env.SHARE_PASSWORD_ACTIVE_KID
+      ? {
+          ...(await contentKeyRing(
+            env.SHARE_PASSWORD_ACTIVE_KID,
+            JSON.parse(env.SHARE_PASSWORD_KEYS),
+          )),
+          derive: globalKdf(env.CONTROL, epoch),
+        }
+      : undefined;
   return {
     verifier: new AccessVerifier(jwks, env.ACCESS_USER_AUDIENCE, env.ACCESS_SERVICE_AUDIENCE),
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
@@ -99,6 +109,7 @@ export async function privateAppDependencies(
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { listCursors: new ListCursorTokens(cursorRing) } : {}),
     ...(appPasswordPepper ? { appPasswordPepper } : {}),
+    ...(sharePasswords ? { sharePasswords } : {}),
     ...(uploadCapabilities ? { uploadCapabilities } : {}),
     bootstrap: bootstrapPolicy(env),
   };

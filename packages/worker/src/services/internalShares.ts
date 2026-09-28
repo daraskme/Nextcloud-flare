@@ -26,7 +26,7 @@ export function shareAccess(session: AccessSession): SqlStatement[] {
     ),
   ];
 }
-async function ownRoot(db: D1Database, session: AccessSession, id: string) {
+export async function ownRoot(db: D1Database, session: AccessSession, id: string) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("share_unavailable");
   const space = await primary(db)
     .prepare("SELECT space_id FROM nodes WHERE id=? AND owner_id=?")
@@ -91,7 +91,7 @@ function membership(
     })),
   ];
 }
-function revokeSessions(id: string): SqlStatement[] {
+export function revokeShareSessions(id: string): SqlStatement[] {
   return [
     {
       sql: `UPDATE share_sessions SET revoked_at=COALESCE(revoked_at,${CLOCK}) WHERE share_id=?`,
@@ -208,7 +208,7 @@ export async function updateInternalShare(
             values: [id],
           },
         ]),
-    ...revokeSessions(id),
+    ...revokeShareSessions(id),
   ]);
   return { id, version: version + 1, disabled: input === null };
 }

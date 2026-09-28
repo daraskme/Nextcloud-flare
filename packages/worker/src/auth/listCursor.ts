@@ -2,7 +2,14 @@ import { base64url } from "jose";
 import type { ContentKeyRing } from "./contentTokens";
 
 export interface ListCursorClaims {
-  readonly aud: "trash" | "share-owned" | "share-root" | "share-received" | "admin-dlq";
+  readonly aud:
+    | "trash"
+    | "share-owned"
+    | "share-root"
+    | "share-received"
+    | "admin-dlq"
+    | "link-owned"
+    | "link-root";
   readonly scopeId: string;
   readonly userId: string;
   readonly credentialId: string;
@@ -18,7 +25,15 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function valid(value: ListCursorClaims, now: number): boolean {
   return (
-    ["trash", "share-owned", "share-root", "share-received", "admin-dlq"].includes(value.aud) &&
+    [
+      "trash",
+      "share-owned",
+      "share-root",
+      "share-received",
+      "admin-dlq",
+      "link-owned",
+      "link-root",
+    ].includes(value.aud) &&
     ID.test(value.scopeId) &&
     ID.test(value.userId) &&
     /^[A-Za-z0-9:_-]{1,256}$/.test(value.credentialId) &&

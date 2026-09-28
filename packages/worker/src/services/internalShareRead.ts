@@ -13,7 +13,7 @@ interface Row {
 }
 
 /** One hundred roots plus a lookahead, with bounded ancestors from one D1 snapshot. */
-async function page(
+export async function sharePage(
   db: D1Database,
   session: AccessSession,
   received: boolean,
@@ -21,6 +21,7 @@ async function page(
   after: ListCursorClaims | null,
   limit: number,
   id?: string,
+  kind: "internal" | "link" = "internal",
 ) {
   const values: BindValue[] = [session.user_id, ...(received ? [session.user_id] : [])];
   let filter = received
@@ -45,7 +46,7 @@ async function page(
       sql: `WITH RECURSIVE candidates AS (
       SELECT sh.*,n.space_id FROM shares sh JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
       JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
-      WHERE sh.kind='internal' AND sh.disabled_at IS NULL
+      WHERE sh.kind='${kind}' AND sh.disabled_at IS NULL
       ${received ? `AND (sh.expires_at IS NULL OR sh.expires_at>${CLOCK})` : ""}
       AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
       AND ${filter} ORDER BY sh.created_at DESC,sh.id DESC LIMIT ?
@@ -60,11 +61,15 @@ async function page(
         WHERE a.share_id=c.id HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(a.deleted_at IS NULL)=1
         AND SUM(a.kind='root' AND a.parent_id IS NULL AND a.id=sp.root_node_id)=1) AS visible,
       json_object('id',c.id,'kind',c.kind,'rootNodeId',n.id,'spaceId',n.space_id,'ownerId',c.owner_id,
-        'name',n.name,'nodeKind',n.kind,'mountName',c.mount_name,'version',c.version,'createdAt',c.created_at,'expiresAt',c.expires_at,
+        'name',n.name,'nodeKind',n.kind,'version',c.version,'createdAt',c.created_at,'expiresAt',c.expires_at,
         'role',CASE WHEN EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=c.id AND sa.action='edit') THEN 'edit' ELSE 'read' END,
-        'recipients',json(CASE WHEN c.owner_id=? THEN (SELECT json_group_array(json_object('userId',u.id,'email',u.email))
+        ${
+          kind === "link"
+            ? "'hasPassword',json(CASE WHEN c.owner_id=? AND c.password_digest IS NOT NULL THEN 'true' ELSE 'false' END)"
+            : `'mountName',c.mount_name,'recipients',json(CASE WHEN c.owner_id=? THEN (SELECT json_group_array(json_object('userId',u.id,'email',u.email))
           FROM share_grants g JOIN users u ON u.id=g.user_id WHERE g.share_id=c.id AND g.disabled_at IS NULL AND g.version=c.version)
-          ELSE '[]' END)) AS data
+          ELSE '[]' END)`
+        }) AS data
       FROM candidates c JOIN nodes n ON n.id=c.root_node_id ORDER BY c.created_at DESC,c.id DESC`,
       values,
     },
@@ -78,8 +83,8 @@ export async function readInternalShare(
   allowRecipient = false,
 ) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("share_unavailable");
-  let row = (await page(db, session, false, undefined, null, 1, id))[0];
-  if (!row && allowRecipient) row = (await page(db, session, true, undefined, null, 1, id))[0];
+  let row = (await sharePage(db, session, false, undefined, null, 1, id))[0];
+  if (!row && allowRecipient) row = (await sharePage(db, session, true, undefined, null, 1, id))[0];
   if (!row || row.visible !== 1) throw new Error("share_unavailable");
   return JSON.parse(row.data) as InternalShare;
 }
@@ -110,7 +115,7 @@ export async function listInternalShares(
       after.generation !== 1)
   )
     throw new Error("invalid_list_cursor");
-  const rows = await page(db, session, received, root, after, limit),
+  const rows = await sharePage(db, session, received, root, after, limit),
     examined = rows.slice(0, limit),
     last = examined.at(-1);
   return {

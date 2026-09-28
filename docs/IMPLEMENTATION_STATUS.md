@@ -1,6 +1,17 @@
 # 実装進捗
 
-## 管理者によるDLQ再投入（今回）
+## 公開リンクの所有者管理API（今回）
+
+[公開リンク](PUBLIC_SHARES.md)の所有者CRUD・一覧を既存のprivate HTTPへ接続。期限/権限/パスワードの変更、秘密値の更新、停止に対応する。現行所有者・root/祖先・version・epoch・maintenanceを確定時にも検査し、変更とshare/content session・ticket失効を同じbatchへ入れる。32-byte秘密値は発行時だけ返す。専用鍵によるpassword保存は既存isolate/global KDFへ接続。schema0063・通常76table・147 route、依存追加なし。匿名unlock・公開bundle・両側のリンクUIは未接続。
+
+- 全Node85file/1,515件成功（84.68秒、/tmp/ncf-link-owner-node-full.log）。新規share-secrets14件で実PBKDF2、shareへの束縛、Unicodeのbyte上限、旧kid読取り/新kid書込み、KDF停止を検証。
+- 関連workerd4file/83件成功（33.61秒、/tmp/ncf-link-owner-native-final.log）。新規link-shares22件に加えてinternal-shares・shared-node-read・selected-share-writesを実行。権限喪失、祖先trash、競合、秘密情報を返さない一覧/詳細、cursor分離、HTTPのversion条件、session/ticket失効とbudget保持を確認。
+- 初回workerd2file/39件は38件成功・1件失敗（10.87秒、/tmp/ncf-link-owner-native.log）。receipt照会も失敗したケースを成功と期待していた試験を修正した。503後に所有者一覧から確定済みの1件を確認し、現行versionで秘密値を更新する経路を検証。POST自動再送は追加していない。最終83件には作成/更新それぞれのACK喪失・rollback・receipt照会失敗を含む。
+- 型検査・lint577file・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-link-owner-types-final.log、/tmp/ncf-link-owner-lint.log、/tmp/ncf-link-owner-contracts.log、/tmp/ncf-link-owner-config.log、/tmp/ncf-link-owner-build.log。remote secret設定・migration/deployなし。
+- 既存共有のbrowser13件成功（2.5分、/tmp/ncf-link-owner-browser.log）。sharesとshared-workspaceの実Access/CSRF・D1・HTTPによる管理、受信閲覧/書込み、失効、応答喪失/reload、所有者間コピーを検証。公開リンクUIの検証ではない。
+- **全Node1,515 + 関連workerd83 + 関連browser13 = 1,611件成功**。全workerd・全browser・実Wrangler backup drillは今回ローカルで再実行していない。
+
+## 管理者によるDLQ再投入（前回）
 
 [DLQ](DEAD_LETTERS.md)の再投入APIと画面を接続。migration0063、通常76table・147 route。管理者の現行権限と元operationの認可を確定時にも検査し、同じOutboxの再配信待ち・監査・受付を一括保存する。元copyのcheckpoint・予算・容量保持を変更しない。受付応答の喪失は同一actor/credential/keyで照合する。
 
