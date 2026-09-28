@@ -14,6 +14,8 @@ schema contract generator は適用済み migration を再生成せず、今後�
 テストは `readD1Migrations` + `applyD1Migrations` で隔離 D1 に適用する。
 既存の Phase 0 probe schema は別 test file の隔離 DB を使い、混在させない。
 
+`0067` はZIP pinの期限切れを上限付きで走査する部分索引だけを追加する（通常76table）。既存pinと参照会計は変更せず、期限後もfenced cleanupまでは保持する。詳細は[ZIP_DOWNLOADS](../../../docs/ZIP_DOWNLOADS.md)を参照。
+
 本番 DB へはまだ適用しない。down migration は提供せず、既存データがある場合の rollback は
 maintenance / GC pause / epoch bump を含む承認済み restore 手順で行う。
 ローカル開発の空 DB には `pnpm exec wrangler d1 migrations apply DB --local` で適用できる。

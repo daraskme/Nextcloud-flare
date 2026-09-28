@@ -1,6 +1,7 @@
 import type { ContentPurpose } from "../auth/contentSession";
 import type { AccountMutationEnv } from "./accountMutation";
 import { trackedR2Write } from "./r2Write";
+import { parseZipManifest, type ZipTargetManifest, zipBudgetKey } from "./zipManifest";
 
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_TARGETS = 1_000;
@@ -15,9 +16,28 @@ export interface TargetEntry {
   readonly size: number;
 }
 
-export interface TargetManifest {
+export interface BlobTargetManifest {
   readonly v: 1;
   readonly targets: readonly TargetEntry[];
+}
+
+export type TargetManifest = BlobTargetManifest | ZipTargetManifest;
+
+export interface BudgetTarget {
+  readonly key: string;
+  readonly size: number;
+}
+
+/** Archive framing is charged too; individual blob allowances keep their existing identities. */
+export async function manifestBudgetTargets(
+  manifest: TargetManifest,
+): Promise<readonly BudgetTarget[]> {
+  return manifest.v === 2
+    ? [{ key: await zipBudgetKey(manifest), size: manifest.outputBytes }]
+    : manifest.targets.map((target) => ({
+        key: `${target.purpose}:${target.blobId}`,
+        size: target.size,
+      }));
 }
 
 export interface TargetManifestRecord {
@@ -79,9 +99,24 @@ export async function stageTargetManifest(
   write: { env: AccountMutationEnv; ownerId: string; epoch: number },
 ): Promise<TargetManifestRecord> {
   const encoded = await encodeTargetManifest(targets);
-  const id = crypto.randomUUID();
+  return stageEncodedTargetManifest(bucket, encoded, write);
+}
+
+/** ZIP callers allocate the ID before acquiring pins; no target-set ID is included in content hashes. */
+export async function stageEncodedTargetManifest(
+  bucket: R2Bucket,
+  encoded: EncodedTargetManifest,
+  write: { env: AccountMutationEnv; ownerId: string; epoch: number },
+  id = crypto.randomUUID(),
+): Promise<TargetManifestRecord> {
+  if (!ID.test(id)) throw new Error("invalid_target_manifest");
+  const bytes = new TextEncoder().encode(encoded.json);
+  parseTargetManifest(bytes.buffer as ArrayBuffer, encoded.totalBytes);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  if ([...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("") !== encoded.hash)
+    throw new Error("invalid_target_manifest");
   const ref = `target-sets/${id}`;
-  const size = new TextEncoder().encode(encoded.json).byteLength;
+  const size = bytes.byteLength;
   const object = await trackedR2Write(
     write.env,
     {
@@ -128,6 +163,7 @@ export function parseTargetManifest(bytes: ArrayBuffer, totalBytes: number): Tar
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error("invalid_target_manifest");
   const manifest = parsed as Record<string, unknown>;
+  if (manifest.v === 2) return parseZipManifest(manifest, totalBytes);
   if (
     Object.keys(manifest).sort().join(",") !== "targets,v" ||
     manifest.v !== 1 ||

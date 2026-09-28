@@ -1,0 +1,20 @@
+# ZIPダウンロード
+
+2026-09-29時点では、固定manifest・サイズ会計・保持の内部基盤まで実装しています。private/publicのZIP作成・取得API、ticket発行、R2ストリーム配信、画面のダウンロード操作はまだ接続していません。
+
+## 実装済み
+
+- `storeZip.ts`: 同じfflate STORE serializerでサイズ測定と配信を行います。CRC、descriptor、UTF-8名、中央ディレクトリを含み、空archiveは22 bytesです。空folderには末尾`/`とDOS directory属性を付け、入力streamを開きません。fileとdirectoryの衝突、NFC重複、危険なpath、不正なUTF-16、1,000 entries超過、ZIP32上限超過を拒否します。queue上限は1 MiB、入力は1件ずつ開き、cancel時はreaderを停止します。
+- `zipSnapshot.ts`: 中央認可を通したroot/folderから、上限と超過判定用の1件を含むindexed subtree traversalで内容を固定します。パスはD1のparent/nameから再構成します。privateの他ownerは明示的なinternal shareを必要とし、publicはread可能なlink shareのroot内に制限します。upload-onlyは拒否します。
+- `zipManifest.ts`: v2 manifestへroot、revision、tree generation、並び順を固定したentry、実blob target、serializer version、正確な出力bytesを保存します。読取り時も同じserializerでサイズを再計算し、余分なfield、targetや順序の不一致を拒否します。従来のv1 manifestの形式は維持します。
+- `BudgetDO`: v2 manifestはZIP purposeだけで受け付け、ヘッダー等を含む正確な出力サイズの3倍を共通予算へ追加します。archive allowanceのidentityはpath/kind/blob/size/serializerから作ります。target-set ID、node ID、revisionや無関係なtree generationが変わっても、同一archiveへの再発行で残量は増えません。原本とZIPは同じ予算の使用量・並列数・request窓を共有します。
+- `zipPins.ts`: manifest保存前に、対象blobを重複除去して同じD1 batchで保持します。snapshot、現在の権限、期限、物理台帳を再検査し、unknown commitでも保持を先に返しません。最大10分の絶対期限までは、1回の完了や取消しでは他のreaderの保持を外しません。呼出し側は、その期限以下のleaseで全streamを停止する必要があります。
+- 定期処理は期限切れZIP pinを上限付きで解放します。system admission、現在epoch、maintenance解除、正確なpin/blob/期限を同じbatchで検査するため、停止中に保持を外しません。owner無効化後も期限切れのDB会計を精算できます。migration0067は専用の部分索引だけを追加し、通常76tableを維持します。
+
+## 接続時に必要な作業
+
+1. snapshotとpin取得後にtracked R2 manifestを保存し、読戻しと同じ認可・保持・budget assertionでtarget-set/ticketを公開する。結果不明の公開はexact admissionの証拠なしに取り消さない。
+2. GETでは現在のcredential/share/version/epoch/session、固定manifest、全node/blob、保持を再検査する。`streamLeasedContent`でBudgetDOのlease・request abort・deadlineをSTORE serializerとR2 readerへ接続し、原本IDやR2 keyを公開しない。
+3. private/public APIと画面を接続し、空folder、同名衝突、共有停止、途中切断、並列配信、ticket取消し、期限後cleanupまで統合試験を行う。安全なattachment filename、private/no-store、nosniff、no-referrerを付ける。
+
+remote migration/deployは実施していません。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。

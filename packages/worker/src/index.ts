@@ -22,6 +22,7 @@ import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory"
 import { dispatchPendingOutbox } from "./jobs/outbox";
 import { handleOutboxBatch } from "./jobs/queue";
 import { repairSingleUploads } from "./jobs/uploadCleanup";
+import { releaseExpiredZipPins } from "./services/zipPins";
 
 async function admittedEpoch(env: Env): Promise<number | null> {
   if (!hasBindings(env)) return null;
@@ -164,6 +165,7 @@ export default {
     await dispatchPendingOutbox(env, env.JOBS, epoch);
     await repairSingleUploads(env, env.BLOBS, epoch);
     await repairMultipartUploads(env, env.BLOBS, epoch);
+    if (Date.now() < deadline) await releaseExpiredZipPins(env, epoch, { deadline });
     await scanOrphanObjects(env, env.BLOBS, epoch);
     const status = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).status();
     if (status.epoch !== epoch || status.maintenance || status.gcPaused) return;

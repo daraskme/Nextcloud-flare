@@ -5,7 +5,12 @@ import { authorizeNode } from "../../src/auth/authorize";
 import { atomicBatch } from "../../src/db/primary";
 import { BudgetDO } from "../../src/do/BudgetDO";
 import { ensureContentBudget } from "../../src/services/contentBudget";
-import { stageTargetManifest, type TargetEntry } from "../../src/services/targetManifest";
+import {
+  stageEncodedTargetManifest,
+  stageTargetManifest,
+  type TargetEntry,
+} from "../../src/services/targetManifest";
+import { encodeZipManifest, type ZipSnapshot } from "../../src/services/zipManifest";
 import { foundationFixture } from "../fixtures/foundation";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 
@@ -98,12 +103,16 @@ async function fixture(totalBytes = 3) {
 async function anotherSession(
   f: Awaited<ReturnType<typeof fixture>>,
   targets: readonly TargetEntry[],
+  zip?: ZipSnapshot,
 ) {
-  const manifest = await stageTargetManifest(env.BLOBS, targets, {
+  const write = {
     env: mutationEnv(),
     epoch: 1,
     ownerId: f.f.ids.user,
-  });
+  };
+  const manifest = zip
+    ? await stageEncodedTargetManifest(env.BLOBS, await encodeZipManifest(zip), write)
+    : await stageTargetManifest(env.BLOBS, targets, write);
   const ticket = crypto.randomUUID(),
     session = crypto.randomUUID(),
     now = Date.now();
@@ -121,8 +130,16 @@ async function anotherSession(
       ],
     },
     {
-      sql: "INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at) VALUES(?,?,?,?,'content',1,?,?)",
-      values: [ticket, f.f.ids.credential, manifest.id, f.ids.budget, now, now + 600_000],
+      sql: "INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at) VALUES(?,?,?,?,?,1,?,?)",
+      values: [
+        ticket,
+        f.f.ids.credential,
+        manifest.id,
+        f.ids.budget,
+        zip ? "zip" : "content",
+        now,
+        now + 600_000,
+      ],
     },
     {
       sql: "INSERT INTO content_sessions(id,user_id,issued_by_credential_id,target_set_id,budget_id,ticket_id,epoch,issued_at,expires_at) VALUES(?,?,?,?,?,?,1,?,?)",
@@ -680,4 +697,111 @@ it("retains an outstanding content lease across an earlier budget lifetime bound
   // A lease may end at the old boundary, or remain tracked until its own deadline.
   // Dropping a still-valid request makes its settlement impossible and frees concurrency early.
   expect(result.secondStillValid ? result.settlement : "ok").toBe("ok");
+});
+
+function zipSnapshot(f: Awaited<ReturnType<typeof fixture>>): ZipSnapshot {
+  return {
+    spaceId: f.f.ids.space,
+    rootNodeId: f.f.ids.folder,
+    rootRevision: 1,
+    treeGeneration: 1,
+    entries: [
+      {
+        nodeId: f.f.ids.file,
+        revision: 1,
+        path: "File",
+        kind: "file",
+        blobId: f.f.ids.blob,
+        size: 3,
+      },
+    ],
+  };
+}
+
+it("charges ZIP framing and preserves spent allowance across reissues, tree revisions and eviction", async () => {
+  const f = await fixture(),
+    snapshot = zipSnapshot(f);
+  const first = await anotherSession(f, [], snapshot);
+  const second = await anotherSession(f, [], { ...snapshot, treeGeneration: 2, rootRevision: 3 });
+  expect(first.manifest.hash).not.toBe(second.manifest.hash);
+  const bytes = first.manifest.totalBytes;
+  expect(bytes).toBeGreaterThan(3);
+  const base = { budgetId: f.ids.budget, sessionId: first.session, epoch: 1 };
+  const lease = await f.stub.reserve({ ...base, requestId: crypto.randomUUID(), bytes: bytes * 3 });
+  await f.stub.settle({ budgetId: f.ids.budget, requestId: lease.requestId, deliveredBytes: null });
+  await evictDurableObject(f.stub);
+  await runInDurableObject(f.stub, async (_, state) => {
+    const budget = new BudgetDO(state, env);
+    await expect(
+      budget.reserve({
+        ...base,
+        sessionId: second.session,
+        requestId: crypto.randomUUID(),
+        bytes: 1,
+      }),
+    ).rejects.toThrow("budget_exceeded");
+  });
+  await f.stub.reserve({
+    ...base,
+    sessionId: f.ids.content,
+    requestId: crypto.randomUUID(),
+    bytes: 9,
+  });
+  expect(await f.stub.status()).toMatchObject({
+    byteLimit: bytes * 3 + 9,
+    bytesCharged: bytes * 3 + 9,
+    requests: 2,
+  });
+});
+
+it("gives an empty ZIP exactly three 22-byte downloads and does not duplicate grants across empty folders", async () => {
+  const f = await fixture(),
+    snapshot = { ...zipSnapshot(f), entries: [] };
+  const first = await anotherSession(f, [], snapshot);
+  const second = await anotherSession(f, [], { ...snapshot, rootNodeId: f.f.ids.root });
+  for (let i = 0; i < 3; i++) {
+    const lease = await f.stub.reserve({
+      budgetId: f.ids.budget,
+      sessionId: first.session,
+      epoch: 1,
+      requestId: crypto.randomUUID(),
+      bytes: 22,
+    });
+    await f.stub.settle({ budgetId: f.ids.budget, requestId: lease.requestId, deliveredBytes: 22 });
+  }
+  await runInDurableObject(f.stub, async (_, state) => {
+    const budget = new BudgetDO(state, env);
+    await expect(
+      budget.reserve({
+        budgetId: f.ids.budget,
+        sessionId: second.session,
+        epoch: 1,
+        requestId: crypto.randomUUID(),
+        bytes: 22,
+      }),
+    ).rejects.toThrow("budget_exceeded");
+  });
+  expect(await f.stub.status()).toMatchObject({
+    byteLimit: 66,
+    bytesCharged: 66,
+    requests: 3,
+    active: 0,
+  });
+});
+
+it("does not grant ZIP allowance to another ticket purpose, including after warming the manifest cache", async () => {
+  const f = await fixture(),
+    zip = await anotherSession(f, [], zipSnapshot(f));
+  const base = { budgetId: f.ids.budget, sessionId: zip.session, epoch: 1 };
+  await runInDurableObject(f.stub, async (_, state) => {
+    const budget = new BudgetDO(state, env);
+    const lease = await budget.reserve({ ...base, requestId: crypto.randomUUID(), bytes: 0 });
+    await budget.settle({ budgetId: f.ids.budget, requestId: lease.requestId, deliveredBytes: 0 });
+    const before = budget.status();
+    await env.DB.prepare("UPDATE tickets SET purpose='content' WHERE id=?").bind(zip.ticket).run();
+    await expect(
+      budget.reserve({ ...base, requestId: crypto.randomUUID(), bytes: 1 }),
+    ).rejects.toThrow("budget_authorization_denied");
+    expect(budget.status()).toEqual(before);
+  });
 });

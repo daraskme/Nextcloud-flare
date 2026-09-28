@@ -3,8 +3,9 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
 import {
+  type BudgetTarget,
   loadTargetManifest,
-  type TargetEntry,
+  manifestBudgetTargets,
   type TargetManifestRecord,
 } from "../services/targetManifest";
 
@@ -16,6 +17,7 @@ const ID = /^[A-Za-z0-9_:-]{1,512}$/;
 const LEASE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 interface Authority extends TargetManifestRecord {
+  purpose: string;
   epoch: number;
   budgetExpiresAt: number;
   sessionExpiresAt: number;
@@ -60,7 +62,7 @@ export interface BudgetSettleRequest {
 
 /** Durable, per-budget admission. Public fetch remains closed until every content route uses it. */
 export class BudgetDO extends DurableObject<Env> {
-  #manifest: { key: string; targets: readonly TargetEntry[] } | undefined;
+  #manifest: { key: string; targets: readonly BudgetTarget[] } | undefined;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS budget_state(
@@ -92,7 +94,7 @@ export class BudgetDO extends DurableObject<Env> {
   async #authority(request: BudgetReserveRequest, now: number): Promise<Authority> {
     const row = await primary(this.env.DB)
       .prepare(`SELECT b.epoch,b.expires_at AS budgetExpiresAt,
-        cs.expires_at AS sessionExpiresAt,ts.total_bytes AS totalBytes,
+        cs.expires_at AS sessionExpiresAt,ts.total_bytes AS totalBytes,t.purpose,
         ts.id,ts.manifest_ref AS ref,ts.manifest_hash AS hash
         FROM budgets b JOIN content_sessions cs ON cs.budget_id=b.id
         JOIN target_sets ts ON ts.id=cs.target_set_id AND ts.credential_id=cs.issued_by_credential_id
@@ -215,15 +217,24 @@ export class BudgetDO extends DurableObject<Env> {
       authority.ref,
       authority.hash,
       authority.totalBytes,
+      authority.purpose,
     ]);
     let targets = this.#manifest?.key === manifestKey ? this.#manifest.targets : undefined;
     if (!targets) {
-      targets = (await loadTargetManifest(this.env.BLOBS, authority)).targets;
+      const manifest = await loadTargetManifest(this.env.BLOBS, authority);
+      if (manifest.v === 2 && authority.purpose !== "zip")
+        throw new Error("budget_authorization_denied");
+      targets = await manifestBudgetTargets(manifest);
       // R2 I/O may outlive a ticket/session. Recheck the exact D1 record before granting bytes.
       authority = await this.#authority(request, Date.now());
       if (
-        JSON.stringify([authority.id, authority.ref, authority.hash, authority.totalBytes]) !==
-        manifestKey
+        JSON.stringify([
+          authority.id,
+          authority.ref,
+          authority.hash,
+          authority.totalBytes,
+          authority.purpose,
+        ]) !== manifestKey
       )
         throw new Error("budget_authorization_denied");
       this.#manifest = { key: manifestKey, targets };
@@ -343,7 +354,7 @@ export class BudgetDO extends DurableObject<Env> {
 
   #grantTargets(
     state: BudgetState,
-    targets: readonly TargetEntry[],
+    targets: readonly BudgetTarget[],
     legacyLimit: number,
   ): BudgetState {
     const window = this.ctx.storage.sql
@@ -367,7 +378,7 @@ export class BudgetDO extends DurableObject<Env> {
     let allowance = state.byte_limit;
     for (const target of targets) {
       // Immutable blob identity also deduplicates aliases/COW copies and new manifests.
-      const key = `${target.purpose}:${target.blobId}`;
+      const key = target.key;
       const known = recorded.get(key) ?? additions.get(key);
       if (known !== undefined) {
         if (known !== target.size) throw new Error("budget_target_conflict");

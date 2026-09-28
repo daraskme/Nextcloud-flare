@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { type StoreEntry, storeZip, storeZipSize } from "../../src/platform/storeZip";
 import { bytesSource, drain } from "../fixtures/streams";
 
@@ -103,3 +103,30 @@ it.each(["../x", "x/../y", "/x", "x\\y", "C:/file", "x//y", "x\u0000y"])(
     expect(() => storeZipSize([entry(name, "")])).toThrow(/invalid_zip_name/);
   },
 );
+
+it("writes empty directories with DOS directory attributes without opening a source", async () => {
+  const open = vi.fn(async () => {
+    throw new Error("must_not_open");
+  });
+  const entries = [{ name: "資料/", directory: true, size: 0, open }, entry("資料/a", "x")];
+  const result = storeZip(entries),
+    bytes = await new Response(result.body).arrayBuffer();
+  expect(open).not.toHaveBeenCalled();
+  expect(bytes.byteLength).toBe(storeZipSize(entries));
+  const view = new DataView(bytes),
+    central = view.getUint32(bytes.byteLength - 6, true);
+  expect(view.getUint32(central, true)).toBe(0x02014b50);
+  expect(view.getUint32(central + 38, true)).toBe(0x10);
+  expect(view.getUint16(bytes.byteLength - 12, true)).toBe(2);
+});
+
+it.each([
+  [entry("a", ""), entry("a/b", "")],
+  [entry("a/b", ""), entry("a", "")],
+  [entry("é", ""), entry("e\u0301", "")],
+  [entry("a", ""), { ...entry("a/", ""), directory: true }],
+  [{ ...entry("a/", "x"), directory: true }],
+  [{ ...entry("a", ""), directory: true }],
+])("rejects file/directory collisions and invalid directory metadata %#", (...entries) => {
+  expect(() => storeZipSize(entries)).toThrow();
+});

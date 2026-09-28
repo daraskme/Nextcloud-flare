@@ -4,15 +4,16 @@ import { Zip, ZipPassThrough } from "fflate";
 export interface StoreEntry {
   readonly name: string;
   readonly size: number;
+  readonly directory?: boolean;
   readonly open: () => Promise<ReadableStream<Uint8Array>>;
 }
 
-function file(name: string): ZipPassThrough {
-  const entry = new ZipPassThrough(name);
+function file(source: Pick<StoreEntry, "name" | "directory">): ZipPassThrough {
+  const entry = new ZipPassThrough(source.name);
   // Fixed metadata for both the measurement pass and actual serialization.
   entry.mtime = new Date(2000, 0, 1, 0, 0, 0);
   entry.os = 0;
-  entry.attrs = 0;
+  entry.attrs = source.directory ? 0x10 : 0;
   return entry;
 }
 
@@ -21,38 +22,60 @@ function inspectEntries(entries: readonly StoreEntry[]): {
   size: number;
 } {
   if (entries.length > LIMITS.zipEntries) throw new RangeError("zip_entry_limit");
-  const names = new Set<string>();
+  const names = new Map<string, boolean>();
   let payloadBytes = 0;
   // Snapshot the inputs so metadata cannot change after dry-run.
   const snapshot = entries.map((entry) => {
     const name = entry.name.normalize("NFC");
+    const directory = entry.directory === true;
+    const path = directory && name.endsWith("/") ? name.slice(0, -1) : name;
     const nameBytes = new TextEncoder().encode(name).byteLength;
     if (
-      !name ||
+      !path ||
+      (directory && !name.endsWith("/")) ||
       nameBytes > 1_024 ||
       /[\\:]/.test(name) ||
       Array.from(name).some(
-        (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+        (character) =>
+          character.charCodeAt(0) < 32 ||
+          character.charCodeAt(0) === 127 ||
+          (character.length === 1 &&
+            character.charCodeAt(0) >= 0xd800 &&
+            character.charCodeAt(0) <= 0xdfff),
       ) ||
-      name.split("/").some((part) => !part || part === "." || part === "..") ||
-      names.has(name)
+      path.split("/").some((part) => !part || part === "." || part === "..") ||
+      names.has(path)
     ) {
       throw new RangeError("invalid_zip_name");
     }
-    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > LIMITS.zipBytes) {
+    if (
+      !Number.isSafeInteger(entry.size) ||
+      entry.size < 0 ||
+      entry.size > LIMITS.zipBytes ||
+      (directory && entry.size !== 0)
+    ) {
       throw new RangeError("zip_size_limit");
     }
-    names.add(name);
+    names.set(path, directory);
     payloadBytes += entry.size;
-    return Object.freeze({ name, size: entry.size, open: entry.open });
+    return Object.freeze({ name, directory, size: entry.size, open: entry.open });
   });
+  // A file must not also be the parent directory of another entry, in either order.
+  for (const path of names.keys()) {
+    const parts = path.split("/");
+    parts.pop();
+    while (parts.length) {
+      if (names.get(parts.join("/")) === false) throw new RangeError("invalid_zip_name");
+      parts.pop();
+    }
+  }
   let overhead = 0;
   const measure = new Zip((error, data) => {
     if (error) throw error;
     overhead += data.byteLength;
   });
   for (const entry of snapshot) {
-    const stream = file(entry.name);
+    const stream = file(entry);
     measure.add(stream);
     stream.push(new Uint8Array(), true);
   }
@@ -69,7 +92,7 @@ export function storeZipSize(entries: readonly StoreEntry[]): number {
   return inspectEntries(entries).size;
 }
 
-/** Phase 0 serializer primitive. Authentication, budgets and pinning precede any future route. */
+/** Bounded STORE serializer; callers provide current authority, pinned blobs and a budget lease. */
 export function storeZip(entries: readonly StoreEntry[]): {
   size: number;
   body: ReadableStream<Uint8Array>;
@@ -124,13 +147,19 @@ export function storeZip(entries: readonly StoreEntry[]): {
                 zip.end();
                 break;
               }
+              if (entry.directory) {
+                const directory = file(entry);
+                zip.add(directory);
+                directory.push(new Uint8Array(), true);
+                continue;
+              }
               const source = await entry.open();
               if (cancelled) {
                 await source.cancel();
                 return;
               }
               reader = source.getReader();
-              current = file(entry.name);
+              current = file(entry);
               currentBytes = 0;
               expected = entry.size;
               zip.add(current);

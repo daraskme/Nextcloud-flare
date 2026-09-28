@@ -158,6 +158,7 @@ export const SYSTEM_MUTATION_KINDS = [
   "upload.complete-failed",
   "dav.put-stored",
   "dav.put-failed",
+  "content.zip-release",
 ] as const;
 export type SystemMutationKind = (typeof SYSTEM_MUTATION_KINDS)[number];
 export function isSystemMutationId(id: string): boolean {

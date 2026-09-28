@@ -1,6 +1,21 @@
 # 実装進捗
 
-## ファイル受け取りリンクの管理・匿名送信・再開（今回）
+## ZIP manifest・予算・保持の内部基盤とバックアップ列上限修正（今回）
+
+[ZIPダウンロード](ZIP_DOWNLOADS.md)の内部基盤を追加しました。空フォルダー、固定manifest、正確な出力サイズ、共通予算、期限付きblob保持と定期解放に対応します。ZIPのticket発行・API・画面への接続は次工程です。schema0067は索引のみを追加し、通常76table・147 routeを維持します。[ファイル受け取りリンク](UPLOAD_ONLY_SHARES.md)、単一ドメイン、公開原本配信・編集/削除は接続済みです。thumb/page/track・media、実環境検証、復旧側の残件も未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+
+先行f2c6c33の[CI36460457472](https://github.com/daraskme/Nextcloud-flare/actions/runs/36460457472)はWindows全Node/4分割・通常/単一host browserの7job成功、backup bindings/cliとUbuntu Nodeの3job失敗で終了しました。バックアップはローカル実D1でも再現し、uploadsが51列になったことで型と値の102列SELECTがD1の結果列上限100を超えると特定しました。今回、同じ凍結keyset pageを100列以内のprojectionへ分割し、各pageのkey/順序/件数を照合するよう修正しています。Ubuntuはbackup-operator試験の5秒timeoutで、Nodeの同時実行を全OSで2に制限しました。製品の期限やUbuntuの試験timeoutは変更していません。CLI jobの保存ログはbackup_run_drill_command_failedのみで、詳細artifactは取得できなかったため、その失敗の同一原因までは確定せず修正後CIで確認します。修正後の検証は上記実装記録を参照してください。
+
+- 全Node93file/1,642件成功（186.75秒、/tmp/ncf-zip-all-unit-2.log）。v2 manifestの正確なサイズ・改変拒否・再発行の予算同一性、51/100列のbackup exportとscalar精度・変更page拒否を含む。初回はsandbox内でCLI子プロセスの出力が失われ、local HTTPも拒否されたため39件失敗した。同じ無効引数CLIを制約内外で比較し、許可されたローカル実行環境で全件を再検証した。
+- ZIP関連の実D1/R2/DO・serializer4file/52件成功（39.15秒、/tmp/ncf-zip-native-2.log）。初回は2件のfixture準備誤りと、3件の期待したRPC例外がtest poolで未処理になる問題があり、準備を修正してDO内で期待例外を検査した。製品の認可や上限は緩めていない。
+- pin解放の最終修正と既存content ticket/budget/session/admission/public配信/lease/accounting/recoveryの回帰9file/141件成功（125.62秒、/tmp/ncf-zip-native-regression.log）。zip-snapshot13件が重複するため、関連nativeは12file/180件。
+- 実Wrangler backup:drill成功（/tmp/ncf-zip-backup-drill-fixed.log、.wrangler/backup-drill-qgsKAu/report.json）。76table・SQL9,955bytesの取得、BACKUPS保存/読戻し/競合拒否、download、offline restore、FTS・会計・FK・schema・元DBのfreeze保持を検証した。元BLOBSの内容復旧、live restore、remote設定の証明には含めない。
+- Web build/Worker dry-run成功（/tmp/ncf-zip-build.log）。
+- 型、lint642file、契約/設定が成功（/tmp/ncf-zip-types-final.log、/tmp/ncf-zip-lint.log、/tmp/ncf-zip-contracts.log、/tmp/ncf-zip-config.log）。
+
+**全Node1,642 + 関連native180 = 重複を除き1,822件成功**。ZIPのticket/API/配信stream/画面は次工程。全workerd、browser、backup:run-drillは今回ローカル再実行していない。schema0067・通常76table・147 route、依存追加なし。remote resource/secret/migration/deployなし。
+
+## ファイル受け取りリンクの管理・匿名送信・再開（先行f2c6c33）
 
 folder/rootを対象にupload-onlyの管理APIとフォルダー操作からの管理画面、匿名の単一/分割送信・受付番号・再開画面を接続した。create/uploadだけを認可し、owner/shareの予約を同じbatchで取得する。保存時の同名は公開batch内で自動改名し、最終名や既存fileを開示しない。作成/受信/確定は同じ201 receipt、statusは元session+capabilityに固定してprivate operation/errorを隠す。失敗・中止・cleanup・復旧監査も同じidentity/予約へ接続する。[UPLOAD_ONLY_SHARES](UPLOAD_ONLY_SHARES.md)参照。migration0066・通常76table・147 route、依存追加なし。
 
@@ -789,7 +804,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 | 2 folder create HTTP | `POST /api/v1/nodes` の bounded JSON、CSRF、Idempotency-Key を LockDO/permit/D1 の folder mutation に接続。`GET /api/v1/operations/:id` は同 credential の current operand/result を照合 | 実 LockDO/D1 の作成・再送・照会、CSRF 欠落、異 payload の409を workerd で検証。test-only admission であり実 ControlDO 再開は未実装 |
 | 2 Files mutation HTTP | private REST の `DELETE /nodes/:id`、`POST /nodes/:id/move`、`POST /nodes/:id/copy` を CSRF、bounded JSON、Idempotency-Key、LockDO、固定 subtree manifest、atomic trash/MOVE/COW COPY へ接続。REST operation は `node.trash` / `node.move` / `node.copy` として DAV と区別し、consumer・復旧監査も両 provenance を検証 | copy→move→trash、各 namespace 結果、Outbox 消費、operation kind、削除後の同一 DELETE 再送を実 D1/DO で検証。ローカル実ControlDOとFiles UIを接続済み。実環境は未検証 |
 | 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
-| 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
+| 0.3 / ZIP配信基盤 | STORE serializer、空folder、固定v2 manifest、認可付きsubtree snapshot、正確なbudget bytes、期限付きpinとcleanup | 内部基盤をローカル実装済み。ticket/API/stream/画面は未接続 |
 | 1.1 契約・schema | 58通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |
