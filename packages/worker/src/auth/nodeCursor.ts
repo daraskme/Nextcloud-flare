@@ -5,7 +5,7 @@ export interface NodeCursorClaims {
   readonly parentId: string;
   readonly spaceId: string;
   readonly ownerId: string;
-  readonly userId: string;
+  readonly userId: string | null;
   readonly credentialId: string;
   readonly epoch: number;
   readonly generation: number;
@@ -21,10 +21,13 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function valid(value: NodeCursorClaims, now: number): boolean {
   return (
-    ID.test(value.parentId) &&
-    ID.test(value.spaceId) &&
-    ID.test(value.ownerId) &&
-    ID.test(value.userId) &&
+    typeof value.credentialId === "string" &&
+    [value.parentId, value.spaceId, value.ownerId, value.lastId].every(
+      (v) => typeof v === "string" && ID.test(v),
+    ) &&
+    (value.userId === null
+      ? typeof value.shareId === "string" && value.credentialId.startsWith("ss:")
+      : typeof value.userId === "string" && ID.test(value.userId)) &&
     /^[A-Za-z0-9:_-]{1,256}$/.test(value.credentialId) &&
     ID.test(value.lastId) &&
     ((value.shareId === undefined && value.shareVersion === undefined) ||

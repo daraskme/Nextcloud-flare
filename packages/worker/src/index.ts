@@ -6,6 +6,7 @@ import { privateAppDependencies } from "./api/privateAppConfig";
 import { publicShareDependencies } from "./api/publicShareConfig";
 import { handlePublicShareHttp, publicShareRoute } from "./api/publicShares";
 import { privateAssetRoute, servePrivateApp } from "./assets/privateApp";
+import { publicAssetRoute, servePublicApp } from "./assets/publicApp";
 import { appPasswordPepperRing } from "./auth/appPassword";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { globalKdf } from "./auth/globalKdf";
@@ -70,6 +71,9 @@ export default {
       } catch {
         return problem(503, "not_ready");
       }
+    }
+    if (new URL(request.url).origin === env.APP_ORIGIN && publicAssetRoute(request)) {
+      return servePublicApp(request, env);
     }
     if (new URL(request.url).origin === env.APP_ORIGIN && publicShareRoute(request)) {
       try {

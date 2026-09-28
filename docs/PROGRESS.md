@@ -1,6 +1,6 @@
 # 開発進捗
 
-[公開リンクの匿名認証](PUBLIC_SHARES.md)を接続しました。秘密値/passwordの検証、共有Cookie、public CSRF、logout、共有/IP別の永続的な試行回数制限に対応します。同じchallengeの並行送信・応答喪失では同じcredentialを再利用します。公開画面・一覧/配信・所有者のリンク管理画面は未接続です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンクの閲覧画面](PUBLIC_SHARES.md)を接続しました。独立したpublic build、fragmentの除去、password認証、共有範囲内の一覧、content ticket経由の表示・保存、共有を閉じる操作に対応します。配信は既存BudgetDOで使用量を計上し、同じunlock sessionの再利用で予算を引き継ぎます。所有者のリンク管理画面、公開編集/upload-only・ZIP・mediaは未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-28
 
@@ -10,7 +10,9 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開linkの一覧・配信・独立public bundle・landingと所有者UIを接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開linkの所有者UIと、残る公開編集・専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行67be478の[CI36425378826](https://github.com/daraskme/Nextcloud-flare/actions/runs/36425378826)は、Ubuntu・Windows1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4は30分のjob上限でcancelledとなりました（GitHub annotation確認）。4/4の全Nodeは成功し、integration中に打ち切られています。先行backupのEBADF修正はUbuntuの全checkでも成功しました。Windowsの未完走を成功扱いにはしません。Windows全Nodeを1/4で一度実行し、残るshardでの重複を取り除きます。全integration shardと検証範囲は維持し、次のCIで完走を確認します。
 
 先行c0ed70aの[CI36421891215](https://github.com/daraskme/Nextcloud-flare/actions/runs/36421891215)は、Windows4分割・browser・backup bindings/cliの7job成功、Ubuntu失敗で終了しました。backup-generationの不正SQL拒否試験で、期待したbackup_invalid_data_sqlがEBADFに置き換わりました。借用fdのReadStreamがparser中断時にfdを閉じ、FileHandleのfinally closeと競合する経路を一時ファイル100回中1回で再現しました。今回は64KiBのFileHandle.readに統一し、handleをfinallyだけで閉じます。修正後のローカル全Node1,528件が成功し、CIでの再確認はpush後に行います。
 

@@ -26,7 +26,8 @@ interface PathRow {
 }
 
 async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
-  if (principal.kind !== "user") throw new Error("node_unavailable");
+  if (principal.kind !== "user" && principal.kind !== "link_share")
+    throw new Error("node_unavailable");
   if (!ID.test(nodeId)) throw new Error("invalid_node_id");
   const spaceId = await primary(db)
     .prepare("SELECT space_id FROM nodes WHERE id=?")
@@ -41,18 +42,27 @@ async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
   if (proof.operation !== "node.read") throw new Error("node_unavailable");
   // Browser metadata reads require an explicit share on another owner's tree.
   // An unscoped read must never disclose names or parent IDs above a grant.
-  const selected = proof.principal.kind === "user" ? proof.principal.selected_share : undefined;
-  if (!selected && proof.node.owner_id !== principal.user_id) throw new Error("node_unavailable");
+  const selected =
+    principal.kind === "link_share"
+      ? { id: principal.share_id, version: principal.share_version }
+      : principal.selected_share;
+  if (!selected && principal.kind === "user" && proof.node.owner_id !== principal.user_id)
+    throw new Error("node_unavailable");
   const scope = selected
     ? await primary(db)
         .prepare(
-          "SELECT root_node_id FROM shares WHERE id=? AND version=? AND owner_id=? AND kind='internal'",
+          "SELECT root_node_id FROM shares WHERE id=? AND version=? AND owner_id=? AND kind=?",
         )
-        .bind(selected.id, selected.version, proof.node.owner_id)
+        .bind(
+          selected.id,
+          selected.version,
+          proof.node.owner_id,
+          principal.kind === "link_share" ? "link" : "internal",
+        )
         .first<string>("root_node_id")
     : await primary(db)
         .prepare("SELECT root_node_id FROM spaces WHERE id=? AND owner_id=?")
-        .bind(spaceId, principal.user_id)
+        .bind(spaceId, proof.node.owner_id)
         .first<string>("root_node_id");
   if (!scope) throw new Error("node_unavailable");
   const fence = selected
@@ -62,7 +72,7 @@ async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
       )
     : assertExists("SELECT 1 FROM spaces WHERE id=? AND owner_id=? AND root_node_id=?", [
         spaceId,
-        principal.user_id,
+        proof.node.owner_id,
         scope,
       ]);
   return { proof, scope, fence, selected };
@@ -157,7 +167,9 @@ export async function listNodeChildren(
   tokens: NodeCursorTokens,
   cursor?: string,
 ) {
-  if (principal.kind !== "user") throw new Error("node_unavailable");
+  if (principal.kind !== "user" && principal.kind !== "link_share")
+    throw new Error("node_unavailable");
+  const userId = principal.kind === "link_share" ? null : principal.user_id;
   const { proof, fence, selected } = await nodeProof(db, principal, parentId);
   const parent = proof.node;
   if (parent.kind === "file") throw new Error("node_not_folder");
@@ -169,7 +181,7 @@ export async function listNodeChildren(
       claims.parentId !== parent.id ||
       claims.spaceId !== parent.space_id ||
       claims.ownerId !== parent.owner_id ||
-      claims.userId !== principal.user_id ||
+      claims.userId !== userId ||
       claims.credentialId !== principal.credential_id ||
       claims.epoch !== principal.epoch ||
       claims.shareId !== selected?.id ||
@@ -227,7 +239,7 @@ export async function listNodeChildren(
           parentId: parent.id,
           spaceId: parent.space_id,
           ownerId: parent.owner_id,
-          userId: principal.user_id,
+          userId,
           credentialId: principal.credential_id,
           epoch: principal.epoch,
           generation: parent.tree_generation,

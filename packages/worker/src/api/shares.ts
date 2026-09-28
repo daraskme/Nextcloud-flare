@@ -20,7 +20,7 @@ export function shareRoute(request: Request): boolean {
     (DETAIL.test(path) && ["GET", "PATCH", "DELETE"].includes(request.method))
   );
 }
-export async function readShareBody(request: Request): Promise<unknown> {
+export async function readShareBody(request: Request, maxBytes = 8192): Promise<unknown> {
   if (request.headers.get("Content-Type") !== "application/json" || !request.body)
     throw new Error("invalid_share_request");
   const reader = request.body.getReader(),
@@ -43,7 +43,7 @@ export async function readShareBody(request: Request): Promise<unknown> {
         break;
       }
       size += part.value.byteLength;
-      if (size > 8192) throw new Error("invalid_share_request");
+      if (size > maxBytes) throw new Error("invalid_share_request");
       parts.push(part.value);
     }
     if (!done) throw new Error("invalid_share_request");

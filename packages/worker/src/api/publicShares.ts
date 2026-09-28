@@ -1,5 +1,7 @@
 import { problem } from "@next-cloud-flare/shared/errors";
+import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
+import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { SharePasswordRing } from "../auth/shareSecrets";
 import { type ShareTokens, shareCookieHeader, shareCookieValue } from "../auth/shareTokens";
 import { CONTROL_NAME } from "../do/controlName";
@@ -12,9 +14,11 @@ import {
   unlockShare,
 } from "../services/shareUnlock";
 import { hasEmptyBody } from "./emptyBody";
+import { publicShareRead, publicShareTicket } from "./publicShareRead";
 import { readShareBody } from "./shares";
 
-const ROUTE = /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})\/(unlock|logout|csrf)$/;
+const ROUTE =
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|tickets(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -24,9 +28,20 @@ export interface PublicShareDependencies {
   tokens: ShareTokens;
   csrf: CsrfTokens;
   passwords?: SharePasswordRing;
+  cursors?: NodeCursorTokens;
+  contentTokens?: ContentTokens;
 }
-export const publicShareRoute = (request: Request) =>
-  request.method === "POST" && ROUTE.test(new URL(request.url).pathname);
+export const publicShareRoute = (request: Request) => {
+  const match = ROUTE.exec(new URL(request.url).pathname),
+    action = match?.[2] ?? "";
+  return (
+    !!match &&
+    ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
+      (request.method === "POST" &&
+        ["unlock", "csrf", "logout", "tickets", "content-session"].includes(action)) ||
+      (request.method === "DELETE" && action.startsWith("tickets/")))
+  );
+};
 const csrfSession = (s: ShareSession) => ({
   kind: "share" as const,
   credentialId: `ss:${s.claims.session_id}`,
@@ -55,15 +70,17 @@ export async function handlePublicShareHttp(
 ): Promise<Response> {
   const url = new URL(request.url),
     match = ROUTE.exec(url.pathname);
-  if (!match || request.method !== "POST" || url.origin !== env.APP_ORIGIN)
+  if (!match || !publicShareRoute(request) || url.origin !== env.APP_ORIGIN)
     return problem(404, "not_found");
   const id = match[1]!,
-    action = match[2]!,
+    action = match[2] ?? "",
     { tokens, csrf, passwords } = dependencies;
   try {
-    if (url.search || url.hash) return problem(400, "bad_request");
+    if ((url.search && !action.startsWith("children/")) || url.hash)
+      return problem(400, "bad_request");
     if (
-      request.headers.get("Origin") !== env.APP_ORIGIN ||
+      (request.headers.get("Origin") !== env.APP_ORIGIN &&
+        !(request.method === "GET" && request.headers.get("Origin") === null)) ||
       request.headers.get("Sec-Fetch-Site") !== "same-origin"
     )
       return problem(403, "forbidden");
@@ -84,6 +101,21 @@ export async function handlePublicShareHttp(
         )
           throw error;
       }
+    }
+    if (request.method === "GET") {
+      if (!session) return problem(401, "unauthorized");
+      return publicShareRead(request, env, session, action, dependencies.cursors);
+    }
+    if (action === "tickets" || action === "content-session" || action.startsWith("tickets/")) {
+      if (!session) return problem(401, "unauthorized");
+      await csrf.verify(env.DB, request, csrfSession(session));
+      return publicShareTicket(
+        request,
+        env,
+        session,
+        action.startsWith("tickets/") ? action.slice(8) : undefined,
+        dependencies.contentTokens,
+      );
     }
     if (action === "csrf") {
       if (!(await hasEmptyBody(request))) return problem(400, "bad_request");

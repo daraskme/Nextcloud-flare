@@ -1,0 +1,279 @@
+* {
+  box-sizing: border-box;
+}
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #19362b;
+  background: #f5f7f4;
+  font-synthesis: none;
+}
+body {
+  margin: 0;
+}
+button,
+input {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #78ae83;
+  outline-offset: 3px;
+}
+.public-shell {
+  max-width: 1040px;
+  margin: auto;
+  padding: 0 36px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 30px 0;
+  font-weight: 650;
+}
+.brand-mark {
+  background: #234e3a;
+  color: white;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  font-size: 22px;
+}
+.brand small {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: #687a70;
+  margin-top: 3px;
+}
+.brand > button {
+  margin-left: auto;
+}
+main {
+  padding: 42px 0 70px;
+  min-height: 70vh;
+}
+.eyebrow {
+  color: #647a68;
+  letter-spacing: 0.16em;
+  font-size: 11px;
+  font-weight: 650;
+}
+h1 {
+  font-size: clamp(26px, 5vw, 38px);
+  font-weight: 550;
+  letter-spacing: -0.035em;
+  overflow-wrap: anywhere;
+  margin: 14px 0;
+}
+.description {
+  color: #63766a;
+  line-height: 1.8;
+  font-size: 14px;
+  margin-bottom: 35px;
+}
+.quiet {
+  border: 0;
+  background: transparent;
+  color: #385e45;
+  padding: 10px 0 10px 12px;
+  font-size: 13px;
+}
+.notice {
+  padding: 16px;
+  border: 1px solid #dbcbac;
+  background: #fff8e9;
+  border-radius: 12px;
+  line-height: 1.8;
+  font-size: 14px;
+}
+.loading,
+.empty {
+  color: #63766a;
+  padding: 26px 0;
+  font-size: 14px;
+}
+.unlock {
+  background: white;
+  border: 1px solid #dbe3d8;
+  border-radius: 18px;
+  padding: 28px;
+  max-width: 470px;
+}
+.unlock label {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.unlock input {
+  width: 100%;
+  border: 1px solid #c1d0c4;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fafbf9;
+}
+.unlock p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: #63766a;
+}
+.primary,
+.load-more {
+  background: #234e3a;
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 14px;
+}
+.primary {
+  width: 100%;
+  margin-top: 12px;
+}
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  font-size: 13px;
+  color: #6b8071;
+  margin-bottom: 18px;
+}
+.breadcrumbs span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.breadcrumbs button {
+  border: 0;
+  background: none;
+  color: inherit;
+  padding: 4px 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #64756a;
+  padding: 10px 4px;
+}
+.file-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  background: white;
+  border: 1px solid #dbe3d8;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.file-list:empty {
+  display: none;
+}
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e8ede5;
+}
+.file-list li:last-child {
+  border: 0;
+}
+.file-icon {
+  width: 42px;
+  height: 46px;
+  flex-shrink: 0;
+  background: #eef2ea;
+  color: #718c5e;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+}
+.document {
+  background: #edf2f6;
+  color: #597893;
+}
+.file-info {
+  flex: 1;
+  min-width: 0;
+}
+.filename,
+.folder-name {
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.folder-name {
+  border: 0;
+  padding: 0;
+  color: #19362b;
+  background: none;
+  text-align: left;
+}
+.file-info small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #748377;
+}
+.download {
+  background: white;
+  border: 1px solid #d4dfd2;
+  border-radius: 8px;
+  color: #385b41;
+  padding: 9px 12px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.load-more {
+  display: block;
+  margin: 24px auto 0;
+}
+footer {
+  border-top: 1px solid #dce3d8;
+  color: #79877b;
+  padding: 24px 0;
+  font-size: 11px;
+}
+@media (max-width: 600px) {
+  .public-shell {
+    padding: 0 20px;
+  }
+  .brand {
+    padding: 22px 0;
+    font-size: 14px;
+  }
+  main {
+    padding-top: 25px;
+  }
+  .file-list li {
+    padding: 16px 12px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .file-icon {
+    width: 32px;
+    height: 38px;
+  }
+  .file-info {
+    min-width: calc(100% - 48px);
+  }
+  .download {
+    margin-left: 42px;
+  }
+  .unlock {
+    padding: 22px;
+  }
+}

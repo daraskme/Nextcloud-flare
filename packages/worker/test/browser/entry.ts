@@ -264,7 +264,10 @@ export default {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     const headers = new Headers(request.headers);
-    if (!headers.has("X-Test-Without-Auth"))
+    const anonymous = (headers.get("Cookie") ?? "")
+      .split(";")
+      .some((item) => item.trim() === "ncf-test-user=anonymous");
+    if (!headers.has("X-Test-Without-Auth") && !anonymous)
       headers.set(
         "Cf-Access-Jwt-Assertion",
         recipientRequest(request) ? ready.recipientToken : ready.token,

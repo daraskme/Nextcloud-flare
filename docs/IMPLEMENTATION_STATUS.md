@@ -1,6 +1,18 @@
 # 実装進捗
 
-## 公開リンクの匿名認証（今回）
+## 公開リンクの閲覧・保存画面（今回）
+
+独立したpublic buildとSRI付き`/s/:id`、匿名root/children、public ticket/content-session/取消しを接続した。fragmentはメモリーへ取り込み直ちにhistoryから除去し、認証成功後に破棄する。初回タブはWeb Locksで直列化し、同じCookie・unlock credentialを再利用する。画面はpassword・Retry-After・folder移動・追加ページ・保存・reload・logoutを扱い、公開配信は既存のcontent hostとBudgetDOを使う。共有の現在の認可をmetadata batchと配信時に検証する。schema0063・通常76table・147 route、依存追加なし。所有者UI、公開編集/upload-only・直接content/thumb・ZIP・media、stagingは未完了。
+
+- 全Node87file/1,530件成功（85.23秒、/tmp/ncf-public-read-unit.log）。新規2件でprivate/auth/test/server module・環境変数・危険な描画のpublic build混入を拒否する。
+- 関連workerd6file/70件成功（28.71秒、/tmp/ncf-public-read-native-final.log）。新規12件で公開root/file/folder範囲、201件pagination、別credential/private cursor拒否、version/logout/祖先/owner競合、ticket再発行時の同じ予算、HEAD/Rangeの会計、取消し・logout後の配信拒否、SRI付きexact assetsと欠損/同じ長さの改変/超過を検証した。既存node-read/shared-node-read/share-unlock/content-ticketも回帰確認。
+- 新規browser2件成功（1.5分、/tmp/ncf-public-read-browser-final-pass.log）。390px幅、秘密値をURL/referer/storageに残さないこと、private bundle非読込み、実ControlDOの初回60秒待機、初回2タブでsession1件、folder移動、R2実体の保存、別tabで再保存、password付きfile root、reload、logoutの別tab反映、所有者停止後の非表示を確認。既存public-auth2件も成功（/tmp/ncf-public-read-browser-verified.log）。同ログの新規1件失敗は所有者DELETEを204とした誤った期待値で、既存契約200へ直して再検証した。
+- 初回workerdは68/70成功。テストのHTTP content originとDELETEのContent-Type不足を修正した。browserの準備selector不一致を直し、匿名test用ヘッダーが本番CORSに拒否されたため、test専用Cookieで匿名fixtureを指定する方式へ変更した。製品CORSは緩めていない。初回ログは/tmp/ncf-public-read-native.log、/tmp/ncf-public-read-browser.log、/tmp/ncf-public-read-browser-final.log。
+- lint601file、型検査、契約/設定検査、Web build、Worker dry-run成功。/tmp/ncf-public-read-lint-final.log、/tmp/ncf-public-read-types-final.log、/tmp/ncf-public-read-contracts.log、/tmp/ncf-public-read-config.log、/tmp/ncf-public-read-build.log、/tmp/ncf-public-read-worker-build.log。スマホ画面を/tmp/ncf-public-share-mobile.pngで目視確認。
+- **全Node1,530 + 関連workerd70 + 関連browser4 = 1,604件成功**。全workerd・全browser・remote Access/CORS/drillは今回ローカル再実行していない。リモートresource・secret・migration・deployは変更していない。
+- 先行67be478の[CI36425378826](https://github.com/daraskme/Nextcloud-flare/actions/runs/36425378826)は7job成功、Windows4/4のみ30分上限で中断（annotation確認）。同じWindows全Nodeを各shardで繰り返し、4/4では6分44秒を使用したため、Windows全Nodeを1/4だけで実行するように整理する。全4integration shard、各shardのlint/types/contracts/config/build、Ubuntu全check、browser/backup、製品deadlineとjob上限は維持する。次のCIで完走を確認する。
+
+## 公開リンクの匿名認証（前回）
 
 [公開認証](PUBLIC_SHARES.md)のchallenge・秘密値/password検証・共有Cookie・public CSRF・logoutをWorkerへ接続。Access設定なしで動作し、同じchallengeの並行送信/応答喪失は同じsessionへ収束させる。期限は最長7日かつshare期限以内。D1確定時にowner・share設定・祖先・epoch・停止を再検査し、logoutは当該credentialの派生配信認証まで一括失効させる。ControlDOへ共有10/IP30回のrolling 60秒制限を追加し、eviction時の保持、初回/喪失後60秒待機、4,096keyの上限、時計逆行・停止時の拒否を実装。schema0063・通常76table・147 route、依存追加なし。公開一覧/content・landing・所有者UIは後続。
 

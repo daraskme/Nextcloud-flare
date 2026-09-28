@@ -1,6 +1,7 @@
-import { contentKeyRing } from "../auth/contentTokens";
+import { ContentTokens, contentKeyRing } from "../auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { globalKdf } from "../auth/globalKdf";
+import { NodeCursorTokens } from "../auth/nodeCursor";
 import { ShareTokens } from "../auth/shareTokens";
 import type { Env } from "../env";
 import type { PublicShareDependencies } from "./publicShares";
@@ -34,9 +35,28 @@ export async function publicShareDependencies(
           derive: globalKdf(env.CONTROL, epoch),
         }
       : undefined;
+  const cursors =
+    env.NODE_CURSOR_KEYS && env.NODE_CURSOR_ACTIVE_KID
+      ? new NodeCursorTokens(
+          await contentKeyRing(env.NODE_CURSOR_ACTIVE_KID, JSON.parse(env.NODE_CURSOR_KEYS)),
+        )
+      : undefined;
+  const contentTokens =
+    env.CONTENT_TICKET_KEYS &&
+    env.CONTENT_TICKET_ACTIVE_KID &&
+    env.CONTENT_COOKIE_KEYS &&
+    env.CONTENT_COOKIE_ACTIVE_KID
+      ? new ContentTokens(
+          await contentKeyRing(env.CONTENT_TICKET_ACTIVE_KID, JSON.parse(env.CONTENT_TICKET_KEYS)),
+          await contentKeyRing(env.CONTENT_COOKIE_ACTIVE_KID, JSON.parse(env.CONTENT_COOKIE_KEYS)),
+          env.CONTENT_ORIGIN,
+        )
+      : undefined;
   return {
     tokens: new ShareTokens(cookie, env.APP_ORIGIN),
     csrf: new CsrfTokens({ activeKid: "unavailable", keys: new Map() }, publicRing, env.APP_ORIGIN),
     ...(passwords ? { passwords } : {}),
+    ...(cursors ? { cursors } : {}),
+    ...(contentTokens ? { contentTokens } : {}),
   };
 }

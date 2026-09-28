@@ -1,6 +1,6 @@
 # 現在の実装状態
 
-[公開リンクの匿名認証](PUBLIC_SHARES.md)を接続しました。秘密値/passwordの検証、共有Cookie、public CSRF、logout、共有/IP別の永続的な試行回数制限に対応します。同じchallengeの並行送信・応答喪失では同じcredentialを再利用します。公開画面・一覧/配信・所有者のリンク管理画面は未接続です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンクの閲覧画面](PUBLIC_SHARES.md)を接続しました。独立したpublic build、fragmentの除去、password認証、共有範囲内の一覧、content ticket経由の表示・保存、共有を閉じる操作に対応します。配信は既存BudgetDOで使用量を計上し、同じunlock sessionの再利用で予算を引き継ぎます。所有者のリンク管理画面、公開編集/upload-only・ZIP・mediaは未完了です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
@@ -8,7 +8,9 @@
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開linkの一覧・配信・独立public bundle・landingと所有者UIを接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開linkの所有者UIと、残る公開編集・専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行67be478の[CI36425378826](https://github.com/daraskme/Nextcloud-flare/actions/runs/36425378826)は、Ubuntu・Windows1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4は30分のjob上限でcancelledとなりました（GitHub annotation確認）。4/4の全Nodeは成功し、integration中に打ち切られています。先行backupのEBADF修正はUbuntuの全checkでも成功しました。Windowsの未完走を成功扱いにはしません。Windows全Nodeを1/4で一度実行し、残るshardでの重複を取り除きます。全integration shardと検証範囲は維持し、次のCIで完走を確認します。
 
 先行c0ed70aの[CI36421891215](https://github.com/daraskme/Nextcloud-flare/actions/runs/36421891215)は、Windows4分割・browser・backup bindings/cliの7job成功、Ubuntu失敗で終了しました。backup-generationの不正SQL拒否試験で、期待したbackup_invalid_data_sqlがEBADFに置き換わりました。借用fdのReadStreamがparser中断時にfdを閉じ、FileHandleのfinally closeと競合する経路を一時ファイル100回中1回で再現しました。今回は64KiBのFileHandle.readに統一し、handleをfinallyだけで閉じます。修正後のローカル全Node1,528件が成功し、CIでの再確認はpush後に行います。
 
@@ -50,8 +52,8 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 公開リンクの所有者管理API | CRUD、期限/権限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効 | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替 | 公開bundleと両側UI・公開配信。[詳細](PUBLIC_SHARES.md) |
-| 公開リンクの匿名認証 | challenge/Cookie、秘密値/password照合、共有sessionの発行/再利用、public CSRF/logout、ControlDOの共有10/IP30回のrolling制限 | JWT用途/鍵切替、D1の失効競合・応答喪失、DO並行制限/eviction/喪失・停止。結果はIMPLEMENTATION_STATUS | 公開一覧/content、landing/両側UI、初回同時タブを含む利用全体のE2E、staging。[詳細](PUBLIC_SHARES.md) |
+| 公開リンクの所有者管理API | CRUD、期限/権限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効 | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替 | 所有者UIと実環境。[詳細](PUBLIC_SHARES.md) |
+| 公開リンクの匿名認証 | challenge/Cookie、秘密値/password照合、共有sessionの発行/再利用、public CSRF/logout、ControlDOの共有10/IP30回のrolling制限 | JWT用途/鍵切替、D1の失効競合・応答喪失、DO並行制限/eviction/喪失・停止。結果はIMPLEMENTATION_STATUS | 所有者UI、公開編集/専用配信経路、staging。[詳細](PUBLIC_SHARES.md) |
 | DLQ記録・管理者再投入 | 配信単位の観測、50件ページ、同じOutboxへの再配信予約、監査と一度限りの受付、現行管理者と元actorの認可 | 同時要求、応答喪失、失効/停止、copy途中再開、成功済みPUT/completeの再送防止、未知native保留。詳細はIMPLEMENTATION_STATUS | 保持期限・通知・実Queue/DLQ運用。[詳細](DEAD_LETTERS.md) |
 | 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link、copyのDLQ・最大規模検証は後続。[詳細](SHARED_WORKSPACE.md) |
 | 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算、停止/照会・未着手/未送信証明/保存済み/既知multipart中止後の失敗精算、実成功後のobject観測修復 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | Queue実行/再開と限定精算は接続済み。停止後巡回は接続済み。上限内の規模検証・未知/未送信修復・中止attemptの再試行管理・DLQ運用は後続。REST受付/read/cancel/retryと画面は接続済み。[詳細](COPY_JOBS.md) |
