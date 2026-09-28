@@ -80,6 +80,7 @@ import {
 } from "./controlBackup";
 import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDatabaseRestore";
 import { ControlEpochHistory } from "./controlEpochHistory";
+import { ControlImageDerivatives } from "./controlImageDerivatives";
 import { ControlImageTransforms } from "./controlImageTransforms";
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
@@ -179,6 +180,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreAdoption: ControlRestoreAdoption;
   readonly #restoreRecovery: ControlRestoreRecovery;
   readonly #r2Writes: ControlR2Writes;
+  readonly #imageDerivatives: ControlImageDerivatives;
   readonly #imageTransforms: ControlImageTransforms;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -465,6 +467,19 @@ export class ControlDO extends DurableObject<Env> {
       () =>
         this.acquireGlobalMutation({
           permitId: `global:images.settle:${crypto.randomUUID()}`,
+          epoch: this.#row().epoch,
+          deadline: Date.now() + 5000,
+        }),
+    );
+    this.#imageDerivatives = new ControlImageDerivatives(
+      ctx.storage,
+      env.DB,
+      (epoch) => {
+        this.#admission.captureSystemMutationMode(epoch);
+      },
+      () =>
+        this.acquireGlobalMutation({
+          permitId: `global:images.cleanup-seal:${crypto.randomUUID()}`,
           epoch: this.#row().epoch,
           deadline: Date.now() + 5000,
         }),
@@ -889,6 +904,10 @@ export class ControlDO extends DurableObject<Env> {
   }
   async repairImageTransforms(expectedEpoch: number, limit = 20) {
     return this.#maintenance(expectedEpoch, () => this.#imageTransforms.repair(limit));
+  }
+  async sealImageDerivative(expectedEpoch: number, imageId: string) {
+    this.#row();
+    return this.#imageDerivatives.seal(expectedEpoch, imageId);
   }
 
   async beginR2Write(request: R2WriteRequest) {

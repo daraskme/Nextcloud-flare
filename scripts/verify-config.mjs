@@ -48,7 +48,7 @@ assert.deepEqual(config.queues.consumers[1], {
   retry_delay: 3600,
   max_concurrency: 1,
 });
-assert.deepEqual(config.triggers.crons, ["* * * * *", "*/2 * * * *"]);
+assert.deepEqual(config.triggers.crons, ["* * * * *", "*/2 * * * *", "1-59/2 * * * *"]);
 assert.equal(config.ratelimits[0].name, "EDGE_LIMITER");
 assert.equal(config.ratelimits[0].simple.period, 60);
 assert.ok(!Object.hasOwn(config.vars, "DEV_BYPASS_ACCESS"));

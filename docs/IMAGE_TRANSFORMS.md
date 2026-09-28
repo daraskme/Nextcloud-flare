@@ -1,6 +1,6 @@
 # サムネイル変換の実行部
 
-2026-09-29。Galleryのサムネイル生成へ使う内部実行部。`media/images/transform.ts`と`objectStream.ts`を追加した。通常uploadのmetadata確定は[IMAGE_METADATA](IMAGE_METADATA.md)、費用claimとnative終了記録は[IMAGE_COSTS](IMAGE_COSTS.md)へ接続済み。[生成物のR2保存](IMAGE_DERIVATIVES.md)も内部処理を実装済み。**安全な回収・修復、Queue接続、配信、Gallery画面は未接続**。HTTP要求から有料変換を直接実行する経路はまだない。
+2026-09-29。Galleryのサムネイル生成へ使う内部実行部。`media/images/transform.ts`と`objectStream.ts`を追加した。通常uploadのmetadata確定は[IMAGE_METADATA](IMAGE_METADATA.md)、費用claimとnative終了記録は[IMAGE_COSTS](IMAGE_COSTS.md)へ接続済み。[生成物のR2保存](IMAGE_DERIVATIVES.md)も内部処理を実装済み。[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)も接続済み。**未知nativeの運用修復、Queue接続、配信、Gallery画面は未接続**。HTTP要求から有料変換を直接実行する経路はまだない。
 
 ## 入出力
 
@@ -17,7 +17,7 @@
 次は次の順に接続する。
 
 1. 費用claimと成功/not_started/明示失敗の終了記録は接続済み。unknownの運用修復と失敗後の明示的な再試行予算は後続。timeoutだけでは未確定費用を解放せず、Images変換をR2 PUT成功として記録しない。
-2. 生成物の不変key、tracked R2保存、physical容量・終了記録、公開直前の原本・認可確認は[IMAGE_DERIVATIVES](IMAGE_DERIVATIVES.md)へ接続済み。未確定/公開不能出力の修復と、backup保持期限を守るpin解放・GCを先に仕上げる。
+2. 生成物の不変key、tracked R2保存、physical容量・終了記録、公開直前の原本・認可確認は[IMAGE_DERIVATIVES](IMAGE_DERIVATIVES.md)へ接続済み。pin解放・GCは[IMAGE_DERIVATIVE_CLEANUP](IMAGE_DERIVATIVE_CLEANUP.md)へ接続済み。未確定nativeの運用修復と新しいclaimによる再公開は後続。
 3. upload Outboxのsm/md生成、lgの要求時生成、thumb ticket/配信、Gallery API/UIと共有閲覧。AVIF入力が実環境で非対応なら原本detailとgrid placeholderへ分岐する。
 
 ## 参照

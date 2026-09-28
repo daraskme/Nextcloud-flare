@@ -26,6 +26,7 @@ import { gcDispatchFence } from "../jobs/gc";
 import { ORPHAN_GRACE_MS, objectFence } from "../jobs/orphanInventory";
 import { accountMutationStatements } from "../services/accountMutation";
 import { globalMutationStatements } from "../services/globalMutation";
+import { initializeImageSeals } from "./controlImageDerivatives";
 import { NativeHistory, nativeIdentity } from "./nativeHistory";
 
 interface Receipt extends Record<string, SqlStorageValue> {
@@ -59,6 +60,7 @@ export class ControlR2Writes {
     ) => Promise<GlobalMutationAdmission>,
   ) {
     const sql = storage.sql;
+    initializeImageSeals(sql);
     this.#history = new NativeHistory(sql);
     sql.exec(
       `CREATE TABLE IF NOT EXISTS control_r2_write_used(id TEXT PRIMARY KEY,expires_at INTEGER NOT NULL)`,
@@ -102,6 +104,17 @@ export class ControlR2Writes {
     if (deadline <= startedAt || deadline > startedAt + 5000)
       throw new Error("r2_write_unavailable");
     this.current(epoch, kind, input);
+    if (
+      kind === "image.put" &&
+      this.sql
+        .exec(
+          "SELECT 1 FROM control_image_derivative_seals WHERE image_id=? OR r2_key=?",
+          input.image!.imageId,
+          key,
+        )
+        .toArray().length
+    )
+      throw new Error("image_derivative_retired");
     this.sql.exec(
       "DELETE FROM control_r2_write_used WHERE id IN (SELECT id FROM control_r2_write_used WHERE expires_at<=? ORDER BY expires_at LIMIT 32)",
       startedAt,

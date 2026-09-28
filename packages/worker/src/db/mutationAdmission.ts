@@ -37,6 +37,7 @@ export type AnyMutationRequest =
   | GlobalMutationRequest;
 export const GLOBAL_MUTATION_KINDS = [
   "images.settle",
+  "images.cleanup-seal",
   "queue.dead-letter",
   "r2.write-settle",
   "r2.manifest-delete",
@@ -115,6 +116,7 @@ export const SYSTEM_MUTATION_KINDS = [
   "image.prepare",
   "image.observe",
   "image.publish",
+  "image.cleanup",
   "copy.release",
   "copy.prepare-put",
   "copy.observe-put",

@@ -17,6 +17,7 @@ import { repairStoppedCopyJobs } from "./jobs/copyMaintenance";
 import { COPY_MAINTENANCE_CRON } from "./jobs/copyMaintenanceClaim";
 import { handleDeadLetterBatch } from "./jobs/deadLetters";
 import { runGarbageCollection } from "./jobs/gc";
+import { IMAGE_CLEANUP_CRON, maintainImageDerivatives } from "./jobs/imageDerivativeCleanup";
 import { repairMultipartUploads } from "./jobs/multipartCleanup";
 import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
 import { dispatchPendingOutbox } from "./jobs/outbox";
@@ -160,6 +161,10 @@ export default {
     if (epoch === null) return;
     if (_event.cron === COPY_MAINTENANCE_CRON) {
       if (Date.now() < deadline) await repairStoppedCopyJobs(env, epoch, { deadline });
+      return;
+    }
+    if (_event.cron === IMAGE_CLEANUP_CRON) {
+      if (Date.now() < deadline) await maintainImageDerivatives(env, epoch, { deadline });
       return;
     }
     await dispatchPendingOutbox(env, env.JOBS, epoch);

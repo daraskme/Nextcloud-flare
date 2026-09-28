@@ -1,6 +1,23 @@
 # 実装進捗
 
-## サムネイルの保存・公開記録（今回）
+## サムネイル生成物の回収（今回）
+
+[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を実装した。未公開の期限/epoch切れ、または公開済み原本の不可逆な削除開始を同じbatchで検査して公開を停止する。ControlDOの独立Images成功identityとR2 pendingを照合し、generationごとの不変な書込み停止tokenを保存する。D1の退役記録が失われても、新しいimage.putを拒否する。未知native・独立履歴欠落では保持を続ける。
+
+停止後は既存の実容量記録を使うか、直接ACKで予算を確保したHEADで観測する。物理予約とpinを一括精算し、存在する出力は35日以上の猶予付きで既存GCへ渡す。physical bytesは実削除確認まで減算しない。専用Cron、8件/25秒、1leaseでHEAD1回・1生成物で累計64回、索引順の待機に対応する。公開中の原本が有効な行は休止し、原本の削除開始時に同じtransactionで起こす。
+
+schema0071・通常79table・147 route、依存追加なし。旧0070の全行を保持し、準備/保存/公開済みの回収行を補う。停止・未凍結・未終了permit/operation/admission/KDF/R2/Imagesなしで移行する。DO停止履歴は削除しない。100万件のImages費用上限に対応するが、大量履歴の容量と時間は未測定。
+
+- 新規native19件成功（22.39秒、/tmp/ncf-image-cleanup-native-2.log）。未送信出力の不在精算、失効後の実容量保持、観測欠落の回収、未知PUT・D1 native行喪失・独立Images履歴喪失の保持、seal/HEAD/精算のACK喪失、参照解除だけでは公開物を回収しないこと、原本の削除開始、64回の上限、evictionとD1退役記録喪失後の再送拒否、専用Cron、遅いHEADのclaim差替え、同時回収、restore freeze、実ControlDO RPC、後続への進行を検証した。GC猶予をassertした後、テスト用に満了を模擬して実R2削除とphysical減算まで確認する。
+- 新規Node4件成功（1.88秒、/tmp/ncf-image-cleanup-migration.log）。旧0070の準備済み/公開済み生成物を含む全旧table値の保存、回収部分索引と一時sort不使用、偽seal/精算の拒否、稼働中移行の拒否を検証した。
+- 最終全Node102file/1,885件成功（211.96秒、/tmp/ncf-image-cleanup-unit-all.log）。新規4件とschema/restore freeze・backup/restore CLIの回帰を含む。
+- 既存R2台帳・GC・copy回収・画像保存・backup barrier/restore snapshotのnative6file/161件成功（167.75秒、/tmp/ncf-image-cleanup-regression.log）。初期native3file/65件も成功し、そのうちimage-costsの34件を含め、今回のnativeは重複を除く8file/214件。Nodeと合計2,099件成功。
+- 初期schema/restore freezeのNode2file/86件も成功（/tmp/ncf-image-cleanup-schema-1.log）。D1用に分割したmigration全体の適用も成功した。backup:operator-drillも成功（/tmp/ncf-image-cleanup-operator-drill.log）。79tableのsnapshot照合、epoch採用、native/domain/inventory修復、監査、受付・GC再開まで確認した。provider応答は模擬で、未知画像PUTの終了証明や専用domain repairの接続を証明するものではない。Web build/Worker dry-runも成功（/tmp/ncf-image-cleanup-build.log）。
+- 型検査成功（/tmp/ncf-image-cleanup-types-final.log）。lint685file・契約/設定検査成功（/tmp/ncf-image-cleanup-{lint,contracts,config}.log）。
+
+Queueのsm/md・lg生成、thumb配信、Gallery API/UI、新claimでの再公開、未知nativeの運用証明・追加予算・通知、復元CLIの専用domain repair、履歴整理は後続。remote resource/secret/migration/deployは行っていない。pushは前回の自動承認審査による拒否後の承認待ちで、再送していない。
+
+## サムネイルの保存・公開記録（先行323176c）
 
 [生成物の保存](IMAGE_DERIVATIVES.md)を内部処理として追加した。成功済みImages receiptのWebP bytes/dimensions/SHA-256を確認し、不変keyへ条件付きPUTする。元のactor/credential・現在node/blob/parent・Outbox claim・epochを準備、native grant、公開batchで再検査する。実保存の観測は失効後もphysicalへ計上し、size/checksum不一致なら公開しない。result ready、blob committed、予約解放は一括確定し、公開ACK喪失はexact receiptで回収する。
 

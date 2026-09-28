@@ -1,6 +1,6 @@
 # 画像変換の費用・終了記録
 
-2026-09-29。画像変換の有料呼出しを重複させないための内部基盤。D1 schema0068で`image_transform_attempts`、0069で失敗の終了記録を追加し、0068/0069時点は通常77table・147 route。[生成物のR2保存](IMAGE_DERIVATIVES.md)は0070で追加済み（78table）。専用の回収・修復、Queueからの自動実行、thumb配信とGallery画面は後続で、現時点では公開HTTPからこの変換を開始しない。
+2026-09-29。画像変換の有料呼出しを重複させないための内部基盤。D1 schema0068で`image_transform_attempts`、0069で失敗の終了記録を追加し、0068/0069時点は通常77table・147 route。[生成物のR2保存](IMAGE_DERIVATIVES.md)は0070で追加済み（78table）。[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)は0071で追加済み（79table）。未知nativeの運用修復、Queueからの自動実行、thumb配信とGallery画面は後続で、現時点では公開HTTPからこの変換を開始しない。
 
 ## 受付と費用の重複防止
 

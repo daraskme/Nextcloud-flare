@@ -62,7 +62,7 @@
       }
     ]
   },
-  "triggers": { "crons": ["* * * * *", "*/2 * * * *"] },
+  "triggers": { "crons": ["* * * * *", "*/2 * * * *", "1-59/2 * * * *"] },
   "images": { "binding": "IMAGES" },
   "ratelimits": [
     {

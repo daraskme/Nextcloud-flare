@@ -101,7 +101,14 @@ export async function prepareImageDerivative(
   };
   const authority = await imageTransformAuthority(env.DB, grant);
   if (existing) {
-    await atomicBatch(env.DB, [...authority, held(claim)]);
+    await atomicBatch(env.DB, [
+      ...authority,
+      held(claim),
+      assertExists(
+        "SELECT 1 FROM image_derivative_cleanup WHERE image_id=? AND retired_at IS NULL",
+        [grant.id],
+      ),
+    ]);
     current(grant);
     return claim;
   }

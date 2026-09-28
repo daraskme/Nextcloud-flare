@@ -14,6 +14,8 @@ schema contract generator は適用済み migration を再生成せず、今後�
 テストは `readD1Migrations` + `applyD1Migrations` で隔離 D1 に適用する。
 既存の Phase 0 probe schema は別 test file の隔離 DB を使い、混在させない。
 
+`0071` は画像生成物ごとの回収・停止証拠・HEAD予算・精算記録を追加する（通常79table）。0070と同じ停止/未凍結/未終了処理なしで適用し、既存生成物を変更せず回収行を補う。公開中の行は休止し、原本の削除開始時に再び対象にする。DOの書込み停止記録は独立したImages成功記録に束縛する。rollback時も停止を維持し、0071に対応するWorkerとschemaを整合させる。詳細は[IMAGE_DERIVATIVE_CLEANUP](../../../docs/IMAGE_DERIVATIVE_CLEANUP.md)を参照。
+
 `0070` はimage.putのnative記録、生成物と原本・pin・reservationの関係（通常78table）、画像専用の物理容量予約を追加する。既存reservationはphysical_only=0を維持し、users.image_reserved_bytesは0で初期化する。通常upload/copyを含めた全予約が物理予算を検査する。停止・未凍結・未終了permit/operation/admission/KDF/R2/Imagesなしで適用し、既存R2台帳の全値を照合して保持する。参照trigger再作成後にfreeze guardも再作成し、復元凍結時の拒否を維持する。D1のmigration分割処理でも適用可能なSQLを使う。旧Workerへのrollbackは停止を維持して対応schemaとコードを整合させる。詳細は[IMAGE_DERIVATIVES](../../../docs/IMAGE_DERIVATIVES.md)を参照。
 
 `0069` は画像変換のfailed状態とboundedなfailure記録を追加する。0068の全既存列を照合して保持し、費用の一意性・不変性・freeze/再開/GC guardを再作成する。0068の移行条件に加え、pending画像変換なしを要求する。独立DO側の未精算も適用前に確認する。DO旧台帳は同期transactionでidentity・cost・結果・件数を保持して移行する。大量履歴の移行時間は未検証。rollbackは停止を維持し、対応schema/コードを整合させる。詳細は[IMAGE_COSTS](../../../docs/IMAGE_COSTS.md)を参照。
