@@ -1,16 +1,24 @@
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
-import { IMAGE_METADATA_GENERATOR, inspectImage } from "../media/images/inspect";
+import {
+  IMAGE_METADATA_GENERATOR,
+  type ImageMetadata,
+  inspectImage,
+} from "../media/images/inspect";
 import { type ImageReadBudget, imageObjectSource } from "../media/images/r2Source";
 import type { EventRow } from "./outboxAuthority";
 
-interface ImageNode {
+export interface ImageNode {
   id: string;
   blob: string;
   parent: string;
   key: string;
   size: number;
   etag: string | null;
+}
+export interface PreparedImageMetadata {
+  statements: readonly SqlStatement[];
+  source?: { node: ImageNode & { etag: string }; image: ImageMetadata; guard: () => Promise<void> };
 }
 const SOURCE = `SELECT n.id,n.current_blob_id AS blob,n.parent_id AS parent,b.r2_key AS key,b.size,s.r2_etag AS etag
   FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
@@ -28,12 +36,12 @@ export async function imageMetadataStatements(
   authority: readonly SqlStatement[],
   deadline: number,
   budget: ImageReadBudget,
-): Promise<readonly SqlStatement[]> {
+): Promise<PreparedImageMetadata> {
   if (
     !["upload.complete", "dav.put"].includes(event.op_kind) ||
     !["node.created", "node.updated"].includes(event.kind)
   )
-    return [];
+    return { statements: [] };
   const values = [
     event.payload_ref,
     event.space_id,
@@ -46,7 +54,7 @@ export async function imageMetadataStatements(
     .bind(...values)
     .first<ImageNode>();
   // An event superseded by another content write must never inspect or adopt that write's blob.
-  if (!node) return [];
+  if (!node) return { statements: [] };
   if (!env.BLOBS || !node.etag) throw new Error("image_source_unavailable");
   const hold = assertExists(
     SOURCE +
@@ -95,5 +103,8 @@ export async function imageMetadataStatements(
         values: [image.mime, node.blob, event.owner_id],
       },
     );
-  return result;
+  return {
+    statements: result,
+    ...(image ? { source: { node: { ...node, etag: node.etag }, image, guard } } : {}),
+  };
 }

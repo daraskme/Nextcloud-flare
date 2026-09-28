@@ -1,5 +1,11 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import type {
+  ImageTransformGrant,
+  ImageTransformReceipt,
+  ImageTransformRequest,
+  ImageTransformTerminal,
+} from "../../src/db/imageTransform";
 import {
   enqueueGlobalMutation,
   enqueueMutation,
@@ -12,8 +18,11 @@ import {
 import { grantPermit as grant } from "../../src/db/permits";
 import type { SqlStatement } from "../../src/db/primary";
 import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
+import { ControlImageDerivatives } from "../../src/do/controlImageDerivatives";
+import { ControlImageTransforms } from "../../src/do/controlImageTransforms";
 import { ControlR2Writes } from "../../src/do/controlR2Writes";
 import type { Env } from "../../src/env";
+import type { ImageTransformFailureReceipt } from "../../src/media/images/failure";
 
 /** Explicit immediate admission fixture; actual ControlDO FIFO/stop/restart is tested separately. */
 export async function acquireMutation<Space extends string | null = string>(
@@ -82,6 +91,7 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
       idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
       get: () => ({
         ...r2WriteFixture(admissionDb),
+        ...imageTransformFixture(admissionDb),
         acquireMutation: (request: MutationRequest) => acquireMutation(request, admissionDb),
         acquireGlobalMutation: (request: Omit<MutationRequest, "spaceId">) =>
           acquireGlobalMutation(request, admissionDb),
@@ -102,6 +112,60 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
           acquireMutation({ ...request, spaceId: null }, admissionDb),
       }),
     } as unknown as Env["CONTROL"],
+  };
+}
+
+/** Real image receipts and native history; only admission is immediate in this fixture. */
+export function imageTransformFixture(db = env.DB) {
+  const invoke = async <T>(
+    action: (images: ControlImageTransforms, derivatives: ControlImageDerivatives) => Promise<T>,
+  ) => {
+    const result = await runInDurableObject(
+      env.CONTROL.get(env.CONTROL.idFromName("singleton")),
+      async (_, state) => {
+        const settle = async () =>
+          acquireGlobalMutation(
+            {
+              permitId: `global:images.settle:${crypto.randomUUID()}`,
+              epoch: (await db
+                .prepare("SELECT epoch FROM control WHERE singleton=1")
+                .first<number>("epoch"))!,
+              deadline: Date.now() + 5000,
+            },
+            db,
+          );
+        const images = new ControlImageTransforms(
+          state.storage,
+          db,
+          () => {},
+          (r) => acquireMutation(r, db),
+          settle,
+        );
+        const derivatives = new ControlImageDerivatives(state.storage, db, () => {}, settle);
+        try {
+          return { ok: true as const, value: await action(images, derivatives) };
+        } catch (error) {
+          return {
+            ok: false as const,
+            message: error instanceof Error ? error.message : "image_fixture_failed",
+          };
+        }
+      },
+    );
+    if (!result.ok) throw new Error(result.message);
+    return result.value;
+  };
+  return {
+    beginImageTransform: (request: ImageTransformRequest) =>
+      invoke((images) => images.begin(request)),
+    finishImageTransform: (
+      grant: ImageTransformGrant,
+      state: ImageTransformTerminal,
+      output: ImageTransformReceipt | null,
+      failure: ImageTransformFailureReceipt | null = null,
+    ) => invoke((images) => images.finish(grant, state, output, failure)),
+    imageDerivativePublicationProof: (epoch: number, id: string) =>
+      invoke((_, derivatives) => derivatives.publicationProof(epoch, id)),
   };
 }
 

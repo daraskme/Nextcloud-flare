@@ -1,6 +1,23 @@
 # 実装進捗
 
-## 保存済みサムネイルの公開再開（今回）
+## Queueからのサムネイル自動生成（今回）
+
+[画像Queue](IMAGE_QUEUE.md)をupload/DAV完了通知へ接続した。検査済みmetadataからsm/mdを計画し、元のactor/credential・親・原本・claimで再認可しながら条件付きR2入力を読む。費用記録と独立DOで重複変換を防ぎ、成功済みは公開再開へ渡す。variantの公開/既知失敗を最終batchで照合し、metadata・MIME・Outbox terminalを一括確定する。
+
+Queue invocation全体で有料試行2回・25秒、metadata 2MiB/64 GETを共有する。原本全量入力は合計40MB以下。非対応はattempts=0、native既知失敗はattempts=1として原本を保持し、再配信で再課金しない。未知nativeと保存証拠不足は保留する。lg lazy、thumb配信とGalleryは未完了。schema0071・通常79table・147 route、移行/依存追加なし。
+
+- 初期の既存metadata native25件成功（21.49秒、/tmp/ncf-image-queue-native-smoke.log）。通常/匿名upload・DAVの原本/認可/atomic metadata回帰を含む。
+- 新規Queue native15件成功（24.30秒、/tmp/ncf-image-queue-native-1.log）。実sm/md寸法・原本不変・物理/論理会計、stored/published中断からの再開、ACK喪失、複数配信の共通費用上限、同時claim、animation/dimension非対応、PNG/AVIF明示拒否、未知Images、最終認可変更、実ControlDO RPCとeviction後の再開を検証した。
+- 型検査成功（/tmp/ncf-image-queue-types-2.log）。初回はEventRowに存在しない通知IDを参照したため、明示的なoutboxIdを渡すよう修正した。
+- PUT結果不明・元GET中の失効を追加し、新規17件と既存Outbox/コピー/費用/保存のnative7file/172件が成功（123.69秒、/tmp/ncf-image-queue-native-regression.log）。先行metadata25件を含め、重複を除くnativeは8file/197件。
+- 画像のNode3file/155件成功（481ms、/tmp/ncf-image-queue-unit.log）。最終型検査、lint689file、契約/設定検査、Web build/Worker dry-run成功（/tmp/ncf-image-queue-{types-final,lint,contracts,config,build}.log）。
+- browser2件成功（1.4分、/tmp/ncf-image-queue-browser.log）。実upload→Queue→6形式の原本decodeと匿名AVIF共有閲覧を確認した。ローカルTLS証明書の接続警告は出たが、assertionと終了は成功した。
+- 追加の元GET中失効試験から、Imagesを呼ぶ前のGET失敗もpendingを残すことを確認した。入力取得をtracked wrapperの送信前callbackへ移し、同じabort signalと5秒送信期限を使ってnot_startedを記録するよう修正した。途中のstream失敗は引き続き未知結果として保持する。GET一時障害後に新claimで成功する試験を追加し、最終native3file/77件成功（74.97秒、/tmp/ncf-image-queue-native-final.log）。Queue18・費用34・metadata25件。上記の既存回帰と合わせnativeは重複を除き8file/198件。
+- 修正後の型検査とlintも成功。修正版のWeb build/Worker dry-runとbrowser2件も成功（/tmp/ncf-image-queue-build-final.log、/tmp/ncf-image-queue-browser-final.log、1.4分）。関連検証はNode155 + native198 + browser2 = 重複を除き355件成功。全test suiteや実Cloudflareを検証したものではない。
+
+remoteへのresource/secret/migration/deploy変更なし。pushは前回の自動承認審査拒否後の承認待ち。
+
+## 保存済みサムネイルの公開再開（先行72a8d69）
 
 [公開再開](IMAGE_DERIVATIVES.md)を追加した。同じOutbox通知の新claim、現在の保存時actor/credential、原本/親/epochを照合し、元grantの期限後もstored出力の公開を完了する。result claim・blob/result/publication・物理予約の解放を一括確定する。費用/native記録・元予約期限と実容量を変更しない。公開済みの応答も現在の認可を再確認し、receiptを更新せず返す。
 

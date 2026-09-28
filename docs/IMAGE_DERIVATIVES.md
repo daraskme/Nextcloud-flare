@@ -1,6 +1,6 @@
 # サムネイルの保存と公開記録
 
-2026-09-29。`jobs/imageDerivative.ts`は、成功済みの[画像変換記録](IMAGE_COSTS.md)からWebP生成物を不変のR2 keyへ保存し、`derivative_results.ready`へ公開する内部処理。schema0070、通常78table・147 route。Queueでの自動生成、thumb byte配信、Gallery API/UIへはまだ接続していない。
+2026-09-29。`jobs/imageDerivative.ts`は、成功済みの[画像変換記録](IMAGE_COSTS.md)からWebP生成物を不変のR2 keyへ保存し、`derivative_results.ready`へ公開する内部処理。schema0070、通常78table・147 route。[Queueでのsm/md自動生成](IMAGE_QUEUE.md)へ接続済み。thumb byte配信、Gallery API/UIは未接続。
 
 ## 受付と容量
 
@@ -32,7 +32,7 @@ ControlDOのprivate `imageDerivativePublicationProof` は、独立したImages�
 
 `image_derivative_objects`は元画像・生成物・result・reservation・native attemptの関係を保持し、費用/native記録の時刻による削除から保存証拠を保護する。生成物pinは期限だけで消さない。未公開の物理予約は一般の旧epoch reservation解放から除外し、専用の終了証拠がないまま返さない。復旧のowner監査では物理予約counterも予約行と照合する。
 
-0071で[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を追加した。独立した書込み停止記録と未終了nativeの検査、観測が欠けた出力のHEAD、予約とpinの精算、35日猶予のGCへ接続している。native結果不明や独立履歴欠落は保留する。同じ通知の新claimからの公開再開は接続済み。Queue自動生成、費用履歴整理、失われた生成bytesの明示的な再変換予算は後続である。
+0071で[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を追加した。独立した書込み停止記録と未終了nativeの検査、観測が欠けた出力のHEAD、予約とpinの精算、35日猶予のGCへ接続している。native結果不明や独立履歴欠落は保留する。同じ通知の新claimからの公開再開は接続済み。Queue自動生成は接続済み。費用履歴整理、失われた生成bytesの明示的な再変換予算は後続である。
 
 ## 移行と検証範囲
 

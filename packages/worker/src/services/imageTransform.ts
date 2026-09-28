@@ -17,7 +17,7 @@ export async function trackedImageTransform(
   env: Pick<Env, "DB" | "CONTROL">,
   input: Omit<ImageTransformRequest, "id" | "deadline">,
   action: (signal: AbortSignal, onFailure: ImageFailureObserver) => Promise<ImageTransformOutput>,
-  beforeDispatch: () => Promise<void>,
+  beforeDispatch: (signal: AbortSignal) => Promise<void>,
 ): Promise<ImageTransformOutput> {
   if (
     !Number.isSafeInteger(input.expiresAt) ||
@@ -51,7 +51,7 @@ export async function trackedImageTransform(
     )
       throw new Error("image_transform_grant_mismatch");
     try {
-      await beforeDispatch();
+      await beforeDispatch(controller.signal);
       controller.signal.throwIfAborted();
       if (Date.now() < grant.startedAt || Date.now() >= grant.deadline)
         throw new Error("image_transform_deadline");

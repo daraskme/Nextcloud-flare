@@ -20,6 +20,8 @@ Queue sendの応答喪失ではleaseを保持する。期限後に新しいclaim
 
 所有者間copyは[コピーQueue consumer](COPY_JOBS.md)へ接続した。コピーは1 invocationを単独で使い、同じbatchの他配信をretryする。通常node eventは従来どおりbatch処理する。yield/heldはretryし、sent Outboxは従来のCronで再送する。停止済みcopyは証明済み32blobまでをbatch共通期限内で精算し、保持が残る間はfailed OutboxでもACKしない。停止後の既知中止・成功観測修復と定期巡回は専用2分Cronへ接続した。Queueの配信有無と独立して、停止済みjobを証明付きで精算する。未知attempt管理とDLQ運用は後続である。
 
+通常/匿名uploadとDAV PUTの画像通知は[sm/md自動生成](IMAGE_QUEUE.md)へ接続済み。画像情報と同じ元actor/credential・claim・原本を使い、成功/既知失敗を確認してからmetadataとOutboxを一括確定する。Queue全体で有料試行2回・25秒を共有し、結果不明は保留する。
+
 ## 検証と残作業
 
 共有32枠満杯時の5経路の待機・返却・namespace操作への再利用、ControlDO eviction後の失われた送信ACK、全batch rollback、common receipt喪失、遅いACK、権限/epoch/lease変化、先行consumer、自己の未確定枠保持を検証する。最新の全体結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。

@@ -42,9 +42,19 @@ export async function planImageTransform(
   }
   const metadata = await inspectImage(source);
   if (!metadata) throw new ImageTransformUnsupported("format");
+  return planInspectedImage(metadata, source.size, variant);
+}
+
+/** Reuse metadata inspected under the same immutable source fence, without another Range read. */
+export function planInspectedImage(
+  metadata: ImageMetadata,
+  sourceBytes: number,
+  variant: ImageVariant,
+): ImageTransformPlan {
+  if (!Object.hasOwn(IMAGE_VARIANTS, variant)) throw new Error("invalid_image_variant");
   if (metadata.animated) throw new ImageTransformUnsupported("animation");
   try {
-    assertImageInput(source.size, metadata.width, metadata.height);
+    assertImageInput(sourceBytes, metadata.width, metadata.height);
   } catch {
     throw new ImageTransformUnsupported("size");
   }
@@ -56,7 +66,7 @@ export async function planImageTransform(
     variant,
     generator: IMAGE_TRANSFORM_GENERATOR,
     source: metadata,
-    sourceBytes: source.size,
+    sourceBytes,
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
   });

@@ -32,6 +32,6 @@ HEADには直接ACKを得た予算更新が必要で、1leaseにつき1回・1�
 
 native PUTの本当の結果が不明な場合、独立履歴が失われた場合、HEAD予算を使い切った場合はpinと予約を保留する。運用上の終了証明、予算再承認、通知・履歴整理は未接続。
 
-Queueのsm/md生成、lgの要求時生成、thumb ticket/配信、Gallery API/UIは未接続。保存成功が確認済みで未退役の生成物は、同じ通知の新claimから[公開を再開](IMAGE_DERIVATIVES.md)できる。失敗後の明示的な有料再試行は後続。公開済み生成物の配信は今後の現在認可に基づく別経路で行う。
+[Queueのsm/md生成](IMAGE_QUEUE.md)は接続済み。lgの要求時生成、thumb ticket/配信、Gallery API/UIは未接続。保存成功が確認済みで未退役の生成物は、同じ通知の新claimから[公開を再開](IMAGE_DERIVATIVES.md)できる。失敗後の明示的な有料再試行は後続。公開済み生成物の配信は今後の現在認可に基づく別経路で行う。
 
 検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。ローカルD1/DO/R2/Imagesの証明であり、実Cloudflare・最大履歴量・OSクライアントの検証ではない。

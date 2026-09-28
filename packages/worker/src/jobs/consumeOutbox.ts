@@ -1,4 +1,4 @@
-import { assertExists, assertOneChange } from "../db/primary";
+import { assertExists, assertOneChange, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import type { ImageReadBudget } from "../media/images/r2Source";
 import {
@@ -8,11 +8,13 @@ import {
 } from "../services/systemMutation";
 import { consumeCopyOutbox } from "./copyQueue";
 import { imageMetadataStatements } from "./imageMetadata";
+import { generateOutboxImages, type ImageGenerationBudget } from "./imageQueue";
 import { nodeEventAuthority, readOutboxEvent } from "./outboxAuthority";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
-export type OutboxConsumerEnv = SystemMutationSource & Partial<Pick<Env, "BLOBS" | "LOCKS">>;
+export type OutboxConsumerEnv = SystemMutationSource &
+  Partial<Pick<Env, "BLOBS" | "LOCKS" | "IMAGES">>;
 
 /** Complete a node event only after a fenced D1 claim and current authorization. */
 export async function consumeOutbox(
@@ -20,6 +22,7 @@ export async function consumeOutbox(
   outboxId: string,
   deadline = Date.now() + 25_000,
   imageBudget: ImageReadBudget = { reads: 0, bytes: 0 },
+  generationBudget: ImageGenerationBudget = { transforms: 0 },
 ): Promise<ConsumeResult> {
   const { DB: db } = env;
   if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 25_000)
@@ -83,12 +86,26 @@ export async function consumeOutbox(
       deadline,
       imageBudget,
     );
+    let derivatives: readonly SqlStatement[] = [];
+    if (metadata.source) {
+      if (!("CONTROL" in env) || !env.BLOBS || !env.IMAGES)
+        throw new Error("image_binding_unavailable");
+      derivatives = await generateOutboxImages(
+        { DB: db, CONTROL: env.CONTROL, BLOBS: env.BLOBS, IMAGES: env.IMAGES },
+        { ...row, id: outboxId },
+        metadata.source,
+        token,
+        deadline,
+        generationBudget,
+      );
+    }
     const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
       ...authority,
       claimFence,
-      ...metadata,
+      ...metadata.statements,
+      ...derivatives,
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}
