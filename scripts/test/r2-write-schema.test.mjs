@@ -4,12 +4,19 @@ import { initialize, migrations } from "../backup/snapshot.mjs";
 
 const versions = await migrations();
 let db;
+let now;
 beforeEach(() => {
   db = initialize(":memory:", versions);
+  now = Math.floor(Date.now() / 1000) * 1000;
+  // Exercise SQLite's actual guards with a controlled clock, including dispatch expiry.
+  db.function("strftime", (format, when) => {
+    if (format !== "%s" || when !== "now") throw new Error("unexpected_test_clock");
+    return String(now / 1000);
+  });
   db.exec("UPDATE control SET maintenance=0");
 });
 afterEach(() => db.close());
-const clock = () => Math.floor(Date.now() / 1000) * 1000;
+const clock = () => now;
 function insert(state = "pending", key = `target-sets/${randomUUID()}`, overrides = {}) {
   const g = {
     id: randomUUID(),
@@ -29,9 +36,9 @@ function insert(state = "pending", key = `target-sets/${randomUUID()}`, override
   ).run(g.id, g.token, g.epoch, g.owner, g.kind, g.key, g.deadline, g.started, g.state, g.finished);
   return g;
 }
-it("keeps unknown writes through elapsed time and refuses repair bypasses", async () => {
+it("keeps unknown writes through elapsed time and refuses repair bypasses", () => {
   const row = insert("pending", undefined, { started: clock() - 3000, deadline: clock() + 2000 });
-  await new Promise((resolve) => setTimeout(resolve, 2100));
+  now += 3000;
   expect(clock()).toBeGreaterThanOrEqual(row.deadline);
   db.exec("UPDATE control SET maintenance=1");
   expect(() => db.exec("UPDATE control SET maintenance=0")).toThrow("r2_write_unsettled");
