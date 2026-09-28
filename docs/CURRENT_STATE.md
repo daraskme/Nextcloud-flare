@@ -1,5 +1,7 @@
 # 現在の実装状態
 
+[サムネイル変換の実行部](IMAGE_TRANSFORMS.md)を追加しました。固定原本のサイズ・静止画・寸法を確認し、条件付きR2ストリームからsm256/md768/lg1600のWebPを生成します。生成物の寸法・metadata非保持・SHA-256を検査し、期限後の応答と途中中断も処理します。費用claim・native終了記録、Queue/R2保存・配信、Gallery UIは次の接続です。schema0067・76table・147 route、依存追加なし。
+
 [画像メタデータ](IMAGE_METADATA.md)を通常upload・WebDAV PUTの完了Outboxへ接続しました。JPEG/PNG/WebP/AVIFの寸法と許可したEXIFだけをbounded Rangeで抽出し、元blob・parent・actor・claimを確認してMIMEと同じbatchで保存します。新しいDAV PUTは利用者申告だけでinline mediaにしません。サムネイル生成・Gallery画面・既存データ再抽出と動画/音声は後続です。
 
 先行472e682の[CI36473189569](https://github.com/daraskme/Nextcloud-flare/actions/runs/36473189569)は公開編集再開後の全10job成功。今回の画像処理は後続の変更です。
@@ -76,6 +78,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| サムネイル変換の内部実行部 | 固定原本の入力計画、条件付きR2 stream、静止画sm/md/lg WebP、出力metadata非保持・寸法・hash・中断 | Nodeの上限/破損/失効/遅延、ローカルImagesのJPEG/PNG/WebP/AVIF/10-bit・3サイズ・alpha・EXIF除去 | 費用claim/native記録、Queue/R2保存・physical会計・配信、Gallery、実EXIF回転・品質・plan検証。[詳細](IMAGE_TRANSFORMS.md) |
 | 画像メタデータと原本MIME | 新しい通常/匿名upload・DAV PUTのOutbox、JPEG/PNG/WebP/AVIF header、EXIF whitelist、current blob/parent/claim、元uploadを確認した受け取り専用認可 | Nodeの破損/上限、実D1/R2の原子確定/応答喪失/失効、Chromeの6形式と匿名AVIF実decode | Images/サムネイル・Gallery API/UI、既存データ/copy/move、動画/音声、他browser・実環境。[詳細](IMAGE_METADATA.md) |
 | 公開リンクの所有者管理API/画面 | CRUD、閲覧/編集切替、期限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効、URLコピー | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替、mobile browser操作 | 実環境。[詳細](PUBLIC_SHARES.md) |
 | 受け取り専用共有 | 所有者管理、password/期限/容量上限、匿名receipt/単一・分割送信、衝突時自動改名、owner/share原子予約、reload再開 | 実D1/R2、既存移行、失敗/中止精算、型・関連Node、390px browser・96 MiB再開・ACK喪失 | 実環境・最大規模。[詳細](UPLOAD_ONLY_SHARES.md) |

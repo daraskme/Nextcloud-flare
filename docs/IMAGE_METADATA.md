@@ -22,7 +22,7 @@ WebDAV PUTも利用者申告のContent-Typeをinline mediaの証拠にしない�
 
 ## 次の接続
 
-- Images変換、sm256/md768/lg1600、generation resultの費用/claim/physical会計・R2終了記録・配信、Gallery API・画面は未実装。
+- [Images変換の内部実行部](IMAGE_TRANSFORMS.md)でsm256/md768/lg1600を生成・検査する。generation resultの費用/claim/physical会計・R2終了記録・Queue接続・配信、Gallery API・画面は未実装。
 - 既存ファイルの再抽出、COW/cross-owner copy・move後のメタデータ引継ぎと再抽出を接続する。今回のOutbox対象は新しいupload/PUTの原本書込み。
 - AVIFのExif item、複数段の派生画像、動画/音声のtrack・tag・duration抽出、Bookshelf/AudioとAV1/Opusの実再生は後続。
 - Imagesへの入力は別途20MB・12,000px・40MP・frame1の制限を適用する。原本とサムネイルの対応可否を混同せず、AVIF変換不可時も原本閲覧を接続する。

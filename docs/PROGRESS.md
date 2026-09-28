@@ -1,5 +1,7 @@
 # 開発進捗
 
+[サムネイル変換の実行部](IMAGE_TRANSFORMS.md)を追加しました。固定原本のサイズ・静止画・寸法を確認し、条件付きR2ストリームからsm256/md768/lg1600のWebPを生成します。生成物の寸法・metadata非保持・SHA-256を検査し、期限後の応答と途中中断も処理します。費用claim・native終了記録、Queue/R2保存・配信、Gallery UIは次の接続です。schema0067・76table・147 route、依存追加なし。
+
 [画像メタデータ](IMAGE_METADATA.md)を通常upload・WebDAV PUTの完了Outboxへ接続しました。JPEG/PNG/WebP/AVIFの寸法と許可したEXIFだけをbounded Rangeで抽出し、元blob・parent・actor・claimを確認してMIMEと同じbatchで保存します。新しいDAV PUTは利用者申告だけでinline mediaにしません。サムネイル生成・Gallery画面・既存データ再抽出と動画/音声は後続です。
 
 先行472e682の[CI36473189569](https://github.com/daraskme/Nextcloud-flare/actions/runs/36473189569)は公開編集再開後の全10job成功。今回の画像処理は後続の変更です。

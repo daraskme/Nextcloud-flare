@@ -9,6 +9,8 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 
 [画像メタデータ](docs/IMAGE_METADATA.md)は、新しいupload・WebDAV PUTからJPEG/PNG/WebP/AVIFを判別し、寸法と許可したEXIFだけを保存します。Gallery画面・サムネイル生成は開発中です。
 
+[サムネイル変換](docs/IMAGE_TRANSFORMS.md)の内部処理は3サイズのWebPを生成・検査します。費用管理・保存・配信と画面への接続を進めています。
+
 [ファイル受け取りリンク](docs/UPLOAD_ONLY_SHARES.md)の管理・匿名送信・同名保存・再開に対応しています。実環境へのmigration0066適用は未実施です。
 
 [ZIPダウンロード](docs/ZIP_DOWNLOADS.md)を所有者・内部共有・公開リンクのAPIと画面へ接続しています。日本語名・空フォルダー、固定manifest、正確なサイズ会計、期限付き保持に対応します。最新schema0067の実環境への適用は未実施です。

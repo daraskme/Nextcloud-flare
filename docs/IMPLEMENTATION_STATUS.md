@@ -1,6 +1,19 @@
 # 実装進捗
 
-## 画像メタデータ・原本MIMEと受け取り専用Outbox（今回）
+## Images変換の内部実行部（今回）
+
+[サムネイル変換](IMAGE_TRANSFORMS.md)の入力計画・条件付きR2ストリーム・Images WebP出力と検査を追加した。原本20MB/12,000px/40MP・静止画制限、非拡大sm256/md768/lg1600、各chunk認可・入力実長、出力12MiB/4,096chunk・metadata非保持・寸法・SHA-256、取消しと遅い応答を扱う。native変換を再送せず、timeoutを終了証明として扱わない。製品のQueue・費用/claim・native ledger・R2生成物保存/配信には未接続。
+
+- Node3file/123件成功（383ms、/tmp/ncf-image-transform-unit-2.log）。新規51件と既存画像53・Range/Images19。variant/入力制限、EXIF8方向の表示寸法、native1回・失敗/未読/遅延、R2条件と変更/実長/現在認可/取消し、output metadata/寸法/size/chunkを検証。
+- 実R2/Imagesの12件成功（1.33秒、/tmp/ncf-image-transform-native-final.log）。JPEG/PNG/WebP/AVIF静止画・10-bit、1920×1080の3サイズ、半透明alpha、private camera EXIF除去、原本不変・差替え拒否を検証。生成WebPを別のImages.infoで読み戻した。
+- /tmp/ncf-image-transform-native-3.logは画像変換12件と既存metadata25件の計37件成功（16.56秒）。/tmp/ncf-image-transform-native.logの既存binding11件も成功。nativeの重複を除く合計は3file/48件、Nodeと合わせ171件。
+- 最初のnative変換9件は、全量R2 GETもoffset=0/length=元sizeを返すため、range属性なしだけを要求する実装が拒否した。省略または完全な元範囲のみを許可して上記再検証に成功。部分範囲・不一致は引き続き拒否する。型検査のUint8Array型指定1件も修正し、最終型検査成功（/tmp/ncf-image-transform-types-final.log）。
+- lint668file・契約/設定・Web build/Worker dry-run成功（/tmp/ncf-image-transform-{lint,contracts,config,build}.log）。8つのbase64 fixtureがbinary原本と完全一致することも検査した。
+- offline Imagesは実Cloudflareの全機能と同一ではない。自動EXIF回転・色・品質・Enterprise AVIF条件の実環境確認は未実施。全Node/workerd/browser・backup drillの再実行もしていない。
+
+schema0067・通常76table・147 route、migration/依存追加なし。5854920のpushは自動承認審査による拒否後、宛先明示の承認待ちで再送していない。remote resource/secret/migration/deployなし。
+
+## 画像メタデータ・原本MIMEと受け取り専用Outbox（先行5854920）
 
 [画像メタデータ](IMAGE_METADATA.md)を通常/匿名upload・WebDAV PUTの完了Outboxへ接続した。JPEG/PNG/WebP/AVIFのheaderと許可したEXIFだけを抽出し、元blob・parent・現在のactor/credential・claim/epochを各Range前後と確定batchで検査する。R2はetag条件付き、元size/range/実bytesも照合し、画像/Queue invocationごと2MiB・64 GETに制限する。node_media・判別済みMIME・Outbox completedを一括確定し、原本や参照会計を変えない。WebDAVの利用者申告MIMEはinline許可にせず、判別前は添付として扱う。schema0067・通常76table・147 route、migration/依存追加なし。
 
