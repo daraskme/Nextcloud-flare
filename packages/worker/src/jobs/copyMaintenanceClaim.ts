@@ -4,6 +4,7 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { copyBudgetExhaustedSql } from "./copyBudget";
 import { loadCopyJobManifest, type StoredCopyManifest } from "./copyManifest";
 
 const CLOCK = "strftime('%s','now')*1000";
@@ -15,8 +16,7 @@ export const COPY_MAINTENANCE_ELIGIBLE = `j.kind='node.copy'
   AND ((j.state IN ('cancelled','failed') AND EXISTS(SELECT 1 FROM copy_job_blobs WHERE job_id=j.id))
     OR (j.state IN ('pending','running') AND (j.epoch<c.epoch
       OR m.expires_at<=${CLOCK}
-      OR ((j.invocation_count>=200 OR j.r2_calls>=20000 OR COALESCE(l.attempt,0)>=10)
-        AND COALESCE(l.expires_at,0)<=${CLOCK}))))`;
+      OR ${copyBudgetExhaustedSql("j")})))`;
 export const COPY_MAINTENANCE_FROM = `FROM bulk_jobs j JOIN copy_job_manifests m ON m.job_id=j.id
   JOIN control c ON c.singleton=1 LEFT JOIN job_leases l ON l.job_id=j.id`;
 export interface CopyMaintenanceClaim {

@@ -7,23 +7,11 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { COPY_EXECUTION_LIMITS } from "./copyLimits";
 import { loadCopyJobManifest } from "./copyManifest";
 
-export const COPY_EXECUTION_LIMITS = Object.freeze({
-  wallMs: 25_000,
-  ownerClaims: 2,
-  invocations: 200,
-  attempts: 10,
-  r2Calls: 20_000,
-  // Reads and native writes share this counter. Executor also meters D1 dispatches.
-  invocationR2Calls: 112,
-  d1Calls: 900,
-  // Leave 60 calls for the current step, publication/receipt recovery and release.
-  d1YieldCalls: 840,
-  steps: 64,
-  rangeBytes: 8 * 1024 * 1024,
-  streamRangeBytes: 90 * 1024 * 1024,
-});
+export { COPY_EXECUTION_LIMITS } from "./copyLimits";
+
 const CLOCK = "strftime('%s','now')*1000";
 const checkpoint = (position: number, offset = 0) =>
   JSON.stringify({ v: 1, blob: position, offset });
@@ -250,12 +238,14 @@ export async function claimCopyJob(
       sql: `UPDATE bulk_jobs SET state='running',checkpoint=COALESCE(checkpoint,?),
         invocation_count=invocation_count+1,updated_at=MAX(updated_at,${CLOCK})
         WHERE id=? AND state IN ('pending','running') AND (checkpoint IS NULL OR checkpoint=?)
-          AND invocation_count<? AND r2_calls<?`,
+          AND invocation_count<? AND r2_calls<=? AND (r2_calls<? OR NOT EXISTS(
+            SELECT 1 FROM copy_job_blobs cb WHERE cb.job_id=bulk_jobs.id AND cb.transfer_state<>'stored'))`,
       values: [
         checkpoint(position, offset),
         claim.id,
         checkpoint(position, offset),
         COPY_EXECUTION_LIMITS.invocations,
+        COPY_EXECUTION_LIMITS.r2Calls,
         COPY_EXECUTION_LIMITS.r2Calls,
       ],
     },

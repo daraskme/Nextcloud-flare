@@ -1,7 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
+import { COPY_EXECUTION_LIMITS, claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
 import { executeCopyJob } from "../../src/jobs/copyExecutor";
 import {
   cancelCopyJob,
@@ -55,13 +55,32 @@ it.each([0, 3, 9 * 1024 * 1024])(
   },
 );
 it("retries a yielded copy and resumes it from durable Outbox redispatch", async () => {
-  const f = await copyJobWithBlobs(57);
-  expect(await consume(f)).toEqual({ acked: 0, retried: 1 });
+  const f = await copyJobWithBlobs(9);
+  // Leave exactly one GET+PUT in this claim. Wall-clock yield may happen before
+  // 56 real copies on a slower runner; this test specifically exercises R2 yield.
+  const prepaid = COPY_EXECUTION_LIMITS.invocationR2Calls - 2;
+  const db = injectBatch(
+    (s) => s.startsWith("UPDATE bulk_jobs SET state='running',checkpoint="),
+    async () => {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE bulk_jobs SET r2_calls=? WHERE id=?").bind(prepaid, f.job.id),
+        env.DB.prepare("UPDATE job_leases SET r2_calls=? WHERE job_id=?").bind(prepaid, f.job.id),
+      ]);
+    },
+    true,
+  );
+  expect(await consume(f, app(db))).toEqual({ acked: 0, retried: 1 });
   expect(await copyJobCounters(f.job.id)).toMatchObject({
     state: "running",
-    r2_calls: 112,
+    r2_calls: COPY_EXECUTION_LIMITS.invocationR2Calls,
+    lease_calls: COPY_EXECUTION_LIMITS.invocationR2Calls,
     invocation_count: 1,
   });
+  expect(
+    await env.DB.prepare("SELECT checkpoint FROM bulk_jobs WHERE id=?")
+      .bind(f.job.id)
+      .first("checkpoint"),
+  ).toBe('{"v":1,"blob":1,"offset":0}');
   await env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
     .bind(f.job.outboxId)
     .run();
@@ -69,7 +88,15 @@ it("retries a yielded copy and resumes it from durable Outbox redispatch", async
   expect(await dispatchOutbox(mutationEnv(), { send }, f.job.outboxId, 1)).toBe("sent");
   expect(send).toHaveBeenCalledWith({ outboxId: f.job.outboxId }, { contentType: "json" });
   expect(await consume(f)).toEqual({ acked: 1, retried: 0 });
-  expect(await copyJobCounters(f.job.id)).toMatchObject({ r2_calls: 114, invocation_count: 2 });
+  expect(await copyJobCounters(f.job.id)).toMatchObject({
+    r2_calls: prepaid + 18,
+    invocation_count: 2,
+  });
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+    used_bytes: 30,
+    physical_bytes: 27,
+    reserved_bytes: 0,
+  });
 });
 it("retains a duplicate behind a live claim without replacing that claim", async () => {
   const f = await copyJobFixture(),

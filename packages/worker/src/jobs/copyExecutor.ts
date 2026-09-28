@@ -98,7 +98,8 @@ export async function executeCopyJob(
         options.partBytes > UPLOAD_LIMITS.maxPartBytes))
   )
     throw new Error("invalid_copy_execution");
-  const budget = d1CallBudget(env.DB, COPY_EXECUTION_LIMITS.d1Calls);
+  const budget = d1CallBudget(env.DB, COPY_EXECUTION_LIMITS.d1Calls),
+    reservedCalls = COPY_EXECUTION_LIMITS.d1Calls - COPY_EXECUTION_LIMITS.d1YieldCalls;
   env = { ...env, DB: budget.db };
   const row = await primary(env.DB)
     .prepare(`SELECT j.id,j.state FROM outbox o JOIN bulk_jobs j ON j.id=o.payload_ref AND j.op_id=o.op_id
@@ -112,6 +113,9 @@ export async function executeCopyJob(
     await loadCopyJobManifest(env.DB, row.id);
     return { ...result, state: row.state === "completed" ? "completed" : "stopped" };
   }
+  // A caller may have already spent part of this invocation's D1 allowance.
+  // Do not consume an execution claim when there is no room to begin work.
+  if (budget.calls >= budget.limit - reservedCalls) return result;
   if (await stopExpiredCopyJob(env, row.id, deadline)) return { ...result, state: "stopped" };
   const claim = await claimCopyJob(env, outboxId, deadline);
   try {
@@ -121,7 +125,7 @@ export async function executeCopyJob(
       // checkpointed, publish in this claim even at the final native/step limit.
       if (
         copyClaimPosition(claim) < claim.plan.source.blobs.length &&
-        (result.steps >= maxSteps || budget.calls >= COPY_EXECUTION_LIMITS.d1YieldCalls)
+        (result.steps >= maxSteps || budget.calls >= budget.limit - reservedCalls)
       )
         return result;
       const step = await nextStep(env.DB, claim);

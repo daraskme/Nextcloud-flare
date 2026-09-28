@@ -48,6 +48,35 @@ it("retains charges after ambiguous results, including a failed batch", async ()
   expect(budget.calls).toBe(2);
   expect(() => s.run()).toThrow("d1_call_budget_exhausted");
 });
+it("shares the same counter and cap when a caller passes its budgeted binding onward", async () => {
+  const f = fixture(),
+    budget = d1CallBudget(f.db, 2),
+    s = budget.db.prepare("SELECT 1");
+  await s.run();
+  const nested = d1CallBudget(budget.db, 900);
+  expect(nested).toBe(budget);
+  expect(nested.limit).toBe(2);
+  expect(nested.calls).toBe(1);
+  await nested.db.batch([s]);
+  expect(budget.calls).toBe(2);
+  expect(() => s.run()).toThrow("d1_call_budget_exhausted");
+  expect(f.sent).toHaveBeenCalledTimes(1);
+  expect(f.batch).toHaveBeenCalledTimes(1);
+});
+it("can tighten an existing cap without forgetting spent calls or later expanding it", async () => {
+  const f = fixture(),
+    budget = d1CallBudget(f.db, 4),
+    s = budget.db.prepare("SELECT 1");
+  await s.run();
+  await s.run();
+  expect(d1CallBudget(budget.db, 1)).toBe(budget);
+  expect(d1CallBudget(budget.db, 4).limit).toBe(1);
+  expect(budget.calls).toBe(2);
+  expect(() => s.run()).toThrow("d1_call_budget_exhausted");
+  expect(() => budget.db.batch([s])).toThrow("d1_call_budget_exhausted");
+  expect(f.sent).toHaveBeenCalledTimes(2);
+  expect(f.batch).not.toHaveBeenCalled();
+});
 it("rejects escape APIs and statements outside the budget scope without dispatch", () => {
   const f = fixture(),
     budget = d1CallBudget(f.db, 2);

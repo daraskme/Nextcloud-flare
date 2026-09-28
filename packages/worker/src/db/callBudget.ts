@@ -1,9 +1,22 @@
+interface D1CallBudget {
+  readonly calls: number;
+  readonly limit: number;
+  readonly db: D1Database;
+}
+const scopes = new WeakMap<D1Database, { budget: D1CallBudget; tighten(limit: number): void }>();
+
 /** Count D1 binding dispatches, including failed/ambiguous calls, before sending them.
  * A batch is one binding call; its individual SQL limits still apply separately.
  * This scope covers the caller's binding, not D1 calls made inside another DO invocation.
+ * Reusing a wrapped binding preserves its consumption and can only tighten its limit.
  */
-export function d1CallBudget(db: D1Database, limit: number) {
+export function d1CallBudget(db: D1Database, limit: number): D1CallBudget {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("invalid_d1_call_budget");
+  const existing = scopes.get(db);
+  if (existing) {
+    existing.tighten(limit);
+    return existing.budget;
+  }
   let calls = 0;
   const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
   const charge = () => {
@@ -27,9 +40,12 @@ export function d1CallBudget(db: D1Database, limit: number) {
     originals.set(wrapped, statement);
     return wrapped;
   };
-  return {
+  const budget = Object.freeze({
     get calls() {
       return calls;
+    },
+    get limit() {
+      return limit;
     },
     db: new Proxy(db, {
       get(target, key) {
@@ -49,5 +65,12 @@ export function d1CallBudget(db: D1Database, limit: number) {
         return value;
       },
     }),
-  };
+  });
+  scopes.set(budget.db, {
+    budget,
+    tighten(next) {
+      limit = Math.min(limit, next);
+    },
+  });
+  return budget;
 }

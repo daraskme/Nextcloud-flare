@@ -1,6 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { d1CallBudget } from "../../src/db/callBudget";
 import { COPY_EXECUTION_LIMITS, claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
 import { executeCopyJob } from "../../src/jobs/copyExecutor";
 import { cancelCopyJob, cleanupStoppedCopyJob } from "../../src/jobs/copyLifecycle";
@@ -86,30 +87,41 @@ it.each([56, 57])(
   "copies %s blobs within metered invocations without repeated writes",
   async (count) => {
     const f = await copyJobWithBlobs(count),
-      measured = measureD1(env.DB),
       put = vi.fn(env.BLOBS.put.bind(env.BLOBS));
-    const a = {
-      ...mutationEnv(measured.db),
-      LOCKS: admitted().LOCKS,
-      BLOBS: { get: env.BLOBS.get.bind(env.BLOBS), put } as unknown as R2Bucket,
-    };
-    expect(await run(f, {}, a)).toMatchObject({
-      state: count === 56 ? "completed" : "yielded",
-      steps: 56,
-    });
-    expect(measured.counts.calls).toBeLessThanOrEqual(COPY_EXECUTION_LIMITS.d1Calls);
-    expect(measured.counts.statements).toBeLessThanOrEqual(4200);
-    expect(await copyJobCounters(f.job.id)).toMatchObject({
-      r2_calls: 112,
-      lease_calls: count === 56 ? null : 112,
-      invocation_count: 1,
-    });
-    expect(await run(f, {}, a)).toMatchObject({ state: "completed", steps: count - 56 });
+    let copied = 0,
+      invocations = 0;
+    for (; invocations < 4 && copied < count; ) {
+      const measured = measureD1(env.DB),
+        a = {
+          ...mutationEnv(measured.db),
+          LOCKS: admitted().LOCKS,
+          BLOBS: { get: env.BLOBS.get.bind(env.BLOBS), put } as unknown as R2Bucket,
+        };
+      const result = await run(f, {}, a);
+      invocations++;
+      expect(result.steps).toBeGreaterThan(0);
+      expect(result.steps).toBeLessThanOrEqual(56);
+      copied += result.steps;
+      expect(result.state).toBe(copied === count ? "completed" : "yielded");
+      expect(measured.counts.calls).toBeLessThanOrEqual(COPY_EXECUTION_LIMITS.d1Calls);
+      expect(measured.counts.statements).toBeLessThanOrEqual(4200);
+      expect(await copyJobCounters(f.job.id)).toMatchObject({
+        r2_calls: copied * 2,
+        lease_calls: copied === count ? null : result.steps * 2,
+        invocation_count: invocations,
+      });
+      expect(await stored(f.job.id)).toMatchObject({
+        checkpoint: JSON.stringify({ v: 1, blob: copied, offset: 0 }),
+      });
+    }
+    // The 25-second wall deadline may yield before the 56-blob native limit.
+    expect(copied).toBe(count);
+    expect(await run(f)).toMatchObject({ state: "completed", steps: 0 });
     expect(put).toHaveBeenCalledTimes(count);
     expect(new Set(put.mock.calls.map(([key]) => key)).size).toBe(count);
     expect(await stored(f.job.id)).toMatchObject({
       r2_calls: count * 2,
-      invocation_count: count === 56 ? 1 : 2,
+      invocation_count: invocations,
     });
     expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
       used_bytes: 3 + count * 3,
@@ -118,17 +130,25 @@ it.each([56, 57])(
       incorrect_refs: 0,
     });
   },
+  150_000,
 );
 it("yields for D1 headroom before R2 runs out when the manifest costs more reads", async () => {
   const f = await copyJobWithBlobs(57, 768),
     measured = measureD1(env.DB),
-    a = { ...mutationEnv(measured.db), LOCKS: admitted().LOCKS };
+    budget = d1CallBudget(measured.db, 128),
+    put = vi.fn(env.BLOBS.put.bind(env.BLOBS)),
+    blobs = { get: env.BLOBS.get.bind(env.BLOBS), put } as unknown as R2Bucket,
+    a = { ...mutationEnv(budget.db), LOCKS: admitted().LOCKS, BLOBS: blobs };
+  // Share a caller's consumed allowance, forcing D1 yield well before the wall limit.
+  await budget.db.prepare("SELECT 1").first();
   const first = await run(f, {}, a);
   expect(first.state).toBe("yielded");
-  expect(first.steps).toBeGreaterThanOrEqual(51);
-  expect(first.steps).toBeLessThan(56);
-  expect(measured.counts.calls).toBeGreaterThanOrEqual(COPY_EXECUTION_LIMITS.d1YieldCalls);
-  expect(measured.counts.calls).toBeLessThanOrEqual(COPY_EXECUTION_LIMITS.d1Calls);
+  expect(first.steps).toBeGreaterThan(0);
+  expect(first.steps).toBeLessThanOrEqual(8);
+  expect(measured.counts.calls).toBeGreaterThanOrEqual(68);
+  expect(measured.counts.calls).toBeLessThanOrEqual(128);
+  expect(budget.limit).toBe(128);
+  expect(budget.calls).toBe(measured.counts.calls);
   expect(await copyJobCounters(f.job.id)).toMatchObject({
     r2_calls: first.steps * 2,
     lease_calls: first.steps * 2,
@@ -138,24 +158,67 @@ it("yields for D1 headroom before R2 runs out when the manifest costs more reads
       .bind(f.job.id)
       .first("expires_at"),
   ).toBe(0);
-  expect(await run(f)).toMatchObject({ state: "completed", steps: 57 - first.steps });
-  expect(await stored(f.job.id)).toMatchObject({ r2_calls: 114, invocation_count: 2 });
+  let copied = first.steps,
+    invocations = 1;
+  for (; invocations < 5 && copied < 57; ) {
+    const next = measureD1(env.DB),
+      result = await run(f, {}, { ...mutationEnv(next.db), LOCKS: admitted().LOCKS, BLOBS: blobs });
+    invocations++;
+    expect(result.steps).toBeGreaterThan(0);
+    expect(result.steps).toBeLessThanOrEqual(56);
+    copied += result.steps;
+    expect(result.state).toBe(copied === 57 ? "completed" : "yielded");
+    expect(next.counts.calls).toBeLessThanOrEqual(COPY_EXECUTION_LIMITS.d1Calls);
+    expect(next.counts.statements).toBeLessThanOrEqual(4200);
+  }
+  expect(copied).toBe(57);
+  expect(put).toHaveBeenCalledTimes(57);
+  expect(new Set(put.mock.calls.map(([key]) => key)).size).toBe(57);
+  expect(await stored(f.job.id)).toMatchObject({
+    state: "completed",
+    r2_calls: 114,
+    invocation_count: invocations,
+  });
   expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
     used_bytes: 174,
     physical_bytes: 171,
     reserved_bytes: 0,
   });
-}, 90_000);
-it("publishes at the exact global call limit without reserving another native call", async () => {
+}, 180_000);
+it("yields before claiming when the caller has only the D1 release reserve left", async () => {
+  const f = await copyJobFixture(),
+    budget = d1CallBudget(env.DB, 61);
+  expect(await run(f, {}, { ...mutationEnv(budget.db), LOCKS: admitted().LOCKS })).toMatchObject({
+    state: "yielded",
+    steps: 0,
+  });
+  expect(budget.calls).toBe(1);
+  expect(await copyJobCounters(f.job.id)).toMatchObject({
+    r2_calls: 0,
+    lease_calls: null,
+    invocation_count: 0,
+  });
+  expect(await run(f)).toMatchObject({ state: "completed", steps: 1 });
+});
+it("publishes at the exact invocation, global call and step limits without another native call", async () => {
   const f = await copyJobFixture();
   await env.DB.prepare("UPDATE bulk_jobs SET r2_calls=19998 WHERE id=?").bind(f.job.id).run();
-  expect(await run(f, { maxSteps: 1 })).toMatchObject({ state: "completed" });
-  expect(await stored(f.job.id)).toMatchObject({ r2_calls: 20000 });
+  const db = injectBatch(
+    (s) => s.startsWith("UPDATE bulk_jobs SET state='running',checkpoint="),
+    async () => {
+      await env.DB.prepare("UPDATE job_leases SET r2_calls=? WHERE job_id=?")
+        .bind(COPY_EXECUTION_LIMITS.invocationR2Calls - 2, f.job.id)
+        .run();
+    },
+    true,
+  );
+  expect(await run(f, { maxSteps: 1 }, app(db))).toMatchObject({ state: "completed", steps: 1 });
+  expect(await stored(f.job.id)).toMatchObject({ r2_calls: 20000, invocation_count: 1 });
 });
 it("does not prepare a PUT when only one global call remains", async () => {
   const f = await copyJobFixture();
   await env.DB.prepare("UPDATE bulk_jobs SET r2_calls=19999 WHERE id=?").bind(f.job.id).run();
-  expect(await run(f)).toMatchObject({ state: "yielded", steps: 0 });
+  expect(await run(f)).toMatchObject({ state: "stopped", steps: 0 });
   expect(
     await env.DB.prepare(
       "SELECT transfer_state,transfer_attempt FROM copy_job_blobs WHERE job_id=?",

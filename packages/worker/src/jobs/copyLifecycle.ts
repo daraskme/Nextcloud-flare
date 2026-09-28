@@ -12,7 +12,8 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
-import { COPY_EXECUTION_LIMITS, copyAuthorityStatements } from "./copyClaim";
+import { copyBudgetExhaustedSql } from "./copyBudget";
+import { copyAuthorityStatements } from "./copyClaim";
 import {
   type CopyMaintenanceClaim,
   checkCopyMaintenance,
@@ -137,15 +138,10 @@ export async function stopExpiredCopyJob(
   const row = await primary(env.DB)
     .prepare(`SELECT j.state,
     CASE WHEN j.epoch<c.epoch THEN 'stale_epoch' WHEN m.expires_at<=${CLOCK} THEN 'copy_expired'
-      WHEN (j.invocation_count>=? OR j.r2_calls>=? OR l.attempt>=?) AND COALESCE(l.expires_at,0)<=${CLOCK} THEN 'copy_budget_exhausted' END AS reason
+      WHEN ${copyBudgetExhaustedSql("j")} THEN 'copy_budget_exhausted' END AS reason
     FROM bulk_jobs j JOIN copy_job_manifests m ON m.job_id=j.id JOIN control c ON c.singleton=1
-    LEFT JOIN job_leases l ON l.job_id=j.id WHERE j.id=?`)
-    .bind(
-      COPY_EXECUTION_LIMITS.invocations,
-      COPY_EXECUTION_LIMITS.r2Calls,
-      COPY_EXECUTION_LIMITS.attempts,
-      id,
-    )
+    WHERE j.id=?`)
+    .bind(id)
     .first<{ state: string; reason: StopReason | null }>();
   if (!row?.reason || !["pending", "running"].includes(row.state)) return false;
   const plan = maintenance?.plan ?? (await loadCopyJobManifest(env.DB, id)).plan;
