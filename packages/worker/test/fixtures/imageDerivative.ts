@@ -1,5 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { ControlImageDerivatives } from "../../src/do/controlImageDerivatives";
 import { ControlImageTransforms } from "../../src/do/controlImageTransforms";
 import { CONTROL_NAME } from "../../src/do/controlName";
 import { planImageTransform, transformImage } from "../../src/media/images/transform";
@@ -82,5 +83,32 @@ export async function imageDerivativeFixture() {
     env.DB.prepare("SELECT * FROM derivative_results WHERE id=?")
       .bind("image_" + grant.id)
       .first<Record<string, unknown>>();
-  return { ...f, node, output, grant, saved, app: mutationEnv() };
+  const app = mutationEnv(),
+    original = app.CONTROL;
+  app.CONTROL = {
+    idFromName: original.idFromName.bind(original),
+    get: () => ({
+      ...original.get(original.idFromName(CONTROL_NAME)),
+      imageDerivativePublicationProof: async (epoch: number, id: string) => {
+        const result = await runInDurableObject(control(), async (_, state) => {
+          const ledger = new ControlImageDerivatives(
+            state.storage,
+            env.DB,
+            () => {},
+            async () => {
+              throw new Error("read_only_proof");
+            },
+          );
+          try {
+            return { ok: true as const, value: await ledger.publicationProof(epoch, id) };
+          } catch (error) {
+            return { ok: false as const, error: String(error) };
+          }
+        });
+        if (!result.ok) throw new Error(result.error);
+        return result.value;
+      },
+    }),
+  } as unknown as typeof app.CONTROL;
+  return { ...f, node, output, grant, saved, app };
 }

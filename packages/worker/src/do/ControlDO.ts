@@ -909,6 +909,13 @@ export class ControlDO extends DurableObject<Env> {
     this.#row();
     return this.#imageDerivatives.seal(expectedEpoch, imageId);
   }
+  async imageDerivativePublicationProof(expectedEpoch: number, imageId: string) {
+    this.#row();
+    this.#admission.assertMutationOpen(expectedEpoch);
+    const proof = await this.#imageDerivatives.publicationProof(expectedEpoch, imageId);
+    this.#admission.assertMutationOpen(expectedEpoch);
+    return proof;
+  }
 
   async beginR2Write(request: R2WriteRequest) {
     this.#row();

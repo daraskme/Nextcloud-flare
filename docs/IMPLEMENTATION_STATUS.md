@@ -1,6 +1,19 @@
 # 実装進捗
 
-## 復元CLIからの画像回収（今回）
+## 保存済みサムネイルの公開再開（今回）
+
+[公開再開](IMAGE_DERIVATIVES.md)を追加した。同じOutbox通知の新claim、現在の保存時actor/credential、原本/親/epochを照合し、元grantの期限後もstored出力の公開を完了する。result claim・blob/result/publication・物理予約の解放を一括確定する。費用/native記録・元予約期限と実容量を変更しない。公開済みの応答も現在の認可を再確認し、receiptを更新せず返す。
+
+private ControlDOの証拠照会は、独立Images成功identity/outputとR2全tupleの終了履歴を検査し、独立pending・seal・履歴欠落を拒否する。D1の退役記録だけが失われても再公開しない。最後のD1 batchにもexact native ID/token、元の保存事実と未退役状態を固定する。native再送も追加R2 HEADも行わない。schema0071・通常79table・147 route、依存/移行追加なし。
+
+- 公開再開のnative28件成功（53.51秒、/tmp/ncf-image-publication-native-3.log）。D1の実時計で元の25秒期限を満了させた後の成功、新claimでの認可、回収が先行した結果の拒否、native履歴と容量の不変性、current credential/parent/source/claim/epoch/maintenance/freezeの最終batch競合、ACK喪失とrollback、unknown PUT・prepared・保存証拠不一致、同時再開、独立Images/R2履歴欠落・seal・DO pending、実ControlDO RPC・eviction後の再開、入力identityの固定を検証した。実際の期限満了を待つ1ケースだけrunner上限45秒を明示し、製品の25秒期限を維持した。
+- 保存・回収・復元画像修復のnative3file/47件も成功（/tmp/ncf-image-publication-native-2.log）。D1が成功のままnative tokenだけが変わる試験も追加し、最終の公開再開29件が成功（55.26秒、/tmp/ncf-image-publication-native-final.log）。独立したhashとの不一致を拒否した。重複を除く今回の関連nativeは4file/76件成功。
+- 型検査、lint687file、契約/設定検査成功（/tmp/ncf-image-publication-{types-final,lint,contracts,config}.log）。Web build・Worker dry-runも成功（/tmp/ncf-image-publication-build.log）。
+- 初期nativeは60/61件成功し、1件はテスト用の保存記録改変自体が既存のphysical_removal_requires_deleted_blobで拒否された。不正fixtureを除き、製品の検査は維持した。その後の期待したRPC拒否をVitestへ直接渡すケースでunhandled rejectionと次ケースのhook timeout/table欠落が発生した。成功系は実RPC、期待する拒否はrunInDurableObject内で受け取る形へ直し、同じ製品コードで28件完走と正常終了を確認した。
+
+自動Queue生成、prepared/観測欠落/未知nativeの修復、失われたbytesの明示的有料再試行、thumb配信・Gallery API/UIは未完了。独立native履歴の削除後の証明不足は保留を維持する。remote変更は行っておらず、pushも前回の自動承認審査拒否後の承認待ち。
+
+## 復元CLIからの画像回収（先行198bb12）
 
 [領域修復](DATABASE_RESTORE_DOMAINS.md)へ `repair-restored --kind images` を追加した。通常の画像回収を同じControlDOの共通受付・seal処理へ直接接続し、自己RPCを使わない。復旧epoch/revision/tokenと未凍結条件をclaim・退役・HEAD予算・精算・lease返却の各batchへ加える。最大8件/25秒、元の物理会計・35日GC猶予・累計64回のHEAD予算を維持する。
 

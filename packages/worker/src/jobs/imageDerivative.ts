@@ -12,6 +12,7 @@ import {
   primary,
   type SqlStatement,
 } from "../db/primary";
+import { CONTROL_NAME } from "../do/controlName";
 import type { Env } from "../env";
 import type { ImageTransformOutput } from "../media/images/transform";
 import { hex } from "../platform/stream";
@@ -262,6 +263,174 @@ export async function publishImageDerivative(env: ImageStoreEnv, c: ImageDerivat
     blobId: c.blobId,
     key: c.key,
     size: c.output.bytes,
+    mime: "image/webp" as const,
+  };
+}
+
+export interface ImagePublicationRequest {
+  imageId: string;
+  outboxId: string;
+  epoch: number;
+  claimToken: string;
+  expiresAt: number;
+}
+
+/** A new delivery may finish a proven stored output; it cannot renew a native dispatch grant. */
+export async function resumeImageDerivative(
+  env: Pick<Env, "DB" | "CONTROL">,
+  request: ImagePublicationRequest,
+) {
+  const now = Date.now();
+  if (
+    !request ||
+    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.imageId) ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(request.outboxId) ||
+    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.claimToken) ||
+    !Number.isSafeInteger(request.epoch) ||
+    request.epoch < 1 ||
+    !Number.isSafeInteger(request.expiresAt) ||
+    request.expiresAt <= now ||
+    request.expiresAt > now + 25000
+  )
+    throw new Error("invalid_image_publication");
+  // Keep one request identity across asynchronous authorization and admission.
+  request = {
+    imageId: request.imageId,
+    outboxId: request.outboxId,
+    epoch: request.epoch,
+    claimToken: request.claimToken,
+    expiresAt: request.expiresAt,
+  };
+  const row = await primary(env.DB)
+    .prepare(`SELECT t.*,x.write_attempt_id,x.state AS storage_state,
+      d.claim_token AS result_claim,d.claim_expires_at AS result_deadline
+      FROM image_transform_attempts t JOIN image_derivative_objects x ON x.id=t.id
+      JOIN derivative_results d ON d.id=x.result_id
+      WHERE t.id=? AND t.state='succeeded' AND x.state IN ('stored','published')`)
+    .bind(request.imageId)
+    .first<Record<string, unknown>>();
+  if (!row) throw new Error("image_derivative_unavailable");
+  const grant = imageGrantFromRow(row),
+    output = JSON.parse(row.output_json as string) as ImageTransformReceipt;
+  if (
+    grant.epoch !== request.epoch ||
+    grant.outboxId !== request.outboxId ||
+    imageOutputJson(grant, output) !== row.output_json
+  )
+    throw new Error("image_derivative_unavailable");
+  const c: ImageDerivativeClaim = {
+    grant,
+    output,
+    blobId: id(grant),
+    key: key(grant),
+    attemptId: row.write_attempt_id as string,
+    state: row.storage_state as ImageDerivativeClaim["state"],
+  };
+  const authority = await imageTransformAuthority(env.DB, {
+    ...grant,
+    claimToken: request.claimToken,
+    expiresAt: request.expiresAt,
+  });
+  const proof = await env.CONTROL.get(
+    env.CONTROL.idFromName(CONTROL_NAME),
+  ).imageDerivativePublicationProof(request.epoch, request.imageId);
+  if (
+    proof.imageId !== request.imageId ||
+    proof.key !== c.key ||
+    proof.outputJson !== row.output_json
+  )
+    throw new Error("image_publication_unproven");
+  const published = c.state === "published";
+  const facts = [
+    ...authority,
+    held(c),
+    success(c),
+    assertExists(
+      "SELECT 1 FROM r2_write_attempts WHERE id=? AND token=? AND state='succeeded' AND r2_key=?",
+      [proof.writeId, proof.writeToken, c.key],
+    ),
+    assertExists(
+      `SELECT 1 FROM image_derivative_objects x
+      JOIN image_transform_attempts t ON t.id=x.id JOIN derivative_results d ON d.id=x.result_id
+      JOIN blobs b ON b.id=x.output_blob_id JOIN blob_storage s ON s.blob_id=b.id
+      JOIN blob_pins p ON p.pin_id=x.pin_id JOIN reservations r ON r.id=x.reservation_id
+      JOIN image_derivative_cleanup cleanup ON cleanup.image_id=x.id JOIN control ctl ON ctl.singleton=1
+      WHERE x.id=? AND x.state=? AND d.state=? AND t.state='succeeded' AND t.output_json=?
+      AND d.blob_id=t.blob_id AND d.kind='thumbnail' AND d.variant=t.variant AND d.generator_version=t.generator_version
+      AND d.claim_token IS ? AND d.claim_expires_at IS ? AND d.epoch=t.epoch AND d.attempts=1
+      AND b.owner_id=x.owner_id AND b.size=d.size AND b.size=json_extract(t.output_json,'$.bytes')
+      AND b.r2_key=d.r2_key AND b.r2_key=? AND b.mime_sniffed='image/webp' AND b.state=? AND b.ref_count=1
+      AND b.sha256_verified=json_extract(t.output_json,'$.sha256') AND b.r2_etag=s.r2_etag
+      AND s.bytes=b.size AND s.removed_at IS NULL AND p.blob_id=b.id AND p.purpose='job' AND p.expires_at IS NULL
+      AND r.owner_id=x.owner_id AND r.bytes=b.size AND r.physical_only=1 AND r.state=?
+      AND r.epoch=t.epoch AND r.expires_at=t.expires_at
+      AND cleanup.retired_at IS NULL AND cleanup.seal_token IS NULL AND cleanup.settled_at IS NULL
+      AND ctl.epoch=? AND ctl.maintenance=0 AND ctl.backup_token IS NULL AND ctl.backup_frozen=0
+      AND ctl.restore_freeze_token IS NULL AND ?>${CLOCK}+1000`,
+      [
+        grant.id,
+        c.state,
+        published ? "ready" : "running",
+        row.output_json as string,
+        row.result_claim as string,
+        row.result_deadline as number,
+        c.key,
+        published ? "committed" : "staging",
+        published ? "released" : "reserved",
+        request.epoch,
+        request.expiresAt,
+      ],
+    ),
+  ];
+  const active = () => {
+    if (Date.now() < now || Date.now() >= request.expiresAt)
+      throw new Error("image_publication_expired");
+  };
+  active();
+  if (published) await atomicBatch(env.DB, facts);
+  else {
+    const admission = await acquireSystemMutation(
+      env,
+      grant.ownerId,
+      "image.publish",
+      request.expiresAt,
+    );
+    active();
+    await commitSystemMutation(env.DB, admission, grant.ownerId, [
+      ...facts,
+      {
+        sql: "UPDATE derivative_results SET claim_token=?,claim_expires_at=? WHERE id=? AND state='running'",
+        values: [request.claimToken, request.expiresAt, id(grant)],
+      },
+      assertOneChange,
+      {
+        sql: "UPDATE blobs SET state='committed' WHERE id=? AND state='staging'",
+        values: [c.blobId],
+      },
+      assertOneChange,
+      {
+        sql: "UPDATE derivative_results SET state='ready' WHERE id=? AND state='running'",
+        values: [id(grant)],
+      },
+      assertOneChange,
+      {
+        sql: "UPDATE image_derivative_objects SET state='published' WHERE id=? AND state='stored'",
+        values: [grant.id],
+      },
+      assertOneChange,
+      {
+        sql: "UPDATE reservations SET state='released' WHERE id=? AND state='reserved'",
+        values: [id(grant)],
+      },
+      assertOneChange,
+    ]);
+  }
+  active();
+  return {
+    id: id(grant),
+    blobId: c.blobId,
+    key: c.key,
+    size: output.bytes,
     mime: "image/webp" as const,
   };
 }

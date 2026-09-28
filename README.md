@@ -7,7 +7,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 
 [公開編集の再開](docs/PUBLIC_EDIT_RECOVERY.md)は、作成・改名・削除を再読み込み後も同じキーで確認します。
 
-[画像メタデータ](docs/IMAGE_METADATA.md)は、新しいupload・WebDAV PUTからJPEG/PNG/WebP/AVIFを判別し、寸法と許可したEXIFだけを保存します。[サムネイル変換](docs/IMAGE_TRANSFORMS.md)と[生成物の保存](docs/IMAGE_DERIVATIVES.md)の内部処理を実装しました。[生成物の回収](docs/IMAGE_DERIVATIVE_CLEANUP.md)を専用Cronと復元CLIへ接続しました。未知nativeの運用修復、Queue自動生成・配信、Gallery画面は開発中です。
+[画像メタデータ](docs/IMAGE_METADATA.md)は、新しいupload・WebDAV PUTからJPEG/PNG/WebP/AVIFを判別し、寸法と許可したEXIFだけを保存します。[サムネイル変換](docs/IMAGE_TRANSFORMS.md)と[生成物の保存](docs/IMAGE_DERIVATIVES.md)の内部処理を実装しました。[生成物の回収](docs/IMAGE_DERIVATIVE_CLEANUP.md)を専用Cronと復元CLIへ接続しました。保存済みのサムネイルは、同じ通知の新しい処理要求から公開を再開できます。未知nativeの運用修復、Queue自動生成・配信、Gallery画面は開発中です。
 
 [サムネイル変換](docs/IMAGE_TRANSFORMS.md)の内部処理は3サイズのWebPを生成・検査します。[費用・終了記録](docs/IMAGE_COSTS.md)で重複変換を防ぎ、明示的に終了した失敗も記録し、未確定の変換をバックアップ・復旧の判定に含めます。保存・配信と画面への接続は開発中です。
 

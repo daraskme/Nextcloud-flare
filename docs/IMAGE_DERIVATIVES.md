@@ -18,11 +18,21 @@
 
 公開は元のactor/credential・現在node/blob/parent・Outbox claim・epoch・期限に加え、Images成功記録、R2の成功記録、保存済みsize/checksum/etag、生成物pinを検査する。blob committed、result ready、公開記録、予約解放を一つのbatchで確定する。公開済みreceiptの応答喪失は同じ確定記録で回収し、再PUTしない。
 
+## 別のQueue要求からの公開再開
+
+`resumeImageDerivative`は、同じOutbox通知を新しいclaimで処理する場合に、保存済み生成物の公開を完了する。元のImages/R2 grant、費用回数、予約期限は更新しない。新しいclaim tokenと最大25秒の公開期限を取り、元と同じ通知・epoch・node/blob/parent・保存時のactor/credentialを現在の状態で認可し直す。別通知や復元後の新epochへ元grantを移す用途には使えない。
+
+ControlDOのprivate `imageDerivativePublicationProof` は、独立したImages成功identity/outputと、R2の全識別列をhashしたnative終了履歴を照合する。書込み停止sealがある場合、同じkeyの独立pendingがある場合、どちらかの履歴が欠ける場合は拒否する。D1の退役記録が失われても独立sealを優先する。これは書込みgrantではなく、Images・R2を再送する権限を持たない。
+
+最後のD1 batchでも現在の認可・claim・原本・epoch・未凍結状態、元のnative write ID/token、保存サイズ/etag/SHA-256、物理予約・pin、未退役状態を照合する。resultのclaim更新、blob committed、result ready、公開状態、予約解放を一括確定する。実容量と費用履歴は増減しない。並行する古いclaimは公開できず、応答喪失は同じ確定receiptで回収する。公開済みの結果も現在の認可を確認して返し、既存receiptを書き換えない。
+
+回収が先に退役を確定した生成物は再公開しない。公開が先に確定すれば、有効な原本に対する期限切れ回収は拒否される。preparedのままの生成物、観測欠落、未知PUT、失われた終了履歴はこの経路では推測せず保持する。native履歴の通常保持は36日で、削除後の復元をこの処理だけで解決できるとは保証しない。
+
 ## 保持と復旧
 
 `image_derivative_objects`は元画像・生成物・result・reservation・native attemptの関係を保持し、費用/native記録の時刻による削除から保存証拠を保護する。生成物pinは期限だけで消さない。未公開の物理予約は一般の旧epoch reservation解放から除外し、専用の終了証拠がないまま返さない。復旧のowner監査では物理予約counterも予約行と照合する。
 
-0071で[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を追加した。独立した書込み停止記録と未終了nativeの検査、観測が欠けた出力のHEAD、予約とpinの精算、35日猶予のGCへ接続している。native結果不明や独立履歴欠落は保留する。Queue自動生成、失効したclaimからの再公開、費用履歴整理、失われた生成bytesの明示的な再変換予算は後続である。
+0071で[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を追加した。独立した書込み停止記録と未終了nativeの検査、観測が欠けた出力のHEAD、予約とpinの精算、35日猶予のGCへ接続している。native結果不明や独立履歴欠落は保留する。同じ通知の新claimからの公開再開は接続済み。Queue自動生成、費用履歴整理、失われた生成bytesの明示的な再変換予算は後続である。
 
 ## 移行と検証範囲
 
