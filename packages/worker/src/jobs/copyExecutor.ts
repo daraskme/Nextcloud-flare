@@ -115,17 +115,24 @@ export async function executeCopyJob(
   }
   // A caller may have already spent part of this invocation's D1 allowance.
   // Do not consume an execution claim when there is no room to begin work.
-  if (budget.calls >= budget.limit - reservedCalls) return result;
+  if (
+    budget.calls >= budget.limit - reservedCalls ||
+    Date.now() >= deadline - COPY_EXECUTION_LIMITS.stepReserveMs
+  )
+    return result;
   if (await stopExpiredCopyJob(env, row.id, deadline)) return { ...result, state: "stopped" };
   const claim = await claimCopyJob(env, outboxId, deadline);
   try {
     for (;;) {
       checkCopyClaim(claim);
-      // Reserve calls for one step, publication and release. Once all blobs are
-      // checkpointed, publish in this claim even at the final native/step limit.
+      // Reserve calls and wall time before preparing another native attempt.
+      // Once all blobs are checkpointed, publish in this claim even at the final
+      // native/step limit.
       if (
         copyClaimPosition(claim) < claim.plan.source.blobs.length &&
-        (result.steps >= maxSteps || budget.calls >= budget.limit - reservedCalls)
+        (result.steps >= maxSteps ||
+          budget.calls >= budget.limit - reservedCalls ||
+          Date.now() >= claim.expiresAt - COPY_EXECUTION_LIMITS.stepReserveMs)
       )
         return result;
       const step = await nextStep(env.DB, claim);
@@ -137,18 +144,16 @@ export async function executeCopyJob(
           return { ...result, state: "completed" };
         return { ...result, state: "held" };
       }
+      // The next-step lookup also consumes time. Never shorten a native grant
+      // merely to squeeze one more transfer into the tail of this invocation.
+      if (step.calls && Date.now() >= claim.expiresAt - COPY_EXECUTION_LIMITS.stepReserveMs)
+        return result;
       if (step.action === "reconcile") {
         const blob = claim.plan.source.blobs[copyClaimPosition(claim)]!;
         if ((await reconcileCopyObject(env, claim.id, blob.id, claim)) !== "stored")
           return { ...result, state: "held" };
       } else await copyNextBlob(env, claim, options.partBytes);
       result.steps++;
-      // Leave time to relinquish the claim. A running native operation still has its original deadline.
-      if (
-        copyClaimPosition(claim) < claim.plan.source.blobs.length &&
-        Date.now() >= claim.expiresAt - 1000
-      )
-        return result;
     }
   } finally {
     await releaseCopyJobClaim(env, claim);

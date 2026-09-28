@@ -200,6 +200,58 @@ it("yields before claiming when the caller has only the D1 release reserve left"
   });
   expect(await run(f)).toMatchObject({ state: "completed", steps: 1 });
 });
+it("yields without consuming a claim when the caller's wall budget is already too short", async () => {
+  const f = await copyJobFixture();
+  expect(await run(f, { deadline: Date.now() + 3000 })).toMatchObject({
+    state: "yielded",
+    steps: 0,
+  });
+  expect(await copyJobCounters(f.job.id)).toMatchObject({
+    r2_calls: 0,
+    invocation_count: 0,
+    lease_calls: null,
+  });
+  expect(await run(f)).toMatchObject({ state: "completed", steps: 1 });
+});
+it("yields before preparing another write with less than a full grant window remaining", async () => {
+  const f = await copyJobWithBlobs(2),
+    deadline = Date.now() + COPY_EXECUTION_LIMITS.wallMs,
+    put = vi.fn(env.BLOBS.put.bind(env.BLOBS)),
+    db = injectBatch(
+      (sql) => sql.startsWith("UPDATE bulk_jobs SET checkpoint="),
+      async () => {
+        // A slow checkpoint ACK consumes this invocation's wall budget. Use the
+        // real clock shared with D1/ControlDO so their expiry fences still apply.
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, deadline - Date.now() - 3000)),
+        );
+      },
+      true,
+    ),
+    a = {
+      ...mutationEnv(db),
+      LOCKS: admitted().LOCKS,
+      BLOBS: {
+        get: env.BLOBS.get.bind(env.BLOBS),
+        put,
+      } as unknown as R2Bucket,
+    };
+  expect(await run(f, { deadline }, a)).toMatchObject({ state: "yielded", steps: 1 });
+  expect(await copyJobCounters(f.job.id)).toMatchObject({ r2_calls: 2, invocation_count: 1 });
+  expect(
+    await env.DB.prepare(
+      "SELECT transfer_state,transfer_attempt FROM copy_job_blobs WHERE job_id=? AND transfer_state='pending'",
+    )
+      .bind(f.job.id)
+      .all(),
+  ).toMatchObject({ results: [{ transfer_state: "pending", transfer_attempt: null }] });
+  expect(await run(f, {}, { ...app(), BLOBS: a.BLOBS })).toMatchObject({
+    state: "completed",
+    steps: 1,
+  });
+  expect(put).toHaveBeenCalledTimes(2);
+  expect(new Set(put.mock.calls.map(([key]) => key)).size).toBe(2);
+}, 60_000);
 it("publishes at the exact invocation, global call and step limits without another native call", async () => {
   const f = await copyJobFixture();
   await env.DB.prepare("UPDATE bulk_jobs SET r2_calls=19998 WHERE id=?").bind(f.job.id).run();

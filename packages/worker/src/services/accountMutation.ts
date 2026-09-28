@@ -10,8 +10,8 @@ import type { Env } from "../env";
 
 export type AccountMutationEnv = Pick<Env, "DB" | "CONTROL">;
 export class MutationUnavailableError extends Error {
-  constructor() {
-    super("mutation_unavailable");
+  constructor(options?: ErrorOptions) {
+    super("mutation_unavailable", options);
     this.name = "MutationUnavailableError";
   }
 }

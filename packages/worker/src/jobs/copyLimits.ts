@@ -1,5 +1,7 @@
 export const COPY_EXECUTION_LIMITS = Object.freeze({
   wallMs: 25_000,
+  // Leave a full 5-second write-grant window plus time for checkpoint/release.
+  stepReserveMs: 6_000,
   ownerClaims: 2,
   invocations: 200,
   attempts: 10,

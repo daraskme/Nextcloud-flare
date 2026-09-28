@@ -453,13 +453,21 @@ test("overwrite confirms the destination, recovers a lost completion and accepts
   await openOverwrite(page, name);
   await page.getByLabel("上書きするファイル", { exact: true }).setInputFiles(filePath);
   let completions = 0;
+  let completionAborted!: () => void;
+  const completionLost = new Promise<void>((resolve) => {
+    completionAborted = resolve;
+  });
   await page.route("**/api/v1/uploads/*/complete", async (route) => {
     if (++completions === 1) {
       expect((await localFetch(route)).status()).toBe(200);
       await route.abort("connectionfailed");
+      completionAborted();
     } else await route.continue();
   });
   await page.getByRole("button", { name: "上書きを開始" }).click();
+  // First finish the injected server commit / lost reply, then measure the UI
+  // reaction. The upload itself need not fit in the locator's five-second wait.
+  await completionLost;
   await expect(page.getByRole("button", { name: "元のファイルを選択・再確認" })).toBeVisible();
   const after = await rootFile(page, name);
   expect(after).toMatchObject({

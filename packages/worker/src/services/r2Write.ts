@@ -63,8 +63,8 @@ async function runWrite<T>(
       )
     )
       throw new Error("invalid_r2_write_grant");
-  } catch {
-    throw new MutationUnavailableError();
+  } catch (cause) {
+    throw new MutationUnavailableError({ cause });
   }
   let dispatchError: unknown;
   let dispatchReady = false;
@@ -94,12 +94,12 @@ async function runWrite<T>(
   } catch (error) {
     // Upload callers retain their existing transport/stream error contract; the hold remains.
     if (input.upload) throw error;
-    throw new MutationUnavailableError();
+    throw new MutationUnavailableError({ cause: error });
   }
   try {
     await control.finishR2Write(grant, "succeeded");
-  } catch {
-    throw new MutationUnavailableError();
+  } catch (cause) {
+    throw new MutationUnavailableError({ cause });
   }
   return value;
 }
