@@ -30,12 +30,10 @@ jobs:
             name: local (windows-latest, 4/4)
             shard: "4/4"
     runs-on: ${{ matrix.os }}
-    # Run 36060684164 passed every test/build but hit 30m during Windows cleanup.
-    # Split only integration files; every shard retains the other check gates.
-    # Run 36317210449 exhausted Ubuntu's 15m job budget during the growing full suite.
-    # Run 36384106965 hit 30m after 30 Windows integration files / 865 tests passed.
-    # Use four integration shards so full Node checks and runner cleanup also fit.
-    # Keep application deadlines unchanged and allow the same 30m runner budget.
+    # Keep all four integration shards and one full Node suite on Windows.
+    # Run 36425378826 spent 6m44s repeating Node tests on shard 4, then hit 30m
+    # during integration. Run that same platform-wide suite on shard 1 only.
+    # Ubuntu still runs every gate; application deadlines and job budgets stay unchanged.
     timeout-minutes: 30
     env:
       CI: "true"
@@ -57,7 +55,7 @@ jobs:
         run: pnpm verify:contracts
       - if: matrix.shard != ''
         run: pnpm verify:config
-      - if: matrix.shard != ''
+      - if: matrix.shard == '1/4'
         run: pnpm test:unit
       - if: matrix.shard != ''
         run: pnpm test:integration --shard=${{ matrix.shard }}
