@@ -13,6 +13,7 @@ export type Principal =
     }
   | {
       readonly kind: "app_password";
+      readonly selected_share?: SelectedShare;
       readonly user_id: string;
       readonly credential_id: string;
       readonly epoch: number;
@@ -202,6 +203,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE p.kind='app_password' AND u.id=p.user_id AND u.disabled_at IS NULL AND ap.revoked_at IS NULL
         AND ap.expires_at>strftime('%s','now')*1000
         AND (ap.root_node_id IS NULL OR EXISTS(SELECT 1 FROM a WHERE id=ap.root_node_id))
+        AND (p.selected_id IS NULL OR ap.root_node_id IS NULL)
         AND (?6 NOT IN ('node.rename','node.trash') OR ap.root_node_id IS NULL OR ap.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM credential_scopes WHERE credential_id=c.id AND scope=?4)
   ),
@@ -211,7 +213,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
         AND (?6 NOT IN ('node.rename','node.trash') OR sh.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
-        AND ((SELECT selected_id FROM p) IS NULL OR EXISTS(SELECT 1 FROM p WHERE p.kind='user' AND sh.id=p.selected_id AND sh.version=p.selected_version))
+        AND ((SELECT selected_id FROM p) IS NULL OR EXISTS(SELECT 1 FROM p WHERE p.kind IN ('user','app_password') AND sh.id=p.selected_id AND sh.version=p.selected_version))
   )
   SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,sp.tree_generation
     FROM nodes n JOIN spaces sp ON sp.id=n.space_id AND sp.owner_id=n.owner_id
@@ -232,7 +234,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
         (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE (u.id=n.owner_id AND p.selected_id IS NULL) OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
-              WHERE (?6<>'node.trash' OR (p.kind='user' AND p.selected_id IS NOT NULL))
+              WHERE (?6<>'node.trash' OR p.selected_id IS NOT NULL)
                 AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
         OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
@@ -267,7 +269,8 @@ export async function authorizeNode(
 ): Promise<AuthorizedNode> {
   let selection: SelectedShare | undefined;
   if ("selected_share" in principal) {
-    if (principal.kind !== "user") throw new Error("authorization_denied");
+    if (principal.kind !== "user" && principal.kind !== "app_password")
+      throw new Error("authorization_denied");
     try {
       selection = selectedShare(principal.selected_share);
     } catch {

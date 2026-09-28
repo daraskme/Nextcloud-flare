@@ -6,6 +6,7 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { assertCreateLocks, hasBlockingLocks, lockTokenHashes } from "../auth/locks";
+import { freezePrincipal, principalSelection } from "../auth/selectedShare";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -335,6 +336,8 @@ export async function putFile(
   env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   request: PutFileRequest,
 ): Promise<MutationOutcome> {
+  request = { ...request, principal: freezePrincipal(request.principal) };
+  const share = principalSelection(request.principal);
   if (
     request.principal.kind !== "app_password" ||
     !Number.isSafeInteger(request.size) ||
@@ -402,6 +405,8 @@ export async function putFile(
   const previousUpload = await davUploadRow(env.DB, intent.id);
   if (previousUpload) {
     if (
+      previousUpload.selected_share_id !== (share?.id ?? null) ||
+      previousUpload.selected_share_version !== (share?.version ?? null) ||
       previousUpload.credential_id !== request.principal.credential_id ||
       previousUpload.owner_id !== ownerId ||
       previousUpload.space_id !== intent.spaceId ||

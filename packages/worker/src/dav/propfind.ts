@@ -1,7 +1,7 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { assertExists, atomicBatch, primary } from "../db/primary";
 import { davEtag } from "./etag";
-import type { DavPath } from "./path";
+import { type DavPath, isSharedDavPath, sharedDavCredentialQuery } from "./path";
 import { type DavPropertyName, type PropfindRequest, validateDavXmlFragment } from "./xml";
 
 const DAV = "DAV:";
@@ -9,7 +9,9 @@ const MAX_CHILDREN = 1_000;
 const MAX_RESPONSE_BYTES = 33_554_432;
 const XML_NAME = /^[A-Za-z_][A-Za-z0-9._-]{0,255}$/;
 
-interface NodeRow {
+export interface NodeRow {
+  virtual?: boolean;
+  hrefName?: string;
   id: string;
   name: string;
   kind: "root" | "folder" | "file";
@@ -19,13 +21,14 @@ interface NodeRow {
   createdAt: number;
   updatedAt: number;
 }
-interface PropRow {
+export interface PropRow {
   nodeId: string;
   namespace: string;
   name: string;
   valueXml: string;
 }
-interface LockRow {
+export interface LockRow {
+  ancestorDepth?: number;
   nodeId: string;
   id: string;
   depth: "0" | "infinity";
@@ -56,8 +59,9 @@ function escapeXml(value: string): string {
 
 function href(path: DavPath, node: NodeRow, child: boolean): string {
   const parts = path.segments.map((segment) => encodeURIComponent(segment.name));
-  if (child) parts.push(encodeURIComponent(node.name));
-  else if (parts.length > 0) parts[parts.length - 1] = encodeURIComponent(node.name);
+  if (child) parts.push(encodeURIComponent(node.hrefName ?? node.name));
+  else if (parts.length > 0 && !(isSharedDavPath(path) && parts.length === 2))
+    parts[parts.length - 1] = encodeURIComponent(node.name);
   const value = `/dav/${parts.join("/")}`;
   return node.kind === "file" ? value : `${value.replace(/\/$/, "")}/`;
 }
@@ -86,6 +90,12 @@ function liveValue(
   namesOnly: boolean,
   locks: readonly LockRow[],
 ): string | null {
+  if (
+    node.virtual &&
+    !["displayname", "resourcetype", "lockdiscovery", "supportedlock"].includes(name)
+  )
+    return null;
+  if (node.virtual && ["lockdiscovery", "supportedlock"].includes(name)) return "";
   if (name === "getcontentlength" && node.kind !== "file") return null;
   if (namesOnly) return "";
   if (name === "displayname") return escapeXml(node.name);
@@ -171,7 +181,7 @@ function requestedProperties(
   return { found, missing };
 }
 
-function responseXml(
+export function davNodeResponseXml(
   path: DavPath,
   node: NodeRow,
   child: boolean,
@@ -226,6 +236,10 @@ export async function propfindResponse(
     UNION ALL SELECT a.target_id,n.id,n.parent_id,a.depth+1 FROM ancestors a JOIN nodes n ON n.id=a.parent_id
       WHERE a.depth<64 AND n.space_id=?8 AND n.owner_id=?9 AND n.deleted_at IS NULL
   )`;
+  const sharedEntry =
+    path.segments.length === 0 && depth === 1
+      ? sharedDavCredentialQuery(authorized.principal)
+      : undefined;
   const batches = await atomicBatch(db, [
     authorizationAssertion(authorized),
     assertExists(
@@ -246,7 +260,7 @@ export async function propfindResponse(
       values,
     },
     {
-      sql: `${lockTargets} SELECT a.target_id AS nodeId,l.id,l.depth,l.owner_text AS ownerText,
+      sql: `${lockTargets} SELECT a.target_id AS nodeId,a.depth AS ancestorDepth,l.id,l.depth,l.owner_text AS ownerText,
         l.display_href AS displayHref,
         CAST((l.expires_at-strftime('%s','now')*1000+999)/1000 AS INTEGER) AS timeoutSeconds
         FROM ancestors a JOIN locks l ON l.node_id=a.id AND (a.depth=0 OR l.depth='infinity')
@@ -259,6 +273,7 @@ export async function propfindResponse(
         authorized.principal.epoch,
       ],
     },
+    ...(sharedEntry ? [sharedEntry] : []),
   ]);
   const nodes = (batches[2]?.results ?? []) as NodeRow[];
   const props = (batches[3]?.results ?? []) as PropRow[];
@@ -294,18 +309,55 @@ export async function propfindResponse(
     if (count > 1) throw new Error("dav_data_invalid");
     lockCounts.set(lock.nodeId, count);
   }
-  const body = `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">${nodes
-    .map((node, index) =>
-      responseXml(
-        path,
-        node,
-        index !== 0,
-        request,
-        props.filter((property) => property.nodeId === node.id),
-        locks.filter((lock) => lock.nodeId === node.id),
-      ),
-    )
-    .join("")}</D:multistatus>`;
+  const fragments = nodes.map((node, index) => {
+    const nodeLocks = locks
+      .filter((lock) => lock.nodeId === node.id)
+      .map((lock) => {
+        if (!isSharedDavPath(path)) return lock;
+        const parts = path.segments.map((s) => s.name);
+        if (index !== 0) parts.push(node.name);
+        const ancestorDepth = lock.ancestorDepth ?? 0;
+        const outside = ancestorDepth > parts.length - 2;
+        const root = parts.slice(0, Math.max(2, parts.length - ancestorDepth));
+        const fileRoot =
+          node.kind === "file" &&
+          (ancestorDepth === 0 || (index === 0 && path.segments.length === 2));
+        return {
+          ...lock,
+          ownerText: outside ? "" : lock.ownerText,
+          displayHref: `/dav/${root.map(encodeURIComponent).join("/")}${fileRoot ? "" : "/"}`,
+        };
+      });
+    return davNodeResponseXml(
+      path,
+      node,
+      index !== 0,
+      request,
+      props.filter((p) => p.nodeId === node.id),
+      nodeLocks,
+    );
+  });
+  if (sharedEntry && batches[5]?.results.length) {
+    if (nodes.length > MAX_CHILDREN) throw new Error("dav_children_limit");
+    fragments.push(davNodeResponseXml(path, SHARED_COLLECTION, true, request, [], []));
+  }
+  return davMultistatus(fragments);
+}
+
+export const SHARED_COLLECTION: NodeRow = {
+  virtual: true,
+  id: "Shared",
+  name: "Shared",
+  kind: "folder",
+  revision: 1,
+  currentBlobId: null,
+  size: null,
+  createdAt: 0,
+  updatedAt: 0,
+};
+
+export function davMultistatus(fragments: readonly string[]): Response {
+  const body = `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">${fragments.join("")}</D:multistatus>`;
   if (new TextEncoder().encode(body).byteLength > MAX_RESPONSE_BYTES)
     throw new Error("dav_response_too_large");
   return new Response(body, {

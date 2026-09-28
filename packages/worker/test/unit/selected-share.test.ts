@@ -26,7 +26,10 @@ it("restores durable share scope, rejects substitution and copies authority befo
   expect(() =>
     storedPrincipal(frozen, { selected_share_id: null, selected_share_version: null }),
   ).toThrow();
-  expect(() => storedPrincipal({ ...user, kind: "app_password" }, saved)).toThrow();
+  expect(storedPrincipal({ ...user, kind: "app_password" }, saved)).toEqual({
+    ...frozen,
+    kind: "app_password",
+  });
 });
 it.each([
   { selected_share_id: "share", selected_share_version: null },
@@ -55,7 +58,7 @@ it("preserves legacy operation IDs and digests while separating selected request
   expect(() =>
     freezePrincipal({
       ...user,
-      kind: "app_password",
+      kind: "link_share",
       selected_share: { id: "share", version: 2 },
     } as unknown as Principal),
   ).toThrow();

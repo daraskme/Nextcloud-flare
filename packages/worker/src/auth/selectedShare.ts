@@ -8,7 +8,8 @@ export interface SelectedShareRecord {
 
 export function principalSelection(principal: Principal): SelectedShare | undefined {
   if (!("selected_share" in principal)) return undefined;
-  if (principal.kind !== "user") throw new Error("invalid_share_selection");
+  if (principal.kind !== "user" && principal.kind !== "app_password")
+    throw new Error("invalid_share_selection");
   return selectedShare(principal.selected_share);
 }
 
@@ -27,7 +28,7 @@ export function storedPrincipal(principal: Principal, row: SelectedShareRecord):
   const requested = principalSelection(principal);
   const saved = storedSelection(row);
   if (
-    (saved && principal.kind !== "user") ||
+    (saved && principal.kind !== "user" && principal.kind !== "app_password") ||
     (requested && (requested.id !== saved?.id || requested.version !== saved?.version))
   )
     throw new Error("share_selection_mismatch");

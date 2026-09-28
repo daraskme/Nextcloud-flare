@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[受信者のShared画面](SHARED_WORKSPACE.md)へ、選択した共有内の移動・コピー・ごみ箱移動を接続しました。元と先の両方を同じ共有で検査し、確定済みの再送も共有ID/versionの省略・差替えを拒否します。削除者を記録し、所有者がごみ箱を一覧・復元・完全削除できます。コピー・移動、削除の応答喪失後の再確認と、所有者の復元を実browserで確認しました。
+[内部共有のWebDAV](DAV_SHARED.md)を接続しました。`/dav/Shared/`に固定mountを一覧し、共有内の読取り・PUT・MKCOL・PROPPATCH・COPY/MOVE/DELETE・LOCK/UNLOCKを扱います。root制限付きapp passwordはSharedを公開せず、資格情報scopeと選択した共有ID/versionを保存・再送・ロック許可・R2送信・Outbox・復旧監査まで維持します。旧NULL mountは推測で補わず、所有者による共有の作り直しでDAV名を付けます。
 
-schema0049・通常69table、migration/依存追加なし。全Node64file/1,325件、関連workerd9file/182件、全browser28件の計1,535件が成功。型・lint・契約/設定・Web build/Worker dry-runとmobile表示も確認済みです。今回の全workerd/Windows検査はpush後のCIで確認します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。
+schema0050・通常69table、依存追加なし。全Node1,338件・関連workerd373件・共有画面browser6件の計1,717件成功。型・lint・契約/設定・buildも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次はDAV Sharedの固定mount解決・旧NULL mount方針、app passwordの範囲制限を保つ共有操作を接続します。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、旧実装/全DO喪失に由来する未記録処理の終了証拠が不足しており、保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、公開link/upload-only/ZIP、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は異なる共有間／個人領域とのDAV転送とcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行ec0a9ebの[CI36358399164](https://github.com/daraskme/Nextcloud-flare/actions/runs/36358399164)はUbuntu・Windows分割1・browserが成功、Windows分割2/3はbackup-healthの30秒超過で失敗し、backupは確認時点で実行中。今回その複合試験だけWindows実行枠を60秒へ変更しました。先行21cd396のR2保存先照合失敗の原因は別途切り分けが必要です。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)はUbuntu・Windows分割1/3と3/3・browserが成功。Windows分割2/3は全Node1,325件成功後、orphan-admissionのgc-confirmで886件中1件失敗（受付回数3の期待に対して2）。backupも成功し全6job中5job成功。失敗したWindows分割2/3を同じコミットで再実行中です。productionの期限や検査は緩めていません。先行21cd396のR2保存先照合失敗も原因は未確定です。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 状態の意味
 
@@ -26,8 +26,9 @@ schema0049・通常69table、migration/依存追加なし。全Node64file/1,325�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | DAV Shared・公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
-| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | DAV Shared・公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
+| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
+| 内部共有DAV | 固定mount一覧/解決、同じ共有内のread/edit操作、資格情報scopeと共有選択の維持、PUT台帳・ロック・Outbox・復旧 | 新規workerd20件とNode13件。関連回帰はIMPLEMENTATION_STATUS | 異なる共有間/個人領域との転送、実OS/staging。[詳細](DAV_SHARED.md) |
+| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
 | Time Travel送信と実応答記録 | 永続pending・5秒の1回grant・固定APIへのPOST・実応答のDO保存・unknownの再送拒否・旧epoch停止維持 | Node34/workerd22追加、関連CLI94/workerd155、16操作の権限拒否と模擬巻戻しを含むbindingドリル成功 | 既定で無効。全I/O運用証明・snapshot照合・epoch採用・live復旧は未完了。[詳細](DATABASE_RESTORE_TIME_TRAVEL.md) |
 | probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と実復元後epoch採用は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
@@ -72,7 +73,7 @@ schema0049・通常69table、migration/依存追加なし。全Node64file/1,325�
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | migration `0001`〜`0047`、69通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
+| schema・契約 | migration `0001`〜`0050`、69通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
@@ -95,7 +96,7 @@ schema0049・通常69table、migration/依存追加なし。全Node64file/1,325�
 | multipart ID修復 | migration `0022`のscan/handle台帳、毎回freshなBLOBS/S3対応検証、既存uploadの全ID走査・abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計。対応検証と同一batchの失効境界 | 全体不在証明・予約精算、実S3、Cron |
 | private単一upload | HMAC capability、D1予約、1回だけのR2 PUT、SHA-256、GETによる応答喪失回収、原子的新規作成/上書き、status/abort HTTP、24時間後のCron回収・GC接続 | 実D1/R2/LockDO、0 byte、同時送信、10 step rollback、失効、DB/R2応答喪失、CSRF/Origin、回収lease競合、旧epoch、実ControlDO停止中repair | 公開共有、未知object修復、stagingは未完了 |
 | private multipart upload | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、R2一度限りcomplete/HEAD、原子的新規/上書き公開、terminal照合、既知R2 IDのabort/期限切れ回収・GC接続、HTTP create/part/status/page/complete/abort | D1/R2/DO/LockDO、64 MiB+末尾の公開、同時確定、応答喪失、storage全喪失、失効、10 step rollback、complete/abort排他 | 未知ID回収後の予約精算は未接続 |
-| WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation、実HTTPの空本文操作。詳細は[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) | 実OS client gate、共有DAV、残るmethod/profile |
+| WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation、実HTTPの空本文操作。詳細は[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) | 実OS client gate、異なる共有間/個人領域との転送、残るmethod/profile。[内部共有DAV](DAV_SHARED.md) |
 | content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDOの対象重複排除/共有使用量、R2/bodyへのlease期限伝播 | D1/R2、署名、失効、Range、budget reserve/settle、実HTTPの発行・交換・空本文取消し、上書き/別target配信、1MiB/対象数上限、期限更新/遅延R2/停止body/取消し。詳細は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)と[CONTENT_LEASES](CONTENT_LEASES.md) | ZIP/page/entry/track、全route会計、長時間download再開UI・実環境 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、共通受付と固定25秒期限 | send/D1応答喪失、重複delivery、主要node event provenance | 実Queue/DLQ、残るevent kind |
@@ -123,7 +124,7 @@ schema0049・通常69table、migration/依存追加なし。全Node64file/1,325�
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 受信共有の編集/upload操作、DAV Shared、公開link、password/unlock、upload-only共有の完全なHTTP surface。内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
+- 異なる共有間のDAV転送、cross-owner copy、公開link、password/unlock、upload-only共有の完全なHTTP surface。内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。

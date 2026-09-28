@@ -1,5 +1,6 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { assertCreateLocks } from "../auth/locks";
+import { principalSelection, type SelectedShareRecord } from "../auth/selectedShare";
 import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import {
   assertExists,
@@ -24,7 +25,7 @@ import {
 } from "./systemMutation";
 
 const CLOCK = "strftime('%s','now')*1000";
-export interface DavUploadRow {
+export interface DavUploadRow extends SelectedShareRecord {
   id: string;
   owner_id: string;
   space_id: string;
@@ -84,6 +85,7 @@ export async function startDavUpload(
 ): Promise<DavUploadRow> {
   const now = Date.now(),
     op = intent.id;
+  const share = principalSelection(intent.principal);
   const row: DavUploadRow = {
     id: "dav_" + op,
     owner_id: owner,
@@ -103,6 +105,8 @@ export async function startDavUpload(
     write_lease_expires_at: now + 900_000,
     expires_at: now + 86_400_000,
     state: "receiving",
+    selected_share_id: share?.id ?? null,
+    selected_share_version: share?.version ?? null,
   };
   const admission = await acquireAccountMutation(env, owner, row.epoch, "dav.put-start");
   await atomicBatch(
@@ -140,8 +144,8 @@ export async function startDavUpload(
       {
         sql: `INSERT INTO uploads(id,source,owner_id,space_id,parent_id,target_id,target_revision,blob_id,reservation_id,
         credential_id,epoch,mode,state,declared_size,capability_hash,upload_name,request_digest,completion_op_id,
-        write_attempt_id,write_lease_expires_at,created_at,expires_at,last_progress_at,accept_parts,in_flight,data_calls,data_bytes)
-        VALUES(?,'dav',?,?,?,?,?,?,?,?,?,'single','receiving',?,'internal:dav',?,?,?,?,?,?,?,?,0,1,1,?)`,
+        write_attempt_id,write_lease_expires_at,created_at,expires_at,last_progress_at,accept_parts,in_flight,data_calls,data_bytes,selected_share_id,selected_share_version)
+        VALUES(?,'dav',?,?,?,?,?,?,?,?,?,'single','receiving',?,'internal:dav',?,?,?,?,?,?,?,?,0,1,1,?,?,?)`,
         values: [
           row.id,
           owner,
@@ -163,6 +167,8 @@ export async function startDavUpload(
           row.expires_at,
           now,
           request.size,
+          row.selected_share_id,
+          row.selected_share_version,
         ],
       },
       assertOneChange,
@@ -180,7 +186,8 @@ function source(row: DavUploadRow): SqlStatement {
     WHERE (u.id=? AND u.source='dav' AND u.owner_id=? AND u.space_id=? AND u.parent_id=? AND u.target_id IS ?
       AND u.target_revision IS ? AND u.blob_id=? AND u.reservation_id=? AND u.credential_id=? AND u.epoch=?)
       AND (u.declared_size=? AND u.request_digest=? AND u.completion_op_id IS ? AND u.write_attempt_id=?
-      AND u.write_lease_expires_at=? AND u.expires_at=? AND u.mode='single' AND c.epoch=u.epoch)
+      AND u.write_lease_expires_at=? AND u.expires_at=? AND u.mode='single' AND c.epoch=u.epoch
+      AND u.selected_share_id IS ? AND u.selected_share_version IS ?)
       AND (r.owner_id=u.owner_id AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at
       AND r.share_id IS NULL AND r.op_id IS u.completion_op_id)
       AND (b.owner_id=u.owner_id AND b.size=u.declared_size AND b.ref_count=0
@@ -188,6 +195,7 @@ function source(row: DavUploadRow): SqlStatement {
       AND ((o.op_id IS NULL AND u.completion_op_id IS NULL) OR
       (o.kind='dav.put' AND o.principal_kind='app_password' AND o.credential_id=u.credential_id
       AND o.epoch=u.epoch AND o.space_id=u.space_id AND o.request_digest=u.request_digest
+      AND o.selected_share_id IS u.selected_share_id AND o.selected_share_version IS u.selected_share_version
       AND (u.completion_op_id IS NULL OR u.completion_op_id=o.op_id)
       AND json_extract(o.operands_json,'$.parentId')=u.parent_id
       AND json_extract(o.operands_json,'$.nodeId') IS u.target_id))
@@ -209,6 +217,8 @@ function source(row: DavUploadRow): SqlStatement {
       row.write_attempt_id,
       row.write_lease_expires_at,
       row.expires_at,
+      row.selected_share_id,
+      row.selected_share_version,
     ],
   };
 }

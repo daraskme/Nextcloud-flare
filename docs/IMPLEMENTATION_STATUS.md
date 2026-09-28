@@ -13,6 +13,19 @@
 
 ## 今回の検証記録
 
+- [内部共有のWebDAV](DAV_SHARED.md)を実装。固定mount一覧/解決、read/edit操作、root制限付き資格情報の非公開、各scopeと選択pairの維持、共有外ancestorのlock情報遮蔽に対応。異なるmount・個人領域との転送は403とし、二つの共有選択を扱う経路は後続。migration0050・69通常table、依存追加なし。
+- HTTP PUTのIf-Match/If-None-Match検査を追加し、直接file mountの保存名を保持。LOCKで作る空fileのR2 keyをownerへ修正。DAV upload元、operation、native R2 admission、LockDO intent、completion、Outboxと復旧監査に選択pairを接続。新規schema試験は旧DBの全tableデータ保持、NULL mount維持、歴史的DAV記録、pair差替え拒否を確認。
+- 初回の共有fixtureはapp ID形式・XML Content-Type・削除record・Outbox送信stateに誤りがあり修正。従来のDAV prepublication schemaがowner本人だけを要求していた箇所は0050で選択付き受信者に対応。全Node初回は1,337/1,338成功で、旧schema試験のapp password拒否期待を新仕様に更新。Node URL型のimportも修正。最終の全Node65file/1,338件は成功（51.27s）。/tmp/ncf-dav-shared-node-final.log。
+- 先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)はUbuntu・Windows分割1/3と3/3・browserが成功。Windows分割2/3は全Node1,325件成功後、orphan-admissionのgc-confirmで886件中1件失敗（受付回数3の期待に対して2）。backupも成功し全6job中5job成功。失敗したWindows分割2/3を同じコミットで再実行中です。productionの期限や検査は緩めていません。先行21cd396のR2保存先照合失敗も原因は未確定です。今回のpush/CIはgit statusとgh run listで確認します。
+
+- 最終の関連workerd18file/373件成功（164.54s）。新規共有DAV20件に加え、既存認可・app password・operation・lock・選択付きAccess更新・Outbox・DAV保存/回収/受付・復旧監査とControlDOを検証。前回Windows CIのorphan-admissionもローカルでは成功。LockDOのadmission_closed診断が1行出るが、全assertionと終了codeは成功。/tmp/ncf-dav-shared-worker-final.log。
+- 型・lint490file・契約/設定・生成schema69table/FK graph・Web build/Worker dry-run成功。今回の全workerd/Windowsはpush後のCIで確認する。remote migration/deployは未実施。/tmp/ncf-dav-shared-types-final.log、/tmp/ncf-dav-shared-lint-final.log、/tmp/ncf-dav-shared-build.log。
+
+- 共有画面browser6件成功（1.5分）。新schemaの初期化から、受信者の閲覧/停止、直接fileの親情報遮蔽、再送/reload、multipart、上書き、move/copy/trashと所有者復元を確認。今回はUI変更がないためbrowser全28件は再実行していない。既知のローカル自己署名TLS probe診断は出るがテストは全成功。/tmp/ncf-dav-shared-browser.log。
+- 今回の最終検証は **全Node1,338 + 関連workerd373 + browser6 = 1,717件成功**。資料のlocal linkとgit diff --checkも成功。製品全体の完了ではなく、継続目標は維持する。
+
+## 先行チェックポイントの検証記録
+
 - [共有内の整理](SHARED_WORKSPACE.md)を接続。edit共有のmove/copy/trash、共有rootで止まる宛先picker、同じshare pairによる確定済み再送、元source/parentを含む照会・Outbox認可を追加。削除actorを残し、所有者がtrash一覧/restore/purgeを行う。共有rootの移動・削除、範囲外の宛先、別grantへの代替は拒否する。schema0049・69通常table、migration/依存追加なし。
 - 新規workerd13ケースはmove/copy/trashのscope付き再送・選択省略/変更拒否・照会・Outbox、確定直前の共有停止と全rollback、read共有とroot削除拒否、元source/parentの範囲外移動、所有者trash・子共有停止・受信者の復元/完全削除拒否を確認。初回はread fixtureが選択に余分なdisabled列を含めていたため修正し、関連26件が成功（23.54s）。最終の認可・lock・namespace mutation・Outbox・復元・共有閲覧を含む9file/182件も成功（141.41s）。/tmp/ncf-shared-transfer-worker-final.log。
 - 新規browserシナリオはmobileでfolder COPY→file MOVE→trash応答喪失→reload/同じkey/body再送→所有者の復元→共有外での非表示を確認。初回はテストのroute.fetchがlocal hostnameを解決できず、次はtrash行をtrと誤指定して失敗。既存のlocalFetchと実際のarticleへ修正し、新規1件成功（39.4s）。mobile画像を確認。最終の全browser28件も成功（6.0分）。/tmp/ncf-shared-transfer-browser-3.log、/tmp/ncf-shared-transfer-browser-final.log。

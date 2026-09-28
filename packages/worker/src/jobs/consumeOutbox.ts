@@ -153,11 +153,11 @@ export async function consumeOutbox(
       return "retry";
     parentId = operands.parentId;
     if (principalSelection(principal)) {
-      if (row.op_kind === "node.copy") {
+      if (["node.copy", "dav.copy"].includes(row.op_kind)) {
         if (typeof operands.sourceNodeId !== "string") return "retry";
         sourceNodeId = operands.sourceNodeId;
       }
-      if (row.op_kind === "node.move") {
+      if (["node.move", "dav.move"].includes(row.op_kind)) {
         if (typeof operands.sourceParentId !== "string") return "retry";
         sourceParentId = operands.sourceParentId;
       }

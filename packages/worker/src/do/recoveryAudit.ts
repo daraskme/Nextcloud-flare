@@ -253,7 +253,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND c.maintenance=1 AND c.gc_paused=1
       AND (NOT EXISTS(SELECT 1 FROM operations o
         WHERE (o.selected_share_id IS NOT NULL OR o.selected_share_version IS NOT NULL)
-        AND (o.selected_share_id IS NULL OR o.selected_share_version IS NULL OR o.principal_kind<>'user'
+        AND (o.selected_share_id IS NULL OR o.selected_share_version IS NULL OR o.principal_kind NOT IN ('user','app_password')
           OR length(o.selected_share_id) NOT BETWEEN 1 AND 128 OR o.selected_share_id GLOB '*[^A-Za-z0-9_-]*'
           OR o.selected_share_version NOT BETWEEN 1 AND 9007199254740991
           OR NOT EXISTS(SELECT 1 FROM shares sh JOIN spaces sp ON sp.id=o.space_id
@@ -261,7 +261,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
               AND o.selected_share_version BETWEEN 1 AND sh.version)))
       AND NOT EXISTS(SELECT 1 FROM uploads u
         WHERE (u.selected_share_id IS NOT NULL OR u.selected_share_version IS NOT NULL)
-        AND (u.selected_share_id IS NULL OR u.selected_share_version IS NULL OR u.source<>'private'
+        AND (u.selected_share_id IS NULL OR u.selected_share_version IS NULL OR u.source NOT IN ('private','dav')
           OR length(u.selected_share_id) NOT BETWEEN 1 AND 128 OR u.selected_share_id GLOB '*[^A-Za-z0-9_-]*'
           OR u.selected_share_version NOT BETWEEN 1 AND 9007199254740991
           OR NOT EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.selected_share_id AND sh.kind='internal'
@@ -686,7 +686,11 @@ export async function inspectRecoveryPage(
       )
         throw new Error("recovery_outbox_provenance_mismatch");
       try {
-        if (storedSelection(row) && row.principal_kind !== "user")
+        if (
+          storedSelection(row) &&
+          row.principal_kind !== "user" &&
+          row.principal_kind !== "app_password"
+        )
           throw new Error("recovery_outbox_provenance_mismatch");
         const operands = JSON.parse(row.operands_json ?? "null") as {
           parentId?: unknown;

@@ -21,3 +21,30 @@ export function davEtag(node: DavEtagNode): string {
   if (node.current_blob_id !== null) throw new Error("invalid_dav_etag");
   return `"c-${node.id}-${node.revision}"`;
 }
+
+/** HTTP entity-tag conditions are independent of the DAV If header. */
+export function assertDavPutConditions(headers: Headers, etag: string | null) {
+  for (const name of ["If-Match", "If-None-Match"]) {
+    const raw = headers.get(name);
+    if (raw === null) continue;
+    if (raw.length > 8192) throw new Error("invalid_dav_if");
+    const value = raw.trim();
+    const tags = value === "*" ? [] : value.match(/(?:W\/)?"[\x21\x23-\x7e\x80-\xff]*"/g);
+    if (
+      value !== "*" &&
+      (!tags ||
+        tags.length === 0 ||
+        tags.length > 16 ||
+        !/^(?:W\/)?"[\x21\x23-\x7e\x80-\xff]*"(?:[ \t]*,[ \t]*(?:W\/)?"[\x21\x23-\x7e\x80-\xff]*")*$/.test(
+          value,
+        ))
+    )
+      throw new Error("invalid_dav_if");
+    const matches =
+      value === "*"
+        ? etag !== null
+        : !!etag &&
+          tags!.some((tag) => (name === "If-Match" ? tag : tag.replace(/^W\//, "")) === etag);
+    if (name === "If-Match" ? !matches : matches) throw new Error("dav_precondition_failed");
+  }
+}

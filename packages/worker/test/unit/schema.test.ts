@@ -44,7 +44,7 @@ it("keeps selected write authority immutable and requires matching upload comple
     ["user", "selected", null],
     ["user", null, 1],
     ["user", "selected", 3],
-    ["app_password", "selected", 1],
+    ["link_share", "selected", 1],
   ] as const)
     expect(() => operation.run("invalid", kind, id, version)).toThrow("invalid_operation_share");
   expect(() =>

@@ -1,6 +1,6 @@
 # 受信した共有の閲覧と編集
 
-更新: 2026-09-28。内部共有の受信一覧・フォルダー閲覧・ファイル配信に加え、edit共有へのフォルダー作成・改名・単一/分割upload・上書き・共有内の移動/コピー/ごみ箱への移動を接続。DAV Shared、公開link、cross-owner copyは後続。
+更新: 2026-09-28。内部共有の受信一覧・フォルダー閲覧・ファイル配信に加え、edit共有へのフォルダー作成・改名・単一/分割upload・上書き・共有内の移動/コピー/ごみ箱への移動を接続。[DAV Shared](DAV_SHARED.md)の同じ共有内の操作も接続済み。公開link、cross-owner copyは後続。
 
 ## 画面とAPI
 
@@ -56,4 +56,4 @@ schema0049・69通常tableを維持し、migration追加はない。移動・コ
 
 ## 次の実装
 
-DAVの固定mount解決、旧NULL mount方針、cross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。
+異なる共有間のDAV転送、cross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。

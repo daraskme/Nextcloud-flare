@@ -1,4 +1,4 @@
-import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
+import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { searchName } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
@@ -12,84 +12,18 @@ import {
 import { lockTokenHashes } from "../../src/auth/locks";
 import { parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
-import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
+import { admittedDavEnv } from "../fixtures/davEnvironment";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
-import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
+import { grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
 
 const emptyBody = () =>
   new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
-
-function admittedDavEnv(overloaded = false): Env {
-  const doEnv = {
-    ...env,
-    CONTROL: {
-      idFromName: env.CONTROL.idFromName.bind(env.CONTROL),
-      get: () => ({
-        acquireMutation: overloaded
-          ? async () => {
-              throw new Error("queue_full");
-            }
-          : acquireMutation,
-        status: async () => ({ epoch: 1, maintenance: false, gcPaused: true }),
-      }),
-    } as unknown as Env["CONTROL"],
-  };
-  return {
-    ...mutationEnv(),
-    APP_ORIGIN: "https://app.invalid",
-    EDGE_LIMITER: {
-      async limit() {
-        return { success: true };
-      },
-    } as RateLimit,
-    LOCKS: {
-      idFromName: env.LOCKS.idFromName.bind(env.LOCKS),
-      get(id: DurableObjectId) {
-        const stub = env.LOCKS.get(id);
-        const invoke = async <T>(callback: (instance: LockDO) => Promise<T>): Promise<T> => {
-          const result = await runInDurableObject(stub, async (_, state) => {
-            try {
-              return { ok: true as const, value: await callback(new LockDO(state, doEnv)) };
-            } catch (error) {
-              return {
-                ok: false as const,
-                message: error instanceof Error ? error.message : "lock_error",
-              };
-            }
-          });
-          if (!result.ok) throw new Error(result.message);
-          return result.value;
-        };
-        return {
-          acquireCreate: (request: Parameters<LockDO["acquireCreate"]>[0]) =>
-            invoke((lock) => lock.acquireCreate(request)),
-          acquireNodeWrite: (request: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
-            invoke((lock) => lock.acquireNodeWrite(request)),
-          acquireTrash: (request: Parameters<LockDO["acquireTrash"]>[0]) =>
-            invoke((lock) => lock.acquireTrash(request)),
-          acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
-            invoke((lock) => lock.acquireMove(request)),
-          acquireCopy: (request: Parameters<LockDO["acquireCopy"]>[0]) =>
-            invoke((lock) => lock.acquireCopy(request)),
-          createDavLock: (request: Parameters<LockDO["createDavLock"]>[0]) =>
-            invoke((lock) => lock.createDavLock(request)),
-          refreshDavLock: (request: Parameters<LockDO["refreshDavLock"]>[0]) =>
-            invoke((lock) => lock.refreshDavLock(request)),
-          unlockDavLock: (request: Parameters<LockDO["unlockDavLock"]>[0]) =>
-            invoke((lock) => lock.unlockDavLock(request)),
-          release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
-            invoke((lock) => lock.release(requestId, permit)),
-        };
-      },
-    } as unknown as Env["LOCKS"],
-  };
-}
 
 async function fixture(suffix: string) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -1630,7 +1564,10 @@ it("parses bounded DAV paths with a single percent decode", () => {
   ]) {
     expect(() => parseDavPath(path)).toThrow("invalid_dav_path");
   }
-  expect(() => parseDavPath("/dav/Shared/mount")).toThrow("dav_shared_not_ready");
+  expect(parseDavPath("/dav/Shared/mount").segments.map((s) => s.name)).toEqual([
+    "Shared",
+    "mount",
+  ]);
 });
 
 it("resolves an app password DAV path relative to its authorized root", async () => {

@@ -1,6 +1,7 @@
 import { portableName, searchName } from "@next-cloud-flare/shared/names";
 import { authorizeNode, type Principal } from "../auth/authorize";
 import { lockTokenHashes } from "../auth/locks";
+import { freezePrincipal } from "../auth/selectedShare";
 import type { DavLockResult } from "../do/LockDO";
 import type { Env } from "../env";
 import { claimOperation, findOperationIntent, operationIntent } from "../jobs/operations";
@@ -178,6 +179,7 @@ export async function createLockedEmptyFile(
   env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   request: CreateLockedFileRequest,
 ): Promise<CreateLockedFileOutcome> {
+  request = { ...request, principal: freezePrincipal(request.principal) };
   const name = portableName(request.name);
   if (
     request.principal.kind !== "app_password" ||
@@ -219,7 +221,6 @@ export async function createLockedEmptyFile(
   });
   let claimed = false;
   const blobId = `${intent.id}_blob`;
-  const key = `u/${request.principal.user_id}/b/${blobId}`;
   try {
     const authorized = await authorizeNode(env.DB, request.principal, {
       operation: "node.create",
@@ -227,6 +228,7 @@ export async function createLockedEmptyFile(
       spaceId: request.spaceId,
     });
     if (authorized.operation !== "node.create") throw new Error("invalid_create_authorization");
+    const key = `u/${authorized.parent.owner_id}/b/${blobId}`;
     const stored = await trackedR2Write(
       env,
       {

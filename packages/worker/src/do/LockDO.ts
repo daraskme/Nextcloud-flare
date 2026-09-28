@@ -8,6 +8,7 @@ import {
   hasBlockingTrashLocks,
   lockTokenHashes,
 } from "../auth/locks";
+import { principalSelection } from "../auth/selectedShare";
 import {
   assertMutationAdmission,
   commitMutationAdmission,
@@ -245,6 +246,7 @@ export class LockDO extends DurableObject<Env> {
       status.epoch,
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     // Durable intent precedes external I/O; no raw lock token is persisted.
     this.ctx.storage.sql.exec(
@@ -323,6 +325,7 @@ export class LockDO extends DurableObject<Env> {
       status.epoch,
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -428,6 +431,7 @@ export class LockDO extends DurableObject<Env> {
       status.epoch,
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -519,6 +523,7 @@ export class LockDO extends DurableObject<Env> {
       status.epoch,
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -582,6 +587,7 @@ export class LockDO extends DurableObject<Env> {
       status.epoch,
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -647,6 +653,7 @@ export class LockDO extends DurableObject<Env> {
       status.epoch,
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -729,6 +736,7 @@ export class LockDO extends DurableObject<Env> {
       request.principal.credential_id,
       status.epoch,
       hashes,
+      ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",

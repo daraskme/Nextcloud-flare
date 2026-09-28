@@ -3,9 +3,11 @@ import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/app
 import { KdfUnavailableError } from "../auth/kdf";
 import { evaluateDavRequestIf } from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
-import { davEtag } from "../dav/etag";
+import { assertDavPutConditions, davEtag } from "../dav/etag";
 import { parseDavLockDepth, parseDavTimeout } from "../dav/lockProtocol";
 import {
+  davPrincipalForPath,
+  isSharedDavPath,
   parseDavPath,
   resolveDavCreateParent,
   resolveDavCredentialPath,
@@ -15,6 +17,7 @@ import {
   resolveDavTransferDestination,
 } from "../dav/path";
 import { propfindResponse } from "../dav/propfind";
+import { sharedDavAvailable, sharedPropfindResponse } from "../dav/shared";
 import {
   parseDavDestination,
   parseDavOverwrite,
@@ -140,10 +143,8 @@ export async function handleDavHttp(
   let path;
   try {
     path = parseDavPath(url.pathname);
-  } catch (error) {
-    return error instanceof Error && error.message === "dav_shared_not_ready"
-      ? problem(503, "not_ready")
-      : problem(400, "bad_request");
+  } catch {
+    return problem(400, "bad_request");
   }
   if (!pepper) return problem(503, "not_ready");
   let allowed: boolean;
@@ -175,6 +176,25 @@ export async function handleDavHttp(
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;
   }
+  const sharedCollection = isSharedDavPath(path) && path.segments.length === 1;
+  try {
+    if (sharedCollection) {
+      if (!(await sharedDavAvailable(env.DB, principal, request.method === "PROPFIND")))
+        return problem(404, "not_found");
+      if (!["OPTIONS", "PROPFIND"].includes(request.method))
+        return problem(405, "method_not_allowed");
+    } else principal = await davPrincipalForPath(env.DB, principal, path);
+  } catch (error) {
+    return error instanceof Error && error.message === "dav_node_unavailable"
+      ? problem(404, "not_found")
+      : problem(503, "not_ready");
+  }
+  if (
+    isSharedDavPath(path) &&
+    path.segments.length === 2 &&
+    ["MKCOL", "MOVE", "DELETE"].includes(request.method)
+  )
+    return problem(403, "forbidden");
   if (request.method === "MKCOL") {
     if (path.segments.length === 0) return problem(405, "method_not_allowed");
     if (
@@ -270,6 +290,7 @@ export async function handleDavHttp(
     if (target && !request.headers.has("If-Match") && !request.headers.has("If"))
       return problem(428, "precondition_failed");
     try {
+      assertDavPutConditions(request.headers, target ? davEtag(target.node) : null);
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const parent = target
         ? { spaceId: target.node.space_id, parent: { id: target.node.parent_id! } }
@@ -291,7 +312,7 @@ export async function handleDavHttp(
         requestId: crypto.randomUUID(),
         spaceId: parent.spaceId,
         parentId: parent.parent.id,
-        name: path.segments.at(-1)!.name,
+        name: target?.node.name ?? path.segments.at(-1)!.name,
         ...(target ? { nodeId: target.node.id, expectedRevision: target.node.revision } : {}),
         body,
         size,
@@ -339,7 +360,10 @@ export async function handleDavHttp(
       if (error instanceof Error && error.message === "dav_precondition_failed")
         return problem(412, "precondition_failed");
       if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
-      if (error instanceof Error && error.message === "authorization_denied")
+      if (
+        error instanceof Error &&
+        ["authorization_denied", "dav_node_unavailable"].includes(error.message)
+      )
         return problem(404, "not_found");
       if (error instanceof Error && error.message.includes("quota_exceeded"))
         return problem(507, "insufficient_storage");
@@ -352,7 +376,10 @@ export async function handleDavHttp(
     } catch {
       return problem(404, "not_found");
     }
-  } else if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY"].includes(request.method)) {
+  } else if (
+    !sharedCollection &&
+    ["PROPFIND", "GET", "HEAD", "DELETE", "COPY"].includes(request.method)
+  ) {
     try {
       resolved = await resolveDavNode(env.DB, principal, path);
     } catch {
@@ -365,6 +392,11 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
+      if (
+        isSharedDavPath(path) !== isSharedDavPath(destination.path) ||
+        (isSharedDavPath(path) && path.segments[1]?.nameCi !== destination.path.segments[1]?.nameCi)
+      )
+        return problem(403, "forbidden");
       const depth = parseDavTransferDepth("COPY", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
       const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
@@ -428,7 +460,10 @@ export async function handleDavHttp(
         return problem(403, "forbidden");
       if (error instanceof Error && error.message === "invalid_copy_authorization")
         return problem(403, "forbidden");
-      if (error instanceof Error && error.message === "authorization_denied")
+      if (
+        error instanceof Error &&
+        ["authorization_denied", "dav_node_unavailable"].includes(error.message)
+      )
         return problem(404, "not_found");
       return problem(503, "not_ready");
     }
@@ -479,7 +514,10 @@ export async function handleDavHttp(
       if (error instanceof Error && error.message === "invalid_dav_if")
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
-      if (error instanceof Error && error.message === "authorization_denied")
+      if (
+        error instanceof Error &&
+        ["authorization_denied", "dav_node_unavailable"].includes(error.message)
+      )
         return problem(404, "not_found");
       return problem(503, "not_ready");
     }
@@ -490,6 +528,11 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
+      if (
+        isSharedDavPath(path) !== isSharedDavPath(destination.path) ||
+        (isSharedDavPath(path) && path.segments[1]?.nameCi !== destination.path.segments[1]?.nameCi)
+      )
+        return problem(403, "forbidden");
       parseDavTransferDepth("MOVE", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
       const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
@@ -555,22 +598,26 @@ export async function handleDavHttp(
         return problem(403, "forbidden");
       if (error instanceof Error && error.message === "invalid_move_authorization")
         return problem(403, "forbidden");
-      if (error instanceof Error && error.message === "authorization_denied")
+      if (
+        error instanceof Error &&
+        ["authorization_denied", "dav_node_unavailable"].includes(error.message)
+      )
         return problem(404, "not_found");
       return problem(503, "not_ready");
     }
   }
   if (request.method === "OPTIONS") {
     try {
-      await resolveDavCredentialPath(env.DB, principal, path);
+      if (!sharedCollection) await resolveDavCredentialPath(env.DB, principal, path);
     } catch {
       return problem(404, "not_found");
     }
     return new Response(null, {
       status: 200,
       headers: {
-        Allow:
-          "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+        Allow: sharedCollection
+          ? "OPTIONS, PROPFIND"
+          : "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",
@@ -579,7 +626,7 @@ export async function handleDavHttp(
     });
   }
   if (request.method === "PROPFIND") {
-    if (!resolved) return problem(404, "not_found");
+    if (!resolved && !sharedCollection) return problem(404, "not_found");
     const depth = request.headers.get("Depth");
     if (depth !== "0" && depth !== "1")
       return new Response(
@@ -600,7 +647,9 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     }
     try {
-      return await propfindResponse(env.DB, resolved, path, Number(depth) as 0 | 1, propfind);
+      return sharedCollection
+        ? await sharedPropfindResponse(env.DB, principal, path, Number(depth) as 0 | 1, propfind)
+        : await propfindResponse(env.DB, resolved!, path, Number(depth) as 0 | 1, propfind);
     } catch (error) {
       if (error instanceof Error && error.message === "mutation_unavailable") {
         const response = problem(503, "not_ready");
