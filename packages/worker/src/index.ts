@@ -1,5 +1,5 @@
 import { problem } from "@next-cloud-flare/shared/errors";
-import { handleContentHttp } from "./api/content";
+import { contentPath, handleContentHttp } from "./api/content";
 import { davPath, handleDavHttp } from "./api/dav";
 import { handlePrivateAppHttp, privateAppRoute } from "./api/privateApp";
 import { privateAppDependencies } from "./api/privateAppConfig";
@@ -44,7 +44,11 @@ export { UploadDO } from "./do/UploadDO";
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (!hasBindings(env)) return problem(503, "binding_unavailable");
-    if (new URL(request.url).origin === env.CONTENT_ORIGIN) {
+    const origin = new URL(request.url).origin;
+    if (
+      origin === env.CONTENT_ORIGIN &&
+      (env.CONTENT_ORIGIN !== env.APP_ORIGIN || contentPath(request))
+    ) {
       if (
         !env.CONTENT_TICKET_KEYS ||
         !env.CONTENT_COOKIE_KEYS ||
@@ -72,10 +76,10 @@ export default {
         return problem(503, "not_ready");
       }
     }
-    if (new URL(request.url).origin === env.APP_ORIGIN && publicAssetRoute(request)) {
+    if (origin === env.APP_ORIGIN && publicAssetRoute(request)) {
       return servePublicApp(request, env);
     }
-    if (new URL(request.url).origin === env.APP_ORIGIN && publicShareRoute(request)) {
+    if (origin === env.APP_ORIGIN && publicShareRoute(request)) {
       try {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
@@ -89,7 +93,7 @@ export default {
         return problem(503, "not_ready");
       }
     }
-    if (new URL(request.url).origin === env.APP_ORIGIN && privateAppRoute(request)) {
+    if (origin === env.APP_ORIGIN && privateAppRoute(request)) {
       try {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
@@ -98,7 +102,7 @@ export default {
         return problem(503, "not_ready");
       }
     }
-    if (new URL(request.url).origin === env.APP_ORIGIN && davPath(request)) {
+    if (origin === env.APP_ORIGIN && davPath(request)) {
       try {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
@@ -115,7 +119,7 @@ export default {
         return problem(503, "not_ready");
       }
     }
-    if (new URL(request.url).origin === env.APP_ORIGIN && privateAssetRoute(request)) {
+    if (origin === env.APP_ORIGIN && privateAssetRoute(request)) {
       try {
         const epoch = await admittedEpoch(env);
         return epoch === null

@@ -22,6 +22,7 @@
     "verify:config": "node scripts/verify-config.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm verify:contracts && pnpm verify:config && pnpm test && pnpm build",
     "test:browser": "pnpm build:web && playwright test",
+    "test:browser:single-host": "pnpm build:web && playwright test --config playwright.single-host.config.ts",
     "backup": "node scripts/backup.mjs",
     "database:restore": "node scripts/database-restore.mjs",
     "backup:monitor": "node scripts/backup-monitor.mjs",

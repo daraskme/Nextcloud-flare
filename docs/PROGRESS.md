@@ -1,6 +1,6 @@
 # 開発進捗
 
-[公開リンク](PUBLIC_SHARES.md)の原本GET/HEAD APIを、既存の配信セッション・BudgetDOへ接続しました。現行共有Cookieと元share/sessionに限定し、HEAD・Range・304も共通の利用量へ計上します。上書き後の古いmanifest、別session/purpose、失効・範囲外の対象を拒否します。匿名編集・削除・所有者復元・再開可能なupload/overwriteも接続済みです。schema0065・通常76table・147 route、移行と依存追加なし。upload-only・thumb・ZIP・media、実環境検証と復旧側の残件は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[単一ドメイン構成](SINGLE_HOST.md)を接続しました。APP_ORIGINとCONTENT_ORIGINが同じ場合も、Files・公開共有・原本配信・DAVをパスで振り分け、既存の認証・Cookie・CSP・会計を維持します。別ドメインの配信hostは従来どおり配信専用です。公開リンクの原本GET/HEAD、匿名編集・削除・所有者復元・再開可能なupload/overwriteも接続済みです。schema0065・通常76table・147 route、移行と依存追加なし。upload-only・thumb・ZIP・media、実環境検証と復旧側の残件は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-29
 
@@ -10,9 +10,9 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は単一host構成のルーティングとupload-onlyを接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はupload-onlyを接続します。copyのDLQ運用・未解決attemptの修復、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は、2026-09-29 01:43 JSTの確認でUbuntu・Windows1/4〜3/4・Windows全Node・browser・backup bindingsの7job成功、Windows4/4とbackup CLIが実行中です。前回失敗したbrowserとWindows1/4の完走を確認しましたが、全CI成功とは扱いません。
+先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は8job成功、Windows4/4失敗で終了しました。multipart-uploadの64 MiB + 3 bytes試験で完了直後のHEADが不在となりupload_complete_pending、867/868件成功です。R2 complete直前の受付・native結果・観測のどの段階が原因かは保存ログだけで確定できず、未解決として追跡します。/tmp/ncf-public-delete-ci-windows4.log。
 
 先行837cfedの[CI36444362854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36444362854)は、Ubuntu・Windows2/4〜4/4・backup bindings/cliの6job成功、browser失敗、Windows1/4が30分上限でcancelledでした。browserの4件は仮想スクロールの表示範囲外を直接操作していたため、検索してから操作する形へ修正しました。Windows全Node（1,573件成功、約9分）を独立jobへ分け、全4integration shardの検査と30分上限を維持します。今回のCIはpush後に確認します。
 

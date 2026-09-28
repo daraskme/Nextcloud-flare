@@ -119,7 +119,7 @@ root GETの`permissions.upload/overwrite`に従ってファイル選択と上書
 3. public側のthumb/page/trackなど、未接続の派生配信経路を契約へつなぐ。原本GET/HEAD APIは接続済みで、画面の保存経路はcontent hostのticket/session経由である。
 4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。
 
-現行のWorker入口はCONTENT_ORIGINと一致すると先にcontent routerへ渡すため、APP_ORIGINとCONTENT_ORIGINを同じ値にする構成は未接続。設計§8.2/§10.4の単一host対応には、配信pathとapp pathの分岐、private/public asset境界、CookieとCSP、browserの検証が必要である。今回の原本GET/HEADは、別々のoriginを使う現行構成で検証している。
+APP_ORIGINとCONTENT_ORIGINを同じ値にする[単一host構成](SINGLE_HOST.md)にも対応する。Worker入口が/sessionと/cの名前空間を配信へ、それ以外の既知app pathを各認可handlerへ振り分ける。host-only CookieとCSP/attachment、private/public asset境界、元share/sessionの制約を維持する。別originのcontent hostにはapp routerを置かない。
 5. stagingでAccess Bypass、Cookie、CORS、鍵切替、KDF予算、実配信を検証する。
 
 検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。全体の残件は[CURRENT_STATE](CURRENT_STATE.md)。

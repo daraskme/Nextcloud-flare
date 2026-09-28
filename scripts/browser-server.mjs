@@ -5,12 +5,18 @@ import { resolve } from "node:path";
 import ts from "typescript";
 
 const root = resolve(import.meta.dirname, "..");
+const args = process.argv.slice(2);
+if (args.length > 1 || (args.length === 1 && args[0] !== "--single-host"))
+  throw new Error("invalid_browser_server_arguments");
+const singleHost = args[0] === "--single-host";
+const port = singleHost ? "8880" : "8879";
+const instance = singleHost ? "browser-single-host" : "browser";
 const parsed = ts.readConfigFile(resolve(root, "wrangler.jsonc"), ts.sys.readFile);
 if (parsed.error) throw new Error("invalid_local_config");
 const config = parsed.config;
-const state = resolve(root, ".wrangler/browser-tests");
-const configFile = resolve(root, ".wrangler/browser-config.json");
-config.name = "ncf-browser-test";
+const state = resolve(root, `.wrangler/${instance}-tests`);
+const configFile = resolve(root, `.wrangler/${instance}-config.json`);
+config.name = `ncf-${instance}-test`;
 config.main = resolve(root, "packages/worker/test/browser/entry.ts");
 config.assets.directory = resolve(root, "packages/web/dist");
 config.d1_databases[0].migrations_dir = resolve(root, "packages/worker/migrations");
@@ -18,8 +24,8 @@ config.queues.consumers = [];
 config.triggers = { crons: [] };
 Object.assign(config.vars, {
   EPOCH_FLOOR: "2",
-  APP_ORIGIN: "https://app.ncf.test:8879",
-  CONTENT_ORIGIN: "https://content.ncf.test:8879",
+  APP_ORIGIN: `https://app.ncf.test:${port}`,
+  CONTENT_ORIGIN: `https://${singleHost ? "app" : "content"}.ncf.test:${port}`,
   UPLOAD_CAPABILITY_ACTIVE_KID: "browser",
   UPLOAD_CAPABILITY_KEYS: JSON.stringify({ browser: randomBytes(32).toString("base64url") }),
 });
@@ -47,7 +53,7 @@ const server = run([
   "--ip",
   "127.0.0.1",
   "--port",
-  "8879",
+  port,
   "--local-protocol",
   "https",
   "--persist-to",

@@ -8,6 +8,12 @@ import { streamBudgetedContentBlob } from "../services/blobRead";
 
 const NODE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
+/** Reserve the content namespace even for malformed paths and unsupported methods. */
+export function contentPath(request: Request): boolean {
+  const path = new URL(request.url).pathname;
+  return path === "/session" || path === "/c" || path.startsWith("/c/");
+}
+
 function cors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", origin);

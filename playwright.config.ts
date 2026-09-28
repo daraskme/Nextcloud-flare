@@ -4,6 +4,7 @@ import { defineConfig } from "@playwright/test";
 const chrome = "/run/current-system/sw/bin/google-chrome";
 export default defineConfig({
   testDir: "./packages/web/test/browser",
+  testIgnore: "**/single-host.spec.ts",
   timeout: 90_000,
   workers: 1,
   retries: 0,

@@ -1,6 +1,19 @@
 # 実装進捗
 
-## 公開原本のGET/HEADと共通の配信会計（今回）
+## 単一ドメインのapp・公開共有・原本配信（今回）
+
+APP_ORIGINとCONTENT_ORIGINが同じときに全app pathがcontent handlerへ渡っていた不具合を修正した。単一hostでは/sessionと/cの名前空間だけを配信へ渡し、既知app pathは既存のAccess・共有・DAV・assets認可へ接続する。別originのcontent hostは配信専用のまま、未知host/path/methodはSPAへfallbackしない。Cookie、CSRF/Origin、CSP/attachment、D1/ControlDO・BudgetDOの既存検査を維持する。[SINGLE_HOST](SINGLE_HOST.md)に経路と未検証範囲を記録した。schema0065・通常76table・147 route、migration/依存追加なし。
+
+- 関連workerd6file/68件成功（51.58秒、/tmp/ncf-single-host-native-final.log）。新規host-routing5件とpublic-assetsの2構成化を含め、API/private assets/DAV認証、配信hostでのapp拒否、未知path/method、公開assets、CSRF/Origin/CORS、host-only Cookie、Range/HEAD・取消し・maintenanceを検査。既存公開配信19件、ticket、実ControlDO bootstrap、multipart-upload27件も成功。初回2file/10件成功（/tmp/ncf-single-host-native.log）は重複加算しない。
+- 単一host専用browser3件成功（1.5分、/tmp/ncf-single-host-browser-final.log）。実Files upload/download、390pxの匿名共有、Unicode名、Cookie/認証境界・HEAD/Range/304・logout後の拒否、HTML/SVGの実添付downloadを検証。初回はHTML/SVGの2件成功、共有1件は本来の60秒待機ボタンを試験が待たず失敗した。既存public試験と同じ待機手順へ修正した。またPlaywrightの設定合成がwebServerを追加結合するため、専用設定は明示的に上書きして8879を重複起動しないようにした。
+- 別hostの既存browser3件成功（1.5分、/tmp/ncf-single-host-split-browser.log）。Filesの作成/rename/upload/保存/trash/restore/copy/move、匿名2tab/共通budget/保存、app経由のHEAD/Range/304/ticket取消しを再確認。
+- 型、lint629file、契約/設定、Web build/Worker dry-run成功。/tmp/ncf-single-host-types-final.log、/tmp/ncf-single-host-lint-final.log、/tmp/ncf-single-host-contracts.log、/tmp/ncf-single-host-config.log、/tmp/ncf-single-host-build-final.log。
+- CIへ単一host browserを独立jobとして追加。従来のbrowser全試験・Windows4分割・全Node・backup両drillと時間上限を維持する。専用ローカル8880のbinding状態は通常の8879や開発DBと分離する。
+- 先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は8job成功、Windows4/4の1件失敗（867/868件成功）。64 MiB + 3 bytesのmultipart確定時にupload_complete_pendingとなった。今回ローカルで該当file全27件が成功したが、保存ログだけで受付・native complete・HEAD観測の原因は確定できず、Windowsの解決済みとは扱わない。/tmp/ncf-public-delete-ci-windows4.log。
+
+**関連workerd68 + browser6 = 74件成功**。upload-only、thumb/page/track、ZIP/media、復旧/運用・最大規模・実環境検証は後続。全Node/全workerd/全browser・backup drillは今回ローカル再実行していない。remote resource/secret/migration/deployなし。
+
+## 公開原本のGET/HEADと共通の配信会計（前回）
 
 `GET/HEAD /api/v1/public/shares/:id/content/:nodeId`を既存のcontent-session・target manifest・BudgetDO・期限付きストリームへ接続した。`POST .../content-session`の追加指定`delivery:"app"`で元のShare-Session/public CSRFを検査してD1セッションを発行し、署名ticket/Cookieを返さずselector IDを返す。GET/HEADは現在の共有Cookieと元Share-Session/Content-Sessionを両方要求し、別credential/purpose、manifest外node/blob、失効・期限・範囲外を拒否する。既存のcontent host配信と同じbyte/request/parallel枠を使い、HEAD/304/416も計上する。公開画面は既存のcontent host保存経路を継続する。共通原本応答へCSPとASCII fallback filenameを追加し、公開APIの拒否時もprivate/no-store・nosniff・no-referrerとHEAD本文なしを維持する。schema0065・通常76table・147 route、migration/依存追加なし。
 
@@ -10,7 +23,7 @@
 - 関連browser9file/27件成功（4.1分、/tmp/ncf-public-content-browser.log）。新規1件はAccessなしのbrowserからapp配信セッションを発行し、実HTTPのHEAD/Range/304・元share-session不一致・ticket取消し後の拒否とprivate/no-store・no-referrerを検証。公開unlock/編集/削除/upload/所有者管理、Filesと内部共有の保存、Unicode filenameを含む既存動作も成功した。最終確認で共通problemにもno-referrerを追加し、handler到達前の設定不備・停止応答へ適用した。変更後の型/lint/buildも成功。
 - 先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は、2026-09-29 01:43 JSTの確認でUbuntu・Windows1/4〜3/4・Windows全Node・browser・backup bindingsの7job成功、Windows4/4とbackup CLIが実行中。前回失敗したbrowserとWindows1/4の完走は確認できたが、全CI成功とは扱わない。
 
-**Node20 + 関連workerd188 + 関連browser27 = 235件成功**。全Node/全workerd/全browserとbackup drillは今回ローカル再実行していない。次は単一host構成のルーティングとupload-only。thumb/page/track、ZIP/media、復旧/運用・最大規模・実環境検証も後続。APP_ORIGINとCONTENT_ORIGINを同じ値にすると現行index.tsがapp pathも先にcontent routerへ渡すため、単一hostを完成扱いにしない。remote resource/secret/migration/deployなし。
+**Node20 + 関連workerd188 + 関連browser27 = 235件成功**。全Node/全workerd/全browserとbackup drillは今回ローカル再実行していない。この時点では単一host構成のルーティングとupload-onlyが次工程だった。単一hostは上記の今回変更で接続した。thumb/page/track、ZIP/media、復旧/運用・最大規模・実環境検証も後続。remote resource/secret/migration/deployなし。
 
 ## 公開共有からのごみ箱移動と所有者復元（前回）
 
