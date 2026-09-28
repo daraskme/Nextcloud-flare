@@ -2,18 +2,31 @@ import { type CopyAuthorityContext, copyAuthorityStatements } from "../jobs/copy
 import { assertExists, assertOneChange, primary, type SqlStatement } from "./primary";
 import type { R2WriteRequest } from "./r2Write";
 
+export const COPY_WRITE_KINDS = [
+  "copy.put",
+  "copy.multipart.create",
+  "copy.multipart.part",
+  "copy.multipart.complete",
+] as const;
+export type CopyWriteKind = (typeof COPY_WRITE_KINDS)[number];
+export function isCopyWrite(kind: string): kind is CopyWriteKind {
+  return (COPY_WRITE_KINDS as readonly string[]).includes(kind);
+}
+
 export interface R2CopyProof {
   jobId: string;
   sourceBlobId: string;
   attemptId: string;
   claimToken: string;
   expiresAt: number;
+  r2UploadId?: string;
+  partNumber?: number;
 }
 export function validateCopyWrite(request: R2WriteRequest): void {
   const p = request.copy;
   if (
     !p ||
-    request.kind !== "copy.put" ||
+    !isCopyWrite(request.kind) ||
     request.gc !== undefined ||
     request.upload !== undefined ||
     request.abort !== undefined ||
@@ -25,7 +38,13 @@ export function validateCopyWrite(request: R2WriteRequest): void {
     !/^[a-f0-9-]{36}$/.test(p.attemptId) ||
     !/^[a-f0-9-]{36}$/.test(p.claimToken) ||
     !Number.isSafeInteger(p.expiresAt) ||
-    p.expiresAt < request.deadline
+    p.expiresAt < request.deadline ||
+    (["copy.multipart.part", "copy.multipart.complete"].includes(request.kind)
+      ? typeof p.r2UploadId !== "string" || p.r2UploadId.length < 1 || p.r2UploadId.length > 1024
+      : p.r2UploadId !== undefined) ||
+    (request.kind === "copy.multipart.part"
+      ? !Number.isInteger(p.partNumber) || p.partNumber! < 1 || p.partNumber! > 10000
+      : p.partNumber !== undefined)
   )
     throw new Error("invalid_r2_write");
 }
@@ -79,9 +98,17 @@ export async function copyWriteProof(
     plan.principal.user_id !== row.principal_id ||
     plan.principal.credential_id !== row.credential_id ||
     plan.principal.epoch !== request.epoch ||
-    row.size > 8 * 1024 * 1024
+    (request.kind === "copy.put" && row.size > 8 * 1024 * 1024)
   )
     throw new Error("r2_copy_unavailable");
+  const specific =
+    request.kind === "copy.put"
+      ? "cb.transfer_mode='single' AND cb.transfer_attempt=? AND cb.transfer_claim=?"
+      : request.kind === "copy.multipart.create"
+        ? "cb.transfer_mode='multipart' AND EXISTS(SELECT 1 FROM copy_multipart_uploads m WHERE m.destination_blob_id=b.id AND m.state='creating' AND m.init_attempt=? AND m.init_claim=?)"
+        : request.kind === "copy.multipart.part"
+          ? "cb.transfer_mode='multipart' AND EXISTS(SELECT 1 FROM copy_multipart_uploads m JOIN copy_multipart_parts p ON p.destination_blob_id=m.destination_blob_id WHERE m.destination_blob_id=b.id AND m.state='uploading' AND m.r2_upload_id=? AND p.part_number=? AND p.attempt_id=? AND p.claim_token=? AND p.state='claimed')"
+          : "cb.transfer_mode='multipart' AND EXISTS(SELECT 1 FROM copy_multipart_uploads m WHERE m.destination_blob_id=b.id AND m.state='completing' AND m.r2_upload_id=? AND m.complete_attempt=? AND m.complete_claim=?)";
   return [
     ...(await copyAuthorityStatements(db, plan, row.transfer_node_id)),
     assertExists(
@@ -90,8 +117,8 @@ export async function copyWriteProof(
       JOIN copy_job_manifests m ON m.job_id=j.id JOIN control c ON c.singleton=1
       JOIN reservations r ON r.id=cb.reservation_id JOIN blob_pins pin ON pin.pin_id=cb.pin_id
       JOIN outbox o ON o.op_id=j.op_id AND o.payload_ref=j.id AND o.kind='copy.requested'
-      WHERE j.id=? AND cb.source_blob_id=? AND cb.transfer_state='claimed' AND cb.transfer_attempt=?
-        AND cb.transfer_claim=? AND cb.transfer_node_id=? AND l.claim_token=cb.transfer_claim AND l.epoch=j.epoch AND l.expires_at=?
+      WHERE j.id=? AND cb.source_blob_id=? AND cb.transfer_state='claimed'
+        AND l.claim_token=? AND cb.transfer_node_id=? AND l.epoch=j.epoch AND l.expires_at=?
         AND l.expires_at>=? AND l.expires_at>strftime('%s','now')*1000
         AND j.kind='node.copy' AND j.state='running' AND j.epoch=? AND c.epoch=j.epoch AND c.maintenance=0
         AND m.sha256=? AND m.expires_at>=l.expires_at AND o.state IN ('dispatching','sent') AND o.epoch=j.epoch
@@ -101,11 +128,11 @@ export async function copyWriteProof(
         AND NOT EXISTS(SELECT 1 FROM blob_storage WHERE blob_id=b.id)
         AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)
         AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE r2_key=b.r2_key)
-        AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=b.r2_key AND state<>'not_started')`,
+        AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=b.r2_key AND ${request.kind === "copy.put" || request.kind === "copy.multipart.create" ? "state<>'not_started'" : "state='pending'"})
+        AND ${specific}`,
       [
         p.jobId,
         p.sourceBlobId,
-        p.attemptId,
         p.claimToken,
         row.transfer_node_id,
         p.expiresAt,
@@ -114,8 +141,14 @@ export async function copyWriteProof(
         row.sha256,
         request.key,
         row.size,
+        ...(["copy.put", "copy.multipart.create"].includes(request.kind)
+          ? [p.attemptId, p.claimToken]
+          : request.kind === "copy.multipart.part"
+            ? [p.r2UploadId!, p.partNumber!, p.attemptId, p.claimToken]
+            : [p.r2UploadId!, p.attemptId, p.claimToken]),
       ],
     ),
+    ...(request.kind === "copy.multipart.complete" ? [copyMultipartPartsProof(request.key)] : []),
     {
       sql: "UPDATE job_leases SET r2_calls=r2_calls+1 WHERE job_id=? AND claim_token=? AND r2_calls<2000",
       values: [p.jobId, p.claimToken],
@@ -127,4 +160,22 @@ export async function copyWriteProof(
     },
     assertOneChange,
   ];
+}
+
+// The explicit non-not_started predicate enables the partial unique index. A key-history
+// scan per part would make completion quadratic in the number of uploaded parts.
+export function copyMultipartPartsProof(key: string): SqlStatement {
+  return assertExists(
+    `SELECT 1 FROM blobs b JOIN copy_multipart_uploads m ON m.destination_blob_id=b.id
+    JOIN copy_job_blobs cb ON cb.destination_blob_id=b.id
+    WHERE b.r2_key=? AND (SELECT COUNT(*) FROM copy_multipart_parts WHERE destination_blob_id=b.id)=m.part_count
+      AND (SELECT SUM(expected_size) FROM copy_multipart_parts WHERE destination_blob_id=b.id)=b.size
+      AND NOT EXISTS(SELECT 1 FROM copy_multipart_parts p WHERE p.destination_blob_id=b.id AND (
+        p.state<>'stored' OR p.part_number>m.part_count OR p.expected_size<>MIN(m.part_bytes,b.size-(p.part_number-1)*m.part_bytes)
+        OR NOT EXISTS(SELECT 1 FROM r2_write_attempts w INDEXED BY r2_write_source
+          WHERE w.kind='copy.multipart.part' AND w.r2_key=b.r2_key
+          AND w.source_ref=json_array(cb.job_id,cb.source_blob_id,p.attempt_id)
+          AND w.state='succeeded' AND w.state<>'not_started')))`,
+    [key],
+  );
 }

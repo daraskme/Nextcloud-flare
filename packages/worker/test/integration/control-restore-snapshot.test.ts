@@ -894,12 +894,12 @@ it("binds the restored snapshot to the original request and records an observati
     restoreResult: result,
     mirror: { snapshotEpoch: 1 },
   });
-  expect(c.mirror.tables).toHaveLength(72);
+  expect(c.mirror.tables).toHaveLength(74);
   expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("snapshot_checking");
   const saved = await attest(c);
   expect(saved).toMatchObject({
     state: "snapshot_verified",
-    tables: 72,
+    tables: 74,
     validator: "restored-snapshot-v1",
   });
   expect(saved.snapshotVerifiedAt).toBeGreaterThanOrEqual(c.issuedAt);

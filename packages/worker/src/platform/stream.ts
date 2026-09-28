@@ -15,6 +15,7 @@ export async function consumeKnownLength<T>(
   expectedBytes: number,
   consume: (body: ReadableStream<Uint8Array>) => Promise<T>,
   signal?: AbortSignal,
+  produced?: (value: { bytes: number; sha256: string }) => void,
 ): Promise<{ value: T; bytes: number; sha256: string }> {
   validateLength(expectedBytes);
   const fixed = new FixedLengthStream(expectedBytes);
@@ -62,7 +63,12 @@ export async function consumeKnownLength<T>(
       throw error;
     });
   // Attach all rejection handlers immediately, including the digest's abort rejection.
-  const settled = Promise.allSettled([producer, consumer, digest.digest]);
+  // A completed producer is a source fact, independent of a late/failed native response.
+  const hashing = digest.digest.then((value) => {
+    produced?.({ bytes, sha256: hex(value) });
+    return value;
+  });
+  const settled = Promise.allSettled([producer, consumer, hashing]);
   const onAbort = () => stop(signal?.reason);
   signal?.addEventListener("abort", onAbort, { once: true });
   if (signal?.aborted) onAbort();

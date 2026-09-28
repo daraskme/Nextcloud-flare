@@ -128,7 +128,7 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   const saved = snapshot(db),
     schema = schemaDigest(db.prepare(schemaQuery).all());
   const { directory: artifact, manifest } = await capture();
-  expect(manifest.tables).toHaveLength(72);
+  expect(manifest.tables).toHaveLength(74);
   expect(manifest.generation.watermark).toBe("committed-history");
   expect(await readdir(artifact)).toEqual(["data.sql", "manifest.json"]);
   expect(await verifyGeneration(artifact)).toEqual(manifest);

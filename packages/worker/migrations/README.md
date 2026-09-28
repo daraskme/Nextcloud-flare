@@ -25,3 +25,5 @@ FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` �
 `0053` は既存job leaseへinvocationのR2 call counterを追加する（通常72tableのまま）。既存token/epoch/期限/試行回数を保持し、新columnは0から開始する。copy claimと読取りは内部serviceのみで、checkpoint進行・転送先保存・精算は後続。
 
 `0054` はcopy.putをnative書込み台帳へ追加し、全既存receiptとcopy保持行を保存する（72table）。copy保持行へ転送state/attempt/claim/hash/固定source nodeを追加し、転送先blobの削除も保持中は拒否する。既存multipart照合とfreezeガードを再作成する。停止・未凍結・open permit/claimed operation/未閉鎖admissionなしで適用し、旧Workerへ戻す場合もmaintenanceを維持する。
+
+`0055` は分割copyのupload/part用2tableを追加する（74table）。既存15種のnative receiptを全field維持し、copy multipartのcreate/part/completeを加える。旧copy保持行はsingle modeを維持する。geometry・不変identity・native/physical記録・連続partを検査し、取消し/精算実装までは削除を拒否する。copy保持中のkeyは全bucket用abortも拒否する。新tableをbackup/restore freeze・export/purge順序へ含める。適用前提とrollback時の停止維持は0054と同じ。

@@ -27,6 +27,33 @@ export async function readCopyJobRange(
   claim: CopyJobClaim,
   range: CopySourceRange,
 ): Promise<Uint8Array> {
+  if (range.length > COPY_EXECUTION_LIMITS.rangeBytes) throw new Error("invalid_copy_range");
+  const length = range.length;
+  return withCopyJobRange(env, claim, range, async (body) => {
+    const bytes = new Uint8Array(length),
+      reader = body.getReader();
+    let offset = 0;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        bytes.set(next.value, offset);
+        offset += next.value.byteLength;
+      }
+      return bytes;
+    } finally {
+      reader.releaseLock();
+    }
+  });
+}
+
+/** Internal streaming transfer; the consumer must finish before the same authorization lease ends. */
+export async function withCopyJobRange<T>(
+  env: SystemMutationSource & Pick<Env, "BLOBS">,
+  claim: CopyJobClaim,
+  range: CopySourceRange,
+  consume: (body: ReadableStream<Uint8Array>) => Promise<T>,
+): Promise<T> {
   checkCopyClaim(claim);
   const { blobId, offset, length } = range;
   const blob = claim.plan.source.blobs.find((b) => b.id === blobId);
@@ -39,7 +66,7 @@ export async function readCopyJobRange(
     !Number.isSafeInteger(length) ||
     offset < 0 ||
     length < 0 ||
-    length > COPY_EXECUTION_LIMITS.rangeBytes ||
+    length > COPY_EXECUTION_LIMITS.streamRangeBytes ||
     offset + length > blob.size ||
     (length === 0 && (blob.size !== 0 || offset !== 0))
   )
@@ -68,6 +95,7 @@ export async function readCopyJobRange(
   const local = beginCopyClaimRead(claim);
   let object: R2ObjectBody | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let delivery: ReadableStreamDefaultController<Uint8Array> | undefined;
   const stopped = new AbortController();
   let rejectStop!: (error: unknown) => void;
   const stopPromise = new Promise<never>((_, reject) => {
@@ -77,6 +105,8 @@ export async function readCopyJobRange(
     if (stopped.signal.aborted) return;
     stopped.abort(reason);
     rejectStop(reason);
+    delivery?.error(reason);
+    delivery = undefined;
     void reader?.cancel(reason).catch(() => undefined);
     if (!reader) void object?.body.cancel(reason).catch(() => undefined);
   };
@@ -142,25 +172,49 @@ export async function readCopyJobRange(
         (!("offset" in object.range) || object.range.offset !== 0 || object.range.length !== 0))
     )
       throw new Error("copy_source_changed");
-    const bytes = new Uint8Array(length);
     reader = object.body.getReader();
     let received = 0;
-    for (;;) {
-      gate();
-      const next = await reader.read();
-      gate();
-      if (next.done) break;
-      if (received + next.value.byteLength > length) throw new Error("copy_source_length_mismatch");
-      bytes.set(next.value, received);
-      received += next.value.byteLength;
-    }
-    if (received !== length) throw new Error("copy_source_length_mismatch");
-    // A share, credential, tree position or lease may have changed while R2 was streaming.
-    const finalAuthority = await copyAuthorityStatements(env.DB, claim.plan, witness.id);
+    let completed = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          delivery = controller;
+        },
+        async pull(controller) {
+          try {
+            gate();
+            const next = await reader!.read();
+            gate();
+            if (next.done) {
+              if (received !== length) throw new Error("copy_source_length_mismatch");
+              const finalAuthority = await copyAuthorityStatements(env.DB, claim.plan, witness.id);
+              gate();
+              await atomicBatch(env.DB, [copyClaimFence(claim), ...finalAuthority, hold]);
+              gate();
+              completed = true;
+              delivery = undefined;
+              controller.close();
+            } else {
+              if (received + next.value.byteLength > length)
+                throw new Error("copy_source_length_mismatch");
+              received += next.value.byteLength;
+              controller.enqueue(next.value);
+            }
+          } catch (error) {
+            stop(error);
+          }
+        },
+        cancel(reason) {
+          delivery = undefined;
+          stop(reason ?? new Error("copy_read_cancelled"));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const consumed = await consume(body);
     gate();
-    await atomicBatch(env.DB, [copyClaimFence(claim), ...finalAuthority, hold]);
-    gate();
-    return bytes;
+    if (!completed) throw new Error("copy_source_not_consumed");
+    return consumed;
   };
   try {
     return await Promise.race([

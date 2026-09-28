@@ -109,7 +109,7 @@ const run = () => verifyRestoredSnapshot({ epoch: 2, id: selected.id, control, r
 it("checks all tables, FK and isolated FTS while preserving exact values and operation terminals", async () => {
   const before = await tableDigests(specs(db), rows),
     saved = await run();
-  expect(saved).toMatchObject({ state: "snapshot_verified", epoch: 2, newEpoch: 3, tables: 72 });
+  expect(saved).toMatchObject({ state: "snapshot_verified", epoch: 2, newEpoch: 3, tables: 74 });
   expect(JSON.stringify(saved)).not.toContain("do-not-print");
   expect(await tableDigests(specs(db), rows)).toEqual(before);
   expect(control.attestSnapshot.mock.calls[0][3].tables).toEqual(before);

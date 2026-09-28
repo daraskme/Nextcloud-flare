@@ -25,9 +25,9 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[所有者間コピーの単一保存](COPY_JOBS.md)を追加しました。8 MiB以下のblobを固定sourceから条件付きでコピー先へ保存し、SHA-256・ETag・実容量・native完了記録を照合してcheckpointを進めます。保存済みの応答喪失はPUTを繰り返さず再開し、権限失効やlease解放後の実保存も記録します。大きいblobのmultipart、結果不明/未送信照合、一括公開、取消し・精算、Queue/HTTP/画面は未完成です。
+[所有者間コピーの分割保存](COPY_JOBS.md)を追加しました。固定sourceをstreamでpartへ送り、upload ID・part hash/ETag・進捗を保存して途中から再開します。実completeの結果を容量台帳へ記録し、遅延応答やACK喪失時も同じ送信を繰り返しません。最大規模の完走予算、結果不明/未送信照合、一括公開、取消し・精算、Queue/HTTP/画面は未完成です。
 
-schema0054・通常72table。既存native receiptとcopy保持行を保存してcopy.putと転送情報を追加しました。依存変更はありません。全Node1,381件・関連workerd228件の計1,609件成功（修正後の対象file再実行を含む）。型・lint510file・契約/設定・buildも成功しました。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0055・通常74table。copy用multipartのupload/part記録を追加し、既存15種のnative receiptを保持しています。全Node1,396件・関連workerd336件の計1,732件が成功しました（修正後の対象file再実行を含む）。型・lint515file・契約/設定・buildと、5世代の保存・補充・復元を行う実Wrangler運用ドリルも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
@@ -37,7 +37,7 @@ DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration
 
 今回のmultipart入口は`restoreInventoryRepair.ts`/`restoreInventory.ts`/`scripts/restore/inventory.mjs`。private `repairInventory`は28番目のmethod。共有の`restoreRepairContext.ts`がsystem/global受付とBLOBS読取りを同じ停止へ固定し、実完了のfinishだけは停止後も保存する。各inventory jobへBindingVerificationScopeを渡し、S3 sourceを採用済みBLOBS対象と照合する。全体25秒のtimeoutでactiveを失わせ、遅延GETから新たなnativeを送らない。既知multipartの元abort照合は`restoreMultipartAbort.ts`。DO履歴はhashだけなので、元D1 tuple欠落はそれだけで修復できない。
 
-送信先は承認済み専用`codex/database-restore`です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は最終確認時にUbuntu・Windows3分割・browser成功、backupは実行中です。最新CI状態はgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は全6job成功です。先行a52b815の[CI36371093589](https://github.com/daraskme/Nextcloud-flare/actions/runs/36371093589)はUbuntu・Windows3分割・browser成功、backup:run-drillのsource fingerprints中にbackup_wrangler_failedで失敗しました。保存されたログだけでは子プロセスの失敗原因を特定できません。最新CI状態はgh run listで確認します。
 
 ## 現在動いている範囲
 

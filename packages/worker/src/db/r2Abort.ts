@@ -100,6 +100,7 @@ export async function abortWriteProof(
       AND p.generation=a.proof_generation AND s.round_id=a.scan_round_id AND s.completed_at IS NOT NULL
       AND h.part_round_id=a.part_round_id AND h.parts_completed_at IS NOT NULL AND h.held_bytes=a.held_bytes
       AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans WHERE r2_key=h.r2_key AND completed_at IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb JOIN blobs b ON b.id=cb.destination_blob_id WHERE b.r2_key=h.r2_key)
       AND NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key
         AND (u.state IN ('created','receiving','uploading','completing','aborting')
           OR COALESCE(u.write_lease_expires_at,0)>strftime('%s','now')*1000

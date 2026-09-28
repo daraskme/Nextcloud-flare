@@ -8,13 +8,14 @@ import { foundationFixture } from "./foundation";
 import { mutationEnv } from "./mutationAdmission";
 import { admitted } from "./uploadEnv";
 
-export async function copyJobFixture(empty = false) {
+export async function copyJobFixture(empty = false, body?: Uint8Array) {
+  const size = body?.byteLength ?? (empty ? 0 : 3);
   const source = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   const target = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   await atomicBatch(env.DB, [
     ...source.statements.map((s) =>
-      empty && s.sql.startsWith("INSERT INTO blobs")
-        ? { ...s, sql: s.sql.replace(",3,?,'committed'", ",0,?,'committed'") }
+      s.sql.startsWith("INSERT INTO blobs")
+        ? { ...s, sql: s.sql.replace(",3,?,'committed'", `,${size},?,'committed'`) }
         : s,
     ),
     ...target.statements,
@@ -24,12 +25,12 @@ export async function copyJobFixture(empty = false) {
     },
   ]);
   const key = `u/${source.ids.user}/b/${source.ids.blob}`;
-  const stored = await env.BLOBS.put(key, empty ? "" : "abc");
+  const stored = await env.BLOBS.put(key, body ?? (empty ? "" : "abc"));
   if (!stored) throw new Error("fixture_r2_failed");
   await env.DB.prepare(
     "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,1)",
   )
-    .bind(source.ids.blob, empty ? 0 : 3, stored.etag)
+    .bind(source.ids.blob, size, stored.etag)
     .run();
   await env.DB.prepare(
     "UPDATE control SET bootstrap_done_at=1,bootstrap_iss='https://access.invalid',bootstrap_sub=? WHERE bootstrap_done_at IS NULL",
@@ -95,7 +96,7 @@ export async function copyJobFixture(empty = false) {
     job,
     enqueue,
     revoke: () => updateInternalShare(mutationEnv(), session, share.id, share.version, null),
-    range: { blobId: source.ids.blob, offset: 0, length: empty ? 0 : 3 },
+    range: { blobId: source.ids.blob, offset: 0, length: size },
   };
 }
 export function copyReaderEnv(get = vi.fn(env.BLOBS.get.bind(env.BLOBS)), db = env.DB) {

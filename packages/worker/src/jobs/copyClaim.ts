@@ -18,9 +18,11 @@ export const COPY_EXECUTION_LIMITS = Object.freeze({
   // Leave D1 query and memory headroom for authorization and subsequent writes.
   rangeReads: 16,
   rangeBytes: 8 * 1024 * 1024,
+  streamRangeBytes: 90 * 1024 * 1024,
 });
 const CLOCK = "strftime('%s','now')*1000";
-const checkpoint = (position: number) => JSON.stringify({ v: 1, blob: position, offset: 0 });
+const checkpoint = (position: number, offset = 0) =>
+  JSON.stringify({ v: 1, blob: position, offset });
 export interface CopyJobClaim {
   readonly id: string;
   readonly token: string;
@@ -33,6 +35,7 @@ interface ClaimProof {
   readonly stop: AbortController;
   busy: boolean;
   position: number;
+  offset: number;
 }
 const proofs = new WeakMap<CopyJobClaim, ClaimProof>();
 function proof(claim: CopyJobClaim): ClaimProof {
@@ -47,12 +50,23 @@ export function checkCopyClaim(claim: CopyJobClaim): void {
 export function copyClaimPosition(claim: CopyJobClaim): number {
   return proof(claim).position;
 }
+export function copyClaimOffset(claim: CopyJobClaim): number {
+  return proof(claim).offset;
+}
+export function advancedCopyPart(claim: CopyJobClaim, offset: number): void {
+  const p = proof(claim),
+    blob = claim.plan.source.blobs[p.position];
+  if (!blob || !Number.isSafeInteger(offset) || offset <= p.offset || offset > blob.size)
+    throw new Error("invalid_copy_checkpoint");
+  p.offset = offset;
+}
 /** Called only after the matching, receipt-backed checkpoint batch commits. */
 export function advancedCopyClaim(claim: CopyJobClaim, position: number): void {
   const p = proof(claim);
   if (position !== p.position + 1 || position > claim.plan.source.blobs.length)
     throw new Error("invalid_copy_checkpoint");
   p.position = position;
+  p.offset = 0;
 }
 
 /** Current authority, using exactly the source/destination selections accepted with the job. */
@@ -127,7 +141,7 @@ export function copyClaimFence(claim: CopyJobClaim): SqlStatement {
       claim.epoch,
       claim.expiresAt,
       claim.plan.destinationOwnerId,
-      checkpoint(proof(claim).position),
+      checkpoint(proof(claim).position, proof(claim).offset),
       claim.plan.digest,
       outboxId,
     ],
@@ -156,11 +170,15 @@ export async function claimCopyJob(
   if (!row) throw new Error("copy_job_unavailable");
   const { plan, expiresAt } = await loadCopyJobManifest(env.DB, row.id);
   const position: number = row.checkpoint === null ? 0 : JSON.parse(row.checkpoint).blob;
+  const offset: number = row.checkpoint === null ? 0 : JSON.parse(row.checkpoint).offset;
   if (
     !Number.isSafeInteger(position) ||
     position < 0 ||
     position > plan.source.blobs.length ||
-    (row.checkpoint !== null && row.checkpoint !== checkpoint(position))
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    offset > (plan.source.blobs[position]?.size ?? 0) ||
+    (row.checkpoint !== null && row.checkpoint !== checkpoint(position, offset))
   )
     throw new Error("invalid_copy_checkpoint");
   const claim: CopyJobClaim = Object.freeze({
@@ -170,7 +188,7 @@ export async function claimCopyJob(
     expiresAt: Math.min(expiresAt, deadline, started + COPY_EXECUTION_LIMITS.wallMs),
     plan,
   });
-  proofs.set(claim, { outboxId, stop: new AbortController(), busy: false, position });
+  proofs.set(claim, { outboxId, stop: new AbortController(), busy: false, position, offset });
   const authority = await copyAuthorityStatements(env.DB, plan);
   const admission = await acquireSystemMutation(
     env,
@@ -182,10 +200,21 @@ export async function claimCopyJob(
   await commitSystemMutation(env.DB, admission, plan.destinationOwnerId, [
     ...authority,
     assertExists(
+      `SELECT 1 WHERE ?1=0 OR EXISTS(SELECT 1 FROM copy_job_blobs cb JOIN copy_multipart_uploads m
+      ON m.destination_blob_id=cb.destination_blob_id WHERE cb.job_id=?2 AND cb.source_blob_id=?3
+        AND cb.transfer_mode='multipart' AND m.state<>'creating'
+        AND ?1=(SELECT SUM(expected_size) FROM copy_multipart_parts p WHERE p.destination_blob_id=m.destination_blob_id
+          AND p.part_number<=(?1+m.part_bytes-1)/m.part_bytes AND p.state='stored'))`,
+      [offset, claim.id, plan.source.blobs[position]?.id ?? null],
+    ),
+    assertExists(
       `SELECT 1 WHERE ?=(SELECT COUNT(*) FROM
       (SELECT * FROM copy_job_blobs WHERE job_id=? ORDER BY source_blob_id LIMIT ?) cb
       JOIN blobs b ON b.id=cb.destination_blob_id JOIN blob_storage s ON s.blob_id=b.id
-      WHERE cb.transfer_state='stored' AND b.state='staging' AND b.sha256_verified=cb.transfer_sha256
+      LEFT JOIN copy_multipart_uploads m ON m.destination_blob_id=b.id
+      WHERE cb.transfer_state='stored' AND b.state='staging' AND
+        ((cb.transfer_mode='single' AND b.sha256_verified=cb.transfer_sha256)
+          OR (cb.transfer_mode='multipart' AND b.sha256_verified IS NULL AND cb.transfer_sha256 IS NULL AND m.state='stored' AND m.object_etag=s.r2_etag))
         AND s.bytes=b.size AND s.removed_at IS NULL)`,
       [position, claim.id, position],
     ),
@@ -214,9 +243,9 @@ export async function claimCopyJob(
         WHERE id=? AND state IN ('pending','running') AND (checkpoint IS NULL OR checkpoint=?)
           AND invocation_count<? AND r2_calls<?`,
       values: [
-        checkpoint(position),
+        checkpoint(position, offset),
         claim.id,
-        checkpoint(position),
+        checkpoint(position, offset),
         COPY_EXECUTION_LIMITS.invocations,
         COPY_EXECUTION_LIMITS.r2Calls,
       ],

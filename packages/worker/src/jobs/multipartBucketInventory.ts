@@ -121,7 +121,9 @@ function observation(
       owner_key,blob_key,owner_id,state,first_seen_at,last_seen_at,epoch,last_round_id)
       VALUES(?,?,?,?,?,?,?,(SELECT id FROM users WHERE id=?),
       CASE WHEN EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id
-        WHERE b.r2_key=? AND u.r2_upload_id=?) THEN 'tracked' ELSE 'quarantined' END,
+        WHERE b.r2_key=? AND u.r2_upload_id=?)
+        OR EXISTS(SELECT 1 FROM copy_multipart_uploads m JOIN blobs b ON b.id=m.destination_blob_id
+          WHERE b.r2_key=? AND m.r2_upload_id=?) THEN 'tracked' ELSE 'quarantined' END,
       ${CLOCK},${CLOCK},?,?)
       ON CONFLICT(source,r2_key,r2_upload_id) DO UPDATE SET
         owner_id=COALESCE(multipart_bucket_handles.owner_id,excluded.owner_id),
@@ -139,6 +141,8 @@ function observation(
       owner,
       blob,
       owner,
+      upload.key,
+      upload.uploadId,
       upload.key,
       upload.uploadId,
       epoch,
