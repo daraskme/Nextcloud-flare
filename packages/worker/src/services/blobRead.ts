@@ -248,6 +248,16 @@ export async function streamBudgetedContentBlob(
     nodeId,
     purpose,
   );
+  return streamBudgetedBlobPlan(bucket, budgets, plan, request);
+}
+
+/** The caller supplies a plan from a current content-session/target/credential proof. */
+export async function streamBudgetedBlobPlan(
+  bucket: R2Bucket,
+  budgets: DurableObjectNamespace<BudgetDO>,
+  plan: ContentBlobPlan,
+  request: Request,
+): Promise<Response> {
   const bytes = reservedResponseBytes(plan.blob, request);
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
@@ -344,7 +354,8 @@ function responseHeaders(plan: BlobReadPlan, etag = plan.contentEtag): Headers {
   return new Headers({
     "Accept-Ranges": "bytes",
     "Cache-Control": "private, no-store",
-    "Content-Disposition": `${disposition}; filename*=UTF-8''${encodedName}`,
+    "Content-Disposition": `${disposition}; filename*=UTF-8''${encodedName}; filename="download"`,
+    "Content-Security-Policy": "default-src 'none'; sandbox; frame-ancestors 'none'",
     "Content-Type": plan.mime,
     ETag: etag,
     "Referrer-Policy": "no-referrer",

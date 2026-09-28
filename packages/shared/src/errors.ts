@@ -29,6 +29,7 @@ export function problem(status: number, code: PlatformErrorCode): Response {
     headers: {
       "Content-Type": "application/problem+json",
       "Cache-Control": "private, no-store",
+      "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     },
   });

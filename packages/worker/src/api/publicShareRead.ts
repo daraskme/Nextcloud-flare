@@ -1,5 +1,6 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { Principal } from "../auth/authorize";
+import { acceptContentTicket } from "../auth/contentAccept";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { Env } from "../env";
@@ -92,8 +93,11 @@ export async function publicShareTicket(
       return new Response(null, { status: 204, headers: HEADERS });
     }
     const input = (await readShareBody(request, 262144)) as Record<string, unknown>;
+    const appDelivery = input.delivery === "app";
     if (
-      Object.keys(input).some((key) => !["nodeIds", "ttlSeconds"].includes(key)) ||
+      Object.keys(input).some((key) => !["nodeIds", "ttlSeconds", "delivery"].includes(key)) ||
+      (input.delivery !== undefined &&
+        (!appDelivery || !new URL(request.url).pathname.endsWith("/content-session"))) ||
       !Array.isArray(input.nodeIds) ||
       input.nodeIds.length < 1 ||
       input.nodeIds.length > 1000 ||
@@ -104,6 +108,8 @@ export async function publicShareTicket(
       (input.ttlSeconds as number) > 600
     )
       return problem(400, "bad_request");
+    if (appDelivery && request.headers.get("Share-Session") !== session.claims.session_id)
+      return problem(412, "precondition_failed");
     const issued = await issueContentTicket(
       env,
       env.BLOBS,
@@ -113,6 +119,15 @@ export async function publicShareTicket(
       "content",
       Math.min(Date.now() + (input.ttlSeconds as number) * 1000, session.claims.exp * 1000),
     );
+    if (appDelivery) {
+      const accepted = await acceptContentTicket(env, tokens, issued.ticket);
+      // Do not put a content-host cookie on the app host, or expose a signed cookie to JS.
+      const { ticket: _ticket, ...receipt } = issued;
+      return Response.json(
+        { ...receipt, sessionId: accepted.sessionId },
+        { status: 201, headers: HEADERS },
+      );
+    }
     return Response.json(issued, { status: 201, headers: HEADERS });
   } catch (error) {
     const code = error instanceof Error ? error.message : "";

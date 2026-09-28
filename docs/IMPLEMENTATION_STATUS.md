@@ -1,6 +1,18 @@
 # 実装進捗
 
-## 公開共有からのごみ箱移動と所有者復元（今回）
+## 公開原本のGET/HEADと共通の配信会計（今回）
+
+`GET/HEAD /api/v1/public/shares/:id/content/:nodeId`を既存のcontent-session・target manifest・BudgetDO・期限付きストリームへ接続した。`POST .../content-session`の追加指定`delivery:"app"`で元のShare-Session/public CSRFを検査してD1セッションを発行し、署名ticket/Cookieを返さずselector IDを返す。GET/HEADは現在の共有Cookieと元Share-Session/Content-Sessionを両方要求し、別credential/purpose、manifest外node/blob、失効・期限・範囲外を拒否する。既存のcontent host配信と同じbyte/request/parallel枠を使い、HEAD/304/416も計上する。公開画面は既存のcontent host保存経路を継続する。共通原本応答へCSPとASCII fallback filenameを追加し、公開APIの拒否時もprivate/no-store・nosniff・no-referrerとHEAD本文なしを維持する。schema0065・通常76table・147 route、migration/依存追加なし。
+
+- 初回workerdは公開原本配信・公開閲覧・blob配信の3file/28件成功（21.97秒、/tmp/ncf-public-content-native.log）。新規17件でGET/HEAD/Range/304/416、範囲・元session・purpose・CSRF/Origin・ticket取消し・失効・親移動・snapshot直前owner変更、content hostとの共通会計、枠更新/parallel/request制限、取消し・R2不整合、HTML/SVG添付を検証した。
+- 期限切れと上書き後の旧manifest拒否も追加し、公開配信・既存content session/ticket/budget/lease/共通受付・unlock・公開編集/削除の10file/177件成功（154.53秒、/tmp/ncf-public-content-native-final.log）。新規公開配信は19件。初回の公開閲覧/blob配信11件と合わせ、重複を除く関連workerdは12file/188件成功。
+- 配信leaseのNode20件成功（334ms、/tmp/ncf-public-content-unit.log）。最終型、lint626file、契約/設定、Web build/Worker dry-runも成功（/tmp/ncf-public-content-types-final.log、/tmp/ncf-public-content-lint-final.log、/tmp/ncf-public-content-contracts.log、/tmp/ncf-public-content-config.log、/tmp/ncf-public-content-build-final.log）。
+- 関連browser9file/27件成功（4.1分、/tmp/ncf-public-content-browser.log）。新規1件はAccessなしのbrowserからapp配信セッションを発行し、実HTTPのHEAD/Range/304・元share-session不一致・ticket取消し後の拒否とprivate/no-store・no-referrerを検証。公開unlock/編集/削除/upload/所有者管理、Filesと内部共有の保存、Unicode filenameを含む既存動作も成功した。最終確認で共通problemにもno-referrerを追加し、handler到達前の設定不備・停止応答へ適用した。変更後の型/lint/buildも成功。
+- 先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は、2026-09-29 01:43 JSTの確認でUbuntu・Windows1/4〜3/4・Windows全Node・browser・backup bindingsの7job成功、Windows4/4とbackup CLIが実行中。前回失敗したbrowserとWindows1/4の完走は確認できたが、全CI成功とは扱わない。
+
+**Node20 + 関連workerd188 + 関連browser27 = 235件成功**。全Node/全workerd/全browserとbackup drillは今回ローカル再実行していない。次は単一host構成のルーティングとupload-only。thumb/page/track、ZIP/media、復旧/運用・最大規模・実環境検証も後続。APP_ORIGINとCONTENT_ORIGINを同じ値にすると現行index.tsがapp pathも先にcontent routerへ渡すため、単一hostを完成扱いにしない。remote resource/secret/migration/deployなし。
+
+## 公開共有からのごみ箱移動と所有者復元（前回）
 
 公開DELETEと確認画面を既存13段階のtrash mutationへ接続した。確認時のrevision、元share/session/epoch/keyを固定し、共有root・範囲外・read権限・DAV lock・1,000件超を拒否する。匿名activityとtrashのactorはnullで、元のoperation/credentialへ帰属を保存する。所有者の既存ごみ箱から一覧・復元・完全削除できる。応答不明時は自動再送せず、Operation-IdがあればGET、なければ元の要求を明示的に再送する。編集操作の追跡は画面内だけで、reload後の復元は未実装。migration0065で既存trashのデータ・参照・凍結guardを保持してactorをnullableにした。通常76table・147 route、依存追加なし。
 

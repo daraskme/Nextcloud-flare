@@ -1,4 +1,5 @@
 import { type Browser, expect, type Page, test } from "@playwright/test";
+import { searchFiles } from "./fileHelpers";
 
 test.setTimeout(180000);
 async function anonymousContext(browser: Browser, mobile = false) {
@@ -30,6 +31,7 @@ async function ownerLink(page: Page, fileOnly = false) {
   await page.getByLabel("名前", { exact: true }).fill(name);
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await searchFiles(page, name);
   await page.getByRole("button", { name: `${name} フォルダー`, exact: true }).click();
   await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   const chooser = page.waitForEvent("filechooser");
@@ -165,6 +167,85 @@ test("public build opens in two anonymous tabs, keeps its capability out of URLs
     ).toBeVisible();
     await expect(two.getByText("共有メモ.txt", { exact: true })).toHaveCount(0);
     expect(errors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("anonymous app delivery counts HEAD, Range and 304 and cannot outlive its ticket", async ({
+  page,
+  browser,
+}) => {
+  const link = await ownerLink(page, true);
+  const context = await anonymousContext(browser);
+  try {
+    const guest = await context.newPage();
+    await guest.goto(`https://app.ncf.test:8879/s/${link.id}#${link.secret}`);
+    await openShared(guest, "共有🔑");
+    const result = await guest.evaluate(async (id) => {
+      const base = `/api/v1/public/shares/${id}`;
+      const root = await fetch(base).then((r) => r.json());
+      const { token } = await fetch(`${base}/csrf`, { method: "POST" }).then((r) => r.json());
+      const created = await fetch(`${base}/content-session`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": token,
+          "Share-Session": root.sessionId,
+        },
+        body: JSON.stringify({ nodeIds: [root.root.id], ttlSeconds: 300, delivery: "app" }),
+      });
+      if (created.status !== 201) throw new Error(`public_delivery_${created.status}`);
+      const saved = await created.json();
+      const headers = { "Share-Session": root.sessionId, "Content-Session": saved.sessionId };
+      const url = `${base}/content/${root.root.id}`;
+      const head = await fetch(url, { method: "HEAD", headers });
+      const partial = await fetch(url, { headers: { ...headers, Range: "bytes=0-5" } });
+      const text = await partial.text();
+      const unchanged = await fetch(url, {
+        headers: { ...headers, "If-None-Match": head.headers.get("ETag")! },
+      });
+      const wrong = await fetch(url, { headers: { ...headers, "Share-Session": "another" } });
+      const cancelled = await fetch(`${base}/tickets/${saved.ticketId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+      });
+      const after = await fetch(url, { method: "HEAD", headers });
+      return {
+        head: head.status,
+        headBody: await head.text(),
+        length: head.headers.get("Content-Length"),
+        partial: partial.status,
+        range: partial.headers.get("Content-Range"),
+        text,
+        unchanged: unchanged.status,
+        wrong: wrong.status,
+        cancelled: cancelled.status,
+        after: after.status,
+        noTicket: !("ticket" in saved),
+        noCookie: created.headers.get("Set-Cookie") === null,
+        privacy: [head, partial, unchanged, wrong, after].every(
+          (r) =>
+            r.headers.get("Cache-Control") === "private, no-store" &&
+            r.headers.get("Referrer-Policy") === "no-referrer",
+        ),
+      };
+    }, link.id);
+    expect(result).toEqual({
+      head: 200,
+      headBody: "",
+      length: "22",
+      partial: 206,
+      range: "bytes 0-5/22",
+      text: "Public",
+      unchanged: 304,
+      wrong: 412,
+      cancelled: 204,
+      after: 404,
+      noTicket: true,
+      noCookie: true,
+      privacy: true,
+    });
   } finally {
     await context.close();
   }

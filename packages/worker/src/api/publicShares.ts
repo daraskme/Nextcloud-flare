@@ -15,6 +15,7 @@ import {
   unlockShare,
 } from "../services/shareUnlock";
 import { hasEmptyBody } from "./emptyBody";
+import { publicShareContent } from "./publicShareContent";
 import {
   PUBLIC_OPERATION,
   publicOperationRoute,
@@ -26,7 +27,7 @@ import { readShareBody } from "./shares";
 import { handleUploadHttp, publicUploadRoute } from "./uploads";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|content\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -48,6 +49,7 @@ export const publicShareRoute = (request: Request) => {
     publicUploadRoute(request) ||
     (!!match &&
       ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
+        (["GET", "HEAD"].includes(request.method) && action.startsWith("content/")) ||
         (request.method === "POST" &&
           ["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action)) ||
         (request.method === "PATCH" && action.startsWith("nodes/")) ||
@@ -81,6 +83,23 @@ export async function handlePublicShareHttp(
   epoch: number,
   dependencies: PublicShareDependencies,
 ): Promise<Response> {
+  const response = await routePublicShareHttp(request, env, epoch, dependencies);
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(HEADERS)) headers.set(key, value);
+  if (request.method === "HEAD") void response.body?.cancel().catch(() => undefined);
+  return new Response(request.method === "HEAD" ? null : response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+async function routePublicShareHttp(
+  request: Request,
+  env: Env,
+  epoch: number,
+  dependencies: PublicShareDependencies,
+): Promise<Response> {
   const url = new URL(request.url),
     match = ROUTE.exec(url.pathname),
     operation = publicOperationRoute(request) ? PUBLIC_OPERATION.exec(url.pathname) : null;
@@ -99,7 +118,7 @@ export async function handlePublicShareHttp(
       return problem(400, "bad_request");
     if (
       (request.headers.get("Origin") !== env.APP_ORIGIN &&
-        !(request.method === "GET" && request.headers.get("Origin") === null)) ||
+        !(["GET", "HEAD"].includes(request.method) && request.headers.get("Origin") === null)) ||
       request.headers.get("Sec-Fetch-Site") !== "same-origin"
     )
       return problem(403, "forbidden");
@@ -123,6 +142,12 @@ export async function handlePublicShareHttp(
         )
           throw error;
       }
+    }
+    if (action.startsWith("content/")) {
+      if (!session) return problem(401, "unauthorized");
+      if (request.headers.get("Share-Session") !== session.claims.session_id)
+        return problem(412, "precondition_failed");
+      return publicShareContent(request, env, session, action.slice(8));
     }
     if (operation || upload || action === "nodes" || action.startsWith("nodes/")) {
       if (!session) return problem(401, "unauthorized");

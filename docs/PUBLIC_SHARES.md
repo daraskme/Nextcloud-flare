@@ -1,6 +1,6 @@
 # 公開リンク共有
 
-更新: 2026-09-29。schema0065・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。upload-only・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-29。schema0065・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketと公開GET/HEADによる原本配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。upload-only・thumb・ZIP・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
@@ -54,6 +54,18 @@ public CSRF付き`POST .../:id/tickets`と`POST .../:id/content-session`はnodeI
 
 同じタブで末尾だけが異なるURLを開く場合、ブラウザーはdocumentを再読込みしないことがある。hashchangeでもfragmentを消去し、進行中の旧clientを中止してpassword・root・一覧を新しいcomponentへ切り替える。再発行前後のリンクを開き直す際も、古い認証表示を流用しない。
 
+## 公開APIからの原本GET/HEAD
+
+`POST .../:id/content-session`に`{nodeIds,ttlSeconds,delivery:"app"}`を指定すると、現在のpublic CSRFと元の`Share-Session`を検査し、既存のtarget manifest・ticket・D1 content sessionを発行する。応答は`{sessionId,ticketId,targetSetId,budgetId,expiresAt}`で、署名ticketや署名Cookieを返さず、app hostにcontent host用Cookieを設定しない。`delivery`省略時は従来どおりcontent hostへ交換するticketを返す。`/tickets`ではこの追加指定を受け付けない。
+
+`GET/HEAD .../:id/content/:nodeId`は、現行共有Cookie・元の`Share-Session`と、上のIDを指定する`Content-Session`ヘッダーが必要。IDは配信対象を選ぶための値で、それだけでは認証できない。queryへの搬送を禁止し、same-originのFetch MetadataとOriginを検査する。GET/HEADでOriginが省略されるブラウザーの同一origin要求も扱う。別share/別unlock credential・private session・purpose違い・manifestにないnode/blobを拒否する。共有範囲・rootからspace rootまでの生存状態・owner・version・epoch・session/ticketの失効と期限を、blobを解決するD1 batchでも確認する。
+
+content hostの配信と同じBudgetDO・lease・ストリーム処理を使う。元の匿名credentialの`s:<shareId>:c:<unlockId>`へ会計し、session更新・別タブ・配信hostの切替で使用量をリセットしない。対象bytesの3倍、10分に1,024 request、同時8本を共通に適用する。HEAD/304/416も1 requestを計上し、本文bytesは0。単一Rangeは206、If-Range不一致と無視するmulti-rangeは全体bytesを先に予約する。GET/HEADのたびにticket/session/manifestを新規作成しない。
+
+上書き後は元manifestのblobと一致しないため旧セッションで新しい本文や304を返さず、現行内容を対象に再発行する。ticket取消し・logout・共有変更・owner停止・祖先trash・範囲外への移動後も拒否する。R2不在・世代不一致は503。本文開始前の既知失敗は0byte、途中の取消し・結果不明は全予約bytesを保持し、配信期限は既存leaseへ従う。
+
+原本の共通応答に`default-src 'none'; sandbox; frame-ancestors 'none'`のCSPと安全なASCII fallback filenameを付ける。HTML/SVGはattachment、元のUnicode名はfilename*を使用する。公開APIの成功/拒否すべてにprivate/no-store・nosniff・no-referrerを付け、HEADのエラーも本文なしにする。公開画面の「開く・保存」は従来のcontent host Cookie経路を使い、大きなfileをブラウザーで一括bufferする経路は追加しない。thumb・page・track・ZIPはそれぞれの派生処理とpurpose検証を接続する必要がある。
+
 ## 公開フォルダー作成と名前変更
 
 `POST .../:id/nodes`は`{kind:"folder",parentId,name}`、`PATCH .../:id/nodes/:nodeId`は`{name}`だけを受ける。space/owner/share/credentialやDAV lock tokenを本文から指定できない。8KiB/5秒以内のJSON、exact Origin/same-origin、現行Cookieとpublic CSRF、`Idempotency-Key`を必須とする。さらにroot GETが返す非秘密の`sessionId`を`Share-Session`ヘッダーへ指定する。別タブの再認証でCookieが別credentialへ変わったら412として、旧keyを新credentialの新規操作にしない。
@@ -102,10 +114,12 @@ root GETの`permissions.upload/overwrite`に従ってファイル選択と上書
 
 ## 次の接続と完了条件
 
-1. 残る専用配信経路とupload-onlyを接続する。公開create/rename/deleteのreload後の操作追跡も残る。
+1. upload-onlyを接続する。公開create/rename/deleteのreload後の操作追跡も残る。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
-3. public側の直接content/thumbなど、未接続の専用配信経路を契約へつなぐ。現在の画面の保存経路はcontent ticket/session経由である。
+3. public側のthumb/page/trackなど、未接続の派生配信経路を契約へつなぐ。原本GET/HEAD APIは接続済みで、画面の保存経路はcontent hostのticket/session経由である。
 4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。
+
+現行のWorker入口はCONTENT_ORIGINと一致すると先にcontent routerへ渡すため、APP_ORIGINとCONTENT_ORIGINを同じ値にする構成は未接続。設計§8.2/§10.4の単一host対応には、配信pathとapp pathの分岐、private/public asset境界、CookieとCSP、browserの検証が必要である。今回の原本GET/HEADは、別々のoriginを使う現行構成で検証している。
 5. stagingでAccess Bypass、Cookie、CORS、鍵切替、KDF予算、実配信を検証する。
 
 検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。全体の残件は[CURRENT_STATE](CURRENT_STATE.md)。
