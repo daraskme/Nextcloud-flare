@@ -9,7 +9,7 @@ import { foundationFixture } from "./foundation";
 import { mutationEnv } from "./mutationAdmission";
 import { admitted } from "./uploadEnv";
 
-export async function copyJobFixture(empty = false, body?: Uint8Array) {
+export async function copyJobSetup(empty = false, body?: Uint8Array) {
   const size = body?.byteLength ?? (empty ? 0 : 3);
   const source = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   const target = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -104,7 +104,6 @@ export async function copyJobFixture(empty = false, body?: Uint8Array) {
     ).toBe("sent");
     return { id: result.operation.result.jobId, outboxId };
   };
-  const job = await enqueue();
   return {
     source,
     target,
@@ -113,11 +112,14 @@ export async function copyJobFixture(empty = false, body?: Uint8Array) {
     share,
     session,
     request,
-    job,
     enqueue,
     revoke: () => updateInternalShare(mutationEnv(), session, share.id, share.version, null),
     range: { blobId: source.ids.blob, offset: 0, length: size },
   };
+}
+export async function copyJobFixture(empty = false, body?: Uint8Array) {
+  const f = await copyJobSetup(empty, body);
+  return { ...f, job: await f.enqueue() };
 }
 export function copyReaderEnv(get = vi.fn(env.BLOBS.get.bind(env.BLOBS)), db = env.DB) {
   return { ...mutationEnv(db), BLOBS: { get } as unknown as R2Bucket };

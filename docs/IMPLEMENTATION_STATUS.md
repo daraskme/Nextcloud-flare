@@ -3,7 +3,9 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-先行8dd74ecの[CI36394122457](https://github.com/daraskme/Nextcloud-flare/actions/runs/36394122457)は終了し、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功しました。UbuntuのNode1,436件と全workerd137file/3,093件の成功もログで確認済みです。直前81e9f01の[CI36396573483](https://github.com/daraskme/Nextcloud-flare/actions/runs/36396573483)は終了し、Ubuntu・Windows分割1/4と3/4・browser・backup bindings/cliが成功しました。Windows2/4はQueue再開1件（796/797件成功）、4/4はexecutor3件（811/814件成功）が失敗しました。25秒で正常にyieldしても固定件数を要求していたため、今回、時間による中断後の再開と重複PUT防止を検証する形へ修正し、D1/R2予算境界は少量の実転送で独立に再現します。製品の期限・上限は維持しています。今回の変更のCIはpush後に確認します。
+直前0b85355の[CI36400478502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36400478502)は、確認時点でUbuntu・Windows分割1/4〜3/4・browser・backup bindings/cliの7jobが成功し、Windows4/4は実行中です。今回のAPI変更のCIはpush後に確認します。
+
+先行8dd74ecの[CI36394122457](https://github.com/daraskme/Nextcloud-flare/actions/runs/36394122457)は終了し、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功しました。UbuntuのNode1,436件と全workerd137file/3,093件の成功もログで確認済みです。直前81e9f01の[CI36396573483](https://github.com/daraskme/Nextcloud-flare/actions/runs/36396573483)は終了し、Ubuntu・Windows分割1/4と3/4・browser・backup bindings/cliが成功しました。Windows2/4はQueue再開1件（796/797件成功）、4/4はexecutor3件（811/814件成功）が失敗しました。25秒で正常にyieldしても固定件数を要求していたため、0b85355で時間による中断後の再開と重複PUT防止を検証する形へ修正し、D1/R2予算境界は少量の実転送で独立に再現しています。製品の期限・上限は維持しています。今回の変更のCIはpush後に確認します。
 
 CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は終了しました。Ubuntu・Windows分割2/4・4/4・browser・backupのbindings/cliは成功、Windows分割1/4は30分のjob上限でcancelled（annotation確認）、3/4はcopy-executionのepoch変更試験の準備中にfixture_copy_failedで失敗しました（Node1,431件成功、integration717/718件成功）。SQLエラーと受付outcomeの診断はef5ee58へ追加済みですが、原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はUbuntu・Windows3分割・browser・backupの全6job成功です。ef5ee58の[CI36389252207](https://github.com/daraskme/Nextcloud-flare/actions/runs/36389252207)は終了し、Windows4分割・browser・backupのbindings/cliが成功しました。Ubuntuは全Node1,431件成功、integration3,046/3,047件成功で、control-restore-domainのfixtureがdispatch_before<=started_at+5000制約に違反しました。開始と期限でDate.now()を別々に取得していたため、8dd74ecで同じ開始値へ統一しました。製品の期限・assertionは維持しています。fdc7abaの[CI36390929822](https://github.com/daraskme/Nextcloud-flare/actions/runs/36390929822)は終了し、Windows4分割・browser・backupのbindings/cli成功、Ubuntu失敗です。UbuntuはNode1,431件成功、integration3,066/3,067件成功で、control-restore-gcの同じ時刻fixture問題でした。8dd74ecでこちらも同じ開始値へ統一しました。
 
@@ -22,6 +24,15 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- 所有者間コピーのREST受付・read/cancelを既存147 routeへ接続。POST copyのdestinationで両側のshare選択を区別し、別spaceはcopy.enqueueの202/Location/Operation-Id、同一spaceは同期COWを返す。8 KiBのJSON、Access/CSRF、idempotency intent、元actor/credential、現在の両側権限を維持する。schema0060・75table・依存は変更しない。
+- GET jobは固定manifest/checkpointからcompletedBlobs/completedBytes/totalBytesを返す。停止後の精算待ちと保持容量、公開先IDを区別する。公開済みoverwriteの旧targetをliveとして要求せず、成功receiptと公開nodeの現行認可を検査する。認可snapshotとstatusの同時検査で公開競合を拒否し、取消より公開が先なら409を返す。取消の再送やACK喪失でも未証明の保持は返さない。
+- 新規workerdの初回は20/25件成功（23.00秒、/tmp/ncf-copy-http-native-initial.log）。COWの検索行、overwriteの物理観測がfixtureに不足し、共有選択へ更新結果の余分なfieldを渡し、別keyを設定するfixtureが大小文字違いのIdempotency-Keyを重複させていた。検索/観測を準備し、id/versionだけを渡し、Headers.setで上書きするよう修正。2回目26/27件（19.17秒）の残り1件も重複headerの修正で解消した。製品の制約は緩めていない。
+- 最終の新規workerd27件成功（18.56秒、/tmp/ncf-copy-http-native-complete.log）。受付→Outbox/Queue→公開、同期COW、両側の共有選択/失効、別actor/credential、CSRF/不正JSON/8 KiB制限、取消再送と精算待ち、受付/取消ACK喪失、503 Operation-Idと再照会、multipart進捗、overwrite後照会、公開競合、公開先の共有範囲外移動、未知native保持、実Access JWT/CSRF入口を検証。
+- 全Node79file/1,463件成功（78.63秒、/tmp/ncf-copy-http-node-full.log）。既存workerd9file/237件成功（188.49秒、/tmp/ncf-copy-http-native-regression.log）：copy-lifecycle/jobs/queue/publication、rename-node/fs-mutation/selected-share-writes/content-ticket/multipart-httpを検証。新規27件を合わせてworkerd10file/264件、**全Node1,463 + 関連workerd264 = 1,727件成功**。
+- 最終型・lint549file・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-copy-http-types-verified.log、/tmp/ncf-copy-http-lint-final.log、/tmp/ncf-copy-http-contracts.log、/tmp/ncf-copy-http-config.log、/tmp/ncf-copy-http-build.log。更新資料のlocal link197件とgit diff --checkも成功。全workerd/browser/実Wranglerドリルは今回ローカルでは再実行していない。UIの宛先選択/ジョブ表示、retry/DLQ、未知nativeの修復、最大規模/実環境検証は未完了。remote migration/deployなし。
+
+### 先行する残り予算の下限判定
 
 - [コピーの残り予算](COPY_JOBS.md)を下限で判定するSQLを追加。BRIEF §8の200 invocation / 20,000 R2 callを維持し、未着手blobは最大90 MiB part、既存multipartは固定geometryで計算する。未prepare partにはGET/書込み、未着手/未completeには必須の段階を数えるが、prepare済みnativeの遅延観測を新規call必須とは扱わない。
 - 残りR2、残りinvocation×112 call、残りinvocation×64段階のいずれにも入らないjobを追加転送前に停止する。生きたleaseは停止しない。migration0060の停止triggerとexecutor/Cronが同じ述語を使い、競合を確定batchで再検査する。全storedのjobは20,000 callでも残りinvocationでDB-onlyのcheckpoint/公開を続行できる。75table、既存row/column、保持/終了証明、25秒/10回の無進捗制限は維持する。

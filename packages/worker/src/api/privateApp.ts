@@ -14,6 +14,7 @@ import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
+import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -43,6 +44,7 @@ export function privateAppRoute(request: Request): boolean {
     statsRoute(request) ||
     trashRoute(request) ||
     nodeMutationRoute(request) ||
+    copyJobRoute(request) ||
     appPasswordRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
@@ -82,6 +84,7 @@ export async function handlePrivateAppHttp(
   const stats = statsRoute(request);
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
+  const copyJob = copyJobRoute(request);
   const appPassword = appPasswordRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
@@ -97,6 +100,7 @@ export async function handlePrivateAppHttp(
     !stats &&
     !trashRead &&
     !nodeMutation &&
+    !copyJob &&
     !appPassword &&
     !share &&
     !upload &&
@@ -139,6 +143,18 @@ export async function handlePrivateAppHttp(
     }
   }
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
+  if (copyJob)
+    return handleCopyJobHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+    );
   if (share)
     return handleShareHttp(request, env, session, dependencies.csrf, dependencies.listCursors);
   if (stats)

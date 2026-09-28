@@ -70,7 +70,7 @@ export interface TrashPage {
 export interface Operation {
   id: string;
   state: "claimed" | "committed" | "failed";
-  result: { nodeId?: string; status?: number } | null;
+  result: { nodeId?: string; jobId?: string; status?: number } | null;
   errorCode?: string;
 }
 export interface Part {

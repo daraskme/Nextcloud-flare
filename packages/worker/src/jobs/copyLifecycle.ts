@@ -1,4 +1,6 @@
-import type { Principal } from "../auth/authorize";
+import type { CopyJobStatus } from "../../../shared/src/copyJobs";
+import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import { destinationPrincipal } from "../auth/transferScope";
 import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import {
   assertExists,
@@ -23,37 +25,74 @@ import { loadCopyJobManifest } from "./copyManifest";
 
 const CLOCK = "strftime('%s','now')*1000";
 type StopReason = "copy_cancelled" | "copy_expired" | "stale_epoch" | "copy_budget_exhausted";
-export interface CopyJobStatus {
-  id: string;
-  state: "pending" | "running" | "completed" | "cancelled" | "failed";
-  nodeCount: number;
-  blobCount: number;
-  cleanupPending: number;
-  heldBytes: number;
-  errorCode: string | null;
-  publishedRootId: string | null;
-}
+
+export type { CopyJobStatus } from "../../../shared/src/copyJobs";
+
+type StatusRow = Omit<CopyJobStatus, "completedBlobs" | "completedBytes" | "totalBytes"> & {
+  checkpoint: string | null;
+};
 const statusQuery = (id: string): SqlStatement => ({
-  sql: `SELECT j.id,j.state,j.node_count AS nodeCount,j.blob_count AS blobCount,
+  sql: `SELECT j.id,j.state,j.checkpoint,j.node_count AS nodeCount,j.blob_count AS blobCount,
     CASE WHEN j.state IN ('cancelled','failed') THEN (SELECT COUNT(*) FROM copy_job_blobs WHERE job_id=j.id) ELSE 0 END AS cleanupPending,
     COALESCE((SELECT SUM(r.bytes) FROM copy_job_blobs cb JOIN reservations r ON r.id=cb.reservation_id WHERE cb.job_id=j.id),0) AS heldBytes,
     j.error_code AS errorCode,j.published_root_id AS publishedRootId FROM bulk_jobs j WHERE j.id=? AND j.kind='node.copy'`,
   values: [id],
 });
 async function authority(db: D1Database, principal: Principal, id: string) {
+  if (principal.kind !== "user") throw new Error("authorization_denied");
+  // Reject foreign/missing references before reading the potentially large manifest.
+  const identity = await primary(db)
+    .prepare(`SELECT j.state,j.published_root_id FROM bulk_jobs j
+    JOIN operations o ON o.op_id=j.op_id WHERE j.id=? AND j.kind='node.copy'
+    AND o.kind='copy.enqueue' AND o.principal_kind='user' AND o.principal_id=?
+    AND o.credential_id=? AND j.credential_id=o.credential_id`)
+    .bind(id, principal.user_id, principal.credential_id)
+    .first<{ state: string; published_root_id: string | null }>();
+  if (!identity) throw new Error("authorization_denied");
   const { plan } = await loadCopyJobManifest(db, id);
   if (
-    principal.kind !== "user" ||
     plan.principal.kind !== "user" ||
     principal.user_id !== plan.principal.user_id ||
     principal.credential_id !== plan.principal.credential_id
   )
     throw new Error("authorization_denied");
-  const statements = await copyAuthorityStatements(db, {
+  const current = {
     ...plan,
     principal: { ...plan.principal, epoch: principal.epoch },
+  };
+  const statements = await copyAuthorityStatements(db, {
+    ...current,
+    // The validated publication receipt accounts for its now-trashed overwrite.
+    overwrite: identity.state === "completed" ? null : plan.overwrite,
   });
-  return { plan, statements };
+  if (identity.state === "completed") {
+    if (!identity.published_root_id) throw new Error("copy_job_unavailable");
+    const visible = await authorizeNode(
+      db,
+      destinationPrincipal(current.principal, plan.destination),
+      {
+        operation: "node.read",
+        spaceId: plan.destination.spaceId,
+        nodeId: identity.published_root_id,
+        ownerOnly: plan.destination.share === null,
+      },
+    );
+    statements.push(
+      authorizationAssertion(visible),
+      assertExists(
+        "SELECT 1 FROM bulk_jobs WHERE id=? AND state='completed' AND published_root_id=?",
+        [id, identity.published_root_id],
+      ),
+    );
+  }
+  return {
+    plan,
+    statements,
+    snapshot: assertExists(
+      "SELECT 1 FROM bulk_jobs WHERE id=? AND state=? AND published_root_id IS ?",
+      [id, identity.state, identity.published_root_id],
+    ),
+  };
 }
 
 /** Reauthorize both original operands and selections, including terminal receipt reads. */
@@ -62,11 +101,32 @@ export async function readCopyJob(
   principal: Principal,
   id: string,
 ): Promise<CopyJobStatus> {
-  const { statements } = await authority(db, principal, id);
-  const result = await atomicBatch(db, [...statements, statusQuery(id)]);
-  const status = result.at(-1)?.results[0] as unknown as CopyJobStatus | undefined;
-  if (!status) throw new Error("copy_job_unavailable");
-  return status;
+  const { plan, statements, snapshot } = await authority(db, principal, id);
+  const result = await atomicBatch(db, [...statements, snapshot, statusQuery(id)]);
+  const row = result.at(-1)?.results[0] as unknown as StatusRow | undefined;
+  if (!row) throw new Error("copy_job_unavailable");
+  const { checkpoint, ...status } = row;
+  const progress = checkpoint === null ? { v: 1, blob: 0, offset: 0 } : JSON.parse(checkpoint);
+  if (
+    progress?.v !== 1 ||
+    !Number.isSafeInteger(progress.blob) ||
+    progress.blob < 0 ||
+    progress.blob > plan.source.blobs.length ||
+    !Number.isSafeInteger(progress.offset) ||
+    progress.offset < 0 ||
+    progress.offset > (plan.source.blobs[progress.blob]?.size ?? 0) ||
+    (status.state === "completed" &&
+      (progress.blob !== plan.source.blobs.length || progress.offset !== 0))
+  )
+    throw new Error("copy_job_unavailable");
+  return {
+    ...status,
+    totalBytes: plan.transferBytes,
+    completedBlobs: progress.blob,
+    completedBytes: plan.source.blobs
+      .slice(0, progress.blob)
+      .reduce((sum, b) => sum + b.size, progress.offset),
+  };
 }
 
 function stopStatements(id: string, reason: StopReason, epoch: number): SqlStatement[] {
@@ -101,7 +161,7 @@ export async function cancelCopyJob(
   id: string,
 ): Promise<CopyJobStatus> {
   const { plan, statements } = await authority(env.DB, principal, id);
-  const status = await primary(env.DB).prepare(statusQuery(id).sql).bind(id).first<CopyJobStatus>();
+  const status = await primary(env.DB).prepare(statusQuery(id).sql).bind(id).first<StatusRow>();
   if (!status) throw new Error("copy_job_unavailable");
   if (status.state === "cancelled" || status.state === "failed")
     return readCopyJob(env.DB, principal, id);
@@ -117,6 +177,7 @@ export async function cancelCopyJob(
     ]);
   } catch (error) {
     const latest = await readCopyJob(env.DB, principal, id);
+    if (latest.state === "completed") throw new Error("copy_already_completed");
     if (latest.state !== "cancelled" && latest.state !== "failed") throw error;
   }
   return readCopyJob(env.DB, principal, id);

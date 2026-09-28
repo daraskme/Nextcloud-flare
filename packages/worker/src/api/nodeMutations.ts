@@ -2,15 +2,18 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { selectedShare } from "../../../shared/src/shares";
 import type { Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
+import { type TransferDestination, transferDestination } from "../auth/transferScope";
 import type { Env } from "../env";
 import { lookupOperation } from "../jobs/operations";
 import { copyNode } from "../services/copyNode";
+import { createCopyJob } from "../services/createCopyJob";
 import { createFolder } from "../services/createFolder";
 import { moveNode } from "../services/moveNode";
 import { purgeTrash } from "../services/purgeTrash";
 import { renameNode } from "../services/renameNode";
 import { restoreTrash } from "../services/restoreTrash";
 import { trashNode } from "../services/trashNode";
+import { readJsonObject } from "./jsonBody";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OPERATION = /^\/api\/v1\/operations\/(op_[a-f0-9]{64})$/;
@@ -18,7 +21,6 @@ const NODE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})$/;
 const NODE_TRANSFER = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})\/(move|copy)$/;
 const TRASH_RESTORE = /^\/api\/v1\/trash\/([A-Za-z0-9_-]{1,128})\/restore$/;
 const TRASH_PURGE = /^\/api\/v1\/trash\/([A-Za-z0-9_-]{1,128})\/purge$/;
-const MAX_BODY = 8192;
 
 function unknownOperation(id: string): Response {
   const response = problem(503, "commit_unknown");
@@ -39,37 +41,6 @@ export function nodeMutationRoute(request: Request): boolean {
     (request.method === "POST" && TRASH_PURGE.test(path)) ||
     (request.method === "GET" && OPERATION.test(path))
   );
-}
-
-async function readBody(request: Request): Promise<Record<string, unknown>> {
-  if (request.headers.get("Content-Type") !== "application/json" || !request.body)
-    throw new Error("invalid_body");
-  const reader = request.body.getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > MAX_BODY) throw new Error("invalid_body");
-      parts.push(next.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const part of parts) {
-    bytes.set(part, offset);
-    offset += part.byteLength;
-  }
-  const decoded: unknown = JSON.parse(
-    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
-  );
-  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded))
-    throw new Error("invalid_body");
-  return decoded as Record<string, unknown>;
 }
 
 function validLockTokens(value: unknown): value is string[] {
@@ -174,6 +145,7 @@ function transferBody(
   overwriteTargetId?: string;
   lockTokens: string[];
   depth: "0" | "infinity";
+  destination?: TransferDestination;
 };
 function transferBody(body: Record<string, unknown>, kind: "move" | "copy") {
   const lockTokens = body.lockTokens ?? [];
@@ -183,7 +155,7 @@ function transferBody(body: Record<string, unknown>, kind: "move" | "copy") {
     "name",
     "overwriteTargetId",
     "lockTokens",
-    ...(kind === "copy" ? ["depth"] : []),
+    ...(kind === "copy" ? ["depth", "destination"] : []),
   ];
   if (
     Object.keys(body).some((key) => !allowed.includes(key)) ||
@@ -198,6 +170,10 @@ function transferBody(body: Record<string, unknown>, kind: "move" | "copy") {
     (kind === "copy" && body.depth !== "0" && body.depth !== "infinity")
   )
     throw new Error(`invalid_${kind}_body`);
+  const destination =
+    kind === "copy"
+      ? transferDestination(body.destination as TransferDestination | undefined)
+      : undefined;
   return {
     spaceId: body.spaceId,
     destinationParentId: body.destinationParentId,
@@ -207,7 +183,36 @@ function transferBody(body: Record<string, unknown>, kind: "move" | "copy") {
       : {}),
     lockTokens,
     ...(kind === "copy" ? { depth: body.depth as "0" | "infinity" } : {}),
+    ...(destination ? { destination } : {}),
   };
+}
+
+async function copyTransfer(
+  env: Env,
+  principal: Principal,
+  requestId: string,
+  sourceNodeId: string,
+  input: ReturnType<typeof transferBody>,
+) {
+  const { spaceId, destination, ...fields } = input;
+  if (destination && destination.spaceId !== spaceId)
+    return createCopyJob(env, {
+      principal,
+      requestId,
+      sourceNodeId,
+      sourceSpaceId: spaceId,
+      destination,
+      ...fields,
+    });
+  return copyNode(env, {
+    principal,
+    requestId,
+    sourceNodeId,
+    spaceId,
+    destination,
+    operation: "node.copy",
+    ...fields,
+  });
 }
 
 /** Private REST bridge for the preexisting operation/permit mutation protocol. */
@@ -254,7 +259,7 @@ export async function handleNodeMutationHttp(
     return problem(400, "bad_request");
   let body: Record<string, unknown>;
   try {
-    body = await readBody(request);
+    body = await readJsonObject(request);
     if ("share" in body) {
       if (!folder && !rename && !trash && !transfer) throw new Error("invalid_share_selection");
       principal = { ...principal, selected_share: selectedShare(body.share) };
@@ -304,16 +309,30 @@ export async function handleNodeMutationHttp(
                     operation: "node.move",
                     ...transferBody(body, "move"),
                   })
-                : await copyNode(env, {
+                : await copyTransfer(
+                    env,
                     principal,
-                    requestId: key,
-                    sourceNodeId: transfer?.[1] ?? "",
-                    operation: "node.copy",
-                    ...transferBody(body, "copy"),
-                  });
+                    key,
+                    transfer?.[1] ?? "",
+                    transferBody(body, "copy"),
+                  );
     if (outcome.kind === "commit_unknown") return unknownOperation(outcome.operationId);
     const operation = outcome.operation;
     if (operation.state === "claimed") return unknownOperation(operation.id);
+    if (
+      operation.state === "committed" &&
+      operation.result?.status === 202 &&
+      operation.result.jobId
+    )
+      return Response.json(operation, {
+        status: 202,
+        headers: {
+          "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff",
+          Location: `/api/v1/jobs/${operation.result.jobId}`,
+          "Operation-Id": operation.id,
+        },
+      });
     if (operation.state === "committed")
       return Response.json(operation, {
         status: folder || transfer?.[2] === "copy" ? 201 : 200,
@@ -351,17 +370,29 @@ export async function handleNodeMutationHttp(
         "invalid_copy_body",
         "invalid_restore_body",
         "invalid_purge_body",
+        "invalid_transfer_scope",
+        "invalid_share_selection",
+        "invalid_copy_overwrite",
       ].includes(error.message)
     )
       return problem(400, "bad_request");
     if (error instanceof Error && error.message === "authorization_denied")
       return problem(404, "not_found");
     if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
-    if (error instanceof Error && error.message === "dav_transfer_too_large")
+    if (
+      error instanceof Error &&
+      ["dav_transfer_too_large", "copy_manifest_too_large"].includes(error.message)
+    )
       return problem(413, "payload_too_large");
     if (
       error instanceof Error &&
-      ["name_conflict", "dav_cross_space_move", "dav_cross_space_copy"].includes(error.message)
+      [
+        "name_conflict",
+        "dav_cross_space_move",
+        "dav_cross_space_copy",
+        "cross_owner_copy_required",
+        "copy_source_unavailable",
+      ].includes(error.message)
     )
       return problem(409, "conflict");
     return problem(503, "not_ready");

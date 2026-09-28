@@ -30,7 +30,7 @@ export interface CreateCopyJobRequest extends CopyPreparationInput {
   readonly requestId: string;
   readonly lockTokens: readonly string[];
 }
-/** Internal async acceptance. HTTP is enabled only once transfer/cleanup are connected. */
+/** Async acceptance shared by private REST and internal calls; publication has its own receipt. */
 export async function createCopyJob(
   env: Pick<Env, "DB" | "LOCKS">,
   input: CreateCopyJobRequest,
