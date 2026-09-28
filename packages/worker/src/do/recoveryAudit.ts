@@ -1,4 +1,5 @@
 import { type SelectedShareRecord, storedSelection } from "../auth/selectedShare";
+import { storedDestination, type TransferDestinationRecord } from "../auth/transferScope";
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
@@ -44,7 +45,7 @@ interface BlobRow {
   removed_at: number | null;
 }
 
-interface OutboxRow extends SelectedShareRecord {
+interface OutboxRow extends SelectedShareRecord, TransferDestinationRecord {
   outbox_id: string;
   kind: string;
   payload_ref: string;
@@ -269,6 +270,17 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
         WHERE o.selected_share_id IS NOT u.selected_share_id
           OR o.selected_share_version IS NOT u.selected_share_version))
+      AND NOT EXISTS(SELECT 1 FROM operations o WHERE
+        ((o.destination_share_id IS NULL)<>(o.destination_share_version IS NULL))
+        OR (o.destination_space_id IS NULL AND o.destination_share_id IS NOT NULL)
+        OR (o.destination_space_id IS NOT NULL AND (
+          o.kind NOT IN ('node.copy','node.move','dav.copy','dav.move') OR o.principal_kind NOT IN ('user','app_password')
+          OR o.destination_space_id<>o.space_id
+          OR (o.destination_share_id IS NOT NULL AND (length(o.destination_share_id) NOT BETWEEN 1 AND 128 OR o.destination_share_id GLOB '*[^A-Za-z0-9_-]*'))
+          OR NOT EXISTS(SELECT 1 FROM spaces sp WHERE sp.id=o.destination_space_id AND (
+            (o.destination_share_id IS NULL AND sp.owner_id=o.principal_id)
+            OR EXISTS(SELECT 1 FROM shares sh WHERE sh.id=o.destination_share_id AND sh.kind='internal' AND sh.owner_id=sp.owner_id
+              AND o.destination_share_version BETWEEN 1 AND sh.version AND o.destination_share_version<=9007199254740991))))))
       AND (c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
@@ -645,7 +657,7 @@ export async function inspectRecoveryPage(
     const rows = await primary(db)
       .prepare(`SELECT b.outbox_id,b.kind,b.payload_ref,b.state,b.epoch,b.dispatch_token,b.dispatch_expires_at,
         b.claim_token,b.claim_expires_at,o.state AS operation_state,o.epoch AS operation_epoch,
-        o.kind AS operation_kind,o.principal_kind,o.selected_share_id,o.selected_share_version,o.operands_json,o.result_json,
+        o.kind AS operation_kind,o.principal_kind,o.selected_share_id,o.selected_share_version,o.destination_space_id,o.destination_share_id,o.destination_share_version,o.operands_json,o.result_json,
         (SELECT s.affected_id FROM operation_steps s WHERE s.op_id=o.op_id
           AND s.kind='node' LIMIT 1) AS node_step_id
       FROM outbox b LEFT JOIN operations o ON o.op_id=b.op_id
@@ -686,8 +698,14 @@ export async function inspectRecoveryPage(
       )
         throw new Error("recovery_outbox_provenance_mismatch");
       try {
+        const destination = storedDestination(row);
         if (
-          storedSelection(row) &&
+          destination &&
+          !["node.copy", "node.move", "dav.copy", "dav.move"].includes(row.operation_kind ?? "")
+        )
+          throw new Error("recovery_outbox_provenance_mismatch");
+        if (
+          (storedSelection(row) || destination) &&
           row.principal_kind !== "user" &&
           row.principal_kind !== "app_password"
         )

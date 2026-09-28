@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)はUbuntu・Windows分割2/3・browser・backupの5job成功、Windows分割1は915/919件成功・4件失敗。multipart-bucket-inventoryの保存先照合で`r2_binding_verification_failed`となった。該当ケースは19〜29秒で失敗し、前後の同系統ケースは成功している。失敗jobの再実行では元の4件が通過したが、別のmultipart-bucket-admissionケースのfixture準備で同じ照合失敗が起き、918/919件成功・1件失敗。14.05秒で終了し、意図したlease失効の注入前に失敗している。WindowsのI/O・受付期限を含む切り分けは継続事項とし、productionの期限やテスト条件は緩めていない。先行a5c7aa0の[CI36351626854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36351626854)は全6job成功。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗job再実行後に全6job成功。初回Windowsのorphan-admission受付回数不一致と、21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)でのR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -13,10 +13,21 @@
 
 ## 今回の検証記録
 
+- [共有間のDAV転送](DAV_SHARED.md)を同一owner/spaceの別mountへ拡張。転送元と転送先の選択をoperation・digest・LockDO permit・claim・確定・結果照会・Outboxへ保持。COPYはread→edit、MOVEはedit→editを要求し、上書きも転送先で認可する。明示的な個人領域はactor所有に限定し、別grantへの暗黙の代替はしない。cross-owner COPYの非同期jobとAccessの共有間pickerは後続。
+- migration0051でdestination space/share ID/versionを追加し、不変tuple・種別・同一space・所有者の整合性を検査。旧データとNULL履歴・legacy digestを保つ。復旧では停止後の正常な過去versionを許可し、破損tupleを拒否する。69通常table、依存追加なし。
+- 新規workerd25ケースは両側の選択、再送の省略/差替え拒否、いずれかの共有停止、確定直前の停止、元/先のlock token、第三mountのIf拒否、permit差替え、claim proof、確定ACK喪失、COPY/MOVE上書きを対象にする。初回追加分は未完了claimの解放とR2未保存fixtureのHEADで2件失敗。操作をfailedへ片付け、実PUTから上書きを検証するfixtureに修正した。
+- 新規Node23ケースは移行前全tableデータ/FK保持、停止済みの履歴、不可変tuple、不正なpair/space/種別、STRICT整数検査、破損復旧記録、digest互換性と権限複製を対象にする。初回全Nodeはテスト中のmigration編集でbackup schema照合1件が失敗。次の固定実行は非整数fixtureをSQLite STRICTが拒否する期待の誤り2件が失敗し、fixtureを修正した。
+- 最終の全Node66file/1,361件成功（54.16s）、関連workerd16file/339件成功（142.08s）。新規25件に加えて既存DAV共有・app password・認可・operation・lock・選択付き更新・Outbox・namespace mutation・共有閲覧・復旧監査と受付を検証した。/tmp/ncf-transfer-scope-node-final-3.log、/tmp/ncf-transfer-scope-worker-final-2.log。
+- 型・lint494file・契約/設定・schema69table/FK graph・Web build/Worker dry-run成功。資料local link569件、git diff --check成功。remote migration/deployは未実施。/tmp/ncf-transfer-scope-types-final.log、/tmp/ncf-transfer-scope-build.log。
+- 新schemaで共有画面browser6件成功（1.5分）。受信者の閲覧/停止、直接fileの親情報遮蔽、再送/reload、multipart、上書き、move/copy/trashと所有者復元を確認。UI変更はなく全browser28件は再実行していない。既知の自己署名TLS probe診断は出るが全assertionは成功。/tmp/ncf-transfer-scope-browser.log。
+- 今回の最終検証は **全Node1,361 + 関連workerd339 + browser6 = 1,706件成功**。製品全体の完了ではなく継続目標を維持する。
+
+### 先行するDAV Sharedの検証
+
 - [内部共有のWebDAV](DAV_SHARED.md)を実装。固定mount一覧/解決、read/edit操作、root制限付き資格情報の非公開、各scopeと選択pairの維持、共有外ancestorのlock情報遮蔽に対応。異なるmount・個人領域との転送は403とし、二つの共有選択を扱う経路は後続。migration0050・69通常table、依存追加なし。
 - HTTP PUTのIf-Match/If-None-Match検査を追加し、直接file mountの保存名を保持。LOCKで作る空fileのR2 keyをownerへ修正。DAV upload元、operation、native R2 admission、LockDO intent、completion、Outboxと復旧監査に選択pairを接続。新規schema試験は旧DBの全tableデータ保持、NULL mount維持、歴史的DAV記録、pair差替え拒否を確認。
 - 初回の共有fixtureはapp ID形式・XML Content-Type・削除record・Outbox送信stateに誤りがあり修正。従来のDAV prepublication schemaがowner本人だけを要求していた箇所は0050で選択付き受信者に対応。全Node初回は1,337/1,338成功で、旧schema試験のapp password拒否期待を新仕様に更新。Node URL型のimportも修正。最終の全Node65file/1,338件は成功（51.27s）。/tmp/ncf-dav-shared-node-final.log。
-- 先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)はUbuntu・Windows分割1/3と3/3・browserが成功。Windows分割2/3は全Node1,325件成功後、orphan-admissionのgc-confirmで886件中1件失敗（受付回数3の期待に対して2）。backupも成功し全6job中5job成功。失敗したWindows分割2/3を同じコミットで再実行中です。productionの期限や検査は緩めていません。先行21cd396のR2保存先照合失敗も原因は未確定です。今回のpush/CIはgit statusとgh run listで確認します。
+- 先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)は初回5job成功、Windows分割2/3のorphan-admission受付回数3の期待に対し2で1件失敗。同じcommitの失敗job再実行で全6job成功。productionの期限や検査は緩めていない。
 
 - 最終の関連workerd18file/373件成功（164.54s）。新規共有DAV20件に加え、既存認可・app password・operation・lock・選択付きAccess更新・Outbox・DAV保存/回収/受付・復旧監査とControlDOを検証。前回Windows CIのorphan-admissionもローカルでは成功。LockDOのadmission_closed診断が1行出るが、全assertionと終了codeは成功。/tmp/ncf-dav-shared-worker-final.log。
 - 型・lint490file・契約/設定・生成schema69table/FK graph・Web build/Worker dry-run成功。今回の全workerd/Windowsはpush後のCIで確認する。remote migration/deployは未実施。/tmp/ncf-dav-shared-types-final.log、/tmp/ncf-dav-shared-lint-final.log、/tmp/ncf-dav-shared-build.log。

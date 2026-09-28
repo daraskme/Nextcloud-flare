@@ -12,6 +12,14 @@ import {
   type SelectedShareRecord,
   storedPrincipal,
 } from "../auth/selectedShare";
+import {
+  destinationPrincipal,
+  sameDestination,
+  storedDestination,
+  type TransferDestination,
+  type TransferDestinationRecord,
+  transferDestination,
+} from "../auth/transferScope";
 import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 
@@ -23,8 +31,9 @@ export interface OperationIntent {
   readonly kind: Operation;
   readonly digest: string;
   readonly operands: string;
+  readonly destination?: TransferDestination;
 }
-export interface OperationRow extends SelectedShareRecord {
+export interface OperationRow extends SelectedShareRecord, TransferDestinationRecord {
   op_id: string;
   principal_kind: Principal["kind"];
   principal_id: string;
@@ -97,8 +106,15 @@ export function operationDigest(
   kind: Operation,
   body: unknown,
   share?: SelectedShare,
+  destination?: TransferDestination,
 ) {
-  return digestJson({ spaceId, kind, body, ...(share ? { share } : {}) });
+  return digestJson({
+    spaceId,
+    kind,
+    body,
+    ...(share ? { share } : {}),
+    ...(destination ? { destination } : {}),
+  });
 }
 
 /** The key selects a credential-local slot; the entire canonical intent is compared separately. */
@@ -109,12 +125,27 @@ export async function operationIntent(
   kind: Operation,
   body: unknown,
   operands: Record<string, string>,
+  destination?: TransferDestination,
 ): Promise<OperationIntent> {
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new Error("invalid_idempotency_key");
   principal = freezePrincipal(principal);
+  destination = transferDestination(destination);
+  if (
+    destination &&
+    (!["node.copy", "node.move", "dav.copy", "dav.move"].includes(kind) ||
+      !["user", "app_password"].includes(principal.kind) ||
+      destination.spaceId !== spaceId)
+  )
+    throw new Error("invalid_transfer_scope");
   const actor = principalId(principal);
   const id = `op_${await digestJson([principal.kind, actor, principal.credential_id, key])}`;
-  const digest = await operationDigest(spaceId, kind, body, principalSelection(principal));
+  const digest = await operationDigest(
+    spaceId,
+    kind,
+    body,
+    principalSelection(principal),
+    destination,
+  );
   const encoded = canonicalJson(operands, 8192);
   return Object.freeze({
     id,
@@ -124,6 +155,7 @@ export async function operationIntent(
     kind,
     digest,
     operands: encoded,
+    ...(destination ? { destination } : {}),
   });
 }
 
@@ -137,6 +169,7 @@ export async function operationRow(db: D1Database, id: string): Promise<Operatio
 function sameIntent(row: OperationRow, intent: OperationIntent, steps: number): boolean {
   const share = principalSelection(intent.principal);
   return (
+    sameDestination(row, intent.destination) &&
     row.selected_share_id === (share?.id ?? null) &&
     row.selected_share_version === (share?.version ?? null) &&
     row.principal_kind === intent.principal.kind &&
@@ -168,7 +201,8 @@ export function assertOperationClaim(claim: OperationClaim): SqlStatement {
   return assertExists(
     `SELECT 1 FROM operations WHERE op_id=? AND state='claimed' AND credential_id=? AND credential_version IS ? AND principal_kind=? AND principal_id=?
     AND space_id=? AND kind=? AND request_digest=? AND epoch=? AND permit_id=? AND permit_expires_at=? AND claimed_expires_at=? AND expected_steps=? AND operands_json=?
-    AND selected_share_id IS ? AND selected_share_version IS ?`,
+    AND selected_share_id IS ? AND selected_share_version IS ?
+    AND destination_space_id IS ? AND destination_share_id IS ? AND destination_share_version IS ?`,
     [
       intent.id,
       intent.principal.credential_id,
@@ -186,6 +220,9 @@ export function assertOperationClaim(claim: OperationClaim): SqlStatement {
       intent.operands,
       share?.id ?? null,
       share?.version ?? null,
+      intent.destination?.spaceId ?? null,
+      intent.destination?.share?.id ?? null,
+      intent.destination?.share?.version ?? null,
     ],
   );
 }
@@ -258,6 +295,10 @@ export function validateClaimAuthorization(
       authorized.node.space_id === intent.spaceId);
   if (
     !targetMatches ||
+    (intent.destination &&
+      !selected &&
+      ("node" in authorized ? authorized.node.owner_id : authorized.parent.owner_id) !==
+        intent.principalId) ||
     selected?.id !== proved?.id ||
     selected?.version !== proved?.version ||
     authorized.principal.kind !== intent.principal.kind ||
@@ -286,23 +327,46 @@ export async function claimOperation(
   permit: Permit,
   authorized: AuthorizedNode,
   steps: number,
+  destinationProof?: AuthorizedNode,
 ): Promise<{ kind: "claimed"; claim: OperationClaim } | { kind: "terminal"; row: OperationRow }> {
   const authority = validateClaimAuthorization(intent, permit, authorized, steps);
   const share = principalSelection(intent.principal);
+  const destinationAuthorities: SqlStatement[] = [];
+  if (intent.destination) {
+    const target = destinationPrincipal(intent.principal, intent.destination),
+      selected = principalSelection(target);
+    const proved = destinationProof ? principalSelection(destinationProof.principal) : undefined;
+    if (
+      !destinationProof ||
+      destinationProof.operation !== "node.create" ||
+      destinationProof.parent.id !== JSON.parse(intent.operands).parentId ||
+      destinationProof.spaceId !== intent.destination.spaceId ||
+      principalId(destinationProof.principal) !== intent.principalId ||
+      destinationProof.principal.kind !== target.kind ||
+      destinationProof.principal.credential_id !== target.credential_id ||
+      destinationProof.principal.epoch !== target.epoch ||
+      selected?.id !== proved?.id ||
+      selected?.version !== proved?.version ||
+      (!selected && destinationProof.parent.owner_id !== intent.principalId)
+    )
+      throw new Error("invalid_operation_claim");
+    destinationAuthorities.push(authorizationAssertion(destinationProof));
+  } else if (destinationProof) throw new Error("invalid_operation_claim");
   const claim: OperationClaim = Object.freeze({ intent, permit, steps });
   const existing = await findOperationIntent(db, intent, steps);
   if (existing && existing.state !== "claimed") {
-    await atomicBatch(db, [authority]);
+    await atomicBatch(db, [authority, ...destinationAuthorities]);
     return { kind: "terminal", row: existing };
   }
   try {
     await atomicBatch(db, [
       assertOpenPermit(permit),
       authority,
+      ...destinationAuthorities,
       {
         sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,
-          permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,selected_share_id,selected_share_version,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000) ON CONFLICT(op_id) DO NOTHING`,
+          permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,selected_share_id,selected_share_version,destination_space_id,destination_share_id,destination_share_version,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?,?,?,?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000) ON CONFLICT(op_id) DO NOTHING`,
         values: [
           intent.id,
           intent.principal.kind,
@@ -320,6 +384,9 @@ export async function claimOperation(
           intent.operands,
           share?.id ?? null,
           share?.version ?? null,
+          intent.destination?.spaceId ?? null,
+          intent.destination?.share?.id ?? null,
+          intent.destination?.share?.version ?? null,
         ],
       },
       assertOperationClaim(claim),
@@ -328,11 +395,16 @@ export async function claimOperation(
     const current = await operationRow(db, intent.id);
     if (current && !sameIntent(current, intent, steps)) throw new Error("idempotency_conflict");
     if (current?.state === "claimed" && current.permit_id === permit.permit_id) {
-      await atomicBatch(db, [assertOpenPermit(permit), authority, assertOperationClaim(claim)]);
+      await atomicBatch(db, [
+        assertOpenPermit(permit),
+        authority,
+        ...destinationAuthorities,
+        assertOperationClaim(claim),
+      ]);
       return { kind: "claimed", claim };
     }
     if (current && current.state !== "claimed") {
-      await atomicBatch(db, [authority]);
+      await atomicBatch(db, [authority, ...destinationAuthorities]);
       return { kind: "terminal", row: current };
     }
     throw error;
@@ -379,6 +451,22 @@ export async function lookupOperation(
     return null;
   try {
     principal = storedPrincipal(principal, row);
+    const proofs: AuthorizedNode[] = [];
+    const prove = async (p: Principal, r: Parameters<typeof authorizeNode>[2]) => {
+      const proof = await authorizeNode(db, p, r);
+      proofs.push(proof);
+      return proof;
+    };
+    const destination = storedDestination(row);
+    if (
+      destination &&
+      (!["node.copy", "node.move", "dav.copy", "dav.move"].includes(row.kind) ||
+        destination.spaceId !== row.space_id)
+    )
+      return null;
+    const targetPrincipal = destinationPrincipal(principal, destination);
+    const sourceOwnerOnly = !!destination && !principalSelection(principal);
+    const targetOwnerOnly = !!destination && !destination.share;
     const operands = JSON.parse(row.operands_json) as {
       parentId?: unknown;
       uploadId?: unknown;
@@ -414,12 +502,14 @@ export async function lookupOperation(
     if (row.kind === "dav.copy" || row.kind === "node.copy") {
       if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
         return null;
-      await authorizeNode(db, principal, {
+      await prove(principal, {
+        ownerOnly: sourceOwnerOnly,
         operation: "node.read",
         nodeId: operands.sourceNodeId,
         spaceId: row.space_id,
       });
-      await authorizeNode(db, principal, {
+      await prove(targetPrincipal, {
+        ownerOnly: targetOwnerOnly,
         operation: "node.create",
         parentId: operands.parentId,
         spaceId: row.space_id,
@@ -431,13 +521,13 @@ export async function lookupOperation(
     ) {
       if (typeof operands.parentId !== "string") return null;
       if (row.kind === "node.purge")
-        await authorizeNode(db, principal, {
+        await prove(principal, {
           operation: "node.read",
           nodeId: operands.parentId,
           spaceId: row.space_id,
         });
       else
-        await authorizeNode(db, principal, {
+        await prove(principal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
@@ -461,19 +551,32 @@ export async function lookupOperation(
     } else if (["node.rename", "node.move", "dav.move", "node.restore"].includes(row.kind)) {
       if (typeof operands.parentId !== "string") return null;
       if (typeof operands.nodeId !== "string") return null;
-      const authorized = await authorizeNode(db, principal, {
-        operation: "node.rename",
-        nodeId: operands.nodeId,
-        spaceId: row.space_id,
-      });
-      if (principalSelection(principal) && ["node.move", "dav.move"].includes(row.kind)) {
+      const authorized = await prove(
+        destination && row.state === "committed" ? targetPrincipal : principal,
+        {
+          ownerOnly: destination && row.state === "committed" ? targetOwnerOnly : sourceOwnerOnly,
+          operation: "node.rename",
+          nodeId: operands.nodeId,
+          spaceId: row.space_id,
+        },
+      );
+      if (
+        (principalSelection(principal) || destination) &&
+        ["node.move", "dav.move"].includes(row.kind)
+      ) {
         if (typeof operands.sourceParentId !== "string") return null;
-        for (const parentId of [operands.sourceParentId, operands.parentId])
-          await authorizeNode(db, principal, {
-            operation: "node.create",
-            parentId,
-            spaceId: row.space_id,
-          });
+        await prove(principal, {
+          operation: "node.create",
+          parentId: operands.sourceParentId,
+          spaceId: row.space_id,
+          ownerOnly: sourceOwnerOnly,
+        });
+        await prove(targetPrincipal, {
+          operation: "node.create",
+          parentId: operands.parentId,
+          spaceId: row.space_id,
+          ownerOnly: targetOwnerOnly,
+        });
       }
       const expectedParent =
         ["node.move", "dav.move"].includes(row.kind) && row.state !== "committed"
@@ -483,14 +586,14 @@ export async function lookupOperation(
         return null;
     } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
       if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
-      await authorizeNode(db, principal, {
+      await prove(principal, {
         operation: "node.read",
         nodeId: operands.parentId,
         spaceId: row.space_id,
       });
     } else if (row.kind === "dav.put" || row.kind === "upload.complete") {
       if (typeof operands.nodeId === "string") {
-        const authorized = await authorizeNode(db, principal, {
+        const authorized = await prove(principal, {
           operation: "node.content.write",
           nodeId: operands.nodeId,
           spaceId: row.space_id,
@@ -502,7 +605,7 @@ export async function lookupOperation(
           return null;
       } else {
         if (typeof operands.parentId !== "string") return null;
-        await authorizeNode(db, principal, {
+        await prove(principal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
@@ -510,7 +613,7 @@ export async function lookupOperation(
       }
     } else {
       if (typeof operands.nodeId !== "string") return null;
-      await authorizeNode(db, principal, {
+      await prove(principal, {
         operation: "node.props.write",
         nodeId: operands.nodeId,
         spaceId: row.space_id,
@@ -554,7 +657,8 @@ export async function lookupOperation(
     let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
     if (result && typeof result.nodeId === "string") {
       try {
-        const proof = await authorizeNode(db, principal, {
+        const proof = await prove(targetPrincipal, {
+          ownerOnly: targetOwnerOnly,
           operation: "node.read",
           nodeId: result.nodeId,
           spaceId: row.space_id,
@@ -578,6 +682,7 @@ export async function lookupOperation(
             ].includes(row.error_code)
           ? row.error_code
           : "operation_failed";
+    if (destination) await atomicBatch(db, proofs.map(authorizationAssertion));
     return { id: row.op_id, state: row.state, errorCode, result: visible };
   } catch {
     return null;

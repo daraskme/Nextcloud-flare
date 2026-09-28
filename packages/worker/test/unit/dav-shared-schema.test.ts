@@ -74,6 +74,10 @@ it.each([false, true])("accepts historical selected DAV scope in recovery, bound
   migrate();
   if (bound) insertOperation();
   insertUpload(true, bound);
+  for (const file of readdirSync(directory)
+    .filter((f) => f.endsWith(".sql") && f > "0050_zz")
+    .sort())
+    db.exec(readFileSync(new URL(file, directory), "utf8"));
   expect(db.prepare(RECOVERY_FINAL_QUERY).get(1)).toBeTruthy();
   expect(() => db.exec("UPDATE uploads SET selected_share_version=2")).toThrow(
     "immutable_upload_share",

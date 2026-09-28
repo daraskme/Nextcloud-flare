@@ -8,7 +8,12 @@ import {
   hasBlockingTrashLocks,
   lockTokenHashes,
 } from "../auth/locks";
-import { principalSelection } from "../auth/selectedShare";
+import { freezePrincipal, principalSelection } from "../auth/selectedShare";
+import {
+  destinationPrincipal,
+  type TransferDestination,
+  transferDestination,
+} from "../auth/transferScope";
 import {
   assertMutationAdmission,
   commitMutationAdmission,
@@ -42,11 +47,13 @@ export interface RenamePermitRequest {
   lockTokens: readonly string[];
 }
 export interface MovePermitRequest extends RenamePermitRequest {
+  destination?: TransferDestination | undefined;
   destinationParentId: string;
   overwriteTargetId?: string;
   operation?: "node.move" | "dav.move";
 }
 export interface CopyPermitRequest extends CreatePermitRequest {
+  destination?: TransferDestination | undefined;
   sourceNodeId: string;
   overwriteTargetId?: string;
   operation?: "node.copy" | "dav.copy";
@@ -361,6 +368,16 @@ export class LockDO extends DurableObject<Env> {
   }
 
   async acquireMove(request: MovePermitRequest): Promise<Permit> {
+    request = {
+      ...request,
+      principal: freezePrincipal(request.principal),
+      destination: transferDestination(request.destination),
+    };
+    if (request.destination && request.destination.spaceId !== request.spaceId)
+      throw new Error("invalid_transfer_scope");
+    const targetPrincipal = destinationPrincipal(request.principal, request.destination);
+    const sourceOwnerOnly = !!request.destination && !principalSelection(request.principal);
+    const targetOwnerOnly = !!request.destination && !request.destination.share;
     this.#canonical(request.spaceId);
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
     const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
@@ -368,11 +385,13 @@ export class LockDO extends DurableObject<Env> {
       throw new Error("admission_closed");
     await this.#initialize(request.spaceId, status.epoch);
     const source = await authorizeNode(this.env.DB, request.principal, {
+      ownerOnly: sourceOwnerOnly,
       operation: "node.rename",
       nodeId: request.nodeId,
       spaceId: request.spaceId,
     });
-    const destination = await authorizeNode(this.env.DB, request.principal, {
+    const destination = await authorizeNode(this.env.DB, targetPrincipal, {
+      ownerOnly: targetOwnerOnly,
       operation: "node.create",
       parentId: request.destinationParentId,
       spaceId: request.spaceId,
@@ -380,7 +399,8 @@ export class LockDO extends DurableObject<Env> {
     if (source.operation !== "node.rename" || destination.operation !== "node.create")
       throw new Error("invalid_move_authorization");
     const overwrite = request.overwriteTargetId
-      ? await authorizeNode(this.env.DB, request.principal, {
+      ? await authorizeNode(this.env.DB, targetPrincipal, {
+          ownerOnly: targetOwnerOnly,
           operation: "node.trash",
           nodeId: request.overwriteTargetId,
           spaceId: request.spaceId,
@@ -432,6 +452,7 @@ export class LockDO extends DurableObject<Env> {
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
       ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
+      ...(request.destination ? [{ destination: request.destination }] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -461,6 +482,16 @@ export class LockDO extends DurableObject<Env> {
   }
 
   async acquireCopy(request: CopyPermitRequest): Promise<Permit> {
+    request = {
+      ...request,
+      principal: freezePrincipal(request.principal),
+      destination: transferDestination(request.destination),
+    };
+    if (request.destination && request.destination.spaceId !== request.spaceId)
+      throw new Error("invalid_transfer_scope");
+    const targetPrincipal = destinationPrincipal(request.principal, request.destination);
+    const sourceOwnerOnly = !!request.destination && !principalSelection(request.principal);
+    const targetOwnerOnly = !!request.destination && !request.destination.share;
     this.#canonical(request.spaceId);
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
     const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
@@ -468,17 +499,20 @@ export class LockDO extends DurableObject<Env> {
       throw new Error("admission_closed");
     await this.#initialize(request.spaceId, status.epoch);
     const source = await authorizeNode(this.env.DB, request.principal, {
+      ownerOnly: sourceOwnerOnly,
       operation: "node.read",
       nodeId: request.sourceNodeId,
       spaceId: request.spaceId,
     });
-    const destination = await authorizeNode(this.env.DB, request.principal, {
+    const destination = await authorizeNode(this.env.DB, targetPrincipal, {
+      ownerOnly: targetOwnerOnly,
       operation: "node.create",
       parentId: request.parentId,
       spaceId: request.spaceId,
     });
     const overwrite = request.overwriteTargetId
-      ? await authorizeNode(this.env.DB, request.principal, {
+      ? await authorizeNode(this.env.DB, targetPrincipal, {
+          ownerOnly: targetOwnerOnly,
           operation: "node.trash",
           nodeId: request.overwriteTargetId,
           spaceId: request.spaceId,
@@ -524,6 +558,7 @@ export class LockDO extends DurableObject<Env> {
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
       ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
+      ...(request.destination ? [{ destination: request.destination }] : []),
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",

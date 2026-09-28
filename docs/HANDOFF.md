@@ -25,21 +25,21 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[内部共有のWebDAV](DAV_SHARED.md)を接続しました。`/dav/Shared/`に固定mountを一覧し、共有内の読取り・PUT・MKCOL・PROPPATCH・COPY/MOVE/DELETE・LOCK/UNLOCKを扱います。root制限付きapp passwordはSharedを公開せず、資格情報scopeと選択した共有ID/versionを保存・再送・ロック許可・R2送信・Outbox・復旧監査まで維持します。旧NULL mountは推測で補わず、所有者による共有の作り直しでDAV名を付けます。
+[内部共有のWebDAV](DAV_SHARED.md)で、同じ所有者の異なるmount間のCOPY/MOVEと上書きに対応しました。転送元と転送先のshare ID/versionを別々に保存し、再送・ロック許可・結果照会・Outbox・復旧監査まで引き継ぎます。COPYは転送元readと転送先edit、MOVEは両側editを要求し、停止した共有を別の広い共有で補いません。所有者をまたぐCOPYは非同期jobが後続で、cross-space MOVEは非対応です。
 
-schema0050・通常69table、依存追加なし。全Node1,338件・関連workerd373件・共有画面browser6件の計1,717件成功。型・lint・契約/設定・buildも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0051・通常69table、依存追加なし。全Node1,361件・関連workerd339件・共有画面browser6件の計1,706件成功。型・lint・契約/設定・buildも成功。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は異なる共有間／個人領域とのDAV転送とcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration0050はDAV保存元のowner一致条件を選択付き受信者へ広げ、0049の不変pair/completion照合を維持する。共有間転送はまだ単一selected_shareでは表現できないため403とする。直接file mount上書きでは保存名と非公開parentを内部proofから使い、返却しない。0050適用後の旧Workerへのrollbackはmaintenanceを維持し、対応版で再検証する。ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
+DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration0050はDAV保存元のowner一致条件を選択付き受信者へ広げ、0049の不変pair/completion照合を維持する。migration0051のdestination tupleとauth/transferScope.tsで転送先選択を独立に保存する。省略はlegacy、share:nullは明示的なactor所有spaceであり相互に代替しない。same-ownerの別mount転送だけを許可し、cross-owner COPYの非同期jobは後続。直接file mount上書きでは保存名と非公開parentを内部proofから使い、返却しない。0050/0051適用後の旧Workerへのrollbackはmaintenanceを維持し、対応版で再検証する。ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
 
 今回のmultipart入口は`restoreInventoryRepair.ts`/`restoreInventory.ts`/`scripts/restore/inventory.mjs`。private `repairInventory`は28番目のmethod。共有の`restoreRepairContext.ts`がsystem/global受付とBLOBS読取りを同じ停止へ固定し、実完了のfinishだけは停止後も保存する。各inventory jobへBindingVerificationScopeを渡し、S3 sourceを採用済みBLOBS対象と照合する。全体25秒のtimeoutでactiveを失わせ、遅延GETから新たなnativeを送らない。既知multipartの元abort照合は`restoreMultipartAbort.ts`。DO履歴はhashだけなので、元D1 tuple欠落はそれだけで修復できない。
 
-送信先は承認済み専用`codex/database-restore`です。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)はUbuntu・Windows分割1/3と3/3・browserが成功。Windows分割2/3は全Node1,325件成功後、orphan-admissionのgc-confirmで886件中1件失敗（受付回数3の期待に対して2）。backupも成功し全6job中5job成功。失敗したWindows分割2/3を同じコミットで再実行中です。productionの期限や検査は緩めていません。先行21cd396のR2保存先照合失敗も原因は未確定です。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗jobの再実行後に全6job成功しました。初回Windows分割2/3のorphan-admission受付回数不一致と、先行21cd396のR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。69通常テーブル、migration `0001`〜`0050`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。69通常テーブル、migration `0001`〜`0051`、147 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

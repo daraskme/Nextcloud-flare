@@ -1,6 +1,7 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
 import { KdfUnavailableError } from "../auth/kdf";
+import { principalSelection } from "../auth/selectedShare";
 import { evaluateDavRequestIf } from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
 import { assertDavPutConditions, davEtag } from "../dav/etag";
@@ -176,6 +177,7 @@ export async function handleDavHttp(
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;
   }
+  const authenticatedPrincipal = principal;
   const sharedCollection = isSharedDavPath(path) && path.segments.length === 1;
   try {
     if (sharedCollection) {
@@ -392,19 +394,28 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
-      if (
-        isSharedDavPath(path) !== isSharedDavPath(destination.path) ||
-        (isSharedDavPath(path) && path.segments[1]?.nameCi !== destination.path.segments[1]?.nameCi)
-      )
-        return problem(403, "forbidden");
       const depth = parseDavTransferDepth("COPY", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
-      const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
+      const target = await resolveDavTransferDestination(
+        env.DB,
+        authenticatedPrincipal,
+        destination.path,
+      );
       if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
       if (target.target && !overwrite) return problem(412, "precondition_failed");
-      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const lockTokens = await evaluateDavRequestIf(
+        env.DB,
+        principal,
+        env.APP_ORIGIN,
+        request,
+        target.parent.principal,
+      );
       const outcome = await copyNode(env, {
         principal,
+        destination: {
+          spaceId: target.parent.spaceId,
+          share: principalSelection(target.parent.principal) ?? null,
+        },
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
         sourceNodeId: resolved.node.id,
@@ -528,19 +539,28 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
-      if (
-        isSharedDavPath(path) !== isSharedDavPath(destination.path) ||
-        (isSharedDavPath(path) && path.segments[1]?.nameCi !== destination.path.segments[1]?.nameCi)
-      )
-        return problem(403, "forbidden");
       parseDavTransferDepth("MOVE", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
-      const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
+      const target = await resolveDavTransferDestination(
+        env.DB,
+        authenticatedPrincipal,
+        destination.path,
+      );
       if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
       if (target.target && !overwrite) return problem(412, "precondition_failed");
-      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const lockTokens = await evaluateDavRequestIf(
+        env.DB,
+        principal,
+        env.APP_ORIGIN,
+        request,
+        target.parent.principal,
+      );
       const outcome = await moveNode(env, {
         principal,
+        destination: {
+          spaceId: target.parent.spaceId,
+          share: principalSelection(target.parent.principal) ?? null,
+        },
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
         nodeId: resolved.node.id,

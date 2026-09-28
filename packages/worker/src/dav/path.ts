@@ -263,6 +263,7 @@ export async function resolveDavCredentialPath(
 /** Resolve condition resource state; an unmapped URL is null while storage failures propagate. */
 export async function resolveDavConditionPath(db: D1Database, principal: Principal, path: DavPath) {
   if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  if (isSharedDavPath(path) !== !!principalSelection(principal)) return null;
   try {
     principal = await davPrincipalForPath(db, principal, path);
   } catch (error) {

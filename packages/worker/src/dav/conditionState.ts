@@ -21,6 +21,7 @@ async function resourceState(
   appOrigin: string,
   resource: string,
   tokenByHash: ReadonlyMap<string, string>,
+  destination?: Principal,
 ): Promise<DavResourceState> {
   let url: URL;
   try {
@@ -43,7 +44,9 @@ async function resourceState(
   } catch {
     return { tokens: new Set(), etag: null };
   }
-  const resolved = await resolveDavConditionPath(db, principal, path);
+  const resolved =
+    (await resolveDavConditionPath(db, principal, path)) ??
+    (destination ? await resolveDavConditionPath(db, destination, path) : null);
   if (!resolved) return { tokens: new Set(), etag: null };
   const batches = await atomicBatch(db, [
     resolved.assertion,
@@ -80,7 +83,18 @@ export async function evaluateDavRequestIf(
   principal: Principal,
   appOrigin: string,
   request: Request,
+  destination?: Principal,
 ): Promise<readonly string[]> {
+  if (
+    destination &&
+    (destination.kind !== principal.kind ||
+      !("user_id" in destination) ||
+      !("user_id" in principal) ||
+      destination.user_id !== principal.user_id ||
+      destination.credential_id !== principal.credential_id ||
+      destination.epoch !== principal.epoch)
+  )
+    throw new Error("invalid_dav_if");
   const header = parseDavIfHeader(request.headers.get("If"));
   if (!header) return [];
   if (header.submittedTokens.length > 16) throw new Error("invalid_dav_if");
@@ -95,7 +109,7 @@ export async function evaluateDavRequestIf(
   requestUrl.search = "";
   requestUrl.hash = "";
   const matches = await evaluateDavIf(header, requestUrl.href, (resource) =>
-    resourceState(db, principal, appOrigin, resource, tokenByHash),
+    resourceState(db, principal, appOrigin, resource, tokenByHash, destination),
   );
   if (!matches) throw new Error("dav_precondition_failed");
   return header.submittedTokens;

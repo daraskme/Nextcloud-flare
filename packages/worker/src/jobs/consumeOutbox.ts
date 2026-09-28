@@ -4,6 +4,12 @@ import {
   type SelectedShareRecord,
   storedPrincipal,
 } from "../auth/selectedShare";
+import {
+  destinationPrincipal,
+  storedDestination,
+  type TransferDestination,
+  type TransferDestinationRecord,
+} from "../auth/transferScope";
 import { assertOneChange, primary } from "../db/primary";
 import {
   acquireSystemMutation,
@@ -14,7 +20,7 @@ import {
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
 
-interface EventRow extends SelectedShareRecord {
+interface EventRow extends SelectedShareRecord, TransferDestinationRecord {
   state: string;
   kind: string;
   payload_ref: string;
@@ -36,7 +42,7 @@ async function eventRow(db: D1Database, id: string): Promise<EventRow | null> {
   return primary(db)
     .prepare(`SELECT b.state,b.kind,b.payload_ref,b.epoch,o.op_id,o.kind AS op_kind,
       o.state AS op_state,o.principal_kind,o.principal_id,o.credential_id,
-      o.credential_version,o.selected_share_id,o.selected_share_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      o.credential_version,o.selected_share_id,o.selected_share_version,o.destination_space_id,o.destination_share_id,o.destination_share_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
       JOIN spaces s ON s.id=o.space_id
       WHERE b.outbox_id=?`)
     .bind(id)
@@ -112,8 +118,24 @@ export async function consumeOutbox(
     !["dispatching", "sent"].includes(row.state)
   )
     return "retry";
+  let destination: TransferDestination | undefined;
+  try {
+    destination = storedDestination(row);
+    if (
+      destination &&
+      (!["user", "app_password"].includes(row.principal_kind) ||
+        !["node.copy", "node.move", "dav.copy", "dav.move"].includes(row.op_kind) ||
+        destination.spaceId !== row.space_id)
+    )
+      return "retry";
+  } catch {
+    return "retry";
+  }
   const principal = savedPrincipal(row);
   if (!principal) return "retry";
+  const targetPrincipal = destinationPrincipal(principal, destination);
+  const sourceOwnerOnly = !!destination && !principalSelection(principal),
+    targetOwnerOnly = !!destination && !destination.share;
   let parentId: string;
   let nodeId: string | undefined;
   let sourceNodeId: string | undefined;
@@ -152,7 +174,7 @@ export async function consumeOutbox(
     )
       return "retry";
     parentId = operands.parentId;
-    if (principalSelection(principal)) {
+    if (principalSelection(principal) || destination) {
       if (["node.copy", "dav.copy"].includes(row.op_kind)) {
         if (typeof operands.sourceNodeId !== "string") return "retry";
         sourceNodeId = operands.sourceNodeId;
@@ -184,34 +206,44 @@ export async function consumeOutbox(
     if (sourceNodeId)
       originalAuthorities.push(
         await authorizeNode(db, principal, {
+          ownerOnly: sourceOwnerOnly,
           operation: "node.read",
           nodeId: sourceNodeId,
           spaceId: row.space_id,
         }),
       );
     if (sourceParentId)
-      for (const originalParent of [sourceParentId, parentId])
-        originalAuthorities.push(
-          await authorizeNode(db, principal, {
-            operation: "node.create",
-            parentId: originalParent,
-            spaceId: row.space_id,
-          }),
-        );
+      originalAuthorities.push(
+        await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId: sourceParentId,
+          spaceId: row.space_id,
+          ownerOnly: sourceOwnerOnly,
+        }),
+        await authorizeNode(db, targetPrincipal, {
+          operation: "node.create",
+          parentId,
+          spaceId: row.space_id,
+          ownerOnly: targetOwnerOnly,
+        }),
+      );
     authorized =
       row.kind === "node.trashed" || row.kind === "node.purged"
-        ? await authorizeNode(db, principal, {
+        ? await authorizeNode(db, targetPrincipal, {
+            ownerOnly: targetOwnerOnly,
             operation: "node.read",
             nodeId: parentId,
             spaceId: row.space_id,
           })
         : nodeId
-          ? await authorizeNode(db, principal, {
+          ? await authorizeNode(db, targetPrincipal, {
+              ownerOnly: targetOwnerOnly,
               operation: row.kind === "node.updated" ? "node.content.write" : "node.rename",
               nodeId,
               spaceId: row.space_id,
             })
-          : await authorizeNode(db, principal, {
+          : await authorizeNode(db, targetPrincipal, {
+              ownerOnly: targetOwnerOnly,
               operation: "node.create",
               parentId,
               spaceId: row.space_id,

@@ -220,6 +220,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     JOIN users owner ON owner.id=n.owner_id AND owner.disabled_at IS NULL
     JOIN control ctl ON ctl.singleton=1 JOIN p
     WHERE n.id=?1 AND n.space_id=?2 AND ctl.epoch=p.epoch
+      AND (json_extract(?3,'$.owner_only') IS NOT 1 OR n.owner_id=p.user_id)
       AND (?7 IS NULL OR n.revision=?7) AND (?8 IS NULL OR sp.tree_generation=?8)
       AND (?9 IS NULL OR n.parent_id=?9)
       AND (?10 IS NULL OR n.current_blob_id=?10)
@@ -265,7 +266,7 @@ function validId(value: unknown, max = 128): value is string {
 export async function authorizeNode(
   db: D1Database,
   principal: Principal,
-  request: NodeRequest,
+  request: NodeRequest & { readonly ownerOnly?: boolean },
 ): Promise<AuthorizedNode> {
   let selection: SelectedShare | undefined;
   if ("selected_share" in principal) {
@@ -317,7 +318,7 @@ export async function authorizeNode(
   const values = [
     nodeId,
     request.spaceId,
-    JSON.stringify(identity),
+    JSON.stringify({ ...identity, owner_only: request.ownerOnly === true }),
     request.operation === "node.create"
       ? "node:create"
       : request.operation === "node.trash"

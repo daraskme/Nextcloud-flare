@@ -56,4 +56,4 @@ schema0049・69通常tableを維持し、migration追加はない。移動・コ
 
 ## 次の実装
 
-異なる共有間のDAV転送、cross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。
+同じ所有者の異なる共有間のDAV転送は[DAV Shared](DAV_SHARED.md)へ接続済み。Access画面での共有間宛先選択、cross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIP、共有メディアと実環境検証が残る。今回の受信画面だけでPhase 6完了とはしない。

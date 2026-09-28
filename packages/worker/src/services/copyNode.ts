@@ -7,6 +7,12 @@ import {
 } from "../auth/authorize";
 import { assertCreateLocks, assertTrashLocks, lockTokenHashes } from "../auth/locks";
 import { freezePrincipal, principalSelection } from "../auth/selectedShare";
+import {
+  destinationPrincipal,
+  sameDestination,
+  type TransferDestination,
+  transferDestination,
+} from "../auth/transferScope";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -34,6 +40,7 @@ type TrashAuthority = Extract<AuthorizedNode, { operation: "node.trash" }>;
 
 export interface CopyNodeRequest {
   readonly principal: Principal;
+  readonly destination?: TransferDestination | undefined;
   readonly requestId: string;
   readonly spaceId: string;
   readonly sourceNodeId: string;
@@ -335,9 +342,9 @@ function copyStatements(
     authorizationAssertion(source),
     authorizationAssertion(destination),
     ...(overwrite ? [authorizationAssertion(overwrite)] : []),
-    assertCreateLocks(destination.parent.id, source.node.space_id, source.principal, hashes),
+    assertCreateLocks(destination.parent.id, source.node.space_id, destination.principal, hashes),
     ...(overwrite
-      ? [assertTrashLocks(overwrite.node.id, source.node.space_id, source.principal, hashes)]
+      ? [assertTrashLocks(overwrite.node.id, source.node.space_id, destination.principal, hashes)]
       : []),
     assertExists(
       "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM nodes WHERE parent_id=? AND name_ci=? AND deleted_at IS NULL AND id<>COALESCE(?,''))",
@@ -369,7 +376,16 @@ export async function copyNode(
   env: Pick<Env, "DB" | "LOCKS">,
   request: CopyNodeRequest,
 ): Promise<MutationOutcome> {
-  request = { ...request, principal: freezePrincipal(request.principal) };
+  request = {
+    ...request,
+    principal: freezePrincipal(request.principal),
+    destination: transferDestination(request.destination),
+  };
+  if (request.destination && request.destination.spaceId !== request.spaceId)
+    throw new Error("dav_cross_space_copy");
+  const targetPrincipal = destinationPrincipal(request.principal, request.destination);
+  const sourceOwnerOnly = !!request.destination && !principalSelection(request.principal);
+  const targetOwnerOnly = !!request.destination && !request.destination.share;
   const share = principalSelection(request.principal);
   if (request.principal.kind !== "user" && request.principal.kind !== "app_password")
     throw new Error("authorization_denied");
@@ -382,6 +398,7 @@ export async function copyNode(
     operationKind,
     {},
     {},
+    request.destination,
   );
   const terminalSlot = await operationRow(env.DB, slotIntent.id);
   if (terminalSlot && terminalSlot.state !== "claimed") {
@@ -392,6 +409,7 @@ export async function copyNode(
       throw new Error("idempotency_conflict");
     }
     if (
+      !sameDestination(terminalSlot, request.destination) ||
       terminalSlot.selected_share_id !== (share?.id ?? null) ||
       terminalSlot.selected_share_version !== (share?.version ?? null) ||
       terminalSlot.principal_kind !== request.principal.kind ||
@@ -411,11 +429,13 @@ export async function copyNode(
     return { kind: "terminal", operation };
   }
   const source = await authorizeNode(env.DB, request.principal, {
+    ownerOnly: sourceOwnerOnly,
     operation: "node.read",
     nodeId: request.sourceNodeId,
     spaceId: request.spaceId,
   });
-  const destination = await authorizeNode(env.DB, request.principal, {
+  const destination = await authorizeNode(env.DB, targetPrincipal, {
+    ownerOnly: targetOwnerOnly,
     operation: "node.create",
     parentId: request.destinationParentId,
     spaceId: request.spaceId,
@@ -428,7 +448,8 @@ export async function copyNode(
     throw new Error("dav_cross_space_copy");
   const manifest = await copyManifest(env.DB, request.sourceNodeId, request.spaceId, request.depth);
   const overwrite = request.overwriteTargetId
-    ? await authorizeNode(env.DB, request.principal, {
+    ? await authorizeNode(env.DB, targetPrincipal, {
+        ownerOnly: targetOwnerOnly,
         operation: "node.trash",
         nodeId: request.overwriteTargetId,
         spaceId: request.spaceId,
@@ -473,6 +494,7 @@ export async function copyNode(
       depth: request.depth,
       ...(overwrite ? { overwriteTargetId: overwrite.node.id } : {}),
     },
+    request.destination,
   );
   const existing = await findOperationIntent(env.DB, intent, COPY_NODE_STEPS);
   if (existing && existing.state !== "claimed") {
@@ -488,23 +510,27 @@ export async function copyNode(
     parentId: request.destinationParentId,
     ...(overwrite ? { overwriteTargetId: overwrite.node.id } : {}),
     principal: request.principal,
+    ...(request.destination ? { destination: request.destination } : {}),
     lockTokens: request.lockTokens,
     operation: operationKind,
   });
   let terminal = false;
   try {
     const currentSource = await authorizeNode(env.DB, request.principal, {
+      ownerOnly: sourceOwnerOnly,
       operation: "node.read",
       nodeId: request.sourceNodeId,
       spaceId: request.spaceId,
     });
-    const currentDestination = await authorizeNode(env.DB, request.principal, {
+    const currentDestination = await authorizeNode(env.DB, targetPrincipal, {
+      ownerOnly: targetOwnerOnly,
       operation: "node.create",
       parentId: request.destinationParentId,
       spaceId: request.spaceId,
     });
     const currentOverwrite = overwrite
-      ? await authorizeNode(env.DB, request.principal, {
+      ? await authorizeNode(env.DB, targetPrincipal, {
+          ownerOnly: targetOwnerOnly,
           operation: "node.trash",
           nodeId: overwrite.node.id,
           spaceId: request.spaceId,
@@ -538,7 +564,14 @@ export async function copyNode(
       (await digestJson(currentOverwriteManifest.ids)) !== (await digestJson(overwriteManifest.ids))
     )
       throw new Error("authorization_denied");
-    const claimed = await claimOperation(env.DB, intent, permit, currentSource, COPY_NODE_STEPS);
+    const claimed = await claimOperation(
+      env.DB,
+      intent,
+      permit,
+      currentSource,
+      COPY_NODE_STEPS,
+      request.destination ? currentDestination : undefined,
+    );
     if (claimed.kind === "terminal") {
       const operation = await lookupOperation(env.DB, request.principal, intent.id);
       if (!operation) throw new Error("authorization_denied");
