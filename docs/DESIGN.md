@@ -825,6 +825,10 @@ upload-only は create/upload receipt/status だけを許可し、list/read/over
 
 ZIP ticket は purpose=`zip`、manifest hash、node+blob集合、share version、epoch、budget ID を束縛する。manifest 作成から配信終了まで blob pin を保持する。v1 ZIP は **STORE のみ**で、圧縮差による予算ずれを作らない。exact output size は実配信と同じ serializer を dry-run して local header/data descriptor/central directory を含め算出し、その hash/size を manifest に保存する。R2 reader は小さい固定並列で backpressure を待ち、disconnect は reader/serializer/budget lease を cancel する。
 
+ZIP用target manifestはv2（`serializer:'store-v1'`、root/revision/tree generation、固定entry集合、blob targets、outputBytes）を使い、空folderも記録する。原本のv1 manifestは維持する。ZIP allowanceはserializer/path/kind/blob/sizeのhashで重複排除し、同じarchiveの再発行では残量を増やさない。target-set/ticket公開前にblobを重複除去してpinし、未知commitや並列readerに備えて最大10分の固定期限まで保持する。
+
+ZIPはprivate/publicともapp経由のPOST発行とGET取得へ接続する。署名ticketはサーバー内で交換し、返すZIP IDは元Access/share credentialに束縛されたselectorとする。各GETは元session、現在の認可・share version、manifest、snapshot、pinを再検査する。既に認可した1応答はpin/lease/sessionの最短期限まで元snapshotを配信できる。Rangeは416（0 bytes・1 request課金）、HEADは未提供。画面は同じappの取得URLへnavigateし、大容量archiveのfetch→blob化を行わない。[ZIP_DOWNLOADS](ZIP_DOWNLOADS.md)に実装範囲と残件を記録する。
+
 ---
 
 ## 9. Web UI

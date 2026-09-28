@@ -1,6 +1,6 @@
 # 公開リンク共有
 
-更新: 2026-09-29。schema0066・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketと公開GET/HEADによる原本配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。[upload-only](UPLOAD_ONLY_SHARES.md)の管理と送信/再開も接続済み。thumb・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-29。schema0067・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketと公開GET/HEADによる原本配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。[upload-only](UPLOAD_ONLY_SHARES.md)の管理と送信/再開も接続済み。[ZIP保存](ZIP_DOWNLOADS.md)も接続済み。thumb/page/track・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
@@ -64,7 +64,7 @@ content hostの配信と同じBudgetDO・lease・ストリーム処理を使う�
 
 上書き後は元manifestのblobと一致しないため旧セッションで新しい本文や304を返さず、現行内容を対象に再発行する。ticket取消し・logout・共有変更・owner停止・祖先trash・範囲外への移動後も拒否する。R2不在・世代不一致は503。本文開始前の既知失敗は0byte、途中の取消し・結果不明は全予約bytesを保持し、配信期限は既存leaseへ従う。
 
-原本の共通応答に`default-src 'none'; sandbox; frame-ancestors 'none'`のCSPと安全なASCII fallback filenameを付ける。HTML/SVGはattachment、元のUnicode名はfilename*を使用する。公開APIの成功/拒否すべてにprivate/no-store・nosniff・no-referrerを付け、HEADのエラーも本文なしにする。公開画面の「開く・保存」は従来のcontent host Cookie経路を使い、大きなfileをブラウザーで一括bufferする経路は追加しない。thumb・page・track・ZIPはそれぞれの派生処理とpurpose検証を接続する必要がある。
+原本の共通応答に`default-src 'none'; sandbox; frame-ancestors 'none'`のCSPと安全なASCII fallback filenameを付ける。HTML/SVGはattachment、元のUnicode名はfilename*を使用する。公開APIの成功/拒否すべてにprivate/no-store・nosniff・no-referrerを付け、HEADのエラーも本文なしにする。公開画面の「開く・保存」は従来のcontent host Cookie経路を使い、大きなfileをブラウザーで一括bufferする経路は追加しない。ZIPは元の共有Cookieを必要とするapp経由の保存へ接続済み。thumb・page・trackはそれぞれの派生処理とpurpose検証を接続する必要がある。
 
 ## 公開フォルダー作成と名前変更
 
@@ -117,7 +117,7 @@ root GETの`permissions.upload/overwrite`に従ってファイル選択と上書
 1. 公開create/rename/deleteのreload後の操作追跡を接続する。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側のthumb/page/trackなど、未接続の派生配信経路を契約へつなぐ。原本GET/HEAD APIは接続済みで、画面の保存経路はcontent hostのticket/session経由である。
-4. ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報の非開示を維持する。
+4. Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報の非開示を維持する。
 
 APP_ORIGINとCONTENT_ORIGINを同じ値にする[単一host構成](SINGLE_HOST.md)にも対応する。Worker入口が/sessionと/cの名前空間を配信へ、それ以外の既知app pathを各認可handlerへ振り分ける。host-only CookieとCSP/attachment、private/public asset境界、元share/sessionの制約を維持する。別originのcontent hostにはapp routerを置かない。
 5. stagingでAccess Bypass、Cookie、CORS、鍵切替、KDF予算、実配信を検証する。

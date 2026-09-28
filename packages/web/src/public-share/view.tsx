@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { zipFailureMessage } from "../../../shared/src/zips";
 import {
   PublicClient,
   PublicError,
@@ -147,14 +148,21 @@ export function PublicApp({ client }: { client: PublicClient }) {
     setBusy(true);
     setMessage("");
     try {
-      await client.download(root!, node, target);
+      if (node.kind === "file") await client.download(root, node, target);
+      else await client.downloadZip(root, node.id, target);
     } catch (error) {
+      if (client.lifetime.signal.aborted) return;
+      const zipMessage =
+        node.kind !== "file" && error instanceof PublicError
+          ? zipFailureMessage(error.status)
+          : undefined;
       if (error instanceof PublicError && [401, 403, 404].includes(error.status)) {
         setRoot(null);
         setTrail([]);
         setPage(null);
       }
-      failed(error);
+      if (zipMessage) setMessage(zipMessage);
+      else failed(error);
     } finally {
       if (!client.lifetime.signal.aborted) setBusy(false);
     }
@@ -338,6 +346,16 @@ export function PublicApp({ client }: { client: PublicClient }) {
             )}
             <div className="list-header">
               <span>{current?.kind === "file" ? "ファイル" : "フォルダー内の項目"}</span>
+              {current && current.kind !== "file" && (
+                <button
+                  className="quiet"
+                  disabled={locked}
+                  aria-label="このフォルダーをZIPで保存"
+                  onClick={() => void download(current)}
+                >
+                  ZIPで保存
+                </button>
+              )}
               {current?.kind !== "file" && root.permissions.createFolder && (
                 <button
                   className="quiet"
@@ -426,6 +444,16 @@ export function PublicApp({ client }: { client: PublicClient }) {
                       }}
                     >
                       ごみ箱へ移動
+                    </button>
+                  )}
+                  {node.kind !== "file" && (
+                    <button
+                      className="download"
+                      disabled={locked}
+                      onClick={() => void download(node)}
+                      aria-label={`${node.name}をZIPで保存`}
+                    >
+                      ZIPで保存 <span aria-hidden="true">↓</span>
                     </button>
                   )}
                   {node.kind === "file" && (

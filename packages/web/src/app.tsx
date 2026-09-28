@@ -8,6 +8,7 @@ import {
   Check,
   ChevronRight,
   Cloud,
+  Download,
   File,
   FileAudio,
   FileImage,
@@ -56,6 +57,7 @@ import {
   type FileNode,
   formatBytes,
   type TrashItem,
+  zipErrorMessage,
 } from "./lib/api";
 
 type Action =
@@ -498,10 +500,14 @@ function NodeMenu({
   node,
   act,
   open,
+  zip,
+  zipBusy,
 }: {
   node: FileNode;
   act: (action: Action) => void;
   open: () => void;
+  zip: () => void;
+  zipBusy: boolean;
 }) {
   return (
     <Menu.Root>
@@ -515,6 +521,11 @@ function NodeMenu({
           <Menu.Item onSelect={open}>
             {node.kind === "folder" ? "開く" : "ファイルを開く・保存"}
           </Menu.Item>
+          {node.kind === "folder" && (
+            <Menu.Item disabled={zipBusy} onSelect={zip}>
+              ZIPで保存
+            </Menu.Item>
+          )}
           {node.parentId && (
             <Menu.Item asChild>
               <Link to="/files/$folderId" params={{ folderId: node.parentId }}>
@@ -552,11 +563,15 @@ function FileList({
   view,
   act,
   open,
+  zip,
+  zipBusy,
 }: {
   rows: FileNode[];
   view: "list" | "grid";
   act: (action: Action) => void;
   open: (node: FileNode) => void;
+  zip: (node: FileNode) => void;
+  zipBusy: boolean;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({
@@ -573,7 +588,13 @@ function FileList({
           <article key={node.id} className="file-card">
             <div className="file-card-top">
               <FileIcon node={node} />
-              <NodeMenu node={node} act={act} open={() => open(node)} />
+              <NodeMenu
+                node={node}
+                act={act}
+                open={() => open(node)}
+                zip={() => zip(node)}
+                zipBusy={zipBusy}
+              />
             </div>
             <button className="file-name" onClick={() => open(node)} title={node.name}>
               {node.name}
@@ -640,7 +661,13 @@ function FileList({
                   {node.kind === "folder" ? "—" : formatBytes(node.size)}
                 </div>
                 <div role="cell">
-                  <NodeMenu node={node} act={act} open={() => open(node)} />
+                  <NodeMenu
+                    node={node}
+                    act={act}
+                    open={() => open(node)}
+                    zip={() => zip(node)}
+                    zipBusy={zipBusy}
+                  />
                 </div>
               </div>
             );
@@ -678,6 +705,7 @@ export function App() {
   const [deadLettersOpen, setDeadLettersOpen] = useState(false);
   useEffect(() => setStatsScope(null), [pathname]);
   const [notice, setNotice] = useState("");
+  const [zipBusy, setZipBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [sidebar, setSidebar] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -830,6 +858,22 @@ export function App() {
     }
     target.opener = null;
     void api.openFile(me, node, target).catch((error) => setNotice(errorMessage(error)));
+  };
+  const downloadZip = (nodeId: string) => {
+    if (!me || zipBusy) return;
+    const target = window.open("about:blank", "_blank");
+    if (!target) {
+      setNotice("ZIPを保存するには、このサイトのポップアップを許可してください。");
+      return;
+    }
+    target.opener = null;
+    setZipBusy(true);
+    setNotice("ZIPを準備しています…");
+    void api
+      .downloadZip(nodeId, target)
+      .then(() => setNotice(""))
+      .catch((error) => setNotice(zipErrorMessage(error)))
+      .finally(() => setZipBusy(false));
   };
   const logout = async () => {
     setLoggingOut(true);
@@ -1137,6 +1181,22 @@ export function App() {
                     <Button
                       variant="ghost"
                       size="icon"
+                      aria-label="このフォルダーをZIPで保存"
+                      title="このフォルダーをZIPで保存"
+                      disabled={zipBusy || data.isPending || !!data.error}
+                      onClick={() => downloadZip(parentId)}
+                    >
+                      {zipBusy ? (
+                        <LoaderCircle size={17} className="spin" />
+                      ) : (
+                        <Download size={17} />
+                      )}
+                    </Button>
+                  )}
+                  {!trash && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       aria-label="フォルダーの情報"
                       onClick={() => setStatsScope(parentId)}
                     >
@@ -1297,7 +1357,14 @@ export function App() {
                   ))}
                 </div>
               ) : (
-                <FileList rows={filtered} view={view} act={act} open={openNode} />
+                <FileList
+                  rows={filtered}
+                  view={view}
+                  act={act}
+                  open={openNode}
+                  zip={(node) => downloadZip(node.id)}
+                  zipBusy={zipBusy}
+                />
               )}
               <div className="list-footer">
                 <span>

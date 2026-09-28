@@ -8,7 +8,7 @@ import { type ContentPurpose } from "../auth/contentSession";
 import { type ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion, shareCoverageBatchAssertions } from "../auth/shareCoverage";
 import type { MutationAdmission } from "../db/mutationAdmission";
-import { assertExists, atomicBatch } from "../db/primary";
+import { assertExists, atomicBatch, type SqlStatement } from "../db/primary";
 import {
   type AccountMutationEnv,
   acquireAccountMutation,
@@ -183,13 +183,69 @@ export async function issueContentTicket(
     ownerId,
     epoch: principal.epoch,
   });
+  return publishContentTicket(
+    env,
+    bucket,
+    tokens,
+    principal,
+    {
+      record,
+      budgetId: budget.id,
+      ownerId,
+      purpose,
+      issuedAt: iat * 1000,
+      expiresAt: exp * 1000,
+      guards: [
+        ...authorizationBatchAssertions(proofs),
+        ...(selectedShare
+          ? shareCoverageBatchAssertions(
+              proofs.map((proof) => proof.node),
+              selectedShare,
+            )
+          : []),
+      ],
+    },
+    share,
+  );
+}
+
+/** Shared atomic publication; domain guards bind the staged manifest to its current authorized targets. */
+export async function publishContentTicket(
+  env: AccountMutationEnv,
+  bucket: R2Bucket,
+  tokens: ContentTokens,
+  principal: Principal,
+  plan: {
+    record: TargetManifestRecord;
+    budgetId: string;
+    ownerId: string;
+    purpose: ContentPurpose;
+    issuedAt: number;
+    expiresAt: number;
+    guards: readonly SqlStatement[];
+  },
+  share?: { readonly id: string; readonly version: number },
+): Promise<IssuedContentTicket> {
+  const db = env.DB;
+  const { record, budgetId, ownerId, purpose } = plan;
+  const iat = Math.floor(plan.issuedAt / 1000),
+    exp = Math.floor(plan.expiresAt / 1000);
+  if (
+    principal.kind === "service" ||
+    !Number.isSafeInteger(iat) ||
+    !Number.isSafeInteger(exp) ||
+    exp <= iat ||
+    exp - iat > 600 ||
+    plan.guards.length === 0
+  )
+    throw new Error("invalid_content_ticket_request");
   const ticketId = crypto.randomUUID();
   const claims = {
     ticket_id: ticketId,
     credential_id: principal.credential_id,
     target_set_id: record.id,
     target_set_hash: record.hash,
-    budget_id: budget.id,
+    budget_id: budgetId,
     purpose,
     epoch: principal.epoch,
     user_id: identity(principal, share).userId,
@@ -201,7 +257,7 @@ export async function issueContentTicket(
   const result = Object.freeze({
     ticketId,
     targetSetId: record.id,
-    budgetId: budget.id,
+    budgetId: budgetId,
     expiresAt: exp * 1000,
   });
   let signed: string | undefined;
@@ -210,14 +266,8 @@ export async function issueContentTicket(
     signed = await tokens.issueTicket(claims);
     const guards = [
       assertExists("SELECT 1 WHERE ?>strftime('%s','now')*1000", [result.expiresAt]),
-      ...authorizationBatchAssertions(proofs),
-      ...(selectedShare
-        ? shareCoverageBatchAssertions(
-            proofs.map((proof) => proof.node),
-            selectedShare,
-          )
-        : []),
-      budgetAndShareAssertion(principal, ownerId, budget.id, result.expiresAt, share),
+      ...plan.guards,
+      budgetAndShareAssertion(principal, ownerId, budgetId, result.expiresAt, share),
     ];
     await atomicBatch(db, guards);
     admission = await acquireAccountMutation(env, ownerId, principal.epoch, "content.issue");
@@ -246,7 +296,7 @@ export async function issueContentTicket(
           ticketId,
           principal.credential_id,
           record.id,
-          budget.id,
+          budgetId,
           purpose,
           principal.epoch,
           iat * 1000,

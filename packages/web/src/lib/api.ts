@@ -1,6 +1,7 @@
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
+import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
 
 export interface Account {
   id: string;
@@ -106,6 +107,12 @@ export class ApiError extends Error {
   ) {
     super(code);
   }
+}
+
+export function zipErrorMessage(error: unknown): string {
+  return (
+    (error instanceof ApiError ? zipFailureMessage(error.status) : undefined) ?? errorMessage(error)
+  );
 }
 
 export function errorMessage(error: unknown): string {
@@ -348,6 +355,24 @@ export class ApiClient {
       target.location.replace(
         `${origin.origin}/c/${encodeURIComponent(node.id)}/${encodeURIComponent(node.currentBlobId ?? "")}`,
       );
+    } catch (error) {
+      target.close();
+      throw error;
+    }
+  }
+
+  async downloadZip(nodeId: string, target: Window, share?: SelectedShare): Promise<void> {
+    const lifetime = this.#lifetime;
+    try {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(nodeId)) throw new Error("invalid_zip_target");
+      const receipt = await this.json<unknown>(
+        `/api/v1/nodes/${nodeId}/zip`,
+        "POST",
+        share ? { share } : {},
+      );
+      lifetime.signal.throwIfAborted();
+      const path = zipDownloadPath(receipt);
+      target.location.replace(new URL(path, globalThis.location.origin).href);
     } catch (error) {
       target.close();
       throw error;

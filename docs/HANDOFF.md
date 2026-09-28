@@ -1,6 +1,8 @@
 # セッション引き継ぎ
 
-[ZIPダウンロード](ZIP_DOWNLOADS.md)の内部基盤を追加しました。空フォルダー、固定manifest、正確な出力サイズ、共通予算、期限付きblob保持と定期解放に対応します。ZIPのticket発行・API・画面への接続は次工程です。schema0067は索引のみを追加し、通常76table・147 routeを維持します。[ファイル受け取りリンク](UPLOAD_ONLY_SHARES.md)、単一ドメイン、公開原本配信・編集/削除は接続済みです。thumb/page/track・media、実環境検証、復旧側の残件も未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[ZIPダウンロード](ZIP_DOWNLOADS.md)を所有者・内部共有・公開リンクのAPIと画面へ接続しました。固定snapshot、日本語名・空フォルダー、正確なサイズ会計、期限付きblob保持に対応し、共有停止・内容変更・元credentialを各取得時に検査します。schema0067・通常76table・147 routeを維持し、今回のmigration/依存追加はありません。thumb/page/track・media、復旧側の残件、実環境検証は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+
+先行c886e85の[CI36465246546](https://github.com/daraskme/Nextcloud-flare/actions/runs/36465246546)は、Ubuntu/Windows Node・全native shard・通常/単一host browser・backup bindings/cliの全10job成功。D1の結果列上限に対応した分割projectionと、Nodeの同時実行制限後の結果です。過去のWindows native失敗の根本原因特定とは区別します。
 
 先行f2c6c33の[CI36460457472](https://github.com/daraskme/Nextcloud-flare/actions/runs/36460457472)はWindows全Node/4分割・通常/単一host browserの7job成功、backup bindings/cliとUbuntu Nodeの3job失敗で終了しました。バックアップはローカル実D1でも再現し、uploadsが51列になったことで型と値の102列SELECTがD1の結果列上限100を超えると特定しました。今回、同じ凍結keyset pageを100列以内のprojectionへ分割し、各pageのkey/順序/件数を照合するよう修正しています。Ubuntuはbackup-operator試験の5秒timeoutで、Nodeの同時実行を全OSで2に制限しました。製品の期限やUbuntuの試験timeoutは変更していません。CLI jobの保存ログはbackup_run_drill_command_failedのみで、詳細artifactは取得できなかったため、その失敗の同一原因までは確定せず修正後CIで確認します。修正後の検証は上記実装記録を参照してください。
 
@@ -43,7 +45,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次はZIPのticket発行・API・ストリーム・画面への接続を進めます。thumb/page/track・media配信、copyのDLQ運用・未解決attemptの修復も続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はthumb/page/track・media配信、公開create/rename/deleteのreload後追跡、copyのDLQ運用・未解決attemptの修復を進めます。ZIPの実環境・最大規模検証も残っています。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
 先行2d34118の[CI36440037128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36440037128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。下記の先行Windows失敗の根本原因が特定されたことを意味しません。
 
@@ -152,7 +154,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-製品側の次の接続は[公開リンク](PUBLIC_SHARES.md)のthumb/page/track・ZIP配信。公開deleteはapi/publicShareMutations.tsからtrashNodeへ接続し、選択時revision・元share/session/keyを固定する。migration0065が既存trash actorを保持したまま匿名null actorを認め、元operation/credentialとの帰属と不変性を検査する。jobs/trashProvenance.tsを復旧最終監査へ接続済み。元sessionからのoperationとoutbox照会では元の親の現行edit権限を必要とする。共有rootの改名・削除禁止、read権限の書込み拒否、別credential/grantへの代替禁止を維持する。公開create/rename/deleteの追跡はメモリー内で、uploadだけがIndexedDBのreload再開へ接続している。
+製品側の次の接続は[公開リンク](PUBLIC_SHARES.md)のthumb/page/track配信。ZIPは[ZIPダウンロード](ZIP_DOWNLOADS.md)へ接続済み。公開deleteはapi/publicShareMutations.tsからtrashNodeへ接続し、選択時revision・元share/session/keyを固定する。migration0065が既存trash actorを保持したまま匿名null actorを認め、元operation/credentialとの帰属と不変性を検査する。jobs/trashProvenance.tsを復旧最終監査へ接続済み。元sessionからのoperationとoutbox照会では元の親の現行edit権限を必要とする。共有rootの改名・削除禁止、read権限の書込み拒否、別credential/grantへの代替禁止を維持する。公開create/rename/deleteの追跡はメモリー内で、uploadだけがIndexedDBのreload再開へ接続している。
 
 公開uploadの入口はservices/uploads/{create,access,complete,multipart,multipartComplete}.tsとapi/uploads.ts。create/access/completeはuserとlink_shareを許可し、auth/uploadPrincipal.tsで保存済みlink/session/versionを照合する。sourceのprivate/dav CHECKは維持する。編集linkはowner予約を使用し、UploadDO・native/R2証明・repair・backup監査へも接続した。multipart cleanupの停止条件とpublication条件は同じbatch内の別assertionとし、D1の式深度100以内に抑える。upload-onlyはshare/owner双方の予約、情報非開示receipt、確定batchでの自動改名、再開画面へ接続済み。[UPLOAD_ONLY_SHARES](UPLOAD_ONLY_SHARES.md)を参照。
 

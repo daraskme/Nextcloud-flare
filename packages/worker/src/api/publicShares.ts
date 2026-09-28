@@ -25,9 +25,10 @@ import {
 import { publicPrincipal, publicShareRead, publicShareTicket } from "./publicShareRead";
 import { readShareBody } from "./shares";
 import { handleUploadHttp, publicUploadRoute } from "./uploads";
+import { handleZipHttp, publicZipRoute } from "./zips";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|content\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128})?|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|content\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -47,14 +48,15 @@ export const publicShareRoute = (request: Request) => {
   return (
     publicOperationRoute(request) ||
     publicUploadRoute(request) ||
+    publicZipRoute(request) ||
     (!!match &&
       ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
         (["GET", "HEAD"].includes(request.method) && action.startsWith("content/")) ||
         (request.method === "POST" &&
           ["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action)) ||
-        (request.method === "PATCH" && action.startsWith("nodes/")) ||
+        (request.method === "PATCH" && /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)) ||
         (request.method === "DELETE" &&
-          (action.startsWith("tickets/") || action.startsWith("nodes/")))))
+          (action.startsWith("tickets/") || /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)))))
   );
 };
 const csrfSession = (s: ShareSession) => ({
@@ -150,6 +152,18 @@ async function routePublicShareHttp(
       !["unlock", "csrf", "logout"].includes(action)
     )
       return problem(404, "not_found");
+    if (publicZipRoute(request)) {
+      if (!session) return problem(401, "unauthorized");
+      return handleZipHttp(
+        request,
+        env,
+        publicPrincipal(session),
+        csrf,
+        dependencies.contentTokens,
+        session.claims.exp * 1000,
+        session,
+      );
+    }
     if (action.startsWith("content/")) {
       if (!session) return problem(401, "unauthorized");
       if (request.headers.get("Share-Session") !== session.claims.session_id)

@@ -1,7 +1,11 @@
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { assertPublicModule, assertPublicSource } from "../../scripts/public-asset-policy.mjs";
+import {
+  assertPublicModule,
+  assertPublicSource,
+  isPublicSource,
+} from "../../scripts/public-asset-policy.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
@@ -11,7 +15,7 @@ export default defineConfig({
       name: "public-source-boundary",
       enforce: "pre",
       transform(source, id) {
-        if (id.replaceAll("\\", "/").includes("/src/public-share/")) assertPublicSource(source);
+        if (isPublicSource(id)) assertPublicSource(source);
       },
       generateBundle(_options, bundle) {
         const modules = new Set<string>();
@@ -19,8 +23,7 @@ export default defineConfig({
           if (chunk.type === "chunk") {
             for (const id of Object.keys(chunk.modules)) {
               assertPublicModule(id, root);
-              if (id.replaceAll("\\", "/").includes("/src/public-share/"))
-                assertPublicSource(this.getModuleInfo(id)?.code ?? "");
+              if (isPublicSource(id)) assertPublicSource(this.getModuleInfo(id)?.code ?? "");
               modules.add(id.replace(root, ""));
             }
           }

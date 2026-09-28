@@ -1,3 +1,5 @@
+import { zipDownloadPath } from "../../../shared/src/zips";
+
 export interface SharedNode {
   id: string;
   name: string;
@@ -256,6 +258,22 @@ export class PublicClient {
       id,
       signal,
     );
+  }
+  async downloadZip(root: SharedRoot, nodeId: string, target: Window) {
+    try {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(nodeId)) throw new Error("invalid_zip_target");
+      const { token } = await this.request<{ token: string }>("/csrf", "POST");
+      const receipt = await this.request<unknown>(`/nodes/${nodeId}/zip`, "POST", {}, token, {
+        "Share-Session": root.sessionId,
+      });
+      this.lifetime.signal.throwIfAborted();
+      target.location.replace(
+        new URL(zipDownloadPath(receipt, this.id), globalThis.location.origin).href,
+      );
+    } catch (error) {
+      target.close();
+      throw error;
+    }
   }
   async download(root: SharedRoot, node: SharedNode, target: Window) {
     try {

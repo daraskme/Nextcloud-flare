@@ -103,6 +103,7 @@ test("mobile sender receives an opaque receipt, hides owner files and preserves 
       })),
     );
     expect(paths.some((p) => /\/children\/|\/nodes\/|\/api\/v1\/operations\//.test(p))).toBe(false);
+    await expect(t.guest.getByRole("button", { name: /ZIPで保存/ })).toHaveCount(0);
     const nodes = await page.evaluate(async (name) => {
       const me = await fetch("/api/v1/me").then((r) => r.json());
       const result = await fetch(`/api/v1/nodes/${me.rootNodeId}/children`).then((r) => r.json());

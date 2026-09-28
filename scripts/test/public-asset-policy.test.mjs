@@ -1,10 +1,11 @@
 import { expect, it } from "vitest";
-import { assertPublicModule, assertPublicSource } from "../public-asset-policy.mjs";
+import { assertPublicModule, assertPublicSource, isPublicSource } from "../public-asset-policy.mjs";
 
 it("permits only the independent public entry and pinned rendering runtime", () => {
   for (const id of [
     "/web/public.html",
     "/web/src/public-share/main.tsx",
+    "/shared/src/zips.ts",
     "/web/node_modules/react/index.js",
     "\0vite/modulepreload-polyfill.js",
     "C:\\web\\src\\public-share\\client.ts",
@@ -17,11 +18,20 @@ it("permits only the independent public entry and pinned rendering runtime", () 
     "/web/src/public-share-evil/main.ts",
     "/web/test/fixture.ts",
     "/worker/src/env.ts",
+    "/shared/src/shares.ts",
+    "/shared/src/zips-evil.ts",
     "/web/node_modules/jose/index.js",
     "/web/index.html",
   ]) {
     expect(() => assertPublicModule(id, "/web/")).toThrow("forbidden public module");
   }
+});
+it("checks the allowlisted ZIP utility source and its Windows path", () => {
+  expect(isPublicSource("/shared/src/zips.ts")).toBe(true);
+  expect(isPublicSource("C:\\shared\\src\\zips.ts")).toBe(true);
+  expect(() => assertPublicModule("C:\\shared\\src\\zips.ts", "C:\\web\\")).not.toThrow();
+  expect(() => assertPublicModule("/other/shared/src/zips.ts", "/web/")).toThrow();
+  expect(isPublicSource("/shared/src/shares.ts")).toBe(false);
 });
 it("rejects private headers, environment substitution, test controls and unsafe rendering", () => {
   for (const source of [

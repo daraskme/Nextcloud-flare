@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import {
   ChevronRight,
   Copy,
+  Download,
   File,
   Folder,
   FolderPlus,
@@ -15,7 +16,14 @@ import {
 import { useRef, useState } from "react";
 import type { InternalShare } from "../../../../shared/src/shares";
 import { Button } from "../../components/ui/button";
-import { type Account, api, errorMessage, type FileNode, formatBytes } from "../../lib/api";
+import {
+  type Account,
+  api,
+  errorMessage,
+  type FileNode,
+  formatBytes,
+  zipErrorMessage,
+} from "../../lib/api";
 import { uploads } from "../uploads/manager";
 
 export interface SharedActionScope {
@@ -133,6 +141,8 @@ function SharedContent({
   const id = nodeId ?? share.rootNodeId;
   const [failure, setFailure] = useState<string | null>(null);
   const [uploadFailure, setUploadFailure] = useState("");
+  const [zipFailure, setZipFailure] = useState("");
+  const [zipBusy, setZipBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const node = useQuery({
@@ -188,6 +198,21 @@ function SharedContent({
       .openFile(account, file, target, { spaceId: share.spaceId, share: selected })
       .catch((error) => setFailure(errorMessage(error)));
   };
+  const downloadZip = (nodeId: string) => {
+    if (zipBusy) return;
+    const target = window.open("about:blank", "_blank");
+    if (!target) {
+      setZipFailure("ZIPを保存するには、このサイトのポップアップを許可してください。");
+      return;
+    }
+    target.opener = null;
+    setZipBusy(true);
+    setZipFailure("");
+    void api
+      .downloadZip(nodeId, target, selected)
+      .catch((error) => setZipFailure(zipErrorMessage(error)))
+      .finally(() => setZipBusy(false));
+  };
   let files: FileNode[] = [];
   if (!error && !loading) {
     if (folder) files = children.data?.pages.flatMap((page) => page.children) ?? [];
@@ -240,6 +265,17 @@ function SharedContent({
       ) : (
         <>
           <p className="shared-access">共有の権限：{share.role === "read" ? "閲覧" : "編集"}</p>
+          {folder && (
+            <Button
+              className="copy-current-folder"
+              disabled={zipBusy}
+              aria-label="このフォルダーをZIPで保存"
+              onClick={() => downloadZip(id)}
+            >
+              {zipBusy ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
+              ZIPで保存
+            </Button>
+          )}
           {folder && node.data && (
             <Button
               className="copy-current-folder"
@@ -270,6 +306,11 @@ function SharedContent({
                 アップロード
               </Button>
             </div>
+          )}
+          {zipFailure && (
+            <p className="form-error" role="alert">
+              {zipFailure}
+            </p>
           )}
           {uploadFailure && (
             <p className="form-error" role="alert">
@@ -308,6 +349,17 @@ function SharedContent({
                   </button>
                 )}
                 <div className="shared-row-actions">
+                  {file.kind === "folder" && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`${file.name}をZIPで保存`}
+                      disabled={zipBusy}
+                      onClick={() => downloadZip(file.id)}
+                    >
+                      <Download size={16} />
+                    </Button>
+                  )}
                   {(!editable || file.id === share.rootNodeId) && (
                     <Button
                       variant="ghost"

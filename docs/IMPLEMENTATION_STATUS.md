@@ -1,6 +1,19 @@
 # 実装進捗
 
-## ZIP manifest・予算・保持の内部基盤とバックアップ列上限修正（今回）
+## ZIP発行・配信APIと所有者/共有画面（今回）
+
+[ZIPダウンロード](ZIP_DOWNLOADS.md)を所有者・内部共有の受信者・匿名readリンクへ接続した。固定snapshot/pin→tracked manifest→共通ticket公開→サーバー内session交換を経て、元credentialに限定したapp GETでSTOREを配信する。毎GETの現行認可・snapshot・pin検査、同一archive再発行時の共通予算、Range拒否のrequest課金、R2 etag/size確認、lease/中断/保持期限を接続した。画面は安全な同じappのselectorへnavigateし、archiveをbufferしない。公開buildへ追加した共有コードは副作用・importのないZIP receipt/説明文utilityの1fileだけを明示許可し、既存のsource/module検査を適用した。schema0067・通常76table・147 route、migration/依存追加なし。
+
+- 全Node94file/1,666件成功（186.61秒、/tmp/ncf-zip-delivery-unit.log）。URLの厳密な検証、CSRF・選択share・元public session、ログアウト中の遅い応答拒否、失敗時のpopup閉鎖と非再送を含む。
+- 公開buildは初回、共通utilityが既存のsource allowlist外として停止した（/tmp/ncf-zip-delivery-build.log）。1fileだけを明示許可してsource検査も適用し、ZIP clientとpublic境界のNode2file/27件成功（233ms、/tmp/ncf-zip-delivery-unit-boundary.log）。全Nodeとの差分は境界検査1件で、重複を除くNodeは1,667件。
+- 実D1/R2/DO4file/113件成功（66.94秒、/tmp/ncf-zip-delivery-native.log）。ZIP HTTP22件、snapshot/pin13件、既存content ticket/admission78件。private/publicの実bytes・Unicode/空folder、実Access/CSRF、元credential、internal read shareと期限、upload-only拒否、共有/内容/pin/manifest変更、Range/再発行budget、切断、取消し後の進行中配信、R2欠落/改変によるbody失敗と課金を検証した。先行API検査3file/97件（/tmp/ncf-zip-api-native.log）はこの113件と重複するため加算しない。
+- 型、Web/private/public build・SRI/境界検査、Worker dry-run成功（/tmp/ncf-zip-delivery-types-final.log、/tmp/ncf-zip-delivery-build-final.log）。
+- browser5file/8件成功（2.0分、/tmp/ncf-zip-delivery-browser.log）。ZIPの所有者・匿名read・internal readの3件で実downloadを解析し、日本語名・内容・空folderを確認した。internalは選択shareの送信と停止後の非表示、匿名はcontent host/private bundle/secret URL不使用、各390px画面の横幅も検査した。既存Files操作/mobile、匿名複数tab、internal停止、upload-only非開示の5件も成功。/tmp/ncf-zip-owner-mobile.png、/tmp/ncf-zip-public-mobile.png、/tmp/ncf-zip-recipient-mobile.pngを目視確認した。
+- 先行c886e85の[CI36465246546](https://github.com/daraskme/Nextcloud-flare/actions/runs/36465246546)はUbuntu/Windows Node、全native shard、通常/単一host browser、backup bindings/cliの全10job成功。先行のD1 projection上限修正とNode同時実行制限後の結果である。過去のWindows native失敗の原因特定とは区別する。
+
+**Node1,667 + 関連native113 + browser8 = 重複を除き1,788件成功**。全workerd・全browserとbackup drillは今回ローカルで再実行していない。実環境・最大規模ZIP、thumb/page/track/media、復旧/運用の残件は維持する。remote resource/secret/migration/deployなし。
+
+## ZIP manifest・予算・保持の内部基盤とバックアップ列上限修正（先行c886e85・7fa5a09）
 
 [ZIPダウンロード](ZIP_DOWNLOADS.md)の内部基盤を追加しました。空フォルダー、固定manifest、正確な出力サイズ、共通予算、期限付きblob保持と定期解放に対応します。ZIPのticket発行・API・画面への接続は次工程です。schema0067は索引のみを追加し、通常76table・147 routeを維持します。[ファイル受け取りリンク](UPLOAD_ONLY_SHARES.md)、単一ドメイン、公開原本配信・編集/削除は接続済みです。thumb/page/track・media、実環境検証、復旧側の残件も未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

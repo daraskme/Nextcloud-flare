@@ -24,6 +24,7 @@ import { handleShareHttp, shareRoute } from "./shares";
 import { handleStatsHttp, statsRoute } from "./stats";
 import { handleTrashHttp, trashRoute } from "./trash";
 import { handleUploadHttp, uploadReadRoute, uploadRoute } from "./uploads";
+import { handleZipHttp, zipRoute } from "./zips";
 
 export interface PrivateAppDependencies {
   readonly verifier: AccessVerifier;
@@ -52,6 +53,7 @@ export function privateAppRoute(request: Request): boolean {
     appPasswordRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
+    zipRoute(request) ||
     (request.method === "POST" &&
       (url.pathname === "/api/v1/csrf" ||
         url.pathname === "/api/v1/content-session" ||
@@ -94,6 +96,7 @@ export async function handlePrivateAppHttp(
   const appPassword = appPasswordRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
+  const zip = zipRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
     /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && request.method === "DELETE";
@@ -111,6 +114,7 @@ export async function handlePrivateAppHttp(
     !appPassword &&
     !share &&
     !upload &&
+    !zip &&
     !ticketIssue &&
     !ticketCancel
   )
@@ -150,6 +154,20 @@ export async function handlePrivateAppHttp(
     }
   }
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
+  if (zip)
+    return handleZipHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+      dependencies.tokens,
+      session.expires_at,
+    );
   if (deadLetters)
     return handleDeadLetterHttp(request, env, session, dependencies.csrf, dependencies.listCursors);
   if (copyJob)
