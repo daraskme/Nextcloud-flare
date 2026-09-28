@@ -20,7 +20,7 @@ export const COPY_EXECUTION_LIMITS = Object.freeze({
   rangeBytes: 8 * 1024 * 1024,
 });
 const CLOCK = "strftime('%s','now')*1000";
-const INITIAL_CHECKPOINT = '{"v":1,"blob":0,"offset":0}';
+const checkpoint = (position: number) => JSON.stringify({ v: 1, blob: position, offset: 0 });
 export interface CopyJobClaim {
   readonly id: string;
   readonly token: string;
@@ -32,6 +32,7 @@ interface ClaimProof {
   readonly outboxId: string;
   readonly stop: AbortController;
   busy: boolean;
+  position: number;
 }
 const proofs = new WeakMap<CopyJobClaim, ClaimProof>();
 function proof(claim: CopyJobClaim): ClaimProof {
@@ -43,11 +44,28 @@ export function checkCopyClaim(claim: CopyJobClaim): void {
   proof(claim).stop.signal.throwIfAborted();
   if (Date.now() >= claim.expiresAt) throw new Error("copy_claim_expired");
 }
+export function copyClaimPosition(claim: CopyJobClaim): number {
+  return proof(claim).position;
+}
+/** Called only after the matching, receipt-backed checkpoint batch commits. */
+export function advancedCopyClaim(claim: CopyJobClaim, position: number): void {
+  const p = proof(claim);
+  if (position !== p.position + 1 || position > claim.plan.source.blobs.length)
+    throw new Error("invalid_copy_checkpoint");
+  p.position = position;
+}
 
 /** Current authority, using exactly the source/destination selections accepted with the job. */
+export type CopyAuthorityContext = Pick<
+  PreparedCopy,
+  "principal" | "destination" | "destinationParentId"
+> & {
+  source: Pick<PreparedCopy["source"], "spaceId" | "rootId">;
+  overwrite: { rootId: string } | null;
+};
 export async function copyAuthorityStatements(
   db: D1Database,
-  plan: PreparedCopy,
+  plan: CopyAuthorityContext,
   witnessId?: string,
 ): Promise<SqlStatement[]> {
   const source = await authorizeNode(db, plan.principal, {
@@ -109,7 +127,7 @@ export function copyClaimFence(claim: CopyJobClaim): SqlStatement {
       claim.epoch,
       claim.expiresAt,
       claim.plan.destinationOwnerId,
-      INITIAL_CHECKPOINT,
+      checkpoint(proof(claim).position),
       claim.plan.digest,
       outboxId,
     ],
@@ -130,13 +148,21 @@ export async function claimCopyJob(
   )
     throw new Error("invalid_copy_claim");
   const row = await primary(env.DB)
-    .prepare(`SELECT j.id FROM outbox b JOIN bulk_jobs j ON j.id=b.payload_ref AND j.op_id=b.op_id
+    .prepare(`SELECT j.id,j.checkpoint FROM outbox b JOIN bulk_jobs j ON j.id=b.payload_ref AND j.op_id=b.op_id
       WHERE b.outbox_id=? AND b.kind='copy.requested' AND b.state IN ('dispatching','sent')
       AND j.kind='node.copy' AND j.state IN ('pending','running')`)
     .bind(outboxId)
-    .first<{ id: string }>();
+    .first<{ id: string; checkpoint: string | null }>();
   if (!row) throw new Error("copy_job_unavailable");
   const { plan, expiresAt } = await loadCopyJobManifest(env.DB, row.id);
+  const position: number = row.checkpoint === null ? 0 : JSON.parse(row.checkpoint).blob;
+  if (
+    !Number.isSafeInteger(position) ||
+    position < 0 ||
+    position > plan.source.blobs.length ||
+    (row.checkpoint !== null && row.checkpoint !== checkpoint(position))
+  )
+    throw new Error("invalid_copy_checkpoint");
   const claim: CopyJobClaim = Object.freeze({
     id: row.id,
     token: crypto.randomUUID(),
@@ -144,7 +170,7 @@ export async function claimCopyJob(
     expiresAt: Math.min(expiresAt, deadline, started + COPY_EXECUTION_LIMITS.wallMs),
     plan,
   });
-  proofs.set(claim, { outboxId, stop: new AbortController(), busy: false });
+  proofs.set(claim, { outboxId, stop: new AbortController(), busy: false, position });
   const authority = await copyAuthorityStatements(env.DB, plan);
   const admission = await acquireSystemMutation(
     env,
@@ -155,6 +181,14 @@ export async function claimCopyJob(
   checkCopyClaim(claim);
   await commitSystemMutation(env.DB, admission, plan.destinationOwnerId, [
     ...authority,
+    assertExists(
+      `SELECT 1 WHERE ?=(SELECT COUNT(*) FROM
+      (SELECT * FROM copy_job_blobs WHERE job_id=? ORDER BY source_blob_id LIMIT ?) cb
+      JOIN blobs b ON b.id=cb.destination_blob_id JOIN blob_storage s ON s.blob_id=b.id
+      WHERE cb.transfer_state='stored' AND b.state='staging' AND b.sha256_verified=cb.transfer_sha256
+        AND s.bytes=b.size AND s.removed_at IS NULL)`,
+      [position, claim.id, position],
+    ),
     assertExists(
       `SELECT 1 WHERE (SELECT COUNT(*) FROM bulk_jobs j JOIN job_leases l ON l.job_id=j.id
       WHERE j.owner_id=? AND j.kind='node.copy' AND j.state='running' AND l.expires_at>${CLOCK})<?`,
@@ -180,9 +214,9 @@ export async function claimCopyJob(
         WHERE id=? AND state IN ('pending','running') AND (checkpoint IS NULL OR checkpoint=?)
           AND invocation_count<? AND r2_calls<?`,
       values: [
-        INITIAL_CHECKPOINT,
+        checkpoint(position),
         claim.id,
-        INITIAL_CHECKPOINT,
+        checkpoint(position),
         COPY_EXECUTION_LIMITS.invocations,
         COPY_EXECUTION_LIMITS.r2Calls,
       ],

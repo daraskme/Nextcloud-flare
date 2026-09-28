@@ -7,6 +7,7 @@ import { assertExists, assertOneChange, atomicBatch, primary } from "../db/prima
 import { abortWriteProof, isAbortWrite } from "../db/r2Abort";
 import { backupDeleteProof } from "../db/r2BackupDelete";
 import { backupsProbeWriteProof } from "../db/r2BackupsProbe";
+import { copyWriteProof } from "../db/r2Copy";
 import { probeWriteProof } from "../db/r2Probe";
 import { isUploadWrite, uploadWriteProof } from "../db/r2Upload";
 import {
@@ -119,6 +120,7 @@ export class ControlR2Writes {
       ...(input.probe ? { probe: input.probe } : {}),
       ...(input.backups ? { backups: input.backups } : {}),
       ...(input.prune ? { prune: input.prune } : {}),
+      ...(input.copy ? { copy: input.copy } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -211,7 +213,12 @@ export class ControlR2Writes {
         this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        const guards = isUploadWrite(kind) ? await uploadWriteProof(this.db, grant) : [];
+        const guards =
+          kind === "copy.put"
+            ? await copyWriteProof(this.db, grant)
+            : isUploadWrite(kind)
+              ? await uploadWriteProof(this.db, grant)
+              : [];
         this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");

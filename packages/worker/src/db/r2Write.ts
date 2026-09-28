@@ -2,6 +2,7 @@ import type { SqlStatement } from "./primary";
 import { isAbortWrite, type R2AbortProof, validateAbortWrite } from "./r2Abort";
 import { type R2BackupDeleteProof, validateBackupDelete } from "./r2BackupDelete";
 import { type R2BackupsProbeProof, validateBackupsProbeWrite } from "./r2BackupsProbe";
+import { type R2CopyProof, validateCopyWrite } from "./r2Copy";
 import { type R2ProbeProof, validateProbeWrite } from "./r2Probe";
 import {
   isUploadWrite,
@@ -12,6 +13,7 @@ import {
 import { type RestorePause, restorePauseCondition } from "./restorePause";
 
 export type R2WriteKind =
+  | "copy.put"
   | "backup.delete"
   | "backups.probe.put"
   | "probe.put"
@@ -49,6 +51,7 @@ export interface R2WriteRequest {
   probe?: R2ProbeProof;
   backups?: R2BackupsProbeProof;
   prune?: R2BackupDeleteProof;
+  copy?: R2CopyProof;
 }
 export interface R2WriteGrant extends R2WriteRequest {
   token: string;
@@ -77,6 +80,7 @@ export function validateR2Write(request: R2WriteRequest): void {
       : request.kind === "blob.delete" ||
           request.kind === "orphan.delete" ||
           isUploadWrite(request.kind) ||
+          request.kind === "copy.put" ||
           isAbortWrite(request.kind)
         ? !request.key.startsWith("u/") || new TextEncoder().encode(request.key).length > 1024
         : request.kind === "empty.put"
@@ -87,6 +91,11 @@ export function validateR2Write(request: R2WriteRequest): void {
             !uuid.test(request.key.slice(12)))
   )
     throw new Error("invalid_r2_write");
+  if (request.kind === "copy.put") {
+    validateCopyWrite(request);
+    return;
+  }
+  if (request.copy !== undefined) throw new Error("invalid_r2_write");
   if (request.kind === "backup.delete") {
     validateBackupDelete(request);
     return;
@@ -167,6 +176,7 @@ export function validateR2WriteGrant(grant: R2WriteGrant): void {
 export const R2_WRITE_IDENTITY =
   "id=? AND token=? AND epoch=? AND owner_id IS ? AND kind=? AND r2_key=? AND dispatch_before=? AND started_at=? AND source_ref IS ?";
 export function r2WriteSourceRef(g: R2WriteRequest): string | null {
+  if (g.copy) return JSON.stringify([g.copy.jobId, g.copy.sourceBlobId, g.copy.attemptId]);
   if (g.prune)
     return JSON.stringify([g.epoch, g.prune.generation.id, g.prune.attemptId, g.prune.phase]);
   if (g.backups)

@@ -3,7 +3,7 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は最終確認時にUbuntu・Windows1/3と2/3・browser成功、Windows3/3とbackupは実行中です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗job再実行後に全6job成功。初回Windowsのorphan-admission受付回数不一致と、21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)でのR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
+送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は最終確認時にUbuntu・Windows3分割・browser成功、backupは実行中です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗job再実行後に全6job成功。初回Windowsのorphan-admission受付回数不一致と、21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)でのR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
 
@@ -12,6 +12,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [所有者間copyの単一保存](COPY_JOBS.md)を追加。migration0054・72table。8 MiB以下の条件付きPUT/SHA-256検査、転送attempt/staging blob、ControlDOでの現行認可とnative receipt、physical/hash/ETag記録、確定後のcheckpoint・再取得を実装。大きいblobのmultipart、大量blobのbatch化と完走予算、未知/未送信/観測欠落の修復、公開・取消し/精算・Queue/HTTP/UIは未実装。
+- 初回の新規保存10件と既存claim/read40件が成功（45.71秒）。共通fixtureを共有化し、実R2の条件付き保存、空blob、prepare/observe/native finish/checkpointのACK喪失、共有停止後の物理会計、既存objectの非上書きを確認。/tmp/ncf-copy-put-first.log。
+- 全Node70file/1,381件のうち1,380件成功（59.66秒）。既存multipart照合triggerをmigrationで再作成した際、freezeより先にdomainエラーになった1件を、freezeガードの再作成で修正。新旧14種のpending/terminal receiptを全field保持する移行、旧copy保持行の追加column初期値、SQL backup/restore、復旧freezeの関連3file/17件は修正後成功（最終3.19秒）。/tmp/ncf-copy-put-node-final.log、/tmp/ncf-copy-put-schema-final.log、/tmp/ncf-copy-put-schema-final-2.log。
+- 関連workerd8file/210件成功（168.27秒）。ControlDOのR2送信、uploadの共通受付、copy受付/claim/read、backup barrier、復旧を回帰。転送中destination blobのDELETE/GC拒否と既存upload R2 writeの追加検証3file/51件も成功（45.96秒）。ControlDOは小さい保存済みidentity/node情報で再認可し、nativeごとのmanifest本文再読込を禁止する試験を追加。最終copy put13件+claim/read40件の53件成功（48.44秒）。/tmp/ncf-copy-put-worker-final.log、/tmp/ncf-copy-put-worker-final-2.log、/tmp/ncf-copy-put-worker-final-3.log。
+- 今回の合計は **全Node1,381 + 関連workerd228 = 1,609件成功**（重複試験を除き、修正対象の再実行を含む）。型・lint510file・契約/設定・生成schema72table/FK graph・Web build/Worker dry-run成功。/tmp/ncf-copy-put-types-complete.log、/tmp/ncf-copy-put-lint-complete.log、/tmp/ncf-copy-put-build.log。HTTP/UI変更がなくbrowserは再実行していない。全workerd/Windowsと実Wrangler backupドリルはpush後のCIで確認する。remote migration/deployなし。
+
+### 先行するコピー実行claimと読取り
 
 - [所有者間copyの実行基盤](COPY_JOBS.md)を追加。migration0053・72table。永続claim/token/epoch/初期checkpoint、owner同時2claim、25秒、全体200 invocation/20,000 R2 call、8MiB/Range・16 read/invocation。固定nodeの現行認可、固定pin/blob/物理ETag、直接ACK後のGET、読取り後の再認可、期限・cancel・遅延body破棄を実装。転送先書込み・checkpoint進行・公開・取消し/精算・Queue consumer/HTTP/UI接続は後続。
 - 初回workerd34件は33成功。空blob fixtureを既存blobのサイズ変更から初期INSERTへ直し、追加ケース後の38件は37成功。R2が空objectにも返すoffset=0/length=0のRange情報を認める修正を追加。失敗時・期限後に届くbodyもcancelする。/tmp/ncf-copy-execution-worker-1.log、/tmp/ncf-copy-execution-worker-2.log。

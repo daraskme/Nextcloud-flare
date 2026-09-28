@@ -11,7 +11,17 @@ export type R2WriteSource =
     };
 type WriteInput = Pick<
   R2WriteRequest,
-  "epoch" | "ownerId" | "kind" | "key" | "gc" | "upload" | "abort" | "probe" | "backups" | "prune"
+  | "epoch"
+  | "ownerId"
+  | "kind"
+  | "key"
+  | "gc"
+  | "upload"
+  | "abort"
+  | "probe"
+  | "backups"
+  | "prune"
+  | "copy"
 >;
 
 /** Each invocation gets one grant; a rejected native call remains unknown, never replayed here. */
@@ -30,6 +40,7 @@ async function runWrite<T>(
     deadline: Math.min(
       deadline ?? Infinity,
       input.upload?.expiresAt ?? Infinity,
+      input.copy?.expiresAt ?? Infinity,
       input.probe?.stop?.expiresAt ?? Infinity,
       input.backups?.expiresAt ?? Infinity,
       input.gc && typeof input.gc.mode === "object" ? input.gc.mode.expiresAt : Infinity,

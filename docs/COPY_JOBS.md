@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。永続job/manifest/Outboxの内部受付に、期限付き実行claimと固定sourceのRange読取りを追加した。HTTP受付、Queue consumerによるR2転送、一括公開、取消し・再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定sourceのRange読取りに、8 MiB以下のblobをコピー先へ保存する内部処理を追加した。分割転送、HTTP受付、Queue consumer、一括公開、取消し・再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -38,11 +38,23 @@ manifest本文は最大8 MiB、64 KiBずつ最大128個のBLOB行へ保存する
 
 blobごとにmanifest上の最初のnodeを固定した権限確認対象にする。元のrootとそのnode、転送先親、必要なoverwrite対象を現在の資格情報・選択shareで認可し、読取り前後でDB条件を再確認する。元fileが新しいblobへ更新されてもpinした旧blobを読むが、そのnodeが選択shareの外へ移動した場合は拒否する。別のaliasや広いgrantへの切替はしない。物理ETagの条件付きGETでkey・全体size・返却Range・実body長も照合する。空blobはRangeを指定せず読む。
 
-返却bytesは上限内だけ保持し、読取り後の再認可に成功してから後続処理へ渡す。期限切れ、claim解放、短い/長いbody、遅れて返るR2応答ではbodyをcancelする。実行claimの解放はpinや予約を返さず、再取得回数も保持する。コピー先への書込みはまだ行わず、読めたことだけでcheckpointを進めたりjob/Outboxを完了にしたりしない。
+返却bytesは上限内だけ保持し、読取り後の再認可に成功してから後続処理へ渡す。期限切れ、claim解放、短い/長いbody、遅れて返るR2応答ではbodyをcancelする。実行claimの解放はpinや予約を返さず、再取得回数も保持する。この読取りだけでcheckpointを進めたりjob/Outboxを完了にしたりしない。
+
+## 小さいblobの保存と進捗
+
+`jobs/copyPut.ts` の `copyNextSmallBlob` はmanifest順に8 MiB以下のblobを一つ保存する。source全体のSHA-256を計算し、既知のsource hashがあれば照合する。共通受付の同じbatchで転送attempt/hash/claimとコピー先staging blobを記録する。このbatchの直接ACKを失った場合はPUTせず、照合待ちを維持する。
+
+新しいnative種別`copy.put`は、ControlDO内でmanifestのidentity、両側の現行認可、source pin、コピー先予約、現在のjob lease、staging blob、既存write不在を再確認する。固定source nodeを転送recordへ束縛し、ControlDOでは小さいidentity行だけを読み、8 MiBのmanifest本文をnative呼出しごとに再読込しない。R2 API予算とnative pending receiptを同じbatchに記録し、1回だけ送信する。PUTには未存在条件とSHA-256を付け、既存objectを上書きしない。書込み結果が不明ならlease期限だけで再送・容量返却をしない。
+
+実際のPUT結果からkey/size/SHA-256/ETagを照合し、blob_storage、検証済みhash、転送stored状態を同じsystem batchに記録する。現在の共有権限が失効した場合やlease解放後に遅れて成功が届いた場合でも、実在bytesの記録は行う。native完了台帳の確定は独立して行い、事実のD1記録が失敗しただけでnativeを再送しない。
+
+現行認可・claim・stored/physical記録・native succeeded・pending不在が揃った後、同じbatchで次のblobへのcheckpointを進め、無進捗retry回数をリセットする。保存済みrecordがあればPUTを繰り返さずこの進捗確定から再開する。再取得時にはcheckpointまでの全blobがstoredであることも照合する。全blobの保存が終わってもnamespace公開やjob/Outbox完了ではない。source pinと容量予約、staging blobは保持する。
+
+8 MiB超のmultipart、送信前ACK喪失後の未送信照合、native結果不明や観測記録欠落の修復、失敗/取消しの精算は未接続。現在はreadとPUTを合わせたcall数で次のreadを制限するため、正常な単一保存は最大8 blob/invocationになる。最大10,000件の受付を完走させるには、大量blobのbatch化とD1/200 invocation/20,000 R2 callの全体予算検証も必要。現段階ではこれらを推測で解放せず、HTTP/Queue consumerを有効化しない。
 
 ## 移行と復旧
 
-migration0052で通常72tableとなり、0053は既存job_leasesへinvocationのR2 call数を追加する。既存のtoken・epoch・期限・試行回数は保持する。0052の追加3tableはSTRICT/FK/index、backup/restore freeze、export/purge順序の契約へ含める。旧catalogueに未解決の`node.copy` bulk jobが残る場合は0052移行を拒否し、元処理の個別照合を要求する。
+migration0052で通常72tableとなり、0053は既存job_leasesへinvocationのR2 call数を追加する。0054は全native receiptと既存のcopy保持情報を維持し、copy.putと転送状態・attempt・hashを追加する（72tableのまま）。既存のtoken・epoch・期限・試行回数は保持する。0052の追加3tableはSTRICT/FK/index、backup/restore freeze、export/purge順序の契約へ含める。旧catalogueに未解決の`node.copy` bulk jobが残る場合は0052移行を拒否し、元処理の個別照合を要求する。
 
 copy用reservationは汎用の旧epoch回収から除外する。保持対応の存在中はreservationの変更とpinの変更/削除を拒否する。pending/running jobまたは保持対応が残る間は復旧後の再開を許可しない。Outbox監査は保存済みmanifestのhashと受付receiptを検査するが、成功しても実転送の終了証明にはならない。24時間の受付期限やepoch変更だけで保持を解放しない。
 
@@ -50,8 +62,8 @@ copy用reservationは汎用の旧epoch回収から除外する。保持対応の
 
 ## 次に接続する処理
 
-1. 内部claim/Range読取りを実際の転送へ接続し、native完了receiptに基づくcheckpoint更新と再取得時の照合を実装する。初期checkpoint以外は現段階では受け付けない。
-2. 固定したsource blobをpinしたまま転送先の単一/分割uploadへ保存し、Queue consumerへ接続する。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
+1. 8 MiB超のblobをmultipartへ接続し、partごとのcheckpointとnative完了receiptを実装する。大量blobのbatch化・完走予算も検証する。
+2. ACK喪失/未送信/結果不明/観測欠落の照合と取消し時の精算を接続し、Queue consumerへ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
 3. 全blobを検証してから、固定manifest・衝突方針・dead propertiesをnamespaceの原子的な公開へ接続する。フォルダーの一部だけを公開しない。
 4. job read/cancel/retry、停止・recovery・Outbox、pin/予約/physicalの精算、Shared画面の宛先選択と進捗を接続する。
 

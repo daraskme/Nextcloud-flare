@@ -18,7 +18,10 @@ import {
 
 it("round-trips a frozen copy job, binary manifest chunks and live holds through isolated SQL restore", async () => {
   const versions = await migrations(),
-    source = initialize(":memory:", versions),
+    source = initialize(
+      ":memory:",
+      versions.filter((m) => m.name < "0054_"),
+    ),
     target = initialize(":memory:", versions);
   const directory = await mkdtemp(join(tmpdir(), "copy-job-backup-"));
   try {
@@ -114,7 +117,9 @@ it("round-trips a frozen copy job, binary manifest chunks and live holds through
       .prepare("INSERT INTO blob_pins VALUES(?,'source-b','copy',10000,1)")
       .run(job + "_p00001");
     source
-      .prepare("INSERT INTO copy_job_blobs VALUES(?,?,?,?,?)")
+      .prepare(
+        "INSERT INTO copy_job_blobs(job_id,source_blob_id,destination_blob_id,pin_id,reservation_id) VALUES(?,?,?,?,?)",
+      )
       .run(job, "source-b", job + "_b00001", job + "_p00001", job + "_r00001");
     for (const [i, kind] of ["copy_job", "copy_manifest", "copy_holds", "copy_outbox"].entries())
       source.prepare("INSERT INTO operation_steps VALUES(?,?,?,?)").run(op, i + 1, kind, job);
@@ -126,6 +131,16 @@ it("round-trips a frozen copy job, binary manifest chunks and live holds through
     source
       .prepare("UPDATE operations SET state='committed',result_json=? WHERE op_id=?")
       .run(JSON.stringify({ status: 202, jobId: job }), op);
+    const oldMapping = source.prepare("SELECT * FROM copy_job_blobs").get();
+    source.exec(versions.find((m) => m.name === "0054_copy_put.sql").sql);
+    expect(source.prepare("SELECT * FROM copy_job_blobs").get()).toEqual({
+      ...oldMapping,
+      transfer_state: "pending",
+      transfer_attempt: null,
+      transfer_claim: null,
+      transfer_sha256: null,
+      transfer_node_id: null,
+    });
     // An expired invocation is exported with its spent budget and retry count intact.
     // The native backup barrier refuses a live invocation; expiry never settles its holds.
     source
