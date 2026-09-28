@@ -147,17 +147,47 @@ export async function* tableRows(spec, query) {
     const selected = [...new Set([...spec.columns, ...spec.keys])];
     // Wrangler's JSON display converts a BLOB array to a string. Ask SQLite for
     // the storage type and hex ourselves so BLOB and lookalike TEXT stay distinct.
-    const projection = selected.flatMap((name, i) => {
-      const column = quote(name);
-      return [
-        `typeof(${column}) AS ${quote(`__ncf_type_${i}`)}`,
-        `CASE WHEN typeof(${column})='blob' THEN hex(${column}) ELSE ${column} END AS ${quote(`__ncf_value_${i}`)}`,
-      ];
-    });
-    const rows = await query(
-      `SELECT ${projection.join(",")} FROM ${quote(spec.name)}${after} ORDER BY ${spec.keys.map(quote).join(",")} LIMIT 4`,
-    );
-    if (!Array.isArray(rows) || rows.length > 4) throw new Error("backup_invalid_page");
+    // D1 limits result sets to 100 columns. Wide tables need several projections
+    // of the same frozen keyset page; repeat and compare keys before joining them.
+    const valueColumns = selected.filter((name) => !spec.keys.includes(name));
+    const capacity = 50 - spec.keys.length;
+    if (capacity < 1) throw new Error("backup_projection_limit");
+    const groups = [];
+    for (let offset = 0; offset < Math.max(1, valueColumns.length); offset += capacity)
+      groups.push([...spec.keys, ...valueColumns.slice(offset, offset + capacity)]);
+    let rows;
+    for (const group of groups) {
+      const projection = group.flatMap((name) => {
+        const i = selected.indexOf(name);
+        const column = quote(name);
+        return [
+          `typeof(${column}) AS ${quote(`__ncf_type_${i}`)}`,
+          `CASE WHEN typeof(${column})='blob' THEN hex(${column}) ELSE ${column} END AS ${quote(`__ncf_value_${i}`)}`,
+        ];
+      });
+      const page = await query(
+        `SELECT ${projection.join(",")} FROM ${quote(spec.name)}${after} ORDER BY ${spec.keys.map(quote).join(",")} LIMIT 4`,
+      );
+      if (!Array.isArray(page) || page.length > 4) throw new Error("backup_invalid_page");
+      if (rows === undefined) rows = page;
+      else {
+        if (page.length !== rows.length) throw new Error("backup_changed_page");
+        rows = rows.map((row, index) => {
+          const next = page[index];
+          for (const key of spec.keys) {
+            const i = selected.indexOf(key);
+            if (
+              row[`__ncf_type_${i}`] !== next[`__ncf_type_${i}`] ||
+              row[`__ncf_value_${i}`] !== next[`__ncf_value_${i}`]
+            )
+              throw new Error("backup_changed_page");
+          }
+          return { ...row, ...next };
+        });
+      }
+      if (rows.length === 0) break;
+    }
+    if (!rows) throw new Error("backup_invalid_page");
     for (const record of rows) {
       const row = Object.fromEntries(
         selected.map((name, i) => {

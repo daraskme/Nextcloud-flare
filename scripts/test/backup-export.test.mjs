@@ -145,3 +145,89 @@ it.each([
     "backup_invalid_data_sql",
   );
 });
+
+it.each([51, 100])(
+  "exports a %i-column table within D1 result limits without losing scalar precision",
+  async (width) => {
+    const source = new DatabaseSync(":memory:"),
+      restored = new DatabaseSync(":memory:");
+    const columns = ["id", ...Array.from({ length: width - 1 }, (_, i) => `c${i}`)];
+    const spec = { name: "wide", columns, keys: ["id"] };
+    const schema = `CREATE TABLE wide(id TEXT PRIMARY KEY,${columns
+      .slice(1)
+      .map((name) => `${name} ANY`)
+      .join(",")}) STRICT;`;
+    try {
+      source.exec(schema);
+      restored.exec(schema);
+      const scalarValues = [
+        Buffer.from([0, 255, 128]),
+        "\ufeff引用'\0\r\n",
+        1.2345678901234567,
+        Number.MAX_SAFE_INTEGER,
+        null,
+      ];
+      for (let i = 0; i < 7; i++)
+        source
+          .prepare(`INSERT INTO wide VALUES(${columns.map(() => "?").join(",")})`)
+          .run(
+            `key-${i}`,
+            ...columns.slice(1).map((_, j) => scalarValues[(i + j) % scalarValues.length]),
+          );
+      let queries = 0;
+      const query = async (sql) => {
+        const statement = source.prepare(sql);
+        expect(statement.columns().length).toBeLessThanOrEqual(100);
+        queries++;
+        return statement.all();
+      };
+      const path = join(directory, "wide.sql");
+      await exportData(path, [spec], query);
+      expect(queries).toBe(width === 51 ? 4 : 6);
+      restored.exec(await readFile(path, "utf8"));
+      expect(restored.prepare("SELECT * FROM wide ORDER BY id").all()).toEqual(
+        source.prepare("SELECT * FROM wide ORDER BY id").all(),
+      );
+      expect(await tableDigests([spec], async (sql) => restored.prepare(sql).all())).toEqual(
+        await tableDigests([spec], query),
+      );
+    } finally {
+      source.close();
+      restored.close();
+    }
+  },
+);
+
+it.each(["key", "count", "order"])(
+  "rejects changed %s across projections of a wide frozen page",
+  async (change) => {
+    const source = new DatabaseSync(":memory:");
+    const columns = ["id", ...Array.from({ length: 50 }, (_, i) => `c${i}`)];
+    try {
+      source.exec(`CREATE TABLE wide(id TEXT PRIMARY KEY,${columns
+        .slice(1)
+        .map((name) => `${name} TEXT`)
+        .join(",")}) STRICT;
+      INSERT INTO wide(id) VALUES('a'),('b');`);
+      let calls = 0;
+      const query = async (sql) => {
+        const rows = source.prepare(sql).all();
+        if (++calls === 2) {
+          if (change === "key") rows[0].__ncf_value_0 = "changed";
+          if (change === "count") rows.pop();
+          if (change === "order") rows.reverse();
+        }
+        return rows;
+      };
+      await expect(
+        exportData(
+          join(directory, "changed.sql"),
+          [{ name: "wide", columns, keys: ["id"] }],
+          query,
+        ),
+      ).rejects.toThrow("backup_changed_page");
+    } finally {
+      source.close();
+    }
+  },
+);
