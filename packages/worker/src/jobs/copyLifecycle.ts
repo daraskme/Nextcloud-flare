@@ -149,7 +149,7 @@ interface CleanupBlob {
   pin_id: string;
   reservation_id: string;
   size: number;
-  disposition: "unwritten" | "stored" | null;
+  disposition: "unwritten" | "stored" | "aborted" | null;
 }
 export interface CopyCleanupResult {
   examined: number;
@@ -185,6 +185,10 @@ export async function cleanupStoppedCopyJob(
   const rows = await primary(env.DB)
     .prepare(`SELECT cb.source_blob_id,cb.destination_blob_id,cb.pin_id,cb.reservation_id,source.size,
     CASE WHEN EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.r2_key='u/'||j.owner_id||'/b/'||cb.destination_blob_id AND w.state='pending') THEN NULL
+      WHEN m.abort_attempt IS NOT NULL AND EXISTS(SELECT 1 FROM r2_write_attempts w INDEXED BY r2_write_source
+        WHERE w.kind='multipart.abort' AND w.source_ref=json_array('copy',cb.job_id,cb.source_blob_id,m.abort_attempt)
+          AND w.state='succeeded' AND w.state<>'not_started' AND w.epoch=m.abort_epoch
+          AND w.owner_id=j.owner_id AND w.r2_key='u/'||j.owner_id||'/b/'||cb.destination_blob_id) THEN 'aborted'
       WHEN cb.transfer_state='stored' AND EXISTS(SELECT 1 FROM r2_write_attempts w INDEXED BY r2_write_source
         WHERE w.kind=CASE cb.transfer_mode WHEN 'single' THEN 'copy.put' ELSE 'copy.multipart.complete' END
           AND w.source_ref=json_array(cb.job_id,cb.source_blob_id,CASE cb.transfer_mode WHEN 'single' THEN cb.transfer_attempt ELSE m.complete_attempt END)

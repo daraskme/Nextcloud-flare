@@ -3,6 +3,8 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
+
 送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行b1fedc7の[CI36377836985](https://github.com/daraskme/Nextcloud-flare/actions/runs/36377836985)はUbuntu・Windows2分割・browser・backupが成功、Windows分割1はsearch.test.tsの1万件検索が90秒timeoutで失敗しました（965/966件成功）。検索試験の遅延原因は未解決で、上限や検査を緩めていません。先行0604da2の[CI36374767844](https://github.com/daraskme/Nextcloud-flare/actions/runs/36374767844)はUbuntu・Windows3分割・browser・backupの全6job成功です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は全6job成功です。先行a52b815の[CI36371093589](https://github.com/daraskme/Nextcloud-flare/actions/runs/36371093589)はUbuntu・Windows3分割・browser成功、backup:run-drillのsource fingerprints中にbackup_wrangler_failedで失敗。保存ログだけでは子プロセスの原因を特定できません。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗job再実行後に全6job成功。初回Windowsのorphan-admission受付回数不一致と、21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)でのR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
 
 先行3f2217bの[CI36327086181](https://github.com/daraskme/Nextcloud-flare/actions/runs/36327086181)はUbuntu・Windows2分割・backup・browserの全5job成功。0dbb5a5の[CI36326186367](https://github.com/daraskme/Nextcloud-flare/actions/runs/36326186367)は4job成功・Windows分割1のNode 1,000/1,001件成功・1件失敗で終了し、そのintegrationは未実行。失敗fixtureは3f2217bで修正済み。先行8a093f7の[CI36325641559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36325641559)は全5job成功。今回の全体check/CIとは分けて扱う。
@@ -12,6 +14,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [停止済みコピーの既知multipart中止](COPY_JOBS.md)を内部実装。migration0058・75table。先行create/part/completeの終了証明、25秒の固定中止attempt、直接ACK後の一度だけのnative送信、遅延終了の照合、aborted receiptによる原子的な予約/pin/保持精算を追加した。未知結果・記録のないprepareでは保持を維持し、中止attemptの再試行管理とQueue/HTTP/UIは後続。
+- 全Node75file/1,431件成功（71.96秒、/tmp/ncf-copy-abort-node-full.log）。新schema19件は旧column/行保持、移行前提、3段階の同一終了証明、索引利用、混在identity拒否を検査。SQL backup5ケースは単一/分割/既存精算receipt/中止準備/中止済みの全table/schema hashとfreezeを確認。epoch条件追加後の関連24件も成功（3.50秒、/tmp/ncf-copy-abort-node-final.log）。
+- 新規workerd33件は0/1/2partでの中止、未送信証明、未知結果/観測欠落、prepare/native/finishのACK喪失、重複送信拒否、遅延part/abort、25秒timeout、失効/旧epoch/maintenance、改変拒否、rollback、実ControlDOでの停止中精算を検証。初回に復旧freezeの拒否条件、遅延partでstreamを消費する順序、実ControlDOのepoch履歴というfixture不備を修正し、安全条件は維持した。
+- 関連workerd12file/306件の初回は305成功・1失敗（351.08秒、/tmp/ncf-copy-abort-worker-regression.log）。遅延part fixture修正と1件追加後、新33件中32件および復旧snapshot46件が成功（130.57秒、/tmp/ncf-copy-abort-worker-final.log）。残る実ControlDO fixtureへ既存試験と同じepoch履歴を追加し、対象1件が成功（4.60秒、/tmp/ncf-copy-abort-control-final.log）。復旧snapshotは旧74という期待を75とexport対象名照合へ修正した。
+- **全Node1,431 + 関連workerd13file/353 = 1,784件成功**（重複を除き、修正後の対象再実行を含む）。型・lint526file・契約/設定・生成schema75table/FK索引の検査、Web build/Worker dry-run成功。/tmp/ncf-copy-abort-types-complete.log、/tmp/ncf-copy-abort-lint-final.log、/tmp/ncf-copy-abort-build.log。UI/HTTP変更はなく、browser・実Wrangler運用ドリル・全workerdは今回ローカルで再実行していない。新headのCIで確認する。remote migration/deployなし。
+
+### 先行するCI再送試験と検索診断
 
 - 015ab17の[CI36380239927](https://github.com/daraskme/Nextcloud-flare/actions/runs/36380239927)でbrowser27/28成功・1失敗。共有recipientのlost response/reload後、作成済みlinkが既に表示されているため、元操作の再送が届く前に送信回数を検査していた。保存traceでもCSRF更新と未完了POSTを確認。同じIdempotency-KeyのPOST応答201と未確認表示の消失を待ち、元body/key一致・共有scope・一件だけの作成・後続renameの検査は維持した。
 - 先行b1fedc7のWindows検索timeoutは未再現。ローカルの同じ9試験を一時的に計測したところ、大規模fixture追加1,083ms・検索399ms・scope SQL383ms・別owner検査54msだった。SQL planはscopeから主キー/children keyset索引、search_index_scope、FTSのrowid付きMATCHを使用。Windowsの遅延がfixtureかSQLかは未確定。元テストに失敗時限定のsearch-scope-timing診断を追加し、完了段階と実行中段階のmsのみを記録する。件数・90秒timeout・production SQLは変更しない。

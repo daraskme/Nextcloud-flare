@@ -7,6 +7,7 @@ import type { RestoreTimeTravelGrant } from "../../../shared/src/restoreTimeTrav
 import { atomicBatch } from "../../src/db/primary";
 import { insertR2Write, type R2WriteGrant } from "../../src/db/r2Write";
 import { RESTORE_SNAPSHOT_CONTROL_QUERY } from "../../src/db/restoreSnapshot";
+import { exportTables } from "../../src/db/schemaContract";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { ControlDatabaseRestore } from "../../src/do/controlDatabaseRestore";
 import { ControlKdf } from "../../src/do/controlKdf";
@@ -894,12 +895,13 @@ it("binds the restored snapshot to the original request and records an observati
     restoreResult: result,
     mirror: { snapshotEpoch: 1 },
   });
-  expect(c.mirror.tables).toHaveLength(74);
+  expect(c.mirror.tables).toHaveLength(75);
+  expect([...c.mirror.tables].sort()).toEqual([...exportTables].sort());
   expect((await control().inspectDatabaseRestore(epoch, id)).state).toBe("snapshot_checking");
   const saved = await attest(c);
   expect(saved).toMatchObject({
     state: "snapshot_verified",
-    tables: 74,
+    tables: 75,
     validator: "restored-snapshot-v1",
   });
   expect(saved.snapshotVerifiedAt).toBeGreaterThanOrEqual(c.issuedAt);

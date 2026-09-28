@@ -29,3 +29,5 @@ FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` �
 `0055` は分割copyのupload/part用2tableを追加する（74table）。既存15種のnative receiptを全field維持し、copy multipartのcreate/part/completeを加える。旧copy保持行はsingle modeを維持する。geometry・不変identity・native/physical記録・連続partを検査し、取消し/精算実装までは削除を拒否する。copy保持中のkeyは全bucket用abortも拒否する。新tableをbackup/restore freeze・export/purge順序へ含める。適用前提とrollback時の停止維持は0054と同じ。
 
 `0057` はcopy停止時刻/epochと不変の精算receiptを追加する（75table）。停止だけでは保持を返さず、未着手/明示的not_started/実保存とnative終了の証拠が揃うblobだけを精算する。copy保持中のnative receiptを自動削除しない。途中multipart/未知結果は保留する。新tableをbackup/restore freeze・export/purgeへ含め、移行条件は0056と同じ。
+
+`0058` は既知copy multipartの中止attempt/epoch/開始時刻/期限と未送信履歴の索引を追加する（75table）。精算receiptへabortedを追加し、全旧行・16依存trigger・freezeを保存する。中止準備、native grant、精算で先行nativeの終了と正確なidentityを照合する。欠落・unknown・timeoutでは保持を返さない。適用前提と旧Workerへのrollback時の停止維持は0057と同じ。

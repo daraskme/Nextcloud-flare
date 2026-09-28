@@ -1,5 +1,6 @@
 import { multipartCleanupFence } from "../jobs/multipartCleanup";
 import { assertExists, primary, type SqlStatement } from "./primary";
+import { copyAbortWriteProof } from "./r2CopyAbort";
 import type { R2WriteRequest } from "./r2Write";
 
 export interface InventoryBindingProof {
@@ -9,7 +10,7 @@ export interface InventoryBindingProof {
   source: string;
 }
 export interface R2AbortProof {
-  source: "initialization" | "cleanup" | "inventory" | "bucket";
+  source: "initialization" | "cleanup" | "inventory" | "bucket" | "copy";
   r2UploadId: string;
   attemptId: string;
   maintenance: boolean;
@@ -19,6 +20,8 @@ export interface R2AbortProof {
   scanRound?: string;
   knownUploadId?: string | null;
   binding?: InventoryBindingProof;
+  jobId?: string;
+  sourceBlobId?: string;
 }
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 export function isAbortWrite(kind: string): kind is "multipart.abort" | "bucket.abort" {
@@ -30,14 +33,14 @@ export function validateAbortWrite(request: R2WriteRequest): void {
     !p ||
     request.upload !== undefined ||
     request.gc !== undefined ||
-    !["initialization", "cleanup", "inventory", "bucket"].includes(p.source) ||
+    !["initialization", "cleanup", "inventory", "bucket", "copy"].includes(p.source) ||
     !uuid.test(p.attemptId) ||
     typeof p.maintenance !== "boolean" ||
     typeof p.r2UploadId !== "string" ||
     !p.r2UploadId ||
     p.r2UploadId.length > 1024 ||
     (request.kind === "bucket.abort") !== (p.source === "bucket") ||
-    (p.source === "bucket"
+    (p.source === "bucket" || p.source === "copy"
       ? p.uploadId !== undefined || p.sourceEpoch !== undefined
       : !/^up_[a-f0-9]{64}$/.test(p.uploadId ?? "") ||
         !Number.isSafeInteger(p.sourceEpoch) ||
@@ -62,7 +65,13 @@ export function validateAbortWrite(request: R2WriteRequest): void {
             p.knownUploadId.length > 0 &&
             p.knownUploadId.length <= 1024)
         )
-      : p.scanRound !== undefined || p.knownUploadId !== undefined)
+      : p.scanRound !== undefined || p.knownUploadId !== undefined) ||
+    (p.source === "copy"
+      ? typeof p.jobId !== "string" ||
+        typeof p.sourceBlobId !== "string" ||
+        !/^copy_[a-f0-9]{64}$/.test(p.jobId ?? "") ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(p.sourceBlobId ?? "")
+      : p.jobId !== undefined || p.sourceBlobId !== undefined)
   )
     throw new Error("invalid_r2_write");
 }
@@ -88,6 +97,7 @@ export async function abortWriteProof(
     ),
   ];
   if (p.binding) guards.push(inventoryBindingFence(p.binding, request.deadline));
+  if (p.source === "copy") return [...guards, copyAbortWriteProof(request)];
   if (p.source === "bucket") {
     guards.push(
       assertExists(

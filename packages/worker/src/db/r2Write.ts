@@ -183,6 +183,8 @@ export function r2WriteSourceRef(g: R2WriteRequest): string | null {
     return JSON.stringify([g.epoch, g.backups.id, g.backups.attemptId, g.backups.nonce]);
   if (g.probe) return JSON.stringify([g.epoch, g.probe.token, g.probe.nonce]);
   if (g.upload) return JSON.stringify([g.upload.id, g.upload.attemptId]);
+  if (g.abort?.source === "copy")
+    return JSON.stringify(["copy", g.abort.jobId, g.abort.sourceBlobId, g.abort.attemptId]);
   if (g.abort)
     return JSON.stringify([
       g.abort.source,

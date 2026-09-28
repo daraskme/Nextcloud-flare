@@ -16,11 +16,13 @@ import {
   tableDigests,
 } from "../backup/snapshot.mjs";
 
-it.each(["single", "multipart", "settled"])(
+it.each(["single", "multipart", "settled", "abort-prepared", "aborted"])(
   "round-trips frozen copy data, holds and cleanup receipts through SQL restore (%s)",
   async (mode) => {
-    const multipart = mode === "multipart",
-      settled = mode === "settled";
+    const aborting = mode === "abort-prepared" || mode === "aborted",
+      multipart = mode === "multipart" || aborting,
+      settled = mode === "settled" || mode === "aborted",
+      stopped = settled || aborting;
     const sourceBytes = multipart ? 9 * 1024 * 1024 : 3;
     const versions = await migrations(),
       source = initialize(
@@ -201,27 +203,29 @@ it.each(["single", "multipart", "settled"])(
           .run(JSON.stringify({ v: 1, blob: 0, offset: 8388608 }), job);
         source.exec("UPDATE control SET maintenance=1");
       }
-      for (const version of versions.filter((m) => m.name > "0055_copy_multipart.sql"))
+      for (const version of versions.filter(
+        (m) => m.name > "0055_copy_multipart.sql" && m.name < "0058_",
+      ))
         source.exec(version.sql);
-      if (settled) {
-        const admission = (kind) => {
-          const id = randomUUID();
-          source
-            .prepare(`INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until,system,maintenance)
+      const admission = (kind) => {
+        const id = randomUUID();
+        source
+          .prepare(`INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until,system,maintenance)
             VALUES(?,?,'target-s',1,strftime('%s','now')*1000,strftime('%s','now')*1000+5000,1,1)`)
-            .run(id, `system:copy.${kind}:${randomUUID()}`);
+          .run(id, `system:copy.${kind}:${randomUUID()}`);
+        source
+          .prepare(
+            "UPDATE mutation_admissions SET state='active',granted_at=strftime('%s','now')*1000,expires_at=strftime('%s','now')*1000+30000 WHERE id=?",
+          )
+          .run(id);
+        return () =>
           source
             .prepare(
-              "UPDATE mutation_admissions SET state='active',granted_at=strftime('%s','now')*1000,expires_at=strftime('%s','now')*1000+30000 WHERE id=?",
+              "UPDATE mutation_admissions SET state='closed',committed_at=strftime('%s','now')*1000 WHERE id=?",
             )
             .run(id);
-          return () =>
-            source
-              .prepare(
-                "UPDATE mutation_admissions SET state='closed',committed_at=strftime('%s','now')*1000 WHERE id=?",
-              )
-              .run(id);
-        };
+      };
+      if (mode === "settled") {
         const stop = admission("stop");
         source
           .prepare(
@@ -240,9 +244,61 @@ it.each(["single", "multipart", "settled"])(
         source.prepare("DELETE FROM blob_pins WHERE pin_id=?").run(job + "_p00001");
         cleanup();
       }
+      const oldReceipts = source.prepare("SELECT * FROM copy_cleanup_receipts").all();
+      for (const version of versions.filter((m) => m.name >= "0058_")) source.exec(version.sql);
+      expect(source.prepare("SELECT * FROM copy_cleanup_receipts").all()).toEqual(oldReceipts);
+      if (aborting) {
+        const stop = admission("stop");
+        source
+          .prepare(
+            "UPDATE bulk_jobs SET state='failed',error_code='copy_expired',stopped_at=strftime('%s','now')*1000,stop_epoch=1 WHERE id=?",
+          )
+          .run(job);
+        source.prepare("UPDATE outbox SET state='failed' WHERE payload_ref=?").run(job);
+        stop();
+        const prepare = admission("multipart-abort"),
+          attempt = randomUUID(),
+          now = Date.now(),
+          id = job + "_b00001";
+        source
+          .prepare(
+            "UPDATE copy_multipart_uploads SET abort_attempt=?,abort_epoch=1,abort_started_at=?,abort_deadline=? WHERE destination_blob_id=?",
+          )
+          .run(attempt, now, now + 4000, id);
+        prepare();
+        if (mode === "aborted") {
+          source
+            .prepare(
+              "INSERT INTO r2_write_attempts VALUES(?,?,1,'target-u','multipart.abort',?,?,?,'succeeded',?,?)",
+            )
+            .run(
+              randomUUID(),
+              randomUUID(),
+              "u/target-u/b/" + id,
+              now + 4000,
+              now,
+              now,
+              JSON.stringify(["copy", job, "source-b", attempt]),
+            );
+          const cleanup = admission("cleanup");
+          source
+            .prepare(`INSERT INTO copy_cleanup_receipts(job_id,source_blob_id,destination_blob_id,pin_id,reservation_id,bytes,disposition,epoch,settled_at)
+            SELECT job_id,source_blob_id,destination_blob_id,pin_id,reservation_id,?,'aborted',1,? FROM copy_job_blobs WHERE job_id=?`)
+            .run(sourceBytes, now, job);
+          source
+            .prepare("UPDATE reservations SET state='released' WHERE id=?")
+            .run(job + "_r00001");
+          source.prepare("UPDATE blobs SET state='deleted' WHERE id=?").run(id);
+          source.prepare("DELETE FROM copy_multipart_parts WHERE destination_blob_id=?").run(id);
+          source.prepare("DELETE FROM copy_multipart_uploads WHERE destination_blob_id=?").run(id);
+          source.prepare("DELETE FROM copy_job_blobs WHERE job_id=?").run(job);
+          source.prepare("DELETE FROM blob_pins WHERE pin_id=?").run(job + "_p00001");
+          cleanup();
+        }
+      }
       // An expired invocation is exported with its spent budget and retry count intact.
       // The native backup barrier refuses a live invocation; expiry never settles its holds.
-      if (!settled)
+      if (!stopped)
         source
           .prepare(
             "INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt,r2_calls) VALUES(?,'expired-claim',1,0,4,9)",
@@ -279,7 +335,7 @@ it.each(["single", "multipart", "settled"])(
           .prepare("SELECT claim_token,expires_at,attempt,r2_calls FROM job_leases WHERE job_id=?")
           .get(job),
       ).toEqual(
-        settled
+        stopped
           ? undefined
           : { claim_token: "expired-claim", expires_at: 0, attempt: 4, r2_calls: 9 },
       );
@@ -294,7 +350,10 @@ it.each(["single", "multipart", "settled"])(
           target
             .prepare("SELECT disposition,bytes FROM copy_cleanup_receipts WHERE job_id=?")
             .get(job),
-        ).toEqual({ disposition: "unwritten", bytes: sourceBytes });
+        ).toEqual({
+          disposition: mode === "aborted" ? "aborted" : "unwritten",
+          bytes: sourceBytes,
+        });
         for (const sql of [
           "UPDATE copy_cleanup_receipts SET bytes=bytes",
           "DELETE FROM copy_cleanup_receipts",

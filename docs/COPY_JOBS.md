@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。途中multipartの中止、結果不明の修復、HTTP受付、Queue consumer、再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。結果不明の修復、HTTP受付、Queue consumer、再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -60,7 +60,7 @@ part進捗は`{v:1,blob,offset}`として確定し、leaseを取り直しても�
 
 全bucket走査では既知のcopy upload IDをtrackedとして扱う。未知IDを含め、copy保持が残るkeyは全bucket用abortから除外する。copy専用の取消し・終了照合が必要で、lease満了や一覧からの消失を閉鎖証明にしない。
 
-送信前ACK喪失後に記録がないattempt、native結果不明や観測記録欠落、途中multipartの中止は未接続。取消し/期限失敗後、未着手・明示的なnot_started・保存済みの証拠が揃うblobの精算は接続済み。現在はreadとwriteを合わせたcall数で次のreadを制限する。最大10,000件・500 GiBの受付を完走させるには、batch化とD1/200 invocation/20,000 R2 callの全体予算検証も必要。現段階ではこれらを推測で解放せず、HTTP/Queue consumerを有効化しない。
+送信前ACK喪失後に記録がないattempt、native結果不明や観測記録欠落の修復は未接続。取消し/期限失敗後、未着手・明示的なnot_started・保存済み・既知multipartの実中止という証拠が揃うblobの精算は接続済み。現在はreadとwriteを合わせたcall数で次のreadを制限する。最大10,000件・500 GiBの受付を完走させるには、batch化とD1/200 invocation/20,000 R2 callの全体予算検証も必要。現段階ではこれらを推測で解放せず、HTTP/Queue consumerを有効化しない。
 
 ## 転送済みコピーの一括公開
 
@@ -84,9 +84,18 @@ schemaでも、staging blob・実在bytes/hash/ETag・single PUTまたはmultipa
 
 - 未着手は転送attempt/保存先blob/送信履歴がないことを検査する。準備済みの場合は、対応するnativeの明示的なnot_started記録と、他の送信がないことを要求する。記録の欠落を未送信の証拠にしない。
 - 保存済みはsingle PUTまたはmultipart completeのnative succeeded、pending不在、hash/ETagとphysical記録を照合する。保存先をorphan/GC候補へ引き継ぎ、35日猶予を付ける。実objectとphysical容量はGCの実削除まで保持する。
-- 途中multipart、unknown native、観測欠落、prepare ACK喪失後の記録なしattemptは保留を返す。HEAD不在・期限満了・abort成功だけでは精算しない。専用multipart abortと不明結果修復は次の接続点。
+- 既知multipartは下記の専用abortで先行nativeの終了と実中止が証明された場合に、`aborted` receiptから予約・pin・part/handle保持を解除する。objectのphysical記録がある場合はこの精算を拒否する。
+- unknown native、未知handle、complete観測欠落、prepare ACK喪失後の記録なしattemptは保留を返す。HEAD不在・期限満了・abort応答だけでは精算しない。不明結果修復は後続。
 
 停止と精算はDB-only receiptでACK喪失を照合し、R2送信許可として使わない。共有失効・owner無効化後でも、停止済みjobの証明できる精算はsystem admissionで可能。停止履歴は不変とし、同じjobをpendingへ戻す再試行は許可しない。新規jobを含むretry設計、HTTP/Queue/画面接続は未実装。
+
+## 停止済みコピーの既知multipart中止
+
+`jobs/copyMultipartAbort.ts` の `abortStoppedCopyMultipart` は、一つの停止済みjob/source blobに対して最大25秒で既知handleの中止を試みる。create成功、準備済み全partのsucceeded/not_started、準備済みcompleteのnot_started、同keyのpending不在を要求する。完成objectにつながる他の送信履歴、physical記録、隔離objectがあれば拒否する。未記録のprepared attemptを未送信扱いにしない。各partの証明にはkind/source_refの索引を使う。
+
+system admissionの原子的batchでattempt・epoch・開始時刻・期限を固定し、直接ACKを得た呼出しだけがR2へ進む。共通の`multipart.abort`にcopy専用の証明を加え、ControlDOとD1 triggerでもjob/source/owner/key/handle/attempt/epoch/期限、先行nativeの終了を再検査する。全bucket用abortでcopy保持を回避しない。所有者が無効化された場合や共有失効後も、停止済みコピーの中止は内部system処理として実行できる。
+
+同じ準備済みattemptを再度呼び出してもR2へ再送せず、対応するnative succeededを照合する。prepare ACK喪失、未知abort、timeoutでは予約とpinを保持し、実終了が遅れて記録されたら次の呼出しで確認する。finishのACKだけを失った場合はD1の同一receiptで回復する。epoch変更後の実終了記録も精算に利用できる。中止処理自体は容量を返さず、`cleanupStoppedCopyJob`が先行処理とabortの終了記録を再検査し、immutable `aborted` receiptと保持の解放を原子的に確定する。中止attemptの未送信・記録喪失からの再試行管理は後続。
 
 ## 移行と復旧
 
@@ -98,14 +107,16 @@ migration0052で通常72tableとなり、0053は既存job_leasesへinvocationの
 
 0057はcopy_cleanup_receiptsを追加して75通常tableとし、bulk_jobsへ停止時刻/epochを追加する。旧行を維持し、停止条件・精算証拠・不変receipt・backup/restore freeze・export/purgeを検査する。保持中のkeyのnative receiptは自動削除から除外し、SQLでも削除を拒否する。0056と同じ停止・排出条件で移行する。
 
-copy用reservationは汎用の旧epoch回収から除外する。公開batchまたは0057の証明済み精算以外は、保持対応の存在中にreservationの変更とpinの変更/削除を拒否する。pending/running jobまたは保持対応が残る間は復旧後の再開を許可しない。Outbox監査は保存済みmanifestのhashと受付receiptを検査するが、成功しても実転送の終了証明にはならない。24時間の受付期限やepoch変更だけで保持を解放しない。
+0058は75tableを維持し、multipart headerへ中止attempt/epoch/開始時刻/期限、not_started履歴の照合索引を追加する。精算receiptへabortedを追加する再作成では全旧行を両方向EXCEPTで検査し、依存する16triggerとfreezeを維持する。中止準備・native dispatch・精算の各段階で同じ終了証明を要求する。既存の精算receipt、途中multipart、中止準備と中止済み状態をSQL export/importで保持する。移行前提とrollback時のmaintenance維持は0057と同じ。
 
-取消し/失敗の精算receiptは元manifestと照合し、復旧の最終fenceは全保持の解放と精算済み件数・Outbox失敗を要求する。manifestと精算receiptは終了後も削除を拒否する。途中multipartの中止や未知結果の修復には追加の終了証拠が必要で、guardだけを外して容量を返す運用は行わない。この段階の内部serviceはHTTP経路へ公開しない。
+copy用reservationは汎用の旧epoch回収から除外する。公開batchまたは0057/0058の証明済み精算以外は、保持対応の存在中にreservationの変更とpinの変更/削除を拒否する。pending/running jobまたは保持対応が残る間は復旧後の再開を許可しない。Outbox監査は保存済みmanifestのhashと受付receiptを検査するが、成功しても実転送の終了証明にはならない。24時間の受付期限やepoch変更だけで保持を解放しない。
+
+取消し/失敗の精算receiptは元manifestと照合し、復旧の最終fenceは全保持の解放と精算済み件数・Outbox失敗を要求する。manifestと精算receiptは終了後も削除を拒否する。未知結果の修復には追加の終了証拠が必要で、guardだけを外して容量を返す運用は行わない。この段階の内部serviceはHTTP経路へ公開しない。
 
 ## 次に接続する処理
 
 1. 大量blob・大容量multipartのbatch化と、最大規模の完走予算を検証する。
-2. ACK喪失/未送信/結果不明/観測欠落の照合と途中multipartの中止を接続し、Queue consumerへ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
+2. ACK喪失/未送信/結果不明/観測欠落の照合と中止attemptの再試行管理を接続し、Queue consumerへ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
 3. 内部の一括公開処理へexecutorを接続し、途中の失敗・取消しを含めたjob状態遷移を完成させる。
 4. job read/cancel/retry、停止・recovery・Outbox、pin/予約/physicalの精算、Shared画面の宛先選択と進捗を接続する。
 
