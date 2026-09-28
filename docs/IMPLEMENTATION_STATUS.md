@@ -1,6 +1,18 @@
 # 実装進捗
 
-## 公開リンクの単一・分割uploadと上書きAPI（今回）
+## 公開アップロード画面・上書き確認・再読み込み後の再開（今回）
+
+公開画面へ単一/分割upload、確認付き上書き、確認済みbyte進捗、一時停止/中止/結果確認を追加した。元share/session・受付/確定key・capability・part attempt・上書きrevision/blobとファイル照合情報を専用IndexedDBへ保存する。秘密URL・password・file本体は保存しない。名前/サイズ/mtimeと先頭/末尾各64 KiBのSHA-256で元ファイルを照合し、単一PUTの結果不明時は再送しない。分割は整合するpart一覧の完了分を除き最大4並列で送る。root permissionsでupload actionも反映する。logout時の記録削除とclosed session保存を同一transactionで行い、通知が遅れた別タブからの再保存を拒否する。schema0064・通常76table・147 route、依存追加なし。
+
+- 全Node89file/1,573件成功（100.24秒、/tmp/ncf-public-upload-ui-unit-full.log）。新規25件は0byte/単一/分割、受付/転送/確定のACK喪失、Operation-Id照会、同じファイル情報でも異なる内容の拒否、保存失敗時の未送信、CSRF中のlogout、別session/同時tab/期限、multipart geometry/cursor/unknown、HTTP拒否後の元intent維持と進捗再取得を含む。
+- 関連workerd5file/80件成功（60.06秒、/tmp/ncf-public-upload-ui-native-final.log）。公開unlock/read/edit/upload/assetsを検証。upload actionだけを取り消す追加1件で、フォルダー作成/renameを維持しつつupload/overwrite両操作を隠すことを確認した。
+- 関連browser4file/14件成功（3.2分、/tmp/ncf-public-upload-ui-browser-final.log）。新規8件でmobile新規/上書き・直接共有file・受付/確定ACK喪失後のreload・96 MiBのmultipart中断/元ファイル再選択/完了partの非再送・中止/logout・read-only・logout通知が届かない別タブの遅延応答を検証し、所有者側でも実byteを読み戻した。初回は12/13件成功で、中止ボタンが送信中に消える時点を終了と誤認した試験を、終了通知を待つ形へ修正した（/tmp/ncf-public-upload-ui-browser.log）。
+- 最終確認で「記録を削除」も転送と同じWeb Lockへ接続した。別タブが送信中なら削除を拒否し、遅れた保存で記録が復活する競合を防ぐ。該当browser1件を拡張して再実行成功（1.4分、/tmp/ncf-public-upload-ui-browser-lock.log）。再build後のpublic-assets4件も成功（2.80秒、/tmp/ncf-public-upload-ui-assets-final.log）。上記との重複は合計に加算しない。
+- 型、lint616file、契約/設定、Web build/Worker dry-run成功。/tmp/ncf-public-upload-ui-types-final.log、/tmp/ncf-public-upload-ui-lint.log、/tmp/ncf-public-upload-ui-contracts.log、/tmp/ncf-public-upload-ui-config.log、/tmp/ncf-public-upload-ui-build-final.log。390pxの上書き確認画面を画像でも確認し、横のはみ出しなし。
+- 先行2d34118の[CI36440037128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36440037128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。下記の先行Windows失敗の根本原因が特定されたことを意味しません。
+- **全Node1,573 + 関連workerd80 + 関連browser14 = 1,667件成功**。公開削除、upload-only、ZIP/media、最大規模と実環境の検証は未完了。全workerd/全browserとbackup drillは今回ローカルで再実行していない。remote resource/secret/migration/deployなし。
+
+## 公開リンクの単一・分割uploadと上書きAPI（前回）
 
 公開uploadの受付・binary転送・確定・status・中止を既存のUploadDO/R2/予約/operationへ接続した。migration0064でuploadsに変更不可のlink_share_id/versionを追加し、元share/session/epochとHMACを照合する。現在のcreate/editに加えてupload actionを受付・R2実行・確定・receipt照会で検査する。編集linkは所有者予約を使用し、匿名activityのactorはnull。直接共有されたfileの親を返さず上書きできる。通常76table・147 route、依存追加なし。
 

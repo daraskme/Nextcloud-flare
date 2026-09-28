@@ -4,10 +4,11 @@ export interface SharedNode {
   kind: "root" | "folder" | "file";
   currentBlobId: string | null;
   size: number | null;
+  revision: number;
 }
 export interface SharedRoot {
   sessionId: string;
-  permissions: { createFolder: boolean; rename: boolean };
+  permissions: { createFolder: boolean; rename: boolean; upload: boolean; overwrite: boolean };
   root: SharedNode;
   contentOrigin: string;
   expiresAt: number;
@@ -42,22 +43,43 @@ export class PublicClient {
     token?: string,
     headers: Record<string, string> = {},
     operationId?: string,
+    signal?: AbortSignal,
   ): Promise<T> {
     const path = operationId
       ? `/api/v1/operations/${operationId}`
       : `/api/v1/public/shares/${this.id}${suffix}`;
+    return this.#fetch<T>(
+      path,
+      {
+        method,
+        headers: {
+          ...headers,
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(token ? { "X-CSRF-Token": token } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+      signal,
+    );
+  }
+  async #fetch<T>(
+    path: string,
+    init: RequestInit,
+    signal?: AbortSignal,
+    timeout = 30000,
+  ): Promise<T> {
+    const active = AbortSignal.any([
+      this.lifetime.signal,
+      AbortSignal.timeout(timeout),
+      ...(signal ? [signal] : []),
+    ]);
+    active.throwIfAborted();
     const response = await fetch(path, {
-      method,
+      ...init,
       credentials: "same-origin",
       redirect: "error",
       cache: "no-store",
-      signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30000)]),
-      headers: {
-        ...headers,
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...(token ? { "X-CSRF-Token": token } : {}),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: active,
     });
     if (!response.ok)
       throw new PublicError(
@@ -68,8 +90,47 @@ export class PublicClient {
           : undefined,
       );
     const value = response.status === 204 ? undefined : await response.json();
-    this.lifetime.signal.throwIfAborted();
+    active.throwIfAborted();
     return value as T;
+  }
+  async uploadJson<T>(
+    sessionId: string,
+    suffix: string,
+    method: "POST" | "DELETE",
+    body: unknown,
+    headers: Record<string, string>,
+    signal?: AbortSignal,
+  ) {
+    const { token } = await this.request<{ token: string }>(
+      "/csrf",
+      "POST",
+      undefined,
+      undefined,
+      {},
+      undefined,
+      signal,
+    );
+    return this.request<T>(
+      suffix,
+      method,
+      body,
+      token,
+      { ...headers, "Share-Session": sessionId },
+      undefined,
+      signal,
+    );
+  }
+  uploadBytes<T>(suffix: string, body: Blob, headers: Record<string, string>, signal: AbortSignal) {
+    return this.#fetch<T>(
+      `/api/v1/public/shares/${this.id}${suffix}`,
+      {
+        method: "PUT",
+        body,
+        headers: { ...headers, "Content-Type": "application/octet-stream" },
+      },
+      signal,
+      900000,
+    );
   }
   async unlock(password: string) {
     if (!navigator.locks) throw new Error("locks_unavailable");
@@ -112,7 +173,7 @@ export class PublicClient {
       "Share-Session": intent.sessionId,
     });
   }
-  operation(id: string, sessionId: string) {
+  operation(id: string, sessionId: string, signal?: AbortSignal) {
     if (!/^op_[a-f0-9]{64}$/.test(id)) throw new Error("invalid_operation_id");
     return this.request<EditOperation>(
       "",
@@ -124,6 +185,7 @@ export class PublicClient {
         "Share-Session": sessionId,
       },
       id,
+      signal,
     );
   }
   async download(root: SharedRoot, node: SharedNode, target: Window) {

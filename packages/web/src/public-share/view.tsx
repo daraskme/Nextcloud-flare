@@ -7,6 +7,8 @@ import {
   type SharedRoot,
 } from "./client";
 import { PublicEditor } from "./editor";
+import { forgetPublicUploads } from "./uploadStore";
+import { PublicUploads } from "./uploads";
 
 function size(bytes: number | null) {
   if (bytes === null) return "サイズ不明";
@@ -24,19 +26,24 @@ export function PublicApp({ client }: { client: PublicClient }) {
     [retry, setRetry] = useState(0);
   const [closed, setClosed] = useState(false);
   const [editing, setEditing] = useState<{ node?: SharedNode } | null>(null);
-  const locked = busy || editing !== null;
+  const [uploading, setUploading] = useState<{ node?: SharedNode } | null>(null);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const locked = busy || editing !== null || uploading !== null || transferBusy;
   const channel = useRef<BroadcastChannel | null>(null);
   const clear = useCallback(() => {
     client.close();
+    void forgetPublicUploads(client.id, root?.sessionId).catch(() => {});
     setRoot(null);
     setTrail([]);
     setPage(null);
     setEditing(null);
+    setUploading(null);
+    setTransferBusy(false);
     setPassword("");
     setClosed(true);
     setBusy(false);
     setMessage("共有を閉じました。もう一度開くには、共有リンクからアクセスしてください。");
-  }, [client]);
+  }, [client, root?.sessionId]);
   const failed = useCallback(
     (error: unknown) => {
       if (client.lifetime.signal.aborted) return;
@@ -58,7 +65,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
     [client],
   );
   const open = useCallback(
-    async (value: string) => {
+    async (value: string, notice = "") => {
       setBusy(true);
       setMessage("");
       setPage(null);
@@ -72,6 +79,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
         setTrail([loaded.root]);
         setPage(items);
         setPassword("");
+        setMessage(notice);
       } catch (error) {
         failed(error);
       } finally {
@@ -104,7 +112,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
     const timer = setTimeout(clear, Math.max(0, root.expiresAt - Date.now()));
     return () => clearTimeout(timer);
   }, [root, clear]);
-  async function browse(next: SharedNode[], cursor?: string | null) {
+  async function browse(next: SharedNode[], cursor?: string | null, notice = "") {
     const previous = page;
     setBusy(true);
     setMessage("");
@@ -116,6 +124,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
         ...result,
         children: cursor ? [...(previous?.children ?? []), ...result.children] : result.children,
       });
+      setMessage(notice);
     } catch (error) {
       setRoot(null);
       setTrail([]);
@@ -184,10 +193,14 @@ export function PublicApp({ client }: { client: PublicClient }) {
         <h1>{root ? current?.name || "共有ファイル" : "共有ファイル"}</h1>
         <p className="description">
           {root
-            ? root.root.kind !== "file" &&
-              (root.permissions.createFolder || root.permissions.rename)
-              ? "共有されたファイルの閲覧・保存、フォルダー作成と名前変更ができます。"
-              : "共有されたファイルを閲覧・保存できます。"
+            ? root.permissions.upload || root.permissions.overwrite
+              ? root.root.kind === "file"
+                ? "共有されたファイルの閲覧・保存と、確認付きの上書きができます。"
+                : "共有されたファイルの閲覧・保存、アップロードと編集ができます。"
+              : root.root.kind !== "file" &&
+                  (root.permissions.createFolder || root.permissions.rename)
+                ? "共有されたファイルの閲覧・保存、フォルダー作成と名前変更ができます。"
+                : "共有されたファイルを閲覧・保存できます。"
             : "リンクを受け取った方のためのファイル共有です。"}
         </p>
         {message && (
@@ -262,6 +275,31 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 }}
               />
             )}
+            {current && (
+              <PublicUploads
+                client={client}
+                root={root}
+                parentId={current.kind === "file" ? null : current.id}
+                request={uploading}
+                closeForm={() => setUploading(null)}
+                busyChanged={setTransferBusy}
+                changed={(notice) => {
+                  if (current.kind === "file") void open("", notice);
+                  else void browse(trail, undefined, notice);
+                }}
+                denied={(error) => {
+                  setUploading(null);
+                  setTransferBusy(false);
+                  setRoot(null);
+                  setTrail([]);
+                  setPage(null);
+                  failed(error);
+                  setMessage(
+                    "共有の状態や上書き先が変わりました。共有リンクを開き直し、現在の内容を確認してください。",
+                  );
+                }}
+              />
+            )}
             <div className="list-header">
               <span>{current?.kind === "file" ? "ファイル" : "フォルダー内の項目"}</span>
               {current?.kind !== "file" && root.permissions.createFolder && (
@@ -274,6 +312,18 @@ export function PublicApp({ client }: { client: PublicClient }) {
                   }}
                 >
                   新規フォルダー
+                </button>
+              )}
+              {current?.kind !== "file" && root.permissions.upload && (
+                <button
+                  className="quiet"
+                  disabled={locked}
+                  onClick={() => {
+                    setMessage("");
+                    setUploading({});
+                  }}
+                >
+                  アップロード
                 </button>
               )}
               <button className="quiet" disabled={locked} onClick={() => void open("")}>
@@ -314,6 +364,19 @@ export function PublicApp({ client }: { client: PublicClient }) {
                       }}
                     >
                       名前を変更
+                    </button>
+                  )}
+                  {node.kind === "file" && root.permissions.overwrite && (
+                    <button
+                      className="rename"
+                      disabled={locked || !node.currentBlobId}
+                      aria-label={`${node.name}を上書き`}
+                      onClick={() => {
+                        setMessage("");
+                        setUploading({ node });
+                      }}
+                    >
+                      上書き
                     </button>
                   )}
                   {node.kind === "file" && (

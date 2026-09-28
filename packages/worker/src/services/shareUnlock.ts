@@ -30,13 +30,14 @@ interface ActiveLink {
   kid: string | null;
   can_create: number;
   can_rename: number;
+  can_upload: number;
 }
 export interface ShareSession {
   claims: ShareCookieClaims;
   ownerId: string;
   rootNodeId: string;
   spaceId: string;
-  permissions: { createFolder: boolean; rename: boolean };
+  permissions: { createFolder: boolean; rename: boolean; upload: boolean; overwrite: boolean };
 }
 // Pre-authentication proof: inspect only this share's bounded ancestry, without fabricating a user credential.
 const ACTIVE_LINK = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
@@ -47,7 +48,8 @@ const ACTIVE_LINK = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,delete
   WHERE a.depth<64 AND instr(a.path,'/'||n.id||'/')=0
   ) SELECT sh.*,n.space_id,
   EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='create') AS can_create,
-  EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='edit') AS can_rename
+  EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='edit') AS can_rename,
+  EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload') AS can_upload
   FROM shares sh JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
   JOIN users owner ON owner.id=sh.owner_id JOIN control ctl ON ctl.singleton=1
   WHERE sh.id=?1 AND sh.kind='link' AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
@@ -106,7 +108,12 @@ export async function readShareSession(
     ownerId: row.owner_id,
     rootNodeId: row.root_node_id,
     spaceId: row.space_id,
-    permissions: { createFolder: row.can_create === 1, rename: row.can_rename === 1 },
+    permissions: {
+      createFolder: row.can_create === 1,
+      rename: row.can_rename === 1,
+      upload: row.can_upload === 1 && row.can_create === 1,
+      overwrite: row.can_upload === 1 && row.can_rename === 1,
+    },
   };
 }
 

@@ -1,8 +1,8 @@
 # 開発進捗
 
-[公開リンク](PUBLIC_SHARES.md)の単一・分割アップロードと上書きをAPIへ接続しました。元の共有ID・version・匿名credentialを保存し、受付・R2転送・確定・receipt照会で現在のupload権限も検査します。既存の所有者容量予約・操作記録・中止/清掃を共有し、migration0064で保存済みの共有情報を変更できなくしました。公開アップロード画面と削除、upload-only・ZIP・media、実環境検証は未完了です。通常76table・147 routeは維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンク](PUBLIC_SHARES.md)の画面へ、単一・分割アップロード、確認付き上書き、進捗、一時停止・中止と結果確認を追加しました。元のshare/session・受付/確定key・capability・ファイルの照合情報を専用IndexedDBへ保存し、再読み込み後も元の操作を確認・再開します。単一PUTの結果不明時は再送せず、分割は完了部分を除いて最大4並列で送信します。直接共有fileの上書きでも親情報を返しません。公開削除、upload-only・ZIP・media、実環境検証は未完了です。schema0064・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
-更新: 2026-09-28
+更新: 2026-09-29
 
 Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV、認証・会計・復旧・共通受付、バックアップの停止・生成・R2保存/取得・完了記録と専用運用コマンドをローカル実装済みです。製品全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。
 
@@ -10,7 +10,9 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開アップロード/上書きの画面、削除と、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開削除と、残る専用配信経路を接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行2d34118の[CI36440037128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36440037128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。下記の先行Windows失敗の根本原因が特定されたことを意味しません。
 
 先行4cf6153の[CI36435508999](https://github.com/daraskme/Nextcloud-flare/actions/runs/36435508999)は、Ubuntu・Windows1/4/2/4/4/4・browser・backup bindings/cliの7job成功、Windows3/4失敗で終了しました。3/4はmultipart-bucket-control-admissionのscan-page試験でr2_binding_verification_failedとなり、773/774件成功でした。保存ログでは根本原因を特定できず、解決済みとは扱いません。
 

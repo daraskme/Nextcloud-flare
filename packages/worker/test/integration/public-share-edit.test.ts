@@ -125,7 +125,12 @@ it("creates and renames once per original credential/key and exposes only a boun
     permissions: unknown;
   }>();
   expect(root.sessionId).toBe(t.session.claims.session_id);
-  expect(root.permissions).toEqual({ createFolder: true, rename: true });
+  expect(root.permissions).toEqual({
+    createFolder: true,
+    rename: true,
+    upload: true,
+    overwrite: true,
+  });
   const lookup = t.request(`/api/v1/operations/${renamed.id}`);
   expect(publicShareRoute(lookup)).toBe(true);
   expect(await (await t.http(lookup)).json()).toEqual(renamed);
@@ -141,6 +146,19 @@ it("creates and renames once per original credential/key and exposes only a boun
       })
     ).status,
   ).toBe(200);
+});
+it("hides upload controls when only folder creation and rename remain authorized", async () => {
+  const t = await fixture();
+  await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='upload'")
+    .bind(t.share.id)
+    .run();
+  const root = await (await t.http(t.request(""))).json<{ permissions: unknown }>();
+  expect(root.permissions).toEqual({
+    createFolder: true,
+    rename: true,
+    upload: false,
+    overwrite: false,
+  });
 });
 it("requires same-origin public CSRF, an idempotency key and the original session", async () => {
   const t = await fixture();
@@ -196,7 +214,7 @@ it("rejects read links, shared-root renames and all targets outside the current 
     ).status,
   ).toBe(404);
   expect(await (await read.http(read.request(""))).json()).toMatchObject({
-    permissions: { createFolder: false, rename: false },
+    permissions: { createFolder: false, rename: false, upload: false, overwrite: false },
   });
   const t = await fixture();
   expect(

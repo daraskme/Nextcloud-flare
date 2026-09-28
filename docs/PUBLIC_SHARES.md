@@ -1,10 +1,10 @@
 # 公開リンク共有
 
-更新: 2026-09-28。schema0064・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更と権限切替、公開upload/overwrite APIを接続済み。公開アップロード画面・削除、upload-only・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-29。schema0064・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketによる配信、公開フォルダー作成・名前変更と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。公開削除、upload-only・ZIP・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
-Filesのファイル・フォルダー操作メニューから「公開リンクを管理」を開く。新規は閲覧を初期選択とし、閲覧/編集の権限、期限と任意のpasswordを設定できる。設定変更でも現在のroleを初期表示して切り替えられる。編集権限は共有内容の変更を許可する設定で、現在の公開画面ではフォルダー作成・名前変更に対応する。作成・再発行の応答に含まれるURLはcomponent内だけに保持し、clipboardへのコピーと公開画面を開く操作を提供する。storage・query cacheへ保存せず、dialogを閉じると再表示できない。設定変更はpasswordの維持/新規設定/解除を区別し、期限切れは期限を更新してから再発行する。
+Filesのファイル・フォルダー操作メニューから「公開リンクを管理」を開く。新規は閲覧を初期選択とし、閲覧/編集の権限、期限と任意のpasswordを設定できる。設定変更でも現在のroleを初期表示して切り替えられる。編集権限は共有内容の変更を許可する設定で、現在の公開画面ではフォルダー作成・名前変更・アップロード・上書きに対応する。作成・再発行の応答に含まれるURLはcomponent内だけに保持し、clipboardへのコピーと公開画面を開く操作を提供する。storage・query cacheへ保存せず、dialogを閉じると再表示できない。設定変更はpasswordの維持/新規設定/解除を区別し、期限切れは期限を更新してから再発行する。
 
 再発行・停止は旧URLと閲覧sessionの失効を画面内で説明し、対象操作を確認する。結果不明とversion競合では更新操作を無効化し、一覧更新後に最新のリンクを選び直す。POST/PATCHを自動で再送せず、受け取れなかった秘密値は再発行で取得する。secretを一覧から復元したように表示しない。独立したlink一覧queryを使い、内部共有の操作は従来どおり利用できる。
 
@@ -66,7 +66,7 @@ root GETの`permissions.createFolder/rename`で編集操作を表示するが、
 
 ## 公開アップロードと上書きAPI
 
-編集linkの`POST .../:id/uploads`は`mode:"single"|"multipart"`、`parentId`、`name`、`declared_size`、任意の`targetId/targetRevision`を受ける。space/owner/share/credentialは本文から指定できない。直接共有したfileの上書きはparentIdを省略でき、認可したtargetから内部で親を解決する。閲覧linkと共有範囲外は拒否する。公開画面からのファイル選択・進捗・再開はまだ未接続である。
+編集linkの`POST .../:id/uploads`は`mode:"single"|"multipart"`、`parentId`、`name`、`declared_size`、任意の`targetId/targetRevision`を受ける。space/owner/share/credentialは本文から指定できない。直接共有したfileの上書きはparentIdを省略でき、認可したtargetから内部で親を解決する。閲覧linkと共有範囲外は拒否する。
 
 全upload経路は現在の共有Cookieと元の`Share-Session`を要求する。JSON変更にはpublic CSRF、受付と確定には`Idempotency-Key`も必要。binary PUTは`Upload-Capability`、exact Origin、既知のContent-Lengthを要求し、partには`Upload-Attempt-Id`、上書きには現行blobの`If-Match`を要求する。`PUT .../uploads/:uploadId/content`または`parts/:number`、空JSONの`POST .../complete`、capability付き`GET .../:uploadId`と空JSONの`DELETE .../:uploadId`を既存の転送・確定・中止処理へ接続する。GETは厳格なafter/limitによるpart一覧を扱う。
 
@@ -76,9 +76,21 @@ migration0064でuploadsへ変更不可のlink_share_id/versionを追加した。
 
 編集linkは所有者の容量予約を使う。share単位の追加予約上限と情報非開示receiptは後続のupload-only専用契約であり、既存編集linkのreservation_limit=0を容量ゼロとして扱わない。未確定の受付応答は同じkey・元sessionで照会/再送し、credentialやkeyを差し替えない。multipart中止の容量解放はnative handleの終了が証明された後になる。
 
+## 公開アップロード画面と再開
+
+root GETの`permissions.upload/overwrite`に従ってファイル選択と上書きを表示する。upload actionだけが取り消された場合も両操作を隠す。上書きは対象名と置換の説明を表示し、確認時点のtarget ID/revision/blobを固定する。選択した元ファイルの名前が違っても保存先の名前は変更しない。直接共有fileの上書きでは親IDを送らない。
+
+95,000,000 bytes以下は単一PUT、それより大きいファイルはmultipartを選ぶ。上限は500 GiB、同時partは最大4、待機中の記録は画面で最大32件。Web Locksで同じ転送への別タブからの同時操作を拒否する。送信中は他の編集を無効にし、確認済みbyte数の進捗と一時停止を表示する。一時停止はブラウザーの通信を止めるだけで、サーバー側の処理の取消しを意味しない。
+
+専用IndexedDB `ncf-public-uploads`へ、元share/session、受付/確定key、upload ID/capability、各partのattempt ID、上書き先と元ファイル照合情報を保存する。秘密URL・password・ファイル本体は保存しない。新規受付と各binary送信の前に記録の永続化を必須とする。再読み込みで復元しても自動送信せず、「結果を確認」「再開する」「送信を中止」を選択する。ファイルを再選択した場合、名前・サイズ・更新日時と先頭/末尾各64 KiBのSHA-256を照合する。全ファイルの内容一致を証明するhashではない。
+
+単一PUTの結果が不明な場合は二度目のPUTを送らず、statusまたは元のoperationを照会する。分割はrevisionとgeometryが揃った全pageから完了partを確認し、完了分を再送しない。in_flight/unknownがあれば新規part送信を停止する。D1 pendingで元attemptの未開始が証明された場合だけ、明示再開で次のattemptへ進む。受付応答喪失は同じ受付key、確定応答喪失は同じ確定keyまたは受信済みOperation-Idで追跡し、sessionやkeyを付け替えない。
+
+完了・中止後は記録を削除し、一覧を再取得する。共有終了・期限切れ・別sessionへの切替でも元の記録を除く。logoutは記録削除とclosed sessionの保存を同じIDB transactionで行い、通知が遅れた別タブの後続保存も拒否する。closed sessionには秘密情報を持たず、最長unlock期限に対応する7日後に掃除できる。「記録を削除」はサーバー処理の取消しではないことを確認してから実行し、別タブが転送lockを保持している間は削除しない。401/403/404/412では共有内容の再確認を案内し、別sessionで元転送を引き継がない。
+
 ## 次の接続と完了条件
 
-1. 公開upload/overwriteの画面と削除を接続する。削除は既存のlink認可対象外であり、trashのactor/operation/復旧契約も整備する。
+1. 公開削除を接続する。削除は既存のlink認可対象外であり、trashのactor/operation/復旧契約も整備する。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側の直接content/thumbなど、未接続の専用配信経路を契約へつなぐ。現在の画面の保存経路はcontent ticket/session経由である。
 4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。

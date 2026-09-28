@@ -274,6 +274,37 @@ h1 {
 .list-header {
   flex-wrap: wrap;
 }
+.public-uploads:empty {
+  display: none;
+}
+.upload-name {
+  overflow-wrap: anywhere;
+}
+.upload-task progress {
+  width: 100%;
+  accent-color: #234e3a;
+}
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.upload-actions .primary {
+  width: auto;
+}
+.public-editor input[type="file"] {
+  padding: 8px;
+  font-size: 12px;
+}
+.public-editor input::file-selector-button {
+  border: 0;
+  border-radius: 5px;
+  padding: 8px;
+  margin-right: 8px;
+  background: #eef2ea;
+  color: #234e3a;
+}
 .load-more {
   display: block;
   margin: 24px auto 0;
