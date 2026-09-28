@@ -34,6 +34,18 @@ export async function publicShareRead(
   const url = new URL(request.url),
     principal = publicPrincipal(session);
   if (!(await hasEmptyBody(request)) || url.hash) return problem(400, "bad_request");
+  if (session.kind === "upload_only") {
+    if (suffix || url.search) return problem(404, "not_found");
+    return Response.json(
+      {
+        kind: "upload_only",
+        sessionId: session.claims.session_id,
+        expiresAt: session.claims.exp * 1000,
+        permissions: session.permissions,
+      },
+      { headers: HEADERS },
+    );
+  }
   const child = /^children\/([A-Za-z0-9_-]{1,128})$/.exec(suffix);
   if (
     [...url.searchParams.keys()].some(

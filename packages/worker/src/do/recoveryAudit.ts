@@ -276,6 +276,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=
             AND sh.owner_id=u.owner_id AND u.selected_share_version BETWEEN 1 AND sh.version))))
       AND (NOT EXISTS(SELECT 1 FROM uploads u
         WHERE (u.link_share_id IS NULL)<>(u.link_share_version IS NULL)
+          OR (u.upload_only=1 AND (u.link_share_id IS NULL OR u.target_id IS NOT NULL OR u.target_revision IS NOT NULL))
           OR (u.source='private' AND u.link_share_id IS NULL AND EXISTS(
             SELECT 1 FROM credentials WHERE id=u.credential_id AND kind='share'))
           OR (u.link_share_id IS NOT NULL AND (u.source<>'private'
@@ -286,8 +287,9 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=
               JOIN shares sh ON sh.id=ss.share_id JOIN reservations r ON r.id=u.reservation_id
               WHERE (cr.id=u.credential_id AND cr.kind='share' AND ss.share_id=u.link_share_id
                 AND ss.share_version=u.link_share_version AND ss.epoch=u.epoch)
-                AND (sh.kind='link' AND sh.owner_id=u.owner_id AND sh.version>=u.link_share_version)
-                AND (r.owner_id=u.owner_id AND r.share_id IS NULL AND r.op_id IS NULL
+                AND (sh.kind=CASE u.upload_only WHEN 1 THEN 'upload_only' ELSE 'link' END
+                  AND sh.owner_id=u.owner_id AND sh.version>=u.link_share_version)
+                AND (r.owner_id=u.owner_id AND r.share_id IS CASE u.upload_only WHEN 1 THEN u.link_share_id ELSE NULL END AND r.op_id IS NULL
                 AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at)))))
       AND NOT EXISTS(SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
         WHERE o.selected_share_id IS NOT u.selected_share_id

@@ -21,7 +21,7 @@ export async function sharePage(
   after: ListCursorClaims | null,
   limit: number,
   id?: string,
-  kind: "internal" | "link" = "internal",
+  kind: "internal" | "link" | "upload_only" = "internal",
 ) {
   const values: BindValue[] = [session.user_id, ...(received ? [session.user_id] : [])];
   let filter = received
@@ -48,7 +48,11 @@ export async function sharePage(
       JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
       WHERE sh.kind='${kind}' AND sh.disabled_at IS NULL
       ${received ? `AND (sh.expires_at IS NULL OR sh.expires_at>${CLOCK})` : ""}
-      AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
+      AND ${
+        kind === "upload_only"
+          ? "n.kind IN ('root','folder') AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='create') AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='upload')"
+          : "EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')"
+      }
       AND ${filter} ORDER BY sh.created_at DESC,sh.id DESC LIMIT ?
     ), a(share_id,id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
       SELECT c.id,n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,0,'/'||n.id||'/'
@@ -62,9 +66,13 @@ export async function sharePage(
         AND SUM(a.kind='root' AND a.parent_id IS NULL AND a.id=sp.root_node_id)=1) AS visible,
       json_object('id',c.id,'kind',c.kind,'rootNodeId',n.id,'spaceId',n.space_id,'ownerId',c.owner_id,
         'name',n.name,'nodeKind',n.kind,'version',c.version,'createdAt',c.created_at,'expiresAt',c.expires_at,
-        'role',CASE WHEN EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=c.id AND sa.action='edit') THEN 'edit' ELSE 'read' END,
         ${
-          kind === "link"
+          kind === "upload_only"
+            ? "'reservationLimit',c.reservation_limit,'reservedBytes',c.reserved_bytes,"
+            : "'role',CASE WHEN EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=c.id AND sa.action='edit') THEN 'edit' ELSE 'read' END,"
+        }
+        ${
+          kind !== "internal"
             ? "'hasPassword',json(CASE WHEN c.owner_id=? AND c.password_digest IS NOT NULL THEN 'true' ELSE 'false' END)"
             : `'mountName',c.mount_name,'recipients',json(CASE WHEN c.owner_id=? THEN (SELECT json_group_array(json_object('userId',u.id,'email',u.email))
           FROM share_grants g JOIN users u ON u.id=g.user_id WHERE g.share_id=c.id AND g.disabled_at IS NULL AND g.version=c.version)

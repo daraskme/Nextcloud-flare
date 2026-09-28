@@ -23,6 +23,7 @@ import {
 import { accessUpload, type UploadRow, uploadFence } from "./access";
 import { settleFailedCompletion } from "./failedCompletion";
 import { multipartHeadCharge, multipartObjectProof, multipartPartsProof } from "./multipartProof";
+import { receiptNames } from "./receiptNames";
 
 const CLOCK = "strftime('%s','now')*1000";
 
@@ -39,6 +40,7 @@ function steps(
   const name = portableName(row.upload_name);
   const search = searchName(name.name);
   const nodeId = create ? `${op}_node` : authority.node.id;
+  const candidates = row.upload_only ? JSON.stringify(receiptNames(row.upload_name, row.id)) : null;
   return [
     {
       kind: "reservation",
@@ -62,21 +64,39 @@ function steps(
           {
             kind: "node",
             affectedId: nodeId,
-            statement: {
-              sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,hidden,last_op_id,created_at,updated_at)
+            statement: candidates
+              ? {
+                  sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,hidden,last_op_id,created_at,updated_at)
+                SELECT ?,?,?,?,json_extract(candidate.value,'$.name'),json_extract(candidate.value,'$.nameCi'),'file',?,
+                  json_extract(candidate.value,'$.hidden'),?,${CLOCK},${CLOCK} FROM json_each(?) candidate
+                WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.parent_id=? AND n.deleted_at IS NULL
+                  AND n.name_ci=json_extract(candidate.value,'$.nameCi')) ORDER BY CAST(candidate.key AS INTEGER) LIMIT 1`,
+                  values: [
+                    nodeId,
+                    row.space_id,
+                    row.owner_id,
+                    row.parent_id,
+                    row.blob_id,
+                    op,
+                    candidates,
+                    row.parent_id,
+                  ],
+                }
+              : {
+                  sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,hidden,last_op_id,created_at,updated_at)
           VALUES(?,?,?,?,?,?,'file',?,?,?,${CLOCK},${CLOCK})`,
-              values: [
-                nodeId,
-                row.space_id,
-                row.owner_id,
-                row.parent_id,
-                name.name,
-                name.nameCi,
-                row.blob_id,
-                name.hidden ? 1 : 0,
-                op,
-              ],
-            },
+                  values: [
+                    nodeId,
+                    row.space_id,
+                    row.owner_id,
+                    row.parent_id,
+                    name.name,
+                    name.nameCi,
+                    row.blob_id,
+                    name.hidden ? 1 : 0,
+                    op,
+                  ],
+                },
           },
           {
             kind: "parent",
@@ -97,10 +117,18 @@ function steps(
           {
             kind: "search_index",
             affectedId: nodeId,
-            statement: {
-              sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)",
-              values: [nodeId, row.space_id, search.textNorm, search.tokens, search.version],
-            },
+            statement: candidates
+              ? {
+                  sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+                SELECT n.id,n.space_id,json_extract(candidate.value,'$.textNorm'),json_extract(candidate.value,'$.tokens'),
+                  json_extract(candidate.value,'$.version'),1 FROM nodes n JOIN json_each(?) candidate
+                ON n.name=json_extract(candidate.value,'$.name') AND n.name_ci=json_extract(candidate.value,'$.nameCi') WHERE n.id=?`,
+                  values: [candidates, nodeId],
+                }
+              : {
+                  sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)",
+                  values: [nodeId, row.space_id, search.textNorm, search.tokens, search.version],
+                },
           },
           {
             kind: "search_fts",
@@ -295,6 +323,7 @@ async function completeUpload(
         parentId: row.parent_id,
         principal,
         lockTokens,
+        ...(row.upload_only ? { upload: true } : {}),
       });
   let terminal = false;
   try {

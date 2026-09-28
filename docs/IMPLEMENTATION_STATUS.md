@@ -1,6 +1,22 @@
 # 実装進捗
 
-## 単一ドメインのapp・公開共有・原本配信（今回）
+## ファイル受け取りリンクの管理・匿名送信・再開（今回）
+
+folder/rootを対象にupload-onlyの管理APIとフォルダー操作からの管理画面、匿名の単一/分割送信・受付番号・再開画面を接続した。create/uploadだけを認可し、owner/shareの予約を同じbatchで取得する。保存時の同名は公開batch内で自動改名し、最終名や既存fileを開示しない。作成/受信/確定は同じ201 receipt、statusは元session+capabilityに固定してprivate operation/errorを隠す。失敗・中止・cleanup・復旧監査も同じidentity/予約へ接続する。[UPLOAD_ONLY_SHARES](UPLOAD_ONLY_SHARES.md)参照。migration0066・通常76table・147 route、依存追加なし。
+
+- 所有者管理の実D14file/66件成功（18.61秒、/tmp/ncf-upload-only-owner-native.log）。upload-only12件、既存link/internal共有・予約会計を検査した。
+- core/復元の実D1/R2/DO5file/87件成功（70.28秒、/tmp/ncf-upload-only-core-native-2.log）。初回は42/43件成功、既存分割中止の歴史的principal proofがD1の式深度100を超えた。条件のグループ化で同じ認可を維持して修正し、再実行で成功した。
+- 追加の同時同名送信・単一/分割の確定失敗精算・native中止後の二重予約解放と、旧schemaからのデータ保持・maintenanceなしの移行拒否・原子的な復旧最終fenceを3file/12件で検証（24.01秒、/tmp/ncf-upload-only-native-3.log）。失敗精算のreservation照合もshare予約に対応した。この段階の関連nativeは重複を除く10file/147件。
+- Node4file/72件成功（232ms、/tmp/ncf-upload-only-unit-final.log）。strict管理入力、password、移植可能なUnicode/長い自動名、元capabilityの保存順、任意status URL拒否、単一/分割receipt・ACK喪失再開を検査。最初の名前上限試験では既存規則が禁止する255 scalarのfixtureを与えて失敗したため、許容最大の254 scalarへ修正した。
+- 初回browser3file/16件中15件成功（3.2分、/tmp/ncf-upload-only-browser.log）。既存公開11件と、新規のACK喪失・96 MiB再開・所有者管理・空file/容量不足を確認。同名送信の内容保持まで成功後、390px画面で64桁受付番号が横にはみ出すassertionが失敗した。noticeに折り返しを追加し、最終browser2file/8件成功（2.2分、/tmp/ncf-upload-only-browser-final.log）。新規5件と既存owner link3件が成功し、重複を除くbrowser全4file/19件成功。修正後の実画面/tmp/ncf-upload-only-mobile.pngも確認した。
+- 型、lint637file、契約/設定、Web build/Worker dry-run成功。/tmp/ncf-upload-only-types-final.log、/tmp/ncf-upload-only-lint.log、/tmp/ncf-upload-only-contracts.log、/tmp/ncf-upload-only-config.log、/tmp/ncf-upload-only-build-final.log。最終の説明文/テスト準備修正後も型・lint・Web build/Worker dry-run成功（/tmp/ncf-upload-only-types-verified.log、/tmp/ncf-upload-only-lint-verified.log、/tmp/ncf-upload-only-build-verified.log）。
+- 共通認可・R2許可・失敗精算が影響する既存native8file/184件成功（87.67秒、/tmp/ncf-upload-only-regression-native.log）。単一/分割upload、DAV、内部共有、公開unlock、ControlDO/共通受付での精算を検証。関連nativeは重複を除く18file/331件。
+- schema/backupのNode追加検査では2file/80件成功、旧link移行fixtureの7件が新しいupload_only列を持たず監査を呼んで失敗した。link/trashの旧データfixtureを保ったまま現行migrationまで進めるよう修正し、2file/29件成功（6.49秒、/tmp/ncf-upload-only-schema-unit-final.log）。旧schema準備の失敗ログは/tmp/ncf-upload-only-schema-unit.log。重複を除くNode全8file/181件。
+- 先行dad1f95の[CI36455427980](https://github.com/daraskme/Nextcloud-flare/actions/runs/36455427980)は全10job成功。過去のWindows nativeエラーの原因特定とは区別する。
+
+**関連native331 + Node181 + browser19 = 531件成功**。thumb/page/track、ZIP/media、公開create/rename/deleteのreload追跡、復旧/運用・最大規模・実環境検証は後続。全Node/全workerd/全browser・backup drillは今回ローカル再実行していない。remote resource/secret/migration/deployなし。
+
+## 単一ドメインのapp・公開共有・原本配信（前回）
 
 APP_ORIGINとCONTENT_ORIGINが同じときに全app pathがcontent handlerへ渡っていた不具合を修正した。単一hostでは/sessionと/cの名前空間だけを配信へ渡し、既知app pathは既存のAccess・共有・DAV・assets認可へ接続する。別originのcontent hostは配信専用のまま、未知host/path/methodはSPAへfallbackしない。Cookie、CSRF/Origin、CSP/attachment、D1/ControlDO・BudgetDOの既存検査を維持する。[SINGLE_HOST](SINGLE_HOST.md)に経路と未検証範囲を記録した。schema0065・通常76table・147 route、migration/依存追加なし。
 

@@ -2,7 +2,7 @@ import { portableName } from "@next-cloud-flare/shared/names";
 import { authorizationAssertion, authorizeNode, type Principal } from "../../auth/authorize";
 import { freezePrincipal, principalSelection } from "../../auth/selectedShare";
 import type { UploadCapabilities } from "../../auth/uploadCapability";
-import { assertExists, atomicBatch } from "../../db/primary";
+import { assertExists, atomicBatch, primary } from "../../db/primary";
 import { multipartPlan, UPLOAD_LIMITS } from "../../do/uploadPlan";
 import { digestJson } from "../../jobs/operations";
 import { validateLength } from "../../platform/stream";
@@ -119,6 +119,13 @@ async function reserveUpload(
           upload: true,
         },
   );
+  const uploadOnly =
+    link &&
+    (await primary(db)
+      .prepare("SELECT kind FROM shares WHERE id=?")
+      .bind(link.id)
+      .first<string>("kind")) === "upload_only";
+  if (uploadOnly && input.targetId) throw new Error("upload_authorization_denied");
   if (
     authorized.operation === "node.content.write" &&
     (authorized.parentId !== input.parentId ||
@@ -153,12 +160,22 @@ async function reserveUpload(
   try {
     await commitAccountMutation(db, admission, owner, [
       authorizationAssertion(authorized),
+      ...(link
+        ? [
+            assertExists("SELECT 1 FROM shares WHERE id=? AND kind=? AND version=?", [
+              link.id,
+              uploadOnly ? "upload_only" : "link",
+              link.version,
+            ]),
+          ]
+        : []),
       ...reservationStatements({
         id: reservation,
         ownerId: owner,
         bytes: input.declaredSize,
         expiresAt: identity.expires_at,
         epoch: input.principal.epoch,
+        ...(uploadOnly ? { share: link } : {}),
       }),
       {
         sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,mime_sniffed,state,created_at)
@@ -169,8 +186,8 @@ async function reserveUpload(
         sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,target_id,blob_id,credential_id,reservation_id,
         mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,
         upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count,selected_share_id,selected_share_version,
-        link_share_id,link_share_version)
-        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        link_share_id,link_share_version,upload_only)
+        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         values: [
           id,
           owner,
@@ -197,6 +214,7 @@ async function reserveUpload(
           share?.version ?? null,
           link?.id ?? null,
           link?.version ?? null,
+          uploadOnly ? 1 : 0,
         ],
       },
       assertExists("SELECT 1 FROM uploads WHERE id=? AND request_digest=?", [id, digest]),

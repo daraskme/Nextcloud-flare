@@ -5,6 +5,7 @@ import { assertExists, atomicBatch, primary, type SqlStatement } from "../../db/
 import { digestJson } from "../../jobs/operations";
 
 export interface UploadRow extends UploadAuthorityRecord {
+  upload_only: 0 | 1;
   id: string;
   owner_id: string;
   space_id: string;
@@ -69,12 +70,16 @@ export function uploadFence(
         AND u.state IN (SELECT value FROM json_each(?))
         AND u.selected_share_id IS ? AND u.selected_share_version IS ?
         AND u.link_share_id IS ? AND u.link_share_version IS ?
+        AND u.upload_only=?
+        AND (u.link_share_id IS NULL OR EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.link_share_id
+          AND sh.kind=CASE u.upload_only WHEN 1 THEN 'upload_only' ELSE 'link' END))
         AND u.expires_at>strftime('%s','now')*1000
         AND u.last_progress_at>strftime('%s','now')*1000-86400000
         ${
           reservation
             ? `AND EXISTS(SELECT 1 FROM reservations r WHERE r.id=u.reservation_id
           AND r.owner_id=u.owner_id AND r.epoch=u.epoch AND r.bytes=u.declared_size
+          AND r.share_id IS CASE u.upload_only WHEN 1 THEN u.link_share_id ELSE NULL END
           AND r.state='reserved' AND r.expires_at>strftime('%s','now')*1000)`
             : ""
         }`,
@@ -87,11 +92,12 @@ export function uploadFence(
       row.selected_share_version,
       row.link_share_id,
       row.link_share_version,
+      row.upload_only,
     ],
   );
 }
 
-/** Access and edit-link transfers share the same protocol. Upload-only is a separate policy. */
+/** Storage and publication always recheck the original credential and saved share policy. */
 export async function uploadAuthority(
   db: D1Database,
   principal: Principal,
@@ -162,7 +168,10 @@ export function uploadReceiptFence(row: UploadRow): SqlStatement {
     `SELECT 1 FROM uploads u JOIN control c ON c.singleton=1
       WHERE u.id=? AND u.source='private' AND u.credential_id=? AND u.epoch=? AND c.epoch=u.epoch AND c.maintenance=0
         AND u.selected_share_id IS ? AND u.selected_share_version IS ?
-        AND u.link_share_id IS ? AND u.link_share_version IS ?`,
+        AND u.link_share_id IS ? AND u.link_share_version IS ?
+        AND u.upload_only=?
+        AND (u.link_share_id IS NULL OR EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.link_share_id
+          AND sh.kind=CASE u.upload_only WHEN 1 THEN 'upload_only' ELSE 'link' END))`,
     [
       row.id,
       row.credential_id,
@@ -171,6 +180,7 @@ export function uploadReceiptFence(row: UploadRow): SqlStatement {
       row.selected_share_version,
       row.link_share_id,
       row.link_share_version,
+      row.upload_only,
     ],
   );
 }

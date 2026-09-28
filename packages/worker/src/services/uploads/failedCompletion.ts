@@ -28,7 +28,8 @@ function source(row: UploadRow, operationId: string): SqlStatement {
         AND (u.r2_upload_id IS ? AND u.multipart_complete_attempt IS ? AND u.multipart_object_etag IS ?)
         AND (c.epoch=u.epoch AND u.in_flight=0 AND u.accept_parts=0)
         AND (r.owner_id=u.owner_id AND r.bytes=u.declared_size AND r.epoch=u.epoch
-        AND r.expires_at=u.expires_at AND r.share_id IS NULL AND r.op_id IS NULL)
+        AND r.expires_at=u.expires_at
+        AND r.share_id IS CASE u.upload_only WHEN 1 THEN u.link_share_id ELSE NULL END AND r.op_id IS NULL)
         AND (b.owner_id=u.owner_id AND b.size=u.declared_size AND b.ref_count=0
         AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id)
         AND (o.kind='upload.complete' AND o.state='failed' AND ${UPLOAD_OPERATION_PRINCIPAL}

@@ -9,7 +9,9 @@ export interface ListCursorClaims {
     | "share-received"
     | "admin-dlq"
     | "link-owned"
-    | "link-root";
+    | "link-root"
+    | "upload-only-owned"
+    | "upload-only-root";
   readonly scopeId: string;
   readonly userId: string;
   readonly credentialId: string;
@@ -33,6 +35,8 @@ function valid(value: ListCursorClaims, now: number): boolean {
       "admin-dlq",
       "link-owned",
       "link-root",
+      "upload-only-owned",
+      "upload-only-root",
     ].includes(value.aud) &&
     ID.test(value.scopeId) &&
     ID.test(value.userId) &&

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { PublicClient } from "../../src/public-share/client";
+import { PublicClient, uploadOnlyReceipt } from "../../src/public-share/client";
 import { transferPublicUpload, type UploadProgress } from "../../src/public-share/upload";
 import {
   newPublicUpload,
@@ -25,9 +25,17 @@ afterEach(() => vi.unstubAllGlobals());
 const uploadId = `up_${"a".repeat(64)}`,
   operationId = `op_${"b".repeat(64)}`;
 const capability = `kid.${"c".repeat(43)}`;
-async function setup(text = "abc", mode: "single" | "multipart" = "single") {
+async function setup(text = "abc", mode: "single" | "multipart" = "single", uploadOnly = false) {
   const file = new File([text], "元の資料.txt", { lastModified: 1000 });
-  const record = await newPublicUpload("share", "session", Date.now() + 600000, "folder", file);
+  const record = await newPublicUpload(
+    "share",
+    "session",
+    Date.now() + 600000,
+    uploadOnly ? null : "folder",
+    file,
+    undefined,
+    uploadOnly,
+  );
   record.mode = mode;
   let saved: PublicUploadRecord | undefined = structuredClone(record);
   const store = {
@@ -69,15 +77,24 @@ async function setup(text = "abc", mode: "single" | "multipart" = "single") {
       : {}),
   });
   const route = async (url: string, init?: RequestInit) => {
+    const accepted = () =>
+      Response.json(
+        { receipt_id: uploadId, status_url: `/api/v1/public/shares/share/uploads/${uploadId}` },
+        { status: 201, headers: { "Upload-Capability": capability } },
+      );
     if (url.endsWith("/csrf")) return Response.json({ token: "csrf" });
-    if (url.endsWith("/uploads")) return Response.json(receipt(), { status: 201 });
+    if (url.endsWith("/uploads"))
+      return uploadOnly ? accepted() : Response.json(receipt(), { status: 201 });
     if (init?.method === "PUT") {
       state.received = true;
       state.phase = mode === "single" ? "completing" : "uploading";
-      return Response.json(mode === "single" ? receipt() : { disposition: "completed" });
+      return uploadOnly
+        ? accepted()
+        : Response.json(mode === "single" ? receipt() : { disposition: "completed" });
     }
     if (url.endsWith("/complete") || url.startsWith("/api/v1/operations/")) {
       state.phase = "completed";
+      if (uploadOnly) return accepted();
       state.operation = operationId;
       return Response.json({
         id: operationId,
@@ -346,4 +363,95 @@ it("rejects corrupt persisted geometry and capability pairs", async () => {
     { target: { id: "target", blobId: "blob", revision: 0 } },
   ])
     expect(validPublicUpload({ ...t.record, ...change })).toBe(false);
+});
+
+it.each(["single", "multipart"] as const)(
+  "receives %s without a namespace operand or operation lookup",
+  async (mode) => {
+    const t = await setup("abc", mode, true);
+    expect(validPublicUpload(t.record)).toBe(true);
+    for (const extra of [
+      { parentId: "folder" },
+      { operationId },
+      { target: { id: "x", revision: 1, blobId: "b" } },
+    ])
+      expect(validPublicUpload({ ...t.record, ...extra })).toBe(false);
+    await t.run();
+    expect(t.progress.at(-1)).toMatchObject({
+      phase: "completed",
+      message: `送信が完了しました。受付番号: ${uploadId}`,
+    });
+    expect(t.saved()).toBeUndefined();
+    const create = t.fetcher.mock.calls.find(([url]) => url.endsWith("/uploads"))!;
+    expect(JSON.parse(create[1]!.body as string)).toEqual({
+      mode,
+      name: t.file.name,
+      declared_size: 3,
+    });
+    expect(t.fetcher.mock.calls.some(([url]) => /operations|children|nodes/.test(url))).toBe(false);
+    expect(t.store.save.mock.calls.every(([record]) => record.operationId === undefined)).toBe(
+      true,
+    );
+  },
+);
+it.each(["single", "multipart"] as const)(
+  "recovers lost %s receipts without repeating received bytes",
+  async (mode) => {
+    for (const lostStage of ["create", "write", "complete"] as const) {
+      const t = await setup("abc", mode, true);
+      let lost = false;
+      t.fetcher.mockImplementation(async (url, init) => {
+        const response = await t.route(url, init);
+        if (
+          !lost &&
+          (lostStage === "create"
+            ? url.endsWith("/uploads")
+            : lostStage === "write"
+              ? init?.method === "PUT"
+              : url.endsWith("/complete"))
+        ) {
+          lost = true;
+          throw new TypeError("lost receipt");
+        }
+        return response;
+      });
+      await expect(t.run()).rejects.toThrow("lost receipt");
+      await t.run("check", undefined);
+      if (t.saved()) await t.run();
+      expect(t.putCount()).toBe(1);
+      expect(t.saved()).toBeUndefined();
+      expect(t.fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/operations/"))).toBe(
+        false,
+      );
+      expect(t.fetcher.mock.calls.filter(([url]) => url.endsWith("/complete"))).toHaveLength(1);
+    }
+  },
+);
+it("persists the upload-only capability before any status request and never accepts a foreign receipt", async () => {
+  const t = await setup("abc", "single", true);
+  t.fetcher.mockImplementation(async (url, init) => {
+    if (url.endsWith(uploadId)) {
+      expect(t.saved()).toMatchObject({ uploadId, capability, uploadOnly: true });
+      throw new TypeError("status unavailable");
+    }
+    return t.route(url, init);
+  });
+  await expect(t.run()).rejects.toThrow("status unavailable");
+  expect(t.putCount()).toBe(0);
+  const prefix = "/api/v1/public/shares/share/uploads";
+  const value = { receipt_id: uploadId, status_url: `${prefix}/${uploadId}` };
+  for (const invalid of [
+    null,
+    {},
+    { ...value, nodeId: "private" },
+    { ...value, receipt_id: "other" },
+    { ...value, status_url: `https://foreign.test${value.status_url}` },
+    { ...value, status_url: value.status_url.replace("/share/", "/other/") },
+  ])
+    expect(() => uploadOnlyReceipt("share", prefix, invalid, 201, capability)).toThrow();
+  expect(() => uploadOnlyReceipt("share", prefix, value, 201, null)).toThrow();
+  expect(() => uploadOnlyReceipt("share", prefix, value, 200, capability)).toThrow();
+  expect(uploadOnlyReceipt("share", `${value.status_url}/parts/1`, value, 202, null)).toEqual({
+    disposition: "in_flight",
+  });
 });

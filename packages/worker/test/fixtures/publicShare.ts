@@ -14,7 +14,7 @@ import { admitted } from "./uploadEnv";
 
 const origin = "https://app.invalid";
 export async function publicShareFixture(
-  role: "read" | "edit" = "edit",
+  role: "read" | "edit" | "upload_only" = "edit",
   root: "folder" | "file" = "folder",
 ) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -26,7 +26,13 @@ export async function publicShareFixture(
     EDGE_LIMITER: { limit: async () => ({ success: true }) },
   };
   const owner = (await readAccessSession(env.DB, f.ids.credential, 1))!;
-  const share = await createLinkShare(app, owner, { kind: "link", rootNodeId: f.ids[root], role });
+  const share = await createLinkShare(
+    app,
+    owner,
+    role === "upload_only"
+      ? { kind: "upload_only", rootNodeId: f.ids[root], reservationLimit: 536870912000 }
+      : { kind: "link", rootNodeId: f.ids[root], role },
+  );
   const key = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const ring = await contentKeyRing("test", { test: key });
   const tokens = new ShareTokens(ring, origin);

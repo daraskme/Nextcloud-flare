@@ -1,6 +1,6 @@
 # 開発進捗
 
-[単一ドメイン構成](SINGLE_HOST.md)を接続しました。APP_ORIGINとCONTENT_ORIGINが同じ場合も、Files・公開共有・原本配信・DAVをパスで振り分け、既存の認証・Cookie・CSP・会計を維持します。別ドメインの配信hostは従来どおり配信専用です。公開リンクの原本GET/HEAD、匿名編集・削除・所有者復元・再開可能なupload/overwriteも接続済みです。schema0065・通常76table・147 route、移行と依存追加なし。upload-only・thumb・ZIP・media、実環境検証と復旧側の残件は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[ファイル受け取りリンク](UPLOAD_ONLY_SHARES.md)を接続しました。所有者の作成・容量上限・パスワード・停止と、匿名の単一/分割送信・受付番号・通信断後の再開に対応します。既存ファイルを送信者へ表示せず、同名は確定batch内で自動改名し、所有者とshare双方の容量予約を検査します。schema0066・通常76table・147 route、依存追加なし。単一ドメイン・公開原本配信・編集/削除も接続済みです。thumb・ZIP・media、実環境検証と復旧側の残件は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-29
 
@@ -10,7 +10,9 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次はupload-onlyを接続します。copyのDLQ運用・未解決attemptの修復、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はthumb/page/track・ZIP/mediaの配信を進めます。copyのDLQ運用・未解決attemptの修復、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+
+先行dad1f95の[CI36455427980](https://github.com/daraskme/Nextcloud-flare/actions/runs/36455427980)は、Ubuntu・Windows全Node/4分割・通常/単一host browser・backup bindings/cliの全10jobが成功して終了しました。過去のWindows native失敗の根本原因が特定されたことを意味しません。
 
 先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は8job成功、Windows4/4失敗で終了しました。multipart-uploadの64 MiB + 3 bytes試験で完了直後のHEADが不在となりupload_complete_pending、867/868件成功です。R2 complete直前の受付・native結果・観測のどの段階が原因かは保存ログだけで確定できず、未解決として追跡します。/tmp/ncf-public-delete-ci-windows4.log。
 

@@ -12,6 +12,7 @@ export interface PublicUploadRecord {
   modified: number;
   sample: string;
   mode: "single" | "multipart";
+  uploadOnly?: true;
   target?: { id: string; revision: number; blobId: string };
   createKey: string;
   completeKey: string;
@@ -34,7 +35,12 @@ export function validPublicUpload(value: unknown): value is PublicUploadRecord {
     id(r.completeKey) &&
     Number.isSafeInteger(r.expiresAt) &&
     r.expiresAt > 0 &&
-    (r.parentId === null ? !!r.target : id(r.parentId)) &&
+    (r.uploadOnly === undefined || r.uploadOnly === true) &&
+    (r.uploadOnly
+      ? r.parentId === null && r.target === undefined && r.operationId === undefined
+      : r.parentId === null
+        ? !!r.target
+        : id(r.parentId)) &&
     typeof r.name === "string" &&
     r.name.length > 0 &&
     r.name.length <= 255 &&
@@ -88,6 +94,7 @@ export async function newPublicUpload(
   parentId: string | null,
   file: File,
   target?: SharedNode,
+  uploadOnly = false,
 ): Promise<PublicUploadRecord> {
   const record: PublicUploadRecord = {
     id: crypto.randomUUID(),
@@ -101,6 +108,7 @@ export async function newPublicUpload(
     modified: file.lastModified,
     sample: await fileSample(file),
     mode: file.size <= 95000000 ? "single" : "multipart",
+    ...(uploadOnly ? { uploadOnly: true as const } : {}),
     ...(target
       ? { target: { id: target.id, revision: target.revision, blobId: target.currentBlobId! } }
       : {}),

@@ -25,8 +25,13 @@ beforeEach(() => {
       VALUES('op','link_share','link','ss:unlock',1,'f-s','node.trash','committed','digest',1,'permit',10000,10000,13,1,1,'{"nodeId":"f-f","parentId":"f-d"}');`);
 });
 afterEach(() => db.close());
-const migrate = () =>
-  db.exec(readFileSync(new URL("0065_anonymous_trash_actor.sql", directory), "utf8"));
+const migrate = () => {
+  // Retain the old-data fixture, then audit with every current migration applied.
+  for (const file of readdirSync(directory)
+    .filter((n) => n.endsWith(".sql") && n >= "0065_")
+    .sort())
+    db.exec(readFileSync(new URL(file, directory), "utf8"));
+};
 const ready = () => db.prepare(RECOVERY_FINAL_QUERY).get(1);
 const trash = (actor: string | null = null) =>
   db

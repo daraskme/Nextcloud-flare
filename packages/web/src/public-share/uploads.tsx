@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { type PublicClient, PublicError, type SharedNode, type SharedRoot } from "./client";
+import { type PublicClient, PublicError, type PublicRoot, type SharedNode } from "./client";
 import { transferPublicUpload, type UploadProgress, uploadMessage } from "./upload";
 import {
   listPublicUploads,
@@ -24,7 +24,7 @@ export function PublicUploads({
   busyChanged,
 }: {
   client: PublicClient;
-  root: SharedRoot;
+  root: PublicRoot;
   parentId: string | null;
   request: { node?: SharedNode } | null;
   closeForm: () => void;
@@ -76,6 +76,7 @@ export function PublicUploads({
         parentId,
         file,
         request.node,
+        root.kind === "upload_only",
       );
       client.lifetime.signal.throwIfAborted();
       if (!alive.current) return;
@@ -126,7 +127,9 @@ export function PublicUploads({
             </p>
           )}
           <p>
-            再読み込み後は元のファイルを選び直して再開できます。上書き先が更新された場合は送信を止めます。
+            {root.kind === "upload_only"
+              ? "再読み込み後は元のファイルを選び直して再開できます。同じ名前のファイルも別のファイルとして保存されます。"
+              : "再読み込み後は元のファイルを選び直して再開できます。上書き先が更新された場合は送信を止めます。"}
           </p>
           <div className="editor-actions">
             <button className="quiet" type="button" disabled={saving} onClick={closeForm}>
@@ -248,7 +251,9 @@ function PublicUploadTask({
   async function forget() {
     if (
       !window.confirm(
-        "記録の削除は送信の中止ではありません。再送前に一覧で結果を確認してください。転送記録を削除しますか？",
+        entry.record.uploadOnly
+          ? "記録を削除すると、この送信の結果を確認できなくなります。サーバー側の処理は取り消されません。転送記録を削除しますか？"
+          : "記録の削除は送信の中止ではありません。再送前に一覧で結果を確認してください。転送記録を削除しますか？",
       )
     )
       return;

@@ -77,7 +77,12 @@ export async function transferPublicUpload(
         throw new Error("別のタブでこの送信を確認しています。少し待ってから再確認してください。");
       current();
       const r = await store.read(original.id);
-      if (!r || r.sessionId !== original.sessionId || r.shareId !== client.id)
+      if (
+        !r ||
+        r.sessionId !== original.sessionId ||
+        r.shareId !== client.id ||
+        r.uploadOnly !== original.uploadOnly
+      )
         throw new Error("転送記録が更新されました。一覧を更新してください。");
       current();
       if (r.expiresAt <= Date.now())
@@ -122,19 +127,21 @@ export async function transferPublicUpload(
           },
           { "Idempotency-Key": r.createKey },
           signal,
+          r.uploadOnly,
         );
         current();
         if (
           !/^up_[a-f0-9]{64}$/.test(receipt.id) ||
           !/^[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]{43}$/.test(receipt.capability) ||
-          receipt.mode !== r.mode ||
-          receipt.declaredSize !== r.size ||
-          !Number.isSafeInteger(receipt.expiresAt)
+          (!r.uploadOnly &&
+            (receipt.mode !== r.mode ||
+              receipt.declaredSize !== r.size ||
+              !Number.isSafeInteger(receipt.expiresAt)))
         )
           throw waiting();
         r.uploadId = receipt.id;
         r.capability = receipt.capability;
-        r.expiresAt = Math.min(r.expiresAt, receipt.expiresAt);
+        if (!r.uploadOnly) r.expiresAt = Math.min(r.expiresAt, receipt.expiresAt);
         await save();
       }
       const base = `/uploads/${r.uploadId}`;
@@ -154,13 +161,17 @@ export async function transferPublicUpload(
           receipt.id !== r.uploadId ||
           receipt.mode !== r.mode ||
           receipt.declaredSize !== r.size ||
+          (r.uploadOnly && receipt.operationId !== null) ||
           !states.has(receipt.state)
         )
           throw waiting();
         return receipt;
       };
       let receipt = await read();
-      if (receipt.state === "completed") return terminal(true, "アップロードが完了しました。");
+      const completedMessage = r.uploadOnly
+        ? `送信が完了しました。受付番号: ${r.uploadId}`
+        : "アップロードが完了しました。";
+      if (receipt.state === "completed") return terminal(true, completedMessage);
       if (stopped.has(receipt.state))
         return terminal(false, "送信は停止済みです。使用容量は回収後に反映されます。");
       if (action === "cancel") {
@@ -192,12 +203,12 @@ export async function transferPublicUpload(
           );
         else update("paused", "保存処理を確認中です。少し待ってから結果を確認してください。");
       };
-      if (receipt.operationId && !r.operationId) {
+      if (!r.uploadOnly && receipt.operationId && !r.operationId) {
         if (!/^op_[a-f0-9]{64}$/.test(receipt.operationId)) throw waiting();
         r.operationId = receipt.operationId;
         await save();
       }
-      if (r.operationId)
+      if (!r.uploadOnly && r.operationId)
         return operation(await client.operation(r.operationId, r.sessionId, signal));
       const readParts = async () => {
         const count = receipt.partCount!,
@@ -272,7 +283,7 @@ export async function transferPublicUpload(
           if (receipt.state !== "created" || r.singleDispatched) throw waiting();
           r.singleDispatched = true;
           await save();
-          await client.uploadBytes(base + "/content", file, contentHeaders, signal);
+          await client.uploadBytes(base + "/content", file, contentHeaders, signal, r.uploadOnly);
           receipt = await read();
           if (receipt.state !== "completing") throw waiting();
           bytes = r.size;
@@ -309,6 +320,7 @@ export async function transferPublicUpload(
                   file.slice((number - 1) * partBytes, Math.min(r.size, number * partBytes)),
                   { ...contentHeaders, "Upload-Attempt-Id": attempt },
                   signal,
+                  r.uploadOnly,
                 );
                 current();
                 if (result.disposition !== "completed") throw waiting();
@@ -331,6 +343,23 @@ export async function transferPublicUpload(
       await save();
       update("completing", "ファイルを確定しています。");
       try {
+        if (r.uploadOnly) {
+          await client.uploadJson(
+            r.sessionId,
+            base + "/complete",
+            "POST",
+            {},
+            { ...headers, "Idempotency-Key": r.completeKey },
+            signal,
+            true,
+          );
+          const result = await read();
+          if (result.state === "completed") await terminal(true, completedMessage);
+          else if (stopped.has(result.state))
+            await terminal(false, "保存は完了しませんでした。共有した方に確認してください。");
+          else update("paused", "保存処理を確認中です。少し待ってから結果を確認してください。");
+          return;
+        }
         await operation(
           await client.uploadJson<EditOperation>(
             r.sessionId,
@@ -342,7 +371,7 @@ export async function transferPublicUpload(
           ),
         );
       } catch (error) {
-        if (error instanceof PublicError && error.operationId) {
+        if (!r.uploadOnly && error instanceof PublicError && error.operationId) {
           r.operationId = error.operationId;
           await save();
         }

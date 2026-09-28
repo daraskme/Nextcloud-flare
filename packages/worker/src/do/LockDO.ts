@@ -38,6 +38,7 @@ export interface CreatePermitRequest {
   parentId: string;
   principal: Principal;
   lockTokens: readonly string[];
+  upload?: boolean;
 }
 export interface RenamePermitRequest {
   requestId: string;
@@ -231,6 +232,7 @@ export class LockDO extends DurableObject<Env> {
       operation: "node.create",
       parentId: request.parentId,
       spaceId: request.spaceId,
+      ...(request.upload === true ? { upload: true } : {}),
     });
     const hashes = await lockTokenHashes(request.lockTokens);
     if (
@@ -254,6 +256,7 @@ export class LockDO extends DurableObject<Env> {
       request.principal.kind === "link_share" ? request.principal.share_version : null,
       hashes,
       ...(principalSelection(request.principal) ? [principalSelection(request.principal)] : []),
+      ...(request.upload === true ? ["upload"] : []),
     ]);
     // Durable intent precedes external I/O; no raw lock token is persisted.
     this.ctx.storage.sql.exec(

@@ -64,6 +64,7 @@ type Action =
   | { kind: "overwrite"; node: FileNode }
   | { kind: "share"; node: FileNode }
   | { kind: "link-share"; node: FileNode }
+  | { kind: "upload-only-share"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
   accountId: string;
@@ -287,7 +288,7 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Exclude<Action, { kind: "overwrite" | "share" | "link-share" }>;
+  action: Exclude<Action, { kind: "overwrite" | "share" | "link-share" | "upload-only-share" }>;
   account: Account;
   homeAccount: Account;
   sourceShare?: InternalShare;
@@ -531,6 +532,11 @@ function NodeMenu({
           <Menu.Item onSelect={() => act({ kind: "copy", node })}>コピー</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "share", node })}>共有を管理</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "link-share", node })}>公開リンクを管理</Menu.Item>
+          {node.kind !== "file" && (
+            <Menu.Item onSelect={() => act({ kind: "upload-only-share", node })}>
+              受け取りリンクを管理
+            </Menu.Item>
+          )}
           <Menu.Separator />
           <Menu.Item className="danger-text" onSelect={() => act({ kind: "trash", node })}>
             ごみ箱に移動
@@ -1353,11 +1359,12 @@ export function App() {
           close={() => setAction(null)}
         />
       )}
-      {action?.kind === "link-share" && me && (
+      {(action?.kind === "link-share" || action?.kind === "upload-only-share") && me && (
         <LinkShareDialog
           key={action.node.id}
           node={action.node}
           account={me}
+          kind={action.kind === "upload-only-share" ? "upload_only" : "link"}
           close={() => setAction(null)}
         />
       )}
@@ -1365,6 +1372,7 @@ export function App() {
         action.kind !== "overwrite" &&
         action.kind !== "share" &&
         action.kind !== "link-share" &&
+        action.kind !== "upload-only-share" &&
         me && (
           <OperationDialog
             key={JSON.stringify(action)}

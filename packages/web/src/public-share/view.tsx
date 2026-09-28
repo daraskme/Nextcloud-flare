@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PublicClient,
   PublicError,
+  type PublicRoot,
   type SharedChildren,
   type SharedNode,
-  type SharedRoot,
 } from "./client";
 import { PublicEditor } from "./editor";
 import { forgetPublicUploads } from "./uploadStore";
@@ -17,7 +17,7 @@ function size(bytes: number | null) {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 export function PublicApp({ client }: { client: PublicClient }) {
-  const [root, setRoot] = useState<SharedRoot | null>(null);
+  const [root, setRoot] = useState<PublicRoot | null>(null);
   const [trail, setTrail] = useState<SharedNode[]>([]);
   const [page, setPage] = useState<SharedChildren | null>(null);
   const [busy, setBusy] = useState(true),
@@ -73,10 +73,13 @@ export function PublicApp({ client }: { client: PublicClient }) {
       setTrail([]);
       try {
         const loaded = await client.unlock(value);
-        const items = loaded.root.kind === "file" ? null : await client.children(loaded.root.id);
+        const items =
+          loaded.kind === "upload_only" || loaded.root.kind === "file"
+            ? null
+            : await client.children(loaded.root.id);
         client.lifetime.signal.throwIfAborted();
         setRoot(loaded);
-        setTrail([loaded.root]);
+        setTrail(loaded.kind === "upload_only" ? [] : [loaded.root]);
         setPage(items);
         setPassword("");
         setMessage(notice);
@@ -134,6 +137,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
     }
   }
   async function download(node: SharedNode) {
+    if (!root || root.kind === "upload_only") return;
     const target = window.open("about:blank", "_blank");
     if (!target) {
       setMessage("ファイルを開くため、ポップアップを許可してください。");
@@ -190,18 +194,20 @@ export function PublicApp({ client }: { client: PublicClient }) {
       </header>
       <main aria-busy={busy}>
         <p className="eyebrow">SHARED WITH YOU</p>
-        <h1>{root ? current?.name || "共有ファイル" : "共有ファイル"}</h1>
+        <h1>{root?.kind === "upload_only" ? "ファイルを送信" : current?.name || "共有ファイル"}</h1>
         <p className="description">
-          {root
-            ? root.permissions.upload || root.permissions.overwrite
-              ? root.root.kind === "file"
-                ? "共有されたファイルの閲覧・保存と、確認付きの上書きができます。"
-                : "共有されたファイルの閲覧・保存、アップロードと編集ができます。"
-              : root.root.kind !== "file" &&
-                  (root.permissions.createFolder || root.permissions.rename)
-                ? "共有されたファイルの閲覧・保存、フォルダー作成と名前変更ができます。"
-                : "共有されたファイルを閲覧・保存できます。"
-            : "リンクを受け取った方のためのファイル共有です。"}
+          {root?.kind === "upload_only"
+            ? "ファイルを選択して送信してください。送信状況を確認し、完了後に受付番号を受け取れます。"
+            : root
+              ? root.permissions.upload || root.permissions.overwrite
+                ? root.root.kind === "file"
+                  ? "共有されたファイルの閲覧・保存と、確認付きの上書きができます。"
+                  : "共有されたファイルの閲覧・保存、アップロードと編集ができます。"
+                : root.root.kind !== "file" &&
+                    (root.permissions.createFolder || root.permissions.rename)
+                  ? "共有されたファイルの閲覧・保存、フォルダー作成と名前変更ができます。"
+                  : "共有されたファイルを閲覧・保存できます。"
+              : "リンクを受け取った方のためのファイル共有です。"}
         </p>
         {message && (
           <p className="notice" role="alert">
@@ -237,7 +243,36 @@ export function PublicApp({ client }: { client: PublicClient }) {
             </button>
           </form>
         )}
-        {root && (
+        {root?.kind === "upload_only" && (
+          <>
+            <button
+              className="primary"
+              disabled={locked}
+              onClick={() => {
+                setMessage("");
+                setUploading({});
+              }}
+            >
+              ファイルを選んで送信
+            </button>
+            <PublicUploads
+              client={client}
+              root={root}
+              parentId={null}
+              request={uploading}
+              closeForm={() => setUploading(null)}
+              busyChanged={setTransferBusy}
+              changed={setMessage}
+              denied={(error) => {
+                setUploading(null);
+                setTransferBusy(false);
+                setRoot(null);
+                failed(error);
+              }}
+            />
+          </>
+        )}
+        {root && root.kind !== "upload_only" && (
           <>
             <nav aria-label="共有フォルダーの階層" className="breadcrumbs">
               {trail.map((node, index) => (

@@ -27,8 +27,13 @@ beforeEach(() => {
       VALUES('op','link_share','link','ss:unlock',1,'f-s','upload.complete','failed','digest',1,'permit',10000,10000,0,1,1,'{"uploadId":"upload","parentId":"f-d"}');`);
 });
 afterEach(() => db.close());
-const migrate = () =>
-  db.exec(readFileSync(new URL("0064_link_upload_binding.sql", directory), "utf8"));
+const migrate = () => {
+  // The current recovery proof must run against the fully migrated schema.
+  for (const file of readdirSync(directory)
+    .filter((n) => n.endsWith(".sql") && n >= "0064_")
+    .sort())
+    db.exec(readFileSync(new URL(file, directory), "utf8"));
+};
 function upload(change: Record<string, unknown> = {}) {
   const values = {
     id: "upload",
@@ -68,6 +73,7 @@ it("preserves existing private uploads and credentials when migrating forward", 
     ...before,
     link_share_id: null,
     link_share_version: null,
+    upload_only: 0,
   });
   expect(ready()).toBeTruthy();
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);

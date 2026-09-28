@@ -242,7 +242,9 @@ const NODE_AUTHORITY = `WITH RECURSIVE
         OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
-            WHERE c.id=p.credential_id AND c.kind='share' AND sh.kind='link'
+            WHERE c.id=p.credential_id AND c.kind='share'
+              AND (sh.kind='link' OR (sh.kind='upload_only' AND ?6='node.create'
+                AND json_extract(?3,'$.upload_action')=1 AND n.id=sh.root_node_id))
               AND sh.id=p.share_id AND sh.version=p.share_version AND ss.share_version=sh.version
               AND ss.epoch=p.epoch AND ss.revoked_at IS NULL AND ss.expires_at>strftime('%s','now')*1000
               AND (ss.user_id IS NULL OR EXISTS(SELECT 1 FROM users WHERE id=ss.user_id AND disabled_at IS NULL))))

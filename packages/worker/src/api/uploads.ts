@@ -133,6 +133,24 @@ export async function handleUploadHttp(
   const action = match?.[2];
   const partNumber = match?.[3] === undefined ? undefined : Number(match[3]);
   const binary = action === "content" || partNumber !== undefined;
+  const uploadOnly = publicSession?.kind === "upload_only";
+  const receipt = (uploadId: string, capability?: string, status = 201) =>
+    Response.json(
+      {
+        receipt_id: uploadId,
+        status_url: `/api/v1/public/shares/${publicSession!.claims.share_id}/uploads/${uploadId}`,
+      },
+      {
+        status,
+        headers: { ...HEADERS, ...(capability ? { "Upload-Capability": capability } : {}) },
+      },
+    );
+  const progress = <T extends { operationId: string | null; errorCode: string | null }>(
+    value: T,
+  ) =>
+    uploadOnly
+      ? { ...value, operationId: null, errorCode: value.errorCode ? "upload_failed" : null }
+      : value;
   const capability = request.headers.get("Upload-Capability") ?? "";
   if (request.method !== "GET" && request.headers.get("Origin") !== env.APP_ORIGIN)
     return problem(403, "forbidden");
@@ -163,7 +181,7 @@ export async function handleUploadHttp(
     if (id && request.method === "GET") {
       if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
       return Response.json(
-        await readUpload(env.DB, principal, id, capability, capabilities, pageQuery(url)),
+        progress(await readUpload(env.DB, principal, id, capability, capabilities, pageQuery(url))),
         { headers: HEADERS },
       );
     }
@@ -218,16 +236,24 @@ export async function handleUploadHttp(
           body,
           length,
         );
+        if (uploadOnly)
+          return receipt(id, undefined, result.disposition === "in_flight" ? 202 : 201);
         return Response.json(result, {
           status: result.disposition === "in_flight" ? 202 : 200,
           headers:
             result.disposition === "in_flight" ? { ...HEADERS, "Retry-After": "1" } : HEADERS,
         });
       }
-      return Response.json(
-        await writeSingleUpload(env, principal, id, capability, capabilities, body, length),
-        { headers: HEADERS },
+      const result = await writeSingleUpload(
+        env,
+        principal,
+        id,
+        capability,
+        capabilities,
+        body,
+        length,
       );
+      return uploadOnly ? receipt(id) : Response.json(result, { headers: HEADERS });
     }
     const body = publicSession
       ? ((await readShareBody(request)) as Record<string, unknown>)
@@ -244,12 +270,14 @@ export async function handleUploadHttp(
         "receipt",
       );
       return Response.json(
-        await (row.mode === "multipart" ? abortMultipartUpload : abortSingleUpload)(
-          env,
-          principal,
-          id,
-          capability,
-          capabilities,
+        progress(
+          await (row.mode === "multipart" ? abortMultipartUpload : abortSingleUpload)(
+            env,
+            principal,
+            id,
+            capability,
+            capabilities,
+          ),
         ),
         { headers: HEADERS, status: row.mode === "multipart" ? 202 : 200 },
       );
@@ -283,10 +311,11 @@ export async function handleUploadHttp(
         : completeSingleUpload)(env, principal, id, capability, capabilities, key, tokens);
       if (outcome.kind === "commit_unknown") {
         const response = problem(503, "commit_unknown");
-        response.headers.set("Operation-Id", outcome.operationId);
+        if (!uploadOnly) response.headers.set("Operation-Id", outcome.operationId);
         response.headers.set("Retry-After", "1");
         return response;
       }
+      if (uploadOnly) return receipt(id);
       if (outcome.operation.state !== "committed") return problem(409, "conflict");
       return Response.json(outcome.operation, { headers: HEADERS });
     }
@@ -294,13 +323,16 @@ export async function handleUploadHttp(
       if (
         Object.keys(body).some(
           (key) =>
-            !["mode", "parentId", "name", "declared_size", "targetId", "targetRevision"].includes(
-              key,
-            ),
+            !(
+              uploadOnly
+                ? ["mode", "name", "declared_size"]
+                : ["mode", "parentId", "name", "declared_size", "targetId", "targetRevision"]
+            ).includes(key),
         )
       )
         return problem(400, "bad_request");
       body.spaceId = publicSession.spaceId;
+      if (uploadOnly) body.parentId = publicSession.rootNodeId;
     }
     if (
       Object.keys(body).some(
@@ -357,12 +389,14 @@ export async function handleUploadHttp(
     };
     if (body.mode === "multipart") {
       const result = await createMultipartUploadReceipt(env, input, capabilities);
+      if (uploadOnly) return receipt(result.receipt.id, result.receipt.capability);
       return Response.json(result.receipt, {
         status: result.pending ? 202 : 201,
         headers: HEADERS,
       });
     }
     const result = await createSingleUpload(env, input, capabilities);
+    if (uploadOnly) return receipt(result.id, result.capability);
     return Response.json(result, { status: 201, headers: HEADERS });
   } catch (error) {
     if (error instanceof Error && error.message === "mutation_unavailable") {

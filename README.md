@@ -5,6 +5,8 @@
 Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。
 
+[ファイル受け取りリンク](docs/UPLOAD_ONLY_SHARES.md)の管理・匿名送信・同名保存・再開に対応しています。実環境へのmigration0066適用は未実施です。
+
 **別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 実装済み・未実装・検証済み・未検証の一覧は [現在状態](docs/CURRENT_STATE.md) にまとめています。
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 / Phase 6 の一部**を実装済み。

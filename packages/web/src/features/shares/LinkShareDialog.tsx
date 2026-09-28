@@ -1,12 +1,17 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { type FormEvent, useRef, useState } from "react";
 import { type LinkShare, linkShareInput } from "../../../../shared/src/linkShares";
+import {
+  type UploadOnlyShare,
+  uploadOnlyShareInput,
+} from "../../../../shared/src/uploadOnlyShares";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/ui/dialog";
 import { type Account, ApiError, api, errorMessage, type FileNode } from "../../lib/api";
 
+type PublicShare = LinkShare | UploadOnlyShare;
 interface Page {
-  items: LinkShare[];
+  items: PublicShare[];
   nextCursor: string | null;
 }
 interface Receipt {
@@ -14,7 +19,7 @@ interface Receipt {
   version: number;
   secret?: string;
 }
-type Confirmation = { action: "rotate" | "disable"; share: LinkShare };
+type Confirmation = { action: "rotate" | "disable"; share: PublicShare };
 function localDate(value: number | null) {
   if (value === null) return "";
   const date = new Date(value),
@@ -37,16 +42,19 @@ export function LinkShareDialog({
   account,
   node,
   close,
+  kind = "link",
 }: {
   account: Account;
   node: FileNode;
   close: () => void;
+  kind?: "link" | "upload_only";
 }) {
+  const uploadOnly = kind === "upload_only";
   const list = useInfiniteQuery({
-    queryKey: ["link-shares", account.id, account.epoch, node.id],
+    queryKey: ["link-shares", kind, account.id, account.epoch, node.id],
     queryFn: ({ pageParam, signal }) =>
       api.request<Page>(
-        `/api/v1/shares?kind=link&rootNodeId=${encodeURIComponent(node.id)}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""}`,
+        `/api/v1/shares?kind=${kind}&rootNodeId=${encodeURIComponent(node.id)}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""}`,
         { signal },
       ),
     initialPageParam: null as string | null,
@@ -55,7 +63,8 @@ export function LinkShareDialog({
     gcTime: 0,
     refetchOnWindowFocus: false,
   });
-  const [editing, setEditing] = useState<LinkShare | null>(null);
+  const [editing, setEditing] = useState<PublicShare | null>(null);
+  const [limit, setLimit] = useState("1024");
   const [expires, setExpires] = useState("");
   const [role, setRole] = useState<"read" | "edit">("read");
   const [password, setPassword] = useState("");
@@ -71,6 +80,7 @@ export function LinkShareDialog({
     setEditing(null);
     setExpires("");
     setRole("read");
+    setLimit("1024");
     setPassword("");
     setPasswordMode("keep");
     setConfirmation(null);
@@ -100,11 +110,20 @@ export function LinkShareDialog({
     let input;
     if (confirmed?.action !== "disable") {
       try {
-        input = linkShareInput(
+        input = (uploadOnly ? uploadOnlyShareInput : linkShareInput)(
           {
-            kind: "link",
+            kind,
             rootNodeId: node.id,
-            role: confirmed ? selected!.role : role,
+            ...(uploadOnly
+              ? {
+                  reservationLimit:
+                    confirmed && selected?.kind === "upload_only"
+                      ? selected.reservationLimit
+                      : limit.trim()
+                        ? Number(limit) * 1048576
+                        : NaN,
+                }
+              : { role: confirmed && selected?.kind === "link" ? selected.role : role }),
             expiresAt: confirmed
               ? selected!.expiresAt
               : expires
@@ -126,7 +145,9 @@ export function LinkShareDialog({
         );
       } catch {
         setFailure(
-          "未来の有効期限と、1,024バイト以内のパスワードを確認してください。パスワードを変更する場合は空欄にできません。",
+          uploadOnly
+            ? "同時送信の上限容量、未来の有効期限、パスワードを確認してください。容量は0以上で指定してください。"
+            : "未来の有効期限と、1,024バイト以内のパスワードを確認してください。パスワードを変更する場合は空欄にできません。",
         );
         return;
       }
@@ -188,8 +209,10 @@ export function LinkShareDialog({
   }
   return (
     <Dialog
-      title="公開リンクを管理"
-      description={`${node.name}をリンクで共有します。`}
+      title={uploadOnly ? "受け取りリンクを管理" : "公開リンクを管理"}
+      description={
+        uploadOnly ? `${node.name}にファイルを受け取ります。` : `${node.name}をリンクで共有します。`
+      }
       open
       onOpenChange={(open) => {
         if (!open && !busy.current) close();
@@ -197,7 +220,9 @@ export function LinkShareDialog({
     >
       <div className="share-dialog">
         <p className="muted">
-          リンクを受け取った人が、ログインせずに閲覧・ダウンロードできます。必要に応じて有効期限やパスワードを設定してください。
+          {uploadOnly
+            ? "リンクを受け取った人が、ログインせずにファイルを送信できます。フォルダーの内容は相手に表示されません。同名のファイルは自動で名前を変えて保存します。"
+            : "リンクを受け取った人が、ログインせずに閲覧・ダウンロードできます。必要に応じて有効期限やパスワードを設定してください。"}
         </p>
         {notice && <p role="status">{notice}</p>}
         {failure && (
@@ -237,12 +262,26 @@ export function LinkShareDialog({
               <div>
                 <strong>{share.hasPassword ? "パスワードあり" : "パスワードなし"}</strong>
                 <p>
-                  {share.role === "read" ? "閲覧" : "編集"} ·{" "}
+                  {share.kind === "upload_only"
+                    ? "受け取り専用"
+                    : share.role === "read"
+                      ? "閲覧"
+                      : "編集"}{" "}
+                  ·{" "}
                   {share.expiresAt === null
                     ? "期限なし"
                     : `${new Date(share.expiresAt).toLocaleString("ja-JP")}まで`}
                   {share.expiresAt !== null && share.expiresAt <= Date.now() && "（期限切れ）"}
                 </p>
+                {share.kind === "upload_only" && (
+                  <p>
+                    同時送信の上限:{" "}
+                    {(share.reservationLimit / 1048576).toLocaleString("ja-JP", {
+                      maximumFractionDigits: 6,
+                    })}{" "}
+                    MiB · 送信・回収待ち: {share.reservedBytes.toLocaleString()} bytes
+                  </p>
+                )}
                 <small>
                   作成: {new Date(share.createdAt).toLocaleString("ja-JP")} · {share.id.slice(-8)}
                 </small>
@@ -252,7 +291,9 @@ export function LinkShareDialog({
                 disabled={locked || !!confirmation}
                 onClick={() => {
                   setEditing(share);
-                  setRole(share.role);
+                  if (share.kind === "upload_only")
+                    setLimit(String(share.reservationLimit / 1048576));
+                  else setRole(share.role);
                   setExpires(localDate(share.expiresAt));
                   setPassword("");
                   setPasswordMode("keep");
@@ -348,19 +389,39 @@ export function LinkShareDialog({
           <form onSubmit={(event) => void save(event)}>
             <fieldset className="share-form" disabled={locked}>
               <legend>{editing ? "リンク設定を変更" : "新しい公開リンク"}</legend>
-              <label htmlFor="link-role">共有権限</label>
-              <select
-                id="link-role"
-                value={role}
-                onChange={(event) => setRole(event.target.value as typeof role)}
-              >
-                <option value="read">閲覧</option>
-                <option value="edit">編集</option>
-              </select>
-              {role === "edit" && (
-                <p className="muted">
-                  リンクを受け取った人が共有内容を変更できます。現在の共有画面はフォルダー作成と名前変更に対応しています。
-                </p>
+              {uploadOnly ? (
+                <>
+                  <label htmlFor="link-limit">同時送信の上限容量（MiB）</label>
+                  <input
+                    id="link-limit"
+                    type="number"
+                    min="0"
+                    step="any"
+                    required
+                    value={limit}
+                    onChange={(event) => setLimit(event.target.value)}
+                  />
+                  <p className="muted">
+                    送信中と回収待ちのファイルに使える容量です。保存済みのファイルを含むアカウント全体の空き容量も必要です。0にすると空ファイル以外の新しい送信を止めます。
+                  </p>
+                </>
+              ) : (
+                <>
+                  <label htmlFor="link-role">共有権限</label>
+                  <select
+                    id="link-role"
+                    value={role}
+                    onChange={(event) => setRole(event.target.value as typeof role)}
+                  >
+                    <option value="read">閲覧</option>
+                    <option value="edit">編集</option>
+                  </select>
+                  {role === "edit" && (
+                    <p className="muted">
+                      リンクを受け取った人が、アップロード・上書き・フォルダー作成・名前変更・ごみ箱への移動を行えます。
+                    </p>
+                  )}
+                </>
               )}
               <label htmlFor="link-expires">有効期限（任意）</label>
               <input
@@ -418,9 +479,11 @@ export function LinkShareDialog({
                     ? "保存中…"
                     : editing
                       ? "リンク設定を保存"
-                      : role === "read"
-                        ? "閲覧リンクを作成"
-                        : "編集リンクを作成"}
+                      : uploadOnly
+                        ? "受け取りリンクを作成"
+                        : role === "read"
+                          ? "閲覧リンクを作成"
+                          : "編集リンクを作成"}
                 </Button>
               </div>
             </fieldset>

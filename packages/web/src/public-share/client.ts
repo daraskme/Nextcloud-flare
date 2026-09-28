@@ -7,6 +7,7 @@ export interface SharedNode {
   revision: number;
 }
 export interface SharedRoot {
+  kind?: "link";
   sessionId: string;
   permissions: {
     createFolder: boolean;
@@ -18,6 +19,45 @@ export interface SharedRoot {
   root: SharedNode;
   contentOrigin: string;
   expiresAt: number;
+}
+export interface UploadOnlyRoot {
+  kind: "upload_only";
+  sessionId: string;
+  expiresAt: number;
+  permissions: SharedRoot["permissions"];
+}
+export type PublicRoot = SharedRoot | UploadOnlyRoot;
+
+/** Bind every opaque receipt to this request; never follow a server-supplied URL. */
+export function uploadOnlyReceipt(
+  shareId: string,
+  path: string,
+  value: unknown,
+  status: number,
+  capability: string | null,
+) {
+  const receipt = value as { receipt_id?: unknown; status_url?: unknown } | null;
+  const prefix = `/api/v1/public/shares/${shareId}/uploads`;
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    Object.keys(receipt).length !== 2 ||
+    typeof receipt.receipt_id !== "string" ||
+    !/^up_[a-f0-9]{64}$/.test(receipt.receipt_id) ||
+    receipt.status_url !== `${prefix}/${receipt.receipt_id}` ||
+    (path !== prefix &&
+      ![`${receipt.status_url}/complete`, `${receipt.status_url}/content`].includes(path) &&
+      !new RegExp(`^${receipt.status_url}/parts/[1-9][0-9]{0,4}$`).test(path))
+  )
+    throw new Error("invalid_upload_receipt");
+  const part = path.includes("/parts/");
+  if (status !== 201 && !(part && status === 202)) throw new Error("invalid_upload_receipt");
+  if (path === prefix) {
+    if (!capability || !/^[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]{43}$/.test(capability))
+      throw new Error("invalid_upload_receipt");
+    return { id: receipt.receipt_id, capability };
+  }
+  return part ? { disposition: status === 201 ? "completed" : "in_flight" } : receipt;
 }
 export interface SharedChildren {
   children: SharedNode[];
@@ -50,6 +90,7 @@ export class PublicClient {
     headers: Record<string, string> = {},
     operationId?: string,
     signal?: AbortSignal,
+    receipt = false,
   ): Promise<T> {
     const path = operationId
       ? `/api/v1/operations/${operationId}`
@@ -66,6 +107,8 @@ export class PublicClient {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
       signal,
+      30000,
+      receipt,
     );
   }
   async #fetch<T>(
@@ -73,6 +116,7 @@ export class PublicClient {
     init: RequestInit,
     signal?: AbortSignal,
     timeout = 30000,
+    receipt = false,
   ): Promise<T> {
     const active = AbortSignal.any([
       this.lifetime.signal,
@@ -97,7 +141,17 @@ export class PublicClient {
       );
     const value = response.status === 204 ? undefined : await response.json();
     active.throwIfAborted();
-    return value as T;
+    return (
+      receipt
+        ? uploadOnlyReceipt(
+            this.id,
+            path,
+            value,
+            response.status,
+            response.headers.get("Upload-Capability"),
+          )
+        : value
+    ) as T;
   }
   async uploadJson<T>(
     sessionId: string,
@@ -106,6 +160,7 @@ export class PublicClient {
     body: unknown,
     headers: Record<string, string>,
     signal?: AbortSignal,
+    receipt = false,
   ) {
     const { token } = await this.request<{ token: string }>(
       "/csrf",
@@ -124,9 +179,16 @@ export class PublicClient {
       { ...headers, "Share-Session": sessionId },
       undefined,
       signal,
+      receipt,
     );
   }
-  uploadBytes<T>(suffix: string, body: Blob, headers: Record<string, string>, signal: AbortSignal) {
+  uploadBytes<T>(
+    suffix: string,
+    body: Blob,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+    receipt = false,
+  ) {
     return this.#fetch<T>(
       `/api/v1/public/shares/${this.id}${suffix}`,
       {
@@ -136,6 +198,7 @@ export class PublicClient {
       },
       signal,
       900000,
+      receipt,
     );
   }
   async unlock(password: string) {
@@ -161,7 +224,7 @@ export class PublicClient {
         this.secret = null;
       },
     );
-    return this.request<SharedRoot>("");
+    return this.request<PublicRoot>("");
   }
   children(id: string, cursor?: string | null) {
     return this.request<SharedChildren>(

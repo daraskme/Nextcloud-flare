@@ -112,10 +112,14 @@ export async function uploadWriteProof(
       WHERE u.id=? AND u.owner_id=? AND u.credential_id=? AND u.epoch=? AND u.source=?
       AND u.selected_share_id IS ? AND u.selected_share_version IS ?
       AND u.link_share_id IS ? AND u.link_share_version IS ?
+      AND u.upload_only=?
+      AND (u.link_share_id IS NULL OR EXISTS(SELECT 1 FROM shares sh WHERE sh.id=u.link_share_id
+        AND sh.kind=CASE u.upload_only WHEN 1 THEN 'upload_only' ELSE 'link' END))
       AND b.owner_id=u.owner_id AND b.r2_key=? AND b.state='staging' AND b.ref_count=0
       AND c.epoch=u.epoch AND c.maintenance=0 AND u.cleanup_pending=0
       AND u.expires_at>=? AND u.last_progress_at>strftime('%s','now')*1000-86400000
       AND r.owner_id=u.owner_id AND r.epoch=u.epoch AND r.bytes=u.declared_size
+      AND r.share_id IS CASE u.upload_only WHEN 1 THEN u.link_share_id ELSE NULL END
       AND r.state='reserved' AND r.expires_at>=? AND ? >= ?
       AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE blob_id=b.id)
       AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE r2_key=b.r2_key)
@@ -130,6 +134,7 @@ export async function uploadWriteProof(
         row.selected_share_version,
         row.link_share_id,
         row.link_share_version,
+        row.upload_only,
         request.key,
         request.deadline,
         request.deadline,

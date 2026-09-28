@@ -1,6 +1,6 @@
 # 公開リンク共有
 
-更新: 2026-09-29。schema0065・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketと公開GET/HEADによる原本配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。upload-only・thumb・ZIP・media、実環境の共有は未完了。
+更新: 2026-09-29。schema0066・通常76table・147 route。所有者管理API/画面、匿名unlock/logout/CSRF、独立公開画面・一覧・content ticketと公開GET/HEADによる原本配信、公開フォルダー作成・名前変更・ごみ箱への移動と権限切替、公開upload/overwrite APIと再開可能な画面を接続済み。[upload-only](UPLOAD_ONLY_SHARES.md)の管理と送信/再開も接続済み。thumb・ZIP・media、実環境の共有は未完了。
 
 ## 所有者による管理
 
@@ -98,7 +98,7 @@ migration0064でuploadsへ変更不可のlink_share_id/versionを追加した。
 
 受付、R2実行許可、公開確定、status/operation照会はcreate/editに加えてupload actionを検査する。共有・credentialの失効、owner停止、祖先trash、quota超過、別unlock sessionへの差替えを拒否する。匿名activityのactorはnull、operationは元のlink principalを保存する。停止や失効で未確定のR2処理を終了済みとせず、既存のnative終了・実体確認に従って容量を精算する。確定済み/失敗済みoperationの内部修復では元の共有情報を照合し、失効後の新規転送権限は与えない。
 
-編集linkは所有者の容量予約を使う。share単位の追加予約上限と情報非開示receiptは後続のupload-only専用契約であり、既存編集linkのreservation_limit=0を容量ゼロとして扱わない。未確定の受付応答は同じkey・元sessionで照会/再送し、credentialやkeyを差し替えない。multipart中止の容量解放はnative handleの終了が証明された後になる。
+編集linkは所有者の容量予約を使う。share単位の追加予約上限と情報非開示receiptは[upload-only](UPLOAD_ONLY_SHARES.md)専用契約へ接続済みであり、既存編集linkのreservation_limit=0を容量ゼロとして扱わない。未確定の受付応答は同じkey・元sessionで照会/再送し、credentialやkeyを差し替えない。multipart中止の容量解放はnative handleの終了が証明された後になる。
 
 ## 公開アップロード画面と再開
 
@@ -114,10 +114,10 @@ root GETの`permissions.upload/overwrite`に従ってファイル選択と上書
 
 ## 次の接続と完了条件
 
-1. upload-onlyを接続する。公開create/rename/deleteのreload後の操作追跡も残る。
+1. 公開create/rename/deleteのreload後の操作追跡を接続する。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側のthumb/page/trackなど、未接続の派生配信経路を契約へつなぐ。原本GET/HEAD APIは接続済みで、画面の保存経路はcontent hostのticket/session経由である。
-4. upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。
+4. ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報の非開示を維持する。
 
 APP_ORIGINとCONTENT_ORIGINを同じ値にする[単一host構成](SINGLE_HOST.md)にも対応する。Worker入口が/sessionと/cの名前空間を配信へ、それ以外の既知app pathを各認可handlerへ振り分ける。host-only CookieとCSP/attachment、private/public asset境界、元share/sessionの制約を維持する。別originのcontent hostにはapp routerを置かない。
 5. stagingでAccess Bypass、Cookie、CORS、鍵切替、KDF予算、実配信を検証する。

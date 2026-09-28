@@ -6,7 +6,7 @@ import type { SharePasswordRing } from "../auth/shareSecrets";
 import type { Env } from "../env";
 import { listInternalShares, readInternalShare } from "../services/internalShareRead";
 import { createInternalShare, updateInternalShare } from "../services/internalShares";
-import { listLinkShares, readLinkShare } from "../services/linkShareRead";
+import { listLinkShares, readLinkShare, readUploadOnlyShare } from "../services/linkShareRead";
 import { createLinkShare, updateLinkShare } from "../services/linkShares";
 import { hasEmptyBody } from "./emptyBody";
 
@@ -86,13 +86,16 @@ export async function handleShareHttp(
         if (url.search) throw new Error("invalid_share_request");
         const share = await readInternalShare(env.DB, session, match[1]!, true).catch((error) => {
           if (!(error instanceof Error) || error.message !== "share_unavailable") throw error;
-          return readLinkShare(env.DB, session, match[1]!);
+          return readLinkShare(env.DB, session, match[1]!).catch((error) => {
+            if (!(error instanceof Error) || error.message !== "share_unavailable") throw error;
+            return readUploadOnlyShare(env.DB, session, match[1]!);
+          });
         });
         return Response.json(share, { headers: { ...HEADERS, ETag: `"share-${share.version}"` } });
       }
       const received = url.pathname === "/api/v1/shared-with-me";
       const kind = url.searchParams.get("kind");
-      if (kind !== null && (received || !["link", "internal"].includes(kind)))
+      if (kind !== null && (received || !["link", "internal", "upload_only"].includes(kind)))
         throw new Error("invalid_share_request");
       if (
         [...url.searchParams.keys()].some(
@@ -107,11 +110,17 @@ export async function handleShareHttp(
         throw new Error("invalid_list_cursor");
       if (!tokens) return problem(503, "not_ready");
       return Response.json(
-        kind === "link"
-          ? await listLinkShares(env.DB, session, tokens, {
-              ...(rootNodeId === undefined ? {} : { rootNodeId }),
-              ...(cursor === undefined ? {} : { cursor }),
-            })
+        kind === "link" || kind === "upload_only"
+          ? await listLinkShares(
+              env.DB,
+              session,
+              tokens,
+              {
+                ...(rootNodeId === undefined ? {} : { rootNodeId }),
+                ...(cursor === undefined ? {} : { cursor }),
+              },
+              kind,
+            )
           : await listInternalShares(env.DB, session, tokens, {
               received,
               ...(rootNodeId === undefined ? {} : { rootNodeId }),
@@ -132,10 +141,9 @@ export async function handleShareHttp(
     }
     if (!match) {
       const input = await readShareBody(request);
-      const saved =
-        (input as { kind?: unknown }).kind === "link"
-          ? await createLinkShare(env, session, input, passwords, request.signal)
-          : await createInternalShare(env, session, input);
+      const saved = ["link", "upload_only"].includes((input as { kind?: unknown }).kind as string)
+        ? await createLinkShare(env, session, input, passwords, request.signal)
+        : await createInternalShare(env, session, input);
       return Response.json(saved, {
         status: 201,
         headers: { ...HEADERS, Location: `/api/v1/shares/${saved.id}`, ETag: '"share-1"' },
@@ -155,7 +163,7 @@ export async function handleShareHttp(
             .first<string>("kind")
         : (value as { kind?: unknown }).kind;
     const saved =
-      kind === "link"
+      kind === "link" || kind === "upload_only"
         ? await updateLinkShare(
             env,
             session,

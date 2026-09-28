@@ -89,6 +89,7 @@ h1 {
   font-size: 13px;
 }
 .notice {
+  overflow-wrap: anywhere;
   padding: 16px;
   border: 1px solid #dbcbac;
   background: #fff8e9;

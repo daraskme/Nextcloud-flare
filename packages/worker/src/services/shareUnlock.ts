@@ -16,6 +16,7 @@ import {
 
 const CLOCK = "strftime('%s','now')*1000";
 interface ActiveLink {
+  kind: "link" | "upload_only";
   id: string;
   owner_id: string;
   root_node_id: string;
@@ -33,6 +34,7 @@ interface ActiveLink {
   can_upload: number;
 }
 export interface ShareSession {
+  kind: "link" | "upload_only";
   claims: ShareCookieClaims;
   ownerId: string;
   rootNodeId: string;
@@ -58,9 +60,12 @@ const ACTIVE_LINK = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,delete
   EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload') AS can_upload
   FROM shares sh JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
   JOIN users owner ON owner.id=sh.owner_id JOIN control ctl ON ctl.singleton=1
-  WHERE sh.id=?1 AND sh.kind='link' AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
+  WHERE sh.id=?1 AND sh.kind IN ('link','upload_only') AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
   AND ctl.epoch=?2 AND ctl.maintenance=0 AND (sh.expires_at IS NULL OR sh.expires_at>${CLOCK})
-  AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read')
+  AND ((sh.kind='link' AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read'))
+    OR (sh.kind='upload_only' AND n.kind IN ('root','folder')
+      AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='create')
+      AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload')))
   AND EXISTS(SELECT COUNT(*) FROM a JOIN spaces sp ON sp.id=a.space_id AND sp.owner_id=a.owner_id
   HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(a.deleted_at IS NULL)=1 AND SUM(a.kind='root' AND a.parent_id IS NULL AND a.id=sp.root_node_id)=1)`;
 
@@ -110,16 +115,17 @@ export async function readShareSession(
     .first<ActiveLink>();
   if (!row) throw new Error("share_session_unavailable");
   return {
+    kind: row.kind,
     claims,
     ownerId: row.owner_id,
     rootNodeId: row.root_node_id,
     spaceId: row.space_id,
     permissions: {
-      createFolder: row.can_create === 1,
-      rename: row.can_rename === 1,
-      delete: row.can_rename === 1,
+      createFolder: row.kind === "link" && row.can_create === 1,
+      rename: row.kind === "link" && row.can_rename === 1,
+      delete: row.kind === "link" && row.can_rename === 1,
       upload: row.can_upload === 1 && row.can_create === 1,
-      overwrite: row.can_upload === 1 && row.can_rename === 1,
+      overwrite: row.kind === "link" && row.can_upload === 1 && row.can_rename === 1,
     },
   };
 }

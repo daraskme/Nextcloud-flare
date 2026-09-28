@@ -67,7 +67,7 @@ const info = (s: ShareSession) => ({
   unlocked: true,
   id: s.claims.share_id,
   version: s.claims.share_version,
-  rootNodeId: s.rootNodeId,
+  ...(s.kind === "upload_only" ? { kind: "upload_only" } : { rootNodeId: s.rootNodeId }),
   expiresAt: s.claims.exp * 1000,
 });
 function limited(seconds: number) {
@@ -143,6 +143,13 @@ async function routePublicShareHttp(
           throw error;
       }
     }
+    if (
+      session?.kind === "upload_only" &&
+      !upload &&
+      !(request.method === "GET" && !action && !operation) &&
+      !["unlock", "csrf", "logout"].includes(action)
+    )
+      return problem(404, "not_found");
     if (action.startsWith("content/")) {
       if (!session) return problem(401, "unauthorized");
       if (request.headers.get("Share-Session") !== session.claims.session_id)
