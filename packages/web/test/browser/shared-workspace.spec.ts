@@ -298,7 +298,17 @@ test("recipient creates and renames with selected scope, including recovery afte
     await dialog.getByRole("button", { name: "新しいフォルダー", exact: true }).click();
     await expect(dialog.getByRole("alert")).toBeVisible();
     await recipient.reload();
+    // Reload already lists the committed folder. Its presence does not prove
+    // that the replay has finished (the replay first needs a fresh CSRF token).
+    const replay = recipient.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/v1/nodes" &&
+        response.request().method() === "POST" &&
+        response.request().headers()["idempotency-key"] === requests[0]!.key,
+    );
     await recipient.getByRole("button", { name: "結果を確認", exact: true }).click();
+    expect((await replay).status()).toBe(201);
+    await expect(recipient.getByRole("button", { name: "結果を確認", exact: true })).toBeHidden();
     await expect(recipient.getByRole("link", { name: /受信者が作成/ })).toBeVisible();
     expect(requests).toHaveLength(2);
     expect(requests[1]).toEqual(requests[0]);

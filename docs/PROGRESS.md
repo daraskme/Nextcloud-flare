@@ -2,6 +2,8 @@
 
 更新: 2026-09-28
 
+CIで見つかった共有編集の再送テストの競合を修正しました。再読込後の一覧には既に作成済みfolderが表示されるため、表示だけで完了判定せず、元Idempotency-KeyのPOST応答201と未確認表示の解消を待ちます。Windowsの1万件検索timeoutはローカルでは再現しておらず、失敗時だけ処理段階・所要msを出す診断を追加しました。90秒・1万件・検索SQLと権限検査は維持しています。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。次の製品実装はコピー途中multipartの中止・精算です。
+
 Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV、認証・会計・復旧・共通受付、バックアップの停止・生成・R2保存/取得・完了記録と専用運用コマンドをローカル実装済みです。製品全体の完成条件は[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)のPhase 0〜9です。
 
 [所有者間コピーの停止・精算](COPY_JOBS.md)を追加しました。元の両側権限を再検査して取消し、期限/epoch/予算で失敗停止します。停止だけでは保持を返さず、未着手・明示的not_started・保存済みの証拠が揃うblobだけを原子的に精算します。保存済みobjectはphysical容量を維持して35日猶予のGCへ渡します。途中multipartの中止、結果不明/観測欠落の修復、最大転送規模の完走予算、Queue/HTTP/画面は未完成です。

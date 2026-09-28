@@ -250,21 +250,47 @@ it("allows an internal grantee to search only within their live shared subtree",
 
 // Fixture construction writes more than 10,000 nodes and FTS rows in workerd.
 // Match the Windows runner budget; this is not a production query deadline.
-it("caps the actual recursive scope at 10000 and keeps foreign matches outside that budget", async () => {
+it("caps the actual recursive scope at 10000 and keeps foreign matches outside that budget", async ({
+  onTestFailed,
+}) => {
+  const completed: { stage: string; ms: number }[] = [];
+  let stage = "fixture",
+    started = Date.now();
+  const next = (name: string) => {
+    const now = Date.now();
+    completed.push({ stage, ms: now - started });
+    stage = name;
+    started = now;
+  };
+  // Distinguish fixture I/O from SQL on slow Windows runners without changing
+  // the dataset, query bounds or timeout. Do not log names or identifiers.
+  onTestFailed(({ task }) => {
+    const timing = JSON.stringify({ completed, pending: { stage, ms: Date.now() - started } });
+    for (const error of task.result?.errors ?? [])
+      error.message += `\nsearch-scope-timing ${timing}`;
+  });
   const t = await fixture();
+  next("insert-10005");
   await t.add(Array.from({ length: 10005 }, (_, i) => `Match ${String(i).padStart(5, "0")}`));
+  next("search");
   const result = await t.search("match");
+  next("search-assertions");
   expect(result.items).toHaveLength(200);
   expect(result.truncated).toBe(true);
   const q = searchQuery("match");
+  next("scope-sql");
   const row = await env.DB.prepare(searchStatement(true))
     .bind(t.f.ids.folder, t.f.ids.space, t.f.ids.user, q.version, q.match, q.pattern, null, null)
     .first<{ scopeCount: number; hitCount: number }>();
+  next("scope-assertions");
   expect(row?.scopeCount).toBe(10000);
   expect(row!.hitCount).toBeLessThan(10000);
+  next("foreign-fixture");
   const other = await fixture();
   await other.add(["Match visible"]);
+  next("foreign-search");
   const visible = await other.search("match");
+  next("foreign-assertions");
   expect(visible.items.map((n) => n.name)).toEqual(["Match visible"]);
   expect(visible.truncated).toBe(false);
 }, 90_000);

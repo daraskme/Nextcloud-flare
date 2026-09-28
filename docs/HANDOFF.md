@@ -25,6 +25,8 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
+CIで見つかった共有編集の再送テストの競合を修正しました。再読込後の一覧には既に作成済みfolderが表示されるため、表示だけで完了判定せず、元Idempotency-KeyのPOST応答201と未確認表示の解消を待ちます。Windowsの1万件検索timeoutはローカルでは再現しておらず、失敗時だけ処理段階・所要msを出す診断を追加しました。90秒・1万件・検索SQLと権限検査は維持しています。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。次の製品実装はコピー途中multipartの中止・精算です。
+
 [所有者間コピーの停止・精算](COPY_JOBS.md)を追加しました。元の両側権限を再検査して取消し、期限/epoch/予算で失敗停止します。停止だけでは保持を返さず、未着手・明示的not_started・保存済みの証拠が揃うblobだけを原子的に精算します。保存済みobjectはphysical容量を維持して35日猶予のGCへ渡します。途中multipartの中止、結果不明/観測欠落の修復、最大転送規模の完走予算、Queue/HTTP/画面は未完成です。
 
 schema0057・通常75table。不変のcopy_cleanup_receiptsとbulk_jobsの停止時刻/epoch、証拠付き精算・native履歴保持guardを追加しました。全Node1,410件・関連workerd304件の計1,714件が成功しました（修正したfileの再実行を含む）。型・lint522file・契約/設定・75tableのSQL backup往復も確認しました。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。

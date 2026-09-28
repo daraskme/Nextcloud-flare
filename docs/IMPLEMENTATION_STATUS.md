@@ -13,6 +13,12 @@
 
 ## 今回の検証記録
 
+- 015ab17の[CI36380239927](https://github.com/daraskme/Nextcloud-flare/actions/runs/36380239927)でbrowser27/28成功・1失敗。共有recipientのlost response/reload後、作成済みlinkが既に表示されているため、元操作の再送が届く前に送信回数を検査していた。保存traceでもCSRF更新と未完了POSTを確認。同じIdempotency-KeyのPOST応答201と未確認表示の消失を待ち、元body/key一致・共有scope・一件だけの作成・後続renameの検査は維持した。
+- 先行b1fedc7のWindows検索timeoutは未再現。ローカルの同じ9試験を一時的に計測したところ、大規模fixture追加1,083ms・検索399ms・scope SQL383ms・別owner検査54msだった。SQL planはscopeから主キー/children keyset索引、search_index_scope、FTSのrowid付きMATCHを使用。Windowsの遅延がfixtureかSQLかは未確定。元テストに失敗時限定のsearch-scope-timing診断を追加し、完了段階と実行中段階のmsのみを記録する。件数・90秒timeout・production SQLは変更しない。
+- 診断用の一時試験で例外とtimeoutの両方に元エラーと段階情報が表示されることを確認し、一時ファイルを削除した。最終search.test.tsは9件成功（6.89秒、/tmp/ncf-search-diagnostics-final.log）。型検査・lint522fileが成功（/tmp/ncf-ci-recovery-types.log、/tmp/ncf-ci-recovery-lint.log）。browser全28シナリオが成功（5.0分、/tmp/ncf-ci-recovery-browser.log）。今回の対象試験は計37件成功。Web buildもbrowser起動前に成功し、更新資料のlocal link185件とgit diff --checkを確認した。Node全体・workerd全体・backup drillは今回再実行せず、新headのCIで確認する。今回の変更はテストと資料のみで、schema0057・通常75table・依存・production動作は変更していない。remote migration/deployなし。
+
+### 先行するコピーの停止・精算
+
 - [所有者間copyの停止・限定精算](COPY_JOBS.md)を追加。migration0057・75table。元の両側権限による内部read/cancel、期限/epoch/予算による停止、32blob/25秒の精算とcursor、不変receipt、予約/pin解除、保存済みobjectの35日GC handoff、停止後のclaim解放を実装。途中multipart・未知/観測欠落・記録なしprepareは保持し、HTTP/Queue/UIは有効化しない。保持中のnative receiptは自動削除から除外する。
 - 全Node74file/1,410件の初回は1,409成功・1失敗（69.02秒）。旧0056の移行テストが現行復旧SQLを旧schemaへ実行していたため、旧行保持を確認した後で後続migrationも適用するよう修正。対象3file/16件成功（2.16秒）、最終の公開schema8件も成功（2.17秒）。精算receiptを含む75tableのSQL export/import・全table/schema hash・freezeを確認。/tmp/ncf-copy-cleanup-node-full.log、/tmp/ncf-copy-cleanup-node-complete.log、/tmp/ncf-copy-cleanup-node-recovery.log。
 - 新規lifecycle35件は、未着手/未送信証明/単一・分割保存後の精算、0 bytes、現在の権限と失効競合、取消し後の遅延保存、unknown/途中multipart保留、ACK喪失、8段階rollback、40blobの32+8件cursor、履歴保持とprune、旧epoch/予算失敗、改変拒否を検証。初回の例外期待と、既存履歴があるkeyへの新規PUTを要求していたprune fixtureは、実際の失敗receipt契約と別keyでのnative精算へ修正。
