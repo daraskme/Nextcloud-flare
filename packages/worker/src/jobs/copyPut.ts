@@ -1,4 +1,4 @@
-import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
+import { assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
 import { hex } from "../platform/stream";
 import { trackedR2Write } from "../services/r2Write";
@@ -15,6 +15,7 @@ import {
   copyClaimFence,
   copyClaimPosition,
 } from "./copyClaim";
+import { copyObjectStatements } from "./copyObject";
 import { advanceCopyBlob } from "./copyProgress";
 import { readCopyJobRange } from "./copyRead";
 
@@ -95,45 +96,27 @@ export async function copyNextSmallBlob(
     );
     checkCopyClaim(claim);
     const observe = async (object: R2Object) => {
-      if (
-        object.key !== key ||
-        !object.etag ||
-        object.etag.length > 256 ||
-        object.size !== blob.size ||
-        !object.checksums.sha256 ||
-        hex(object.checksums.sha256) !== sha256
-      )
-        throw new Error("copy_destination_mismatch");
+      const statements = copyObjectStatements(
+        {
+          jobId: claim.id,
+          sourceBlobId: blob.id,
+          destinationBlobId: destinationId,
+          ownerId: claim.plan.destinationOwnerId,
+          size: blob.size,
+          attemptId,
+          claimToken: claim.token,
+          mode: "single",
+          sha256,
+        },
+        object,
+      );
       const receipt = await acquireSystemMutation(
         env,
         claim.plan.destinationOwnerId,
         "copy.observe-put",
       );
-      // Actual native facts must survive a revoked grant, disabled owner or expired execution lease.
-      await commitSystemMutation(env.DB, receipt, claim.plan.destinationOwnerId, [
-        assertExists(
-          "SELECT 1 FROM copy_job_blobs WHERE job_id=? AND source_blob_id=? AND destination_blob_id=? AND transfer_attempt=? AND transfer_claim=? AND transfer_sha256=? AND transfer_state IN ('claimed','stored')",
-          [claim.id, blob.id, destinationId, attemptId, claim.token, sha256],
-        ),
-        {
-          sql: `INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,${CLOCK}) ON CONFLICT(blob_id) DO NOTHING`,
-          values: [destinationId, blob.size, object.etag],
-        },
-        assertExists(
-          "SELECT 1 FROM blob_storage WHERE blob_id=? AND bytes=? AND r2_etag=? AND removed_at IS NULL",
-          [destinationId, blob.size, object.etag],
-        ),
-        {
-          sql: "UPDATE blobs SET sha256_verified=?,r2_etag=? WHERE id=? AND state='staging'",
-          values: [sha256, object.etag, destinationId],
-        },
-        assertOneChange,
-        {
-          sql: "UPDATE copy_job_blobs SET transfer_state='stored' WHERE job_id=? AND source_blob_id=? AND transfer_attempt=?",
-          values: [claim.id, blob.id, attemptId],
-        },
-        assertOneChange,
-      ]);
+      // Record actual facts even after revocation or execution lease expiry.
+      await commitSystemMutation(env.DB, receipt, claim.plan.destinationOwnerId, statements);
     };
     const result = await trackedR2Write(
       env,

@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。結果不明の修復、HTTP受付、Queue consumer、再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。実保存成功後に失ったobject観測の修復も内部実装した。未知結果やpart/handle観測の修復、HTTP受付、Queue consumer、再試行は後続で、画面から所有者間コピーを使える状態にはまだしていない。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -60,7 +60,7 @@ part進捗は`{v:1,blob,offset}`として確定し、leaseを取り直しても�
 
 全bucket走査では既知のcopy upload IDをtrackedとして扱う。未知IDを含め、copy保持が残るkeyは全bucket用abortから除外する。copy専用の取消し・終了照合が必要で、lease満了や一覧からの消失を閉鎖証明にしない。
 
-送信前ACK喪失後に記録がないattempt、native結果不明や観測記録欠落の修復は未接続。取消し/期限失敗後、未着手・明示的なnot_started・保存済み・既知multipartの実中止という証拠が揃うblobの精算は接続済み。現在はreadとwriteを合わせたcall数で次のreadを制限する。最大10,000件・500 GiBの受付を完走させるには、batch化とD1/200 invocation/20,000 R2 callの全体予算検証も必要。現段階ではこれらを推測で解放せず、HTTP/Queue consumerを有効化しない。
+送信前ACK喪失後に記録がないattempt、native結果不明やpart/handle観測記録欠落の修復は未接続。objectの観測欠落は下記の実成功証明付き修復へ接続した。取消し/期限失敗後、未着手・明示的なnot_started・保存済み・既知multipartの実中止という証拠が揃うblobの精算は接続済み。現在はreadとwriteを合わせたcall数で次のreadを制限する。最大10,000件・500 GiBの受付を完走させるには、batch化とD1/200 invocation/20,000 R2 callの全体予算検証も必要。現段階ではこれらを推測で解放せず、HTTP/Queue consumerを有効化しない。
 
 ## 転送済みコピーの一括公開
 
@@ -85,7 +85,7 @@ schemaでも、staging blob・実在bytes/hash/ETag・single PUTまたはmultipa
 - 未着手は転送attempt/保存先blob/送信履歴がないことを検査する。準備済みの場合は、対応するnativeの明示的なnot_started記録と、他の送信がないことを要求する。記録の欠落を未送信の証拠にしない。
 - 保存済みはsingle PUTまたはmultipart completeのnative succeeded、pending不在、hash/ETagとphysical記録を照合する。保存先をorphan/GC候補へ引き継ぎ、35日猶予を付ける。実objectとphysical容量はGCの実削除まで保持する。
 - 既知multipartは下記の専用abortで先行nativeの終了と実中止が証明された場合に、`aborted` receiptから予約・pin・part/handle保持を解除する。objectのphysical記録がある場合はこの精算を拒否する。
-- unknown native、未知handle、complete観測欠落、prepare ACK喪失後の記録なしattemptは保留を返す。HEAD不在・期限満了・abort応答だけでは精算しない。不明結果修復は後続。
+- unknown native、未知handle、prepare ACK喪失後の記録なしattemptは保留を返す。complete観測欠落は、native実成功と下記object照合が揃うまで保留する。HEAD不在・期限満了・abort応答だけでは精算しない。不明結果修復は後続。
 
 停止と精算はDB-only receiptでACK喪失を照合し、R2送信許可として使わない。共有失効・owner無効化後でも、停止済みjobの証明できる精算はsystem admissionで可能。停止履歴は不変とし、同じjobをpendingへ戻す再試行は許可しない。新規jobを含むretry設計、HTTP/Queue/画面接続は未実装。
 
@@ -96,6 +96,14 @@ schemaでも、staging blob・実在bytes/hash/ETag・single PUTまたはmultipa
 system admissionの原子的batchでattempt・epoch・開始時刻・期限を固定し、直接ACKを得た呼出しだけがR2へ進む。共通の`multipart.abort`にcopy専用の証明を加え、ControlDOとD1 triggerでもjob/source/owner/key/handle/attempt/epoch/期限、先行nativeの終了を再検査する。全bucket用abortでcopy保持を回避しない。所有者が無効化された場合や共有失効後も、停止済みコピーの中止は内部system処理として実行できる。
 
 同じ準備済みattemptを再度呼び出してもR2へ再送せず、対応するnative succeededを照合する。prepare ACK喪失、未知abort、timeoutでは予約とpinを保持し、実終了が遅れて記録されたら次の呼出しで確認する。finishのACKだけを失った場合はD1の同一receiptで回復する。epoch変更後の実終了記録も精算に利用できる。中止処理自体は容量を返さず、`cleanupStoppedCopyJob`が先行処理とabortの終了記録を再検査し、immutable `aborted` receiptと保持の解放を原子的に確定する。中止attemptの未送信・記録喪失からの再試行管理は後続。
+
+## 実保存後のobject観測修復
+
+`jobs/copyReconcile.ts` の `reconcileCopyObject` は、一つのjob/source blobについて、最大25秒・一度のR2 HEADで失った保存先の観測を復元する。固定manifest・staging blob・pin/予約・元attemptと、owner/key/epoch/source_refが完全一致するPUTまたはcompleteのnative succeededを要求する。pending、別種の書込み、隔離object、GC候補は拒否する。HEADでobjectを発見しても、それをnative処理終了の証明にはしない。
+
+HEAD前のsystem admissionを直接ACKした場合だけ読み、記録時にも同じepoch/maintenance・native receipt・保持を同じbatchで再検査する。単一保存は正確なkey/size/ETagと準備済みSHA-256、分割保存はcreate時のcopy_job/copy_blob/copy_attemptメタデータと全partの保存・native成功も照合する。単一/分割の元送信と共通の `copyObjectStatements` を用い、blob_storage・hash/ETag・stored状態を原子的に記録する。分割の全体hashはNULLを維持する。
+
+元leaseの終了、共有失効、owner無効化、永久停止後も実在bytesを計上できる。二重照合やcommit ACK喪失でphysicalを重複加算せず、記録済みならHEADを省略する。修復自身はnativeを再送せず、checkpoint・namespace・予約・pinを変更しない。稼働jobは再認可を伴う通常の進捗確定へ戻り、停止済みjobは既存の証拠付き精算と35日GCへ渡す。欠落・checksum/metadata不一致・HEAD失敗/期限超過では保持する。この内部修復は転送claimを使わないため、executor接続時にはHEADを含むjob全体予算・修復呼出し頻度の制御を統合する。part/handleの復元、未知nativeや未送信attemptの再試行管理も後続で、HTTP/Queueにはまだ公開しない。
 
 ## 移行と復旧
 

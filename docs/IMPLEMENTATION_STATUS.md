@@ -3,6 +3,8 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。完了結果は同じrun IDで確認します。
+
 先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
 
 送信先は承認済みGitHub daraskme/Nextcloud-flareの専用`codex/database-restore`です。先行b1fedc7の[CI36377836985](https://github.com/daraskme/Nextcloud-flare/actions/runs/36377836985)はUbuntu・Windows2分割・browser・backupが成功、Windows分割1はsearch.test.tsの1万件検索が90秒timeoutで失敗しました（965/966件成功）。検索試験の遅延原因は未解決で、上限や検査を緩めていません。先行0604da2の[CI36374767844](https://github.com/daraskme/Nextcloud-flare/actions/runs/36374767844)はUbuntu・Windows3分割・browser・backupの全6job成功です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は全6job成功です。先行a52b815の[CI36371093589](https://github.com/daraskme/Nextcloud-flare/actions/runs/36371093589)はUbuntu・Windows3分割・browser成功、backup:run-drillのsource fingerprints中にbackup_wrangler_failedで失敗。保存ログだけでは子プロセスの原因を特定できません。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功。先行f953d43の[CI36361608147](https://github.com/daraskme/Nextcloud-flare/actions/runs/36361608147)はUbuntu・Windows3分割・browser・backupの全6job成功。先行a9af702の[CI36359614104](https://github.com/daraskme/Nextcloud-flare/actions/runs/36359614104)も失敗job再実行後に全6job成功。初回Windowsのorphan-admission受付回数不一致と、21cd396の[CI36354864354](https://github.com/daraskme/Nextcloud-flare/actions/runs/36354864354)でのR2保存先照合失敗の原因は未確定です。productionの期限や検査は緩めていません。今回のpush/CIはgit statusとgh run listで確認します。
@@ -14,6 +16,12 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [実保存後のコピー観測修復](COPY_JOBS.md)を追加。schema0058・75tableを維持する。固定manifest/保持と元native succeededを要求し、単一PUTはHEADのSHA-256、multipart completeはコピー固有metadataと全partの成功を照合して、physical/hash/ETag・stored状態を原子的に復元する。HEAD前後のepoch/maintenance・native/保持を再検査し、実送信と修復の保存SQLを共通化した。修復自体はcheckpoint/namespace/予約/pinを変更しない。
+- 最初の修復27件・既存単一13件・分割27件は全67件成功（89.87秒、/tmp/ncf-copy-reconcile-worker-initial.log）。実R2保存後に観測SQLだけを失敗させ、欠落復元・0 bytes・続行・停止/失効/旧epoch後のGC handoff・SHA/metadata不一致・未知native/欠落prepareの保持・HEAD前後の境界・ACK喪失・rollback・並行照合・期限・実ControlDOを検証した。追加したmultipart rollbackと実25秒timeoutを含む最終5file/154件も成功（256.00秒、/tmp/ncf-copy-reconcile-worker-final.log）。関連workerdは重複を除き7file/194件成功。stream cancellationの診断は出るが、全assertionと終了codeは成功した。
+- 型・lint529file・契約/設定検査は成功。/tmp/ncf-copy-reconcile-types-final.log、/tmp/ncf-copy-reconcile-lint-final.log、/tmp/ncf-copy-reconcile-contracts.log、/tmp/ncf-copy-reconcile-config.log。全Node75file/1,431件成功（75.15秒、/tmp/ncf-copy-reconcile-node-full.log）。**全Node1,431 + 関連workerd194 = 1,625件成功**。Web build/Worker dry-runも成功（/tmp/ncf-copy-reconcile-build.log）。更新資料のlocal link195件とgit diff --checkも確認した。今回のUI/HTTP/schema変更はなく、browser・全workerd・実Wranglerドリルはローカルで再実行していない。push後CIで確認する。native unknown、part/handle観測、未送信attempt再試行、全体完走予算、Queue/HTTP/UIは引き続き未完了。remote migration/deployなし。
+
+### 先行する既知copy multipartの中止・精算
 
 - [停止済みコピーの既知multipart中止](COPY_JOBS.md)を内部実装。migration0058・75table。先行create/part/completeの終了証明、25秒の固定中止attempt、直接ACK後の一度だけのnative送信、遅延終了の照合、aborted receiptによる原子的な予約/pin/保持精算を追加した。未知結果・記録のないprepareでは保持を維持し、中止attemptの再試行管理とQueue/HTTP/UIは後続。
 - 全Node75file/1,431件成功（71.96秒、/tmp/ncf-copy-abort-node-full.log）。新schema19件は旧column/行保持、移行前提、3段階の同一終了証明、索引利用、混在identity拒否を検査。SQL backup5ケースは単一/分割/既存精算receipt/中止準備/中止済みの全table/schema hashとfreezeを確認。epoch条件追加後の関連24件も成功（3.50秒、/tmp/ncf-copy-abort-node-final.log）。

@@ -104,6 +104,7 @@ export const SYSTEM_MUTATION_KINDS = [
   "copy.stop",
   "copy.cleanup",
   "copy.multipart-abort",
+  "copy.reconcile-object",
   "copy.claim",
   "copy.read",
   "copy.release",

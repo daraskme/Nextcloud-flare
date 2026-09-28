@@ -8,7 +8,7 @@ D1巻戻しに備え、精算済みlive receiptを削除する前に[独立し�
 
 | 操作 | 送信条件 | 完了の扱い |
 |---|---|---|
-| 所有者間copy | 元/先の現行権限・固定source node・pin/予約・実行claim・転送attemptを再検査。multipartは正確なupload ID/part/complete attemptと既存part成功も確認 | `copy.put`・`copy.multipart.create/part/complete`の実成功を独立記録する。観測事実と現行認可が揃ってから進捗を確定。取消し後も保持し、未着手/明示的未送信/実保存とnative終了の証拠が揃うblobだけ精算する。既知multipartは先行native終了を確認して専用証明付きmultipart.abortを一度だけ送信し、実終了後にaborted receiptで精算。結果不明の修復と中止attempt再試行は後続。[詳細](COPY_JOBS.md) |
+| 所有者間copy | 元/先の現行権限・固定source node・pin/予約・実行claim・転送attemptを再検査。multipartは正確なupload ID/part/complete attemptと既存part成功も確認 | `copy.put`・`copy.multipart.create/part/complete`の実成功を独立記録する。観測事実と現行認可が揃ってから進捗を確定。取消し後も保持し、未着手/明示的未送信/実保存とnative終了の証拠が揃うblobだけ精算する。既知multipartは先行native終了を確認して専用証明付きmultipart.abortを一度だけ送信し、実終了後にaborted receiptで精算。native succeeded後のobject観測欠落はHEADのhash/metadataと同一保持を照合して復元する。未知結果と中止attempt再試行は後続。[詳細](COPY_JOBS.md) |
 | BACKUPS世代削除 | 完成receiptの全tuple/hash、35日超の保持、元epoch・停止mode/revision/token、世代内の正確な1〜20 key。同じ世代のpendingなしをgrant batchで再検査し、DO側の元のbackup/停止状態も確認 | `backup.delete`の実成功を記録してから次の一覧へ進む。part batchと最後のmanifestを別試行にし、応答喪失では追加削除・absent確定を保留する |
 | BACKUPS接続probe | 固定key `sys/restore/binding-probe-v1`、明示null owner、元の復旧要求/試行/nonce/bucket/期待ETagと停止challenge。DO原本をgrant前後と送信直前、D1停止revision/tokenをgrant batchで再検査 | `backups.probe.put`のnative実終了を記録してからchallengeを返す。条件不成立のnullも終了記録へ反映するが、接続確認はconflictで失敗する |
 | BLOBS/S3接続probe | 固定system key、明示null owner、元のlease token/nonce/source/期待ETag、prepared phase、現epoch・maintenance/GC停止をgrant batchで再検査。復旧先照合では停止revision/tokenと元期限も要求 | `probe.put`のnative実成功を記録後にS3読戻しへ進む。条件不成立のnullもnativeが終了した事実として記録するが、接続検証はconflictで失敗する |

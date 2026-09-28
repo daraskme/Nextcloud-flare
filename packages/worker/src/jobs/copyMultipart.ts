@@ -26,6 +26,7 @@ import {
   copyClaimOffset,
   copyClaimPosition,
 } from "./copyClaim";
+import { copyObjectStatements } from "./copyObject";
 import { advanceCopyBlob } from "./copyProgress";
 import { copyNextSmallBlob } from "./copyPut";
 import { withCopyJobRange } from "./copyRead";
@@ -355,39 +356,24 @@ export async function copyNextBlob(
     .bind(id)
     .all<R2UploadedPart>();
   if (parts.results.length !== row.part_count) throw new Error("copy_parts_incomplete");
-  const observe = async (object: R2Object) => {
-    if (object.key !== key || object.size !== blob.size || !object.etag || object.etag.length > 256)
-      throw new Error("copy_destination_mismatch");
-    await facts("copy.multipart-stored", [
-      assertExists(
-        "SELECT 1 FROM copy_multipart_uploads WHERE destination_blob_id=? AND complete_attempt=? AND complete_claim=? AND state IN ('completing','stored') AND r2_upload_id=?",
-        [id, attempt, claim.token, row.r2_upload_id],
+  const observe = (object: R2Object) =>
+    facts(
+      "copy.multipart-stored",
+      copyObjectStatements(
+        {
+          jobId: claim.id,
+          sourceBlobId: blob.id,
+          destinationBlobId: id,
+          ownerId: claim.plan.destinationOwnerId,
+          size: blob.size,
+          attemptId: attempt,
+          claimToken: claim.token,
+          mode: "multipart",
+          r2UploadId: row.r2_upload_id!,
+        },
+        object,
       ),
-      {
-        sql: `INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,${CLOCK}) ON CONFLICT(blob_id) DO NOTHING`,
-        values: [id, blob.size, object.etag],
-      },
-      assertExists(
-        "SELECT 1 FROM blob_storage WHERE blob_id=? AND bytes=? AND r2_etag=? AND removed_at IS NULL",
-        [id, blob.size, object.etag],
-      ),
-      {
-        sql: "UPDATE blobs SET r2_etag=? WHERE id=? AND state='staging' AND sha256_verified IS NULL",
-        values: [object.etag, id],
-      },
-      assertOneChange,
-      {
-        sql: "UPDATE copy_multipart_uploads SET state='stored',object_etag=? WHERE destination_blob_id=? AND complete_attempt=?",
-        values: [object.etag, id, attempt],
-      },
-      assertOneChange,
-      {
-        sql: "UPDATE copy_job_blobs SET transfer_state='stored' WHERE job_id=? AND source_blob_id=? AND transfer_mode='multipart'",
-        values: [claim.id, blob.id],
-      },
-      assertOneChange,
-    ]);
-  };
+    );
   const object = await trackedR2Write(
     env,
     {
