@@ -1,6 +1,17 @@
 # 実装進捗
 
-## 公開リンクの所有者管理API（今回）
+## 公開リンクの匿名認証（今回）
+
+[公開認証](PUBLIC_SHARES.md)のchallenge・秘密値/password検証・共有Cookie・public CSRF・logoutをWorkerへ接続。Access設定なしで動作し、同じchallengeの並行送信/応答喪失は同じsessionへ収束させる。期限は最長7日かつshare期限以内。D1確定時にowner・share設定・祖先・epoch・停止を再検査し、logoutは当該credentialの派生配信認証まで一括失効させる。ControlDOへ共有10/IP30回のrolling 60秒制限を追加し、eviction時の保持、初回/喪失後60秒待機、4,096keyの上限、時計逆行・停止時の拒否を実装。schema0063・通常76table・147 route、依存追加なし。公開一覧/content・landing・所有者UIは後続。
+
+- 全Node86file/1,528件成功（83.68秒、/tmp/ncf-unlock-node-fixed.log）。新規share-tokens13件で署名用途・share/epoch/origin・期限・鍵切替・重複Cookie拒否・IPv6正規化を確認。backup修正前の全Nodeも1,528件成功（84.82秒、/tmp/ncf-unlock-node-full.log）。
+- 初回workerd4file/73件は72件成功・実RPC fixtureの復旧初期状態で1件失敗（17.87秒、/tmp/ncf-unlock-native.log）。部分bootstrapを作らない空DBの監査へ修正。次の4file/102件はassertionが全成功したが、期待するControlDO停止例外がVitestへ漏れてexit1（69.94秒、/tmp/ncf-unlock-native-final.log）。拒否の確認を同じ実DO内でawaitする試験へ修正し、rate/backupの2file/28件はexit0で成功（26.00秒、/tmp/ncf-unlock-rate-backup-final.log）。製品の停止・期限条件は変更していない。
+- 実browserは新規public-auth2件と既存shares3件の計5件成功（1.6分、/tmp/ncf-unlock-browser.log）。Accessなしの実HTTP、実global KDF/ControlDO/D1、初回rate待機、誤password、Secure/HttpOnly/Lax Cookie、別tabのsession再利用、CSRF/logout、unlock応答喪失後の同一credential、所有者変更による失効を検証。公開landing/UIの検証ではない。
+- 型検査・lint586file・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-unlock-types-browser.log、/tmp/ncf-unlock-lint-final.log、/tmp/ncf-unlock-contracts-final.log、/tmp/ncf-unlock-config-final.log、/tmp/ncf-unlock-build.log。remote secret設定・migration/deployなし。
+- 最終workerdはunlock/rate・link-shares・CSRF・global KDF・control admission・backup barrierの7file/160件すべてexit0で成功（89.55秒、/tmp/ncf-unlock-native-all-final.log）。**全Node1,528 + 関連workerd160 + 関連browser5 = 1,693件成功**。全workerd・全browser・実Wrangler backup drillは今回ローカルで再実行していない。
+- 先行c0ed70aのCI Ubuntu失敗（Node1,514/1,515件成功）は、不正backup SQLのparser中断後の二重closeで元エラーがEBADFに置き換わる競合だった。一時ファイルの最小再現100回中1回で確認。scripts/backup/generation.mjsを64KiBのFileHandle.readへ変更し、finallyだけでcloseする。既存の不正SQL拒否・hash/内容照合・restoreを含む修正後全Node1,528件が成功。Windows4分割・browser・backup bindings/cliは先行CIでも成功。CIでの修正確認はpush後。
+
+## 公開リンクの所有者管理API（前回）
 
 [公開リンク](PUBLIC_SHARES.md)の所有者CRUD・一覧を既存のprivate HTTPへ接続。期限/権限/パスワードの変更、秘密値の更新、停止に対応する。現行所有者・root/祖先・version・epoch・maintenanceを確定時にも検査し、変更とshare/content session・ticket失効を同じbatchへ入れる。32-byte秘密値は発行時だけ返す。専用鍵によるpassword保存は既存isolate/global KDFへ接続。schema0063・通常76table・147 route、依存追加なし。匿名unlock・公開bundle・両側のリンクUIは未接続。
 

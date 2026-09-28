@@ -45,6 +45,10 @@ async function initialize(bindings: Env) {
     CSRF_PUBLIC_KEYS: keys(),
     APP_PASSWORD_ACTIVE_KID: "browser",
     APP_PASSWORD_PEPPERS: keys(),
+    SHARE_COOKIE_ACTIVE_KID: "browser",
+    SHARE_COOKIE_KEYS: keys(),
+    SHARE_PASSWORD_ACTIVE_KID: "browser",
+    SHARE_PASSWORD_KEYS: keys(),
     CONTENT_TICKET_ACTIVE_KID: "browser",
     CONTENT_COOKIE_ACTIVE_KID: "browser",
     CONTENT_TICKET_KEYS: keys(),
@@ -120,6 +124,15 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    const shareSessions = /^\/__test__\/share-session-count\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+    if (shareSessions && request.method === "GET") {
+      const count = await ready.env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM share_sessions WHERE share_id=?",
+      )
+        .bind(shareSessions[1])
+        .first<number>("n");
+      return Response.json({ count });
+    }
     const deadLetterNode = /^\/__test__\/dead-letter-node\/([A-Za-z0-9_-]{1,128})$/.exec(path);
     if (deadLetterNode && request.method === "POST") {
       const outbox = await ready.env.DB.prepare(

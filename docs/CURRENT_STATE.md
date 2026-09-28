@@ -1,6 +1,6 @@
 # 現在の実装状態
 
-[公開リンクの所有者向けAPI](PUBLIC_SHARES.md)を追加しました。作成・一覧・期限/権限/パスワード変更・秘密値更新・停止を現行所有者の認可と共通更新受付へ接続し、設定変更時は共有セッションと派生配信認証を一括で失効させます。秘密値は発行時だけ返します。匿名unlock・公開画面・所有者のリンク管理画面は未接続です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンクの匿名認証](PUBLIC_SHARES.md)を接続しました。秘密値/passwordの検証、共有Cookie、public CSRF、logout、共有/IP別の永続的な試行回数制限に対応します。同じchallengeの並行送信・応答喪失では同じcredentialを再利用します。公開画面・一覧/配信・所有者のリンク管理画面は未接続です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
@@ -8,9 +8,11 @@
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次は公開linkの匿名unlock・Cookie/CSRF・share/IP制限・public bundle・配信と所有者UIを接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次は公開linkの一覧・配信・独立public bundle・landingと所有者UIを接続します。copyのDLQ運用・未解決attemptの修復、upload-only、ZIPも続けます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-先行57d54dcの[CI36419462128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36419462128)は最終確認時点で進行中です。Ubuntu・Windows2/4と3/4・browser・backup bindingsの5jobが成功し、Windows1/4と4/4・backup cliの3jobは未完了です。今回の公開リンクAPI変更のCIはpush後に確認します。
+先行c0ed70aの[CI36421891215](https://github.com/daraskme/Nextcloud-flare/actions/runs/36421891215)は、Windows4分割・browser・backup bindings/cliの7job成功、Ubuntu失敗で終了しました。backup-generationの不正SQL拒否試験で、期待したbackup_invalid_data_sqlがEBADFに置き換わりました。借用fdのReadStreamがparser中断時にfdを閉じ、FileHandleのfinally closeと競合する経路を一時ファイル100回中1回で再現しました。今回は64KiBのFileHandle.readに統一し、handleをfinallyだけで閉じます。修正後のローカル全Node1,528件が成功し、CIでの再確認はpush後に行います。
+
+先行57d54dcの[CI36419462128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36419462128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。
 
 先行19622b8の[CI36415056432](https://github.com/daraskme/Nextcloud-flare/actions/runs/36415056432)は、Ubuntu・Windows1/4と2/4・browser・backup bindings/cliの6job成功、Windows3/4と4/4失敗で終了しました。3/4はbudget.test.tsの準備中にR2 grantのD1 triggerがr2_write_unavailableで拒否し、729/730件成功。4/4はcontrol-restore-inventoryのsame_round試験でdatabase_restore_inventory_unconfirmedとなり、839/840件成功。保存ログでは詳細原因を特定できず、解決済みとは扱いません。DLQ再投入変更57d54dcのCIは上記を参照してください。
 
@@ -48,7 +50,8 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 公開リンクの所有者管理API | CRUD、期限/権限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効 | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替 | 匿名unlock・Cookie/CSRF・IP/share別制限・公開bundleと両側UI・公開配信。[詳細](PUBLIC_SHARES.md) |
+| 公開リンクの所有者管理API | CRUD、期限/権限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効 | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替 | 公開bundleと両側UI・公開配信。[詳細](PUBLIC_SHARES.md) |
+| 公開リンクの匿名認証 | challenge/Cookie、秘密値/password照合、共有sessionの発行/再利用、public CSRF/logout、ControlDOの共有10/IP30回のrolling制限 | JWT用途/鍵切替、D1の失効競合・応答喪失、DO並行制限/eviction/喪失・停止。結果はIMPLEMENTATION_STATUS | 公開一覧/content、landing/両側UI、初回同時タブを含む利用全体のE2E、staging。[詳細](PUBLIC_SHARES.md) |
 | DLQ記録・管理者再投入 | 配信単位の観測、50件ページ、同じOutboxへの再配信予約、監査と一度限りの受付、現行管理者と元actorの認可 | 同時要求、応答喪失、失効/停止、copy途中再開、成功済みPUT/completeの再送防止、未知native保留。詳細はIMPLEMENTATION_STATUS | 保持期限・通知・実Queue/DLQ運用。[詳細](DEAD_LETTERS.md) |
 | 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link、copyのDLQ・最大規模検証は後続。[詳細](SHARED_WORKSPACE.md) |
 | 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算、停止/照会・未着手/未送信証明/保存済み/既知multipart中止後の失敗精算、実成功後のobject観測修復 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | Queue実行/再開と限定精算は接続済み。停止後巡回は接続済み。上限内の規模検証・未知/未送信修復・中止attemptの再試行管理・DLQ運用は後続。REST受付/read/cancel/retryと画面は接続済み。[詳細](COPY_JOBS.md) |
@@ -101,7 +104,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 | schema・契約 | migration `0001`〜`0051`、69通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
-| KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
+| KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答。公開linkは事前の共有/IP制限にも接続 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md)と[PUBLIC_SHARES](PUBLIC_SHARES.md) | 証明喪失試行の収束、upload-onlyへの接続、実CPU・処理量・切断 |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | namespace更新の全体受付 | migration0030、D1 active32/waiting256、ControlDO FIFO、LockDO全8許可経路、失効と最終commit fence | 新規Node4・workerd17件と全check成功。上限・再送・応答喪失・待機後認可・停止/復旧 | 他の更新経路・backup barrier・実負荷。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | DAVロックの全体受付・確定記録 | migration0031、LOCK/refresh/UNLOCKの共有枠、lock変更/記録/解放の一括確定、60秒保持 | Node4・workerd22件追加。実ControlDO待機、HTTP503、失効/停止、応答喪失、別処理のunlock、rollback、旧DB移行 | HTTP応答喪失後のtoken再取得・別RPCの結果再生は未実装。実環境未検証 |
@@ -149,7 +152,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 公開linkの匿名unlock・Cookie/CSRF・公開bundle・配信、upload-only共有の完全なHTTP surface。所有者管理APIとpassword保存は[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
+- 公開linkの公開bundle・一覧/配信・管理画面、upload-only共有の完全なHTTP surface。所有者管理API・password保存・匿名unlock/CSRF/logoutは[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。

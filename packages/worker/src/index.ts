@@ -3,6 +3,8 @@ import { handleContentHttp } from "./api/content";
 import { davPath, handleDavHttp } from "./api/dav";
 import { handlePrivateAppHttp, privateAppRoute } from "./api/privateApp";
 import { privateAppDependencies } from "./api/privateAppConfig";
+import { publicShareDependencies } from "./api/publicShareConfig";
+import { handlePublicShareHttp, publicShareRoute } from "./api/publicShares";
 import { privateAssetRoute, servePrivateApp } from "./assets/privateApp";
 import { appPasswordPepperRing } from "./auth/appPassword";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
@@ -64,6 +66,20 @@ export default {
           request,
           env,
           new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN),
+        );
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    if (new URL(request.url).origin === env.APP_ORIGIN && publicShareRoute(request)) {
+      try {
+        const epoch = await admittedEpoch(env);
+        if (epoch === null) return problem(503, "not_ready");
+        return handlePublicShareHttp(
+          request,
+          env,
+          epoch,
+          await publicShareDependencies(env, epoch),
         );
       } catch {
         return problem(503, "not_ready");

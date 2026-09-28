@@ -1,6 +1,6 @@
 # Next-cloud-flare
 
-[公開リンクの所有者向けAPI](docs/PUBLIC_SHARES.md)を追加しました。リンクの作成・一覧・期限/権限/パスワード変更・秘密値更新・停止に対応し、変更時は既存の共有セッションと配信認証を一括で失効させます。匿名unlock・公開画面・所有者のリンク管理画面は未接続です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンクの匿名認証](docs/PUBLIC_SHARES.md)を接続しました。秘密値/passwordの検証、共有Cookie、public CSRF、logout、共有/IP別の永続的な試行回数制限に対応します。同じchallengeの並行送信・応答喪失では同じcredentialを再利用します。公開画面・一覧/配信・所有者のリンク管理画面は未接続です。schema0063・通常76table・147 routeを維持しています。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
 
 Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。

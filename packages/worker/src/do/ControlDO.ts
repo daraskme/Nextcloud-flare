@@ -87,6 +87,11 @@ import { ControlRestoreSnapshot } from "./controlRestoreSnapshot";
 import { ControlRestoreSource } from "./controlRestoreSource";
 import { ControlRestoreTarget } from "./controlRestoreTarget";
 import { ControlRestoreTimeTravel } from "./controlRestoreTimeTravel";
+import {
+  ControlShareUnlock,
+  type ShareUnlockAdmission,
+  type ShareUnlockAttempt,
+} from "./controlShareUnlock";
 import { type EpochReason, epochNumber, parseEpochFloor, recoverEpochFloor } from "./epochHistory";
 import { type KdfRepairResult, KdfSettlements } from "./kdfSettlements";
 import {
@@ -150,6 +155,7 @@ export interface RecoveryAuditStatus {
 export class ControlDO extends DurableObject<Env> {
   readonly #admission: ControlAdmission;
   readonly #kdf: ControlKdf;
+  readonly #shareUnlock: ControlShareUnlock;
   readonly #kdfSettlements: KdfSettlements;
   readonly #mutations: ControlMutations;
   readonly #backup: ControlBackup;
@@ -361,6 +367,9 @@ export class ControlDO extends DurableObject<Env> {
           };
         },
       },
+    );
+    this.#shareUnlock = new ControlShareUnlock(ctx.storage, (epoch) =>
+      this.#admission.assertMutationOpen(epoch),
     );
     this.#kdf = new ControlKdf(
       env.DB,
@@ -912,6 +921,13 @@ export class ControlDO extends DurableObject<Env> {
   /** Internal fixed-cost PBKDF2 only. No password or derived material is persisted. */
   async deriveKdf(request: KdfRequest): Promise<ArrayBuffer> {
     return this.#kdf.derive(request);
+  }
+
+  async admitShareUnlock(request: ShareUnlockAttempt): Promise<ShareUnlockAdmission> {
+    const status = await this.status();
+    if (status.maintenance || status.epoch !== request.epoch)
+      throw new Error("share_unlock_unavailable");
+    return this.#shareUnlock.admit(request);
   }
 
   /** Operator-only bounded reconciliation; unknown executions never become terminal here. */

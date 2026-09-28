@@ -1,6 +1,6 @@
 # 公開リンク共有
 
-更新: 2026-09-28。schema0063・通常76table・147 route。所有者管理APIは接続済み。匿名unlock・公開画面・実環境の共有はまだ利用できない。
+更新: 2026-09-28。schema0063・通常76table・147 route。所有者管理APIと匿名unlock/logout/CSRFは接続済み。公開画面・公開一覧/配信・実環境の共有はまだ利用できない。
 
 ## 所有者による管理
 
@@ -20,9 +20,25 @@ UTF-8で1〜1,024bytes、入力を正規化・trimしない。不正なUnicode s
 
 新しい設定は`SHARE_PASSWORD_KEYS`と`SHARE_PASSWORD_ACTIVE_KID`。1〜3個の32-byte鍵を読み、active kidで新規保存する。app passwordやCookieの鍵を使い回さない。実行は既存のisolate内KDF制限とControlDOのglobal KDFへ渡す。公開側の照合helperは旧kidを含むringで読めるが、未知kidを受け付けず、KDFの混雑・不明結果をpassword不一致へ変換しない。remote secretは設定していない。
 
+## 匿名認証
+
+`POST /api/v1/public/shares/:id/unlock`は同じ経路で二段階の受付を行う。両段階ともexact Origin、Sec-Fetch-Site same-origin、8KiB/5秒以内のJSONを必須とする。最初の`{"step":"challenge"}`は共有の有無や設定を開示せず、5分の署名challengeを本文と`__Host-ncf_unlock_<id>` Cookieへ返す。既存の有効なchallengeを再利用する。CookieはSecure/HttpOnly/SameSite=Lax/Path=/。続く`{secret,password?}`はそのCookieと完全一致するX-CSRF-Tokenを必須とし、署名・share ID・epoch・origin・期限を検証する。このpre-unlock challengeは、R6の認証後CSRF発行APIとは別の用途である。
+
+既存の有効な共有Cookieがあれば、challenge要求には認証済みのroot ID/version/期限だけを返し、KDFやsession作成を繰り返さない。新規認証は秘密値、必要ならpasswordを検証し、所有者・共有設定・root/祖先・epoch・停止状態をsessionとcredentialの登録batchで再検査する。Cookie署名鍵は専用`SHARE_COOKIE_KEYS`/`SHARE_COOKIE_ACTIVE_KID`。Access設定やprivate CSRF鍵は公開認証に不要で、用途違いのtokenを受け付けない。
+
+認証済みCookieは`__Host-ncf_share_<id>`、Secure/HttpOnly/SameSite=Lax/Path=/、最長7日かつshare期限以内。share/version/session/epoch/origin/iat/exp/nonceを署名する。D1にはnonceの用途別digestだけを保存し、同じchallengeから同じsession IDを導く。並行送信、batch ACK喪失、receipt照会失敗後も同じchallengeを使って再試行でき、二つ目のcredentialを作らない。有効なsessionの期限を延長せず、失効済みの行を復活させない。challenge喪失・期限切れ後の同一性は保証しない。ブラウザーの初回同時タブとCookie共有はpublic UIのE2Eで別途検証する。
+
+`POST /api/v1/public/shares/:id/csrf`は本文なし、exact Origin/same-originと現行共有Cookieを必須とし、既存のpublic用CSRF（1時間・再使用/再発行可）を返す。logoutはそのCSRFと空JSON objectを要求し、当該unlock credentialのshare session、派生content session、ticketを同じbatchで失効させる。他の匿名閲覧者やbudgetの使用量は変更しない。成功時に共有Cookieとchallenge Cookieを削除する。共有のversion更新/失効・owner停止・祖先trash・期限・epoch不一致後は既存Cookieを受け付けない。
+
+## 試行回数
+
+edge limiterに加え、ControlDOの`admitShareUnlock`がrolling 60秒で共有10回・client IP30回を一括で計上する。信頼済みCF-Connecting-IPだけを使い、IPv6表記を正規化する。productionでIPが得られない場合は503とし、developmentだけloopbackを使う。raw IPはDOへ永続保存せず、DO内の独立した乱数saltによるHMACをkeyに使う。
+
+rate ledgerはDO SQLiteへ保存し、eviction・epoch変更で使用量を消さない。最大4,096key、keyごと最大30時刻と期限indexで容量を制限し、満杯は429。状態が初めて作られた場合や全喪失後は60秒待機する。時計の逆行、停止、D1 mirror不一致、RPCの結果不明は拒否する。失敗した認証の回数は返金せず、RPCを自動再送せず、KDFへ先に進まない。KDFそのものは既存のglobal/isolate制限へ接続する。rate ledgerはD1 backup対象ではなく、喪失時の待機で再開する。
+
 ## 次の接続と完了条件
 
-1. 匿名unlock、share-bound Cookie/CSRF、share/IP別rate limitを接続する。fragmentはlandingが直ちにhistoryから除去し、秘密値をpath/query/logへ出さない。
+1. landingを接続し、fragmentを直ちにhistoryから除去して秘密値をpath/query/logへ出さない。challenge/認証/再試行・Cookie・初回同時タブを実browserで検証する。
 2. 別のpublic build/asset manifest/SRI/CSPを作り、private chunkや認証clientを混入させない。公開リンクの所有者UIも、実際に開けるlandingと合わせて接続する。
 3. 公開一覧・content ticket/session・全byte/requestのBudgetDO会計、失効・祖先trash・期限・別tabを匿名E2Eで確認する。
 4. edit/upload-only、ZIP、Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報を開示しない。

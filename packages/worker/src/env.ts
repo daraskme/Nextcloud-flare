@@ -41,6 +41,8 @@ export interface Env {
   APP_PASSWORD_ACTIVE_KID?: string;
   SHARE_PASSWORD_KEYS?: string;
   SHARE_PASSWORD_ACTIVE_KID?: string;
+  SHARE_COOKIE_KEYS?: string;
+  SHARE_COOKIE_ACTIVE_KID?: string;
   UPLOAD_CAPABILITY_KEYS?: string;
   UPLOAD_CAPABILITY_ACTIVE_KID?: string;
   R2_INVENTORY_ACCOUNT_ID?: string;

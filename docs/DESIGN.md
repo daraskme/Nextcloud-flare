@@ -514,7 +514,7 @@ DAV の各行は router 生成時に `/dav` と `/dav/*path` の二 template へ
 | `same-origin-json` | 既定。mutation は exact `Origin=APP_ORIGIN`、`Sec-Fetch-Site:same-origin`、`application/json`、one-time CSRF。GET/HEAD は token 不要 |
 | `cross-origin-content` | `/session` の POST/OPTIONS は `Origin` が app origin allowlist の固定値と一致する場合だけ許可し、固定 `Access-Control-Allow-Origin`、`Access-Control-Allow-Credentials:true`、必要 header/method の preflight を返す。content GET/HEAD は Cookie と同一 session budget を検査 |
 | `dav` | HTTPS Basic のみ。CORS/CSRF Cookie を使わず browser Origin 付き request を拒否 |
-| `public-form` | exact share landing Origin、share session/capability、one-time public CSRF。`Origin:null`/missing を拒否 |
+| `public-form` | exact share landing Origin、share session/capability、public CSRF。R6の認証後tokenはsession束縛で1時間再使用可。unlockの初回は同じPOST経路のchallenge段階で5分の署名Cookie/本文tokenを発行し、秘密値送信時に両者の一致を要求する。[公開認証契約](PUBLIC_SHARES.md)。`Origin:null`/missing を拒否 |
 
 Binary upload PUT は対応 profile の exact Origin、upload capability、known `Content-Length`、expected part metadata を要求するが JSON Content-Type は要求しない。single/multipart とも 411（length 欠落）、必要な `If-Match` 欠落は 428。manifest/scope/error/profile/state 遷移の全行を生成 test で被覆し、未知 method-template は 404 とする。
 

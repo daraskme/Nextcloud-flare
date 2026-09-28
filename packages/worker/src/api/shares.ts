@@ -20,7 +20,7 @@ export function shareRoute(request: Request): boolean {
     (DETAIL.test(path) && ["GET", "PATCH", "DELETE"].includes(request.method))
   );
 }
-async function body(request: Request): Promise<unknown> {
+export async function readShareBody(request: Request): Promise<unknown> {
   if (request.headers.get("Content-Type") !== "application/json" || !request.body)
     throw new Error("invalid_share_request");
   const reader = request.body.getReader(),
@@ -131,7 +131,7 @@ export async function handleShareHttp(
       return problem(403, "forbidden");
     }
     if (!match) {
-      const input = await body(request);
+      const input = await readShareBody(request);
       const saved =
         (input as { kind?: unknown }).kind === "link"
           ? await createLinkShare(env, session, input, passwords, request.signal)
@@ -147,7 +147,7 @@ export async function handleShareHttp(
     if (request.method === "DELETE") {
       if (!(await hasEmptyBody(request))) throw new Error("invalid_share_request");
       value = null;
-    } else value = await body(request);
+    } else value = await readShareBody(request);
     const kind =
       value === null
         ? await env.DB.prepare("SELECT kind FROM shares WHERE id=? AND owner_id=?")
