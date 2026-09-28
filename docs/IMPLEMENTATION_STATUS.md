@@ -1,6 +1,20 @@
 # 実装進捗
 
-## Images変換の内部実行部（今回）
+## 画像変換の費用・終了記録（今回）
+
+[画像変換の費用・終了記録](IMAGE_COSTS.md)を追加した。元upload/DAV PUTのactor・credential・parent・blob・Outbox claimをaccount mutationと同じbatchで照合し、ControlDOの独立台帳でblob×variant×generatorの重複変換を防ぐ。成功/not_startedの実終了だけを精算し、ACK喪失・遅い結果・D1復元後も再変換せずに照合する。未確定8件・履歴100万件で受付を制限する。停止後の精算、backup/restore freeze・受付再開・原本GC・復旧監査の保留、復旧CLIのimages件数を接続した。
+
+- 新規Node26件を含む関連7file/300件成功（66.02秒、/tmp/ncf-image-ledger-unit.log）。変換入力/出力、schema、backup生成/restore snapshot/database restore CLIを含む。
+- 新規native26件成功（22.27秒、/tmp/ncf-image-ledger-native-4.log）。重複変換、3サイズ別claim、実R2/Images、grant/終了のACK喪失、最後の認可失効、トランザクション中のcredential失効、eviction/D1巻戻し、identity差替え、停止、backup/監査、8件/100万件の上限、timeout後の実結果を確認した。実ControlDOの受付/終了RPCも通過する。
+- 既存native5file/144件も成功。/tmp/ncf-image-ledger-native-2.logのbackup barrier/R2記録64件、/tmp/ncf-image-ledger-native-3.logのrestore snapshot/復旧受付/domain80件。重複を除くnativeは6file/170件。
+- 初回nativeではfixtureのcredential失効先を存在しない列へ指定し、RPC例外の検証がunhandledを起こしたため修正。追加の実ControlDO試験はfixtureのD1/DO GC policy不一致で拒否されたため、全GC設定を一致させて26件の再検証に成功した。製品の認可・mirror確認は緩和していない。
+- backup:operator-drill成功（/tmp/ncf-image-ledger-operator-drill.log）。77tableのcapture/export/snapshot、epoch採用、native/domain/inventory修復、監査、受付とGCの段階再開を確認し、imagesを含む全pendingが0となった。ローカルD1/R2/DOの演習で、Time TravelとS3 provider応答は模擬。実Cloudflare復元の証明ではない。
+- 最終の全Node98file/1,842件成功（190.70秒、/tmp/ncf-image-ledger-unit-all.log）。migrationの未終了KDF/R2 guard追加後のschemaと全CLIも含む。関連native170件と合わせ、重複を除き2,012件成功。
+- lint673file・型・契約/設定・Web build/Worker dry-run成功（/tmp/ncf-image-ledger-{lint,typecheck,contracts,config,build}.log）。
+
+schema0068・通常77table・147 route、依存追加なし。migrationは停止・未凍結・未終了KDF/R2等なしを要求する。Queue/R2保存・thumb配信/Galleryは未接続。既知のImages失敗の終了証明、unknownの運用修復、保持期限を照合した費用履歴整理は後続。全workerd/browser再実行とremote resource/secret/migration/deployは行っていない。Git pushは先行5854920への宛先明示の承認待ちを継続し、再送していない。
+
+## Images変換の内部実行部（先行36a9045）
 
 [サムネイル変換](IMAGE_TRANSFORMS.md)の入力計画・条件付きR2ストリーム・Images WebP出力と検査を追加した。原本20MB/12,000px/40MP・静止画制限、非拡大sm256/md768/lg1600、各chunk認可・入力実長、出力12MiB/4,096chunk・metadata非保持・寸法・SHA-256、取消しと遅い応答を扱う。native変換を再送せず、timeoutを終了証明として扱わない。製品のQueue・費用/claim・native ledger・R2生成物保存/配信には未接続。
 

@@ -142,7 +142,7 @@ export async function repairRestoredNative({
       ![r.checked, r.reconciled, r.unknown].every((v) => Number.isSafeInteger(v) && v >= 0) ||
       r.checked !== r.reconciled + r.unknown ||
       r.completed !== (r.stage === "complete") ||
-      ![r.databasePending?.kdf, r.databasePending?.r2].every(
+      ![r.databasePending?.kdf, r.databasePending?.r2, r.databasePending?.images].every(
         (v) => Number.isSafeInteger(v) && v >= 0,
       )
     )
@@ -157,16 +157,23 @@ export async function repairRestoredNative({
       live: {
         kdf: liveNativeStatus(r.live?.kdf, pageSize, 20),
         r2: liveNativeStatus(r.live?.r2, pageSize, 32),
+        images: liveNativeStatus(r.live?.images, pageSize, 8),
       },
-      databasePending: { kdf: r.databasePending.kdf, r2: r.databasePending.r2 },
+      databasePending: {
+        kdf: r.databasePending.kdf,
+        r2: r.databasePending.r2,
+        images: r.databasePending.images,
+      },
     };
     repair.pending =
       !repair.completed ||
       repair.unknown > 0 ||
       repair.live.kdf.pending > 0 ||
       repair.live.r2.pending > 0 ||
+      repair.live.images.pending > 0 ||
       repair.databasePending.kdf > 0 ||
-      repair.databasePending.r2 > 0;
+      repair.databasePending.r2 > 0 ||
+      repair.databasePending.images > 0;
     result = { ...status, repair };
     progress({ stage: "native_repair", repair });
     if (repair.completed) break;

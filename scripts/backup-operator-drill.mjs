@@ -421,7 +421,7 @@ try {
   });
   assert.equal(sqlVerified.state, "sql_verified");
   assert.equal(sqlVerified.bytes, download.manifest.data.bytes);
-  assert.equal(sqlVerified.tables, 76);
+  assert.equal(sqlVerified.tables, 77);
   const d1Reader = {
     target: { mode: "local", databaseId: "00000000-0000-0000-0000-000000000000" },
     readMirror: () => query(RESTORE_D1_QUERY),
@@ -668,7 +668,7 @@ try {
     reader: { ...bindingReader, snapshotQuery: query },
   });
   assert.equal(snapshot.state, "snapshot_verified");
-  assert.equal(snapshot.tables, 76);
+  assert.equal(snapshot.tables, 77);
   assert.equal(snapshot.newEpoch, 3);
   await worker.evictDurableObject("CONTROL", { name: "singleton" });
   assert.equal(
@@ -706,7 +706,7 @@ try {
   assert.equal(nativeRepair.repair.completed, true);
   assert.equal(nativeRepair.repair.unknown, 0);
   assert.equal(nativeRepair.repair.pending, false);
-  assert.deepEqual(nativeRepair.repair.databasePending, { kdf: 0, r2: 0 });
+  assert.deepEqual(nativeRepair.repair.databasePending, { kdf: 0, r2: 0, images: 0 });
   const domainRepairs = [];
   for (const kind of RESTORE_DOMAIN_KINDS) {
     const { repair } = await repairRestoredDomain({

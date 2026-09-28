@@ -26,7 +26,8 @@ export async function restoreRepairContext(
       stop,
       assertExists(`SELECT 1 WHERE
     NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
-    AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')`),
+    AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')
+    AND NOT EXISTS(SELECT 1 FROM image_transform_attempts WHERE state='pending')`),
     ]);
   } catch {
     current();

@@ -13,6 +13,7 @@ let selected, control, page;
 const live = () => ({
   kdf: { checked: 0, reconciled: 0, pending: 0, unknown: 0 },
   r2: { checked: 0, reconciled: 0, pending: 0, unknown: 0 },
+  images: { checked: 0, reconciled: 0, pending: 0, unknown: 0 },
 });
 const audit = (stage = "complete", pages = 10) => ({
   epoch: 3,
@@ -46,7 +47,7 @@ beforeEach(() => {
         unknown: 1,
         completed: true,
         live: live(),
-        databasePending: { kdf: 0, r2: 1 },
+        databasePending: { kdf: 0, r2: 1, images: 0 },
         token: "private",
       },
     })),
@@ -81,7 +82,7 @@ it("reports unknown native rows separately from a complete scan without opening 
     unknown: 1,
     completed: true,
     live: live(),
-    databasePending: { kdf: 0, r2: 1 },
+    databasePending: { kdf: 0, r2: 1, images: 0 },
     pending: true,
   });
   expect(JSON.stringify(result)).not.toContain("private");
@@ -98,7 +99,7 @@ it("respects the native page budget and retains server progress", async () => {
       unknown: 0,
       completed: false,
       live: live(),
-      databasePending: { kdf: 0, r2: 0 },
+      databasePending: { kdf: 0, r2: 0, images: 0 },
     },
   });
   expect(
@@ -107,13 +108,13 @@ it("respects the native page budget and retains server progress", async () => {
   expect(control.repairNative).toHaveBeenCalledTimes(2);
   expect(control.repairNative).toHaveBeenLastCalledWith(2, selected.id, 1);
 });
-it.each(["kdf", "r2", "database-kdf", "database-r2"])(
+it.each(["kdf", "r2", "images", "database-kdf", "database-r2", "database-images"])(
   "keeps a completed historical scan pending when %s holds remain",
   async (kind) => {
     const value = await control.repairNative();
     control.repairNative.mockClear();
     value.repair.checked = value.repair.reconciled = value.repair.unknown = 0;
-    value.repair.databasePending = { kdf: 0, r2: 0 };
+    value.repair.databasePending = { kdf: 0, r2: 0, images: 0 };
     if (kind.startsWith("database-")) value.repair.databasePending[kind.slice(9)] = 1;
     else value.repair.live[kind] = { checked: 0, reconciled: 0, pending: 1, unknown: 1 };
     control.repairNative.mockResolvedValue(value);
@@ -154,6 +155,9 @@ it.each([
   ["kdf", "pending", 21],
   ["r2", "pending", 33],
   ["r2", "unknown", 1],
+  ["images", "pending", 9],
+  ["images", "checked", -1],
+  ["images", "unknown", 1],
 ])("rejects invalid live %s %s count", async (kind, field, count) => {
   const value = await control.repairNative();
   value.repair.live[kind][field] = count;

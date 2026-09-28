@@ -22,7 +22,8 @@ interface NativeAbort {
   source_ref: string;
 }
 const noPending = () =>
-  assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')");
+  assertExists(`SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')
+    AND NOT EXISTS(SELECT 1 FROM image_transform_attempts WHERE state='pending')`);
 
 /** An immutable D1 tuple alone is insufficient after rollback: require the independent native history. */
 async function successProof(

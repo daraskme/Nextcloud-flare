@@ -1,0 +1,31 @@
+# 画像変換の費用・終了記録
+
+2026-09-29。画像変換の有料呼出しを重複させないための内部基盤。D1 schema0068で`image_transform_attempts`を追加し、通常77table・147 route。生成物のR2保存、Queueからの自動実行、thumb配信とGallery画面は後続で、現時点では公開HTTPからこの変換を開始しない。
+
+## 受付と費用の重複防止
+
+`ControlImageTransforms.begin`は通常upload/DAV PUTの元Outboxに対して、元actor・credential・共有・parent・現在node/blob・blob step・R2保存記録・epochとclaim期限を確認する。原本のkey/etag/sizeと選択した変換寸法を固定し、通常のaccount mutation枠でD1のpending行と認可を一括確定する。権限を読んだ後の変更も同じbatchで拒否する。
+
+grantを返す前に、ControlDOのSQLiteへ完全なidentityとblob×variant×generatorの費用キーを保存する。費用キーはpendingまたはsucceededの間はuniqueで、別claimや再配信も再実行できない。DOの記録はD1のバックアップ/復元対象外であり、巻戻し後の再課金も防ぐ。明示的なnot_startedの終了記録がある場合だけ同じ費用キーに新しいgrantを許可する。grant自体は再発行しない。
+
+未精算は最大8件。全履歴は最大100万件で、満杯なら新規受付を拒否する。時刻・lease expiry・D1の欠落だけで古い費用記録を消さない。GC/保持期限を照合した履歴整理は未接続である。
+
+## 実行と終了
+
+`trackedImageTransform`は5秒以内に1回だけnative actionを開始し、invocationの25秒以下の期限を維持する。開始直前にも認可callbackを要求する。まだ実行していないgrantだけをnot_startedとして終了できる。grantのACK喪失は未確定のまま保持し、native actionを呼ばない。
+
+正常な生成物はサイズ・寸法・SHA-256のreceiptで終了する。DOへ実終了を保存してから、全identity付きのD1 terminalを確定する。D1更新やRPCのACK喪失は、その同じterminalを読み戻す。D1確定に失敗してもDOの終了証拠を保持し、後から変換を再実行せずに精算する。
+
+timeout後も実結果を得られた場合は終了の事実を記録するが、期限を失ったcallerへ生成物を返さない。native失敗・不明結果・終了証拠のない取消しはpendingを維持する。現実のImagesエラーを根拠付きでfailedへ収束させる経路、unknownの運用上の解決は未接続で、Queue自動実行を有効化する前の残件である。単なるError/timeoutを未実行扱いにしない。
+
+## 停止・バックアップ・復旧
+
+新規受付はControlDOとD1の停止/epoch/freezeを確認する。終了事実は停止後も共通のglobal mutation枠で精算できる。local未精算記録またはD1 pendingがあればbackup開始・freeze・復旧後の再開・原本GCを拒否する。復旧監査、domain/inventory修復の事前確認にも含める。
+
+`repairImageTransforms`と復旧native修復は、DOの終了証拠とD1の完全なidentityを照合する。pendingへ戻ったD1をsucceeded/not_startedへ直しても、ImagesもR2書込みも再実行しない。id/token/元blob/変換引数等が異なる行、DOの証拠が欠落した行は未確定のまま残す。復旧CLIは`live.images`と`databasePending.images`を表示し、画像変換が残る場合を完了判定から除外する。
+
+## 移行と次の接続
+
+0068は停止・未凍結・open permit/claimed operation/未閉鎖admission/未終了KDF/R2なしで適用する。export/purge順序とbackup/restore freezeに追加する。旧Workerへ戻す場合は停止を維持し、schemaとコードが整合する復元手順を使う。remote migrationは未実施。
+
+次は、既知の変換失敗の終了証明、immutable derivative keyへのtracked R2保存とphysical容量、current node/blob/claim/epochでの結果公開、sm/md Queueとlg lazy受付、thumb ticket/配信、Gallery API/UIを接続する。サムネイルは検査済み原本からサーバー側で生成する。

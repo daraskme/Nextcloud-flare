@@ -551,6 +551,12 @@ export class ControlBackup {
           .first()
       )
         throw new Error("backup_r2_write_unsettled");
+      if (
+        await primary(this.db)
+          .prepare("SELECT 1 FROM image_transform_attempts WHERE state='pending' LIMIT 1")
+          .first()
+      )
+        throw new Error("image_transform_unsettled");
       if (this.#row()?.token !== row?.token || this.#row()?.phase !== row?.phase)
         throw new Error("backup_conflict");
       this.#identity(epoch, id);

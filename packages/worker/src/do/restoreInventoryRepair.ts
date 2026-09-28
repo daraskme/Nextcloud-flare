@@ -167,6 +167,7 @@ export async function repairRestoredInventory(
       OR EXISTS(SELECT 1 FROM multipart_bucket_scan WHERE completed_at IS NULL OR epoch<>? OR source<>?)
       OR EXISTS(SELECT 1 FROM multipart_bucket_handles h WHERE state='quarantined' OR source<>? OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id))
       OR EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')
+      OR EXISTS(SELECT 1 FROM image_transform_attempts WHERE state='pending')
     ) AS pending FROM control WHERE singleton=1 AND EXISTS (${stopQuery})`)
       .bind(
         epoch,

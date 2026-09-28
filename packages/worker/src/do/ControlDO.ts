@@ -18,6 +18,12 @@ import type {
   RestoreTimeTravelResult,
 } from "../../../shared/src/restoreTimeTravel";
 import type { KdfRequest } from "../auth/globalKdf";
+import type {
+  ImageTransformGrant,
+  ImageTransformReceipt,
+  ImageTransformRequest,
+  ImageTransformTerminal,
+} from "../db/imageTransform";
 import {
   type GlobalMutationAdmission,
   isGlobalMutationId,
@@ -73,6 +79,7 @@ import {
 } from "./controlBackup";
 import { ControlDatabaseRestore, type DatabaseRestoreSource } from "./controlDatabaseRestore";
 import { ControlEpochHistory } from "./controlEpochHistory";
+import { ControlImageTransforms } from "./controlImageTransforms";
 import { ControlKdf } from "./controlKdf";
 import { ControlMutations } from "./controlMutations";
 import { CONTROL_NAME } from "./controlName";
@@ -171,6 +178,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreAdoption: ControlRestoreAdoption;
   readonly #restoreRecovery: ControlRestoreRecovery;
   readonly #r2Writes: ControlR2Writes;
+  readonly #imageTransforms: ControlImageTransforms;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -204,6 +212,7 @@ export class ControlDO extends DurableObject<Env> {
       () => {
         this.#kdfSettlements.assertEmpty();
         this.#r2Writes.assertEmpty();
+        this.#imageTransforms.assertEmpty();
       },
       () => this.#databaseRestore.assertInactive(),
       () => this.#databaseRestore.active(),
@@ -243,6 +252,7 @@ export class ControlDO extends DurableObject<Env> {
       assertNoBackup(ctx.storage.sql);
       this.#kdfSettlements.assertEmpty();
       this.#r2Writes.assertEmpty();
+      this.#imageTransforms.assertEmpty();
       if (ctx.storage.sql.exec("SELECT 1 FROM control_maintenance_tasks LIMIT 1").toArray().length)
         throw new Error("database_restore_maintenance_active");
     };
@@ -326,6 +336,7 @@ export class ControlDO extends DurableObject<Env> {
           current();
           this.#kdfSettlements.assertEmpty();
           this.#r2Writes.assertEmpty();
+          this.#imageTransforms.assertEmpty();
           return repairRestoredDomain(
             ctx.storage.sql,
             env.DB,
@@ -341,6 +352,7 @@ export class ControlDO extends DurableObject<Env> {
           current();
           this.#kdfSettlements.assertEmpty();
           this.#r2Writes.assertEmpty();
+          this.#imageTransforms.assertEmpty();
           return repairRestoredInventory(
             ctx.storage.sql,
             env,
@@ -356,8 +368,11 @@ export class ControlDO extends DurableObject<Env> {
           current();
           const r2 = await this.#r2Writes.repair(limit, current);
           current();
+          const images = await this.#imageTransforms.repair(limit, current);
+          current();
           return {
             kdf,
+            images,
             r2: {
               checked: r2.checked,
               reconciled: r2.reconciled,
@@ -392,6 +407,7 @@ export class ControlDO extends DurableObject<Env> {
       () => {
         // A frozen backup cannot mirror a late native completion or reopen with a pending row.
         this.#r2Writes.assertEmpty();
+        this.#imageTransforms.assertEmpty();
         return this.#admission.captureBackup();
       },
       (snapshot, token) => this.#admission.restoreBackup(snapshot, token),
@@ -438,6 +454,18 @@ export class ControlDO extends DurableObject<Env> {
           permitId: `global:${kind === "backup.delete" ? "r2.backups-delete" : kind === "backups.probe.put" ? "r2.backups-probe-put" : kind === "probe.put" ? "r2.probe-put" : kind.endsWith(".abort") ? "r2.multipart-abort" : kind === "manifest.delete" ? "r2.manifest-delete" : "r2.gc-delete"}:${crypto.randomUUID()}`,
           epoch,
           deadline,
+        }),
+    );
+    this.#imageTransforms = new ControlImageTransforms(
+      ctx.storage,
+      env.DB,
+      (epoch) => this.#admission.assertMutationOpen(epoch),
+      (request) => this.acquireMutation(request),
+      () =>
+        this.acquireGlobalMutation({
+          permitId: `global:images.settle:${crypto.randomUUID()}`,
+          epoch: this.#row().epoch,
+          deadline: Date.now() + 5000,
         }),
     );
   }
@@ -845,6 +873,22 @@ export class ControlDO extends DurableObject<Env> {
   }
 
   /** Private trusted-Worker grants, never a public R2 proxy or a replayable dispatch receipt. */
+  async beginImageTransform(request: ImageTransformRequest) {
+    this.#row();
+    return this.#imageTransforms.begin(request);
+  }
+  async finishImageTransform(
+    grant: ImageTransformGrant,
+    outcome: ImageTransformTerminal,
+    output: ImageTransformReceipt | null,
+  ) {
+    this.#row();
+    return this.#imageTransforms.finish(grant, outcome, output);
+  }
+  async repairImageTransforms(expectedEpoch: number, limit = 20) {
+    return this.#maintenance(expectedEpoch, () => this.#imageTransforms.repair(limit));
+  }
+
   async beginR2Write(request: R2WriteRequest) {
     this.#row();
     return this.#r2Writes.begin(request);
@@ -1321,6 +1365,7 @@ export class ControlDO extends DurableObject<Env> {
     epochNumber(expectedEpoch);
     this.#kdfSettlements.assertEmpty();
     this.#r2Writes.assertEmpty();
+    this.#imageTransforms.assertEmpty();
     const status = await this.status();
     if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
     this.#admission.assertClosed(expectedEpoch);

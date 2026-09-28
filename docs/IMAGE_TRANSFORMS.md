@@ -1,6 +1,6 @@
 # サムネイル変換の実行部
 
-2026-09-29。Galleryのサムネイル生成へ使う内部実行部。`media/images/transform.ts`と`objectStream.ts`を追加した。通常uploadのmetadata確定は[IMAGE_METADATA](IMAGE_METADATA.md)へ接続済みだが、**この変換のQueue接続、費用claim、R2生成物保存・配信、Gallery画面は未接続**。HTTP要求から有料変換を直接実行する経路はまだない。
+2026-09-29。Galleryのサムネイル生成へ使う内部実行部。`media/images/transform.ts`と`objectStream.ts`を追加した。通常uploadのmetadata確定は[IMAGE_METADATA](IMAGE_METADATA.md)、費用claimとnative終了記録は[IMAGE_COSTS](IMAGE_COSTS.md)へ接続済み。**この変換のQueue接続、R2生成物保存・配信、Gallery画面は未接続**。HTTP要求から有料変換を直接実行する経路はまだない。
 
 ## 入出力
 
@@ -16,7 +16,7 @@
 
 次は次の順に接続する。
 
-1. blob×variant×generatorの費用claimとnative開始/終了/unknown記録。重複Queue、遅い応答、D1復元後の再実行を防ぐ。既存R2 write ledgerはR2操作だけのため、Images変換をR2 PUT成功として記録しない。
+1. 費用claimと成功/not_startedの終了記録は接続済み。既知のImages失敗の終了証明とunknownの運用修復を追加する。timeoutだけでは未確定費用を解放せず、Images変換をR2 PUT成功として記録しない。
 2. 生成物の不変key、tracked R2保存、physical容量・終了記録、結果公開のcurrent node/blob/actor/claim/epoch fence、停止・backup・復旧監査。
 3. upload Outboxのsm/md生成、lgの要求時生成、thumb ticket/配信、Gallery API/UIと共有閲覧。AVIF入力が実環境で非対応なら原本detailとgrid placeholderへ分岐する。
 

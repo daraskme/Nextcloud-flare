@@ -27,6 +27,7 @@ server derivative は既存の WebP / metadata 除去 / budget / claim fence に
 
 - 実装済み: bounded container sniff、AV1/Opus の MIME/codec string、native probe adapter、AVIF 原本/derivative 選択。単体20件。
 - [画像メタデータ](IMAGE_METADATA.md): JPEG/PNG/WebP/AVIFのbounded header/EXIF、通常upload・DAV PUTの完了Outbox、現在のblob/claimに限定したnode_media/MIME保存を接続。変換なしで既存原本配信へimage MIMEを渡す。
+- [画像変換の費用・終了記録](IMAGE_COSTS.md): 同じblob・variant・generatorの再課金を防ぐ内部台帳。成功と未実行の事実を復旧時も保持し、不明結果をバックアップ・再開の判定に含める。Queue、R2保存、thumb配信、Galleryは後続。
 - [サムネイル変換の内部実行部](IMAGE_TRANSFORMS.md): 条件付きR2ストリームから静止画sm/md/lg WebPを生成・検査する。JPEG/PNG/WebP/AVIF/10-bit・alpha・EXIF除去をローカルで検証済み。費用claim・Queue・R2保存/配信への接続と実環境検証は残る。
 - 未接続: Images derivative・Gallery/lightbox/player UI、既存データ再抽出/copy後の引継ぎ、AV1/Opus track/tag parserと動画/音声配信の確認。各phaseの残件を継続する。
 - 必須 fixture: AVIF 静止画/sequence、AV1 MP4/WebM（音声なし/Opus付き、8/10-bit）、Opus Ogg/WebM/MP4、偽装拡張子/truncated header、seek/Range、再生不可表示、AVIF derivative unavailable 時の原本表示。

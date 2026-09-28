@@ -44,6 +44,7 @@ interface RecoveryHost {
   ): Promise<{
     kdf: KdfRepairResult;
     r2: KdfRepairResult;
+    images: KdfRepairResult;
   }>;
 }
 
@@ -89,8 +90,9 @@ export class ControlRestoreRecovery {
       const databasePending = await primary(this.db)
         .prepare(`SELECT
           (SELECT COUNT(*) FROM kdf_attempts WHERE state='claimed') AS kdf,
-          (SELECT COUNT(*) FROM r2_write_attempts WHERE state='pending') AS r2`)
-        .first<{ kdf: number; r2: number }>();
+          (SELECT COUNT(*) FROM r2_write_attempts WHERE state='pending') AS r2,
+          (SELECT COUNT(*) FROM image_transform_attempts WHERE state='pending') AS images`)
+        .first<{ kdf: number; r2: number; images: number }>();
       stopped();
       if (!databasePending) throw new Error("database_restore_native_repair_unconfirmed");
       return { ...page, live, databasePending };
