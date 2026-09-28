@@ -55,11 +55,11 @@ it.each([0, 3, 9 * 1024 * 1024])(
   },
 );
 it("retries a yielded copy and resumes it from durable Outbox redispatch", async () => {
-  const f = await copyJobWithBlobs(9);
+  const f = await copyJobWithBlobs(57);
   expect(await consume(f)).toEqual({ acked: 0, retried: 1 });
   expect(await copyJobCounters(f.job.id)).toMatchObject({
     state: "running",
-    r2_calls: 16,
+    r2_calls: 112,
     invocation_count: 1,
   });
   await env.DB.prepare("UPDATE outbox SET dispatch_expires_at=0 WHERE outbox_id=?")
@@ -69,7 +69,7 @@ it("retries a yielded copy and resumes it from durable Outbox redispatch", async
   expect(await dispatchOutbox(mutationEnv(), { send }, f.job.outboxId, 1)).toBe("sent");
   expect(send).toHaveBeenCalledWith({ outboxId: f.job.outboxId }, { contentType: "json" });
   expect(await consume(f)).toEqual({ acked: 1, retried: 0 });
-  expect(await copyJobCounters(f.job.id)).toMatchObject({ r2_calls: 18, invocation_count: 2 });
+  expect(await copyJobCounters(f.job.id)).toMatchObject({ r2_calls: 114, invocation_count: 2 });
 });
 it("retains a duplicate behind a live claim without replacing that claim", async () => {
   const f = await copyJobFixture(),

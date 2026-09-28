@@ -130,8 +130,10 @@ export async function copyJobCounters(id: string) {
     .first();
 }
 
-export async function copyJobWithBlobs(count: number) {
+export async function copyJobWithBlobs(count: number, properties = 0) {
   if (!Number.isInteger(count) || count < 1 || count > 64) throw new Error("invalid_fixture_count");
+  if (!Number.isInteger(properties) || properties < 0 || properties > 768)
+    throw new Error("invalid_fixture_properties");
   const f = await copyJobFixture();
   await cancelCopyJob(mutationEnv(), f.request.principal, f.job.id);
   await cleanupStoppedCopyJob(mutationEnv(), f.job.id);
@@ -162,5 +164,17 @@ export async function copyJobWithBlobs(count: number) {
       },
     ]);
   }
+  if (properties)
+    await atomicBatch(env.DB, [
+      {
+        sql: `INSERT INTO node_props(node_id,namespace,name,value_xml)
+          SELECT ?,'urn:copy-budget',CAST(value AS TEXT),? FROM json_each(?)`,
+        values: [
+          f.source.ids.folder,
+          "x".repeat(8192),
+          JSON.stringify(Array.from({ length: properties }, (_, i) => i)),
+        ],
+      },
+    ]);
   return { ...f, job: await f.enqueue() };
 }

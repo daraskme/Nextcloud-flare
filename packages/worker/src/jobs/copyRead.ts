@@ -139,7 +139,7 @@ export async function withCopyJobRange<T>(
         hold,
         {
           sql: "UPDATE job_leases SET r2_calls=r2_calls+1 WHERE job_id=? AND claim_token=? AND r2_calls<?",
-          values: [claim.id, claim.token, COPY_EXECUTION_LIMITS.rangeReads],
+          values: [claim.id, claim.token, COPY_EXECUTION_LIMITS.invocationR2Calls],
         },
         assertOneChange,
         {

@@ -1,7 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
+import { COPY_EXECUTION_LIMITS, claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
 import { executeCopyJob } from "../../src/jobs/copyExecutor";
 import { cancelCopyJob, cleanupStoppedCopyJob } from "../../src/jobs/copyLifecycle";
 import { copyNextBlob } from "../../src/jobs/copyMultipart";
@@ -49,7 +49,7 @@ it.each([0, 3, 9 * MiB])(
 );
 it("resumes from each multipart checkpoint without repeating create or part calls", async () => {
   const f = await copyJobFixture(false, new Uint8Array(9 * MiB));
-  for (const calls of [1, 3, 5, 6]) {
+  for (const calls of [1, 3, 5]) {
     expect(await run(f, { maxSteps: 1 })).toMatchObject({ state: "yielded", steps: 1 });
     expect(await copyJobCounters(f.job.id)).toMatchObject({ r2_calls: calls });
     expect(
@@ -58,14 +58,14 @@ it("resumes from each multipart checkpoint without repeating create or part call
         .first("expires_at"),
     ).toBe(0);
   }
-  expect(await run(f)).toMatchObject({ state: "completed", steps: 0 });
-  expect(await stored(f.job.id)).toMatchObject({ invocation_count: 5, r2_calls: 6 });
+  expect(await run(f, { maxSteps: 1 })).toMatchObject({ state: "completed", steps: 1 });
+  expect(await stored(f.job.id)).toMatchObject({ invocation_count: 4, r2_calls: 6 });
 });
-it("yields before a native pair would exceed the invocation budget and finishes the rest", async () => {
+it("retains the eight-blob D1 regression budget when explicitly yielding after eight steps", async () => {
   const f = await copyJobWithBlobs(9);
   const measured = measureD1(env.DB);
   const a = { ...mutationEnv(measured.db), LOCKS: admitted().LOCKS };
-  expect(await run(f, {}, a)).toMatchObject({ state: "yielded", steps: 8 });
+  expect(await run(f, { maxSteps: 8 }, a)).toMatchObject({ state: "yielded", steps: 8 });
   // The original path required 222 calls / 705 statements for these same eight real copies.
   expect(measured.counts.calls).toBeLessThanOrEqual(140);
   expect(measured.counts.statements).toBeLessThanOrEqual(650);
@@ -82,10 +82,74 @@ it("yields before a native pair would exceed the invocation budget and finishes 
     reserved_bytes: 0,
   });
 });
+it.each([56, 57])(
+  "copies %s blobs within metered invocations without repeated writes",
+  async (count) => {
+    const f = await copyJobWithBlobs(count),
+      measured = measureD1(env.DB),
+      put = vi.fn(env.BLOBS.put.bind(env.BLOBS));
+    const a = {
+      ...mutationEnv(measured.db),
+      LOCKS: admitted().LOCKS,
+      BLOBS: { get: env.BLOBS.get.bind(env.BLOBS), put } as unknown as R2Bucket,
+    };
+    expect(await run(f, {}, a)).toMatchObject({
+      state: count === 56 ? "completed" : "yielded",
+      steps: 56,
+    });
+    expect(measured.counts.calls).toBeLessThanOrEqual(COPY_EXECUTION_LIMITS.d1Calls);
+    expect(measured.counts.statements).toBeLessThanOrEqual(4200);
+    expect(await copyJobCounters(f.job.id)).toMatchObject({
+      r2_calls: 112,
+      lease_calls: count === 56 ? null : 112,
+      invocation_count: 1,
+    });
+    expect(await run(f, {}, a)).toMatchObject({ state: "completed", steps: count - 56 });
+    expect(put).toHaveBeenCalledTimes(count);
+    expect(new Set(put.mock.calls.map(([key]) => key)).size).toBe(count);
+    expect(await stored(f.job.id)).toMatchObject({
+      r2_calls: count * 2,
+      invocation_count: count === 56 ? 1 : 2,
+    });
+    expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+      used_bytes: 3 + count * 3,
+      physical_bytes: count * 3,
+      reserved_bytes: 0,
+      incorrect_refs: 0,
+    });
+  },
+);
+it("yields for D1 headroom before R2 runs out when the manifest costs more reads", async () => {
+  const f = await copyJobWithBlobs(57, 768),
+    measured = measureD1(env.DB),
+    a = { ...mutationEnv(measured.db), LOCKS: admitted().LOCKS };
+  const first = await run(f, {}, a);
+  expect(first.state).toBe("yielded");
+  expect(first.steps).toBeGreaterThanOrEqual(51);
+  expect(first.steps).toBeLessThan(56);
+  expect(measured.counts.calls).toBeGreaterThanOrEqual(COPY_EXECUTION_LIMITS.d1YieldCalls);
+  expect(measured.counts.calls).toBeLessThanOrEqual(COPY_EXECUTION_LIMITS.d1Calls);
+  expect(await copyJobCounters(f.job.id)).toMatchObject({
+    r2_calls: first.steps * 2,
+    lease_calls: first.steps * 2,
+  });
+  expect(
+    await env.DB.prepare("SELECT expires_at FROM job_leases WHERE job_id=?")
+      .bind(f.job.id)
+      .first("expires_at"),
+  ).toBe(0);
+  expect(await run(f)).toMatchObject({ state: "completed", steps: 57 - first.steps });
+  expect(await stored(f.job.id)).toMatchObject({ r2_calls: 114, invocation_count: 2 });
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+    used_bytes: 174,
+    physical_bytes: 171,
+    reserved_bytes: 0,
+  });
+}, 90_000);
 it("publishes at the exact global call limit without reserving another native call", async () => {
   const f = await copyJobFixture();
   await env.DB.prepare("UPDATE bulk_jobs SET r2_calls=19998 WHERE id=?").bind(f.job.id).run();
-  expect(await run(f)).toMatchObject({ state: "completed" });
+  expect(await run(f, { maxSteps: 1 })).toMatchObject({ state: "completed" });
   expect(await stored(f.job.id)).toMatchObject({ r2_calls: 20000 });
 });
 it("does not prepare a PUT when only one global call remains", async () => {
@@ -235,7 +299,9 @@ it("refuses an executor repair HEAD after its invocation call budget is spent", 
   const f = await copyJobFixture(),
     claim = await claimCopyJob(mutationEnv(), f.job.outboxId);
   await expect(copyNextBlob(app(failObservation()), claim)).rejects.toThrow();
-  await env.DB.prepare("UPDATE job_leases SET r2_calls=16 WHERE job_id=?").bind(f.job.id).run();
+  await env.DB.prepare("UPDATE job_leases SET r2_calls=? WHERE job_id=?")
+    .bind(COPY_EXECUTION_LIMITS.invocationR2Calls, f.job.id)
+    .run();
   const head = vi.fn(env.BLOBS.head.bind(env.BLOBS));
   await expect(
     reconcileCopyObject(
@@ -246,7 +312,10 @@ it("refuses an executor repair HEAD after its invocation call budget is spent", 
     ),
   ).rejects.toThrow();
   expect(head).not.toHaveBeenCalled();
-  expect(await copyJobCounters(f.job.id)).toMatchObject({ r2_calls: 2, lease_calls: 16 });
+  expect(await copyJobCounters(f.job.id)).toMatchObject({
+    r2_calls: 2,
+    lease_calls: COPY_EXECUTION_LIMITS.invocationR2Calls,
+  });
   await releaseCopyJobClaim(mutationEnv(), claim);
 });
 it("finishes a lost publication ACK without repeating the completed execution", async () => {
@@ -262,7 +331,7 @@ it("finishes a lost publication ACK without repeating the completed execution", 
   expect(await run(f)).toMatchObject({ state: "completed", steps: 0 });
   expect(await stored(f.job.id)).toMatchObject({ invocation_count: 1, r2_calls: 2 });
 });
-it.each([{ maxSteps: 0 }, { maxSteps: 33 }, { partBytes: 1 }, { deadline: 0 }])(
+it.each([{ maxSteps: 0 }, { maxSteps: 65 }, { partBytes: 1 }, { deadline: 0 }])(
   "rejects invalid execution options %j",
   async (options) => {
     const f = await copyJobFixture();

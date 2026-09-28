@@ -2,7 +2,7 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { Env } from "../../src/env";
-import { claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
+import { COPY_EXECUTION_LIMITS, claimCopyJob, releaseCopyJobClaim } from "../../src/jobs/copyClaim";
 import { copyNextSmallBlob } from "../../src/jobs/copyPut";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { copyJobFixture as fixture } from "../fixtures/copyJob";
@@ -144,6 +144,28 @@ it("retains unknown PUT and quota after a lost native response", async () => {
   await expect(claimCopyJob(mutationEnv(), f.job.outboxId)).rejects.toThrow();
   expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({ reserved_bytes: 3 });
   expect(a.put).toHaveBeenCalledTimes(1);
+});
+it("refuses a native grant when the shared invocation counter was exhausted after prepare", async () => {
+  const f = await fixture(),
+    claim = await claimCopyJob(mutationEnv(), f.job.outboxId);
+  const db = injectBatch(
+    (sql) => sql.startsWith("INSERT INTO r2_write_attempts"),
+    async () => {
+      await env.DB.prepare("UPDATE job_leases SET r2_calls=? WHERE job_id=?")
+        .bind(COPY_EXECUTION_LIMITS.invocationR2Calls, claim.id)
+        .run();
+    },
+    false,
+  );
+  const a = app(db);
+  await expect(copyNextSmallBlob(a, claim)).rejects.toThrow();
+  expect(a.put).not.toHaveBeenCalled();
+  expect(await position(claim.id)).toBe('{"v":1,"blob":0,"offset":0}');
+  expect(await stored(claim.id)).toMatchObject({ transfer_state: "claimed" });
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+    reserved_bytes: 3,
+    physical_bytes: 0,
+  });
 });
 it.each(["observe", "advance"])("recovers a lost %s ACK without repeating PUT", async (phase) => {
   const f = await fixture(),

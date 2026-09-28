@@ -1,3 +1,4 @@
+import { d1CallBudget } from "../db/callBudget";
 import { primary } from "../db/primary";
 import { UPLOAD_LIMITS } from "../do/uploadPlan";
 import type { Env } from "../env";
@@ -53,7 +54,7 @@ async function nextStep(db: D1Database, claim: CopyJobClaim) {
     action:
       calls &&
       (row.invocation_calls === null ||
-        row.invocation_calls + calls > COPY_EXECUTION_LIMITS.rangeReads ||
+        row.invocation_calls + calls > COPY_EXECUTION_LIMITS.invocationR2Calls ||
         row.total_calls + calls > COPY_EXECUTION_LIMITS.r2Calls)
         ? ("yield" as const)
         : action,
@@ -82,7 +83,7 @@ export async function executeCopyJob(
 ): Promise<CopyExecutionResult> {
   const started = Date.now(),
     deadline = options.deadline ?? started + COPY_EXECUTION_LIMITS.wallMs,
-    maxSteps = options.maxSteps ?? 32;
+    maxSteps = options.maxSteps ?? COPY_EXECUTION_LIMITS.steps;
   if (
     !/^[A-Za-z0-9_-]{1,128}$/.test(outboxId) ||
     !Number.isSafeInteger(deadline) ||
@@ -90,13 +91,15 @@ export async function executeCopyJob(
     deadline > started + COPY_EXECUTION_LIMITS.wallMs ||
     !Number.isInteger(maxSteps) ||
     maxSteps < 1 ||
-    maxSteps > 32 ||
+    maxSteps > COPY_EXECUTION_LIMITS.steps ||
     (options.partBytes !== undefined &&
       (!Number.isSafeInteger(options.partBytes) ||
         options.partBytes < UPLOAD_LIMITS.minPartBytes ||
         options.partBytes > UPLOAD_LIMITS.maxPartBytes))
   )
     throw new Error("invalid_copy_execution");
+  const budget = d1CallBudget(env.DB, COPY_EXECUTION_LIMITS.d1Calls);
+  env = { ...env, DB: budget.db };
   const row = await primary(env.DB)
     .prepare(`SELECT j.id,j.state FROM outbox o JOIN bulk_jobs j ON j.id=o.payload_ref AND j.op_id=o.op_id
     WHERE o.outbox_id=? AND o.kind='copy.requested' AND j.kind='node.copy'`)
@@ -112,8 +115,15 @@ export async function executeCopyJob(
   if (await stopExpiredCopyJob(env, row.id, deadline)) return { ...result, state: "stopped" };
   const claim = await claimCopyJob(env, outboxId, deadline);
   try {
-    for (; result.steps < maxSteps; ) {
+    for (;;) {
       checkCopyClaim(claim);
+      // Reserve calls for one step, publication and release. Once all blobs are
+      // checkpointed, publish in this claim even at the final native/step limit.
+      if (
+        copyClaimPosition(claim) < claim.plan.source.blobs.length &&
+        (result.steps >= maxSteps || budget.calls >= COPY_EXECUTION_LIMITS.d1YieldCalls)
+      )
+        return result;
       const step = await nextStep(env.DB, claim);
       if (step.action === "held") return { ...result, state: "held" };
       if (step.action === "yield") return result;
@@ -130,9 +140,12 @@ export async function executeCopyJob(
       } else await copyNextBlob(env, claim, options.partBytes);
       result.steps++;
       // Leave time to relinquish the claim. A running native operation still has its original deadline.
-      if (Date.now() >= claim.expiresAt - 1000) return result;
+      if (
+        copyClaimPosition(claim) < claim.plan.source.blobs.length &&
+        Date.now() >= claim.expiresAt - 1000
+      )
+        return result;
     }
-    return result;
   } finally {
     await releaseCopyJobClaim(env, claim);
   }

@@ -1,4 +1,8 @@
-import { type CopyAuthorityContext, copyAuthorityStatements } from "../jobs/copyClaim";
+import {
+  COPY_EXECUTION_LIMITS,
+  type CopyAuthorityContext,
+  copyAuthorityStatements,
+} from "../jobs/copyClaim";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "./primary";
 import type { R2WriteRequest } from "./r2Write";
 
@@ -150,8 +154,8 @@ export async function copyWriteProof(
     ),
     ...(request.kind === "copy.multipart.complete" ? [copyMultipartPartsProof(request.key)] : []),
     {
-      sql: "UPDATE job_leases SET r2_calls=r2_calls+1 WHERE job_id=? AND claim_token=? AND r2_calls<2000",
-      values: [p.jobId, p.claimToken],
+      sql: "UPDATE job_leases SET r2_calls=r2_calls+1 WHERE job_id=? AND claim_token=? AND r2_calls<?",
+      values: [p.jobId, p.claimToken, COPY_EXECUTION_LIMITS.invocationR2Calls],
     },
     assertOneChange,
     {

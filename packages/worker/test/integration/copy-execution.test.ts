@@ -316,13 +316,13 @@ it("refuses reads beyond the persistent invocation budget", async () => {
     claim = await claimCopyJob(mutationEnv(), f.job.outboxId),
     app = readerEnv();
   await env.DB.prepare("UPDATE job_leases SET r2_calls=? WHERE job_id=?")
-    .bind(COPY_EXECUTION_LIMITS.rangeReads, claim.id)
+    .bind(COPY_EXECUTION_LIMITS.invocationR2Calls, claim.id)
     .run();
   await expect(readCopyJobRange(app, claim, f.range)).rejects.toThrow();
   expect(app.BLOBS.get).not.toHaveBeenCalled();
   expect(await counters(f.job.id)).toMatchObject({
     r2_calls: 0,
-    lease_calls: COPY_EXECUTION_LIMITS.rangeReads,
+    lease_calls: COPY_EXECUTION_LIMITS.invocationR2Calls,
   });
 });
 

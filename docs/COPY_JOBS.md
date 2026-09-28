@@ -34,7 +34,7 @@ manifest本文は最大8 MiB、64 KiBずつ最大128個のBLOB行へ保存する
 
 `jobs/copyClaim.ts` は送信済み（または送信中）のOutbox IDから保存済みmanifestを照合し、両側の現行権限と共通system admissionを経て実行leaseを取得する。同じtransactionでjobをrunningへ進め、token・epoch・期限・初期checkpointを保存する。並行配信は一つだけが取得でき、転送先ownerあたり同時2claim、実行25秒、job全体200 invocation/20,000 R2 callを上限にする。進捗が未確定の再取得は最大10回。lease期限を過ぎても、転送先keyに結果不明のnative writeがあれば再取得しない。
 
-`jobs/copyRead.ts` はbufferとして返す場合は1回最大8 MiB、multipartへのstream転送では最大90 MiBをRangeで読み出す。D1認可・後続書込みの余裕を確保するため、読取り開始時にinvocationの合計R2 call数が16未満であることを要求する。R2送信前にjobとleaseのcall数を同じbatchで増やし、直接の成功応答を得た場合だけGETする。claim取得はDB receiptから応答喪失を照合できるが、送信前batchの応答喪失はGETの許可にしない。失敗したcall数も戻さない。
+`jobs/copyRead.ts` はbufferとして返す場合は1回最大8 MiB、multipartへのstream転送では最大90 MiBをRangeで読み出す。invocationの合計R2 call数は112回までとし、GET/修復HEADとControlDOでのnative書込みが同じ上限を検査する。R2送信前にjobとleaseのcall数を同じbatchで増やし、直接の成功応答を得た場合だけGETする。claim取得はDB receiptから応答喪失を照合できるが、送信前batchの応答喪失はGETの許可にしない。失敗したcall数も戻さない。D1の余裕はexecutorが別途実測して確保する。
 
 blobごとにmanifest上の最初のnodeを固定した権限確認対象にする。元のrootとそのnode、転送先親、必要なoverwrite対象を現在の資格情報・選択shareで認可し、読取り前後でDB条件を再確認する。元fileが新しいblobへ更新されてもpinした旧blobを読むが、そのnodeが選択shareの外へ移動した場合は拒否する。別のaliasや広いgrantへの切替はしない。物理ETagの条件付きGETでkey・全体size・返却Range・実body長も照合する。空blobはRangeを指定せず読む。
 
@@ -107,13 +107,15 @@ HEAD前のsystem admissionを直接ACKした場合だけ読み、記録時にも
 
 ## 一回分のコピー実行
 
-`jobs/copyExecutor.ts` の `executeCopyJob` はOutbox IDからjobを特定し、通常のclaim、単一/分割転送、実成功後のobject観測修復、進捗確定、一括公開を内部でつなぐ。1回25秒・最大32段階で処理し、各段階の開始前に必要なR2呼出し数を確認する。単一保存とpartにはGET+書込みの2回、multipart初期化/完了と修復HEADには1回を見込む。進捗照合と公開は追加のR2 callを必要としない。invocationの16 callとjob全体20,000 callに収まらなければ準備前にyieldし、保存済みcheckpointから続行する。
+`jobs/copyExecutor.ts` の `executeCopyJob` はOutbox IDからjobを特定し、通常のclaim、単一/分割転送、実成功後のobject観測修復、進捗確定、一括公開を内部でつなぐ。1回25秒・最大64転送段階で処理し、各段階の開始前に必要なR2呼出し数を確認する。単一保存とpartにはGET+書込みの2回、multipart初期化/完了と修復HEADには1回を見込む。進捗照合と公開は追加のR2 callを必要としない。invocationの112 callとjob全体20,000 callに収まらなければ準備前にyieldし、保存済みcheckpointから続行する。最後のblobのcheckpointが確定したら、転送段階数・native上限に達していても同じclaimで公開する。
+
+`db/callBudget.ts`でexecutorが使うD1 bindingを包み、読戻し・認可・進捗・公開・解放を含めてdispatch前に数える。840回以上なら次の転送を開始せずyieldし、1段階の完了・公開/応答喪失照合・lease解放のため60回を残す。900回で追加dispatchを拒否する。batchはSQL本数と別に1 binding callと数え、失敗/ACK喪失でも返却しない。別scopeのprepared statementや未計測のsession/exec/dump経路は許可しない。Queue入口・終了照合には別の100回分を残し、同じQueue invocationで他のcopyを開始しない。ControlDO/LockDO内の別invocationのSQLはこのcounterの対象外。
 
 claim付き修復HEADも、元のclaim/権限とcall数の増加を同じsystem batchで確定し、直接ACKを得た場合だけ送信する。ACK喪失分を返さず、結果不明の書込みは再送しない。prepared状態のhandle/partが未解決ならheldを返す。通常の終了・yield・例外では自分の実行leaseだけを返し、別実行のclaimには触れない。完了済みの再配信はimmutable manifestと公開receiptを照合し、追加のclaimやnamespace変更を作らない。
 
-期限・旧epoch・予算超過は既存の停止処理で判定する。stoppedという内部結果は保持の解放やQueue ACKを意味しない。精算・中止・修復に残った保持は既存の専用処理へ渡す必要がある。Queueからの実行は下記へ接続した。停止後のcleanup巡回も接続した。HTTP、再試行管理・DLQ運用・最大規模の完走予算は引き続き仕上げる。現在の16 call/実行では大量blobが200 invocation以内に収まらないため、10,000 blobの完走を検証済みとはしない。
+期限・旧epoch・予算超過は既存の停止処理で判定する。stoppedという内部結果は保持の解放やQueue ACKを意味しない。精算・中止・修復に残った保持は既存の専用処理へ渡す必要がある。Queueからの実行は下記へ接続した。停止後のcleanup巡回も接続した。HTTP、再試行管理・DLQ運用・最大規模の完走予算は引き続き仕上げる。小さいblobを56個ずつ進められる場合は10,000個を179 invocationに収められる計算だが、実時間・metadata・multipart geometry・失敗分の予算も必要であり、最大規模の完走を検証済みとはしない。特に多数のmultipartにはinit/completeの追加callがあり、20,000 callの全体上限との整合をさらに詰める。
 
-Cloudflareの[D1制限](https://developers.cloudflare.com/d1/platform/limits/)は呼出し回数とbatch内の各SQLにも適用される。[Workerのsubrequest上限変更](https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/)だけを根拠に読取り枠を増やさず、D1・認可・native記録を含めて最大規模を測定する。
+Cloudflareの[D1制限](https://developers.cloudflare.com/d1/platform/limits/)はPaidで1 invocationあたり1,000 queriesをsubrequest上限へ関連付け、各SQLの長さ/bind数とbatch全体30秒も制限する。[公式workerdのD1 binding実装](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/d1-api.ts)ではbatchを一つのquery配列のfetch/RPCで送るため、上記counterはbinding呼出しを数える。repoの各batch最大1,000 SQL文・100 bind/文・100 KB/文の検査は別に維持する。Freeの50回上限への適合や実Cloudflare上での最大規模・遅延をローカル試験の成功から推定しない。
 
 ## Queue consumer
 
@@ -121,7 +123,7 @@ Cloudflareの[D1制限](https://developers.cloudflare.com/d1/platform/limits/)�
 
 completedは公開receiptを照合する。failed/cancelledはDB-onlyの証拠付き精算を最大32blob行い、全元blobがimmutable精算receiptへ移り、保持が0で、正確なOutbox/job/opの終端tupleを再確認した場合だけACKする。精算の`readyOnly`選択は未知attemptを飛ばすので、先頭に保留があっても後続を32件ずつ精算できる。精算候補の選択自体を閉鎖証明にせず、従来のtransaction/triggerでnative終了証拠を再検査する。
 
-未完了multipartのabort、停止後の観測修復、旧epoch・未配信停止jobの精算は下記の専用巡回へ接続した。失敗Outboxは通常Cronの再送対象外なので、Queue consumerと独立して拾う。DLQからの運用再開は後続。HTTP受付は未接続。16 call/claim、最大200 invocationと最大10,000blobの予算問題も残る。
+未完了multipartのabort、停止後の観測修復、旧epoch・未配信停止jobの精算は下記の専用巡回へ接続した。失敗Outboxは通常Cronの再送対象外なので、Queue consumerと独立して拾う。DLQからの運用再開は後続。HTTP受付は未接続。112 call/claimとD1実測yieldを導入したが、最大200 invocationと20,000 R2 callで全サイズ構成が完走する保証はまだない。
 
 ## 停止後の自動巡回
 
@@ -141,7 +143,7 @@ DB-onlyのcursor/claim/精算/解放はexact admission receiptで応答喪失を
 
 単一PUT、multipartのhandleと完成objectは、実応答の観測が確定した呼出しでは同じ事実を二度書き込まない。観測が失敗すればnative成功の独立記録後に再試行し、遅延した実結果の記録も継続する。executorは次の段階とclaim/job残予算を一つのSELECTで読むが、この読取りは送信許可ではなく、送信前batchで予算加算と認可を再検査して直接ACKを要求する。
 
-8つの独立した3-byte blobを実R2へコピーしてyieldするfixtureでは、Worker側のD1 binding呼出しは222→132回、SQL文は705→600本。回帰試験はそれぞれ140回/650本以内を要求する。ControlDO/LockDO内部のSQL・remote遅延はこの数に含めない。25秒・16 R2 callと全体予算は維持し、最大規模の完走を証明済みとはしない。
+8つの独立した3-byte blobを実R2へコピーしてyieldする従来fixtureでは、Worker側のD1 binding呼出しは222→132回、SQL文は705→600本。8段階で明示yieldする回帰試験は引き続き140回/650本以内を要求する。通常実行は56個を900 binding call/4,200 SQL文以内で処理して次のclaimへ続ける。大きいmanifestではD1 counterによってR2上限より先にyieldする。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とし、ControlDO/LockDO内部のSQL・remote遅延は上記の数に含めない。
 
 ## 移行と復旧
 
