@@ -1,6 +1,8 @@
 # セッション引き継ぎ
 
-[サムネイル生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を接続しました。D1と独立したControlDOの記録で新しい書込みを止め、未終了PUTがない場合だけ実容量へ計上して予約・pinを精算します。公開中の画像は原本が削除段階へ進むまで保持し、回収後も35日のGC猶予を守ります。専用Cronは最大8件・25秒、HEADは生成物ごとに累計64回までです。schema0071・通常79table・147 route。Queue自動生成・thumb配信・Gallery UI、未知nativeの運用修復と復元CLIへの専用接続は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[復元後の画像回収](DATABASE_RESTORE_DOMAINS.md)を `repair-restored --kind images` へ接続しました。未保存の生成物や保存済みの未公開出力を、同じ停止証拠と容量計算で回収します。停止変更・独立履歴欠落では予約を保持します。schema・公開API・依存の追加はありません。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+
+[サムネイル生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を接続しました。D1と独立したControlDOの記録で新しい書込みを止め、未終了PUTがない場合だけ実容量へ計上して予約・pinを精算します。公開中の画像は原本が削除段階へ進むまで保持し、回収後も35日のGC猶予を守ります。専用Cronは最大8件・25秒、HEADは生成物ごとに累計64回までです。schema0071・通常79table・147 route。復元CLIの画像回収にも接続済みです。Queue自動生成・thumb配信・Gallery UI、未知nativeの運用修復は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [サムネイルの保存処理](IMAGE_DERIVATIVES.md)を追加しました。成功済みのWebPを不変のR2 keyへ一度だけ保存し、元の認可・現在の原本・claim・epochと実際の保存証拠を確認して公開記録を確定します。画像の予約容量は通常ファイルの論理容量と分離し、実bytesは物理容量へ計上します。schema0070・通常78table・147 route。生成物の回収は後続の0071で接続済みです。未確定nativeの運用修復、Queue自動生成、thumb配信、Gallery UIは未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

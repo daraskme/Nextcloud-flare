@@ -6,6 +6,7 @@ import {
   primary,
   type SqlStatement,
 } from "../db/primary";
+import type { ControlDO } from "../do/ControlDO";
 import { CONTROL_NAME } from "../do/controlName";
 import type { Env } from "../env";
 import {
@@ -17,7 +18,20 @@ import {
 const CLOCK = "strftime('%s','now')*1000";
 export const IMAGE_CLEANUP_CRON = "1-59/2 * * * *";
 export const IMAGE_CLEANUP_LIMIT = 8;
-type CleanupEnv = Pick<Env, "DB" | "CONTROL" | "BLOBS">;
+type CleanupSource = Pick<Env, "DB" | "BLOBS"> &
+  (
+    | Pick<Env, "CONTROL">
+    | { systemControl: Pick<ControlDO, "status" | "acquireSystemMutation" | "sealImageDerivative"> }
+  );
+type CleanupScope = { current(): void; stop: SqlStatement };
+type CleanupEnv = CleanupSource & { scope?: CleanupScope };
+export interface ImageCleanupResult {
+  inspected: number;
+  retired: number;
+  settled: number;
+  held: number;
+  r2Calls: number;
+}
 interface Claim {
   id: string;
   owner: string;
@@ -31,14 +45,16 @@ interface Claim {
   deadline: number;
   reason: "expired" | "source_deleted" | null;
 }
-const fence = (c: Claim): SqlStatement =>
+const fence = (c: Claim, env: CleanupEnv): SqlStatement[] => [
+  ...(env.scope ? [env.scope.stop] : []),
   assertExists(
     `SELECT 1 FROM image_derivative_cleanup x
   JOIN control ctl ON ctl.singleton=1 WHERE x.image_id=? AND x.claim_token=? AND x.claim_epoch=?
   AND x.claim_deadline=? AND x.claim_deadline>${CLOCK} AND x.settled_at IS NULL
   AND ctl.epoch=x.claim_epoch AND (ctl.maintenance=0 OR ctl.gc_paused=1)`,
     [c.id, c.token, c.epoch, c.deadline],
-  );
+  ),
+];
 const quiet = (c: Claim, seal: string): SqlStatement =>
   assertExists(
     `SELECT 1 FROM image_derivative_cleanup
@@ -46,7 +62,8 @@ const quiet = (c: Claim, seal: string): SqlStatement =>
   AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=? AND state='pending')`,
     [c.id, seal, c.key],
   );
-function current(c: Claim) {
+function current(c: Claim, env: CleanupEnv) {
+  env.scope?.current();
   if (Date.now() >= c.deadline) throw new Error("image_cleanup_deadline");
 }
 export const IMAGE_CLEANUP_QUERY = `SELECT x.id,x.owner_id AS owner,x.output_blob_id AS blob,
@@ -65,10 +82,12 @@ async function claim(
   deadline: number,
   imageId?: string,
 ): Promise<Claim | null> {
+  env.scope?.current();
   const row = await primary(env.DB)
     .prepare(IMAGE_CLEANUP_QUERY)
     .bind(epoch, imageId ?? null, imageId ?? null)
     .first<Omit<Claim, "token" | "epoch" | "deadline">>();
+  env.scope?.current();
   if (!row) return null;
   const c: Claim = { ...row, token: crypto.randomUUID(), epoch, deadline };
   const admission = await acquireSystemMutation(env, c.owner, "image.cleanup", deadline);
@@ -79,15 +98,15 @@ async function claim(
       values: [c.token, epoch, deadline, row.reason ? 60000 : 3600000, c.id],
     },
     assertOneChange,
-    fence(c),
+    ...fence(c, env),
   ]);
-  current(c);
+  current(c, env);
   return c;
 }
 async function retire(env: CleanupEnv, c: Claim) {
   const admission = await acquireSystemMutation(env, c.owner, "image.cleanup", c.deadline);
   await commitSystemMutation(env.DB, admission, c.owner, [
-    fence(c),
+    ...fence(c, env),
     {
       sql: `UPDATE image_derivative_cleanup SET retired_at=MAX(${CLOCK},(SELECT created_at FROM image_derivative_objects WHERE id=?)),retired_epoch=?,reason=?
       WHERE image_id=? AND retired_at IS NULL`,
@@ -110,7 +129,7 @@ async function settle(
   seal: string,
   object: R2Object | null | undefined,
 ) {
-  current(c);
+  current(c, env);
   const facts: SqlStatement[] = [];
   if (object) {
     if (
@@ -135,7 +154,7 @@ async function settle(
   const disposition = object === null ? "absent" : "stored";
   const admission = await acquireSystemMutation(env, c.owner, "image.cleanup", c.deadline);
   await commitSystemMutation(env.DB, admission, c.owner, [
-    fence(c),
+    ...fence(c, env),
     quiet(c, seal),
     ...facts,
     {
@@ -171,16 +190,17 @@ async function inspectAndSettle(
   env: CleanupEnv,
   c: Claim,
 ): Promise<{ settled: boolean; calls: number }> {
-  current(c);
+  current(c, env);
   await retire(env, c);
-  current(c);
-  const seal = await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).sealImageDerivative(
-    c.epoch,
-    c.id,
-  );
+  current(c, env);
+  const control =
+    "systemControl" in env
+      ? env.systemControl
+      : env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
+  const seal = await control.sealImageDerivative(c.epoch, c.id);
   if (!seal || seal.key !== c.key || !/^[a-f0-9-]{36}$/.test(seal.token))
     throw new Error("image_seal_unavailable");
-  current(c);
+  current(c, env);
   const recorded = await primary(env.DB)
     .prepare("SELECT 1 FROM blob_storage WHERE blob_id=? AND removed_at IS NULL")
     .bind(c.blob)
@@ -194,7 +214,7 @@ async function inspectAndSettle(
   await atomicBatch(
     env.DB,
     systemMutationStatements(admission, c.owner, [
-      fence(c),
+      ...fence(c, env),
       quiet(c, seal.token),
       {
         sql: "UPDATE image_derivative_cleanup SET head_calls=head_calls+1,head_token=? WHERE image_id=? AND head_calls<64 AND head_token IS NULL",
@@ -203,7 +223,7 @@ async function inspectAndSettle(
       assertOneChange,
     ]),
   );
-  current(c);
+  current(c, env);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const object = await Promise.race([
@@ -215,7 +235,7 @@ async function inspectAndSettle(
         );
       }),
     ]);
-    current(c);
+    current(c, env);
     await settle(env, c, seal.token, object);
     return { settled: true, calls: 1 };
   } catch {
@@ -227,10 +247,11 @@ async function inspectAndSettle(
 
 /** Eight fair candidates, one HEAD per lease, 64 lifetime HEADs per generation, no writes or transforms. */
 export async function maintainImageDerivatives(
-  env: CleanupEnv,
+  source: CleanupSource,
   epoch: number,
-  options: { deadline?: number; limit?: number; imageId?: string } = {},
-) {
+  options: { deadline?: number; limit?: number; imageId?: string; scope?: CleanupScope } = {},
+): Promise<ImageCleanupResult> {
+  const env: CleanupEnv = { ...source, ...(options.scope ? { scope: options.scope } : {}) };
   const now = Date.now(),
     deadline = options.deadline ?? now + 25000,
     limit = options.limit ?? IMAGE_CLEANUP_LIMIT;
@@ -248,6 +269,7 @@ export async function maintainImageDerivatives(
     throw new Error("invalid_image_cleanup");
   const result = { inspected: 0, retired: 0, settled: 0, held: 0, r2Calls: 0 };
   for (let i = 0; i < limit && Date.now() < deadline - 1000; i++) {
+    env.scope?.current();
     const c = await claim(env, epoch, deadline, options.imageId);
     if (!c) break;
     result.inspected++;
@@ -261,6 +283,7 @@ export async function maintainImageDerivatives(
     } catch {
       /* Lost evidence or native uncertainty retains the pin and reservation. */
     } finally {
+      env.scope?.current();
       const status = await primary(env.DB)
         .prepare("SELECT retired_at,settled_at FROM image_derivative_cleanup WHERE image_id=?")
         .bind(c.id)
@@ -271,7 +294,7 @@ export async function maintainImageDerivatives(
         try {
           const admission = await acquireSystemMutation(env, c.owner, "image.cleanup", deadline);
           await commitSystemMutation(env.DB, admission, c.owner, [
-            fence(c),
+            ...fence(c, env),
             {
               sql: "UPDATE image_derivative_cleanup SET claim_deadline=0 WHERE image_id=? AND claim_token=?",
               values: [c.id, c.token],
@@ -284,5 +307,6 @@ export async function maintainImageDerivatives(
       }
     }
   }
+  env.scope?.current();
   return result;
 }

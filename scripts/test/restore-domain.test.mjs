@@ -66,6 +66,21 @@ beforeEach(() => {
     releaseRecovery: vi.fn(),
     resumeRecovery: vi.fn(),
   };
+  const repair = control.repairDomain.getMockImplementation();
+  control.repairDomain.mockImplementation(async (...args) => {
+    const raw = await repair(...args);
+    if (args[2] === "images")
+      raw.repair.cleanup = {
+        inspected: 1,
+        retired: 1,
+        settled: 0,
+        held: 1,
+        r2Calls: 1,
+        token: "private",
+        key: "private",
+      };
+    return raw;
+  });
 });
 const args = () => ({ epoch: 2, id: selected.id, kind: "single", control });
 it.each(RESTORE_DOMAIN_KINDS)(
@@ -140,6 +155,42 @@ it.each([
   raw.repair.cleanup[field] = value;
   control.repairDomain.mockResolvedValue(raw);
   await expect(repairRestoredDomain({ ...args(), kind })).rejects.toThrow(/invalid_/);
+});
+it.each([
+  { inspected: 9 },
+  { inspected: 0 },
+  { retired: 2 },
+  { retired: 0, settled: 1, held: 0 },
+  { settled: 1 },
+  { held: -1 },
+  { held: 0.5 },
+  { r2Calls: 2 },
+  { r2Calls: undefined },
+])("rejects invalid image repair counts %j", async (change) => {
+  const raw = await control.repairDomain(2, selected.id, "images");
+  Object.assign(raw.repair.cleanup, change);
+  control.repairDomain.mockResolvedValue(raw);
+  await expect(repairRestoredDomain({ ...args(), kind: "images" })).rejects.toThrow(/invalid_/);
+});
+it("reports an ineligible image hold without claiming completion or retrying", async () => {
+  const raw = await control.repairDomain(2, selected.id, "images");
+  raw.repair.cleanup = { inspected: 0, retired: 0, settled: 0, held: 0, r2Calls: 0 };
+  control.repairDomain.mockClear().mockResolvedValue(raw);
+  expect((await repairRestoredDomain({ ...args(), kind: "images" })).repair).toEqual({
+    kind: "images",
+    pending: true,
+    cleanup: raw.repair.cleanup,
+  });
+  expect(control.repairDomain).toHaveBeenCalledTimes(1);
+});
+it("accepts image settlement without HEAD when physical storage was already recorded", async () => {
+  const raw = await control.repairDomain(2, selected.id, "images");
+  raw.repair.pending = false;
+  raw.repair.cleanup = { inspected: 1, retired: 1, settled: 1, held: 0, r2Calls: 0 };
+  control.repairDomain.mockResolvedValue(raw);
+  expect((await repairRestoredDomain({ ...args(), kind: "images", limit: 1 })).repair.pending).toBe(
+    false,
+  );
 });
 it.each([
   { claimed: 1 },

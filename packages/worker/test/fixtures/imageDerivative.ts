@@ -22,9 +22,9 @@ export async function imageDerivativeFixture() {
   const outboxId = result.operation.id + "_event",
     claimToken = crypto.randomUUID();
   await env.DB.prepare(
-    "UPDATE outbox SET state='sent',claim_token=?,claim_expires_at=? WHERE outbox_id=?",
+    "UPDATE outbox SET state='sent',dispatch_token=?,dispatch_expires_at=?,claim_token=?,claim_expires_at=? WHERE outbox_id=?",
   )
-    .bind(claimToken, Date.now() + 30000, outboxId)
+    .bind(crypto.randomUUID(), Date.now() + 30000, claimToken, Date.now() + 30000, outboxId)
     .run();
   const plan = await planImageTransform(
     { size: bytes.length, read: async (o, n) => bytes.slice(o, o + n) },

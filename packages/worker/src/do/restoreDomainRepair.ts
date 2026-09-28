@@ -1,6 +1,11 @@
 import type { RestoreDomainKind } from "../../../shared/src/restoreDomain";
 import { primary } from "../db/primary";
 import { drainStoppedBlobGarbageCollection, type GcResult } from "../jobs/gc";
+import {
+  IMAGE_CLEANUP_LIMIT,
+  type ImageCleanupResult,
+  maintainImageDerivatives,
+} from "../jobs/imageDerivativeCleanup";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
 import {
   drainStoppedOrphanGarbageCollection,
@@ -17,6 +22,7 @@ import { type RestoreRepairControl, restoreRepairContext } from "./restoreRepair
 type DomainRepairResult =
   | { cleanup: UploadCleanupResult; held: number }
   | { cleanup: GcResult | OrphanGcResult }
+  | { cleanup: ImageCleanupResult }
   | { inventory: OrphanScanResult }
   | { released: number }
   | { failed: number };
@@ -29,6 +35,9 @@ const REMAINING: Record<RestoreDomainKind, string> = {
     "SELECT 1 FROM uploads WHERE mode='single' AND (state NOT IN ('completed','expired','aborted','failed') OR cleanup_pending=1 OR cleanup_token IS NOT NULL)",
   multipart:
     "SELECT 1 FROM uploads WHERE mode='multipart' AND (state NOT IN ('completed','expired','aborted','failed') OR cleanup_pending=1 OR cleanup_token IS NOT NULL OR (state<>'completed' AND multipart_cleanup_closed IS NULL))",
+  images: `SELECT 1 FROM image_derivative_cleanup c JOIN image_derivative_objects x ON x.id=c.image_id
+    JOIN blobs b ON b.id=x.source_blob_id WHERE c.settled_at IS NULL
+    AND (x.state<>'published' OR c.retired_at IS NOT NULL OR b.state IN ('deleting','deleted'))`,
   reservations: "SELECT 1 FROM reservations WHERE state='reserved'",
   outbox: "SELECT 1 FROM outbox WHERE state IN ('pending','dispatching','sent')",
   "blob-gc": "SELECT 1 FROM gc_candidates WHERE state='deleting'",
@@ -87,7 +96,14 @@ export async function repairRestoredDomain(
       },
     });
     result = { cleanup, held };
-  } else if (kind === "reservations")
+  } else if (kind === "images")
+    result = {
+      cleanup: await maintainImageDerivatives({ ...source, BLOBS: guardedBucket }, epoch, {
+        limit: Math.min(limit, IMAGE_CLEANUP_LIMIT),
+        scope: { current, stop },
+      }),
+    };
+  else if (kind === "reservations")
     result = { released: await releaseStaleRecoveryReservations(source, epoch, limit) };
   else if (kind === "outbox")
     result = { failed: await failStaleRecoveryOutbox(source, epoch, limit) };

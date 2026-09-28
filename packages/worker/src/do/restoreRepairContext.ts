@@ -3,7 +3,12 @@ import type { ControlDO } from "./ControlDO";
 
 export type RestoreRepairControl = Pick<
   ControlDO,
-  "status" | "acquireSystemMutation" | "acquireGlobalMutation" | "beginR2Write" | "finishR2Write"
+  | "status"
+  | "acquireSystemMutation"
+  | "acquireGlobalMutation"
+  | "beginR2Write"
+  | "finishR2Write"
+  | "sealImageDerivative"
 >;
 
 /** Shared request-stop guards. Only actual native completion may outlive this scope. */
@@ -52,6 +57,12 @@ export async function restoreRepairContext(
       acquireGlobalMutation: async (input: Parameters<ControlDO["acquireGlobalMutation"]>[0]) => {
         current();
         const result = await control.acquireGlobalMutation(input);
+        current();
+        return result;
+      },
+      sealImageDerivative: async (epoch: number, imageId: string) => {
+        current();
+        const result = await control.sealImageDerivative(epoch, imageId);
         current();
         return result;
       },

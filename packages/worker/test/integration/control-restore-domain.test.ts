@@ -490,6 +490,7 @@ it.each(["d1", "kdf", "r2"])(
       });
     try {
       await expect(restored.domain("single")).rejects.toThrow(/preflight_pending|unsettled/);
+      await expect(restored.domain("images")).rejects.toThrow(/preflight_pending|unsettled/);
     } finally {
       // Synthetic dispatch row only; this fixture did not send native I/O.
       if (where === "d1")

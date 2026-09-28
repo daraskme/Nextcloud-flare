@@ -1,6 +1,20 @@
 # 実装進捗
 
-## サムネイル生成物の回収（今回）
+## 復元CLIからの画像回収（今回）
+
+[領域修復](DATABASE_RESTORE_DOMAINS.md)へ `repair-restored --kind images` を追加した。通常の画像回収を同じControlDOの共通受付・seal処理へ直接接続し、自己RPCを使わない。復旧epoch/revision/tokenと未凍結条件をclaim・退役・HEAD予算・精算・lease返却の各batchへ加える。最大8件/25秒、元の物理会計・35日GC猶予・累計64回のHEAD予算を維持する。
+
+未公開・退役済み・原本削除済みの未精算出力は、backoffや有効leaseで今回は選ばれなくてもpendingとなる。原本が有効な公開済み画像は保持し、回収の保留に含めない。CLIは件数と状態だけを返し、矛盾した件数や過大な結果を拒否する。一般のreservations修復から画像用予約を解放しない。schema0071・通常79table・147 route、依存追加なし。
+
+- 新規native10件成功（29.33秒、/tmp/ncf-image-restore-native-3.log）。実ControlDO/共通受付・不在精算後の全復元監査・eviction後の再実行、保存済み未観測出力の容量計上/35日猶予、公開済み保持、候補のbackoffと件数制限、精算ACK喪失、HEAD前後の停止変更、D1停止revision変更、独立Images履歴欠落の保持を検証した。
+- CLIのNode3file/148件成功（62.16秒、/tmp/ncf-image-restore-node.log）。新しいkind、内部key/tokenの除去、不正件数拒否、未精算候補の保留、観測済み出力のHEAD不要精算を含む。
+- 初期の既存native2file/46件成功。追加したテストでは通知fixtureのdispatch証拠欠落とケース間のsent残存を検出し、実通知形式と明示的なfixture終了処理へ修正した。最初の監査失敗後にhook timeout/table欠落も発生したが、修正後は同じ期限で10件完走した。
+- 最終回帰native5file/124件成功（183.78秒、/tmp/ncf-image-restore-regression.log）。復元domain/GC/inventory・画像保存/回収を検証した。domainのD1/KDF/R2保留時にimagesも拒否することを追加確認した。上記の新規10件と合わせてnative6file/134件、Nodeとの合計282件成功。実行中にworkerdのpump canceled警告は出たが、全assertionとプロセス終了は成功した。
+- 型検査成功（/tmp/ncf-image-restore-types-final.log）。lint686file・契約/設定検査成功（/tmp/ncf-image-restore-{lint,contracts,config}.log）。backup:operator-drill成功（/tmp/ncf-image-restore-operator.log）。79table snapshot、epoch採用、画像を含む8種類のdomain修復、12ページ監査、受付・GC再開まで確認した。画像対象は空のservice-binding経路で、生成物を持つ場合は上記native10件で検証した。provider応答は模擬で、実Cloudflare検証ではない。演習の固定説明文も8種類へ更新した。Web build/Worker dry-runも成功（/tmp/ncf-image-restore-build.log）。
+
+Queue自動生成、新claimでの公開、thumb配信、Gallery API/UI、未知nativeの運用修復・予算再承認・通知・履歴整理は未完了。remote resource/secret/migration/deployは行っていない。pushは前回の自動承認審査による拒否後の承認待ちで、再送していない。
+
+## サムネイル生成物の回収（先行2b31ebc）
 
 [生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を実装した。未公開の期限/epoch切れ、または公開済み原本の不可逆な削除開始を同じbatchで検査して公開を停止する。ControlDOの独立Images成功identityとR2 pendingを照合し、generationごとの不変な書込み停止tokenを保存する。D1の退役記録が失われても、新しいimage.putを拒否する。未知native・独立履歴欠落では保持を続ける。
 

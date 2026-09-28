@@ -225,6 +225,25 @@ export async function repairRestoredDomain({ epoch, id, kind, limit = 20, contro
       r2Calls: c.r2Calls,
     };
     repair.held = r.held;
+  } else if (kind === "images") {
+    const c = r.cleanup;
+    if (
+      !c ||
+      ![c.inspected, c.retired, c.settled, c.held, c.r2Calls].every(count) ||
+      c.inspected > 8 ||
+      c.retired > c.inspected ||
+      c.settled > c.retired ||
+      c.settled + c.held > c.inspected ||
+      c.r2Calls > c.inspected
+    )
+      throw new Error("database_restore_invalid_domain_repair");
+    repair.cleanup = {
+      inspected: c.inspected,
+      retired: c.retired,
+      settled: c.settled,
+      held: c.held,
+      r2Calls: c.r2Calls,
+    };
   } else if (kind === "blob-gc" || kind === "orphan-gc") {
     const c = r.cleanup,
       changed = kind === "orphan-gc" ? c?.changed : 0;
