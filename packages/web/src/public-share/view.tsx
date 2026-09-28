@@ -8,6 +8,7 @@ import {
   type SharedNode,
 } from "./client";
 import { PublicEditor } from "./editor";
+import { forgetPublicEdits } from "./editStore";
 import { forgetPublicUploads } from "./uploadStore";
 import { PublicUploads } from "./uploads";
 
@@ -29,11 +30,15 @@ export function PublicApp({ client }: { client: PublicClient }) {
   const [editing, setEditing] = useState<{ node?: SharedNode; remove?: boolean } | null>(null);
   const [uploading, setUploading] = useState<{ node?: SharedNode } | null>(null);
   const [transferBusy, setTransferBusy] = useState(false);
-  const locked = busy || editing !== null || uploading !== null || transferBusy;
+  const [editState, setEditState] = useState({ blocked: true, running: false });
+  const locked =
+    busy || editing !== null || uploading !== null || transferBusy || editState.running;
+  const editLocked = locked || editState.blocked;
   const channel = useRef<BroadcastChannel | null>(null);
   const clear = useCallback(() => {
     client.close();
     void forgetPublicUploads(client.id, root?.sessionId).catch(() => {});
+    void forgetPublicEdits(client.id, root?.sessionId).catch(() => {});
     setRoot(null);
     setTrail([]);
     setPage(null);
@@ -195,7 +200,11 @@ export function PublicApp({ client }: { client: PublicClient }) {
           Nextcloud Flare<small>共有リンク</small>
         </span>
         {root && (
-          <button className="quiet" disabled={locked} onClick={() => void logout()}>
+          <button
+            className="quiet"
+            disabled={busy || transferBusy || editState.running}
+            onClick={() => void logout()}
+          >
             共有を閉じる
           </button>
         )}
@@ -295,17 +304,20 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 </span>
               ))}
             </nav>
-            {editing && current && (
+            {current && (
               <PublicEditor
+                key={root.sessionId}
                 client={client}
                 sessionId={root.sessionId}
+                expiresAt={root.expiresAt}
                 parentId={current.id}
-                node={editing.node}
-                remove={editing.remove}
+                request={editing}
+                statusChanged={setEditState}
                 close={() => setEditing(null)}
-                done={() => {
+                done={(notice) => {
                   setEditing(null);
-                  void browse(trail);
+                  if (current.kind === "file") void open("", notice);
+                  else void browse(trail, undefined, notice);
                 }}
                 failed={(error) => {
                   setEditing(null);
@@ -359,7 +371,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
               {current?.kind !== "file" && root.permissions.createFolder && (
                 <button
                   className="quiet"
-                  disabled={locked}
+                  disabled={editLocked}
                   onClick={() => {
                     setMessage("");
                     setEditing({});
@@ -371,7 +383,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
               {current?.kind !== "file" && root.permissions.upload && (
                 <button
                   className="quiet"
-                  disabled={locked}
+                  disabled={editLocked}
                   onClick={() => {
                     setMessage("");
                     setUploading({});
@@ -410,7 +422,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
                   {root.permissions.rename && node.id !== root.root.id && (
                     <button
                       className="rename"
-                      disabled={locked}
+                      disabled={editLocked}
                       aria-label={`${node.name}の名前を変更`}
                       onClick={() => {
                         setMessage("");
@@ -423,7 +435,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
                   {node.kind === "file" && root.permissions.overwrite && (
                     <button
                       className="rename"
-                      disabled={locked || !node.currentBlobId}
+                      disabled={editLocked || !node.currentBlobId}
                       aria-label={`${node.name}を上書き`}
                       onClick={() => {
                         setMessage("");
@@ -436,7 +448,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
                   {root.permissions.delete && node.id !== root.root.id && (
                     <button
                       className="rename"
-                      disabled={locked}
+                      disabled={editLocked}
                       aria-label={`${node.name}をごみ箱へ移動`}
                       onClick={() => {
                         setMessage("");

@@ -1,0 +1,25 @@
+# 公開編集の操作追跡と再読み込み
+
+2026-09-29。公開リンクのフォルダー作成・名前変更・ごみ箱移動を、送信前のIndexedDB保存と明示的な結果確認へ接続しています。サーバーの既存mutation/operation APIと現在の認可を使い、schema0067・通常76table・147 routeを維持します。
+
+## 保存と確認
+
+`web/src/public-share/editStore.ts`は専用DB `ncf-public-edits`へ、共有ID・元のunlock session・期限・名前・対象種別・method/path/body・再送key・既知のoperation IDを保存します。秘密URL、password、CSRF、Cookie、ファイル本体を記録しません。method/path/bodyは作成・改名・削除だけの厳密な形式で検査し、別host・query・余分なfield・元sessionの差替えを拒否します。
+
+共有/sessionごとに未確認の操作を1件だけ保持し、全体で128件を上限にします。記録の期限は元session以下、最大7日です。記録の永続化が完了するまでCSRF取得やmutationを開始しません。各タブのHTTP処理と記録削除は同じWeb Lockを使い、更新・終端削除は元の不変なintentと照合します。Web Locksまたは保存が使えない場合は新しい編集を送信しません。
+
+再読み込み・タブを閉じた後も同じ共有Cookieが有効なら、保存した操作を復元します。自動送信はせず「結果を確認」を表示します。操作IDがある場合は元sessionでGET照会し、IDが分からない場合は元のmethod/path/body/key/sessionで明示的に再送します。元の親や対象revisionは現在の画面の場所や表示値に置き換えません。
+
+`edit.ts`は応答ID、state、確定statusと開示される対象nodeを照合し、判明したoperation IDも保存してから終端記録を削除します。削除後など対象情報を開示しないreceiptはstatusで確認します。保存・削除の失敗は元の操作を保持します。初回の明確な入力拒否・競合等では修正可能な状態へ戻しますが、一度結果が不明になった操作は後続の4xxだけで捨てず、同じkeyを維持します。401/403/404/412は共有内容を隠して再確認を案内し、新session/keyへの自動切替はしません。
+
+## 画面・別タブ・消去
+
+`editor.tsx`は保存済みの名前や削除対象を表示し、確認中の操作がある間は次の新規編集を無効にします。BroadcastChannelとフォーカス復帰で別タブの更新を読み直し、遅い読取りが新しい状態を上書きしないよう世代を検査します。別タブが同じ操作を実行中なら確認・削除を拒否します。別タブの操作完了で、まだ送信していない自分の確認フォームや対象revisionを変更しません。
+
+「記録を削除」は、結果を追跡できなくなりサーバー処理の取消しにはならないことを確認した上で行います。壊れた記録も明示消去まで新しい編集を止めます。既知の記録を削除するときは元intentを照合し、古いタブから新しい操作の記録を消しません。
+
+共有終了・期限切れは元sessionの記録削除とclosed markerを同じIDB transactionで確定し、遅れて届いた応答による再保存を拒否します。clientの中断も保存前に検査します。closed markerは最大unlock期限に対応する7日間保持します。
+
+別sessionの記録は表示・引継ぎしません。古いタブから新sessionの記録を消す競合を避けるため、有効な別sessionの記録を一覧読込みだけでは削除せず、元sessionの終了または期限後の掃除で削除します。ブラウザーの保存データを手動消去した場合や別端末への引継ぎは復元できません。操作の現在の認可と実行結果はD1が正です。
+
+検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。公開uploadの再開は独立した[PUBLIC_SHARES](PUBLIC_SHARES.md)の転送台帳を使います。thumb/page/track・mediaと実環境検証は後続です。

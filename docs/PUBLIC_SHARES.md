@@ -74,7 +74,7 @@ content hostの配信と同じBudgetDO・lease・ストリーム処理を使う�
 
 既存`GET /api/v1/operations/:operationId`に`X-Share-Id`を付けると公開認証経路を選ぶ。`Share-Session`、当該Cookie、same-originを要求し、Accessや他の共有Cookieへfallbackしない。元と同じcredential/version/epochと、現在の元operandへの権限がある場合だけreceiptを返す。別credentialや権限を失ったoperandは404、失効Cookieは401。不明なDB結果は503。
 
-root GETの`permissions.createFolder/rename`で編集操作を表示するが、APIの現在の認可が常に正となる。画面は送信中の重複操作を防ぎ、結果不明なら名前・key・元sessionをメモリーに固定する。「結果を確認」でOperation-IdがあればGET照会し、ID自体を受信できなかった場合だけ同じ要求を同じkeyで明示的に再送する。自動再送しない。401/403/404/412では新credentialや新keyへ切り替えず、共有内容の再確認を案内する。編集フォームを閉じると追跡は終了し、実行の取消しにはならない。reload/タブ終了後の追跡復元は未対応で、再度作成する前に一覧確認を案内する。
+root GETの`permissions.createFolder/rename`で編集操作を表示するが、APIの現在の認可が常に正となる。[公開編集の再開](PUBLIC_EDIT_RECOVERY.md)は送信前に元の名前・対象・key・sessionをIndexedDBへ固定し、再読み込み後も復元する。「結果を確認」でOperation-IdがあればGET照会し、ID自体を受信できなかった場合だけ同じ要求を同じkeyで明示的に再送する。自動再送しない。401/403/404/412では新credentialや新keyへ切り替えず、共有内容の再確認を案内する。未確認操作は共有/sessionごとに1件で、別タブの実行・記録削除をWeb Lockと元intentの照合で制御する。記録の明示削除は実行の取消しではない。
 
 ## 公開編集リンクからの削除
 
@@ -86,7 +86,7 @@ root GETの`permissions.createFolder/rename`で編集操作を表示するが、
 
 migration0065は既存trashのactorと被参照IDを保ったままactor_idをnullableにする。匿名操作ではtrash/activityのactorはnull、operationsの元link/credential/versionで帰属を記録し、所有者へ置き換えない。actor/space/root/reason/epochを後から変更できず、匿名trash作成時に元operationとcredential/shareの対応を要求する。復旧監査は失効済みの元sessionも履歴として照合し、不正な帰属を拒否する。既存のbackup/restore書込み凍結を優先する。migrationは停止・未処理受付なしで適用する。
 
-成功はHTTP200のoperation receipt（result.statusは204）。削除後のnode内容は返さず、元と同じsession/key/revisionで終端を読み戻す。既知のOperation-IdはGETで確認する。公開receiptと後続eventは元の親に対する現在の編集権限も確認し、別sessionや編集権限を失った共有へ渡さない。編集画面の追跡はメモリー内に限られ、reload/タブ終了後は一覧を確認する。
+成功はHTTP200のoperation receipt（result.statusは204）。削除後のnode内容は返さず、元と同じsession/key/revisionで終端を読み戻す。既知のOperation-IdはGETで確認する。公開receiptと後続eventは元の親に対する現在の編集権限も確認し、別sessionや編集権限を失った共有へ渡さない。削除確認時のrevisionも[永続的な操作追跡](PUBLIC_EDIT_RECOVERY.md)へ保存し、reload後の値で差し替えない。
 
 ## 公開アップロードと上書きAPI
 
@@ -114,7 +114,7 @@ root GETの`permissions.upload/overwrite`に従ってファイル選択と上書
 
 ## 次の接続と完了条件
 
-1. 公開create/rename/deleteのreload後の操作追跡を接続する。
+1. 公開create/rename/deleteのreload後追跡は[PUBLIC_EDIT_RECOVERY](PUBLIC_EDIT_RECOVERY.md)へ接続済み。実環境でのブラウザー保存制限・session期限・認可変更も継続検証する。
 2. 共有範囲・認証・失効と配信会計を、期限経過・祖先trash・最大規模・実ブラウザーでも継続検証する。
 3. public側のthumb/page/trackなど、未接続の派生配信経路を契約へつなぐ。原本GET/HEAD APIは接続済みで、画面の保存経路はcontent hostのticket/session経由である。
 4. Gallery/Bookshelf/Audioを各phaseの契約へ接続する。upload-onlyの名前・衝突・既存file情報の非開示を維持する。

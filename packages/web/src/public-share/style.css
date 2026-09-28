@@ -240,6 +240,7 @@ h1 {
   flex-shrink: 0;
 }
 .public-editor {
+  overflow-wrap: anywhere;
   padding: 24px;
   margin: 24px 0;
   background: white;

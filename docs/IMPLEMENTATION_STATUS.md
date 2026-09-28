@@ -1,6 +1,20 @@
 # 実装進捗
 
-## ZIP発行・配信APIと所有者/共有画面（今回）
+## 公開編集の永続追跡と再読み込み後の確認（今回）
+
+[公開編集の再開](PUBLIC_EDIT_RECOVERY.md)を追加した。作成・改名・削除の元intentを送信前にIndexedDBへ保存し、再読み込み後も同じ共有session・key・対象・bodyで明示確認する。既知のoperation IDは照会だけを行う。共有/session単位のWeb Lock、保存済みintentとの照合、別タブ通知、ログアウト時のclosed markerで重複実行・記録の差替え・遅い応答による再保存を拒否する。別sessionの操作は引き継がず、古いタブから新sessionの記録も消さない。サーバーAPI・schema0067・通常76table・147 route・依存は変更していない。
+
+- 関連Node4file/94件成功（328ms、/tmp/ncf-public-edit-unit-2.log）。編集37件、既存公開upload30件、ZIP24件、public asset境界3件。削除後等の対象情報を隠したreceiptを3件追加し、編集40件成功（147ms、/tmp/ncf-public-edit-unit-3.log）。重複を除くNodeは97件。
+- 編集・再開browser2file/11件成功（2.3分、/tmp/ncf-public-edit-browser-3.log）。実POST/PATCH/DELETEの成功応答だけを失わせ、reload後の同じkey/body/session・原親/対象・一度だけの反映を検査した。既知IDのGET専用確認、IDB保存失敗時の非送信、別タブ競合、logout後の遅いACK、新sessionへの非引継ぎと旧タブからの記録保護も成功。
+- 既存削除browser4件成功（/tmp/ncf-public-edit-browser-2.log）。初回の削除3件は新しいreceipt検査が非開示nodeIdを必須にしたため失敗し、別タブの完了通知が未送信の確認フォームを閉じる問題も確認して実行を中止した。非開示receiptと未送信フォームの保持を修正した。続く再開POST試験は確認ボタンが処理中表示へ変わるだけで完了と判断していたため、永続記録の削除を待つ観測へ修正し、上記11件で成功した。初回の公開認証browser2件も成功（/tmp/ncf-public-edit-browser.log）。
+- 390pxの作成・改名・削除復元画面は横幅の検査と/tmp/ncf-public-edit-recovery-{post,patch,delete}.pngの目視確認を行った。元の名前・対象、確認ボタンと記録削除の説明を表示している。
+- 既存公開upload・ZIPのbrowser2file/11件成功（2.6分、/tmp/ncf-public-edit-browser-regression.log）。単一/分割upload・上書き、予約/確定応答喪失後のreload、完了済みpartの非再送、中止・logout、read-only制限、所有者/internal/publicの実ZIP downloadを検証した。今回の関連browserは6file/28件。
+- 型、lint653file、契約/設定、Web/private/public build・SRI/境界検査とWorker dry-run成功（/tmp/ncf-public-edit-types-final.log、/tmp/ncf-public-edit-lint-final.log、/tmp/ncf-public-edit-contracts.log、/tmp/ncf-public-edit-config.log、/tmp/ncf-public-edit-build-2.log）。
+- 先行ebcc9faの[CI36469054574](https://github.com/daraskme/Nextcloud-flare/actions/runs/36469054574)はUbuntu/Windows Node、全native shard、通常/単一host browser、backup bindings/cliの全10job成功。
+
+**関連Node97 + browser28 = 重複を除き125件成功**。全Node・全workerd・全browser・backup drillは今回ローカルで再実行していない。thumb/page/track・media、復旧・運用、実環境検証は未完了。remote resource/secret/migration/deployなし。
+
+## ZIP発行・配信APIと所有者/共有画面（先行ebcc9fa）
 
 [ZIPダウンロード](ZIP_DOWNLOADS.md)を所有者・内部共有の受信者・匿名readリンクへ接続した。固定snapshot/pin→tracked manifest→共通ticket公開→サーバー内session交換を経て、元credentialに限定したapp GETでSTOREを配信する。毎GETの現行認可・snapshot・pin検査、同一archive再発行時の共通予算、Range拒否のrequest課金、R2 etag/size確認、lease/中断/保持期限を接続した。画面は安全な同じappのselectorへnavigateし、archiveをbufferしない。公開buildへ追加した共有コードは副作用・importのないZIP receipt/説明文utilityの1fileだけを明示許可し、既存のsource/module検査を適用した。schema0067・通常76table・147 route、migration/依存追加なし。
 

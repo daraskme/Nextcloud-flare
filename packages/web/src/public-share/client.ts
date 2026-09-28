@@ -237,12 +237,28 @@ export class PublicClient {
     const { token } = await this.request<{ token: string }>("/csrf", "POST");
     return this.request<T>(suffix, "POST", body, token);
   }
-  async edit(intent: EditIntent): Promise<EditOperation> {
-    const { token } = await this.request<{ token: string }>("/csrf", "POST");
-    return this.request<EditOperation>(intent.suffix, intent.method, intent.body, token, {
-      "Idempotency-Key": intent.key,
-      "Share-Session": intent.sessionId,
-    });
+  async edit(intent: EditIntent, signal?: AbortSignal): Promise<EditOperation> {
+    const { token } = await this.request<{ token: string }>(
+      "/csrf",
+      "POST",
+      undefined,
+      undefined,
+      {},
+      undefined,
+      signal,
+    );
+    return this.request<EditOperation>(
+      intent.suffix,
+      intent.method,
+      intent.body,
+      token,
+      {
+        "Idempotency-Key": intent.key,
+        "Share-Session": intent.sessionId,
+      },
+      undefined,
+      signal,
+    );
   }
   operation(id: string, sessionId: string, signal?: AbortSignal) {
     if (!/^op_[a-f0-9]{64}$/.test(id)) throw new Error("invalid_operation_id");
