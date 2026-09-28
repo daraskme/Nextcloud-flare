@@ -101,6 +101,8 @@ function globalScope(admission: GlobalMutationAdmission): void {
     throw new Error("mutation_unavailable");
 }
 export const SYSTEM_MUTATION_KINDS = [
+  "copy.stop",
+  "copy.cleanup",
   "copy.claim",
   "copy.read",
   "copy.release",

@@ -2,13 +2,13 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[所有者間コピーの一括公開](COPY_JOBS.md)を追加しました。全blobの保存・native終了を照合し、コピー先のpermitで全node・属性・検索・容量・参照数を一括確定します。上書き先はtrashへ移し、成功したjobのpin/予約/転送情報を同じbatchで精算します。結果不明/未送信照合、取消し・失敗時の精算、最大転送規模の完走予算、Queue/HTTP/画面は未完成です。
+[所有者間コピーの停止・精算](COPY_JOBS.md)を追加しました。元の両側権限を再検査して取消し、期限/epoch/予算で失敗停止します。停止だけでは保持を返さず、未着手・明示的not_started・保存済みの証拠が揃うblobだけを原子的に精算します。保存済みobjectはphysical容量を維持して35日猶予のGCへ渡します。途中multipartの中止、結果不明/観測欠落の修復、最大転送規模の完走予算、Queue/HTTP/画面は未完成です。
 
-schema0056・通常74table。bulk_jobsの公開receiptと成功時の精算guardを追加しました。全Node1,404件・関連workerd286件の計1,690件が成功しました（修正後の対象file再実行を含む）。型・lint519file・契約/設定・Web/Worker build・SQL backup往復・D1復旧/backup barrierも成功。先行0604da2のCIは全6job成功です。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0057・通常75table。不変のcopy_cleanup_receiptsとbulk_jobsの停止時刻/epoch、証拠付き精算・native履歴保持guardを追加しました。全Node1,410件・関連workerd304件の計1,714件が成功しました（修正したfileの再実行を含む）。型・lint522file・契約/設定・75tableのSQL backup往復も確認しました。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-送信先は承認済み専用`codex/database-restore`です。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は全6job成功です。先行a52b815の[CI36371093589](https://github.com/daraskme/Nextcloud-flare/actions/runs/36371093589)はUbuntu・Windows3分割・browser成功、backup:run-drillのsource fingerprints中にbackup_wrangler_failedで失敗しました。保存されたログだけでは子プロセスの失敗原因を特定できません。最新CI状態はgh run listで確認します。
+送信先は承認済み専用`codex/database-restore`です。先行b1fedc7の[CI36377836985](https://github.com/daraskme/Nextcloud-flare/actions/runs/36377836985)はUbuntu・Windows2分割・browser・backupが成功、Windows分割1はsearch.test.tsの1万件検索が90秒timeoutで失敗しました（965/966件成功）。検索試験の遅延原因は未解決で、上限や検査を緩めていません。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は全6job成功です。先行a52b815の[CI36371093589](https://github.com/daraskme/Nextcloud-flare/actions/runs/36371093589)はUbuntu・Windows3分割・browser成功、backup:run-drillのsource fingerprints中にbackup_wrangler_failedで失敗しました。保存されたログだけでは子プロセスの失敗原因を特定できません。最新CI状態はgh run listで確認します。
 
 ## 状態の意味
 
@@ -27,7 +27,7 @@ schema0056・通常74table。bulk_jobsの公開receiptと成功時の精算guard
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
 | 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link・cross-owner copyは後続。[詳細](SHARED_WORKSPACE.md) |
-| 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | 完走予算・未知/未送信修復・取消し/失敗時精算・Queue/HTTP/UIは後続。[詳細](COPY_JOBS.md) |
+| 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算、停止/照会・未着手/未送信証明/保存済みの失敗精算 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | 完走予算・未知/未送信修復・途中multipart中止・Queue/HTTP/UIは後続。[詳細](COPY_JOBS.md) |
 | 内部共有DAV | 固定mount一覧/解決、read/edit操作、同一ownerの別mount間COPY/MOVE、両側の選択とロック・Outbox・復旧 | 実D1の権限停止競合、再送・応答喪失・照会・上書き、schema移行と破損復旧記録の拒否。関連回帰はIMPLEMENTATION_STATUS | cross-owner copy、実OS/staging。[詳細](DAV_SHARED.md) |
 | 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 公開link・upload-only・ZIPは後続。[詳細](INTERNAL_SHARES.md) |
 | 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |

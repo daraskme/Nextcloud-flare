@@ -201,14 +201,27 @@ export async function loadCopyJobManifest(db: D1Database, id: string): Promise<S
       if (!completed) throw new Error("copy_manifest_unavailable");
       return Object.freeze({ plan: freeze({ ...plan, digest: hash }), expiresAt: row.expires_at });
     }
+    const stopped = row.state === "cancelled" || row.state === "failed";
+    if (
+      stopped &&
+      !(await primary(db)
+        .prepare(`SELECT 1 FROM bulk_jobs WHERE id=? AND stopped_at IS NOT NULL AND stop_epoch>=epoch
+      AND ((state='cancelled' AND error_code='copy_cancelled') OR (state='failed' AND error_code IN ('copy_expired','stale_epoch','copy_budget_exhausted')))`)
+        .bind(id)
+        .first())
+    )
+      throw new Error("copy_manifest_unavailable");
     const holds = await primary(db)
       .prepare(`SELECT cb.source_blob_id,cb.destination_blob_id,cb.pin_id,cb.reservation_id,b.size
       FROM copy_job_blobs cb JOIN blobs b ON b.id=cb.source_blob_id
       JOIN blob_pins p ON p.pin_id=cb.pin_id AND p.blob_id=b.id AND p.purpose='copy' AND p.expires_at=?2
       JOIN reservations r ON r.id=cb.reservation_id AND r.owner_id=?3 AND r.bytes=b.size AND r.epoch=?4
         AND r.state='reserved' AND r.expires_at=?2 AND r.share_id IS NULL AND r.op_id IS NULL
-      WHERE cb.job_id=?1 AND b.owner_id=?5 ORDER BY cb.source_blob_id LIMIT 10001`)
-      .bind(id, row.expires_at, row.owner_id, row.epoch, row.source_owner_id)
+      WHERE cb.job_id=?1 AND b.owner_id=?5
+      UNION ALL SELECT source_blob_id,destination_blob_id,pin_id,reservation_id,bytes AS size
+        FROM copy_cleanup_receipts WHERE job_id=?1 AND ?6=1
+      ORDER BY source_blob_id LIMIT 10001`)
+      .bind(id, row.expires_at, row.owner_id, row.epoch, row.source_owner_id, Number(stopped))
       .all<{
         source_blob_id: string;
         destination_blob_id: string;

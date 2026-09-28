@@ -287,8 +287,11 @@ export async function releaseCopyJobClaim(
     assertExists(
       `SELECT 1 WHERE changes()=1 OR EXISTS(SELECT 1 FROM bulk_jobs j JOIN operations o ON o.op_id=j.publish_op_id
       WHERE j.id=? AND j.epoch=? AND j.state='completed' AND o.kind='copy.publish' AND o.state='committed'
-        AND json_extract(o.operands_json,'$.claimToken')=?)`,
-      [claim.id, claim.epoch, claim.token],
+        AND json_extract(o.operands_json,'$.claimToken')=?)
+      OR EXISTS(SELECT 1 FROM bulk_jobs j JOIN copy_job_manifests m ON m.job_id=j.id
+        WHERE j.id=? AND j.epoch=? AND m.sha256=? AND j.state IN ('cancelled','failed') AND j.stopped_at IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM job_leases WHERE job_id=j.id))`,
+      [claim.id, claim.epoch, claim.token, claim.id, claim.epoch, claim.plan.digest],
     ),
   ]);
 }

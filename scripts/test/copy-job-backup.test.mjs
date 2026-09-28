@@ -16,9 +16,11 @@ import {
   tableDigests,
 } from "../backup/snapshot.mjs";
 
-it.each([false, true])(
-  "round-trips frozen copy data and holds through SQL restore (multipart=%s)",
-  async (multipart) => {
+it.each(["single", "multipart", "settled"])(
+  "round-trips frozen copy data, holds and cleanup receipts through SQL restore (%s)",
+  async (mode) => {
+    const multipart = mode === "multipart",
+      settled = mode === "settled";
     const sourceBytes = multipart ? 9 * 1024 * 1024 : 3;
     const versions = await migrations(),
       source = initialize(
@@ -201,13 +203,51 @@ it.each([false, true])(
       }
       for (const version of versions.filter((m) => m.name > "0055_copy_multipart.sql"))
         source.exec(version.sql);
+      if (settled) {
+        const admission = (kind) => {
+          const id = randomUUID();
+          source
+            .prepare(`INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until,system,maintenance)
+            VALUES(?,?,'target-s',1,strftime('%s','now')*1000,strftime('%s','now')*1000+5000,1,1)`)
+            .run(id, `system:copy.${kind}:${randomUUID()}`);
+          source
+            .prepare(
+              "UPDATE mutation_admissions SET state='active',granted_at=strftime('%s','now')*1000,expires_at=strftime('%s','now')*1000+30000 WHERE id=?",
+            )
+            .run(id);
+          return () =>
+            source
+              .prepare(
+                "UPDATE mutation_admissions SET state='closed',committed_at=strftime('%s','now')*1000 WHERE id=?",
+              )
+              .run(id);
+        };
+        const stop = admission("stop");
+        source
+          .prepare(
+            "UPDATE bulk_jobs SET state='failed',error_code='copy_expired',stopped_at=strftime('%s','now')*1000,stop_epoch=1 WHERE id=?",
+          )
+          .run(job);
+        source.prepare("UPDATE outbox SET state='failed' WHERE payload_ref=?").run(job);
+        stop();
+        const cleanup = admission("cleanup");
+        source
+          .prepare(`INSERT INTO copy_cleanup_receipts(job_id,source_blob_id,destination_blob_id,pin_id,reservation_id,bytes,disposition,epoch,settled_at)
+          SELECT job_id,source_blob_id,destination_blob_id,pin_id,reservation_id,?,'unwritten',1,strftime('%s','now')*1000 FROM copy_job_blobs WHERE job_id=?`)
+          .run(sourceBytes, job);
+        source.prepare("UPDATE reservations SET state='released' WHERE id=?").run(job + "_r00001");
+        source.prepare("DELETE FROM copy_job_blobs WHERE job_id=?").run(job);
+        source.prepare("DELETE FROM blob_pins WHERE pin_id=?").run(job + "_p00001");
+        cleanup();
+      }
       // An expired invocation is exported with its spent budget and retry count intact.
       // The native backup barrier refuses a live invocation; expiry never settles its holds.
-      source
-        .prepare(
-          "INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt,r2_calls) VALUES(?,'expired-claim',1,0,4,9)",
-        )
-        .run(job);
+      if (!settled)
+        source
+          .prepare(
+            "INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt,r2_calls) VALUES(?,'expired-claim',1,0,4,9)",
+          )
+          .run(job);
       const token = randomUUID();
       source
         .prepare(
@@ -238,13 +278,31 @@ it.each([false, true])(
         target
           .prepare("SELECT claim_token,expires_at,attempt,r2_calls FROM job_leases WHERE job_id=?")
           .get(job),
-      ).toEqual({ claim_token: "expired-claim", expires_at: 0, attempt: 4, r2_calls: 9 });
+      ).toEqual(
+        settled
+          ? undefined
+          : { claim_token: "expired-claim", expires_at: 0, attempt: 4, r2_calls: 9 },
+      );
       expect(target.prepare("SELECT reserved_bytes FROM users WHERE id='target-u'").get()).toEqual({
-        reserved_bytes: sourceBytes,
+        reserved_bytes: settled ? 0 : sourceBytes,
       });
       expect(target.prepare("SELECT ref_count FROM blobs WHERE id='source-b'").get()).toEqual({
-        ref_count: 2,
+        ref_count: settled ? 1 : 2,
       });
+      if (settled) {
+        expect(
+          target
+            .prepare("SELECT disposition,bytes FROM copy_cleanup_receipts WHERE job_id=?")
+            .get(job),
+        ).toEqual({ disposition: "unwritten", bytes: sourceBytes });
+        for (const sql of [
+          "UPDATE copy_cleanup_receipts SET bytes=bytes",
+          "DELETE FROM copy_cleanup_receipts",
+        ])
+          expect(() => target.exec(sql)).toThrow(
+            /backup_frozen|immutable_copy_cleanup|copy_cleanup_receipt_required/,
+          );
+      }
       // Recreating triggers can change which of the two rejecting guards fires first.
       expect(() => target.exec("UPDATE copy_job_chunks SET data=data")).toThrow(
         /backup_frozen|immutable_copy_chunk/,

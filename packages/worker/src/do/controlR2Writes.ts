@@ -295,7 +295,10 @@ export class ControlR2Writes {
           ]),
           {
             sql: `DELETE FROM r2_write_attempts WHERE id IN (SELECT id FROM r2_write_attempts
-          WHERE state<>'pending' AND id<>? AND finished_at<=strftime('%s','now')*1000-86400000 ORDER BY finished_at LIMIT 32)`,
+          WHERE state<>'pending' AND id<>? AND finished_at<=strftime('%s','now')*1000-86400000
+            AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb JOIN bulk_jobs j ON j.id=cb.job_id
+              WHERE r2_write_attempts.r2_key='u/'||j.owner_id||'/b/'||cb.destination_blob_id)
+          ORDER BY finished_at LIMIT 32)`,
             values: [grant.id],
           },
         ]),

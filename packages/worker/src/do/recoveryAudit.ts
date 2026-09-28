@@ -253,7 +253,7 @@ export async function rebuildRecoverySearchFts(
 
 /** Also asserted inside the admission transaction. Group predicates to stay below D1's
  * expression-depth limit after callers wrap this query in an assertion and add stop fences. */
-export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=?
+export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE (c.singleton=1 AND c.epoch=?
       AND c.maintenance=1 AND c.gc_paused=1
       AND (NOT EXISTS(SELECT 1 FROM operations o
         WHERE (o.selected_share_id IS NOT NULL OR o.selected_share_version IS NOT NULL)
@@ -297,11 +297,14 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
         AND NOT EXISTS(${COPY_PUBLICATION_BINDING_SQL.replace("p.op_id=?", "p.op_id=published.op_id")}))
       AND NOT EXISTS(SELECT 1 FROM bulk_jobs j WHERE j.kind='node.copy' AND j.state='completed'
         AND NOT EXISTS(SELECT 1 FROM operations p WHERE p.op_id=j.publish_op_id AND p.kind='copy.publish' AND p.state='committed'))
-      ))
-      AND (c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
+      )))
+      AND ((c.gc_hold_token IS NULL AND c.gc_hold_operation IS NULL AND c.gc_hold_expires_at IS NULL
       AND NOT EXISTS(SELECT 1 FROM bulk_jobs WHERE kind='node.copy' AND state IN ('pending','running'))
-      AND NOT EXISTS(SELECT 1 FROM copy_job_blobs)
-      AND NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
+      AND NOT EXISTS(SELECT 1 FROM bulk_jobs j WHERE j.kind='node.copy' AND j.state IN ('cancelled','failed')
+        AND (j.stopped_at IS NULL OR j.stop_epoch IS NULL OR j.blob_count<>(SELECT COUNT(*) FROM copy_cleanup_receipts WHERE job_id=j.id)
+          OR NOT EXISTS(SELECT 1 FROM outbox b WHERE b.op_id=j.op_id AND b.kind='copy.requested' AND b.payload_ref=j.id AND b.state='failed')))
+      AND NOT EXISTS(SELECT 1 FROM copy_job_blobs))
+      AND (NOT EXISTS(SELECT 1 FROM reservations WHERE state='reserved')
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.cleanup_token IS NOT NULL
@@ -312,8 +315,8 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM outbox
         WHERE state IN ('pending','dispatching','sent') AND epoch<>c.epoch)
       AND NOT EXISTS(SELECT 1 FROM job_leases)
-      AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')
-      AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE state='deleting' OR claim_token IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting'))
+      AND (NOT EXISTS(SELECT 1 FROM orphan_objects WHERE state='deleting' OR claim_token IS NOT NULL
         OR (state<>'deleted' AND (owner_key IS NULL OR epoch>c.epoch
           OR (owner_id IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=owner_key)))))
       AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)
@@ -323,8 +326,8 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=s.source AND p.epoch=c.epoch AND p.phase='idle'))
       AND NOT EXISTS(SELECT 1 FROM multipart_bucket_handles h WHERE h.state='quarantined'
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=h.source)
-        OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id)))
-      AND (NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
+        OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id))))
+      AND ((NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
       AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
       AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE state='pending')
@@ -336,7 +339,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
         OR (c.bootstrap_done_at IS NOT NULL AND length(c.bootstrap_iss)>0 AND length(c.bootstrap_sub)>0
           AND EXISTS(SELECT 1 FROM users
           WHERE role='app_admin' AND disabled_at IS NULL
-            AND access_iss=c.bootstrap_iss AND access_sub=c.bootstrap_sub)))`;
+            AND access_iss=c.bootstrap_iss AND access_sub=c.bootstrap_sub))))`;
 
 /** Last D1 observation before an audit is marked complete; admission stays closed. */
 export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): Promise<void> {

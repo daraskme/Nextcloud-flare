@@ -83,6 +83,11 @@ it("preserves every legacy column and the accepted copy while adding nullable pu
     published_root_id: null,
   });
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  // The current recovery fence is checked against the current schema, after preservation above.
+  for (const name of readdirSync(directory)
+    .filter((n) => n.endsWith(".sql") && n > "0056_copy_publication.sql")
+    .sort())
+    db.exec(readFileSync(new URL(name, directory), "utf8"));
   expect(db.prepare(RECOVERY_FINAL_QUERY).get(1)).toBeUndefined();
 });
 it.each(["open", "backup", "restore"])("refuses migration during %s", (phase) => {
