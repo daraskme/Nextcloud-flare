@@ -118,7 +118,6 @@ export async function cancelCopyJob(
 
 /** Internal bounded executor/recovery entry; eligibility is rechecked by SQL in the stop batch. */
 export async function stopExpiredCopyJob(env: SystemMutationSource, id: string): Promise<boolean> {
-  const { plan } = await loadCopyJobManifest(env.DB, id);
   const row = await primary(env.DB)
     .prepare(`SELECT j.state,
     CASE WHEN j.epoch<c.epoch THEN 'stale_epoch' WHEN m.expires_at<=${CLOCK} THEN 'copy_expired'
@@ -133,6 +132,7 @@ export async function stopExpiredCopyJob(env: SystemMutationSource, id: string):
     )
     .first<{ state: string; reason: StopReason | null }>();
   if (!row?.reason || !["pending", "running"].includes(row.state)) return false;
+  const { plan } = await loadCopyJobManifest(env.DB, id);
   const admission = await acquireSystemMutation(env, plan.destinationOwnerId, "copy.stop");
   await commitSystemMutation(
     env.DB,

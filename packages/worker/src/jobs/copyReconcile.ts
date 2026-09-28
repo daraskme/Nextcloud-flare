@@ -1,4 +1,4 @@
-import { assertExists, atomicBatch, primary } from "../db/primary";
+import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { copyMultipartPartsProof } from "../db/r2Copy";
 import type { Env } from "../env";
 import {
@@ -7,6 +7,14 @@ import {
   type SystemMutationSource,
   systemMutationStatements,
 } from "../services/systemMutation";
+import {
+  COPY_EXECUTION_LIMITS,
+  type CopyJobClaim,
+  checkCopyClaim,
+  copyAuthorityStatements,
+  copyClaimFence,
+  copyClaimPosition,
+} from "./copyClaim";
 import { loadCopyJobManifest } from "./copyManifest";
 import { type CopyObjectIdentity, copyObjectStatements } from "./copyObject";
 
@@ -57,11 +65,20 @@ export async function reconcileCopyObject(
   env: SystemMutationSource & Pick<Env, "BLOBS">,
   jobId: string,
   sourceBlobId: string,
+  claim?: CopyJobClaim,
 ): Promise<"stored" | "held"> {
-  const deadline = Date.now() + 25_000;
+  if (claim) {
+    checkCopyClaim(claim);
+    if (
+      claim.id !== jobId ||
+      claim.plan.source.blobs[copyClaimPosition(claim)]?.id !== sourceBlobId
+    )
+      throw new Error("invalid_copy_reconciliation");
+  }
+  const deadline = Math.min(Date.now() + 25_000, claim?.expiresAt ?? Infinity);
   if (!/^copy_[a-f0-9]{64}$/.test(jobId) || !/^[A-Za-z0-9_-]{1,128}$/.test(sourceBlobId))
     throw new Error("invalid_copy_reconciliation");
-  const { plan } = await loadCopyJobManifest(env.DB, jobId);
+  const plan = claim?.plan ?? (await loadCopyJobManifest(env.DB, jobId)).plan;
   const source = plan.source.blobs.find((b) => b.id === sourceBlobId);
   if (!source) throw new Error("invalid_copy_reconciliation");
   const row = await primary(env.DB)
@@ -93,8 +110,30 @@ export async function reconcileCopyObject(
     ),
     ...(row.transfer_mode === "multipart" ? [copyMultipartPartsProof(row.r2_key)] : []),
   ];
-  // A recovered DB-only receipt does not authorize this HEAD.
-  await atomicBatch(env.DB, systemMutationStatements(admission, owner, proof));
+  const charged = claim
+    ? [
+        copyClaimFence(claim),
+        ...(await copyAuthorityStatements(
+          env.DB,
+          claim.plan,
+          claim.plan.source.entries.find((n) => n.blobId === sourceBlobId)!.id,
+        )),
+        {
+          sql: "UPDATE job_leases SET r2_calls=r2_calls+1 WHERE job_id=? AND claim_token=? AND r2_calls<?",
+          values: [claim.id, claim.token, COPY_EXECUTION_LIMITS.rangeReads],
+        },
+        assertOneChange,
+        {
+          sql: "UPDATE bulk_jobs SET r2_calls=r2_calls+1 WHERE id=? AND r2_calls<?",
+          values: [claim.id, COPY_EXECUTION_LIMITS.r2Calls],
+        },
+        assertOneChange,
+      ]
+    : [];
+  if (claim) checkCopyClaim(claim);
+  // A recovered DB-only receipt does not authorize this HEAD. A lost ACK consumes its budget.
+  await atomicBatch(env.DB, systemMutationStatements(admission, owner, [...proof, ...charged]));
+  if (claim) checkCopyClaim(claim);
   if (Date.now() >= deadline) return "held";
   let timer: ReturnType<typeof setTimeout> | undefined;
   let object: R2Object | null;

@@ -103,7 +103,17 @@ system admissionの原子的batchでattempt・epoch・開始時刻・期限を�
 
 HEAD前のsystem admissionを直接ACKした場合だけ読み、記録時にも同じepoch/maintenance・native receipt・保持を同じbatchで再検査する。単一保存は正確なkey/size/ETagと準備済みSHA-256、分割保存はcreate時のcopy_job/copy_blob/copy_attemptメタデータと全partの保存・native成功も照合する。単一/分割の元送信と共通の `copyObjectStatements` を用い、blob_storage・hash/ETag・stored状態を原子的に記録する。分割の全体hashはNULLを維持する。
 
-元leaseの終了、共有失効、owner無効化、永久停止後も実在bytesを計上できる。二重照合やcommit ACK喪失でphysicalを重複加算せず、記録済みならHEADを省略する。修復自身はnativeを再送せず、checkpoint・namespace・予約・pinを変更しない。稼働jobは再認可を伴う通常の進捗確定へ戻り、停止済みjobは既存の証拠付き精算と35日GCへ渡す。欠落・checksum/metadata不一致・HEAD失敗/期限超過では保持する。この内部修復は転送claimを使わないため、executor接続時にはHEADを含むjob全体予算・修復呼出し頻度の制御を統合する。part/handleの復元、未知nativeや未送信attemptの再試行管理も後続で、HTTP/Queueにはまだ公開しない。
+元leaseの終了、共有失効、owner無効化、永久停止後も実在bytesを計上できる。二重照合やcommit ACK喪失でphysicalを重複加算せず、記録済みならHEADを省略する。修復自身はnativeを再送せず、checkpoint・namespace・予約・pinを変更しない。稼働jobは再認可を伴う通常の進捗確定へ戻り、停止済みjobは既存の証拠付き精算と35日GCへ渡す。欠落・checksum/metadata不一致・HEAD失敗/期限超過では保持する。executor経由の修復は元の転送claimとR2 call予算を消費する。claimを持たない保守用呼出しは引き続き内部用途とし、巡回時の頻度・総量制御は後続である。part/handleの復元、未知nativeや未送信attemptの再試行管理も後続で、HTTP/Queueにはまだ公開しない。
+
+## 一回分のコピー実行
+
+`jobs/copyExecutor.ts` の `executeCopyJob` はOutbox IDからjobを特定し、通常のclaim、単一/分割転送、実成功後のobject観測修復、進捗確定、一括公開を内部でつなぐ。1回25秒・最大32段階で処理し、各段階の開始前に必要なR2呼出し数を確認する。単一保存とpartにはGET+書込みの2回、multipart初期化/完了と修復HEADには1回を見込む。進捗照合と公開は追加のR2 callを必要としない。invocationの16 callとjob全体20,000 callに収まらなければ準備前にyieldし、保存済みcheckpointから続行する。
+
+claim付き修復HEADも、元のclaim/権限とcall数の増加を同じsystem batchで確定し、直接ACKを得た場合だけ送信する。ACK喪失分を返さず、結果不明の書込みは再送しない。prepared状態のhandle/partが未解決ならheldを返す。通常の終了・yield・例外では自分の実行leaseだけを返し、別実行のclaimには触れない。完了済みの再配信はimmutable manifestと公開receiptを照合し、追加のclaimやnamespace変更を作らない。
+
+期限・旧epoch・予算超過は既存の停止処理で判定する。stoppedという内部結果は保持の解放やQueue ACKを意味しない。精算・中止・修復に残った保持は既存の専用処理へ渡す必要がある。この段階ではQueue/HTTPへ接続せず、再試行・cleanup巡回・DLQ・最大規模の完走予算は引き続き仕上げる。現在の16 call/実行では大量blobが200 invocation以内に収まらないため、10,000 blobの完走を検証済みとはしない。
+
+Cloudflareの[D1制限](https://developers.cloudflare.com/d1/platform/limits/)は呼出し回数とbatch内の各SQLにも適用される。[Workerのsubrequest上限変更](https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/)だけを根拠に読取り枠を増やさず、D1・認可・native記録を含めて最大規模を測定する。
 
 ## 移行と復旧
 
@@ -125,7 +135,7 @@ copy用reservationは汎用の旧epoch回収から除外する。公開batchま�
 
 1. 大量blob・大容量multipartのbatch化と、最大規模の完走予算を検証する。
 2. ACK喪失/未送信/結果不明/観測欠落の照合と中止attemptの再試行管理を接続し、Queue consumerへ進める。chunkごとに現行権限とclaim fenceを検査し、native R2の送信・結果不明・実終了の記録を残す。
-3. 内部の一括公開処理へexecutorを接続し、途中の失敗・取消しを含めたjob状態遷移を完成させる。
+3. 内部executorのyield/held/stoppedをQueue再配信とcleanup巡回へつなぎ、途中の失敗・取消しとDLQからの再開を完成させる。
 4. job read/cancel/retry、停止・recovery・Outbox、pin/予約/physicalの精算、Shared画面の宛先選択と進捗を接続する。
 
 同期DAVは引き続き同一owner・1,000 node・10 GiBまでで、cross-owner要求をREST jobへ自動fallbackしない。[DAV Shared](DAV_SHARED.md)を参照。検証結果と残る全体要件は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。

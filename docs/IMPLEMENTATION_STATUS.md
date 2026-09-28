@@ -3,7 +3,9 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。完了結果は同じrun IDで確認します。
+先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。同じrun IDで完了結果を確認します。
+
+先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、CIの実行単位を見直します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
 
 先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
 
@@ -16,6 +18,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- [一回分のコピー実行](COPY_JOBS.md)を追加。Outbox IDからclaim・転送・object観測修復・checkpoint・一括公開までを接続し、最大32段階/25秒でyieldする。nativeの開始前にGET+PUT/part=2、init/complete/修復HEAD=1という必要数を確認する。200 invocation/20,000 R2 callと実行中16 callの枠は維持する。停止/完了の再配信はreceiptを照合し、精算前のstoppedをQueue ACKと扱わない。
+- claim付き修復は現在のblob/元claim/現行権限と、job/leaseのcall加算を直接ACKした後だけHEADする。ACK喪失分を返さない。通常実行ではclaim取得時の一度だけmanifestを読み、停止判定の候補がない場合に8 MiBのmanifestを重複読込みしない。
+- 初回の実行20件+既存修復29件は41成功・8失敗（89.45秒、/tmp/ncf-copy-executor-worker-initial.log）。試験用appのspreadでadmitted LockDOを実ControlDO未起動の参照へ上書きしていた。LockDO参照を明示して修正し、公開・再送・予算・claim束縛の追加検証を行った。productionの受付条件は緩めない。
+- 最終の全Node75file/1,431件が成功（74.22秒）、関連workerd6file/184件が成功（242.16秒）。新規executor23件は9blobの予算境界・multipart各段階再開・修復HEADの予算/直接ACK・公開ACK喪失・停止再送を含む。今回の合計は **1,615件成功**。/tmp/ncf-copy-executor-node-full.log、/tmp/ncf-copy-executor-worker-final.log。
+- 型・lint531file・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-copy-executor-types-complete.log、/tmp/ncf-copy-executor-lint-final.log、/tmp/ncf-copy-executor-build.log。HTTP/UI変更がないためbrowserは再実行していない。全workerd/Windows・実Wranglerドリルはpush後のCIで確認する。schema0058・75tableを維持し、Queue/HTTP/画面は未接続。現行16 call/実行で最大blob数の完走は証明できていないため、最大規模のD1/転送/再試行予算・cleanup巡回・DLQ接続は後続とする。remote migration/deployなし。
+
+### 先行するobject観測修復
 
 - [実保存後のコピー観測修復](COPY_JOBS.md)を追加。schema0058・75tableを維持する。固定manifest/保持と元native succeededを要求し、単一PUTはHEADのSHA-256、multipart completeはコピー固有metadataと全partの成功を照合して、physical/hash/ETag・stored状態を原子的に復元する。HEAD前後のepoch/maintenance・native/保持を再検査し、実送信と修復の保存SQLを共通化した。修復自体はcheckpoint/namespace/予約/pinを変更しない。
 - 最初の修復27件・既存単一13件・分割27件は全67件成功（89.87秒、/tmp/ncf-copy-reconcile-worker-initial.log）。実R2保存後に観測SQLだけを失敗させ、欠落復元・0 bytes・続行・停止/失効/旧epoch後のGC handoff・SHA/metadata不一致・未知native/欠落prepareの保持・HEAD前後の境界・ACK喪失・rollback・並行照合・期限・実ControlDOを検証した。追加したmultipart rollbackと実25秒timeoutを含む最終5file/154件も成功（256.00秒、/tmp/ncf-copy-reconcile-worker-final.log）。関連workerdは重複を除き7file/194件成功。stream cancellationの診断は出るが、全assertionと終了codeは成功した。

@@ -25,17 +25,19 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-[実保存後のコピー観測修復](COPY_JOBS.md)を追加しました。元nativeの実成功と転送先HEADのhash/metadataを照合し、欠落したphysical/hash/ETag・stored情報を原子的に復元します。通常の再認可付き進捗確定、または停止済み精算へ戻せます。結果不明の処理は保持し、part/handle観測・未送信attemptの再試行・全体完走予算とQueue/HTTP/UIは後続です。
+[コピー実行処理](COPY_JOBS.md)でclaim・転送・記録修復・checkpoint・一括公開を接続しました。各段階に必要なR2 call数を確認し、実行枠を使い切る前に準備を止めて次の呼出しへ渡します。修復HEADもclaimとjob全体の予算に計上し、応答喪失分を返しません。全Node1,431件と関連workerd184件、合計1,615件の回帰試験が成功しました。最大規模の完走・停止後のcleanup巡回・Queue/HTTP/UIは引き続き未完了です。
 
-今回はschema0058・通常75tableを維持し、元の保存処理と観測記録を共通化しました。修復29件を含む関連workerd7file/194件、全Node75file/1,431件の計1,625件が成功。型・lint529file・契約/設定検査とWeb build/Worker dry-runも成功しました。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0058・通常75tableを維持しています。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。完了結果は同じrun IDで確認します。
+先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。同じrun IDで完了結果を確認します。
+
+先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、CIの実行単位を見直します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
 
 先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
 
-copy受付は`services/createCopyJob.ts`、保存/読戻しは`jobs/copyManifest.ts`。内部`copy.enqueue`をLockDO/common admissionへ接続し、成功receipt 202は受付の確定だけを表す。`bulk_jobs.op_id`はその受付operationを参照する。実行claimは`jobs/copyClaim.ts`、固定sourceの読取りは`jobs/copyRead.ts`。owner同時2claim、25秒、8MiB/Range、16 read/invocationを上限とする。単一保存は`jobs/copyPut.ts`、ControlDOでの送信証明は`db/r2Copy.ts`。転送先staging/physical/native完了を照合してcheckpointを進める。multipartはjobs/copyMultipart.ts、一括公開はjobs/copyPublication.ts。0056のcopy.publishはコピー先spaceのpermitを取り、namespace・容量・保持を一括確定する。停止/照会/限定精算はjobs/copyLifecycle.ts。既知handleの中止はjobs/copyMultipartAbort.tsとdb/r2CopyAbort.tsへ接続済み。実成功後のobject観測修復はjobs/copyReconcile.ts、元送信と共通の事実記録はjobs/copyObject.ts。次は未知native/未送信/part・handle観測の照合、中止attemptの再試行管理、全体完走予算とQueue/HTTP/UIを接続する。保存済みmanifestを読んでもrequest-local authorization proofは再発行しない。0057では停止履歴と、未着手/未送信/実保存の証拠が揃うblobに限り精算receiptで保持の解放を許可する。copy保持中のnative receiptは期限で削除せず、guardだけを外さない。0058では既知multipartの実中止を証明した精算も許可する。終了証拠の不足と未知結果は保留を返す。詳細は[COPY_JOBS](COPY_JOBS.md)。JSON ID集合→主キーのCROSS JOINも保つ。
+copy受付は`services/createCopyJob.ts`、保存/読戻しは`jobs/copyManifest.ts`。内部`copy.enqueue`をLockDO/common admissionへ接続し、成功receipt 202は受付の確定だけを表す。`bulk_jobs.op_id`はその受付operationを参照する。実行claimは`jobs/copyClaim.ts`、固定sourceの読取りは`jobs/copyRead.ts`。owner同時2claim、25秒、8MiB/Range、16 read/invocationを上限とする。単一保存は`jobs/copyPut.ts`、ControlDOでの送信証明は`db/r2Copy.ts`。転送先staging/physical/native完了を照合してcheckpointを進める。multipartはjobs/copyMultipart.ts、一括公開はjobs/copyPublication.ts。0056のcopy.publishはコピー先spaceのpermitを取り、namespace・容量・保持を一括確定する。停止/照会/限定精算はjobs/copyLifecycle.ts。既知handleの中止はjobs/copyMultipartAbort.tsとdb/r2CopyAbort.tsへ接続済み。実成功後のobject観測修復はjobs/copyReconcile.ts、元送信と共通の事実記録はjobs/copyObject.ts。実行全体はjobs/copyExecutor.ts。次は未知native/未送信/part・handle観測、中止attempt再試行、停止後のcleanup巡回、全体完走予算とQueue/HTTP/UIを接続する。保存済みmanifestを読んでもrequest-local authorization proofは再発行しない。0057では停止履歴と、未着手/未送信/実保存の証拠が揃うblobに限り精算receiptで保持の解放を許可する。copy保持中のnative receiptは期限で削除せず、guardだけを外さない。0058では既知multipartの実中止を証明した精算も許可する。終了証拠の不足と未知結果は保留を返す。詳細は[COPY_JOBS](COPY_JOBS.md)。JSON ID集合→主キーのCROSS JOINも保つ。
 
 DAV Sharedの入口は`dav/path.ts`・`dav/shared.ts`・`api/dav.ts`。migration0050はDAV保存元のowner一致条件を選択付き受信者へ広げ、0049の不変pair/completion照合を維持する。migration0051のdestination tupleとauth/transferScope.tsで転送先選択を独立に保存する。省略はlegacy、share:nullは明示的なactor所有spaceであり相互に代替しない。same-ownerの別mount転送だけを許可し、cross-owner COPYの非同期jobは後続。直接file mount上書きでは保存名と非公開parentを内部proofから使い、返却しない。0050/0051適用後の旧Workerへのrollbackはmaintenanceを維持し、対応版で再検証する。ごみ箱の一覧・復元・完全削除は所有者だけに許可する。
 

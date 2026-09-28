@@ -2,13 +2,15 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[実保存後のコピー観測修復](COPY_JOBS.md)を追加しました。元nativeの実成功と転送先HEADのhash/metadataを照合し、欠落したphysical/hash/ETag・stored情報を原子的に復元します。通常の再認可付き進捗確定、または停止済み精算へ戻せます。結果不明の処理は保持し、part/handle観測・未送信attemptの再試行・全体完走予算とQueue/HTTP/UIは後続です。
+[コピー実行処理](COPY_JOBS.md)でclaim・転送・記録修復・checkpoint・一括公開を接続しました。各段階に必要なR2 call数を確認し、実行枠を使い切る前に準備を止めて次の呼出しへ渡します。修復HEADもclaimとjob全体の予算に計上し、応答喪失分を返しません。全Node1,431件と関連workerd184件、合計1,615件の回帰試験が成功しました。最大規模の完走・停止後のcleanup巡回・Queue/HTTP/UIは引き続き未完了です。
 
-今回はschema0058・通常75tableを維持し、元の保存処理と観測記録を共通化しました。修復29件を含む関連workerd7file/194件、全Node75file/1,431件の計1,625件が成功。型・lint529file・契約/設定検査とWeb build/Worker dry-runも成功しました。詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
+schema0058・通常75tableを維持しています。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。完了結果は同じrun IDで確認します。
+先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。同じrun IDで完了結果を確認します。
+
+先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、CIの実行単位を見直します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
 
 先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
 
