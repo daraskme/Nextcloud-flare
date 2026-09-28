@@ -167,6 +167,25 @@ it.each(["observe", "advance"])("recovers a lost %s ACK without repeating PUT", 
     reserved_bytes: 3,
   });
 });
+it("retries an uncommitted object observation after recording native success", async () => {
+  const f = await fixture(),
+    claim = await claimCopyJob(mutationEnv(), f.job.outboxId);
+  const a = app(
+    injectBatch(
+      (sql) => sql.startsWith("INSERT INTO blob_storage"),
+      async () => {
+        throw new Error("observation_rollback");
+      },
+      false,
+    ),
+  );
+  expect(await copyNextSmallBlob(a, claim)).toBe("stored");
+  expect(a.put).toHaveBeenCalledTimes(1);
+  expect(await auditOwnerLedger(env.DB, f.target.ids.user)).toMatchObject({
+    physical_bytes: 3,
+    reserved_bytes: 3,
+  });
+});
 it("uses stored evidence after a native finish ACK is lost", async () => {
   const f = await fixture(),
     claim = await claimCopyJob(mutationEnv(), f.job.outboxId),

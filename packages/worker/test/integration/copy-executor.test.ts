@@ -9,6 +9,7 @@ import { copyNextBlob } from "../../src/jobs/copyMultipart";
 import { reconcileCopyObject } from "../../src/jobs/copyReconcile";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { copyJobCounters, copyJobFixture } from "../fixtures/copyJob";
+import { measureD1 } from "../fixtures/d1Calls";
 import { clearEndedR2TestWrites, mutationEnv } from "../fixtures/mutationAdmission";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
@@ -96,7 +97,12 @@ async function many() {
 }
 it("yields before a native pair would exceed the invocation budget and finishes the rest", async () => {
   const f = await many();
-  expect(await run(f)).toMatchObject({ state: "yielded", steps: 8 });
+  const measured = measureD1(env.DB);
+  const a = { ...mutationEnv(measured.db), LOCKS: admitted().LOCKS };
+  expect(await run(f, {}, a)).toMatchObject({ state: "yielded", steps: 8 });
+  // The original path required 222 calls / 705 statements for these same eight real copies.
+  expect(measured.counts.calls).toBeLessThanOrEqual(140);
+  expect(measured.counts.statements).toBeLessThanOrEqual(650);
   expect(await copyJobCounters(f.job.id)).toMatchObject({
     r2_calls: 16,
     lease_calls: 16,

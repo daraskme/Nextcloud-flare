@@ -3,9 +3,9 @@
 更新: 2026-09-28。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-コピー実行処理はb7a32abで専用ブランチへpush済み。[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)で全体回帰を確認中です。CIの30分打切り対策として、Windows integrationを4分割し、backup:run-drillを通常/専用bindingドリルから別runnerへ分離しました。独立起動に必要な.wrangler初期化も追加しています。全135 integration/spikeファイルを34/34/34/33へ重複・欠落なく分割できることを確認し、変更後のWindows/ドリルの実完走は次のpushのCIで確認します。
+CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は最終確認時にUbuntu・Windows分割2/4・4/4・browser・backup(bindings)成功、Windows分割1/4・backup(cli)実行中です。Windows分割3/4はNode1,431件成功、integration717/718件成功で、copy-executionのepoch変更試験の準備中にfixture_copy_failedとなりました。231msでの失敗で、30分のjob上限とは別です。SQLエラーと受付outcomeを残すfixture診断を追加し、local対象40件は成功しましたが原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はbrowser・Windows分割2/3成功、他jobは実行中です。それぞれ同じrun IDで完了を確認します。
 
-先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。同じrun IDで完了結果を確認します。
+先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)はUbuntu・Windows分割2/3・3/3・browser・backup成功、Windows分割1/3は30分のjob上限でcancelledです（GitHub annotationで確認）。上記4分割化後のCIで完走を確認します。
 
 先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、上記のCI実行単位へ分割します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
 
@@ -20,6 +20,14 @@
 先行`3ffbba0`の[CI36320613487](https://github.com/daraskme/Nextcloud-flare/actions/runs/36320613487)はUbuntu・Windows2分割・backup・browserの全5jobが成功。先行`43597a6`の[CI36317210449](https://github.com/daraskme/Nextcloud-flare/actions/runs/36317210449)ではUbuntuが15分枠で打ち切られたため、3ffbba0でjob枠を30分に変更した。productionと個別テストの期限は変更していない。
 
 ## 今回の検証記録
+
+- コピーの認可照会を同じprimary batchへ集約し、各operandの入力snapshotと既存の権限assertionを維持する。単一PUT・multipart作成/completeの観測は直接ACKまたはDB-only receiptで確定できた場合だけ重複を省き、失敗時は再試行する。進捗と残予算も一つのSELECTで取得する。schema0058・75table・実行25秒/16call・200 invocation/20,000 R2 callは変更しない。
+- 実R2で8blobを保存してyieldする同一fixtureを計測。Worker側D1 binding呼出しは222→132回、SQL文は705→600本となった。ControlDO/LockDO内部のSQLは別invocationのためこの値に含めない。これはローカル処理量の計測であり、remote遅延や最大10,000blob/500GiBの完走証明ではない。/tmp/ncf-copy-budget-baseline.log、/tmp/ncf-copy-budget-worker-initial.log。
+- 初回の認可・単一/分割保存・executor4file/109件成功（82.43秒）。最終は全Node75file/1,431件成功（74.95秒）、関連workerd11file/294件成功（287.35秒）で、合計 **1,725件成功**。8blobのDB往復上限、4種のcredential、混在principal、入力snapshot、現在権限とrevision再検査、観測rollback後の再試行、共有/DAV・公開/停止・content ticketを確認した。想定したstream取消し診断は出るが全assertionと終了codeは成功。/tmp/ncf-copy-budget-node-full.log、/tmp/ncf-copy-budget-worker-final.log。
+- Windows CIのfixture_copy_failed診断追加後、copy-execution40件も成功（34.90秒、重複分は上記合計へ加算しない）。失敗したbatchのSQLエラーと受付outcomeを残し、fixtureの自動再試行やproductionの期限緩和は追加しない。/tmp/ncf-copy-budget-ci-win3.log、/tmp/ncf-copy-budget-fixture-final.log。
+- 型・lint532file・契約/設定・Web build/Worker dry-run成功。/tmp/ncf-copy-budget-types-complete.log、/tmp/ncf-copy-budget-build.log。今回はHTTP/UIを変更していないためbrowserを再実行していない。全workerd/Windows・実Wranglerドリルはpush後のCIで確認する。remote migration/deployなし。
+
+### 先行するコピー実行処理とCI分割
 
 - CI分割変更: 36384106965のWindows分割2はNode1,431件とintegration30file/865件まで成功し、後続の試験中にjob上限で停止した。4分割化とbackup CLI分離でも各jobの30分枠・個別試験/アプリの期限・全assertionを維持する。Vitest 4.1.11の実BaseSequencerで135fileの完全分割を確認。lint531file、ドリルのNode構文検査、git diff --check成功。実Windows/新runnerの結果はCI待ちで、製品の追加試験数には加算しない。
 

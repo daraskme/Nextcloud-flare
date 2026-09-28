@@ -2,15 +2,15 @@
 
 更新: 2026-09-28。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-[コピー実行処理](COPY_JOBS.md)でclaim・転送・記録修復・checkpoint・一括公開を接続しました。各段階に必要なR2 call数を確認し、実行枠を使い切る前に準備を止めて次の呼出しへ渡します。修復HEADもclaimとjob全体の予算に計上し、応答喪失分を返しません。全Node1,431件と関連workerd184件、合計1,615件の回帰試験が成功しました。最大規模の完走・停止後のcleanup巡回・Queue/HTTP/UIは引き続き未完了です。
+[所有者間コピー](COPY_JOBS.md)の認可を同じprimary batchで照会し、保存結果の重複記録と進捗/予算の別照会を減らしました。実R2で8blobを保存してyieldする同一fixtureのWorker側D1呼出しは222→132回、SQL文は705→600本です。各operandの現在権限・元の選択・確定batchでの再検査を維持し、観測書込みが失敗した場合の再試行も残します。全Node1,431件と関連workerd294件、合計1,725件の回帰試験が成功しました。最大規模の完走・停止後のcleanup巡回・Queue/HTTP/UIは引き続き未完了です。
 
 schema0058・通常75tableを維持しています。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
 次はcross-owner copy、公開link/password/unlock/public bundle、upload-only、ZIPを進めます。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
-コピー実行処理はb7a32abで専用ブランチへpush済み。[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)で全体回帰を確認中です。CIの30分打切り対策として、Windows integrationを4分割し、backup:run-drillを通常/専用bindingドリルから別runnerへ分離しました。独立起動に必要な.wrangler初期化も追加しています。全135 integration/spikeファイルを34/34/34/33へ重複・欠落なく分割できることを確認し、変更後のWindows/ドリルの実完走は次のpushのCIで確認します。
+CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は最終確認時にUbuntu・Windows分割2/4・4/4・browser・backup(bindings)成功、Windows分割1/4・backup(cli)実行中です。Windows分割3/4はNode1,431件成功、integration717/718件成功で、copy-executionのepoch変更試験の準備中にfixture_copy_failedとなりました。231msでの失敗で、30分のjob上限とは別です。SQLエラーと受付outcomeを残すfixture診断を追加し、local対象40件は成功しましたが原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はbrowser・Windows分割2/3成功、他jobは実行中です。それぞれ同じrun IDで完了を確認します。
 
-先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)は最終確認時にbrowser成功、Ubuntu・Windows3分割・backupは実行中です。同じrun IDで完了結果を確認します。
+先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)はUbuntu・Windows分割2/3・3/3・browser・backup成功、Windows分割1/3は30分のjob上限でcancelledです（GitHub annotationで確認）。上記4分割化後のCIで完走を確認します。
 
 先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、上記のCI実行単位へ分割します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
 

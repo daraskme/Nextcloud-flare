@@ -1,4 +1,4 @@
-import { authorizationAssertion, authorizeNode } from "../auth/authorize";
+import { authorizationAssertion, authorizeNodes } from "../auth/authorize";
 import { destinationPrincipal } from "../auth/transferScope";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { PreparedCopy } from "../services/copyPreparation";
@@ -82,43 +82,48 @@ export async function copyAuthorityStatements(
   plan: CopyAuthorityContext,
   witnessId?: string,
 ): Promise<SqlStatement[]> {
-  const source = await authorizeNode(db, plan.principal, {
-    operation: "node.read",
-    spaceId: plan.source.spaceId,
-    nodeId: plan.source.rootId,
-    ownerOnly: !plan.principal.selected_share,
-  });
   const destination = destinationPrincipal(plan.principal, plan.destination);
-  const target = await authorizeNode(db, destination, {
-    operation: "node.create",
-    spaceId: plan.destination.spaceId,
-    parentId: plan.destinationParentId,
-    ownerOnly: plan.destination.share === null,
-  });
-  const statements = [authorizationAssertion(source), authorizationAssertion(target)];
+  const requests: Parameters<typeof authorizeNodes>[1][number][] = [
+    {
+      principal: plan.principal,
+      request: {
+        operation: "node.read",
+        spaceId: plan.source.spaceId,
+        nodeId: plan.source.rootId,
+        ownerOnly: !plan.principal.selected_share,
+      },
+    },
+    {
+      principal: destination,
+      request: {
+        operation: "node.create",
+        spaceId: plan.destination.spaceId,
+        parentId: plan.destinationParentId,
+        ownerOnly: plan.destination.share === null,
+      },
+    },
+  ];
   if (plan.overwrite)
-    statements.push(
-      authorizationAssertion(
-        await authorizeNode(db, destination, {
-          operation: "node.trash",
-          spaceId: plan.destination.spaceId,
-          nodeId: plan.overwrite.rootId,
-          ownerOnly: plan.destination.share === null,
-        }),
-      ),
-    );
+    requests.push({
+      principal: destination,
+      request: {
+        operation: "node.trash",
+        spaceId: plan.destination.spaceId,
+        nodeId: plan.overwrite.rootId,
+        ownerOnly: plan.destination.share === null,
+      },
+    });
   if (witnessId && witnessId !== plan.source.rootId)
-    statements.push(
-      authorizationAssertion(
-        await authorizeNode(db, plan.principal, {
-          operation: "node.read",
-          spaceId: plan.source.spaceId,
-          nodeId: witnessId,
-          ownerOnly: !plan.principal.selected_share,
-        }),
-      ),
-    );
-  return statements;
+    requests.push({
+      principal: plan.principal,
+      request: {
+        operation: "node.read",
+        spaceId: plan.source.spaceId,
+        nodeId: witnessId,
+        ownerOnly: !plan.principal.selected_share,
+      },
+    });
+  return (await authorizeNodes(db, requests)).map(authorizationAssertion);
 }
 
 /** Exact token, epoch, manifest and checkpoint; a JSON-reloaded claim is never a proof. */

@@ -23,6 +23,8 @@ export interface CopyExecutionResult {
   steps: number;
 }
 interface StepRow {
+  total_calls: number;
+  invocation_calls: number | null;
   transfer_state: string;
   state: string | null;
   part_bytes: number | null;
@@ -36,22 +38,32 @@ async function nextStep(db: D1Database, claim: CopyJobClaim) {
   const blob = claim.plan.source.blobs[copyClaimPosition(claim)];
   if (!blob) return { action: "publish", calls: 0 } as const;
   const row = await primary(db)
-    .prepare(`SELECT cb.transfer_state,m.state,m.part_bytes,m.part_count,p.part_number,p.state AS part_state
-      FROM copy_job_blobs cb LEFT JOIN copy_multipart_uploads m ON m.destination_blob_id=cb.destination_blob_id
+    .prepare(`SELECT cb.transfer_state,m.state,m.part_bytes,m.part_count,p.part_number,p.state AS part_state,
+      j.r2_calls AS total_calls,l.r2_calls AS invocation_calls
+      FROM copy_job_blobs cb JOIN bulk_jobs j ON j.id=cb.job_id
+      LEFT JOIN job_leases l ON l.job_id=j.id AND l.claim_token=?
+      LEFT JOIN copy_multipart_uploads m ON m.destination_blob_id=cb.destination_blob_id
       LEFT JOIN copy_multipart_parts p ON p.destination_blob_id=m.destination_blob_id
         AND p.part_number=(SELECT MAX(part_number) FROM copy_multipart_parts WHERE destination_blob_id=m.destination_blob_id)
       WHERE cb.job_id=? AND cb.source_blob_id=?`)
-    .bind(claim.id, blob.id)
+    .bind(claim.token, claim.id, blob.id)
     .first<StepRow>();
   if (!row) throw new Error("copy_transfer_unavailable");
+  const step = (action: "transfer" | "reconcile", calls: number) => ({
+    action:
+      calls &&
+      (row.invocation_calls === null ||
+        row.invocation_calls + calls > COPY_EXECUTION_LIMITS.rangeReads ||
+        row.total_calls + calls > COPY_EXECUTION_LIMITS.r2Calls)
+        ? ("yield" as const)
+        : action,
+    calls,
+  });
   if (row.transfer_state === "stored") return { action: "transfer", calls: 0 } as const;
   if (row.transfer_state === "pending")
-    return {
-      action: "transfer",
-      calls: blob.size <= COPY_EXECUTION_LIMITS.rangeBytes ? 2 : 1,
-    } as const;
+    return step("transfer", blob.size <= COPY_EXECUTION_LIMITS.rangeBytes ? 2 : 1);
   if (blob.size <= COPY_EXECUTION_LIMITS.rangeBytes || row.state === "completing")
-    return { action: "reconcile", calls: 1 } as const;
+    return step("reconcile", 1);
   if (row.state !== "uploading" || row.part_state === "claimed")
     return { action: "held", calls: 0 } as const;
   if (
@@ -59,7 +71,7 @@ async function nextStep(db: D1Database, claim: CopyJobClaim) {
     copyClaimOffset(claim) < Math.min(blob.size, row.part_number * row.part_bytes!)
   )
     return { action: "transfer", calls: 0 } as const;
-  return { action: "transfer", calls: (row.part_number ?? 0) < row.part_count! ? 2 : 1 } as const;
+  return step("transfer", (row.part_number ?? 0) < row.part_count! ? 2 : 1);
 }
 
 /** One internal invocation. Durable checkpoints drive replay; terminal holds have separate cleanup. */
@@ -104,19 +116,7 @@ export async function executeCopyJob(
       checkCopyClaim(claim);
       const step = await nextStep(env.DB, claim);
       if (step.action === "held") return { ...result, state: "held" };
-      if (step.calls) {
-        const budget = await primary(env.DB)
-          .prepare(`SELECT j.r2_calls AS total,l.r2_calls AS invocation FROM job_leases l
-          JOIN bulk_jobs j ON j.id=l.job_id WHERE l.job_id=? AND l.claim_token=?`)
-          .bind(claim.id, claim.token)
-          .first<{ total: number; invocation: number }>();
-        if (
-          !budget ||
-          budget.invocation + step.calls > COPY_EXECUTION_LIMITS.rangeReads ||
-          budget.total + step.calls > COPY_EXECUTION_LIMITS.r2Calls
-        )
-          return result;
-      }
+      if (step.action === "yield") return result;
       if (step.action === "publish") {
         const published = await publishCopyJob(env, claim);
         if (published.kind === "terminal" && published.operation.state === "committed")

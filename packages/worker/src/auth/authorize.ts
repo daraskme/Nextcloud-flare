@@ -1,5 +1,5 @@
 import { type SelectedShare, selectedShare } from "../../../shared/src/shares";
-import { assertExists, prepare, primary, type SqlStatement } from "../db/primary";
+import { assertExists, atomicBatch, prepare, primary, type SqlStatement } from "../db/primary";
 import type { VerifiedAccessService } from "./access";
 import type { AccessSession } from "./sessions";
 
@@ -263,11 +263,10 @@ function validId(value: unknown, max = 128): value is string {
     !/[\x00-\x20/]/.test(value)
   );
 }
-export async function authorizeNode(
-  db: D1Database,
+function nodeAuthorization(
   principal: Principal,
   request: NodeRequest & { readonly ownerOnly?: boolean },
-): Promise<AuthorizedNode> {
+) {
   let selection: SelectedShare | undefined;
   if ("selected_share" in principal) {
     if (principal.kind !== "user" && principal.kind !== "app_password")
@@ -339,10 +338,13 @@ export async function authorizeNode(
           : "read",
     request.operation,
   ] as const;
-  const node = await prepare(primary(db), {
-    sql: NODE_AUTHORITY,
-    values: [...values, null, null, null, null],
-  }).first<LiveNode>();
+  return { identity, values, request: Object.freeze({ ...request }) };
+}
+
+function authorizedNode(
+  { identity, values, request }: ReturnType<typeof nodeAuthorization>,
+  node: LiveNode | null,
+): AuthorizedNode {
   if (!node) throw new Error("authorization_denied");
   Object.freeze(node);
   const assertion = Object.freeze(
@@ -400,4 +402,41 @@ export async function authorizeNode(
   );
   assertions.set(authorized, assertion);
   return authorized;
+}
+
+export async function authorizeNode(
+  db: D1Database,
+  principal: Principal,
+  request: NodeRequest & { readonly ownerOnly?: boolean },
+): Promise<AuthorizedNode> {
+  const context = nodeAuthorization(principal, request);
+  const node = await prepare(primary(db), {
+    sql: NODE_AUTHORITY,
+    values: [...context.values, null, null, null, null],
+  }).first<LiveNode>();
+  return authorizedNode(context, node);
+}
+
+/** One primary snapshot for a bounded group; each operand keeps its own principal and fence. */
+export async function authorizeNodes(
+  db: D1Database,
+  requests: readonly {
+    principal: Principal;
+    request: NodeRequest & { readonly ownerOnly?: boolean };
+  }[],
+): Promise<AuthorizedNode[]> {
+  if (requests.length < 1 || requests.length > 16) throw new Error("authorization_denied");
+  const contexts = requests.map(({ principal, request }) => nodeAuthorization(principal, request));
+  const results = await atomicBatch(
+    db,
+    contexts.map(({ values }) => ({
+      sql: NODE_AUTHORITY,
+      values: [...values, null, null, null, null],
+    })),
+  );
+  if (results.length !== contexts.length) throw new Error("authorization_denied");
+  return results.map((result, index) => {
+    if (!result.success || result.results.length !== 1) throw new Error("authorization_denied");
+    return authorizedNode(contexts[index]!, result.results[0] as unknown as LiveNode);
+  });
 }

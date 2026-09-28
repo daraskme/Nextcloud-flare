@@ -70,9 +70,28 @@ export async function copyJobFixture(empty = false, body?: Uint8Array) {
     lockTokens: [],
   };
   const enqueue = async () => {
-    const result = await createCopyJob(admitted(), { ...request, requestId: crypto.randomUUID() });
+    const batchErrors: string[] = [];
+    const db = new Proxy(env.DB, {
+      get(target, key) {
+        if (key === "batch")
+          return async (statements: D1PreparedStatement[]) => {
+            try {
+              return await target.batch(statements);
+            } catch (error) {
+              batchErrors.push(String(error).slice(0, 1024));
+              throw error;
+            }
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const result = await createCopyJob(admitted(db), {
+      ...request,
+      requestId: crypto.randomUUID(),
+    });
     if (result.kind !== "terminal" || !result.operation.result?.jobId)
-      throw new Error("fixture_copy_failed");
+      throw new Error(`fixture_copy_failed: ${JSON.stringify({ result, batchErrors })}`);
     const outboxId = result.operation.id + "_copy";
     expect(
       await dispatchOutbox(

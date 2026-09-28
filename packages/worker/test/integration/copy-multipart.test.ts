@@ -353,6 +353,31 @@ it.each(["handle", "part", "progress", "object"])(
     ).toBe(1);
   },
 );
+it.each(["handle", "object"])(
+  "retries an uncommitted %s observation after native success",
+  async (phase) => {
+    const f = phase === "handle" ? await fixture() : await transferred();
+    const a = app(
+      injectBatch(
+        (sql) =>
+          sql.startsWith(
+            phase === "handle"
+              ? "UPDATE copy_multipart_uploads SET r2_upload_id"
+              : "INSERT INTO blob_storage",
+          ),
+        async () => {
+          throw new Error("observation_rollback");
+        },
+        false,
+      ),
+    );
+    expect(await step(a, f.claim)).toBe(phase === "handle" ? "initialized" : "stored");
+    expect(a.create.mock.calls.length + a.complete.mock.calls.length).toBe(1);
+    expect(await header(f.id)).toMatchObject({
+      state: phase === "handle" ? "uploading" : "stored",
+    });
+  },
+);
 it.each(["init", "part", "complete"])(
   "resumes known %s after a lost native finish ACK",
   async (phase) => {

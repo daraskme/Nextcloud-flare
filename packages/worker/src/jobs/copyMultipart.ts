@@ -191,6 +191,7 @@ export async function copyNextBlob(
         assertOneChange,
       ]);
     };
+    let recorded = false;
     const handle = await trackedR2Write(
       env,
       {
@@ -206,6 +207,7 @@ export async function copyNextBlob(
         });
         try {
           await record(handle);
+          recorded = true;
         } catch {
           /* Preserve native completion independently of observation ACK. */
         }
@@ -214,7 +216,7 @@ export async function copyNextBlob(
       claim.expiresAt,
       () => checkCopyClaim(claim),
     );
-    await record(handle);
+    if (!recorded) await record(handle);
     checkCopyClaim(claim);
     return "initialized";
   }
@@ -374,6 +376,7 @@ export async function copyNextBlob(
         object,
       ),
     );
+  let observed = false;
   const object = await trackedR2Write(
     env,
     {
@@ -389,6 +392,7 @@ export async function copyNextBlob(
       );
       try {
         await observe(result);
+        observed = true;
       } catch {
         /* Keep the independent native completion fact. */
       }
@@ -397,7 +401,7 @@ export async function copyNextBlob(
     claim.expiresAt,
     () => checkCopyClaim(claim),
   );
-  await observe(object);
+  if (!observed) await observe(object);
   await advanceCopyBlob(env, claim);
   return "stored";
 }

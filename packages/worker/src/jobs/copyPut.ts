@@ -118,6 +118,7 @@ export async function copyNextSmallBlob(
       // Record actual facts even after revocation or execution lease expiry.
       await commitSystemMutation(env.DB, receipt, claim.plan.destinationOwnerId, statements);
     };
+    let observed = false;
     const result = await trackedR2Write(
       env,
       {
@@ -141,6 +142,7 @@ export async function copyNextSmallBlob(
         if (object) {
           try {
             await observe(object);
+            observed = true;
           } catch {
             /* Native completion still gets its independent receipt. */
           }
@@ -151,7 +153,7 @@ export async function copyNextSmallBlob(
       () => checkCopyClaim(claim),
     );
     if (!result) throw new Error("copy_destination_exists");
-    await observe(result);
+    if (!observed) await observe(result);
   }
   await advanceCopyBlob(env, claim);
   return "stored";

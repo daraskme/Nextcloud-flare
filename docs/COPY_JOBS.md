@@ -115,6 +115,14 @@ claim付き修復HEADも、元のclaim/権限とcall数の増加を同じsystem 
 
 Cloudflareの[D1制限](https://developers.cloudflare.com/d1/platform/limits/)は呼出し回数とbatch内の各SQLにも適用される。[Workerのsubrequest上限変更](https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/)だけを根拠に読取り枠を増やさず、D1・認可・native記録を含めて最大規模を測定する。
 
+## DB往復の削減と計測
+
+コピーで一緒に必要になるsource root・destination parent・overwrite・固定source nodeの認可は、`authorizeNodes`で最大4件を同じprimary batchにまとめる。各operandには元のprincipal/選択を個別に保存し、SQLへ渡す前に全入力を検査・固定する。結果は既存と同じrequest-local proofで、後続の確定batchでもrevision・tree generation・credential・選択・現在の権限を再検査する。共有停止時に他のgrantへ代替しない。
+
+単一PUT、multipartのhandleと完成objectは、実応答の観測が確定した呼出しでは同じ事実を二度書き込まない。観測が失敗すればnative成功の独立記録後に再試行し、遅延した実結果の記録も継続する。executorは次の段階とclaim/job残予算を一つのSELECTで読むが、この読取りは送信許可ではなく、送信前batchで予算加算と認可を再検査して直接ACKを要求する。
+
+8つの独立した3-byte blobを実R2へコピーしてyieldするfixtureでは、Worker側のD1 binding呼出しは222→132回、SQL文は705→600本。回帰試験はそれぞれ140回/650本以内を要求する。ControlDO/LockDO内部のSQL・remote遅延はこの数に含めない。25秒・16 R2 callと全体予算は維持し、最大規模の完走を証明済みとはしない。
+
 ## 移行と復旧
 
 migration0052で通常72tableとなり、0053は既存job_leasesへinvocationのR2 call数を追加する。0054は全native receiptと既存のcopy保持情報を維持し、copy.putと転送状態・attempt・hashを追加する（72tableのまま）。既存のtoken・epoch・期限・試行回数は保持する。0052の追加3tableはSTRICT/FK/index、backup/restore freeze、export/purge順序の契約へ含める。旧catalogueに未解決の`node.copy` bulk jobが残る場合は0052移行を拒否し、元処理の個別照合を要求する。

@@ -5,12 +5,14 @@ import {
   authorizationAssertion,
   authorizationBatchAssertions,
   authorizeNode,
+  authorizeNodes,
   type NodeRequest,
   type Principal,
   servicePrincipal,
 } from "../../src/auth/authorize";
 import { atomicBatch } from "../../src/db/primary";
 import { accessFixture } from "../fixtures/access";
+import { measureD1 } from "../fixtures/d1Calls";
 import { foundationFixture } from "../fixtures/foundation";
 
 it("packs eleven current read proofs and rejects a blob changed after the read", async () => {
@@ -22,6 +24,101 @@ it("packs eleven current read proofs and rejects a blob changed after the read",
   await atomicBatch(env.DB, assertions);
   await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(f.ids.file).run();
   await expect(atomicBatch(env.DB, assertions)).rejects.toThrow();
+});
+
+it.each(["user", "app_password", "link_share", "service"] as const)(
+  "batches %s authority in one primary call and keeps current credential fences",
+  async (kind) => {
+    const f = await fixture(kind);
+    const measured = measureD1(env.DB);
+    const requests = [
+      { principal: f.principal, request: f.read },
+      { principal: f.principal, request: kind === "service" ? f.read : f.create },
+    ];
+    const proofs = await authorizeNodes(measured.db, requests);
+    expect(measured.counts).toEqual({ calls: 1, statements: 2 });
+    expect(proofs).toEqual(
+      await Promise.all(requests.map((r) => authorizeNode(env.DB, r.principal, r.request))),
+    );
+    await atomicBatch(env.DB, proofs.map(authorizationAssertion));
+    expect(() => authorizationAssertion(JSON.parse(JSON.stringify(proofs[0])))).toThrow(
+      "invalid_authorization_proof",
+    );
+    await env.DB.prepare("UPDATE users SET disabled_at=1 WHERE id=?").bind(f.ids.user).run();
+    await expect(atomicBatch(env.DB, proofs.map(authorizationAssertion))).rejects.toThrow();
+    await expect(authorizeNodes(env.DB, requests)).rejects.toThrow("authorization_denied");
+  },
+);
+
+it("rejects an unauthorized operand rather than substituting another principal in a batch", async () => {
+  const f = await fixture();
+  await expect(
+    authorizeNodes(env.DB, [
+      { principal: f.principal, request: f.read },
+      {
+        principal: f.principal,
+        request: { ...f.read, spaceId: f.other.space, nodeId: f.other.file },
+      },
+    ]),
+  ).rejects.toThrow("authorization_denied");
+});
+
+it("validates every bounded operand before querying", async () => {
+  const f = await fixture();
+  const measured = measureD1(env.DB);
+  const request = { principal: f.principal, request: f.read };
+  for (const requests of [
+    [],
+    Array(17).fill(request),
+    [request, { ...request, request: { ...f.read, spaceId: "invalid/space" } }],
+  ])
+    await expect(authorizeNodes(measured.db, requests)).rejects.toThrow("authorization_denied");
+  expect(measured.counts).toEqual({ calls: 0, statements: 0 });
+});
+
+it("keeps independent principals and result order in a mixed authority batch", async () => {
+  const f = await fixture();
+  const other: Principal = {
+    kind: "user",
+    user_id: f.other.user,
+    credential_id: f.other.credential,
+    epoch: 1,
+  };
+  const proofs = await authorizeNodes(env.DB, [
+    {
+      principal: other,
+      request: { operation: "node.read", nodeId: f.other.file, spaceId: f.other.space },
+    },
+    { principal: f.principal, request: f.read },
+  ]);
+  expect(proofs).toMatchObject([
+    { principal: other, node: { id: f.other.file } },
+    { principal: f.principal, node: { id: f.ids.file } },
+  ]);
+  await atomicBatch(env.DB, proofs.map(authorizationAssertion));
+  await env.DB.prepare("UPDATE users SET disabled_at=1 WHERE id=?").bind(f.other.user).run();
+  await expect(atomicBatch(env.DB, [authorizationAssertion(proofs[0]!)])).rejects.toThrow();
+  await atomicBatch(env.DB, [authorizationAssertion(proofs[1]!)]);
+});
+
+it("freezes batch inputs before waiting for SQL and refuses stale revision proofs", async () => {
+  const f = await fixture();
+  const request = { ...f.read };
+  const db = new Proxy(env.DB, {
+    get(target, key) {
+      if (key === "batch")
+        return (statements: D1PreparedStatement[]) => {
+          Object.assign(request, f.create);
+          return target.batch(statements);
+        };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const proofs = await authorizeNodes(db, [{ principal: f.principal, request }]);
+  expect(proofs[0]).toMatchObject({ operation: "node.read", node: { id: f.ids.file } });
+  await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?").bind(f.ids.file).run();
+  await expect(atomicBatch(env.DB, proofs.map(authorizationAssertion))).rejects.toThrow();
 });
 
 beforeAll(async () => {
