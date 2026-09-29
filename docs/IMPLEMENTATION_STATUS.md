@@ -7,8 +7,8 @@
 
 ## 今回の検証記録
 
-- 読み取り専用公開linkのfocused Node11件・workerd5件が成功。`pnpm test`はNode710件（42file、41.55s）・workerd2,106件（102file、408.57s）、計2,816件が成功。
-- `pnpm lint`（381file）、型検査、契約/設定検査、Web buildが成功。public Vite entryはcontent hash付きJS/CSSの2 assetを生成し、private entryとの相互参照がないことをmanifestと実assets responseで確認。
+- public content ticket/sessionの関連workerd16件が成功。`pnpm test`はNode710件（42file、39.92s）・workerd2,107件（102file、394.77s）、計2,817件が成功。
+- `pnpm lint`（381file）、型検査、契約/設定検査、Web buildが成功。public Vite entryは更新したcontent hash付きJS/CSSの2 assetを生成し、CSPは設定済みcontent originだけを追加許可する。
 - 新しいNodeの走査14件とmaintain26件、計40件が成功（341ms）。全check内のNode全696件（40file、44.23s）も成功。
 - 新しいworkerd走査13件と既存prune26件、計39件が成功（19.40s）。型検査も成功。
 - 専用bindingドリル成功。67table・SQL11,322bytes、全9操作の権限拒否、5世代の取得、期限切れ世代の自動回収、破損保留とhealthの分離を確認。
@@ -25,7 +25,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 5/6 読み取り専用公開リンク | owner管理、fragment capability、share Cookie、metadata/children、CSRF/logout、独立hashed assets、Files共有dialog | focused Node11件・workerd5件、全体Node710件・workerd2,106件が成功。lint381file・型・契約/設定・Web buildも成功。download ticket/content-session、password/upload-only/internal share、stagingは未接続。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
+| 5/6 読み取り専用公開リンク | owner管理、fragment capability、share Cookie、metadata/children、CSRF/logout、target manifest、content ticket/Cookie、BudgetDO配信、独立hashed assets、Files共有dialog | 関連workerd16件、全体Node710件・workerd2,107件が成功。root外拒否、budget再利用、content-origin交換、R2配信、ticket cancelを確認。lint381file・型・契約/設定・Web buildも成功。password/upload-only/internal share、stagingは未接続。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 4 期限切れSQL世代の明示回収 | 専用prune、D1/R2世代照合、35日超・20部品/100RPC、manifest最終削除・再実行 | Node12件・workerd26件を追加。全Node674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功。専用bindingドリルは67table・SQL11,322bytesで成功。実CLIドリルもSQL9,079bytesで成功し、期限内拒否・回収・再実行・receipt保持を確認。全check成功、Node674件＋workerd2,087件（99file、1,143.07s）の計2,761件。型・契約/設定検査・Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査を再確認しました。schema0039・67table・依存を維持。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 4 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。 実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。 timer設置・外部通知・期限切れ削除・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |

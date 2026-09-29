@@ -1,4 +1,5 @@
 import { problem } from "@next-cloud-flare/shared/errors";
+import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import {
@@ -11,7 +12,11 @@ import {
 } from "../auth/shareSession";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
+import { issueContentTicket } from "../services/contentTicket";
+import { cancelContentTicket } from "../services/contentTicketCancel";
 import { listNodeChildren, readNode } from "../services/nodeRead";
+import { readContentTicketRequest } from "./contentTickets";
+import { hasEmptyBody } from "./emptyBody";
 
 const ID = "[A-Za-z0-9_-]{1,128}";
 const SHARE = new RegExp(`^/api/v1/public/shares/(${ID})$`);
@@ -19,6 +24,9 @@ const CHILDREN = new RegExp(`^/api/v1/public/shares/(${ID})/children/(${ID})$`);
 const UNLOCK = new RegExp(`^/api/v1/public/shares/(${ID})/unlock$`);
 const LOGOUT = new RegExp(`^/api/v1/public/shares/(${ID})/logout$`);
 const CSRF = new RegExp(`^/api/v1/public/shares/(${ID})/csrf$`);
+const TICKETS = new RegExp(`^/api/v1/public/shares/(${ID})/tickets$`);
+const TICKET = new RegExp(`^/api/v1/public/shares/(${ID})/tickets/(${ID})$`);
+const CONTENT_SESSION = new RegExp(`^/api/v1/public/shares/(${ID})/content-session$`);
 const MAX_BODY = 4096;
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -29,13 +37,20 @@ const HEADERS = {
 export interface PublicShareDependencies {
   readonly csrf: Pick<CsrfTokens, "issue" | "verify">;
   readonly cursors?: NodeCursorTokens;
+  readonly tokens?: ContentTokens;
 }
 
 export function publicShareApiRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
   return (
     (request.method === "GET" && (SHARE.test(path) || CHILDREN.test(path))) ||
-    (request.method === "POST" && (UNLOCK.test(path) || LOGOUT.test(path) || CSRF.test(path)))
+    (request.method === "POST" &&
+      (UNLOCK.test(path) ||
+        LOGOUT.test(path) ||
+        CSRF.test(path) ||
+        TICKETS.test(path) ||
+        CONTENT_SESSION.test(path))) ||
+    (request.method === "DELETE" && TICKET.test(path))
   );
 }
 
@@ -147,7 +162,18 @@ export async function handlePublicShareHttp(
   const childrenMatch = request.method === "GET" ? CHILDREN.exec(url.pathname) : null;
   const csrfMatch = request.method === "POST" ? CSRF.exec(url.pathname) : null;
   const logoutMatch = request.method === "POST" ? LOGOUT.exec(url.pathname) : null;
-  const shareId = shareMatch?.[1] ?? childrenMatch?.[1] ?? csrfMatch?.[1] ?? logoutMatch?.[1] ?? "";
+  const ticketsMatch = request.method === "POST" ? TICKETS.exec(url.pathname) : null;
+  const contentSessionMatch = request.method === "POST" ? CONTENT_SESSION.exec(url.pathname) : null;
+  const ticketMatch = request.method === "DELETE" ? TICKET.exec(url.pathname) : null;
+  const shareId =
+    shareMatch?.[1] ??
+    childrenMatch?.[1] ??
+    csrfMatch?.[1] ??
+    logoutMatch?.[1] ??
+    ticketsMatch?.[1] ??
+    contentSessionMatch?.[1] ??
+    ticketMatch?.[1] ??
+    "";
   if (!shareId) return problem(404, "not_found");
   let session;
   try {
@@ -186,6 +212,70 @@ export async function handlePublicShareHttp(
     }
   }
   const principal = sharePrincipal(session);
+  if (ticketMatch) {
+    if (url.search) return problem(404, "not_found");
+    try {
+      await dependencies.csrf.verify(env.DB, request, sessionCsrf(session));
+    } catch {
+      return problem(403, "forbidden");
+    }
+    if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
+    try {
+      await cancelContentTicket(env, principal, ticketMatch[2] ?? "");
+    } catch (error) {
+      if (
+        error instanceof MutationUnavailableError ||
+        (error instanceof Error && error.message === "ticket_cancel_commit_unknown")
+      ) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      return problem(404, "not_found");
+    }
+    return new Response(null, { status: 204, headers: HEADERS });
+  }
+  if (ticketsMatch || contentSessionMatch) {
+    if (url.search) return problem(404, "not_found");
+    if (!dependencies.tokens) return problem(503, "not_ready");
+    try {
+      await dependencies.csrf.verify(env.DB, request, sessionCsrf(session));
+    } catch {
+      return problem(403, "forbidden");
+    }
+    let body;
+    try {
+      body = await readContentTicketRequest(request);
+      if (body.share || body.purpose !== "content") throw new Error("invalid_ticket_body");
+    } catch {
+      return problem(400, "bad_request");
+    }
+    try {
+      const issued = await issueContentTicket(
+        env,
+        env.BLOBS,
+        dependencies.tokens,
+        principal,
+        body.targets,
+        body.purpose,
+        Math.min(Date.now() + body.ttlSeconds * 1000, session.expiresAt),
+      );
+      return Response.json(issued, { status: 201, headers: HEADERS });
+    } catch (error) {
+      if (
+        error instanceof MutationUnavailableError ||
+        (error instanceof Error &&
+          ["content_ticket_commit_unknown", "content_budget_commit_unknown"].includes(
+            error.message,
+          ))
+      ) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      return problem(404, "not_found");
+    }
+  }
   if (shareMatch) {
     if (url.search) return problem(404, "not_found");
     try {
@@ -196,6 +286,7 @@ export async function handlePublicShareHttp(
           version: session.shareVersion,
           expiresAt: session.shareExpiresAt,
           createdAt: session.createdAt,
+          contentOrigin: env.CONTENT_ORIGIN,
           root,
           actions: ["read", "download"],
         },

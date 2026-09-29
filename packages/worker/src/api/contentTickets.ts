@@ -12,12 +12,14 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PURPOSES = new Set(["content", "thumb", "page", "zip", "track"]);
 const MAX_BODY = 524_288;
 
-async function readRequest(request: Request): Promise<{
+export interface ContentTicketRequest {
   targets: ContentTicketTarget[];
   purpose: "content" | "thumb" | "page" | "zip" | "track";
   ttlSeconds: number;
   share?: { id: string; version: number };
-}> {
+}
+
+export async function readContentTicketRequest(request: Request): Promise<ContentTicketRequest> {
   if (request.headers.get("Content-Type") !== "application/json" || !request.body)
     throw new Error("invalid_ticket_body");
   const reader = request.body.getReader();
@@ -135,9 +137,9 @@ export async function handlePrivateContentTicketHttp(
       return problem(404, "not_found");
     }
   }
-  let body: Awaited<ReturnType<typeof readRequest>>;
+  let body: ContentTicketRequest;
   try {
-    body = await readRequest(request);
+    body = await readContentTicketRequest(request);
   } catch {
     return problem(400, "bad_request");
   }

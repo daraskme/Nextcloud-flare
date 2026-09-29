@@ -2,11 +2,12 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { handleContentHttp } from "../../src/api/content";
 import type { PublicShareDependencies } from "../../src/api/publicShareConfig";
 import { handlePublicShareHttp } from "../../src/api/publicShares";
 import { publicAssets } from "../../src/assets/publicManifest";
 import { servePublicShare } from "../../src/assets/publicShare";
-import { contentKeyRing } from "../../src/auth/contentTokens";
+import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { shareSecretDigest } from "../../src/auth/shareSession";
@@ -15,13 +16,22 @@ import { foundationFixture } from "../fixtures/foundation";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 
 const origin = "https://app.invalid";
+const contentOrigin = "https://content.invalid";
 let dependencies: PublicShareDependencies;
+let contentTokens: ContentTokens;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   const privateSecret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const publicSecret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const cursorSecret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ticketSecret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const cookieSecret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  contentTokens = new ContentTokens(
+    await contentKeyRing("ticket", { ticket: ticketSecret }),
+    await contentKeyRing("cookie", { cookie: cookieSecret }),
+    contentOrigin,
+  );
   dependencies = {
     csrf: new CsrfTokens(
       await csrfKeyRing("private", { private: privateSecret }),
@@ -29,6 +39,7 @@ beforeAll(async () => {
       origin,
     ),
     cursors: new NodeCursorTokens(await contentKeyRing("cursor", { cursor: cursorSecret })),
+    tokens: contentTokens,
   };
 });
 
@@ -70,6 +81,7 @@ function shareEnv() {
   return {
     ...mutationEnv(),
     APP_ORIGIN: origin,
+    CONTENT_ORIGIN: contentOrigin,
     EDGE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
   };
 }
@@ -124,6 +136,7 @@ it("unlocks a capability into a share-bound cookie and reads only the selected t
   expect(metadata.status).toBe(200);
   expect(await metadata.json()).toMatchObject({
     id: f.shareId,
+    contentOrigin,
     root: { id: f.owner.ids.folder, kind: "folder" },
     actions: ["read", "download"],
   });
@@ -157,6 +170,122 @@ it("unlocks a capability into a share-bound cookie and reads only the selected t
     dependencies,
   );
   expect(wrongShare.status).toBe(401);
+});
+
+it("issues, redeems, reuses, and cancels budgeted public content tickets", async () => {
+  const f = await fixture();
+  const key = `u/${f.owner.ids.user}/b/${f.owner.ids.blob}`;
+  const stored = await env.BLOBS.put(key, "abc");
+  if (!stored) throw new Error("fixture_blob_missing");
+  await env.DB.prepare(
+    "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,?)",
+  )
+    .bind(f.owner.ids.blob, stored.etag, Date.now())
+    .run();
+  try {
+    const unlocked = await handlePublicShareHttp(
+      unlockRequest(f.shareId, f.secret),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    const shareCookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const csrfResponse = await handlePublicShareHttp(
+      sessionRequest(`/api/v1/public/shares/${f.shareId}/csrf`, shareCookie, {
+        method: "POST",
+        headers: { Origin: origin, "Sec-Fetch-Site": "same-origin" },
+      }),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    const { token } = (await csrfResponse.json()) as { token: string };
+    const issue = (path: string, nodeId = f.owner.ids.file) =>
+      handlePublicShareHttp(
+        sessionRequest(path, shareCookie, {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+          },
+          body: JSON.stringify({
+            targets: [{ spaceId: f.owner.ids.space, nodeId }],
+            purpose: "content",
+            ttlSeconds: 300,
+          }),
+        }),
+        shareEnv(),
+        1,
+        dependencies,
+      );
+
+    const first = await issue(`/api/v1/public/shares/${f.shareId}/tickets`);
+    expect(first.status).toBe(201);
+    const issued = (await first.json()) as {
+      ticket: string;
+      ticketId: string;
+      budgetId: string;
+    };
+    const renewed = await issue(`/api/v1/public/shares/${f.shareId}/content-session`);
+    expect(renewed.status).toBe(201);
+    expect(((await renewed.json()) as { budgetId: string }).budgetId).toBe(issued.budgetId);
+    expect(
+      (await issue(`/api/v1/public/shares/${f.shareId}/tickets`, f.outside.ids.file)).status,
+    ).toBe(404);
+
+    const accepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(accepted.status).toBe(201);
+    const contentCookie = (accepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const contentPath = `/c/${f.owner.ids.file}/${f.owner.ids.blob}`;
+    const downloaded = await handleContentHttp(
+      new Request(`${contentOrigin}${contentPath}`, {
+        headers: { Cookie: contentCookie },
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(downloaded.status).toBe(200);
+    expect(new TextDecoder().decode(await downloaded.arrayBuffer())).toBe("abc");
+
+    const cancelled = await handlePublicShareHttp(
+      sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets/${issued.ticketId}`, shareCookie, {
+        method: "DELETE",
+        headers: {
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": token,
+        },
+      }),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(cancelled.status).toBe(204);
+    expect(
+      (
+        await handleContentHttp(
+          new Request(`${contentOrigin}${contentPath}`, {
+            headers: { Cookie: contentCookie },
+          }),
+          shareEnv(),
+          contentTokens,
+        )
+      ).status,
+    ).toBe(404);
+  } finally {
+    await env.BLOBS.delete(key);
+  }
 });
 
 it("requires current share/session state and revokes through public CSRF logout", async () => {
@@ -245,6 +374,9 @@ it("serves an isolated no-store shell and immutable hashed public assets", async
   );
   expect(shell.status).toBe(200);
   expect(shell.headers.get("Cache-Control")).toBe("public, no-store");
+  expect(shell.headers.get("Content-Security-Policy")).toContain(
+    `connect-src 'self' ${contentOrigin}`,
+  );
   const html = await shell.text();
   for (const path of publicAssets) expect(html).toContain(path);
   expect(html).not.toContain("/private-assets/");

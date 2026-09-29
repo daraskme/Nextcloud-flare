@@ -41,6 +41,7 @@ async function unlock() {
 }
 
 function date(value) {
+  if (!Number.isFinite(value)) return "—";
   return new Intl.DateTimeFormat("ja-JP", {
     dateStyle: "medium",
     timeStyle: "short",
@@ -57,6 +58,53 @@ function size(value) {
     unit += 1;
   }
   return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+}
+
+async function downloadFile(node, button) {
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  let csrf;
+  let issued;
+  try {
+    csrf = await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}/csrf`, {
+      method: "POST",
+    });
+    issued = await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}/tickets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.token },
+      body: JSON.stringify({
+        targets: [{ spaceId: state.share.root.spaceId, nodeId: node.id }],
+        purpose: "content",
+        ttlSeconds: 300,
+      }),
+    });
+    const accepted = await fetch(`${state.share.contentOrigin}/session`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      redirect: "error",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket: issued.ticket }),
+    });
+    if (!accepted.ok) throw new Error(String(accepted.status));
+    location.assign(
+      `${state.share.contentOrigin}/c/${encodeURIComponent(node.id)}/${encodeURIComponent(node.currentBlobId)}`,
+    );
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  } catch {
+    if (csrf && issued) {
+      void request(
+        `/api/v1/public/shares/${encodeURIComponent(shareId)}/tickets/${encodeURIComponent(issued.ticketId)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.token },
+        },
+      ).catch(() => {});
+    }
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
 }
 
 async function page(folderId, cursor) {
@@ -99,7 +147,6 @@ function renderRows(listing, folderId) {
     const row = element("article", { className: "node-row" });
     const button = element("button", { className: "node-button" });
     button.type = "button";
-    button.disabled = node.kind !== "folder";
     const icon = element("span", {
       className: "node-icon",
       text: node.kind === "folder" ? "▰" : "▤",
@@ -111,6 +158,10 @@ function renderRows(listing, folderId) {
         state.stack.push({ id: node.id, name: node.name });
         void renderFolder(document.querySelector(".path"), node.id);
       });
+    } else if (node.currentBlobId) {
+      button.addEventListener("click", () => void downloadFile(node, button));
+    } else {
+      button.disabled = true;
     }
     row.append(
       button,
@@ -188,7 +239,16 @@ function renderShare() {
   shell.append(header, path, listing);
   app.replaceChildren(shell);
   state.stack = [{ id: state.share.root.id, name: state.share.root.name }];
-  void renderFolder(path, state.share.root.id);
+  if (state.share.root.kind === "file") {
+    state.pages.set(state.share.root.id, {
+      children: [state.share.root],
+      nextCursor: null,
+    });
+    renderPath(path);
+    renderRows(listing, state.share.root.id);
+  } else {
+    void renderFolder(path, state.share.root.id);
+  }
 }
 
 async function start() {

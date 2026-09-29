@@ -28,7 +28,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 読み取り専用公開リンク | owner作成/一覧/参照/無効化、fragment unlock、share Cookie、metadata/children、public CSRF/logout、独立shell/assets、Files共有dialog | focused Node11/workerd5件、全体Node710/workerd2,106件。capability/session/version/epoch/root coverage、owner分離、失効、hashed assetsとexact route | download ticket/content-session、password/upload-only/internal share、shared DAV、media/ZIP、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
+| 読み取り専用公開リンク | owner作成/一覧/参照/無効化、fragment unlock、share Cookie、metadata/children、public CSRF/logout、target manifest/ticket/content Cookie/BudgetDO経由のfile download、独立shell/assets、Files共有dialog | capability/session/version/epoch/root coverage、owner分離、失効、budget再利用、content-origin交換、R2配信、ticket cancel、hashed assetsとexact route | password/upload-only/internal share、shared DAV、media/ZIP、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer実設置・外部通知・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer設置・外部通知・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
