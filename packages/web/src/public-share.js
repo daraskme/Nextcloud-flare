@@ -90,6 +90,8 @@ async function downloadFile(node, button) {
     location.assign(
       `${state.share.contentOrigin}/c/${encodeURIComponent(node.id)}/${encodeURIComponent(node.currentBlobId)}`,
     );
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
   } catch {
     if (csrf && issued) {
       void request(
