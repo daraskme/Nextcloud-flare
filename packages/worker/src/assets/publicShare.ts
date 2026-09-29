@@ -23,9 +23,16 @@ export async function servePublicShare(request: Request, env: Env): Promise<Resp
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Frame-Options", "DENY");
+  const contentOrigin = new URL(env.CONTENT_ORIGIN);
+  if (
+    contentOrigin.origin !== env.CONTENT_ORIGIN ||
+    contentOrigin.protocol !== "https:" ||
+    contentOrigin.origin === env.APP_ORIGIN
+  )
+    return problem(503, "not_ready");
   headers.set(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
   );
   return new Response(request.method === "HEAD" ? null : resource.body, {
     status: resource.status,

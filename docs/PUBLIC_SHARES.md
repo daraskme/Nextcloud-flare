@@ -16,15 +16,20 @@ public session は各 request で次を再検査する。
 - ControlDO mirror の current epoch と maintenance。
 - share action と、選択 root 配下の node coverage。
 
-接続済み public API は次の5経路だけである。
+接続済み public API は次の8経路である。
 
 - `POST /api/v1/public/shares/:shareId/unlock`
 - `GET /api/v1/public/shares/:shareId`
 - `GET /api/v1/public/shares/:shareId/children/:nodeId`
 - `POST /api/v1/public/shares/:shareId/csrf`
 - `POST /api/v1/public/shares/:shareId/logout`
+- `POST /api/v1/public/shares/:shareId/tickets`
+- `DELETE /api/v1/public/shares/:shareId/tickets/:ticketId`
+- `POST /api/v1/public/shares/:shareId/content-session`
 
 public mutation は app origin、`Origin`、Fetch Metadata、JSON、public 専用 CSRF、share/session の現行性を検査する。logout は share session と派生 content session を失効し、active budget を revoke する。
+
+file 選択時は share root 配下の file だけを target manifest に固定し、share session の期限内で短命 content ticket を発行する。browser は分離された `CONTENT_ORIGIN/session` で ticket を HttpOnly content Cookie に交換してから `/c/<nodeId>/<blobId>` を開く。R2 key は client へ返さない。content origin は D1 authority、manifest、share version/epoch/action、現在の blob、BudgetDO lease を再検査して immutable R2 object を配信する。同じ unlock session の再発行は同じ budget を再利用し、ticket cancel は派生 content session も失効する。
 
 ## assets と cache
 
@@ -32,14 +37,13 @@ public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS �
 
 ## 未接続
 
-この checkpoint は read-only metadata と folder browsing までである。file download は raw R2 key を公開せず、既存の target manifest、content ticket、content-session、BudgetDO を public ticket/content-session route へ接続してから有効化する。
-
-password share、upload-only share、内部共有、shared DAV、ZIP、Gallery、Bookshelf、Audio と public media/library route は未接続であり、route registry は 404 fail closed を維持する。remote migration と staging/production deploy は実施していない。
+app origin の直接 content proxy、password share、upload-only share、内部共有、shared DAV、ZIP、Gallery、Bookshelf、Audio と public media/library route は未接続であり、route registry は 404 fail closed を維持する。remote migration と staging/production deploy は実施していない。
 
 ## ローカル検証
 
 - capability の正誤、Cookie 属性、metadata/children、root 外拒否。
 - share 間 Cookie 分離、version/epoch mismatch、CSRF logout と失効。
+- public ticket の CSRF、root coverage、target manifest、content Cookie 交換、budget 再利用、R2配信、ticket cancel 後の拒否。
 - owner 以外の作成/参照/無効化拒否、無効化の一度だけの version 更新と派生 session 失効。
 - hashed public assets、private assets 非参照、shell no-store、asset immutable cache。
 - route registry の exact allowlist と未実装 route の fail closed。
