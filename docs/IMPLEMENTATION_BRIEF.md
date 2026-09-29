@@ -4,7 +4,7 @@
 
 状態: **v0.6 で R5 ゲート項目を是正済み。Astra R6 再ゲート = 条件付き Go（`docs/reviews/round6-astra.md`）。Phase 0 → 1 の順に着手可。R6 の 10 条件は §8 の確定事項で閉じ、Phase 1 完了前に fixture で証明する。**
 
-実装進捗: Phase 0 と Phase 1 の一部を実装。内部の atomic フォルダー作成・outbox producer・`node.created` consumer と Queue handler の admission gate まで実装。全 operation の認可、実 Queue/DLQ の検証、ControlDO 再開、repair/HTTP 接続と実環境 gate は未完了。再開は [`HANDOFF.md`](HANDOFF.md)、検証結果の正本は [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)、実装契約は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+2026-09-29の状態整理: 本書は設計上の実装順序・最終完了条件を定める資料。現在はFoundationに加えてFiles・upload/COPY・共有・WebDAV・Gallery・Audio・ZIP/CBZ本棚・backup/復旧の各ローカル経路を実装しているが、各phaseの残件と実環境gateがある。実装済み／未完了・検証済み／未検証は [`CURRENT_STATE.md`](CURRENT_STATE.md)、再開は [`HANDOFF.md`](HANDOFF.md)、検証履歴は [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)、内部契約は [`FOUNDATION.md`](FOUNDATION.md) を参照。以下の完了条件を現在の実装量に合わせて緩めない。
 
 - Phase 0 gate 1 で D1 `_assert`、`changes()`、EXISTS fallback と G01 三反例を最初に実証する。
 - 設計の安全性に関わる空欄を実装者の推測で埋めず、`docs/DESIGN.md` v0.6 と `docs/reviews/round5-resolution.md` を正本とする。
@@ -96,14 +96,14 @@ Node、pnpm、Wrangler、TypeScript、Vitest と全依存は Phase 0 で互換�
 
 - pnpm workspace: worker/web/shared。
 - Workerの `fetch/queue/scheduled` と DO をlocal runtimeで動かす。
-- private SPA、public-share、readerを別entryとしてbuildし、Workerがmanifestに従ってassetsを配信する。pure表示componentのsource共有は可。
+- 最終構成ではprivate SPA、public-share、trusted readerを別entryとしてbuildし、Workerがmanifestに従ってassetsを配信する。pure表示componentのsource共有は可。現時点のbuildはprivate／public-shareの2入口で、ZIP/CBZ画像readerは共有表示component。EPUB用trusted readerの独立入口は未実装。
 - local D1/R2/KV/DO/Queues stateはstaging/productionと分離する。
 - Cookie/CORS試験はapp/contentの別originとHTTPSを使う。
 - local auth fixture adapterは開発/test専用entryに限定し、本番bundleへ含めない。
 - secretは未追跡設定または環境別secret storeから供給し、Git/frontend/test snapshotへ含めない。
 - production相当のAccess、zone body limit、Images codec、Queue concurrency、D1性能はlocal成功で代替しない。
 
-**用意する package scripts：**
+**現在定義済みの主要package scripts：**
 
 ```text
 pnpm dev
@@ -112,12 +112,14 @@ pnpm typecheck
 pnpm build
 pnpm test:unit
 pnpm test:integration
-pnpm test:e2e
+pnpm test:browser
+pnpm test:browser:single-host
 pnpm verify:contracts
 pnpm verify:config
+pnpm check
 ```
 
-`test:e2e` はブラウザ機能実装時に追加する。それ以外は定義済み。`verify:contracts` は toolchain/limit/禁止API と route/operation の設計照合を行う。schema/FK/state の検査は unit/integration tests に含めるが、Phase 1 後半の認可・台帳・permit gate は未完了。
+`check` はlint・型・契約／設定・Node／workerd試験・buildを実行する。browserとbackupドリルは別コマンド。`verify:contracts` はtoolchain/limit/禁止APIとroute/operationの設計照合を行うが、全routeのhandler接続・全phase完成は証明しない。schema/FK/state・認可・台帳・permitの検証はunit/integrationに含め、最新コードでの実行範囲はCURRENT_STATEを参照する。
 
 ## 5. CI 構成
 

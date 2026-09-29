@@ -13,7 +13,7 @@
 
 ## タグ編集
 
-[音声タグの編集](AUDIO_METADATA_EDIT.md)で曲名・アーティスト・アルバムの表示値を変更できる。空欄で抽出値へ戻す。現在の原本・revision・選択共有とDAV lockを確定batchで確認し、競合や保存結果不明時は現在のタグを読み直す。単一fileのtracks応答は編集可能な利用者だけに抽出値/override/revisionを返し、一覧にはcanEditのhintを付ける。タグの検索文字列への同期は後続。
+[音声タグの編集](AUDIO_METADATA_EDIT.md)で曲名・アーティスト・アルバムの表示値を変更できる。空欄で抽出値へ戻す。現在の原本・revision・選択共有とDAV lockを確定batchで確認し、競合や保存結果不明時は現在のタグを読み直す。単一fileのtracks応答は編集可能な利用者だけに抽出値/override/revisionを返し、一覧にはcanEditのhintを付ける。[タグの検索同期と既存曲の再索引](AUDIO_SEARCH.md)も接続済み。
 
 ## 再生位置
 
@@ -25,7 +25,7 @@
 
 共有原本の所有spaceでControlDO mutation枠を取得し、元の認可・node/parent/blob・generator/duration・位置の期待値・epochを同じD1 batchで再検査する。状態更新、古いblobに属する本人の状態の整理、確定receiptと枠の返却は一括確定する。応答喪失では同じreceiptを読んで確定を確認する。原本差し替え後の一覧へ古い位置を引き継がない。原本bytes・quota・参照数は変更しない。
 
-schema0073・通常79table・149 route。0073は表示可能な子を探索する索引だけを追加し、table・依存を追加しない。全応答はno-store。結果の検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
+一覧の候補探索を追加した時点はschema0073・通常79table・149 route契約。0073は表示可能な子を探索する索引だけを追加し、table・依存を追加しない。現在の全体schema・契約数は[CURRENT_STATE](CURRENT_STATE.md)を参照する。全応答はno-store。結果の検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
 
 ## 候補の探索予算
 

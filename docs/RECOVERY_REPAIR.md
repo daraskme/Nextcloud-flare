@@ -1,6 +1,6 @@
 # 旧epochの予約・通知・検索索引の修復
 
-更新: 2026-09-25。停止中の内部ControlDO RPCを共通受付へ接続した。HTTP/operator UI、backup exportそのもの、remote migration/deployは未実装・未実施。
+内部RPCを共通受付へ接続した記録: 2026-09-25。状態注記を2026-09-29に更新。本書は旧epochの予約・通知・検索索引の修復契約を扱う。後続で[backup export](BACKUP_EXPORT.md)・[世代保存とオフライン復元](BACKUP_GENERATIONS.md)・[復旧CLIのdomain repair](DATABASE_RESTORE_DOMAINS.md)を接続済み。operator UI、完全な未知処理の修復と実環境へのmigration/deployは未完了・未実施。現在の全体状態は[CURRENT_STATE](CURRENT_STATE.md)を参照する。
 
 ## 呼出しと範囲
 
@@ -32,12 +32,14 @@ bootstrapが未完ならissuer/subとuser/spaceが全て空であること、完
 
 1回の予約・通知修復は最大20件。開始前の時刻から25秒の固定期限を持ち、次の行を始める前と受付後に検査する。期限後に新しい更新を開始せず、完了件数だけを報告する。既に開始したD1命令を途中取消しした証明には使わない。
 
-## 検証と残作業
+## 当時の検証と修復上の制約
+
+以下の件数・schema0034/0035は当時の記録で、schema0077／最新HEADの全体試験結果ではない。
 
 workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。
 
 境界試験は受付不能、rollback、ACK/照合喪失、他のwaiting/active、epoch/mode/pause/bootstrap変更、固定期限、実owner/disabled owner/space未復元、uploadへの結合、行の置換、通知の由来とclaim、他処理の終端を検査する。実ControlDO試験は全32枠との共有、1枠だけ空いても拒否、全終了後だけ確定、応答喪失後のevictionとread-only再照会を検査する。
 
-backupは通常の停止modeだけでは凍結されない。[専用barrier](BACKUP_BARRIER.md)を追加し、復旧更新も含め通常table全体を凍結する。これらの修復は停止中にも更新できる。upload公開失敗後と[DAV PUTの保存事実・失敗精算](DAV_UPLOAD.md)は共通受付へ接続済み。汎用予約回収はupload参照のある予約に加え、台帳のない旧dav.put予約も除外し、op_idを選択時・待機後・終端照合で束縛する。旧DAVの保存事実はfailed operationだけで証明できないため、明示的なR2-aware repairが必要。DAVの長時間転送と短い公開用permitは分離済み。未結合uploadもR2-aware cleanupの対象である。旧DAVの証明付き回収を残しつつ、専用barrierに続けてlogical export/restore drillを進める。未知KDF/multipartの閉鎖証明や容量精算はこの修復の対象に含めない。
+backupは通常の停止modeだけでは凍結されない。[専用barrier](BACKUP_BARRIER.md)を追加し、復旧更新も含め通常table全体を凍結する。これらの修復は停止中にも更新できる。upload公開失敗後と[DAV PUTの保存事実・失敗精算](DAV_UPLOAD.md)は共通受付へ接続済み。汎用予約回収はupload参照のある予約に加え、台帳のない旧dav.put予約も除外し、op_idを選択時・待機後・終端照合で束縛する。旧DAVの保存事実はfailed operationだけで証明できないため、明示的なR2-aware repairが必要。DAVの長時間転送と短い公開用permitは分離済み。未結合uploadもR2-aware cleanupの対象である。後続でlogical exportとローカルのオフライン復元ドリルは接続・実行済みだが、未知KDF/multipartの閉鎖証明や容量精算はこの修復の対象に含めない。
 
 migration0035以前のDAV PUTには永続attempt・write lease・条件付き送信がなく、例外時にnative PUTの終了を待たない経路もあった。旧予約の24h期限、failed operation、HEADのpresent/absentだけを終了証明にしてはならない。新しい台帳の終了期限を旧書込みへ後付けせず、物理容量の観測・隔離と、書込み終了を証明した後の予約精算を分ける。終了証明のない旧保留を解放する処理は未実装である。

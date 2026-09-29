@@ -1,334 +1,110 @@
-# 現在の実装状態
+# 現在状態：実装・残件・検証
 
-同じ所有者内の書籍COPYに本棚を接続しました。保存済みのZIP/CBZ/EPUB索引を原本とともに参照し、ZIP/CBZはコピー後すぐ読めます。タイトル・著者・シリーズの設定を引き継ぎ、読書位置はコピー先で独立して保存します。schema0077・通常81table・152 API route。既存ファイルの索引要求、所有者をまたぐCOPY先の再索引、表紙生成、PDF/EPUB本文、フォルダー画像リーダー、運用修復と実環境gateは未完成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+更新: **2026-09-29**。ソース確認の基準は **`81b351e`**（同じ所有者内の書籍COPY）。今回の更新は資料の整理で、アプリの追加実装は行っていない。
 
-## 先行実装の記録
+**主要なファイル操作・共有・Gallery・Audio・ZIP/CBZ本棚はローカル接続済み。製品全体は未完成で、staging／productionの稼働・リリース判定は未実施。** Foundationや一つの機能の成功を製品完成と扱わない。
 
-[既存ファイルのメディア情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFiles画面へ接続しました。現在の読者で原本を解析し、音声タグ・画像寸法・動画情報・MIME・検索索引を一括反映します。編集済みタグを保持し、再実行で原本を再走査しません。schema0076・通常79table・151 API route。自動一括再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+## 判定と基準
 
-[既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[音声の埋め込み表紙](AUDIO_COVERS.md)を、抽出・WebP変換・保存・配信・Audio一覧と常駐playerへ接続しました。新しいMP3・FLAC・M4A/MP4・Ogg Opus/Vorbisを対象に、現在の原本と閲覧権限を確認します。既存の変換記録・容量予約・回収処理を共有し、再実行で変換を重複させません。schema0075・通常79table・149 API route。既存原本の表紙再抽出と所有者間COPY後の再生成、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[既存音声の再索引](AUDIO_SEARCH.md)を定期保守へ接続しました。保存済みの実効タグから検索cache・base索引・FTSを一括修復します。ControlDOへ進行位置を保存し、1回32候補・最大8件・5秒で少しずつ進めます。原本・編集値・再生位置は変更せず、競合や停止・backup/restore凍結を再検査します。schema0074・通常79table・149 API route。cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[所有者間COPY](COPY_JOBS.md)へ音声metadataの引継ぎを追加しました。新しいmanifest v2で受付時の抽出値・override・時間・番号と検索cacheを固定し、コピー先のAudio一覧・Files検索へ同時反映します。元タグが受付後に変わっても固定値を維持し、旧v1ジョブも従来の契約で再開します。rawと正規化後を含む8 MiB上限を検査します。schema0074・通常79table・149 API route。既存曲の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[音声タグの検索](AUDIO_SEARCH.md)をFilesへ接続しました。新しく抽出・編集した曲名・アーティスト・アルバムを検索でき、改名・MOVE・復元と同一所有者COPYでタグを保持します。単一/分割upload・DAV上書きでは旧原本のタグを直ちに外します。schema0074・通常79table・149 API route。既存曲の一括再索引、所有者間COPYの音声引継ぎ、cover、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[音声タグの検索準備](AUDIO_SEARCH.md)として、抽出値とoverrideから検索用データを同時保存する処理を追加しました。Unicode正規化とfield上限、元タグとの一致、抽出中の競合時の再試行を実装しています。schema0074・通常79table・149 API route。検索API/FTS、改名・MOVE・上書き・COPY・復元との同期、既存データ再構築は次の接続対象です。cover、Bookshelf、運用修復と実環境gateも継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[音声タグの編集](AUDIO_METADATA_EDIT.md)を所有者・明示選択した内部edit共有へ接続しました。曲名・アーティスト・アルバムを修正し、空欄で原本からの抽出値へ戻せます。現在の原本とrevision、元の認可、DAV lockを再確認し、override・更新世代・監査・確定receiptを同時保存します。保存後も同じ原本の再生を維持します。schema0073・通常79table・149 API route。タグの検索同期、cover、Bookshelf、既存原本の再抽出/copy引継ぎ、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[AAC（M4A/MP4）・Vorbis（Ogg）](AAC_VORBIS.md)の情報抽出と原本再生を追加しました。AACの音声構成とVorbisの3ヘッダーを上限付きで検査し、タグ・時間・形式を既存の一覧と常駐playerへ接続します。AAC-LCとVorbisのmono/stereo原本を所有者・公開リンクで実際に再生しました。HE-AACは構成解析までで実音源の復号は未検証です。schema0073・通常79table・149 API routeを維持します。cover・override編集/検索、Bookshelf、既存原本の再抽出/copy引継ぎ、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[MP3・FLAC・WAVの情報抽出と再生](AUDIO_FORMATS.md)を追加しました。原本ヘッダーと読み取り上限を検査し、曲名・artist・album・時間を既存の一覧と常駐playerへ接続します。所有者と公開リンクで実際の原本を再生し、利用者別位置の保存も確認しました。schema0073・通常79table・149 API routeを維持します。AAC/Vorbis、cover・override編集、Bookshelf、既存原本の再抽出と運用修復、実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[Audioの2,000曲表示](AUDIO.md)をローカルChromeで検証し、再生時刻の更新による一覧全体の再描画を抑えました。長いタグでも一覧と固定プレーヤーの高さを保ちます。所有者画面とスマホ幅の公開リンクで、実APIによる200件ずつの読み込み・上限・再生・前後移動・終了を確認しました。schema0073・通常79table・149 API routeを維持します。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[Audio一覧の探索量](AUDIO.md)を制限しました。表示可能な項目の索引から1回につき1,000候補と続行確認1件を読み、音声以外や非表示の項目が大量にあっても全件走査を避けます。空ページもカーソルで続けられ、画面は最大3回まで自動で進みます。2,000曲上限と現在の認可・原本・再生位置の検査は維持します。schema0073・通常79table・149 API route。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[Audioの一覧と常駐プレーヤー](AUDIO.md)を所有者・内部共有・公開リンクへ接続しました。画面を移動してもOpus原本の再生を継続し、ログイン利用者は15秒ごとと一時停止時に本人の位置を保存して再開できます。保存競合では上書きせず現在の位置を再取得します。共有解除・ログアウトと配信期限に合わせて音声を破棄します。追加音声形式・cover・override編集、Bookshelf、運用修復と実環境検証は継続します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[Audioの曲一覧と再生位置API](AUDIO.md)を接続しました。所有者・内部共有・公開リンクで現在のOpus情報を一覧し、ログイン利用者は本人の再生位置だけを保存できます。原本差し替え・共有解除・別タブの先行保存を検査します。schema0072・通常79table・149 routeを維持します。専用一覧画面・常駐player・自動保存と再開は次の接続対象です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[AV1・Opusの情報抽出と動画再生](TRACK_METADATA.md)を接続しました。MP4/WebMのAV1動画（8/10-bit、Opus付き／音声なし）をGalleryで開き、所有者・内部共有・公開リンクの原本URLから再生します。再生不可時は同じ認可のダウンロードを提供します。OpusのOgg/WebM/MP4情報と限定タグは既存DBへ保存し、Filesから原本を開いて再生できます。schema0072・通常79table・149 routeを維持します。Audio専用UIと位置保存、Bookshelf、既存データ再抽出/copy引継ぎ、運用修復は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[大きいプレビューの要求時生成](LARGE_THUMBNAILS.md)をGalleryへ接続しました。開いた画像だけにlg1600を要求し、所有者・内部共有・公開リンクでプレビューと原本を切り替えられます。同じ原本への要求を集約し、現在の閲覧権限をQueueの生成・公開時にも検査します。schema0072・通常79table・149 route。動画情報・player、Bookshelf/Audio、未知nativeや失効した生成要求の運用修復は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[Galleryの画像一覧と閲覧](GALLERY.md)を所有者・内部共有・公開リンクへ接続しました。撮影日時順の200件ページ、グリッド／リスト、再帰切替、原本ライトボックスと前後移動に対応します。現在の原本・生成version・認可を固定し、サムネイル取得は画面付近の同時4件に制限します。50,000候補の読み取り行数gateが未達のため、設計に従い通常10,000候補へ縮小します。schema0071・通常79table・147 routeを維持します。lg要求時生成、動画情報・player、Bookshelf/Audioと運用の残件は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[サムネイル配信](THUMBNAIL_DELIVERY.md)を所有者・内部共有・公開リンクへ接続しました。生成済みWebPの世代とサイズをチケットに固定し、現在の閲覧権限・原本・共有状態を配信直前にも確認します。同じ生成物の別名や再発行では配信容量を加算しません。schema0071・通常79table・147 routeを維持します。次はGallery API/UIとlgの要求時生成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[アップロード後のサムネイル生成](IMAGE_QUEUE.md)をQueueへ接続しました。通常・匿名uploadとWebDAV PUTからsm256/md768のWebPを生成・保存し、成功済みの再配信では変換とPUTを重複させません。invocation全体で有料試行2回・25秒を共有し、非対応・既知の失敗は原本を残して記録します。未知結果は保留します。schema0071・通常79table・147 routeを維持します。次はthumb配信・Gallery API/UI・lgの要求時生成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[サムネイルの公開再開](IMAGE_DERIVATIVES.md)を追加しました。元の処理期限が切れても、同じ通知の新しいclaimと現在の認可で、成功済みの保存結果を公開できます。D1と独立した終了履歴・書込み停止記録も照合し、費用・保存を重複させません。schema0071・通常79table・147 routeを維持します。Queue自動生成・配信・Gallery UIは次の接続対象です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[復元後の画像回収](DATABASE_RESTORE_DOMAINS.md)を `repair-restored --kind images` へ接続しました。未保存の生成物や保存済みの未公開出力を、同じ停止証拠と容量計算で回収します。停止変更・独立履歴欠落では予約を保持します。schema・公開API・依存の追加はありません。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[サムネイル生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)を接続しました。D1と独立したControlDOの記録で新しい書込みを止め、未終了PUTがない場合だけ実容量へ計上して予約・pinを精算します。公開中の画像は原本が削除段階へ進むまで保持し、回収後も35日のGC猶予を守ります。専用Cronは最大8件・25秒、HEADは生成物ごとに累計64回までです。schema0071・通常79table・147 route。復元CLIの画像回収にも接続済みです。Queue自動生成・thumb配信・Gallery UI、未知nativeの運用修復は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[サムネイルの保存処理](IMAGE_DERIVATIVES.md)を追加しました。成功済みのWebPを不変のR2 keyへ一度だけ保存し、元の認可・現在の原本・claim・epochと実際の保存証拠を確認して公開記録を確定します。画像の予約容量は通常ファイルの論理容量と分離し、実bytesは物理容量へ計上します。schema0070・通常78table・147 route。生成物の回収は後続の0071で接続済みです。未確定nativeの運用修復、Queue自動生成、thumb配信、Gallery UIは未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[画像変換の失敗記録](IMAGE_COSTS.md)を接続しました。Imagesの明示的な拒否と、EOFまで取得した生成物の検査失敗を終了として記録します。timeout後の遅い拒否、応答喪失、D1復元後も同じ記録を修復します。失敗の費用キーを保持し、再実行を許可しません。schema0069・通常77table・147 route。R2保存は後続の0070で接続済みです。回収・修復、配信、Queue、Gallery UIが次の接続対象です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[画像変換の費用・終了記録](IMAGE_COSTS.md)を追加しました。同じblob・サイズ・生成versionの重複変換を防ぎ、実際の終了証拠をD1とは独立したControlDOに保存します。応答喪失やD1復元後も変換を再実行せず記録を修復し、未確定ならbackup・復旧完了・受付再開を止めます。schema0068・通常77table・147 route、依存追加なし。既知のImages失敗の終了証明は後続の0069で接続済みです。R2保存は後続の0070で接続済みです。Queue・配信・Gallery UIは後続です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[サムネイル変換の実行部](IMAGE_TRANSFORMS.md)を追加しました。固定原本のサイズ・静止画・寸法を確認し、条件付きR2ストリームからsm256/md768/lg1600のWebPを生成します。生成物の寸法・metadata非保持・SHA-256を検査し、期限後の応答と途中中断も処理します。費用claim・native終了記録は後続のIMAGE_COSTSで接続済みです。R2保存は後続の0070で接続済みです。Queue・配信、Gallery UIは次の接続です。この実行部を追加した時点はschema0067・76table・147 route、依存追加なし。
-
-[画像メタデータ](IMAGE_METADATA.md)を通常upload・WebDAV PUTの完了Outboxへ接続しました。JPEG/PNG/WebP/AVIFの寸法と許可したEXIFだけをbounded Rangeで抽出し、元blob・parent・actor・claimを確認してMIMEと同じbatchで保存します。新しいDAV PUTは利用者申告だけでinline mediaにしません。サムネイル生成・Gallery画面・既存データ再抽出と動画/音声は後続です。
-
-先行472e682の[CI36473189569](https://github.com/daraskme/Nextcloud-flare/actions/runs/36473189569)は公開編集再開後の全10job成功。今回の画像処理は後続の変更です。
-
-[公開編集の再開](PUBLIC_EDIT_RECOVERY.md)を実装しました。フォルダー作成・改名・削除の元intentを送信前に保存し、再読み込み後は同じsession/keyで明示確認します。別タブの同時実行、記録の差替え、ログアウト後の遅い応答による再保存を拒否します。サーバーAPI・schema・依存の追加はありません。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-[ZIPダウンロード](ZIP_DOWNLOADS.md)を所有者・内部共有・公開リンクのAPIと画面へ接続しました。固定snapshot、日本語名・空フォルダー、正確なサイズ会計、期限付きblob保持に対応し、共有停止・内容変更・元credentialを各取得時に検査します。schema0067・通常76table・147 routeを維持し、今回のmigration/依存追加はありません。thumb/page/track・media、復旧側の残件、実環境検証は未完了です。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-先行ebcc9faの[CI36469054574](https://github.com/daraskme/Nextcloud-flare/actions/runs/36469054574)は、ZIP配信接続後のUbuntu/Windows Node・全native shard・通常/単一host browser・backup bindings/cliの全10jobが成功しました。今回の公開編集再開は後続の変更です。
-
-先行c886e85の[CI36465246546](https://github.com/daraskme/Nextcloud-flare/actions/runs/36465246546)は、Ubuntu/Windows Node・全native shard・通常/単一host browser・backup bindings/cliの全10job成功。D1の結果列上限に対応した分割projectionと、Nodeの同時実行制限後の結果です。過去のWindows native失敗の根本原因特定とは区別します。
-
-先行f2c6c33の[CI36460457472](https://github.com/daraskme/Nextcloud-flare/actions/runs/36460457472)はWindows全Node/4分割・通常/単一host browserの7job成功、backup bindings/cliとUbuntu Nodeの3job失敗で終了しました。バックアップはローカル実D1でも再現し、uploadsが51列になったことで型と値の102列SELECTがD1の結果列上限100を超えると特定しました。今回、同じ凍結keyset pageを100列以内のprojectionへ分割し、各pageのkey/順序/件数を照合するよう修正しています。Ubuntuはbackup-operator試験の5秒timeoutで、Nodeの同時実行を全OSで2に制限しました。製品の期限やUbuntuの試験timeoutは変更していません。CLI jobの保存ログはbackup_run_drill_command_failedのみで、詳細artifactは取得できなかったため、その失敗の同一原因までは確定せず修正後CIで確認します。修正後の検証は上記実装記録を参照してください。
-
-更新: 2026-09-29。直近の到達点は[PROGRESS](PROGRESS.md)。
-
-[所有者間コピー](COPY_JOBS.md)の明示的な再試行をRESTと画面へ接続しました。元jobの停止と全blobの精算が証明された後、現在の内容から新しいjobを1件だけ受け付けます。異なるkeyの競合・応答喪失・reloadでも同じ後継を追跡し、元jobの容量保持やnative記録を解除しません。DLQの保持期限管理と通知、未知native/part/handleの全修復、最大規模の実環境検証、タブ終了後や別端末の追跡復元は未完了です。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
-
-前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
-
-次はlg要求時生成、動画情報/playerとpage/track・media配信、copyのDLQ運用・未解決attemptの修復を進めます。ZIPの実環境・最大規模検証も残っています。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
-
-先行dad1f95の[CI36455427980](https://github.com/daraskme/Nextcloud-flare/actions/runs/36455427980)は、Ubuntu・Windows全Node/4分割・通常/単一host browser・backup bindings/cliの全10jobが成功して終了しました。過去のWindows native失敗の根本原因が特定されたことを意味しません。
-
-先行937b434の[CI36450383559](https://github.com/daraskme/Nextcloud-flare/actions/runs/36450383559)は8job成功、Windows4/4失敗で終了しました。multipart-uploadの64 MiB + 3 bytes試験で完了直後のHEADが不在となりupload_complete_pending、867/868件成功です。R2 complete直前の受付・native結果・観測のどの段階が原因かは保存ログだけで確定できず、未解決として追跡します。/tmp/ncf-public-delete-ci-windows4.log。
-
-先行837cfedの[CI36444362854](https://github.com/daraskme/Nextcloud-flare/actions/runs/36444362854)は、Ubuntu・Windows2/4〜4/4・backup bindings/cliの6job成功、browser失敗、Windows1/4が30分上限でcancelledでした。browserの4件は仮想スクロールの表示範囲外を直接操作していたため、検索してから操作する形へ修正しました。Windows全Node（1,573件成功、約9分）を独立jobへ分け、全4integration shardの検査と30分上限を維持します。今回のCIはpush後に確認します。
-
-先行2d34118の[CI36440037128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36440037128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。下記の先行Windows失敗の根本原因が特定されたことを意味しません。
-
-先行4cf6153の[CI36435508999](https://github.com/daraskme/Nextcloud-flare/actions/runs/36435508999)は、Ubuntu・Windows1/4/2/4/4/4・browser・backup bindings/cliの7job成功、Windows3/4失敗で終了しました。3/4はmultipart-bucket-control-admissionのscan-page試験でr2_binding_verification_failedとなり、773/774件成功でした。保存ログでは根本原因を特定できず、解決済みとは扱いません。
-
-先行1cee05dの[CI36430025491](https://github.com/daraskme/Nextcloud-flare/actions/runs/36430025491)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。Windows全Nodeを1/4に集約後の全shard完走を確認しています。
-
-先行67be478の[CI36425378826](https://github.com/daraskme/Nextcloud-flare/actions/runs/36425378826)は、Ubuntu・Windows1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4は30分のjob上限でcancelledとなりました（GitHub annotation確認）。4/4の全Nodeは成功し、integration中に打ち切られています。先行backupのEBADF修正はUbuntuの全checkでも成功しました。Windowsの未完走を成功扱いにはしません。Windows全Nodeを1/4で一度実行し、残るshardでの重複を取り除きます。全integration shardと検証範囲は維持し、次のCIで完走を確認します。
-
-先行c0ed70aの[CI36421891215](https://github.com/daraskme/Nextcloud-flare/actions/runs/36421891215)は、Windows4分割・browser・backup bindings/cliの7job成功、Ubuntu失敗で終了しました。backup-generationの不正SQL拒否試験で、期待したbackup_invalid_data_sqlがEBADFに置き換わりました。借用fdのReadStreamがparser中断時にfdを閉じ、FileHandleのfinally closeと競合する経路を一時ファイル100回中1回で再現しました。今回は64KiBのFileHandle.readに統一し、handleをfinallyだけで閉じます。修正後のローカル全Node1,528件が成功し、CIでの再確認はpush後に行います。
-
-先行57d54dcの[CI36419462128](https://github.com/daraskme/Nextcloud-flare/actions/runs/36419462128)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8job成功で終了しました。
-
-先行19622b8の[CI36415056432](https://github.com/daraskme/Nextcloud-flare/actions/runs/36415056432)は、Ubuntu・Windows1/4と2/4・browser・backup bindings/cliの6job成功、Windows3/4と4/4失敗で終了しました。3/4はbudget.test.tsの準備中にR2 grantのD1 triggerがr2_write_unavailableで拒否し、729/730件成功。4/4はcontrol-restore-inventoryのsame_round試験でdatabase_restore_inventory_unconfirmedとなり、839/840件成功。保存ログでは詳細原因を特定できず、解決済みとは扱いません。DLQ再投入変更57d54dcのCIは上記を参照してください。
-
-先行f2e4788の[CI36411992220](https://github.com/daraskme/Nextcloud-flare/actions/runs/36411992220)は、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功して終了しました。
-
-先行45a72d2の[CI36405509625](https://github.com/daraskme/Nextcloud-flare/actions/runs/36405509625)は、Ubuntu・Windows分割2/4と3/4・browser・backup bindings/cliの6job成功、Windows1/4失敗、4/4はcancelledで終了しました。Windows1/4はNode1,464/1,466件成功で、backup-operatorとdatabase-restoreのbeforeEachが60秒でタイムアウトしました。準備処理のボトルネックは未確定です。先行810ea19の[CI36402990343](https://github.com/daraskme/Nextcloud-flare/actions/runs/36402990343)はWindows4分割を含む7job成功、browserのみ27/28件成功で終了しました。上書き応答喪失試験の待機順序は45a72d2で修正し、同コミットのbrowser CI成功を確認済みです。
-
-先行0b85355の[CI36400478502](https://github.com/daraskme/Nextcloud-flare/actions/runs/36400478502)は終了しました。Ubuntu・Windows分割1/4〜3/4・browser・backup bindings/cliの7job成功、Windows4/4はcopy-executorの2件で書込み許可取得に失敗しました（workerd813/815件成功）。以前の固定件数assertionとは異なります。残り3秒で次転送へ進む経路をローカルで再現し、6秒の事前余裕を追加しましたが、CIの元例外が隠れていたため、2件の根本原因を確定したとは扱いません。内部causeを保持して次回CIで確認します。
-
-先行8dd74ecの[CI36394122457](https://github.com/daraskme/Nextcloud-flare/actions/runs/36394122457)は終了し、Ubuntu・Windows4分割・browser・backup bindings/cliの全8jobが成功しました。UbuntuのNode1,436件と全workerd137file/3,093件の成功もログで確認済みです。直前81e9f01の[CI36396573483](https://github.com/daraskme/Nextcloud-flare/actions/runs/36396573483)は終了し、Ubuntu・Windows分割1/4と3/4・browser・backup bindings/cliが成功しました。Windows2/4はQueue再開1件（796/797件成功）、4/4はexecutor3件（811/814件成功）が失敗しました。25秒で正常にyieldしても固定件数を要求していたため、0b85355で時間による中断後の再開と重複PUT防止を検証する形へ修正し、D1/R2予算境界は少量の実転送で独立に再現しています。製品の期限・上限は維持しています。今回の変更のCIはpush後に確認します。
-
-CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387497530)は終了しました。Ubuntu・Windows分割2/4・4/4・browser・backupのbindings/cliは成功、Windows分割1/4は30分のjob上限でcancelled（annotation確認）、3/4はcopy-executionのepoch変更試験の準備中にfixture_copy_failedで失敗しました（Node1,431件成功、integration717/718件成功）。SQLエラーと受付outcomeの診断はef5ee58へ追加済みですが、原因解消とは扱いません。コピー実行処理b7a32abの[CI36387145263](https://github.com/daraskme/Nextcloud-flare/actions/runs/36387145263)はUbuntu・Windows3分割・browser・backupの全6job成功です。ef5ee58の[CI36389252207](https://github.com/daraskme/Nextcloud-flare/actions/runs/36389252207)は終了し、Windows4分割・browser・backupのbindings/cliが成功しました。Ubuntuは全Node1,431件成功、integration3,046/3,047件成功で、control-restore-domainのfixtureがdispatch_before<=started_at+5000制約に違反しました。開始と期限でDate.now()を別々に取得していたため、8dd74ecで同じ開始値へ統一しました。製品の期限・assertionは維持しています。fdc7abaの[CI36390929822](https://github.com/daraskme/Nextcloud-flare/actions/runs/36390929822)は終了し、Windows4分割・browser・backupのbindings/cli成功、Ubuntu失敗です。UbuntuはNode1,431件成功、integration3,066/3,067件成功で、control-restore-gcの同じ時刻fixture問題でした。8dd74ecでこちらも同じ開始値へ統一しました。
-
-先行5787368の[CI36385410210](https://github.com/daraskme/Nextcloud-flare/actions/runs/36385410210)はUbuntu・Windows分割2/3・3/3・browser・backup成功、Windows分割1/3は30分のjob上限でcancelledです（GitHub annotationで確認）。上記4分割化後のCIで完走を確認します。
-
-先行de13fc6の[CI36384106965](https://github.com/daraskme/Nextcloud-flare/actions/runs/36384106965)はUbuntu・Windows分割1/3・3/3・browser成功、Windows分割2/3とbackupは30分のjob上限でcancelledとなりました（GitHub annotationで確認）。backup:run-drillは上限直前に全assertion成功とSQL 9,233bytesのPASSを出していますが、jobの正常終了は確認できません。Windows分割2/3も打切り直前まで試験が進行しており、上記のCI実行単位へ分割します。以前のbackup_wrangler_failedや検索個別timeoutの原因が解決したことは意味しません。
-
-先行2f9b8bdの[CI36381492636](https://github.com/daraskme/Nextcloud-flare/actions/runs/36381492636)はbrowser・Windows分割1/2が成功、Ubuntu・Windows分割3は復旧snapshot試験の旧table数74という期待値で失敗しました。通常75tableとexport対象名の完全一致へ今回修正し、対象46件は成功しています。backupは通常drill・operator drill成功後、run-drill中に30分のjob上限で打ち切られました（GitHub annotationで確認）。保存ログだけでは遅延箇所を確定できず、調査を継続します。
-
-送信先は承認済み専用`codex/database-restore`です。先行b1fedc7の[CI36377836985](https://github.com/daraskme/Nextcloud-flare/actions/runs/36377836985)はUbuntu・Windows2分割・browser・backupが成功、Windows分割1はsearch.test.tsの1万件検索が90秒timeoutで失敗しました（965/966件成功）。検索試験の遅延原因は未解決で、上限や検査を緩めていません。先行33a8a80の[CI36365491865](https://github.com/daraskme/Nextcloud-flare/actions/runs/36365491865)はUbuntu・Windows3分割・browser・backupの全6job成功です。前回の時刻依存テスト修正はWindows3分割でも成功しました。以前のorphan-admission回数不一致と21cd396のR2保存先照合失敗の原因は未確定です。先行af30646の[CI36367826306](https://github.com/daraskme/Nextcloud-flare/actions/runs/36367826306)は全6job成功です。先行7e933b1の[CI36369537337](https://github.com/daraskme/Nextcloud-flare/actions/runs/36369537337)は全6job成功です。先行a52b815の[CI36371093589](https://github.com/daraskme/Nextcloud-flare/actions/runs/36371093589)はUbuntu・Windows3分割・browser成功、backup:run-drillのsource fingerprints中にbackup_wrangler_failedで失敗しました。保存されたログだけでは子プロセスの失敗原因を特定できません。最新CI状態はgh run listで確認します。
-
-## 状態の意味
-
-| 状態 | 意味 |
+| 表記 | 意味 |
 |---|---|
-| 実装済み | repository内に本体と接続経路がある。ただしリモート公開済みとは限らない |
-| 検証済み（local） | Node/SQLiteまたはworkerdのD1/R2/DO/Imagesで自動試験済み |
-| 検証済み（CI） | GitHub ActionsのUbuntu/Windowsでrepository全checkが成功済み |
-| 未検証（staging） | 実Cloudflare resource、Access、Queue、ネットワーク、browser等の試験が残る |
-| 未実装 | 必要なサービス、UI、運用処理、または接続経路がまだない |
+| 実装済み | 記載したサービス・API・画面がコードに接続されている。分野全体の完成や実環境の動作保証ではない |
+| 一部実装／未完了 | 使用可能な範囲はあるが、仕様の一部・運用への接続が残る |
+| 検証済み | 記載したコード・環境・試験範囲で成功した記録がある |
+| 未検証 | 実装の有無にかかわらず、その環境・条件での成功を確認していない |
 
-ローカル成功はstagingやproductionの成功を意味しない。現在productionへのmigration・deployは行っていない。
+- schemaはmigration `0001`〜`0077`、通常81テーブル。route manifestは152契約。**契約に載っていてもhandlerが未接続の経路があるため、152 API完成とは数えない。**
+- 基準ブランチは `codex/database-restore`。資料整理前は作業ツリーclean、ローカル追跡参照 `origin/codex/database-restore` は `472e682`、基準コードはその33コミット先。
+- 上記はローカル参照の確認であり、今回fetchやGitHubの再照会はしていない。資料更新コミットはこの差分数に含めない。
+- 現在状態は本書、検証履歴は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)、最近の変更は [PROGRESS](PROGRESS.md)、次の作業は [HANDOFF](HANDOFF.md)。履歴中の「今回」「未実装」は当時の状態として読む。
 
-## 実装済みでローカル検証済み
+## 実装済みの範囲と残件
 
-| 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
+全phaseの完了条件は [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) §2と [DESIGN](DESIGN.md) を維持する。以下の各行には残件または実環境の確認があるため、phase全体の完了宣言はしない。
+
+| 分野 | 実装済み・接続済み | 未完了・未接続 | 詳細／既存の検証記録 |
 |---|---|---|---|
-| 音声タグ検索と既存曲の再索引 | 抽出/編集・ファイル操作・所有者間COPYとの同期。定期保守による旧cache/base/FTSの修復、永続cursor・32候補/8件/5秒上限 | Unicode、競合/巻戻し、応答喪失、元データ/再生位置保持、途中再開・同時実行・停止、検索cursor失効。件数はIMPLEMENTATION_STATUS | 原本の一括再抽出、他media、実D1負荷と進行表示。[詳細](AUDIO_SEARCH.md) |
-| AudioとGallery | 曲一覧・常駐player・本人の位置保存、タグ編集、MP3/FLAC/WAV/AAC/Vorbis/Opus。新しいMP3/FLAC/MP4/Oggの埋め込み表紙。画像lightbox・AV1原本再生・サムネイル配信と共有閲覧 | ローカルD1/R2/QueueとChrome、Audio2,000曲・最大長タグ、所有者/共有/公開閲覧。詳細は各機能資料 | 原本の一括再抽出、WAV/WebM表紙、Bookshelf、他OS/browserと実Cloudflare |
-| サムネイル変換の内部実行部 | 固定原本の入力計画、条件付きR2 stream、静止画sm/md/lg WebP、出力metadata非保持・寸法・hash・中断 | Nodeの上限/破損/失効/遅延、ローカルImagesのJPEG/PNG/WebP/AVIF/10-bit・3サイズ・alpha・EXIF除去 | 費用claim/native記録、Queue/R2保存・physical会計・配信、Gallery、実EXIF回転・品質・plan検証。[詳細](IMAGE_TRANSFORMS.md) |
-| 画像メタデータと原本MIME | 新しい通常/匿名upload・DAV PUTのOutbox、JPEG/PNG/WebP/AVIF header、EXIF whitelist、current blob/parent/claim、元uploadを確認した受け取り専用認可 | Nodeの破損/上限、実D1/R2の原子確定/応答喪失/失効、Chromeの6形式と匿名AVIF実decode | Images/サムネイル・Gallery API/UI、既存データ/copy/move、動画/音声、他browser・実環境。[詳細](IMAGE_METADATA.md) |
-| 公開リンクの所有者管理API/画面 | CRUD、閲覧/編集切替、期限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効、URLコピー | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替、mobile browser操作 | 実環境。[詳細](PUBLIC_SHARES.md) |
-| 受け取り専用共有 | 所有者管理、password/期限/容量上限、匿名receipt/単一・分割送信、衝突時自動改名、owner/share原子予約、reload再開 | 実D1/R2、既存移行、失敗/中止精算、型・関連Node、390px browser・96 MiB再開・ACK喪失 | 実環境・最大規模。[詳細](UPLOAD_ONLY_SHARES.md) |
-| 公開閲覧・フォルダー作成・名前変更・削除・upload | 独立public build/SRI、root/children、ticket配信、現行edit権限でのcreate/rename、元session/key固定の再送とoperation照会、単一/分割upload・上書きAPI/画面、IndexedDB再開・中止、確認付きtrashと所有者の復元 | 匿名複数tab、共有境界、保存直前の失効、DAV lock、ACK喪失、権限切替、mobile browser | thumb/page/track・media、staging。[詳細](PUBLIC_SHARES.md) |
-| 公開リンクの匿名認証 | challenge/Cookie、秘密値/password照合、共有sessionの発行/再利用、public CSRF/logout、ControlDOの共有10/IP30回のrolling制限 | JWT用途/鍵切替、D1の失効競合・応答喪失、DO並行制限/eviction/喪失・停止。結果はIMPLEMENTATION_STATUS | 未接続の公開API、staging。[詳細](PUBLIC_SHARES.md) |
-| DLQ記録・管理者再投入 | 配信単位の観測、50件ページ、同じOutboxへの再配信予約、監査と一度限りの受付、現行管理者と元actorの認可 | 同時要求、応答喪失、失効/停止、copy途中再開、成功済みPUT/completeの再送防止、未知native保留。詳細はIMPLEMENTATION_STATUS | 保持期限・通知・実Queue/DLQ運用。[詳細](DEAD_LETTERS.md) |
-| 受信共有の閲覧・編集 | Shared一覧・配下/単体file閲覧、選択share固定、共有rootでのparent/breadcrumb遮蔽、content download、folder作成/改名、単一/分割upload・上書き、共有内move/copy/trashと所有者のごみ箱 | 実D1で認可/失効競合/再送/Outbox/UploadDO/R2、実browserで独立受信者のmobile表示・応答喪失・reload再開・親情報の遮蔽 | 公開link、copyのDLQ・最大規模検証は後続。[詳細](SHARED_WORKSPACE.md) |
-| 所有者間copyの受付・転送・一括公開 | 固定manifest、job/Outbox、pin/予約、実行lease、固定blob Range、単一/分割保存・part進捗・physical/native照合、一括公開・成功時の保持精算、停止/照会・未着手/未送信証明/保存済み/既知multipart中止後の失敗精算、実成功後のobject観測修復 | 実D1/R2/DOで認可・応答喪失・並行取得・遅延成功・重複送信拒否を検証。回帰結果はIMPLEMENTATION_STATUS | Queue実行/再開と限定精算は接続済み。停止後巡回は接続済み。上限内の規模検証・未知/未送信修復・中止attemptの再試行管理・DLQ運用は後続。REST受付/read/cancel/retryと画面は接続済み。[詳細](COPY_JOBS.md) |
-| 内部共有DAV | 固定mount一覧/解決、read/edit操作、同一ownerの別mount間COPY/MOVE、両側の選択とロック・Outbox・復旧 | 実D1の権限停止競合、再送・応答喪失・照会・上書き、schema移行と破損復旧記録の拒否。関連回帰はIMPLEMENTATION_STATUS | cross-owner copy、実OS/staging。[詳細](DAV_SHARED.md) |
-| 内部共有の管理 | 所有者CRUD/期限設定、受信一覧API、固定mount名、version/相手/現行認証の再検査、旧session/ticket失効、Files管理画面 | 実D1の認可/競合/rollback/応答喪失、実ブラウザーのmobile CRUD/非再送/古い編集拒否 | 公開link・受け取り専用共有は接続済み。ZIPも接続済み。[詳細](INTERNAL_SHARES.md) |
-| 復元後snapshotの隔離検証 | DO/CLI観測照合・信頼済みmigration prefix・全通常table hash・隔離SQL/FK/FTS・DO証言保存 | 新規Node17/workerd16、関連CLI150/workerd138、18操作の権限拒否と68tableの実bindingドリル成功 | 採用用停止障壁・新epoch採用・全監査/再開は後続。[詳細](DATABASE_RESTORE_SNAPSHOT.md) |
-| Time Travel送信と実応答記録 | 永続pending・5秒の1回grant・固定APIへのPOST・実応答のDO保存・unknownの再送拒否・旧epoch停止維持 | Node34/workerd22追加、関連CLI94/workerd155、16操作の権限拒否と模擬巻戻しを含むbindingドリル成功 | 既定で無効。全I/O運用証明・snapshot照合・epoch採用・live復旧は未完了。[詳細](DATABASE_RESTORE_TIME_TRAVEL.md) |
-| probe・upload・multipart・空ファイル・manifest・GCのR2終了記録 | migration0041〜0046・DO/D1送信記録・元attemptの一意制約・実成功/未送信だけの終了記録・凍結/再開/GC/予約解放拒否・既知終了のrepair | 期限切れpendingの移行保持、結果不明・遅延終了・元claim/認可の変更・15分転送leaseを試験。68tableの運用ドリル成功。全体結果はIMPLEMENTATION_STATUS | CLI保存とepoch履歴は専用DO記録へ接続済み。native不明の運用証明と実復元後epoch採用は後続。[詳細](R2_WRITE_SETTLEMENT.md) |
-| epoch履歴のnative終了記録 | DO pending intentとreserved receiptの原子的保存、1回だけの条件付きPUT、実応答のみの終了記録、古い継続の拒否 | 新規24件と停止・監査・凍結・backupの関連workerd177件、Node11件が成功 | 旧実装/全喪失の終了証明、live復元後採用。[詳細](EPOCH_HISTORY_WRITES.md) |
-| 復旧用epoch事前予約 | 復旧元証言・凍結対象・要求IDの固定、DO/R2予約、private RPCとCLI、通常cancel拒否、D1旧epoch維持 | 新規workerd15件を含む関連162件、Node126件、14操作の権限拒否を含む実bindingドリル成功 | 実D1上書き・予約epoch採用、予約後の安全な中止、全I/O終了証明。[詳細](DATABASE_RESTORE_EPOCH.md) |
-| 復旧中D1書込み凍結 | migration0040と0041で全68通常table guard・修復受付拒否・永続intent・再照会・停止token更新による取消し | 保留R2試行の拒否とprivate bindingドリル成功 | 全外部I/Oの終了証明・実上書き/採用は後続。[詳細](DATABASE_RESTORE_FREEZE.md) |
-| 復旧先の一括照合 | BACKUPS fresh probe/S3読戻し、同一D1 challengeでのBLOBS/BACKUPSの試行・期限照合 | Node42/workerd28追加、全check3,206件、実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BINDINGS.md) |
-| 復旧先BLOBSの照合 | fresh D1照合・bucket固定・probe条件付き更新/S3読戻し・DO観測保存 | Node40/workerd26追加、全check3,136件と実private bindingドリル成功 | 最終停止、実上書き・採用、実S3は後続。[詳細](DATABASE_RESTORE_BLOBS.md) |
-| Time Travel候補の照合 | remote候補準備・固定D1のfresh照合・時刻検索bookmark一致・DO証言 | Node42件/workerd24件追加、全Node843/関連workerd144、実private bindingと合成providerのドリル成功 | 実remote検索、保持期限保証、最終停止・D1上書き・採用は未接続。[詳細](DATABASE_RESTORE_BOOKMARK.md) |
-| 復旧先D1の照合 | 対象のDO固定・fresh停止token・独立Wrangler query・5分の観測・再実行 | Node39件/workerd23件追加。全Node801件・関連workerd120件と実binding/CLI成功 | 最終停止・実上書きは後続。[DATABASE_RESTORE_TARGET](DATABASE_RESTORE_TARGET.md) |
-| 復旧準備の運用CLI | 専用service binding、prepare/verify/inspect/cancel、隔離SQL検証とDOへの証言保存 | Node34件追加・DO10件追加。全check2,942件・実binding/CLI両ドリル成功 | 対象binding・最終停止・実D1上書き・新epoch採用は後続。[DATABASE_RESTORE_OPERATOR](DATABASE_RESTORE_OPERATOR.md) |
-| logical復旧元の照合 | 完了receipt・R2 manifest/部品hash・35日・永続cursor・ControlDO RPC | 新規42件、関連115件。再起動・取消し・古い結果・期限・時計逆行・完了後の競合・遅い応答 | 対象binding・最終停止・実復旧は後続。SQL/schema再検証は専用CLIへ追加。[DATABASE_RESTORE_SOURCE](DATABASE_RESTORE_SOURCE.md) |
-| D1復旧準備 | DO内の要求・世代選択固定、停止保持、照会/取消し、通常操作との排他 | primary/ACK喪失、eviction、巻き戻り、遅延処理、未知KDF、同epoch巻き戻りと未確定停止の28件が成功。全体結果は検証記録 | 最終停止・新epoch採用・実D1復元は後続。[DATABASE_RESTORE](DATABASE_RESTORE.md) |
-| バックアップ実行監視・通知 | host SQLite・失敗/長時間/成功欠落・HTTPS状態変化通知・永続未ACK・別timer例 | 監視32件、実CLI設定失敗、loopback受信fixture、ACK喪失・並行送信・復旧 | 実通知先・host監視・設置は後続。[BACKUP_MONITORING](BACKUP_MONITORING.md) |
-| 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer/通知先の実設置・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
-| 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
-| 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer/通知先の実設置・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
-| バックアップ保持判定 | inventory/health、実R2/SQL検証・35日/最少5世代/最新24時間・終了コード通知 | Node27/workerd23追加、全Node644件・関連79件成功 | 通知先の実設定・live復旧は未接続。[BACKUP_RETENTION](BACKUP_RETENTION.md) |
-| 日次バックアップ | サーバー所有ID・同日実データ検証・R2からの再開 | Node17/workerd17追加、関連56件・全Node617件成功 | 定時起動・通知先の実設置・live復旧は未完了。[BACKUP_OPERATOR](BACKUP_OPERATOR.md) |
-| 値を保持するデータ出力 | 型情報・BLOB hex・NUL TEXT・bounded SQL writer | Node16件追加、統合600件と実D1/CLIの3ドリルが成功 | remote・大規模運用は未検証。[BACKUP_EXPORT](BACKUP_EXPORT.md) |
-| 過去schemaと全table照合 | 信頼済みprefix、保存時schema、未知tableの拒否 | Node19件追加、統合584件と実D1の3ドリルが成功 | 全データ形式・live復旧は後続。[BACKUP_HISTORY](BACKUP_HISTORY.md) |
-| バックアップ用GC保護 | migration0039・35日猶予・最後の参照による延長・WebDAV空ファイルの直接削除除去 | Node565件（34file、18.55s）が成功しました。workerd全体は2,013件中2,012件が成功し、失敗した1件は旧仕様の即時削除を期待するDAV試験でした。35日以内の削除拒否・容量保持と期間経過後の回収へ更新し、そのfileの17件（7.06s）が成功。再実行を含めworkerd全2,013件を確認しています。lint345file・型・契約/設定検査、Web build・Worker dry-runも成功しました。schema0039の実D1試験5件と、従来CLI（67table・SQL9,599bytes）、専用binding（9,613bytes）、実CLI run→receipt→download→restore-offline（9,110bytes）の3ドリルも成功しました。この変更のCIはプッシュ後に確認します。 | 35日保護は元BLOBS bucket内の削除猶予です。移行前に削除済みのobjectを復元せず、bucket/account喪失への別保管も提供しません。過去schemaは0037以降の信頼済みmigration列だけを受け付けます。追加データ形式、定時起動、Time Travel・live復旧・全storage喪失からの運用復旧とremote検証は未完了です。 |
-| バックアップ運用コマンド | 専用capability、run/receipt/cancel、再実行と失敗時の停止維持 | Node25件を追加し、全552件（33file、19.71s）が成功しました。専用bindingの実ControlDO/D1/R2ドリルは67table・SQL9,613bytesで成功し、全4操作の権限/環境/無効化、eviction後の再実行、取消・履歴、復元先のFTS/会計を確認しました。R2保存先修正後の実CLI run→receipt→download→restore-offlineもSQL9,110bytesで成功し、同じ引数の再実行と元policyへの復帰を確認しています。従来CLIのcapture/publish/download/restore-offlineも修正後に67table・SQL9,599bytesで成功しました。全体checkも成功し、Node552件＋workerd2,009件（95file）の計2,561件、lint・型・契約・設定検査、Web buildとWorker dry-runを確認しました。 | 専用service bindingを持つ運用者だけがSQL検証済みhashを証言します。remote Cloudflareの認証・権限・実resourceによる運用検証は未実施です。定時起動、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
-| バックアップ完了記録 | 内部completeBackup、R2実体/cursor照合、D1 receiptと元policyへの原子的復帰、migration0038 | Node22件・workerd18件を追加し、全体checkが成功しました。Node527件（32file、14.22s）・workerd2,009件（95file、1,085.53s）、計2,536件を検証しています。lint335file・型・契約/設定検査・Web build・Worker dry-runも成功。schema0038で実CLIのcapture→verify→local R2 publish→download→restore-offlineが67table・SQL9,599bytesで成功しました。今回commitのCI/browserはプッシュ後に確認します。 | completeBackupは内部RPCです。SQL/source/schema/FK/FTSの全検証は信頼された生成コマンドが担い、ControlDOはそのhashでR2実体を再検査します。利用者が指定したhashを転送する公開APIは追加していません。remote運用の認証・権限検証、元BLOBSの独立保管、live復旧、全storage喪失からの運用復旧は未完了です。 |
-| バックアップR2保存・取得 | 条件付きpart保存、manifest最終確定、native終了記録、unknown保持、download後の全検証 | 実CLI/local R2の保存・取得・隔離復元。8MiB超の複数part、再開、ACK喪失、同時公開、改変/欠落、期限・本文上限・署名を試験 | 保存対象はD1の論理SQL。remoteの運用接続検証、BLOBS本体の独立保管、定時起動・live復旧は後続。remote S3は実装済み・実環境未検証。 |
-| バックアップ世代・オフライン復元 | 実Wrangler抽出、全行/hash/schema/FK/FTS照合、ローカル世代保存、新規DB復元 | schema0038・全67tableの実CLIドリルで元DBの凍結保持、容量、FTS検索を確認。欠落/内容変化、不正SQL、checksum不一致、既存出力保護、UTF-8/文上限を試験 | 旧version/全データ形式の互換性、Time Travel・live restoreの新epoch/全監査、backup中の全storage喪失からの運用復旧は後続。 |
-| バックアップ書込み停止 | 専用永続intent、全通常table凍結、watermark、元policyへの原子的復帰 | 全table guard、旧schema移行、確定順序、ACK/primary喪失、遅延開始/解除、全storage喪失、rollback。実ControlDOの完了記録は上記の通り検証 | 内部RPCとCLIを認証付き運用処理で接続する一連のドリル、停止中の全ControlDO喪失からの運用復旧は後続。 |
-| DAVの転送と公開の分離 | 本文後のfresh30秒permit、開始受付、未結合記録の回収 | Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
-| DAV PUTの保存台帳 | 送信前の永続記録・共通受付・未知結果の容量保留・回収/GC | Node2件・workerd47件を追加。全体実行はNode424件（25file、6.25s）・workerd1,944/1,945件（91file、1,010.68s）成功。唯一の失敗は移行数の旧期待値34で、35へ修正後に実D1のschema5件（2.71s）が全成功しました。ローカル計2,369件を検証済みです。最終lint・型・契約/設定・Web build・Worker dry-runも成功。Windows分割は実Vitestの91fileを46/45fileへ重複・欠落なしと確認し、CIでの実行結果は別途確認します。schema0035/通常67table、依存追加なし。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
-| upload公開失敗後の精算受付 | 実ownerの共通枠・物理計上証明・GC後の再照会 | workerd51件を追加（境界46件・実ControlDO4件・HTTP1件）。関連109件（66.06s）と実ControlDO4件に加え、全体checkが成功。Node422件（25file、6.20s）・workerd1,898件（87file、990.88s）、計2,320件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
-| 旧epoch修復の全体受付 | 予約・通知・FTS、厳密な停止条件と自分の枠だけの例外 | workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。 | 旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。 |
-| 全bucket multipartの全体受付 | scan/parts/abortの8経路、null scope、直接ACK、同一ControlDO | workerd82件を追加（境界73件・実ControlDO9件）。関連109件（97.66s）と全体checkが成功。Node422件（25file、5.68s）・workerd1,780件（83file、971.26s）、計2,202件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 | 旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| 未追跡object調査・回収の全体受付 | scan/GCの10経路、null scope、直接ACK、同一ControlDO | workerd105件追加（境界93件・実ControlDO12件）。全体check成功、Node422件（25file、6.01s）・workerd1,698件（81file、888.73s）、計2,120件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 | 全bucket multipart inventory・旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| 所有者なし更新の全体受付 | migration0034・global RPC・R2 probe、通常と同じ枠 | Node6件・workerd68件追加（probe境界58件・実ControlDO等9件・移行1件）。全体check成功、Node422件（25file、6.04秒）・workerd1,593件（79file、851.58秒）、計2,015件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。診断表示の追加後も関連59件（44.02秒）と型検査が成功。schema0034/通常67table、依存追加なし。 | orphan/全bucket inventory・旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| 既存uploadの未知multipart調査受付 | round・予算・観測・ID/page・中止receipt・lease返却・エラー、同一ControlDO受付 | workerd66件追加（境界59件・実ControlDO7件）。全体check成功、Node416件（25file、5.90秒）・workerd1,468件（75file、755.11秒）、計1,884件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 | orphan/全bucket inventory・旧epoch repairの残る更新受付とbackup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| blob GCの全体受付 | 通常/停止中/復元中、claim・外部予算・精算・エラー、同一ControlDO受付 | workerd80件追加（GC境界73件・実ControlDO7件）。全体check成功、Node416件（25file、5.66秒）・workerd1,402件（73file、705.27秒）、計1,818件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0033/通常67table、migration・依存追加なし。 | 残るorphan/multipart inventory・Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| upload自動回収の全体受付 | claim・外部予算・観測・閉鎖・精算・エラー、ControlDO直接受付 | workerd62件追加。90c4593のローカル全check成功、Node416/workerd1322、計1,738件。CIは冒頭参照。 | 残るinventory/Queueの更新受付とbackup barrier、未知KDF/multipartの収束、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。 |
-| UploadDO台帳の全体受付 | 初期化・通常反映・停止反映・喪失時停止、共有枠と直接ACK | workerd33件追加。8892b4fのローカル全check成功、Node416/workerd1260、計1,676件。CIは冒頭参照。 | 残るinventory・Queue/backupと実環境は後続 |
-| 復旧用更新の全体受付 | migration0033、通常と同じ枠、物理観測・既知ID・初期化停止・外部claim | Node8件/workerd41件追加。f9dffcbのCI全成功、Node416/workerd1227/browser19、計1,662件。 | 残るinventory・Queue等の残る更新受付、backup barrier、未知KDF/multipartの収束、共有/メディア/実環境検証は後続です。 |
-| upload中止/検証の全体受付 | single/multipart利用者中止、multipart検証済み情報、exact receiptと返却 | workerd45件追加。f62dad8のCI全成功、Node408/workerd1186/browser19、計1,613件。 | 残るinventory/Queue/backupは後続 |
-| upload転送の全体受付 | 単一start/recover/verify、multipart start/completeの5経路、直接ACKによる外部送信とDB-only receipt回収を分離 | workerd45件追加。47160c4のCI全成功、Node408/workerd1141/browser19、計1,568件。 | 残るinventory/Queue/backupは後続 |
-| upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
-| 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
-| Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | migration `0001`〜`0051`、69通常table、FTS、147 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致 | 全147 routeの機能実装は未完了 |
-| 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
-| KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
-| KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答。公開linkは事前の共有/IP制限にも接続 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md)と[PUBLIC_SHARES](PUBLIC_SHARES.md) | 証明喪失試行の収束、実CPU・処理量・切断 |
-| 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
-| namespace更新の全体受付 | migration0030、D1 active32/waiting256、ControlDO FIFO、LockDO全8許可経路、失効と最終commit fence | 新規Node4・workerd17件と全check成功。上限・再送・応答喪失・待機後認可・停止/復旧 | 他の更新経路・backup barrier・実負荷。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
-| DAVロックの全体受付・確定記録 | migration0031、LOCK/refresh/UNLOCKの共有枠、lock変更/記録/解放の一括確定、60秒保持 | Node4・workerd22件追加。実ControlDO待機、HTTP503、失効/停止、応答喪失、別処理のunlock、rollback、旧DB移行 | HTTP応答喪失後のtoken再取得・別RPCの結果再生は未実装。実環境未検証 |
-| app password更新の全体受付 | 発行・失効・pepper更新の共有枠、KDF後取得、current authorityと確定記録/解放を同一batch | workerd32件追加。混雑HTTP503、失効/停止、ACK/readback喪失、root/20件上限、別owner拒否、実ControlDOのKDFと32枠 | 他のaccount更新とbackup統合、実環境未検証 |
-| atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
-| Files UI | React/TanStackの一覧・操作・trash・確認付き上書き/再開upload・logout、認証付きprivate assets | ローカル実APIの19 browser scenario、NodeのCSRF競合4件 | 共有・media・実環境。検索は[SEARCH](SEARCH.md)。詳細は[FILES_UI](FILES_UI.md) |
-| フォルダー集計 | Accessのaccount stats、所有folderの再帰件数/現在のlogical bytes、1万件上限と部分結果、Files情報dialog | D1の12件と検索9件の回帰、実APIでのbrowser集計/再集計/拒否時非表示。全check成功 | 実D1予算・負荷、共有/media別集計。[FOLDER_STATS](FOLDER_STATS.md) |
-| 検索 | Access検索API、現行権限/祖先、名前の正規化、範囲10,000・page200、用途/条件付きcursor、Files検索と元の保存先の保持 | Node query/cursor、実D1階層・共有/削除/失効・旧索引・上限、実browser検索/上書き/201件pagination/世代競合 | media metadata parser/同期、索引version再構築運用、実D1予算。[SEARCH](SEARCH.md) |
-| Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | 全route profile・実環境 |
-| Trash | 一覧、restore、purge、別trash子退避、名前衝突解決、GC稼働中の永続pauseと既存削除drain | 最大64層・1,000 node、冪等再送、期限/識別子/停止競合、応答喪失・再起動、実browser復元 | 単一hold、実環境、大規模非同期trash/purge。詳細は[RESTORE_GC](RESTORE_GC.md) |
-| 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
-| GC | 35日猶予candidate・最後のnamespace参照解除による期限延長、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | unknown multipart ID、既知keyの不正置換、実Cron運用 |
-| 未追跡object | D1のページcursor/lease、HEAD照合、隔離台帳、35日猶予、実physical会計、再利用拒否、Cronと停止中inventory | 応答喪失、同時走査/回収、置換・再出現、owner後日復元、pause/epoch、復旧監査 | incomplete multipart、他prefix、実R2運用 |
-| multipart S3診断 | 署名付きListMultipartUploads/ListParts/GetBucketLifecycleConfiguration、1 GET/最大100件/1 MiB/10秒、停止中ControlDO診断 | XML/設定/署名/timeout/ページ失敗、実D1 fenceとControlDO監査再初期化、予約保持 | 全体不在証明・予約精算、実S3/lifecycle試験 |
-| R2/S3対応検証 | migration `0023`、固定64-byte system probeのfresh nonce/CAS更新、scope付きD1 fence、ControlDO検証と復旧監査 | 実R2条件付きPUT、遅延create/更新、誤bucketの古い値、応答喪失、epoch/pause/lease、system容量保持 | multipart全体閉鎖・予約精算への接続、実S3試験 |
-| 未追跡multipartの中止・容量保留 | migration `0027`/`0028`、全`u/`走査、正確なkey/ID照合、part最大観測bytesのphysical保留、発見handleの中止・不変receipt、停止中ControlDOと復旧fence | 観測27件と中止19件。ページ、並行処理、応答喪失、遅い応答、source/proof、所有者復元、64回上限、0-byte再開拒否 | 全体閉鎖・容量精算、実S3、Cron/HTTP。[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
-| multipart ID修復 | migration `0022`のscan/handle台帳、毎回freshなBLOBS/S3対応検証、既存uploadの全ID走査・abort・不変receipt・physical観測、停止中ControlDO repair | 複数ID/ページ、claim・page・receipt応答喪失、遅延ID、epoch/token/pin/lease、S3障害時の会計。対応検証と同一batchの失効境界 | 全体不在証明・予約精算、実S3、Cron |
-| private単一upload | HMAC capability、D1予約、1回だけのR2 PUT、SHA-256、GETによる応答喪失回収、原子的新規作成/上書き、status/abort HTTP、24時間後のCron回収・GC接続 | 実D1/R2/LockDO、0 byte、同時送信、10 step rollback、失効、DB/R2応答喪失、CSRF/Origin、回収lease競合、旧epoch、実ControlDO停止中repair | 公開共有、未知object修復、stagingは未完了 |
-| private multipart upload | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、R2一度限りcomplete/HEAD、原子的新規/上書き公開、terminal照合、既知R2 IDのabort/期限切れ回収・GC接続、HTTP create/part/status/page/complete/abort | D1/R2/DO/LockDO、64 MiB+末尾の公開、同時確定、応答喪失、storage全喪失、失効、10 step rollback、complete/abort排他 | 未知ID回収後の予約精算は未接続 |
-| WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation、実HTTPの空本文操作。詳細は[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) | 実OS client gate、cross-owner copy、残るmethod/profile。[内部共有DAV](DAV_SHARED.md) |
-| ZIP保存 | 所有者・内部共有・公開リンクの発行/取得APIと保存画面、v2固定manifest、STORE、日本語名・空folder、期限付きpin、共通budget | D1/R2/DOで元credential・共有期限/停止・変更拒否・R2異常・切断と会計を検証。画面を含む最新結果はIMPLEMENTATION_STATUS | 最大規模・実Cloudflare/OS検証。[詳細](ZIP_DOWNLOADS.md) |
-| content ticket | target manifest、ticket発行/取消、Cookie交換、current blob配信、BudgetDOの対象重複排除/共有使用量、R2/bodyへのlease期限伝播 | D1/R2、署名、失効、Range、budget reserve/settle、実HTTPの発行・交換・空本文取消し、上書き/別target配信、1MiB/対象数上限、期限更新/遅延R2/停止body/取消し。詳細は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)と[CONTENT_LEASES](CONTENT_LEASES.md) | page/entry/track、全route会計、長時間download再開UI・実環境 |
-| quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
-| Outbox | durable producer、lease再送、ID-only Queue message、consumer、共通受付と固定25秒期限 | send/D1応答喪失、重複delivery、主要node event provenance | 実Queue/DLQ、残るevent kind |
-| 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
-| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ZIP STORE serializer | format vector、境界、CRC、Unicode、cancel | parser、変換、配信、player/gallery/reader |
+| Foundation・認証（0/1） | D1 schema・原子的mutation、ControlDO epoch／停止／共通受付、LockDO、認可・CSRF・Access verifier・初回owner・logout・app password、容量／参照／pin、operation receipt・Outbox | 残る契約経路の接続、結果不明の外部処理の全ケースの修復、実Access・MFA・秘密鍵設定 | [FOUNDATION](FOUNDATION.md)、[MUTATION_ADMISSION](MUTATION_ADMISSION.md)、[検証履歴](IMPLEMENTATION_STATUS.md) |
+| Files（2/5） | 一覧・詳細・名前検索、音声タグ検索、所有フォルダーの要求時集計、作成／改名／MOVE、同じ所有者内のCOW COPY、原本Range／HEAD、上書き時のversion／ref会計、Files UI | お気に入り・汎用タグのAPI/UI、詳細preview・File System Access handle、画像／動画等を含む汎用metadata検索・索引保守 | [FILES_UI](FILES_UI.md)、[SEARCH](SEARCH.md)、[FOLDER_STATS](FOLDER_STATS.md) |
+| Upload（3） | 単一／multipart、新規／上書き、状態取得・再開・中止・既知ID期限切れ回収。private・内部共有・公開編集・受け取り専用の導線 | 未知multipartの全体閉鎖と予約／保留容量の精算、実R2 lifecycle・長時間障害の確認 | [UPLOAD_HTTP](UPLOAD_HTTP.md)、[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)、[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md) |
+| 所有者間COPY（3） | 永続manifest・job、単一／分割転送、途中再開、一括公開、取消／精算、明示的retry、保存先選択・進捗・同じタブのreload復元、音声metadata引継ぎ | タブ終了後／別端末の追跡復元、未知native／part／handleを含む全修復、未索引書籍への接続 | [COPY_JOBS](COPY_JOBS.md)、[AUDIO_SEARCH](AUDIO_SEARCH.md) |
+| Trash・GC（4） | ごみ箱一覧、同期restore／purge、fence付きGC、35日猶予、未知完成objectの隔離／回収、停止中の既存deleting drain | 大規模treeの非同期trash／restore／purge、未追跡生成物や不正置換の全修復、未知multipartの全体閉鎖／精算 | [GC_RECOVERY](GC_RECOVERY.md)、[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)、[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md) |
+| 内部／公開共有（6） | 所有者の共有管理、受信Sharedのread／edit、公開password・unlock・CSRF・logout、閲覧／作成／改名／削除／upload／overwrite、公開編集のreload復元、受け取り専用リンク | 各共有を通した未実装機能の拡張、実domain／Cookie／CORS／Accessの検証 | [INTERNAL_SHARES](INTERNAL_SHARES.md)、[SHARED_WORKSPACE](SHARED_WORKSPACE.md)、[PUBLIC_SHARES](PUBLIC_SHARES.md)、[PUBLIC_EDIT_RECOVERY](PUBLIC_EDIT_RECOVERY.md) |
+| Content・ZIP（6） | 用途別ticket／session／配信budget、原本、サムネイル、音声原本、ZIP/CBZページを内部／公開共有に配信。固定manifestのZIP STOREダウンロード | 任意archive entry・page thumb等。single-hostはattachment／原本fallbackで、別content hostと同じinline機能ではない | [THUMBNAIL_DELIVERY](THUMBNAIL_DELIVERY.md)、[ZIP_DOWNLOADS](ZIP_DOWNLOADS.md)、[SINGLE_HOST](SINGLE_HOST.md)、[ARCHIVE_READER](ARCHIVE_READER.md) |
+| WebDAV（7） | Class 1/2のHTTP処理、XML／property／条件header／lock、COPY／MOVE、Shared mount、同じ所有者の別共有への転送 | Finder／Explorer／rclone／cadaver／litmus等の実クライアント対応表と通し試験 | [DAV_SHARED](DAV_SHARED.md)、[DAV_UPLOAD](DAV_UPLOAD.md)、[検証履歴](IMPLEMENTATION_STATUS.md) |
+| Gallery（8A） | JPEG/PNG/WebP/AVIF情報抽出、sm/md自動・lg要求時生成、保存／費用／回収、一覧・grid/list・lightbox・共有、AV1動画原本再生 | 50,000候補gate未達（通常上限10,000）、自動一括再抽出、画像／動画metadataのCOPY連携、実Imagesと他browserの検証 | [GALLERY](GALLERY.md)、[IMAGE_QUEUE](IMAGE_QUEUE.md)、[LARGE_THUMBNAILS](LARGE_THUMBNAILS.md)、[TRACK_METADATA](TRACK_METADATA.md) |
+| Audio（8C） | Opus／MP3／FLAC／WAV／AAC／Vorbis解析、曲一覧・常駐player・本人の再生位置、タグ編集／検索／旧cache再索引、MP3/FLAC/MP4/Ogg埋め込み表紙、既存音声／COPY先の表紙要求 | WAV/WebM表紙、parserの未対応領域、自動一括抽出、HE-AACの実復号・他browser／実端末の確認 | [AUDIO](AUDIO.md)、[AUDIO_SEARCH](AUDIO_SEARCH.md)、[AUDIO_COVERS](AUDIO_COVERS.md)、[AAC_VORBIS](AAC_VORBIS.md) |
+| 既存media | 現在閲覧できる古い画像／音声／動画の情報抽出をFilesから明示要求し、Queueの結果を確認 | 全原本の自動走査、同じversionで完了後の強制再走査、失効した要求を別読者へ付け替える処理 | [MEDIA_EXTRACTION](MEDIA_EXTRACTION.md) |
+| Bookshelf（8B） | 新規ZIP/CBZ/EPUBのbounded索引・Queue保存／回収、本棚一覧・フォルダー移動・個人登録、ZIP/CBZページ閲覧・本人位置、内部／公開共有、同じ所有者内のCOPYで索引／metadata再利用 | 既存／未索引／旧COPY／所有者間COPY先の索引要求、書籍metadata編集、表紙／page thumb、画像フォルダー／PDF／EPUB本文リーダー | [ARCHIVE_READER](ARCHIVE_READER.md)、下記の直近検証 |
+| Backup・復旧（4/9） | 専用barrier、通常全テーブルの論理export／検証・R2世代保存／取得、日次補充・保持／回収・監視adapter・オフライン復元。復旧CLIの環境照合・epoch予約・Time Travel送信記録・snapshot検証・停止中採用・全監査・段階再開、domain repair | 未知nativeの終了証明・全修復、logical importによるlive復元、旧schemaからの自動移行、予約後の安全な取消、全DO喪失、大規模DBのRTO、元BLOBSの独立保管、実災害復旧 | [DATABASE_RESTORE_RECOVERY](DATABASE_RESTORE_RECOVERY.md)、[DATABASE_RESTORE_DOMAINS](DATABASE_RESTORE_DOMAINS.md)、[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md) |
+| DLQ・管理・Release（9） | DLQ保存・管理者一覧／requeue APIと画面、バックアップ監視／HTTPS通知adapter、ローカル検証とCI定義 | DLQ resolve／保持期限／通知、一般管理・automation経路、実通知先・定時実行・監視／Logpush、resource inventory・配備・release／rollback演習、横断UI品質 | [DEAD_LETTERS](DEAD_LETTERS.md)、[BACKUP_MONITORING](BACKUP_MONITORING.md)、[CI定義](../.github/workflows/ci.yml) |
 
-今回のQueue受付とS3試験修正の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
+### 本棚の「できる／できない」
 
-## 実装済みだがstaging未検証・未公開
+- 新しいZIP/CBZをアップロードし、索引生成後に所有者・内部共有・公開リンクで読むところまで接続済み。位置の保存は所有者／内部共有の本人に限定し、匿名公開には保存・開示しない。
+- 個人の登録フォルダーは本人所有のroot／folderを最大32件。共有フォルダーは共有画面から開く。一覧は200件ずつで、Audioの2,000曲上限を本棚へ適用していない。
+- 同じ所有者内の単一／フォルダー／再コピーは、同じblobの公開索引を再利用する。metadataは独立させ、読書位置はコピーせず、索引の追加R2書込みは行わない。
+- EPUBはコンテナ索引まで。PDFとEPUB本文は原本への導線であり、専用リーダーではない。OPF／目次／sanitization／trusted iframe／CFI／テーマは未実装。
+- 既存書籍の索引要求は**未実装**。次の候補として調査しただけで、今回の資料更新で実装済みにはしていない。
 
-- Workerのprivate/content/DAV handler。ControlDOは監査後に再開可能だが、実環境の設定・公開は未実施。
-- Queue consumer、Cron outbox dispatch、Cron GC。ローカルworkerdでは検証済みだが実Queue/DLQ/Cron deliveryは未検証。
-- Cloudflare Images bindingの入力境界。実codec、制限、費用は未検証。
-- Access JWT、app password、content ticket、cursor鍵。remote secretと実鍵rotationは未設定・未検証。
-- 実D1/R2/KV/DO/Queue/Rate Limit/Assets間のネットワーク断、retry、region挙動。
-- WebDAVのWindows/macOS/Linux実client相互運用。
-- custom domain、host分離、CORS/Cookie、workers.dev/preview無効化の実環境確認。
+### 契約だけでは完成と数えない例
 
-## 未実装
+[route manifest](../packages/worker/src/routes/manifest.ts) と [private router](../packages/worker/src/api/privateApp.ts)、[Worker入口](../packages/worker/src/index.ts) を照合した。お気に入り／汎用タグ、書籍item情報の取得・編集、app-hostのbook page／thumb／entry、管理者のuser無効化・所有権移譲・強制unlock、automation list／metadataには未接続の経路が残る。ZIP/CBZの実ページ配信はcontent hostの `/c/:nodeId/:blobId/pages/:page` に接続済みで、この経路との混同に注意する。
 
-### サービスとデータ処理
+## 検証済み：直近の変更
 
-- multipartのunknown creation IDの全体閉鎖・予約精算と実7日incomplete lifecycle検証。既存uploadの未知ID中止とfresh nonceによるBLOBS/S3対応検証は実装済み。S3設定読取りと一覧/partのbounded診断は接続済み（[MULTIPART_INVENTORY](MULTIPART_INVENTORY.md)）。
-- upload行自体が失われたincomplete multipartの全体閉鎖・容量精算。全`u/`のhandle走査・中止receipt・part容量保留は接続済み（[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)）。未知の完成済み`u/` objectの隔離・35日回収も接続済み。
-- 大規模tree向けの非同期trash/restore/purge job。
-- 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
-- media parserの未対応領域、自動一括再抽出、画像/動画metadataのCOPY引継ぎと索引保守。新しいupload/DAV PUTの抽出に加え、[既存原本の個別抽出](MEDIA_EXTRACTION.md)、[音声タグの検索同期・既存cache再索引](AUDIO_SEARCH.md)は接続済み。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)、名前検索APIと現行権限付きpaginationは[SEARCH](SEARCH.md)へ接続済み。
-- 公開linkのthumb/page/track配信。ZIPは[ZIPダウンロード](ZIP_DOWNLOADS.md)へ接続済み。受け取り専用共有のHTTP/画面は[UPLOAD_ONLY_SHARES](UPLOAD_ONLY_SHARES.md)へ接続済み。所有者管理API/画面・password保存・匿名unlock/CSRF/logout・独立公開bundle・閲覧/保存・create/rename/delete・upload/overwrite APIと画面は[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
-- archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。ZIP downloadは所有者・内部共有・匿名readリンクへ接続済み（[ZIP_DOWNLOADS](ZIP_DOWNLOADS.md)）。
-- バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
-- `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
+`81b351e` の書籍COPY変更について、修正途中の成功と修正後の再実行を合わせた関連試験は **202件（Node37・workerd164・Chrome1、重複除外）**。これは単一の全suite実行結果ではない。最終修正後にはNode37・COPY/MOVE関連77・Chrome1を実行し、その他の成功は同じ変更作業中の先行実行から集計している。
 
-### UI
+| 区分 | 確認できたこと | 結果・証跡 |
+|---|---|---|
+| Node | COPY/MOVE digestの1,000件×最大128文字ID、旧hash互換、超過／不正ID、一般intent上限、転送先／共有選択 | 3file・37件成功、13.40秒。`/tmp/ncf-copy-library-unit.log` |
+| workerd・最終実行 | 書籍COPY、rename/MOVE、DAV共有転送、選択共有の更新 | 4file・77件成功、95.17秒。`/tmp/ncf-copy-library-native-complete.log` |
+| workerd・先行の成功分 | operation／旧receipt26件、ページ24件、読書位置23件、本棚14件 | 計87件。`/tmp/ncf-copy-library-native-final.log` のoperation分、`/tmp/ncf-copy-library-native-2.log` のページ／位置／本棚分。これらのログ全体には別試験の失敗も含む |
+| 大量COPY境界 | 400冊のCOPY／MOVE、単一／フォルダー／再コピー、原本／出力の証拠、独立metadata／位置、追加PUT・physical加算なし、EPUBコンテナ、rollback／応答喪失 | 上記77件中の書籍11件。1,000冊の実環境負荷試験ではない |
+| Chrome | 実Files UIからコピー→本棚で開く→元の2ページ目／コピー先の1ページ目を個別保存→reload後に再開 | 1件成功、50.2秒。`/tmp/ncf-copy-library-browser.log`、画像目視済み。artifact: `/tmp/ncf-copy-library-browser-results` |
+| 静的検査 | typecheck、lint（850file）、契約／設定検査 | `/tmp/ncf-copy-library-{typecheck,lint,contracts,config}-complete.log`、全成功 |
+| build | private／public Web、Worker dry-run | `/tmp/ncf-copy-library-build.log`、成功。Worker 2,081.22KiB、gzip 439.43KiB。実配備ではない |
 
-- File System Access handle、詳細preview。
-- コピー追跡のタブ終了後・別端末での復元、公開link管理、media metadata検索、大量gridの仮想化。
-- Bookshelf/EPUB reader、原本の一括再抽出・WAV/WebM表紙、mediaの残る詳細表示・操作。Gallery/lightboxとAudio playerは上記の範囲を接続済み。
-- AVIF/AV1/Opusの他OS/browser検証と未対応環境のfallback整備。ローカルChromeの原本decode/再生は確認済み。
+初期失敗（D1式深度、fixtureの検索行・LIKE・許可解放、digest上限）は修正・関連再試験後に集計した。失敗した実行を丸ごと成功扱いにせず、同じ試験を重複加算しない。ChromeのローカルTLS診断出力はあるがrunnerは終了コード0。詳細は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) に残す。
 
-### 制御・運用
+`/tmp` のログ・画像はこのPCの一時証跡で、Git管理・永続保存を保証しない。将来ログが消えた場合は文書の記録と試験ソースを参照し、必要な範囲を再実行する。
 
-- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限。KDFの全体rate/枠・isolate内制限とbackup専用barrierは接続済み。
-- operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
-- staging/production resource inventory、remote migration、deploy。
-- monitoring、alert、Logpush、capacity/費用確認。
-- 実環境でのbackup/restore drill、release、rollback、障害対応runbookの実行。ローカルのバックアップ/隔離復元ドリルは実行済み。
+## 過去に検証済みだが、現在の全体保証ではないもの
 
-## 未検証
+| 対象 | 過去の成功・制限 | 現在の扱い |
+|---|---|---|
+| 本棚 `6ec3a5c` | 関連172件（Node46・workerd118・Chrome8）。212冊ページング、50,050件規模の疎な候補探索、登録・共有・390px表示。空pageのUI試験のみ応答fixture使用 | 記録済み。直近HEADで172件全てを再実行したわけではない |
+| 読書位置 `55daa6a` | 関連169件（Node38・workerd127・Chrome4）。本人分離、CAS競合、原本上書き、失効、保存失敗、再開 | 記録済み。匿名への位置非開示を維持する |
+| Gallery | ローカル50,050画像fixtureで50,000候補の一覧SELECTは550,203行、設計の60,000行gate未達。通常上限10,000へ縮小 | **50,000件性能gateは不合格のまま**。縮小後も実D1のp95未検証。[詳細](GALLERY.md) |
+| Audio | ローカルD1の候補探索予算、Chromeの2,000曲・CPU 4倍制限、390px表示／原本再生・player描画 | ローカルの回帰検知。実モバイル機器・Cloudflare性能の証明ではない。[詳細](AUDIO.md) |
+| Backup／復旧 | ローカルD1/R2／専用binding／CLI／オフライン復元ドリル、合成providerとD1巻戻しによる復旧試験 | 実Time Travel・本番災害復旧とは区別する。schema0077／最新HEADで全ドリルを再実行していない |
+| GitHub CI | 先行 `dad1f95` の全10job成功等を履歴に保存。一方、別実行のWindows timeout／multipart HEAD不在、backupのR2照合・子プロセス失敗等の原因未確定記録もある | 最新HEADのCI未確認。後の成功だけで過去失敗の根本原因解決と扱わない。今回remote再照会なし |
 
-未実装項目は当然未検証である。それ以外に、実装済みでも次は未検証である。
+過去の全suiteの件数を現在の件数へ足さない。正確な実行条件・失敗／再実行・CI参照は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) に保存している。
 
-- 実Cloudflare Access + MFA + service token。
-- 実Queueのack loss、最大retry、DLQ、requeue。
-- 実Cronの重複・遅延・同時実行。
-- 実R2のdelete/head障害、429、長時間ネットワーク断、lifecycle。
-- 実D1 Time Travelとlogical exportからの復元。
-- 実CloudflareでのControlDO storage lossを含む完全な停止→監査→再開。ローカルfixtureは検証済み。
-- 実Images codecとAVIF生成。
-- 複数ブラウザー、モバイル、支援技術、実WebDAV client。
-- セキュリティheader、CORS、Cookie、domain aliasのdeploy後検査。
-- 負荷、長時間運転、大量データ、費用上限。
+## 未検証・リリース前に残る確認
 
-## セッションをまたいで保持する事項
+| 確認対象 | 現状 |
+|---|---|
+| 最新コードでの全回帰 | `pnpm check` 全体、全browser／single-host suite、全backup／operatorドリル、最新GitHub CIは未実施・未確認。直近は上記の対象限定検証 |
+| Cloudflare認証・公開境界 | 実Access・MFA・service token、秘密鍵／pepper、配備後のCSP・CORS・Cookie・domain alias未検証 |
+| D1・R2・Queue・Cron | 実D1予算／競合／障害、R2の遅延・429・切断・delete／HEAD障害・7日multipart lifecycle、Queue ack loss／retry／DLQ／requeue、Cron重複・遅延を実環境で未検証 |
+| Media | 実Images codec／AVIF変換と費用、AVIF／AV1／Opusを含む他OS／Firefox／Safari／実端末の対応範囲未確定 |
+| WebDAV | 実Finder／Explorer／rclone／cadaver／litmusの対応表未確定 |
+| 復旧 | 実D1 Time Travel、logical exportからのlive復元、全DO storage喪失、完全停止→修復→監査→受付／GC再開、大規模DB RTO未検証・一部未実装 |
+| UI・性能 | 支援技術／a11y、touch、低性能端末、長時間連続運転、最大規模負荷、capacity／費用上限の全体判定未完了 |
+| 運用 | staging／production inventory、定時起動／通知先／監視／Logpushの実設定、remote migration／deploy、release／rollback・障害対応runbookの実行なし |
 
-### 目標
+## 次の開発順序
 
-Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) の製品完了条件まで進める。ユーザー確認が不要なローカル実装、試験、通常commitは継続する。pushは以下の最新の承認状況に従う。
+1. **既存／コピー済み書籍の索引要求**：現在の閲覧権限で明示受付し、本棚から結果確認・閲覧へつなぐ。旧要求の失効・結果不明を新要求へ無条件に付け替えない。
+2. **本棚の残り**：表紙／ページthumb、書籍metadata編集、entry配信、画像フォルダー・PDF・EPUB本文、安全なreaderとCFI。各段階で原本・索引世代・共有失効を検証する。
+3. **Files／処理の残り**：未接続の契約、大規模非同期trash／restore／purge、COPY追跡復元、media COPY／一括再抽出、Gallery性能gate、横断UI品質。
+4. **復旧の残り**：未知native／multipartの終了証明と精算、全DO喪失、旧schema／logical import／安全な取消、運用UI・DLQ保守。
+5. **全体回帰と実環境gate**：コードを固定して全検証を行い、対象環境を確定した上でstaging／実クライアント／復旧・rollback演習へ進む。
 
-### 許可と禁止
+## リモート操作と文書維持
 
-- 検証済みのまとまりはローカルcommitする。`origin/codex/database-restore`へのpushは472e682まで実行済みだが、後続5854920は自動承認審査で「外部宛先へのコード送信の明示承認がない」と拒否された。daraskme/Nextcloud-flare・同branchへの送信を明示した承認質問は未回答のため、後続commitもpushしない。共有mainへのpushも自動承認レビューに拒否されている。
-- force pushはしない。
-- GitHubへのpushをCloudflare production deployの許可と解釈しない。
-- remote resource作成、remote D1 migration、secret設定、staging/production deployは、具体的な環境情報と実行段階の確認が必要。
-- secretをrepository、`wrangler.jsonc`、logへ書かない。
+ローカル実装・検証・通常commitは継続対象。pushは、先行の自動承認審査が「外部宛先へのコード送信の明示承認がない」と拒否した後の宛先確認が未回答のため保留中。対象は `daraskme/Nextcloud-flare` の `codex/database-restore`。後続commitへの差替えで再試行せず、force pushもしない。Cloudflareのresource作成・remote migration・secret設定・配備は実行しておらず、GitHubへのpushと別の操作として扱う。
 
-### 壊してはいけない条件
-
-- ControlDO再開は全監査と同一D1 batchの最終fenceを通す。flagsを直接解除しない。実環境再開は未実施。
-- D1がnamespace・authorization・ledgerの正本、R2がimmutable contentの正本。
-- mutationはcurrent auth、epoch、permit、revision/tree fence、operation terminalを同じatomic boundaryで確認する。
-- `blobs.state='deleting'` とGC `deleting`は不可逆。
-- blob参照追加は`deleting/deleted`を拒否する。
-- GCはref=0、全pinなし、current control mode・epoch・claim所有を各dispatch/精算時に再検査する。通常GCはpause解除時のみ、停止中drainは既存deletingのみ。不在確認後だけphysical精算する。
-- 適用済みmigrationを書き換えず、新しい番号のmigrationを追加する。
-- AVIF・AV1・Opusを保存・配信・Gallery/player要件から外さない。詳細は [MEDIA_FORMATS](MEDIA_FORMATS.md)。
-
-### 次の優先順
-
-1. 復元後の各領域の修復を要求単位のoperator/CLIへ接続する。KDF/R2の保持された終了証拠との照合は[実装済み](DATABASE_RESTORE_NATIVE.md)。upload/multipart・予約・outbox・旧backup記録の収束を進める。未知nativeや証拠喪失を終了扱いにしない。
-2. 予約後の安全な中止、logical import、大規模snapshotの再開/RTO、旧schemaの移行手順、実Time Travel/全storage喪失の復旧drill。事前予約・1回送信・snapshot照合・停止中epoch採用・全監査/段階再開はローカル実装済み。
-3. unknown multipart IDの全体不在証明・予約精算と、upload行喪失時の全bucket閉鎖・保留容量精算。freshなS3/BLOBS対応検証・走査・中止receiptは接続済み。
-4. Queueの残るevent kindとrepair、終了証明を失ったKDFの運用収束。
-5. Files UIの残り、共有/公開link、media metadata検索、ZIP/reader/media配信。
-6. Gallery/Bookshelf/Audio、AVIF/AV1/Opusの実browser検証。
-7. 定時バックアップと通知先の設置、全storage喪失からの運用復旧。
-8. staging inventory、実OS client、実環境gateと公開。
-
-### 次回開始時の確認
-
-```sh
-cd /home/hiroshi/ドキュメント/Nextcloud-flare
-git status --short
-git diff
-git log -5 --oneline
-gh run list --limit 3 --json databaseId,headSha,status,conclusion,url
-```
-
-変更前に既存差分を保護する。変更後は最低限 `git diff --check`、該当テスト、typecheckを行い、checkpoint前に全check、Web build、Wrangler dry-runを実行する。schema変更時は新migrationを追加し、`node scripts/generate-schema-contracts.mjs`とschema testを更新する。
-
-## 文書更新ルール
-
-checkpointごとに次を更新する。
-
-1. この文書の該当行を「実装済み」「staging未検証」「未実装」の間で移動する。
-2. [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ実行コマンド、件数、結果を記録する。
-3. [HANDOFF](HANDOFF.md)の次作業と注意事項を更新する。
-4. READMEの短い概要が古くなっていないか確認する。
+今後は本書の該当行と基準コードを更新し、検証の環境・範囲・失敗・再実行を [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) に追記する。過去の文章を現在状態へ重複追記しない。設計上の完了条件は、ローカル成功や作業上の都合で緩めない。

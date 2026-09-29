@@ -1,6 +1,22 @@
 # 実装進捗
 
-## 同じ所有者内の書籍COPY（今回）
+この文書は変更時点ごとの検証履歴。現在の実装済み／未完了・検証済み／未検証は [CURRENT_STATE](CURRENT_STATE.md)、次の作業は [HANDOFF](HANDOFF.md) を参照する。各項目のschema・件数・「今回」「未実装」は記録当時の値であり、最新HEADの全体保証ではない。異なるcheckpointの成功件数を累積しない。
+
+## 状態資料の整理（2026-09-29、コード基準81b351e）
+
+README・CURRENT_STATE・HANDOFF・PROGRESSを現在の概要と再開情報へ整理した。旧概要の「本棚画面／読書位置」「公開thumb/page/track」「公開共有管理」「Audioタグ検索」「既存media個別抽出」「backup export」が未実装と読める記述を修正し、未接続route・部分実装・実環境未検証を区別した。機能別のAudio／Gallery／旧epoch修復、実装ブリーフの現在状態とコマンドも更新した。過去の検証本文は保持し、整理前の概要は `git show 81b351e:docs/CURRENT_STATE.md` 等で参照できる。
+
+コード・schema・依存の変更なし。直近の関連202件は、修正過程の成功と再実行を重複除外した記録。最終修正後のNode37・workerd77・Chrome1と、先行実行で成功したworkerd87を分けて掲載した。今回の資料更新のためにアプリ全suite・browser・operatorドリルを再実行したとは扱わない。remote状態の再照会・push・Cloudflare操作はしていない。
+
+資料更新の確認:
+
+- 変更9文書の相対リンク251件について参照先の存在を確認し、欠落0件。外部URLの到達性検査はしていない。
+- ソースからroute契約152件・migration77本（最新0077）を再確認した。
+- `pnpm verify:contracts`、`pnpm verify:config`、`pnpm lint`（850file、修正なし）が成功。設定検査もremote環境未設定を確認した。lintは既存のコード検査であり、Markdownの内容確認は別に実施した。
+- `git diff --check` が成功。変更対象はMarkdownのみ。既存の試験ログとrouter／package scriptsを読み、記載範囲を照合した。
+- 一時リンク検査の初回はNodeからの子プロセス起動がsandboxのEPERMとなった。子プロセスを使わないファイル読取りへ変更して成功した。製品試験の失敗ではない。
+
+## 同じ所有者内の書籍COPY（81b351e）
 
 [書籍COPY](ARCHIVE_READER.md)で、コピー先から保存済みのZIP/CBZ/EPUB索引を使えるようにした。同じowner/space/blobに限り、ページ配信と共通の原本tuple・公開出力・hash/容量・保存receipt・pin・回収状態の証明をCOPYの最終transaction内で照合する。単一ファイル、フォルダーと再コピーを扱い、R2の追加PUT・物理予約を行わない。表示名・著者・シリーズは独立したmetadataへ引き継ぎ、読書位置はコピーしない。ファイル名由来のタイトルはコピー先の名前に合わせる。EPUBはコンテナ索引まで。
 
