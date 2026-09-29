@@ -12,6 +12,7 @@ import {
 import { PublicEditor } from "./editor";
 import { forgetPublicEdits } from "./editStore";
 import { Gallery } from "./gallery";
+import { MediaExtraction } from "./mediaExtraction";
 import { forgetPublicUploads } from "./uploadStore";
 import { PublicUploads } from "./uploads";
 
@@ -52,6 +53,7 @@ function SharedAudio({
   return <AudioLibrary key={transport.scope} client={transport} />;
 }
 export function PublicApp({ client }: { client: PublicClient }) {
+  const [extracting, setExtracting] = useState<SharedNode | null>(null);
   const [gallery, setGallery] = useState(false);
   const [audio, setAudio] = useState(false);
   const audioPlayer = useAudioPlayer();
@@ -80,6 +82,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
     setPage(null);
     setEditing(null);
     setUploading(null);
+    setExtracting(null);
     setTransferBusy(false);
     setPassword("");
     setClosed(true);
@@ -454,6 +457,14 @@ export function PublicApp({ client }: { client: PublicClient }) {
             >
               {audio ? "ファイル一覧へ戻る" : "オーディオで表示"}
             </button>
+            {extracting && (
+              <MediaExtraction
+                key={JSON.stringify([root.sessionId, extracting.id, extracting.currentBlobId])}
+                node={extracting}
+                request={(key, signal) => client.extractMedia(root, extracting, key, signal)}
+                close={() => setExtracting(null)}
+              />
+            )}
             {audio && current ? (
               <SharedAudio client={client} root={root} nodeId={current.id} />
             ) : gallery && current ? (
@@ -494,6 +505,16 @@ export function PublicApp({ client }: { client: PublicClient }) {
                           }}
                         >
                           名前を変更
+                        </button>
+                      )}
+                      {node.kind === "file" && (
+                        <button
+                          className="rename"
+                          disabled={locked || !node.currentBlobId}
+                          aria-label={node.name + "のメディア情報を読み込む"}
+                          onClick={() => setExtracting(node)}
+                        >
+                          メディア情報
                         </button>
                       )}
                       {node.kind === "file" && root.permissions.overwrite && (

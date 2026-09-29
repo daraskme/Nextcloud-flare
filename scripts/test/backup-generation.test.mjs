@@ -73,6 +73,9 @@ beforeEach(async () => {
     );
   }
   // Compact terminal fixtures test exact data preservation, not operation provenance or live recovery.
+  db.prepare(
+    "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at,result_json) VALUES('extracted-event','committed-history','media.requested',?,'completed',1,1,1,?)",
+  ).run(fixture.ids.file, JSON.stringify({ kind: "audio" }));
   db.exec("UPDATE control SET maintenance=0");
   const requeueId = "dlq_" + "a".repeat(64);
   db.prepare(

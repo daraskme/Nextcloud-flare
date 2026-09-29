@@ -6,6 +6,7 @@ import type { Env } from "../env";
 import { copyAuthorityStatements } from "../jobs/copyClaim";
 import { loadCopyJobManifest } from "../jobs/copyManifest";
 import { imageRequestAuthority } from "../jobs/imageRequestAuthority";
+import { mediaRequestAuthority } from "../jobs/mediaRequestAuthority";
 import { digestJson } from "../jobs/operations";
 import { nodeEventAuthority, readOutboxEvent } from "../jobs/outboxAuthority";
 import { OUTBOX_REQUEUE_ELIGIBLE } from "../jobs/outboxRequeue";
@@ -83,8 +84,10 @@ export async function requeueDeadLetter(
           plan.digest,
         ]),
       );
-    } else if (event.kind === "image.requested") {
-      const saved = await imageRequestAuthority(db, event);
+    } else if (event.kind === "image.requested" || event.kind === "media.requested") {
+      const saved = await (event.kind === "media.requested"
+        ? mediaRequestAuthority
+        : imageRequestAuthority)(db, event);
       if (!saved) throw new Error("original_authority_unavailable");
       authority = saved;
     } else {

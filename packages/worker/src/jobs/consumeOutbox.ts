@@ -10,6 +10,7 @@ import { consumeCopyOutbox } from "./copyQueue";
 import { imageMetadataStatements } from "./imageMetadata";
 import { generateOutboxImages, type ImageGenerationBudget } from "./imageQueue";
 import { consumeLargeThumbnail } from "./largeThumbnail";
+import { consumeMediaExtraction } from "./mediaExtraction";
 import { nodeEventAuthority, readOutboxEvent } from "./outboxAuthority";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
@@ -30,6 +31,15 @@ export async function consumeOutbox(
     return "retry";
   if (!outboxId || outboxId.length > 128) return "retry";
   const row = await readOutboxEvent(db, outboxId);
+  if (row?.kind === "media.requested") {
+    if (!("CONTROL" in env) || !env.BLOBS) return "retry";
+    return consumeMediaExtraction(
+      { DB: db, CONTROL: env.CONTROL, BLOBS: env.BLOBS },
+      outboxId,
+      deadline,
+      imageBudget,
+    );
+  }
   if (row?.kind === "image.requested") {
     if (!("CONTROL" in env) || !env.BLOBS || !env.IMAGES) return "retry";
     return consumeLargeThumbnail(

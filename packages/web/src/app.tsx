@@ -62,11 +62,13 @@ import {
   zipErrorMessage,
 } from "./lib/api";
 import { useAudioPlayer } from "./public-share/audio";
+import { MediaExtraction } from "./public-share/mediaExtraction";
 
 type Action =
   | { kind: "create" }
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
   | { kind: "overwrite"; node: FileNode }
+  | { kind: "media"; node: FileNode }
   | { kind: "share"; node: FileNode }
   | { kind: "link-share"; node: FileNode }
   | { kind: "upload-only-share"; node: FileNode }
@@ -293,7 +295,10 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Exclude<Action, { kind: "overwrite" | "share" | "link-share" | "upload-only-share" }>;
+  action: Exclude<
+    Action,
+    { kind: "overwrite" | "media" | "share" | "link-share" | "upload-only-share" }
+  >;
   account: Account;
   homeAccount: Account;
   sourceShare?: InternalShare;
@@ -539,6 +544,11 @@ function NodeMenu({
           {node.kind === "file" && (
             <Menu.Item onSelect={() => act({ kind: "overwrite", node })}>
               ファイルを上書き
+            </Menu.Item>
+          )}
+          {node.kind === "file" && (
+            <Menu.Item onSelect={() => act({ kind: "media", node })}>
+              メディア情報を読み込む
             </Menu.Item>
           )}
           <Menu.Item onSelect={() => act({ kind: "rename", node })}>名前を変更</Menu.Item>
@@ -1451,6 +1461,39 @@ export function App() {
         </main>
       </div>
       <UploadPanel />
+      {action?.kind === "media" && me && (
+        <Dialog
+          title="メディア情報"
+          description="ファイルの情報を読み込みます。"
+          open
+          onOpenChange={(open) => {
+            if (!open) setAction(null);
+          }}
+        >
+          <MediaExtraction
+            key={JSON.stringify([
+              me.id,
+              me.epoch,
+              actionScope?.share.id,
+              actionScope?.share.version,
+              action.node.id,
+              action.node.currentBlobId,
+            ])}
+            node={action.node}
+            close={() => setAction(null)}
+            request={(key, signal) =>
+              api.extractMedia(
+                action.node,
+                key,
+                signal,
+                actionScope
+                  ? { id: actionScope.share.id, version: actionScope.share.version }
+                  : undefined,
+              )
+            }
+          />
+        </Dialog>
+      )}
       {action?.kind === "overwrite" && me && (
         <OverwriteDialog
           key={JSON.stringify(action)}
@@ -1487,6 +1530,7 @@ export function App() {
       )}
       {action &&
         action.kind !== "overwrite" &&
+        action.kind !== "media" &&
         action.kind !== "share" &&
         action.kind !== "link-share" &&
         action.kind !== "upload-only-share" &&

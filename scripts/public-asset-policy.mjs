@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-/** Public source, one pure ZIP receipt utility, and the pinned rendering runtime only. */
+/** Public source, explicitly reviewed pure receipt utilities, and the pinned rendering runtime only. */
 export function assertPublicModule(id, root) {
   const normalized = id.replaceAll("\\", "/"),
     base = root.replaceAll("\\", "/").replace(/\/$/, "");
@@ -13,10 +13,12 @@ export function assertPublicModule(id, root) {
   )
     return;
   const file = normalized.replace(/^\0/, "").split("?")[0];
-  const zipUtility = `${base.slice(0, base.lastIndexOf("/"))}/shared/src/zips.ts`;
+  const utilities = ["zips.ts", "mediaExtraction.ts"].map(
+    (name) => `${base.slice(0, base.lastIndexOf("/"))}/shared/src/${name}`,
+  );
   assert.ok(
     file === `${base}/public.html` ||
-      file === zipUtility ||
+      utilities.includes(file) ||
       file?.startsWith(`${base}/src/public-share/`) ||
       /\/node_modules\/(react|react-dom|scheduler)\//.test(file ?? ""),
     `forbidden public module: ${id}`,
@@ -24,7 +26,10 @@ export function assertPublicModule(id, root) {
 }
 export function isPublicSource(id) {
   const file = id.replaceAll("\\", "/").split("?")[0];
-  return file.includes("/src/public-share/") || file.endsWith("/shared/src/zips.ts");
+  return (
+    file.includes("/src/public-share/") ||
+    ["zips.ts", "mediaExtraction.ts"].some((name) => file.endsWith(`/shared/src/${name}`))
+  );
 }
 export function assertPublicSource(source) {
   for (const forbidden of [

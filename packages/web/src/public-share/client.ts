@@ -81,6 +81,28 @@ export class PublicError extends Error {
 }
 export class PublicClient {
   readonly lifetime = new AbortController();
+  async extractMedia(root: SharedRoot, node: SharedNode, key: string, signal: AbortSignal) {
+    const active = AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(30000)]);
+    const headers = { "Share-Session": root.sessionId };
+    const { token } = await this.request<{ token: string }>(
+      "/csrf",
+      "POST",
+      undefined,
+      undefined,
+      headers,
+      undefined,
+      active,
+    );
+    return this.request(
+      `/media/${node.id}`,
+      "POST",
+      { blobId: node.currentBlobId },
+      token,
+      { ...headers, "Idempotency-Key": key },
+      undefined,
+      active,
+    );
+  }
   audioClient(root: SharedRoot, nodeId: string): AudioClient {
     const headers = { "Share-Session": root.sessionId };
     const active = (signal: AbortSignal) =>

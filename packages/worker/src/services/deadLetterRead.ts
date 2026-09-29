@@ -34,7 +34,7 @@ export async function listDeadLetters(
     ORDER BY received_at DESC,message_id DESC LIMIT 51
   ) SELECT d.message_id AS messageId,d.outbox_id AS outboxId,d.sent_at AS sentAt,
     d.received_at AS receivedAt,d.epoch AS recordedEpoch,
-    CASE WHEN b.kind IN ('image.requested','copy.requested','node.created','node.updated','node.trashed','node.restored','node.purged','node.renamed')
+    CASE WHEN b.kind IN ('media.requested','image.requested','copy.requested','node.created','node.updated','node.trashed','node.restored','node.purged','node.renamed')
       THEN b.kind WHEN b.outbox_id IS NOT NULL THEN 'unknown' END AS eventKind,
     b.state AS eventState,b.epoch AS eventEpoch,j.id AS jobId,j.state AS jobState,
     d.requeue_id AS requeueId,d.requeued_at AS requeuedAt

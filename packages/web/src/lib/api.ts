@@ -160,6 +160,28 @@ export class ApiClient {
   #csrfFlight: Promise<string> | undefined;
   #lifetime = new AbortController();
 
+  async extractMedia(
+    node: Pick<FileNode, "id" | "currentBlobId">,
+    key: string,
+    signal: AbortSignal,
+    share?: SelectedShare,
+  ) {
+    const lifetime = this.#lifetime;
+    const token = await this.csrf();
+    const active = AbortSignal.any([signal, lifetime.signal]);
+    active.throwIfAborted();
+    return this.request<unknown>(`/api/v1/nodes/${node.id}/media`, {
+      method: "POST",
+      signal: active,
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+        "Idempotency-Key": key,
+      },
+      body: JSON.stringify({ blobId: node.currentBlobId, ...(share ? { share } : {}) }),
+    });
+  }
+
   audioClient(
     account: Account,
     rootId: string,

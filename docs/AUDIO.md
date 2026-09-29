@@ -61,6 +61,6 @@ Content-Sessionは300秒を要求し、実際のCookie receipt期限に従う。
 
 ## 残件
 
-[override編集](AUDIO_METADATA_EDIT.md)と[タグの検索同期・既存曲再索引](AUDIO_SEARCH.md)は接続済み。[埋め込み表紙](AUDIO_COVERS.md)も新しいMP3/FLAC/MP4/Oggから抽出・変換し、一覧と常駐playerへ表示する。既存音声・所有者間COPY先の表紙もplayerから要求できる。音声metadata自体の再抽出とWAV/WebM表紙は継続する。原本OpusのFiles経由再生は[TRACK_METADATA](TRACK_METADATA.md)、追加形式の範囲と限界は[MP3/FLAC/WAV](AUDIO_FORMATS.md)と[AAC/Vorbis](AAC_VORBIS.md)を参照。
+[override編集](AUDIO_METADATA_EDIT.md)と[タグの検索同期・既存曲再索引](AUDIO_SEARCH.md)は接続済み。[埋め込み表紙](AUDIO_COVERS.md)も新しいMP3/FLAC/MP4/Oggから抽出・変換し、一覧と常駐playerへ表示する。既存音声・所有者間COPY先の表紙もplayerから要求できる。[既存原本の情報抽出](MEDIA_EXTRACTION.md)もFilesから要求できる。自動一括処理とWAV/WebM表紙は継続する。原本OpusのFiles経由再生は[TRACK_METADATA](TRACK_METADATA.md)、追加形式の範囲と限界は[MP3/FLAC/WAV](AUDIO_FORMATS.md)と[AAC/Vorbis](AAC_VORBIS.md)を参照。
 
 ローカルD1の候補探索gateと2,000曲のChrome描画gateは上記で検証済み。実Cloudflareの負荷・適用と、他OS/browser・実モバイル機器の確認は後続。

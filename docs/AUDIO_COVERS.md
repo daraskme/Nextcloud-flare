@@ -41,4 +41,4 @@ playerは自動pollせず、pending後の「表紙を確認」で同じ要求key
 
 0075はimage_derivative_start triggerだけを置換し、既知のgeneratorとkindの対応を検査する。通常79table・149公開routeを維持する。適用時はmaintenance、backup/restore未凍結、未終了permit/operation/admission/R2/KDF/Imagesなしを要求する。旧migrationを変更しない。実Cloudflareへの適用は未実施。
 
-既存完了済み音声とCOPY先の表紙は上記の明示要求で生成できる。音声metadata自体が欠けた原本の再抽出・自動一括処理、WAV内ID3・WebM attachmentの表紙抽出は未実装。同一所有者COPYの同じblobは既存の表紙を参照できる。PNG以外の実埋め込み形式や巨大タグ・多種類のencoder、実Cloudflare Images、他OS/browserの検証は追加が必要。実施した試験は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。
+既存完了済み音声とCOPY先の表紙は上記の明示要求で生成できる。音声metadataが欠けた原本は、先に[Filesから情報抽出](MEDIA_EXTRACTION.md)を要求できる。自動一括処理、WAV内ID3・WebM attachmentの表紙抽出は未実装。同一所有者COPYの同じblobは既存の表紙を参照できる。PNG以外の実埋め込み形式や巨大タグ・多種類のencoder、実Cloudflare Images、他OS/browserの検証は追加が必要。実施した試験は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。

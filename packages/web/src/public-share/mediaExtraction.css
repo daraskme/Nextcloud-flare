@@ -1,0 +1,33 @@
+.media-extraction {
+  padding: 16px;
+  border: 1px solid #cedae3;
+  border-radius: 12px;
+  background: #f8fbff;
+  color: #243e57;
+  margin-block: 16px;
+}
+.media-extraction-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.media-extraction p {
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+.media-extraction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.media-extraction-actions button {
+  border: 1px solid #c6d7e6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: inherit;
+  background: white;
+  cursor: pointer;
+}
+.media-extraction-actions button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

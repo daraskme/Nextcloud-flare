@@ -18,6 +18,7 @@ import { handleAudioListHttp } from "./audio";
 import { hasEmptyBody } from "./emptyBody";
 import { handleGalleryHttp } from "./gallery";
 import { handleLargeThumbnailHttp } from "./largeThumbnail";
+import { handleMediaExtractionHttp } from "./mediaExtraction";
 import { publicShareContent } from "./publicShareContent";
 import {
   PUBLIC_OPERATION,
@@ -32,7 +33,7 @@ import { handleUploadHttp, publicUploadRoute } from "./uploads";
 import { handleZipHttp, publicZipRoute } from "./zips";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|gallery|tracks|content-session|(?:content|thumb)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|gallery|tracks|content-session|(?:content|thumb|media)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -63,7 +64,8 @@ export const publicShareRoute = (request: Request) => {
           (action.startsWith("content/") || action.startsWith("thumb/"))) ||
         (request.method === "POST" &&
           (["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action) ||
-            action.startsWith("thumb/"))) ||
+            action.startsWith("thumb/") ||
+            action.startsWith("media/"))) ||
         (request.method === "PATCH" && /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)) ||
         (request.method === "DELETE" &&
           (action.startsWith("tickets/") || /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)))))
@@ -197,12 +199,12 @@ async function routePublicShareHttp(
         session.rootNodeId,
       );
     }
-    if (action.startsWith("thumb/")) {
+    if (action.startsWith("thumb/") || action.startsWith("media/")) {
       if (!session) return problem(401, "unauthorized");
       if (request.headers.get("Share-Session") !== session.claims.session_id)
         return problem(412, "precondition_failed");
       if (request.method === "POST")
-        return handleLargeThumbnailHttp(
+        return (action.startsWith("media/") ? handleMediaExtractionHttp : handleLargeThumbnailHttp)(
           request,
           env,
           publicPrincipal(session),

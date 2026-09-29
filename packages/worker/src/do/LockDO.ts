@@ -300,6 +300,29 @@ export class LockDO extends DurableObject<Env> {
     blobId: string;
     principal: Principal;
   }): Promise<Permit> {
+    return this.#acquireMediaRead(request, "thumbnail.request");
+  }
+
+  async acquireMediaExtraction(request: {
+    requestId: string;
+    spaceId: string;
+    nodeId: string;
+    blobId: string;
+    principal: Principal;
+  }): Promise<Permit> {
+    return this.#acquireMediaRead(request, "media.extract");
+  }
+
+  async #acquireMediaRead(
+    request: {
+      requestId: string;
+      spaceId: string;
+      nodeId: string;
+      blobId: string;
+      principal: Principal;
+    },
+    kind: "thumbnail.request" | "media.extract",
+  ): Promise<Permit> {
     request = { ...request, principal: freezePrincipal(request.principal) };
     this.#canonical(request.spaceId);
     if (
@@ -325,12 +348,7 @@ export class LockDO extends DurableObject<Env> {
         request.principal.user_id !== proof.node.owner_id)
     )
       throw new Error("authorization_denied");
-    const digest = JSON.stringify([
-      "thumbnail.request",
-      request.nodeId,
-      request.blobId,
-      request.principal,
-    ]);
+    const digest = JSON.stringify([kind, request.nodeId, request.blobId, request.principal]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
       request.requestId,

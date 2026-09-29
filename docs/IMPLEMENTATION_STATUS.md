@@ -1,6 +1,22 @@
 # 実装進捗
 
-## 既存音声・コピー先からの表紙要求（今回）
+## 既存ファイルのメディア情報抽出（今回）
+
+[原本の情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFilesへ接続した。音声metadataがなくAudioに出ない古い原本を、現在の閲覧者でQueueへ要求できる。画像・動画もuploadと同じ上限付きparserを使う。新しいprivate/public POST mediaと`media.extract` operationを追加し、node/blob/generatorの固定Outboxへ集約する。0076はcatalogue・Outboxの終端JSON列・部分一意索引を追加し、通常79tableを維持する。API routeは151。
+
+原本の認可・親・blob・etag・claimをRange前後と確定時に検査し、MIME・metadata・実効タグのcache/base/FTS・一覧世代・終端結果を同時に確定する。同じ原本のoverrideを保持し、同時編集では巻き戻す。未対応は既存metadataを保持したまま記録し、予算切れ・失効・競合を未対応と確定しない。原本・node revision・再生位置・参照/容量を変えず、Images変換も呼ばない。画面は明示確認を使い、閉じた後の遅い応答を破棄する。
+
+- Node関連83件成功。最初の4file/79件（41.94秒、/tmp/ncf-media-unit-1.log）でmigrationの停止/凍結条件、receiptの原本・version・状態整合、現行/旧backup snapshotを検証した。終端JSONを含むfixtureと公開source境界を加えた2file/45件も成功（40.35秒、/tmp/ncf-media-unit-final.log）。backup試験はデータ保存・復元を対象としたterminal fixtureで、operation来歴の証明ではない。件数は重複を除く。
+- Native関連80件成功。初回3file/64件のうち63件が成功し、新しい試験の検索version期待値だけが正規化version接尾辞を欠いて失敗した（78.59秒、/tmp/ncf-media-native-1.log）。正規定数へ修正し、競合を補強した抽出24件と既存表紙9件が成功（40.39秒、/tmp/ncf-media-native-2.log）。既存track抽出33件とlg14件も初回で成功している。新規では旧upload資格失効後のAccess読者、MP3/FLAC/WAV/AAC/Vorbis/Opus・画像・AV1動画、検索反映、未対応の記録、読み取り予算、失効/原本/epoch/hidden/revision/index競合、override編集、受付/確定ACK喪失、同時consumer、CSRF、不正・過大な終端JSONの拒否を確認した。
+- 初回buildは新しい共有receipt検証moduleが公開source許可リスト外として停止した（/tmp/ncf-media-build.log）。依存や秘密値を持たない純粋な検証moduleを個別に追加し、既存のsource検査を適用した。private module・類似パス・別directoryの拒否を維持している。最終Web両入口/Worker dry-run build成功（Worker1,949.93KiB・gzip410.98KiB、/tmp/ncf-media-build-final.log）。
+- Chrome4件成功。最初の4件では所有者・内部共有・公開リンクのFiles→抽出→確認→Audio一覧→実MP3再生の3件が成功し、遅延応答試験だけがNode側fetchのローカルhostname解決で失敗した（1.5分、/tmp/ncf-media-browser-1.log）。既存のloopback/Hostヘルパーへ揃え、中断試験1件が成功（27.4秒、/tmp/ncf-media-browser-close.log）。実受付済み応答を遅延させ、閉じる操作でHTTPがabortされ、再び開いても古い結果を表示しないことを確認した。同じkeyでの状態照会、390pxのはみ出し防止を確認し、公開の完了画面と内部共有のplayerを目視確認した。初回artifactは/tmp/ncf-media-browser-firstへ保存した。
+- 最終Native7file/147件成功（87.73秒、/tmp/ncf-media-native-final.log）。抽出26件へ、現行権限を要求する管理者DLQ再送とoperation照会を追加した。同じkeyを別の有効なCOW nodeへ使った場合の409相当の競合も確認する。既存の画像metadata・Outbox・operation・DLQ・schemaと公開asset/SRI検査も成功。重複を除く関連試験は290件（Node83・Native203・Chrome4）。全suiteの再実行ではない。
+- typecheck、lint（794file）、verify:contracts、verify:config成功（/tmp/ncf-media-{types-complete,lint,contracts-final,config-final}.log）。schema contract再生成で通常79table・FK索引・operation catalogueを確認した。
+- ローカルoperator drill成功（/tmp/ncf-media-operator.log、保存先.wrangler/operator-drill-3ZVSSo）。0076を含む79tableのexport・隔離復元・snapshot照合・epoch採用・全監査・受付/GC再開まで確認した。provider応答は模擬で、Imagesなどは空のfixture。実Cloudflareの復旧を実証するものではない。
+
+自動一括再抽出、完了後の同じ抽出versionでの強制走査、失効した保存読者の付替え、WAV/WebM表紙、Bookshelf、運用修復と実Cloudflare/他OS/browser gateは継続する。実環境へmigration/deployしていない。pushは自動承認審査拒否後の明示承認待ちで、ローカルcommitに保持する。
+
+## 既存音声・コピー先からの表紙要求（先行b1975e1）
 
 [既存音声の表紙要求](AUDIO_COVERS.md)を所有者・内部共有・公開リンクのplayerへ接続した。現在の音声metadataがある原本に対して既存POST thumbへsmを要求し、Queueでsm/mdを生成する。元uploadの資格情報に依存せず、受付した現在の閲覧者の認可・node/parent/blob/etagを処理中と確定前に再検査する。所有者間COPYの新blobも、引継ぎ済みmetadataとコピー先の所有権を使う。画像用lgのrequest ID・旧operation intentを維持し、表紙はblobごとの固定IDへ集約する。
 

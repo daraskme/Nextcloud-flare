@@ -31,6 +31,7 @@ export interface ImageNode {
 }
 export interface PreparedImageMetadata {
   statements: readonly SqlStatement[];
+  kind?: "image" | "video" | "audio" | "unsupported";
   source?: {
     node: ImageNode & { etag: string };
     image: ImageMetadata;
@@ -82,6 +83,30 @@ export async function imageMetadataStatements(
   const guard = async () => {
     await atomicBatch(env.DB, [...authority, claim, hold]);
   };
+  return prepareFileMetadata(
+    { DB: env.DB, BLOBS: env.BLOBS },
+    { ...node, etag: node.etag },
+    event.space_id,
+    event.owner_id,
+    hold,
+    guard,
+    deadline,
+    budget,
+  );
+}
+
+/** The same bounded parser serves upload events and explicitly requested current-file refreshes. */
+export async function prepareFileMetadata(
+  env: Pick<Env, "DB" | "BLOBS">,
+  node: ImageNode & { name: string; revision: number; etag: string },
+  spaceId: string,
+  ownerId: string,
+  hold: SqlStatement,
+  guard: () => Promise<void>,
+  deadline: number,
+  budget: ImageReadBudget,
+  refresh = false,
+): Promise<PreparedImageMetadata> {
   await guard();
   const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
   const original = { key: node.key, size: node.size, etag: node.etag };
@@ -108,11 +133,16 @@ export async function imageMetadataStatements(
   const artwork = await inspectAudioCover(track),
     coverImage = artwork?.image,
     cover = artwork?.cover;
+  const kind = image ? "image" : (track?.media.kind ?? "unsupported");
+  if (refresh && kind === "unsupported") return { statements: [hold], kind };
   // Even the no-image result belongs to this exact current blob and source authorization.
   const result: SqlStatement[] = [
     hold,
     { sql: "DELETE FROM node_media WHERE node_id=?", values: [node.id] },
-    { sql: "DELETE FROM node_audio WHERE node_id=? AND blob_id<>?", values: [node.id, node.blob] },
+    {
+      sql: "DELETE FROM node_audio WHERE node_id=? AND (blob_id<>? OR ?=1)",
+      values: [node.id, node.blob, refresh && kind !== "audio" ? 1 : 0],
+    },
   ];
   if (image)
     result.push(
@@ -133,7 +163,7 @@ export async function imageMetadataStatements(
       },
       {
         sql: "UPDATE blobs SET mime_sniffed=? WHERE id=? AND owner_id=?",
-        values: [image.mime, node.blob, event.owner_id],
+        values: [image.mime, node.blob, ownerId],
       },
     );
   if (track) {
@@ -151,7 +181,7 @@ export async function imageMetadataStatements(
       },
       {
         sql: "UPDATE blobs SET mime_sniffed=? WHERE id=? AND owner_id=?",
-        values: [mediaContentType(track.media), node.blob, event.owner_id],
+        values: [mediaContentType(track.media), node.blob, ownerId],
       },
     );
     if (track.media.kind === "audio") {
@@ -196,21 +226,23 @@ export async function imageMetadataStatements(
           search.version,
         ],
       });
-      result.push(
-        ...nodeSearchSteps(node.id, event.space_id, node.name, node.revision).flatMap((step) => [
-          step.statement,
-          assertOneChange,
-        ]),
-        {
-          sql: "UPDATE spaces SET tree_generation=tree_generation+1 WHERE id=? AND owner_id=?",
-          values: [event.space_id, event.owner_id],
-        },
-        assertOneChange,
-      );
     }
   }
+  if (refresh || kind === "audio")
+    result.push(
+      ...nodeSearchSteps(node.id, spaceId, node.name, node.revision).flatMap((step) => [
+        step.statement,
+        assertOneChange,
+      ]),
+      {
+        sql: "UPDATE spaces SET tree_generation=tree_generation+1 WHERE id=? AND owner_id=?",
+        values: [spaceId, ownerId],
+      },
+      assertOneChange,
+    );
   return {
     statements: result,
+    kind,
     ...(image || (coverImage && cover)
       ? {
           source: {

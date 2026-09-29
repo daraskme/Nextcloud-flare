@@ -30,11 +30,12 @@ export interface EventRow extends SelectedShareRecord, TransferDestinationRecord
   owner_id: string;
   operands_json: string;
   result_json: string | null;
+  outbox_result_json?: string | null;
 }
 
 export async function readOutboxEvent(db: D1Database, id: string): Promise<EventRow | null> {
   return primary(db)
-    .prepare(`SELECT b.state,b.kind,b.payload_ref,b.epoch,o.op_id,o.kind AS op_kind,
+    .prepare(`SELECT b.state,b.kind,b.payload_ref,b.epoch,b.result_json AS outbox_result_json,o.op_id,o.kind AS op_kind,
       o.state AS op_state,o.principal_kind,o.principal_id,o.credential_id,
       o.credential_version,o.selected_share_id,o.selected_share_version,o.destination_space_id,o.destination_share_id,o.destination_share_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b JOIN operations o ON o.op_id=b.op_id
       JOIN spaces s ON s.id=o.space_id

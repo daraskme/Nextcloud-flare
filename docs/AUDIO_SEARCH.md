@@ -46,7 +46,7 @@ ControlDOのlocal SQLiteにepoch・cache version・最後のnode ID・実行toke
 
 ## 残る接続
 
-- 原本に対して古い/不正なmetadataの再抽出、音声以外の索引再構築と運用画面。
+- [現在読める原本の個別再抽出](MEDIA_EXTRACTION.md)はFilesへ接続済み。自動一括再抽出、音声以外の索引再構築と運用画面は後続。
 - 最大長の音声タグと大量音声での実D1負荷gate、media全体の再抽出運用。
 
 検証結果は[実装進捗](IMPLEMENTATION_STATUS.md)を参照。実Cloudflareへのmigration・配備は未実施。

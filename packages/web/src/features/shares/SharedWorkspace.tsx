@@ -7,6 +7,7 @@ import {
   File,
   Folder,
   FolderPlus,
+  Info,
   LoaderCircle,
   MoreHorizontal,
   Pencil,
@@ -36,7 +37,7 @@ type SharedActions = {
   onAction: (
     action:
       | { kind: "create" }
-      | { kind: "rename" | "overwrite" | "move" | "copy" | "trash"; node: FileNode },
+      | { kind: "rename" | "overwrite" | "move" | "copy" | "trash" | "media"; node: FileNode },
     scope: SharedActionScope,
   ) => void;
   writesBlocked: boolean;
@@ -383,6 +384,21 @@ function SharedContent({
                       </button>
                     )}
                     <div className="shared-row-actions">
+                      {file.kind === "file" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={file.name + "のメディア情報を読み込む"}
+                          onClick={() =>
+                            onAction(
+                              { kind: "media", node: file },
+                              { share, parentId: folder ? id : (file.parentId ?? null) },
+                            )
+                          }
+                        >
+                          <Info size={16} />
+                        </Button>
+                      )}
                       {file.kind === "folder" && (
                         <Button
                           variant="ghost"

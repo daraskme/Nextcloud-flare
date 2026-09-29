@@ -84,6 +84,8 @@ export function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
           invoke((lock) => lock.acquireRename(r)),
         acquireThumbnail: (r: Parameters<LockDO["acquireThumbnail"]>[0]) =>
           invoke((lock) => lock.acquireThumbnail(r)),
+        acquireMediaExtraction: (r: Parameters<LockDO["acquireMediaExtraction"]>[0]) =>
+          invoke((lock) => lock.acquireMediaExtraction(r)),
         acquireTrash: (r: Parameters<LockDO["acquireTrash"]>[0]) =>
           invoke((lock) => lock.acquireTrash(r)),
         acquireMove: (r: Parameters<LockDO["acquireMove"]>[0]) =>

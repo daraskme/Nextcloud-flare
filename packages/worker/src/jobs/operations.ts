@@ -278,7 +278,7 @@ export function validateClaimAuthorization(
   const restore = intent.kind === "node.restore";
   const purge = intent.kind === "node.purge";
   const targetMatches =
-    (intent.kind === "thumbnail.request" &&
+    (["thumbnail.request", "media.extract"].includes(intent.kind) &&
       authorized.operation === "gallery.read" &&
       authorized.node.id === operands.nodeId &&
       authorized.node.parent_id === operands.parentId &&
@@ -478,6 +478,7 @@ export async function lookupOperation(
       row.kind !== "node.copy" &&
       row.kind !== "copy.enqueue" &&
       row.kind !== "thumbnail.request" &&
+      row.kind !== "media.extract" &&
       row.kind !== "copy.publish" &&
       row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
@@ -544,7 +545,7 @@ export async function lookupOperation(
         .first();
       if (!bound) return null;
     }
-    if (row.kind === "thumbnail.request") {
+    if (row.kind === "thumbnail.request" || row.kind === "media.extract") {
       if (
         typeof operands.nodeId !== "string" ||
         typeof operands.parentId !== "string" ||
@@ -714,7 +715,9 @@ export async function lookupOperation(
         ? (JSON.parse(row.result_json) as { status: number; nodeId?: string; jobId?: string })
         : null;
     const expectedStatus =
-      row.kind === "copy.enqueue" || row.kind === "thumbnail.request"
+      row.kind === "copy.enqueue" ||
+      row.kind === "thumbnail.request" ||
+      row.kind === "media.extract"
         ? 202
         : row.kind === "dav.put" || row.kind === "upload.complete"
           ? typeof operands.nodeId === "string"
@@ -747,6 +750,7 @@ export async function lookupOperation(
         "node.move",
         "dav.move",
         "thumbnail.request",
+        "media.extract",
         "audio.metadata.write",
       ].includes(row.kind) &&
       result.nodeId !== operands.nodeId

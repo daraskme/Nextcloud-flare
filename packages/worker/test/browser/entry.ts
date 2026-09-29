@@ -11,7 +11,7 @@ import { dispatchOutbox } from "../../src/jobs/outbox";
 import { handleOutboxBatch } from "../../src/jobs/queue";
 import { foundationFixture } from "../fixtures/foundation";
 import { audioLibraryFixture } from "./audioLibrary";
-import { legacyAudioFixture } from "./legacyAudio";
+import { legacyAudioFixture, legacyMediaFixture } from "./legacyAudio";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
 
@@ -131,6 +131,9 @@ export default {
     const legacyAudio = /^\/__test__\/legacy-audio\/([A-Za-z0-9_-]{1,128})$/.exec(path);
     if (legacyAudio && request.method === "POST")
       return Response.json(await legacyAudioFixture(ready.env, legacyAudio[1]!));
+    const legacyMedia = /^\/__test__\/legacy-media\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+    if (legacyMedia && request.method === "POST")
+      return Response.json(await legacyMediaFixture(ready.env, legacyMedia[1]!));
     const shareSessions = /^\/__test__\/share-session-count\/([A-Za-z0-9_-]{1,128})$/.exec(path);
     if (shareSessions && request.method === "GET") {
       const count = await ready.env.DB.prepare(

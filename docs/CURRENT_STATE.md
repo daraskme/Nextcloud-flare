@@ -1,8 +1,10 @@
 # 現在の実装状態
 
-[既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[既存ファイルのメディア情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFiles画面へ接続しました。現在の読者で原本を解析し、音声タグ・画像寸法・動画情報・MIME・検索索引を一括反映します。編集済みタグを保持し、再実行で原本を再走査しません。schema0076・通常79table・151 API route。自動一括再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [音声の埋め込み表紙](AUDIO_COVERS.md)を、抽出・WebP変換・保存・配信・Audio一覧と常駐playerへ接続しました。新しいMP3・FLAC・M4A/MP4・Ogg Opus/Vorbisを対象に、現在の原本と閲覧権限を確認します。既存の変換記録・容量予約・回収処理を共有し、再実行で変換を重複させません。schema0075・通常79table・149 API route。既存原本の表紙再抽出と所有者間COPY後の再生成、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
@@ -128,8 +130,8 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 音声タグ検索と既存曲の再索引 | 抽出/編集・ファイル操作・所有者間COPYとの同期。定期保守による旧cache/base/FTSの修復、永続cursor・32候補/8件/5秒上限 | Unicode、競合/巻戻し、応答喪失、元データ/再生位置保持、途中再開・同時実行・停止、検索cursor失効。件数はIMPLEMENTATION_STATUS | 原本再抽出、他media、実D1負荷と進行表示。[詳細](AUDIO_SEARCH.md) |
-| AudioとGallery | 曲一覧・常駐player・本人の位置保存、タグ編集、MP3/FLAC/WAV/AAC/Vorbis/Opus。新しいMP3/FLAC/MP4/Oggの埋め込み表紙。画像lightbox・AV1原本再生・サムネイル配信と共有閲覧 | ローカルD1/R2/QueueとChrome、Audio2,000曲・最大長タグ、所有者/共有/公開閲覧。詳細は各機能資料 | 音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、他OS/browserと実Cloudflare |
+| 音声タグ検索と既存曲の再索引 | 抽出/編集・ファイル操作・所有者間COPYとの同期。定期保守による旧cache/base/FTSの修復、永続cursor・32候補/8件/5秒上限 | Unicode、競合/巻戻し、応答喪失、元データ/再生位置保持、途中再開・同時実行・停止、検索cursor失効。件数はIMPLEMENTATION_STATUS | 原本の一括再抽出、他media、実D1負荷と進行表示。[詳細](AUDIO_SEARCH.md) |
+| AudioとGallery | 曲一覧・常駐player・本人の位置保存、タグ編集、MP3/FLAC/WAV/AAC/Vorbis/Opus。新しいMP3/FLAC/MP4/Oggの埋め込み表紙。画像lightbox・AV1原本再生・サムネイル配信と共有閲覧 | ローカルD1/R2/QueueとChrome、Audio2,000曲・最大長タグ、所有者/共有/公開閲覧。詳細は各機能資料 | 原本の一括再抽出、WAV/WebM表紙、Bookshelf、他OS/browserと実Cloudflare |
 | サムネイル変換の内部実行部 | 固定原本の入力計画、条件付きR2 stream、静止画sm/md/lg WebP、出力metadata非保持・寸法・hash・中断 | Nodeの上限/破損/失効/遅延、ローカルImagesのJPEG/PNG/WebP/AVIF/10-bit・3サイズ・alpha・EXIF除去 | 費用claim/native記録、Queue/R2保存・physical会計・配信、Gallery、実EXIF回転・品質・plan検証。[詳細](IMAGE_TRANSFORMS.md) |
 | 画像メタデータと原本MIME | 新しい通常/匿名upload・DAV PUTのOutbox、JPEG/PNG/WebP/AVIF header、EXIF whitelist、current blob/parent/claim、元uploadを確認した受け取り専用認可 | Nodeの破損/上限、実D1/R2の原子確定/応答喪失/失効、Chromeの6形式と匿名AVIF実decode | Images/サムネイル・Gallery API/UI、既存データ/copy/move、動画/音声、他browser・実環境。[詳細](IMAGE_METADATA.md) |
 | 公開リンクの所有者管理API/画面 | CRUD、閲覧/編集切替、期限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効、URLコピー | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替、mobile browser操作 | 実環境。[詳細](PUBLIC_SHARES.md) |
@@ -236,7 +238,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 - upload行自体が失われたincomplete multipartの全体閉鎖・容量精算。全`u/`のhandle走査・中止receipt・part容量保留は接続済み（[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)）。未知の完成済み`u/` objectの隔離・35日回収も接続済み。
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
-- 動画/音声のmetadata parser、metadata検索索引同期、索引version再構築運用。新しいupload・DAV PUTの画像抽出は[IMAGE_METADATA](IMAGE_METADATA.md)へ接続済みで、既存データ再抽出とcopy/move引継ぎは残る。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
+- media parserの未対応領域、自動一括再抽出、画像/動画metadataのCOPY引継ぎと索引保守。新しいupload/DAV PUTの抽出に加え、[既存原本の個別抽出](MEDIA_EXTRACTION.md)、[音声タグの検索同期・既存cache再索引](AUDIO_SEARCH.md)は接続済み。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)、名前検索APIと現行権限付きpaginationは[SEARCH](SEARCH.md)へ接続済み。
 - 公開linkのthumb/page/track配信。ZIPは[ZIPダウンロード](ZIP_DOWNLOADS.md)へ接続済み。受け取り専用共有のHTTP/画面は[UPLOAD_ONLY_SHARES](UPLOAD_ONLY_SHARES.md)へ接続済み。所有者管理API/画面・password保存・匿名unlock/CSRF/logout・独立公開bundle・閲覧/保存・create/rename/delete・upload/overwrite APIと画面は[PUBLIC_SHARES](PUBLIC_SHARES.md)、内部共有の管理CRUD・一覧APIは[INTERNAL_SHARES](INTERNAL_SHARES.md)、受信閲覧/contentは[SHARED_WORKSPACE](SHARED_WORKSPACE.md)へ接続済み。
 - archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。ZIP downloadは所有者・内部共有・匿名readリンクへ接続済み（[ZIP_DOWNLOADS](ZIP_DOWNLOADS.md)）。
 - バックアップ定時起動・通知先の実設置、Time Travel手順、live restore automation。実行監視・HTTPS通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
@@ -246,7 +248,7 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 - File System Access handle、詳細preview。
 - コピー追跡のタブ終了後・別端末での復元、公開link管理、media metadata検索、大量gridの仮想化。
-- Bookshelf/EPUB reader、音声metadata自体の再抽出・WAV/WebM表紙、mediaの残る詳細表示・操作。Gallery/lightboxとAudio playerは上記の範囲を接続済み。
+- Bookshelf/EPUB reader、原本の一括再抽出・WAV/WebM表紙、mediaの残る詳細表示・操作。Gallery/lightboxとAudio playerは上記の範囲を接続済み。
 - AVIF/AV1/Opusの他OS/browser検証と未対応環境のfallback整備。ローカルChromeの原本decode/再生は確認済み。
 
 ### 制御・運用

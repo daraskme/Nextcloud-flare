@@ -1,8 +1,10 @@
 # セッション引き継ぎ
 
-[既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[既存ファイルのメディア情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFiles画面へ接続しました。現在の読者で原本を解析し、音声タグ・画像寸法・動画情報・MIME・検索索引を一括反映します。編集済みタグを保持し、再実行で原本を再走査しません。schema0076・通常79table・151 API route。自動一括再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [音声の埋め込み表紙](AUDIO_COVERS.md)を、抽出・WebP変換・保存・配信・Audio一覧と常駐playerへ接続しました。新しいMP3・FLAC・M4A/MP4・Ogg Opus/Vorbisを対象に、現在の原本と閲覧権限を確認します。既存の変換記録・容量予約・回収処理を共有し、再実行で変換を重複させません。schema0075・通常79table・149 API route。既存原本の表紙再抽出と所有者間COPY後の再生成、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
@@ -207,7 +209,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
 - private単一uploadのHTTP・D1予約・R2送信・原子的complete・abort・期限切れ回収・GC handoffは接続済み。multipartのD1予約/認可RPC/状態mirrorとR2 create/part送信は内部接続済み。multipartのR2 complete/HEAD・原子的新規/上書き公開は内部接続済み。既知IDのR2 abort・期限切れ回収は接続済み。private HTTPは接続済み。Files UIの一覧・操作・確認付き上書き/再開uploadは接続済み。未知object/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実環境のControlDO admission/Access/署名鍵設定、全route会計は未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
-- AVIF/AV1/Opusのparser・配信・Gallery/Audioの原本表示/再生とローカルChrome試験は接続済み。新しいMP3/FLAC/MP4/Oggの表紙と、既存音声/COPY先の表紙要求も接続済み。他OS/browser・実Cloudflareのgate、Bookshelf、metadata自体の原本再抽出は残る。
+- AVIF/AV1/Opusのparser・配信・Gallery/Audioの原本表示/再生とローカルChrome試験は接続済み。新しいMP3/FLAC/MP4/Oggの表紙と、既存音声/COPY先の表紙要求も接続済み。他OS/browser・実Cloudflareのgate、Bookshelf、原本の自動一括再抽出は残る。個別の情報抽出はMEDIA_EXTRACTIONへ接続済み。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。
 - app password 作成と DAV 認証には `APP_PASSWORD_PEPPERS` と `APP_PASSWORD_ACTIVE_KID` の pepper ring が必要。未設定なら 503。remote secret 登録は未完了。

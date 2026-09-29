@@ -21,6 +21,7 @@ import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { handleLargeThumbnailHttp } from "./largeThumbnail";
+import { handleMediaExtractionHttp, mediaExtractionRoute } from "./mediaExtraction";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -50,6 +51,7 @@ export function privateAppRoute(request: Request): boolean {
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
     thumbnailRoute(request) ||
+    mediaExtractionRoute(request) ||
     galleryRoute(request) ||
     audioReadRoute(request) ||
     playbackRoute(request) ||
@@ -101,6 +103,7 @@ export async function handlePrivateAppHttp(
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
   const thumbnail = thumbnailRoute(request);
+  const mediaExtraction = mediaExtractionRoute(request);
   const gallery = galleryRoute(request);
   const audio = audioReadRoute(request);
   const playback = playbackRoute(request);
@@ -124,6 +127,7 @@ export async function handlePrivateAppHttp(
     !logout &&
     !nodeRead &&
     !thumbnail &&
+    !mediaExtraction &&
     !gallery &&
     !audio &&
     !playback &&
@@ -303,9 +307,9 @@ export async function handlePrivateAppHttp(
         ? handleAudioMetadataHttp(request, env, principal, dependencies.csrf)
         : handlePlaybackHttp(request, env, principal, dependencies.csrf);
   }
-  if (thumbnail)
+  if (thumbnail || mediaExtraction)
     if (request.method === "POST")
-      return handleLargeThumbnailHttp(
+      return (mediaExtraction ? handleMediaExtractionHttp : handleLargeThumbnailHttp)(
         request,
         env,
         {

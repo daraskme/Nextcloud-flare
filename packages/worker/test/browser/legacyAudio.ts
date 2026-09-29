@@ -5,6 +5,25 @@ import { imageObjectSource } from "../../src/media/images/r2Source";
 import { TRACK_METADATA_LIMITS } from "../../src/media/tracks/common";
 import { inspectTracks } from "../../src/media/tracks/inspect";
 
+/** Historical completed upload predating any parser; do not inject extracted product data. */
+export async function legacyMediaFixture(env: Env, nodeId: string) {
+  await atomicBatch(env.DB, [
+    assertExists(
+      `SELECT 1 FROM nodes n JOIN operations o ON o.op_id=n.last_op_id
+      WHERE n.id=? AND n.kind='file' AND n.current_blob_id IS NOT NULL AND o.kind='upload.complete' AND o.state='committed'
+      AND NOT EXISTS(SELECT 1 FROM node_media WHERE node_id=n.id)
+      AND NOT EXISTS(SELECT 1 FROM node_audio WHERE node_id=n.id)
+      AND NOT EXISTS(SELECT 1 FROM image_transform_attempts WHERE blob_id=n.current_blob_id)`,
+      [nodeId],
+    ),
+    {
+      sql: "UPDATE outbox SET state='completed' WHERE op_id=(SELECT last_op_id FROM nodes WHERE id=?) AND kind='node.created'",
+      values: [nodeId],
+    },
+  ]);
+  return { nodeId };
+}
+
 /** Test-only old-deployment fixture: finish metadata extraction without a cover generation. */
 export async function legacyAudioFixture(env: Env, nodeId: string) {
   const node =

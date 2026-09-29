@@ -12,7 +12,7 @@ export async function upload(
   filename: string,
   parentId?: string,
   fixtureKind: "images" | "tracks" = "images",
-  metadata: "current" | "legacy-audio" = "current",
+  metadata: "current" | "legacy-audio" | "legacy-media" = "current",
 ) {
   const encoded = readFileSync(
     new URL(`../../../worker/test/fixtures/${fixtureKind}/${filename}`, import.meta.url),
@@ -55,8 +55,8 @@ export async function upload(
         body: "{}",
       });
       // This existing local fixture drives the real Outbox producer/consumer without a remote Queue.
-      if (metadata === "legacy-audio")
-        await json(`/__test__/legacy-audio/${operation.result.nodeId}`, { method: "POST" });
+      if (metadata !== "current")
+        await json(`/__test__/${metadata}/${operation.result.nodeId}`, { method: "POST" });
       else {
         const consumed = await json(`/__test__/dead-letter-dispatch/${operation.id}_event`, {
           method: "POST",

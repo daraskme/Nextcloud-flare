@@ -45,3 +45,5 @@ FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` �
 `0072` は`thumbnail.request` operationと`image.requested`のpayload部分一意索引を追加する（通常79table）。原本blob・lg・generatorの同じ要求は、別名や閲覧者が異なっても既存通知へ集約する。失敗・失効を新しい有料試行の許可へ読み替えない。停止・未凍結・未終了permit/operation/admission/R2/KDF/Imagesなしで適用し、旧Workerへのrollbackでも停止を維持する。[大きいプレビュー](../../../docs/LARGE_THUMBNAILS.md)を参照。
 
 `0073` はAudio候補探索用の可視子部分索引を追加する（通常79table）。親・space・owner・名前/IDでseekし、非表示/削除済みの大量兄弟を走査せず、cursorへも含めない。既存行・会計・tableを変更しない。適用前の停止・未凍結・未終了処理なしとrollbackの停止維持は0072と同じ。[Audio](../../../docs/AUDIO.md)を参照。
+
+`0076` は`media.extract` operation、Outboxの上限1KiBの終端JSON列、`media.requested`部分一意索引を追加する（通常79table）。現在読者による[既存原本の情報抽出](../../../docs/MEDIA_EXTRACTION.md)をQueueへ受け付け、未対応を含む結果を原子的に保存する。停止・未凍結・未終了permit/operation/admission/R2/KDF/Imagesなしで適用し、旧migrationを変更しない。
