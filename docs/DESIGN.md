@@ -290,8 +290,8 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `node.create` | `node:create` / create | `[parent,space]` |
 | `node.content.write` | `node:write` / edit | `[node,parent,oldBlob?,newBlob]` |
 | `node.rename` | `node:write` / edit | `[node,parent]` |
-| `node.move` | `node:write` / edit | `[source,sourceParent,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors]`。cross-space は拒否 |
-| `node.copy` | `node:read` + `node:create` | `[source,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors,copyManifest]` |
+| `node.move` | source `node:write` + destination parent `node:create` + overwrite target `node:delete` (conditional) / edit | `[source,sourceParent,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors]`。cross-space は拒否 |
+| `node.copy` | source `node:read` + destination parent `node:create` + overwrite target `node:delete` (conditional) | `[source,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors,copyManifest]` |
 | `node.trash` | `node:delete` / edit | `[source,parent,trashOp,descendantSet]` |
 | `node.restore` | `node:create` | `[trashOp,root,destinationParent]` |
 | `node.purge` | `node:delete` | `[trashOp,root,memberSet]` |
@@ -319,7 +319,12 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `automation.list`,`automation.metadata.read` | service `node:read` | `[service,mappedUser,space,scopeRoot,node?]` |
 | `dav.options` | valid app password | `[credential,source]` |
 | `dav.read`,`dav.propfind` | `node:read` | `[credential,source,ancestors,properties?,locks?]` |
-| `dav.put`,`dav.mkcol`,`dav.proppatch`,`dav.copy`,`dav.move`,`dav.delete`,`dav.lock`,`dav.unlock` | 対応する node scope | §7 profile の source/destination/parent/lock tuple |
+| `dav.put` | create は destination parent `node:create`、overwrite は source `node:write` | §7 profile の source/parent/blob/lock tuple |
+| `dav.copy` | source `node:read` + destination parent `node:create` + overwrite target `node:delete` (conditional) | §7 profile の source/destination/lock tuple |
+| `dav.move` | source `node:write` + destination parent `node:create` + overwrite target `node:delete` (conditional) | §7 profile の source/source parent/destination/lock tuple |
+| `dav.delete` | source `node:delete` | §7 profile の source/source parent/descendant/lock tuple |
+| `dav.lock` | existing source は `node:write`、lock-null create は source parent `node:create` | §7 profile の source/source parent/lock tuple |
+| `dav.mkcol`,`dav.proppatch`,`dav.unlock` | 対応する node scope | §7 profile の source/destination/parent/lock tuple |
 
 `Authorized<Operation>` は operation ごとの discriminated tuple を返し、一般 `Operand[]` を handler に渡さない。folder COPY は開始時に固定 manifest を作り、衝突方針、dead props 引継ぎ、全成功または部分結果なしを束縛する。route の型検査は補助であり、意味的な認可 matrix fixture を必須とする。
 
@@ -371,7 +376,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | host | method | template | auth | operation | operands | adminOnly | CSRF profile |
 |---|---|---|---|---|---|---|---|
 | app | GET | `/` | access | `spa.read` | `currentUser` | false | same-origin-json |
-| app | GET | `/assets/:asset` | access | `spa.read` | `currentUser,assetManifest` | false | same-origin-json |
+| app | GET | `/private-assets/:asset` | access | `spa.read` | `currentUser,assetManifest` | false | same-origin-json |
 | app | GET | `/public-assets/:asset` | public | `public.asset.read` | `publicAssetManifest` | false | same-origin-json |
 | app | GET | `/s` | public | `share.landing` | `publicAssetManifest` | false | same-origin-json |
 | app | GET | `/s/:shareId` | public | `share.landing` | `shareId,publicAssetManifest` | false | same-origin-json |
@@ -503,7 +508,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | content | GET | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |
 | content | HEAD | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |
 | content | GET | `/reader/index.html` | public | `reader.shell` | `readerAssetManifest` | false | same-origin-json |
-| content | GET | `/reader/:asset` | public | `reader.shell` | `readerAssetManifest` | false | same-origin-json |
+| content | GET | `/reader-assets/:asset` | public | `reader.shell` | `readerAssetManifest` | false | same-origin-json |
 
 DAV の各行は router 生成時に `/dav` と `/dav/*path` の二 template へ展開し、root で意味を持たない mutation は 405 にする。`*path` は一度だけ decode する bounded remainder で、他 surface へ流さない。public edit の MOVE route は v1 非提供であり 404 とする。service automation upload/mutation も v1 非提供である。
 

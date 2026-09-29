@@ -7,6 +7,7 @@ import {
   assertOperationClaim,
   claimOperation,
   digestJson,
+  findOperationIntent,
   lookupOperation,
   operationIntent,
   operationRow,
@@ -143,6 +144,26 @@ it("binds a key to its exact credential and full intent while allowing canonical
   await expect(
     operationIntent(f.principal, "bad key", f.ids.space, "node.create", {}, {}),
   ).rejects.toThrow("invalid_idempotency_key");
+});
+
+it("rejects an old operation row after the epoch advances without changing credential identity", async () => {
+  const f = await fixture();
+  await commitFixture(f);
+  await env.DB.prepare("UPDATE control SET epoch=2").run();
+  const currentPrincipal = { ...f.principal, epoch: 2 };
+  const currentIntent = await operationIntent(
+    currentPrincipal,
+    f.key,
+    f.ids.space,
+    "node.create",
+    { name: "New" },
+    { parentId: f.ids.folder },
+  );
+  expect(currentIntent.id).toBe(f.intent.id);
+  expect(await lookupOperation(env.DB, currentPrincipal, currentIntent.id)).toBeNull();
+  await expect(findOperationIntent(env.DB, currentIntent, 1)).rejects.toThrow(
+    "idempotency_conflict",
+  );
 });
 
 it("claims rename only for its exact node and parent, then exposes a current terminal result", async () => {

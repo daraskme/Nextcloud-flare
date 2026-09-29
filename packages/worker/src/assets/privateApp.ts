@@ -3,15 +3,15 @@ import { privateAppDependencies } from "../api/privateAppConfig";
 import { AccessAuthenticationError } from "../auth/access";
 import { loginAccessUser } from "../auth/login";
 import type { Env } from "../env";
+import { privateSpaPath } from "../routes/bindings";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { privateAssets } from "./privateManifest";
 
 const assets = new Set<string>(privateAssets);
-const pages = /^(?:\/|\/files(?:\/[A-Za-z0-9_-]{1,128})?|\/trash)$/;
 
 export function privateAssetRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
-  return ["GET", "HEAD"].includes(request.method) && (pages.test(path) || assets.has(path));
+  return ["GET", "HEAD"].includes(request.method) && (privateSpaPath(path) || assets.has(path));
 }
 
 /** Exact private build graph only. Public/service/unknown paths never receive an SPA fallback. */
@@ -34,7 +34,7 @@ export async function servePrivateApp(
     }
     return problem(error instanceof AccessAuthenticationError ? 401 : 403, "unauthorized");
   }
-  const page = pages.test(url.pathname);
+  const page = privateSpaPath(url.pathname);
   url.pathname = page ? "/index.html" : url.pathname;
   url.search = "";
   const resource = await env.ASSETS.fetch(new Request(url, { method: request.method }));

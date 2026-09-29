@@ -72,8 +72,8 @@ export const OPERATIONS = {
   "node.create": ["node:create"],
   "node.content.write": ["node:write"],
   "node.rename": ["node:write"],
-  "node.move": ["node:write"],
-  "node.copy": ["node:read", "node:create"],
+  "node.move": ["node:write", "node:create", "node:delete"],
+  "node.copy": ["node:read", "node:create", "node:delete"],
   "node.trash": ["node:delete"],
   "node.restore": ["node:create"],
   "node.purge": ["node:delete"],
@@ -122,18 +122,59 @@ export const OPERATIONS = {
   "dav.options": [],
   "dav.read": ["node:read"],
   "dav.propfind": ["node:read"],
-  "dav.put": ["node:write"],
+  "dav.put": ["node:create", "node:write"],
   "dav.mkcol": ["node:create"],
   "dav.proppatch": ["node:write"],
-  "dav.copy": ["node:read", "node:create"],
-  "dav.move": ["node:write"],
+  "dav.copy": ["node:read", "node:create", "node:delete"],
+  "dav.move": ["node:write", "node:create", "node:delete"],
   "dav.delete": ["node:delete"],
-  "dav.lock": ["node:write"],
+  "dav.lock": ["node:create", "node:write"],
   "dav.unlock": ["node:write"],
 } as const satisfies Record<string, readonly Scope[]>;
 export type Operation = keyof typeof OPERATIONS;
 
+export type OperationScopeCondition = "always" | "create" | "overwrite" | "existing" | "lock-null";
+export interface OperationScopeTuple {
+  readonly operand: "source" | "sourceParent" | "destinationParent" | "overwriteTarget";
+  readonly when: OperationScopeCondition;
+  readonly scopes: readonly Scope[];
+}
+
+export const OPERATION_SCOPE_TUPLES = {
+  "node.move": [
+    { operand: "source", when: "always", scopes: ["node:write"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "node.copy": [
+    { operand: "source", when: "always", scopes: ["node:read"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "node.trash": [{ operand: "source", when: "always", scopes: ["node:delete"] }],
+  "dav.put": [
+    { operand: "destinationParent", when: "create", scopes: ["node:create"] },
+    { operand: "source", when: "overwrite", scopes: ["node:write"] },
+  ],
+  "dav.copy": [
+    { operand: "source", when: "always", scopes: ["node:read"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "dav.move": [
+    { operand: "source", when: "always", scopes: ["node:write"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "dav.delete": [{ operand: "source", when: "always", scopes: ["node:delete"] }],
+  "dav.lock": [
+    { operand: "source", when: "existing", scopes: ["node:write"] },
+    { operand: "sourceParent", when: "lock-null", scopes: ["node:create"] },
+  ],
+} as const satisfies Partial<Record<Operation, readonly OperationScopeTuple[]>>;
+
 // Scope lists are necessary constraints, never complete authorization decisions.
+// Multi-operand and create/overwrite variants are refined by OPERATION_SCOPE_TUPLES.
 // Empty lists still require the operation-specific surface/credential/target policy.
 export type PrincipalKind = "user" | "app_password" | "link_share" | "service" | "job" | "system";
 export type AuthMode =

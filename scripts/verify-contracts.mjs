@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
-import { OPERATIONS } from "../packages/shared/src/contracts.ts";
+import { OPERATION_SCOPE_TUPLES, OPERATIONS } from "../packages/shared/src/contracts.ts";
 import { LIMITS } from "../packages/shared/src/limits.ts";
+import { ROUTE_BINDINGS, verifyRouteBindings } from "../packages/worker/src/routes/bindings.ts";
 import { ROUTES } from "../packages/worker/src/routes/manifest.ts";
 import { routeContracts } from "./route-contract-source.mjs";
 
@@ -66,4 +67,15 @@ for (const route of ROUTES) {
   if (route.auth.includes("service")) assert.equal(route.method, "GET", "Automation is read-only");
   assert.ok(!route.operation.includes("client_thumb"));
 }
-console.log("Toolchain, limits, route/operation contracts and forbidden stream APIs verified.");
+for (const [operation, tuples] of Object.entries(OPERATION_SCOPE_TUPLES)) {
+  const tupleScopes = [...new Set(tuples.flatMap((tuple) => tuple.scopes))].sort();
+  assert.deepEqual(
+    [...OPERATIONS[operation]].sort(),
+    tupleScopes,
+    `${operation}: scope tuple drift`,
+  );
+}
+assert.deepEqual(verifyRouteBindings(ROUTES, ROUTE_BINDINGS), [], "Route binding coverage drift");
+console.log(
+  "Toolchain, limits, route/operation/binding contracts and forbidden stream APIs verified.",
+);
