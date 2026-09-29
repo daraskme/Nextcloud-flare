@@ -1,8 +1,10 @@
 # 現在の実装状態
 
-[Audio一覧の探索量](AUDIO.md)を制限しました。表示可能な項目の索引から1回につき1,000候補と続行確認1件を読み、音声以外や非表示の項目が大量にあっても全件走査を避けます。空ページもカーソルで続けられ、画面は最大3回まで自動で進みます。2,000曲上限と現在の認可・原本・再生位置の検査は維持します。schema0073・通常79table・149 API route。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[Audioの2,000曲表示](AUDIO.md)をローカルChromeで検証し、再生時刻の更新による一覧全体の再描画を抑えました。長いタグでも一覧と固定プレーヤーの高さを保ちます。所有者画面とスマホ幅の公開リンクで、実APIによる200件ずつの読み込み・上限・再生・前後移動・終了を確認しました。schema0073・通常79table・149 API routeを維持します。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[Audio一覧の探索量](AUDIO.md)を制限しました。表示可能な項目の索引から1回につき1,000候補と続行確認1件を読み、音声以外や非表示の項目が大量にあっても全件走査を避けます。空ページもカーソルで続けられ、画面は最大3回まで自動で進みます。2,000曲上限と現在の認可・原本・再生位置の検査は維持します。schema0073・通常79table・149 API route。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [Audioの一覧と常駐プレーヤー](AUDIO.md)を所有者・内部共有・公開リンクへ接続しました。画面を移動してもOpus原本の再生を継続し、ログイン利用者は15秒ごとと一時停止時に本人の位置を保存して再開できます。保存競合では上書きせず現在の位置を再取得します。共有解除・ログアウトと配信期限に合わせて音声を破棄します。追加音声形式・cover・override編集、Bookshelf、運用修復と実環境検証は継続します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

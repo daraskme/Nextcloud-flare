@@ -881,6 +881,8 @@ Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、cli
 
 [Audio一覧と再生位置API](AUDIO.md)はOpusを対象に接続済み。0073の可視子索引で1,000候補+続行確認1件ずつ探索し、空pageでもkeysetで続行する。返却上限2,000曲を維持し、非表示項目をcursorへ含めない。専用画面・常駐player・自動保存／再開も接続済み。追加形式・cover・override編集は継続する。
 
+一覧の描画はscope/選択曲だけを購読し、playerの時刻更新から分離する。最大長タグを含む2,000曲について、ローカルChrome CPU4倍制限で所有者画面とスマホ幅の公開リンクを検証する。実一覧API/原本再生、200件追加5秒未満、合成timeupdate後のframe待ちp95 100ms未満、45更新のscript処理750ms未満、player高200px/260px未満と横方向のはみ出しなしを回帰gateとする。実モバイル機器と実Cloudflareの性能は別に確認する。[測定条件と結果](AUDIO.md)を参照。
+
 ### 9A.4 共通認可 / job
 
 全media routeはEffectiveLive、capability root、current blob、generation、credential scopeを検査する。index/tag/sanitize/thumb jobはoutbox、saved principal、epoch、fenced result claimを使いstale結果を公開しない。

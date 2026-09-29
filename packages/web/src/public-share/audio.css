@@ -71,7 +71,9 @@
   gap: 5px;
 }
 .audio-description strong,
-.audio-now strong {
+.audio-now strong,
+.audio-description small,
+.audio-now small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -79,7 +81,6 @@
 .audio-description small,
 .audio-now small {
   color: #5c6e80;
-  overflow-wrap: anywhere;
 }
 .audio-filename {
   font-size: 11px;

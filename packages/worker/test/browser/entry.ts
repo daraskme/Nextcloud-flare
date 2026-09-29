@@ -10,6 +10,7 @@ import { handleDeadLetterBatch } from "../../src/jobs/deadLetters";
 import { dispatchOutbox } from "../../src/jobs/outbox";
 import { handleOutboxBatch } from "../../src/jobs/queue";
 import { foundationFixture } from "../fixtures/foundation";
+import { audioLibraryFixture } from "./audioLibrary";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
 
@@ -124,6 +125,8 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    if (path === "/__test__/audio-library" && request.method === "POST")
+      return Response.json(await audioLibraryFixture(ready.env.DB, await request.json()));
     const shareSessions = /^\/__test__\/share-session-count\/([A-Za-z0-9_-]{1,128})$/.exec(path);
     if (shareSessions && request.method === "GET") {
       const count = await ready.env.DB.prepare(

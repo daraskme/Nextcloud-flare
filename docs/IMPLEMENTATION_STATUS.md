@@ -1,6 +1,18 @@
 # 実装進捗
 
-## Audio一覧の候補探索と読み取り予算（今回）
+## Audioの2,000曲描画と長いタグ（今回）
+
+[Audio](AUDIO.md)の一覧が再生時刻・音量・一時停止のたびに全2,000行を再描画していたため、scope/選択曲IDだけの安定したsnapshotを追加した。常駐playerの状態更新は維持する。曲名・artist/album・ファイル名は省略表示にし、全文をDOM/titleへ残す。最大長のタグで一覧や固定playerが縦に広がる問題も修正した。
+
+- Node23件成功（player14 + client9、/tmp/ncf-audio-scale-unit.log）。時刻・音量・pause中の選択snapshotの安定性と、前後移動・同じ曲の共有scope変更・利用資格喪失での更新を追加確認した。
+- Browser6件成功（3.1分、/tmp/ncf-audio-scale-browser.log）。新規規模試験は実upload/Queueの3つのOpus原本からテスト専用D1へ2,001曲を用意し、各blobの参照上限を維持する。曲名1,024 bytes、artist/album各1,023 bytes。所有者1440×1000と匿名公開390×844、CPU4倍制限で、実一覧APIの200件ずつの読み込み、2,000曲上限、原本再生、前後移動、close後のsrc/選択解除を検査した。既存5件もRange・自動保存・SPA継続・再開・競合・共有解除・logout・download fallbackを再確認した。
+- 表示測定は原本再生を確認してからpauseし、合成timeupdateを45回送ってrequestAnimationFrameを待つ。先頭5回を除いたframe待ちp95は所有者45.4→17.3ms、公開45.1→17.2ms、ScriptDurationは全45回で1,336→44ms・1,403→39ms。player高は295→77px・357→170px、改善後のページ追加最大は1,252/1,129ms。heap観測55.5/63.7MiBはGCを固定したpeakではない。初回は高さgateを意図どおり検出して1件失敗（/tmp/ncf-audio-scale-baseline.log）。規模の上限や長文fixture、表示gateは緩めていない。前後のJSONとスクリーンショットは/tmp/ncf-audio-scale-before・/tmp/ncf-audio-scale-afterへ保存し、改善後の両画面を目視確認した。
+- Native公開asset5件成功（3.56秒、/tmp/ncf-audio-scale-native.log）。公開入口・SRI・原本hostとの分離・不正assetの拒否を再確認した。重複を除く関連試験は34件成功。
+- typecheck・lint・verify:contracts・verify:configとWeb両入口/Worker dry-run buildが成功（/tmp/ncf-audio-scale-{types,lint,contracts,config,build}.log）。生成したdist/worker/index.jsに規模fixtureのendpoint/関数/エラー文字列が含まれないことも確認した。
+
+schema0073・通常79table・149 API routeを維持。依存・migration・公開APIを追加しない。規模fixtureのendpointはbrowserテスト入口だけに置く。ローカルChromeの回帰gateであり、実Cloudflareや実モバイル機器の性能保証ではない。追加形式・cover・override編集、Bookshelf、既存metadata再抽出/copy引継ぎ、運用修復とrelease gateは継続する。全suite・実環境への適用は未実施。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## Audio一覧の候補探索と読み取り予算
 
 [Audio](AUDIO.md)のdata SELECTへ1,000候補と続行確認1件の上限を入れた。0073の可視子部分索引で親・space・owner・name/idをseekし、hidden/deletedの兄弟をcursorへ入れない。metadataと原本を結合する前に候補窓をmaterializeする。201曲目があれば返した200曲目を境界にし、曲が少なければ窓の最後から続行する。空pageのnextCursorも有効で、フォルダー後方を省略しない。画面は最大3つの空pageまで自動続行し、その後は明示的に続きを読み込める。利用者別位置・認可・原本・2,000曲上限を維持する。
 

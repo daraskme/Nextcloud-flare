@@ -48,8 +48,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           {state.track && (
             <>
               <div className="audio-now">
-                <strong>{state.track.title}</strong>
-                <small>{state.track.artist || state.track.name}</small>
+                <strong title={state.track.title}>{state.track.title}</strong>
+                <small title={state.track.artist || state.track.name}>
+                  {state.track.artist || state.track.name}
+                </small>
               </div>
               <div className="audio-controls">
                 <button
@@ -126,7 +128,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
 export function AudioLibrary({ client }: { client: AudioClient }) {
   const player = useAudioPlayer();
-  const playing = useSyncExternalStore(player.subscribe, player.getSnapshot);
+  const playing = useSyncExternalStore(player.subscribe, player.getSelectionSnapshot);
   const [page, setPage] = useState<AudioPage | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -180,9 +182,7 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
           <li
             key={item.id}
             className={
-              playing.scope === client.scope && playing.track?.id === item.id
-                ? "audio-selected"
-                : ""
+              playing.scope === client.scope && playing.trackId === item.id ? "audio-selected" : ""
             }
           >
             <button
@@ -192,9 +192,15 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
             >
               <span aria-hidden="true">▶</span>
               <span className="audio-description">
-                <strong>{item.title}</strong>
-                <small>{[item.artist, item.album].filter(Boolean).join(" · ") || item.name}</small>
-                {item.title !== item.name && <small className="audio-filename">{item.name}</small>}
+                <strong title={item.title}>{item.title}</strong>
+                <small title={[item.artist, item.album].filter(Boolean).join(" · ") || item.name}>
+                  {[item.artist, item.album].filter(Boolean).join(" · ") || item.name}
+                </small>
+                {item.title !== item.name && (
+                  <small className="audio-filename" title={item.name}>
+                    {item.name}
+                  </small>
+                )}
               </span>
               <span className="audio-time">
                 {item.durationMs === null ? "—" : audioTime(item.durationMs / 1000)}

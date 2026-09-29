@@ -149,6 +149,38 @@ it("resumes the current user's position, checkpoints, pauses and serializes next
   expect(f.media.currentTime).toBe(31);
   expect(f.saved.get("two")?.positionMs).toBe(3000);
 });
+it("keeps the list selection stable during playback updates and changes it on navigation or scope loss", async () => {
+  const f = fixture(true);
+  const observed: unknown[] = [];
+  f.player.subscribe(() => {
+    const selection = f.player.getSelectionSnapshot();
+    const current = f.player.getSnapshot();
+    expect(selection).toEqual({ scope: current.scope, trackId: current.track?.id ?? null });
+    observed.push(selection);
+  });
+  await f.select();
+  const selected = f.player.getSelectionSnapshot();
+  expect(selected).toEqual({ scope: "owner:root", trackId: "one" });
+  f.media.currentTime = 27;
+  f.media.dispatchEvent(new Event("timeupdate"));
+  f.player.volume(0.3);
+  f.media.pause();
+  expect(f.player.getSnapshot()).toMatchObject({ position: 27, volume: 0.3, playing: false });
+  expect(f.player.getSelectionSnapshot()).toBe(selected);
+  expect(observed.every((x) => x === selected)).toBe(true);
+  await f.player.skip(1);
+  expect(f.player.getSelectionSnapshot()).toEqual({ scope: "owner:root", trackId: "two" });
+  await f.player.skip(-1);
+  const back = f.player.getSelectionSnapshot();
+  expect(back).toEqual(selected);
+  const otherScope = { ...f.client, scope: "share:root" };
+  await f.player.select(otherScope, page(), items[0]!);
+  expect(f.player.getSelectionSnapshot()).toEqual({ scope: "share:root", trackId: "one" });
+  expect(f.player.getSelectionSnapshot()).not.toBe(back);
+  f.lifetime.abort();
+  expect(f.player.getSelectionSnapshot()).toEqual({ scope: "", trackId: null });
+  expect(observed.at(-1)).toBe(f.player.getSelectionSnapshot());
+});
 it("coalesces saves while a receipt is pending and uses the returned CAS value", async () => {
   const f = fixture();
   await f.select();

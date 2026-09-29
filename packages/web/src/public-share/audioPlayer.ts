@@ -14,6 +14,10 @@ export interface AudioSnapshot {
   previous: boolean;
   next: boolean;
 }
+interface AudioSelection {
+  scope: string;
+  trackId: string | null;
+}
 interface Session {
   client: AudioClient;
   item: AudioTrack;
@@ -56,6 +60,7 @@ export function audioDenied(error: unknown) {
 /** One native element lives outside route content. No original is copied into a Blob URL. */
 export class AudioPlayer {
   #snapshot = empty();
+  #selection: AudioSelection = { scope: "", trackId: null };
   #listeners = new Set<() => void>();
   #session: Session | null = null;
   #retiring = new Set<Session>();
@@ -103,6 +108,8 @@ export class AudioPlayer {
     }, 15000);
   }
   getSnapshot = () => this.#snapshot;
+  // List rows only depend on the selected track, not native playback time updates.
+  getSelectionSnapshot = () => this.#selection;
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);
     return () => {
@@ -111,6 +118,10 @@ export class AudioPlayer {
   };
   #patch(value: Partial<AudioSnapshot>) {
     this.#snapshot = { ...this.#snapshot, ...value };
+    const { scope, track } = this.#snapshot;
+    const trackId = track?.id ?? null;
+    if (scope !== this.#selection.scope || trackId !== this.#selection.trackId)
+      this.#selection = { scope, trackId };
     for (const listener of this.#listeners) listener();
   }
   #live(s: Session) {
