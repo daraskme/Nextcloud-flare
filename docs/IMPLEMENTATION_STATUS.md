@@ -1,6 +1,17 @@
 # 実装進捗
 
-## Bookshelfのアーカイブ読み取り基盤（今回）
+## アーカイブ索引のQueue保存・容量会計・回収（今回）
+
+[アーカイブ索引](ARCHIVE_READER.md)を新しいZIP/CBZ/EPUBアップロードのOutboxへ接続した。原本のowner/blob/key/size/ETagに固定したJSONを検証し、SHA付き不変R2出力として保存する。保存済みprincipal・元blob step・現在のnode/祖先・epoch/claimを生成前後と公開batchで再検査する。独立DO履歴、物理専用予約、job pin、共通R2送信記録で二重PUTと根拠のない予約解放を防ぐ。公開済みの索引をLibrary metadataへ一括反映し、未公開/原本削除済みの索引はseal・実容量観測・35日猶予付きGCで回収する。復元CLIに`archives`を追加した。schema0077・通常81table・151 API route。
+
+- Node関連347件成功（11file、重複除外）。codec、parser/R2 source、R2 grant、migrationの停止/凍結条件と既存receipt/guard/index保持、全テーブルのfreeze/FK、索引と予約・回収行を含むbackupの保存/復元、CLIの引数・結果検証を確認した。ログは`/tmp/ncf-archive-unit-{4,5}.log`、`/tmp/ncf-archive-unit-parser-r2.log`、`/tmp/ncf-archive-migration-final.log`。初回の42失敗は追加fixtureの受付状態とbackup FK条件の不備で、既存制約を満たす作成手順へ修正し、対象46件を再実行して全件成功した。
+- Native関連202件成功（10file、重複除外）。索引保存/回収20件、Queue16件、復元5件と既存画像・Outbox・schema/復旧の回帰を確認した。権限/親/epoch/claim/祖先非表示の変更、サイズ/hash異常、prepare/公開/完了ACK喪失、新claimによる保存済み索引の再利用、未知PUTと独立履歴保持、D1巻戻し後のseal、35日猶予後の実GCを検証。匿名edit/upload-onlyの新uploadも索引化し、upload-onlyへread権限を追加しない。復元5件では実停止受付、全監査、容量精算、公開済み索引の保持、HEAD前後の停止変更を確認した。ログは`/tmp/ncf-archive-native-4.log`、`/tmp/ncf-archive-native-final.log`、`/tmp/ncf-archive-restore-native.log`。回帰で画像receipt削除の拒否エラーが変わったため、0077が再作成する37triggerの元の順序を保持し、画像/Queue34件とmigration5件を再実行して成功した。
+- typecheck、lint816file、契約・設定検査成功。ログは`/tmp/ncf-archive-types-complete.log`、`/tmp/ncf-archive-lint-complete.log`、`/tmp/ncf-archive-{contracts,config}-final.log`。Web両入口とWorker dry-run build成功（2,021.86KiB・gzip426.82KiB、`/tmp/ncf-archive-build-final.log`）。
+- ローカル`backup:operator-drill`成功（`/tmp/ncf-archive-operator-final.log`）。81tableの隔離snapshot、epoch採用、archivesを含む9領域の修復、12ページ全監査、受付とGC再開を確認した。演習のarchives対象は空で、索引を持つ復旧は上記Native5件で検証した。provider応答は模擬で、実Cloudflare復旧ではない。
+
+関連試験は合計549件。全suiteとbrowserの再実行ではない。UI・新HTTP route・依存の追加なし。索引用RangeはQueue invocation全体で4回/9MiB、処理は25秒以内。既存の画像/音声判定用Rangeは別予算を使う。保存済み索引の再開では索引用RangeとPUTを繰り返さない。既存原本への読者起点の索引要求、COPY連携、ページ配信・MIME検査、Library API・本棚/PDF/EPUB画面・読書位置は後続。リモートmigration/deployは実行していない。pushは既存の自動承認審査拒否後の明示承認待ち。
+
+## Bookshelfのアーカイブ読み取り基盤（先行f296561）
 
 [ZIP/CBZ・EPUBコンテナの読み取り基盤](ARCHIVE_READER.md)を追加した。末尾/central directoryのbounded Rangeから不変indexを作り、STORE/DEFLATEと通常ZIP64を扱う。パス・重複・local header範囲・暗号化・サイズ上限を検査し、ページ候補を自然順にする。選んだentryだけを条件付きR2 Rangeで読み、local/central header・descriptorを照合してnative展開し、配信前のchunk上限とEOFのCRCを確認する。現在認可のcallback、読み取り予算、原本差替え、期限とcancelを処理する。
 

@@ -1,4 +1,5 @@
 import { primary } from "../db/primary";
+import { archiveIndexReadBudget } from "./archiveQueue";
 import { consumeOutbox, type OutboxConsumerEnv } from "./consumeOutbox";
 
 export interface OutboxDelivery {
@@ -31,6 +32,7 @@ export async function handleOutboxBatch(
   const deadline = Date.now() + 25_000;
   const imageBudget = { reads: 0, bytes: 0 };
   const generationBudget = { transforms: 0 };
+  const archiveBudget = archiveIndexReadBudget();
   for (const message of batch.messages) {
     try {
       const id = outboxMessageId(message.body);
@@ -47,7 +49,14 @@ export async function handleOutboxBatch(
           if (!nodeBatch) result = await consumeOutbox(env, id, deadline);
         } else {
           nodeBatch = true;
-          result = await consumeOutbox(env, id, deadline, imageBudget, generationBudget);
+          result = await consumeOutbox(
+            env,
+            id,
+            deadline,
+            imageBudget,
+            generationBudget,
+            archiveBudget,
+          );
         }
       }
       if (result === "completed" || result === "failed") {

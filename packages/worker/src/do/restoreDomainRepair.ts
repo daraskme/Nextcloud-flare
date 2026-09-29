@@ -1,5 +1,9 @@
 import type { RestoreDomainKind } from "../../../shared/src/restoreDomain";
 import { primary } from "../db/primary";
+import {
+  ARCHIVE_CLEANUP_LIMIT,
+  maintainArchiveDerivatives,
+} from "../jobs/archiveDerivativeCleanup";
 import { drainStoppedBlobGarbageCollection, type GcResult } from "../jobs/gc";
 import {
   IMAGE_CLEANUP_LIMIT,
@@ -36,6 +40,9 @@ const REMAINING: Record<RestoreDomainKind, string> = {
   multipart:
     "SELECT 1 FROM uploads WHERE mode='multipart' AND (state NOT IN ('completed','expired','aborted','failed') OR cleanup_pending=1 OR cleanup_token IS NOT NULL OR (state<>'completed' AND multipart_cleanup_closed IS NULL))",
   images: `SELECT 1 FROM image_derivative_cleanup c JOIN image_derivative_objects x ON x.id=c.image_id
+    JOIN blobs b ON b.id=x.source_blob_id WHERE c.settled_at IS NULL
+    AND (x.state<>'published' OR c.retired_at IS NOT NULL OR b.state IN ('deleting','deleted'))`,
+  archives: `SELECT 1 FROM archive_derivative_cleanup c JOIN archive_derivative_objects x ON x.id=c.archive_id
     JOIN blobs b ON b.id=x.source_blob_id WHERE c.settled_at IS NULL
     AND (x.state<>'published' OR c.retired_at IS NOT NULL OR b.state IN ('deleting','deleted'))`,
   reservations: "SELECT 1 FROM reservations WHERE state='reserved'",
@@ -100,6 +107,13 @@ export async function repairRestoredDomain(
     result = {
       cleanup: await maintainImageDerivatives({ ...source, BLOBS: guardedBucket }, epoch, {
         limit: Math.min(limit, IMAGE_CLEANUP_LIMIT),
+        scope: { current, stop },
+      }),
+    };
+  else if (kind === "archives")
+    result = {
+      cleanup: await maintainArchiveDerivatives({ ...source, BLOBS: guardedBucket }, epoch, {
+        limit: Math.min(limit, ARCHIVE_CLEANUP_LIMIT),
         scope: { current, stop },
       }),
     };

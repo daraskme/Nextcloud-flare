@@ -18,6 +18,7 @@ import type {
   RestoreTimeTravelResult,
 } from "../../../shared/src/restoreTimeTravel";
 import type { KdfRequest } from "../auth/globalKdf";
+import type { ArchiveDerivativeGrant, ArchiveDerivativeReceipt } from "../db/archiveDerivative";
 import type {
   ImageTransformGrant,
   ImageTransformReceipt,
@@ -72,6 +73,7 @@ import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCle
 import type { ImageTransformFailureReceipt } from "../media/images/failure";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
+import { ControlArchiveDerivatives } from "./controlArchiveDerivatives";
 import { ControlAudioSearch } from "./controlAudioSearch";
 import {
   assertNoBackup,
@@ -183,6 +185,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #restoreRecovery: ControlRestoreRecovery;
   readonly #r2Writes: ControlR2Writes;
   readonly #imageDerivatives: ControlImageDerivatives;
+  readonly #archiveDerivatives: ControlArchiveDerivatives;
   readonly #imageTransforms: ControlImageTransforms;
   readonly #epochHistory: ControlEpochHistory;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -487,6 +490,19 @@ export class ControlDO extends DurableObject<Env> {
       () =>
         this.acquireGlobalMutation({
           permitId: `global:images.cleanup-seal:${crypto.randomUUID()}`,
+          epoch: this.#row().epoch,
+          deadline: Date.now() + 5000,
+        }),
+    );
+    this.#archiveDerivatives = new ControlArchiveDerivatives(
+      ctx.storage,
+      env.DB,
+      (epoch) => {
+        this.#admission.captureSystemMutationMode(epoch);
+      },
+      () =>
+        this.acquireGlobalMutation({
+          permitId: `global:archives.cleanup-seal:${crypto.randomUUID()}`,
           epoch: this.#row().epoch,
           deadline: Date.now() + 5000,
         }),
@@ -922,6 +938,22 @@ export class ControlDO extends DurableObject<Env> {
   async sealImageDerivative(expectedEpoch: number, imageId: string) {
     this.#row();
     return this.#imageDerivatives.seal(expectedEpoch, imageId);
+  }
+  async recordArchiveDerivative(grant: ArchiveDerivativeGrant, output: ArchiveDerivativeReceipt) {
+    this.#row();
+    this.#admission.assertMutationOpen(grant.epoch);
+    return this.#archiveDerivatives.remember(grant, output);
+  }
+  async sealArchiveDerivative(expectedEpoch: number, archiveId: string) {
+    this.#row();
+    return this.#archiveDerivatives.seal(expectedEpoch, archiveId);
+  }
+  async archiveDerivativePublicationProof(expectedEpoch: number, archiveId: string) {
+    this.#row();
+    this.#admission.assertMutationOpen(expectedEpoch);
+    const proof = await this.#archiveDerivatives.publicationProof(expectedEpoch, archiveId);
+    this.#admission.assertMutationOpen(expectedEpoch);
+    return proof;
   }
   async imageDerivativePublicationProof(expectedEpoch: number, imageId: string) {
     this.#row();

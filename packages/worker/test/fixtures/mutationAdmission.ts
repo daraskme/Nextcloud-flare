@@ -1,6 +1,10 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type {
+  ArchiveDerivativeGrant,
+  ArchiveDerivativeReceipt,
+} from "../../src/db/archiveDerivative";
+import type {
   ImageTransformGrant,
   ImageTransformReceipt,
   ImageTransformRequest,
@@ -18,6 +22,7 @@ import {
 import { grantPermit as grant } from "../../src/db/permits";
 import type { SqlStatement } from "../../src/db/primary";
 import type { R2WriteGrant, R2WriteRequest, R2WriteTerminal } from "../../src/db/r2Write";
+import { ControlArchiveDerivatives } from "../../src/do/controlArchiveDerivatives";
 import { ControlImageDerivatives } from "../../src/do/controlImageDerivatives";
 import { ControlImageTransforms } from "../../src/do/controlImageTransforms";
 import { ControlR2Writes } from "../../src/do/controlR2Writes";
@@ -92,6 +97,7 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
       get: () => ({
         ...r2WriteFixture(admissionDb),
         ...imageTransformFixture(admissionDb),
+        ...archiveDerivativeFixture(admissionDb),
         acquireMutation: (request: MutationRequest) => acquireMutation(request, admissionDb),
         acquireGlobalMutation: (request: Omit<MutationRequest, "spaceId">) =>
           acquireGlobalMutation(request, admissionDb),
@@ -112,6 +118,50 @@ export function mutationEnv(db = env.DB, admissionDb = env.DB): Env {
           acquireMutation({ ...request, spaceId: null }, admissionDb),
       }),
     } as unknown as Env["CONTROL"],
+  };
+}
+
+export function archiveDerivativeFixture(db = env.DB) {
+  const invoke = async <T>(action: (archives: ControlArchiveDerivatives) => Promise<T>) => {
+    const result = await runInDurableObject(
+      env.CONTROL.get(env.CONTROL.idFromName("singleton")),
+      async (_, state) => {
+        const archive = new ControlArchiveDerivatives(
+          state.storage,
+          db,
+          () => {},
+          async () =>
+            acquireGlobalMutation(
+              {
+                permitId: `global:archives.cleanup-seal:${crypto.randomUUID()}`,
+                epoch: (await db
+                  .prepare("SELECT epoch FROM control WHERE singleton=1")
+                  .first<number>("epoch"))!,
+                deadline: Date.now() + 5000,
+              },
+              db,
+            ),
+        );
+        try {
+          return { ok: true as const, value: await action(archive) };
+        } catch (error) {
+          return {
+            ok: false as const,
+            message: error instanceof Error ? error.message : "archive_fixture_failed",
+          };
+        }
+      },
+    );
+    if (!result.ok) throw new Error(result.message);
+    return result.value;
+  };
+  return {
+    recordArchiveDerivative: (grant: ArchiveDerivativeGrant, output: ArchiveDerivativeReceipt) =>
+      invoke((archive) => archive.remember(grant, output)),
+    archiveDerivativePublicationProof: (epoch: number, id: string) =>
+      invoke((archive) => archive.publicationProof(epoch, id)),
+    sealArchiveDerivative: (epoch: number, id: string) =>
+      invoke((archive) => archive.seal(epoch, id)),
   };
 }
 

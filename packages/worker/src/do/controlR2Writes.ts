@@ -5,6 +5,7 @@ import type {
 } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import { abortWriteProof, isAbortWrite } from "../db/r2Abort";
+import { archiveWriteProof } from "../db/r2Archive";
 import { backupDeleteProof } from "../db/r2BackupDelete";
 import { backupsProbeWriteProof } from "../db/r2BackupsProbe";
 import { copyWriteProof, isCopyWrite } from "../db/r2Copy";
@@ -26,6 +27,7 @@ import { gcDispatchFence } from "../jobs/gc";
 import { ORPHAN_GRACE_MS, objectFence } from "../jobs/orphanInventory";
 import { accountMutationStatements } from "../services/accountMutation";
 import { globalMutationStatements } from "../services/globalMutation";
+import { assertArchiveOrigin, initializeArchiveOrigins } from "./controlArchiveDerivatives";
 import { initializeImageSeals } from "./controlImageDerivatives";
 import { NativeHistory, nativeIdentity } from "./nativeHistory";
 
@@ -61,6 +63,7 @@ export class ControlR2Writes {
   ) {
     const sql = storage.sql;
     initializeImageSeals(sql);
+    initializeArchiveOrigins(sql);
     this.#history = new NativeHistory(sql);
     sql.exec(
       `CREATE TABLE IF NOT EXISTS control_r2_write_used(id TEXT PRIMARY KEY,expires_at INTEGER NOT NULL)`,
@@ -136,6 +139,7 @@ export class ControlR2Writes {
       ...(input.prune ? { prune: input.prune } : {}),
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.image ? { image: input.image } : {}),
+      ...(input.archive ? { archive: input.archive } : {}),
     };
     // Never replay a grant. Even a lost RPC reply can have reached the caller.
     const saved = this.sql.exec(
@@ -228,8 +232,11 @@ export class ControlR2Writes {
         this.current(epoch, kind, grant);
         if (Date.now() < startedAt || Date.now() >= deadline)
           throw new Error("r2_write_unavailable");
-        const guards =
-          kind === "image.put"
+        const archive = kind === "archive.put" ? await archiveWriteProof(this.db, grant) : null;
+        if (archive) assertArchiveOrigin(this.sql, archive.grant, archive.outputJson);
+        const guards = archive
+          ? archive.statements
+          : kind === "image.put"
             ? await imageWriteProof(this.db, grant)
             : isCopyWrite(kind)
               ? await copyWriteProof(this.db, grant)
@@ -317,6 +324,8 @@ export class ControlR2Writes {
             AND NOT EXISTS(SELECT 1 FROM copy_job_blobs cb JOIN bulk_jobs j ON j.id=cb.job_id
               WHERE r2_write_attempts.r2_key='u/'||j.owner_id||'/b/'||cb.destination_blob_id)
             AND NOT EXISTS(SELECT 1 FROM image_derivative_objects x JOIN blobs b ON b.id=x.output_blob_id
+              WHERE b.r2_key=r2_write_attempts.r2_key)
+            AND NOT EXISTS(SELECT 1 FROM archive_derivative_objects x JOIN blobs b ON b.id=x.output_blob_id
               WHERE b.r2_key=r2_write_attempts.r2_key)
           ORDER BY finished_at LIMIT 32)`,
             values: [grant.id],

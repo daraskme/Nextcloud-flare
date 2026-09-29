@@ -13,6 +13,7 @@ import { globalKdf } from "./auth/globalKdf";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
+import { maintainArchiveDerivatives } from "./jobs/archiveDerivativeCleanup";
 import { repairStoppedCopyJobs } from "./jobs/copyMaintenance";
 import { COPY_MAINTENANCE_CRON } from "./jobs/copyMaintenanceClaim";
 import { handleDeadLetterBatch } from "./jobs/deadLetters";
@@ -174,7 +175,13 @@ export default {
           console.warn("audio_reindex_deferred");
         }
       }
-      if (Date.now() < deadline) await maintainImageDerivatives(env, epoch, { deadline });
+      // Alternate the first domain so a busy image/archive backlog cannot starve the other.
+      const maintenance =
+        Math.floor(_event.scheduledTime / 60000) % 4 === 1
+          ? [maintainImageDerivatives, maintainArchiveDerivatives]
+          : [maintainArchiveDerivatives, maintainImageDerivatives];
+      for (const maintain of maintenance)
+        if (Date.now() < deadline) await maintain(env, epoch, { deadline });
       return;
     }
     await dispatchPendingOutbox(env, env.JOBS, epoch);

@@ -23,6 +23,7 @@ type WriteInput = Pick<
   | "prune"
   | "copy"
   | "image"
+  | "archive"
 >;
 
 /** Each invocation gets one grant; a rejected native call remains unknown, never replayed here. */
@@ -43,6 +44,7 @@ async function runWrite<T>(
       input.upload?.expiresAt ?? Infinity,
       input.copy?.expiresAt ?? Infinity,
       input.image?.expiresAt ?? Infinity,
+      input.archive?.expiresAt ?? Infinity,
       input.probe?.stop?.expiresAt ?? Infinity,
       input.backups?.expiresAt ?? Infinity,
       input.gc && typeof input.gc.mode === "object" ? input.gc.mode.expiresAt : Infinity,

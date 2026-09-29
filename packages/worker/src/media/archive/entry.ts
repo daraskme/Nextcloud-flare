@@ -84,8 +84,8 @@ async function dataOffset(source: ArchiveSource, entry: ArchiveEntry): Promise<n
 }
 
 /**
- * Open an ordinal of a freshly inspected, immutable index. Persisted JSON needs validation
- * before becoming an ArchiveIndex. Callers provide current authorization and a deadline
+ * Open an ordinal of an immutable index from inspectArchive or decodeArchiveIndex.
+ * Callers provide current authorization and a deadline
  * through checkpoint (also used by the R2 source). CRC failures can occur after output.
  */
 export async function openArchiveEntry(

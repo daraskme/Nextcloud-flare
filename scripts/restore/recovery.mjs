@@ -225,7 +225,7 @@ export async function repairRestoredDomain({ epoch, id, kind, limit = 20, contro
       r2Calls: c.r2Calls,
     };
     repair.held = r.held;
-  } else if (kind === "images") {
+  } else if (kind === "images" || kind === "archives") {
     const c = r.cleanup;
     if (
       !c ||

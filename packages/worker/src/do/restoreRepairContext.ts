@@ -9,6 +9,7 @@ export type RestoreRepairControl = Pick<
   | "beginR2Write"
   | "finishR2Write"
   | "sealImageDerivative"
+  | "sealArchiveDerivative"
 >;
 
 /** Shared request-stop guards. Only actual native completion may outlive this scope. */
@@ -63,6 +64,12 @@ export async function restoreRepairContext(
       sealImageDerivative: async (epoch: number, imageId: string) => {
         current();
         const result = await control.sealImageDerivative(epoch, imageId);
+        current();
+        return result;
+      },
+      sealArchiveDerivative: async (epoch: number, archiveId: string) => {
+        current();
+        const result = await control.sealArchiveDerivative(epoch, archiveId);
         current();
         return result;
       },

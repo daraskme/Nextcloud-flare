@@ -6,6 +6,7 @@ import type { Env } from "../../src/env";
 import {
   acquireMutation,
   acquireSystemMutation,
+  archiveDerivativeFixture,
   imageTransformFixture,
   r2WriteFixture,
 } from "./mutationAdmission";
@@ -20,6 +21,7 @@ export function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
       get: () => ({
         ...r2WriteFixture(),
         ...imageTransformFixture(),
+        ...archiveDerivativeFixture(),
         acquireMutation,
         acquireSystemMutation,
         status: async () => ({ epoch, maintenance, gcPaused: true }),

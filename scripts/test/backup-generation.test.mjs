@@ -10,6 +10,7 @@ import { exportData } from "../backup/export.mjs";
 import { captureGeneration, restoreGeneration, verifyGeneration } from "../backup/generation.mjs";
 import { initialize, migrations, quote, schemaDigest, schemaQuery } from "../backup/snapshot.mjs";
 import { parseInsert, statements } from "../backup/sql.mjs";
+import { seedArchiveStorage } from "./fixtures/archive-storage.mjs";
 
 let directory, db, versions, id, source;
 const literal = (v) =>
@@ -104,6 +105,7 @@ beforeEach(async () => {
       state,
       state === "pending" ? null : started,
     );
+  seedArchiveStorage(db, fixture.ids);
   db.exec("UPDATE control SET maintenance=1");
   const token = randomUUID();
   db.prepare(
@@ -147,7 +149,9 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   const saved = snapshot(db),
     schema = schemaDigest(db.prepare(schemaQuery).all());
   const { directory: artifact, manifest } = await capture();
-  expect(manifest.tables).toHaveLength(79);
+  expect(manifest.tables).toHaveLength(81);
+  expect(saved.archive_derivative_objects).toHaveLength(1);
+  expect(saved.archive_derivative_cleanup).toHaveLength(1);
   expect(manifest.generation.watermark).toBe("committed-history");
   expect(await readdir(artifact)).toEqual(["data.sql", "manifest.json"]);
   expect(await verifyGeneration(artifact)).toEqual(manifest);
@@ -166,6 +170,9 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
     expect(
       restored.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get(),
     ).toEqual({ used_bytes: 3, reserved_bytes: 5, physical_bytes: 3 });
+    expect(restored.prepare("SELECT image_reserved_bytes FROM users").get()).toEqual({
+      image_reserved_bytes: 13,
+    });
     expect(
       restored.prepare("SELECT COUNT(*) n FROM search_fts WHERE search_fts MATCH 'sample'").get().n,
     ).toBe(1);

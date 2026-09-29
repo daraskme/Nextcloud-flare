@@ -47,7 +47,7 @@ const usage = `Usage:
   pnpm database:restore verify-restored --operator-config JSON --remote --config PATH [--environment NAME] --epoch N --id UUID
   pnpm database:restore audit-restored --operator-config JSON --remote --epoch N --id UUID [--max-pages 100] [--page-size 10]
   pnpm database:restore repair-restored-native --operator-config JSON --remote --epoch N --id UUID [--max-pages 100] [--page-size 10]
-  pnpm database:restore repair-restored --operator-config JSON --remote --epoch N --id UUID --kind single|multipart|images|reservations|outbox|blob-gc|orphan-gc|orphan-inventory [--limit 20]
+  pnpm database:restore repair-restored --operator-config JSON --remote --epoch N --id UUID --kind single|multipart|images|archives|reservations|outbox|blob-gc|orphan-gc|orphan-inventory [--limit 20]
   pnpm database:restore inventory-restored --operator-config JSON --remote --epoch N --id UUID --action verify|uploads|bucket|parts|abort [--limit 20] [--handle-id UUID] [--attempt-id UUID]
   pnpm database:restore rebuild-restored-fts --operator-config JSON --remote --epoch N --id UUID
   pnpm database:restore resume-restored --operator-config JSON --remote --epoch N --id UUID

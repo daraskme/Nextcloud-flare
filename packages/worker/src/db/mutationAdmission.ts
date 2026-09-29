@@ -38,6 +38,7 @@ export type AnyMutationRequest =
 export const GLOBAL_MUTATION_KINDS = [
   "images.settle",
   "images.cleanup-seal",
+  "archives.cleanup-seal",
   "queue.dead-letter",
   "r2.write-settle",
   "r2.manifest-delete",
@@ -118,6 +119,10 @@ export const SYSTEM_MUTATION_KINDS = [
   "image.observe",
   "image.publish",
   "image.cleanup",
+  "archive.prepare",
+  "archive.observe",
+  "archive.publish",
+  "archive.cleanup",
   "copy.release",
   "copy.prepare-put",
   "copy.observe-put",

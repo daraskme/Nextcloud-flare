@@ -1,10 +1,10 @@
 # Next-cloud-flare
 
-[本棚のアーカイブ読み取り基盤](docs/ARCHIVE_READER.md)を追加しました。ZIP/CBZ・EPUBコンテナの上限付き索引解析と、CRCを検査するページ単位の展開に対応します。索引保存・生成ジョブ・配信API・本棚画面への接続は開発中です。
+[本棚のアーカイブ索引](docs/ARCHIVE_READER.md)を、新しいZIP/CBZ/EPUBアップロードのQueueへ接続しました。上限付きで索引を生成し、SHA付きJSONを保存します。二重保存の防止、容量会計と不要索引の回収にも対応します。配信API・本棚画面・読書位置は開発中です。
 
 [音声タグの検索](docs/AUDIO_SEARCH.md)へ既存曲の再索引を接続しました。定期保守が保存済みタグを少しずつ索引へ反映し、途中から再開します。[所有者間コピー](docs/COPY_JOBS.md)でも受付時の音声情報を引き継ぎます。[埋め込み表紙](docs/AUDIO_COVERS.md)も新しいMP3/FLAC/MP4/Oggから抽出し、Audio一覧と常駐playerへ表示します。既存音声や所有者間コピー先でも、プレーヤーから表紙を読み込めます。[古いファイルの情報抽出](docs/MEDIA_EXTRACTION.md)もFilesから要求できます。自動一括再抽出、Bookshelfと運用の残件は開発中です。
 
-[公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0076・通常79table・151 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0077・通常81table・151 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
 
 Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。
@@ -13,7 +13,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 
 [画像メタデータ](docs/IMAGE_METADATA.md)は、新しいupload・WebDAV PUTからJPEG/PNG/WebP/AVIFを判別し、寸法と許可したEXIFだけを保存します。[サムネイル変換](docs/IMAGE_TRANSFORMS.md)と[生成物の保存](docs/IMAGE_DERIVATIVES.md)の内部処理を実装しました。[生成物の回収](docs/IMAGE_DERIVATIVE_CLEANUP.md)を専用Cronと復元CLIへ接続しました。保存済みのサムネイルは、同じ通知の新しい処理要求から公開を再開できます。[Queueからのsm/md自動生成](docs/IMAGE_QUEUE.md)と[サムネイル配信](docs/THUMBNAIL_DELIVERY.md)を接続しました。現在の原本・閲覧権限に束縛し、所有者・内部共有・公開リンクへ配信します。[Galleryの画像一覧・グリッド／リスト・ライトボックス・共有閲覧](docs/GALLERY.md)も接続しました。[lgの要求時生成とプレビュー／原本切り替え](docs/LARGE_THUMBNAILS.md)も接続しました。[AV1動画のGallery再生とOpusの情報抽出・原本再生](docs/TRACK_METADATA.md)も接続しました。[Audioの曲一覧・常駐player・利用者別再生位置](docs/AUDIO.md)も接続しました。大量の通常/非表示項目があるfolderも1,000候補ずつ探索し、続きの曲を省略せず取得します。新しい音声の埋め込み表紙も接続済みです。Bookshelf、既存データ再抽出と運用修復は開発中です。
 
-[サムネイル変換](docs/IMAGE_TRANSFORMS.md)の内部処理は3サイズのWebPを生成・検査します。[費用・終了記録](docs/IMAGE_COSTS.md)で重複変換を防ぎ、明示的に終了した失敗も記録し、未確定の変換をバックアップ・復旧の判定に含めます。保存・Queue自動生成・生成済みサムネイル配信は接続済みです。Galleryの画像・AV1動画閲覧は接続済みです。Audio専用画面・常駐player・位置保存/再開も接続済みです。Audioの埋め込み表紙は接続済みです。Bookshelfは開発中です。
+[サムネイル変換](docs/IMAGE_TRANSFORMS.md)の内部処理は3サイズのWebPを生成・検査します。[費用・終了記録](docs/IMAGE_COSTS.md)で重複変換を防ぎ、明示的に終了した失敗も記録し、未確定の変換をバックアップ・復旧の判定に含めます。保存・Queue自動生成・生成済みサムネイル配信は接続済みです。Galleryの画像・AV1動画閲覧は接続済みです。Audio専用画面・常駐player・位置保存/再開も接続済みです。Audioの埋め込み表紙は接続済みです。Bookshelfは[アーカイブ索引の解析・Queue保存・回収](docs/ARCHIVE_READER.md)まで接続し、APIと画面は開発中です。
 
 [ファイル受け取りリンク](docs/UPLOAD_ONLY_SHARES.md)の管理・匿名送信・同名保存・再開に対応しています。実環境へのmigration0066適用は未実施です。
 
@@ -23,7 +23,7 @@ Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕
 
 現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Phase 2 / WebDAV / Phase 3 / Phase 6 の一部**を実装済み。
 [内部共有の管理](docs/INTERNAL_SHARES.md)から相手・権限・期限の設定と共有停止を行えます。[受信者のShared画面](docs/SHARED_WORKSPACE.md)で閲覧・ダウンロード、edit共有へのフォルダー作成・改名・単一/分割アップロード・上書き、共有内の移動・コピー・ごみ箱への移動も行えます。[WebDAVのShared](docs/DAV_SHARED.md)では同じ共有内の読み書きと、同じ所有者の別共有へのコピー・移動ができます。所有者をまたぐコピーも、保存先選択・受付・進捗・取消まで画面へ接続しました。公開linkも管理・閲覧・編集・保存へ接続済みです。
-79通常テーブル、migration `0001`〜`0074`、149経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
+81通常テーブル、migration `0001`〜`0077`、151経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割アップロードまでローカル接続しています。
 所有者間コピーは[永続受付・単一/分割転送・途中再開・一括公開・取消し/精算・QueueとREST](docs/COPY_JOBS.md)までローカル接続済みです。実行回数とR2の残予算を判定し、期限直前は次の転送を開始せず中断します。画面での宛先選択/進捗/取消とタブのreload後の追跡を接続しました。停止後の明示的retryも接続済みです。DLQ運用、未知nativeの全修復、最大規模の実環境検証、タブ終了後/別端末からの追跡復元は未完了です。
 アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査・中止とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)も接続しました。完全な閉鎖証明と予約・保留容量の精算は未完了です。[Files UI](docs/FILES_UI.md)の一覧・操作・再開uploadはローカルAPIに接続済みです。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
 期限切れBACKUPS世代削除・BLOBS/BACKUPS接続probe・空ファイル・単一/DAV PUT・multipart作成/part/完了/全中止・配信manifest保存/削除・blob/orphan GCには[送信・終了の永続記録](docs/R2_WRITE_SETTLEMENT.md)を追加しました。元のattemptの二重送信を防ぎ、最大15分の本文転送leaseを維持します。結果不明の試行が残る間は予約解放・cleanup完了・復旧凍結・受付再開・対象GCを拒否します。[BACKUPS外部CLI保存](docs/BACKUP_PUBLICATION_WRITES.md)と[epoch履歴PUT](docs/EPOCH_HISTORY_WRITES.md)も専用記録へ接続し、nativeの実応答後だけ終了を記録します。GET一致・HEAD不在・lease満了では結果不明の保留を消しません。[復旧要求に固定したepoch事前予約](docs/DATABASE_RESTORE_EPOCH.md)も接続済みで、D1の旧epochと凍結を維持します。[予約epochの停止中採用](docs/DATABASE_RESTORE_ADOPTION.md)も接続済みです。[全監査・復旧hold解除・段階再開](docs/DATABASE_RESTORE_RECOVERY.md)も接続済みです。native不明の運用証明、未終了処理の全ケースの修復、実D1復元は開発中です。

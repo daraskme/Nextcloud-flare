@@ -2,6 +2,7 @@ export const RESTORE_DOMAIN_KINDS = [
   "single",
   "multipart",
   "images",
+  "archives",
   "reservations",
   "outbox",
   "blob-gc",

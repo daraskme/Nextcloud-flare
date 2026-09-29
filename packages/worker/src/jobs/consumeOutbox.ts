@@ -1,11 +1,13 @@
 import { assertExists, assertOneChange, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
+import type { ArchiveReadBudget } from "../media/archive/r2Source";
 import type { ImageReadBudget } from "../media/images/r2Source";
 import {
   acquireSystemMutation,
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { archiveIndexReadBudget, archiveOutboxStatements } from "./archiveQueue";
 import { consumeCopyOutbox } from "./copyQueue";
 import { imageMetadataStatements } from "./imageMetadata";
 import { generateOutboxImages, type ImageGenerationBudget } from "./imageQueue";
@@ -25,6 +27,7 @@ export async function consumeOutbox(
   deadline = Date.now() + 25_000,
   imageBudget: ImageReadBudget = { reads: 0, bytes: 0 },
   generationBudget: ImageGenerationBudget = { transforms: 0 },
+  archiveBudget: ArchiveReadBudget = archiveIndexReadBudget(),
 ): Promise<ConsumeResult> {
   const { DB: db } = env;
   if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > Date.now() + 25_000)
@@ -120,6 +123,17 @@ export async function consumeOutbox(
         generationBudget,
       );
     }
+    const archive = await archiveOutboxStatements(
+      {
+        DB: db,
+        ...(env.BLOBS ? { BLOBS: env.BLOBS } : {}),
+        ...("CONTROL" in env ? { CONTROL: env.CONTROL } : {}),
+      },
+      { ...row, id: outboxId },
+      token,
+      deadline,
+      archiveBudget,
+    );
     const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
@@ -127,6 +141,7 @@ export async function consumeOutbox(
       claimFence,
       ...metadata.statements,
       ...derivatives,
+      ...archive,
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}

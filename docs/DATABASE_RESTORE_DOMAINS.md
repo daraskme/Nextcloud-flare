@@ -2,7 +2,7 @@
 
 更新: 2026-09-29
 
-[予約epoch採用](DATABASE_RESTORE_ADOPTION.md)後、同じ復旧要求から既存の停止中修復を呼び出す。対象は単一upload、既知multipart、画像生成物、古い予約、対応済みのoutbox通知、削除開始済みのblob/orphan、完成済みR2オブジェクトのinventory。namespaceの操作や通知そのものは再実行しない。
+[予約epoch採用](DATABASE_RESTORE_ADOPTION.md)後、同じ復旧要求から既存の停止中修復を呼び出す。対象は単一upload、既知multipart、画像生成物、アーカイブ索引、古い予約、対応済みのoutbox通知、削除開始済みのblob/orphan、完成済みR2オブジェクトのinventory。namespaceの操作や通知そのものは再実行しない。
 
 ## 実行
 
@@ -12,20 +12,21 @@ pnpm database:restore repair-restored --remote \
   --kind single --limit 20
 ```
 
-`--kind`を次の8種類から選ぶ。`--limit`は1〜20、既定20。画像は指定値にかかわらず最大8件。1回の呼出しは1回の限定された修復だけを行い、CLI内で反復しない。private `database-restore-v1`権限、`RESTORE_OPERATOR_ENABLED=true`、`RESTORE_WRITE_ENABLED=true`が必要。採用前、hold解除後、別の要求、別のepochでは拒否する。
+`--kind`を次の9種類から選ぶ。`--limit`は1〜20、既定20。画像・アーカイブ索引は指定値にかかわらず最大8件。1回の呼出しは1回の限定された修復だけを行い、CLI内で反復しない。private `database-restore-v1`権限、`RESTORE_OPERATOR_ENABLED=true`、`RESTORE_WRITE_ENABLED=true`が必要。採用前、hold解除後、別の要求、別のepochでは拒否する。
 
 | kind | 処理と残る保護 |
 |---|---|
 | single | 元の24時間期限を過ぎたuploadを停止し、HEADで実体を確認する。不在が確定すれば容量を戻す。正しい実体があればphysicalを計上してGC候補へ渡す。未期限・公開済みoperation・pin・metadata不一致を迂回しない |
 | multipart | 既知handleを元のlease/operation条件で中止し、閉鎖とHEADの両方を確認してから精算する。以前の中止の終了証拠があればDB上の閉鎖記録だけを補う。未知handleや不明なnative処理は保持する |
 | images | 旧epoch/期限切れの未公開生成物、原本がdeleting/deletedに進んだ公開済み生成物を最大8件・25秒で回収する。独立したImages履歴と書込み停止tokenが必要。既存の実容量または予算付きHEADから物理予約とpinを精算し、実在する出力は35日猶予付きでGCへ渡す。Images変換・PUTは再実行しない |
+| archives | 原本に固定した索引の独立履歴・書込みsealを確認し、物理予約とpinを精算する。最大8件・25秒、実体は35日猶予付きGCへ渡す。未知PUT・履歴欠落は保持する。[詳細](ARCHIVE_READER.md) |
 | reservations | 古いepochの予約のうち、uploadから参照されず、DAV PUT operationにも紐づかないものだけを解放する。uploadの容量は各cleanupへ残す |
 | outbox | 古いepochの対応済みnode通知を、元のcommitted operation・種類・node step・owner/spaceへ照合してfailedにする。元operationは変更せず、通知を再送しない。未対応kindや未終了claimは残す |
 | blob-gc | 既にdeletingのblobだけを現在のclaimでDELETE/HEADし、実終了・不在の確認後にphysicalを精算する。candidate、pin、参照、未精算upload、有効leaseを保持する |
 | orphan-gc | 35日を過ぎたdeletingだけを処理する。前後のHEADと全metadataを照合し、置換された実体は容量と猶予を更新して保持する。quarantinedから新しい削除を始めない |
 | orphan-inventory | BLOBSのu/を1ページだけ走査し、各未知keyのHEADから隔離台帳とphysicalを更新する。既知catalogueを重複計上せず、削除・予約解放はしない。cursorはD1に保存する |
 
-最初にDOのlive KDF/R2/Images記録が空であること、D1にも`claimed`/`pending`がないことを確認する。残っていれば[終了記録の修復](DATABASE_RESTORE_NATIVE.md)を先に行う。未知のnative処理を経過時間から終了扱いにしない。予約/outboxの修復には既存のquiescence・bootstrap確認も必要なので、まずuploadの停止と精算を進める。画像の物理予約は一般の`reservations`では解放せず、`images`を使う。
+最初にDOのlive KDF/R2/Images記録が空であること、D1にも`claimed`/`pending`がないことを確認する。残っていれば[終了記録の修復](DATABASE_RESTORE_NATIVE.md)を先に行う。未知のnative処理を経過時間から終了扱いにしない。予約/outboxの修復には既存のquiescence・bootstrap確認も必要なので、まずuploadの停止と精算を進める。画像・アーカイブ索引の物理予約は一般の`reservations`では解放せず、`images` / `archives`を使う。
 
 ## 画像生成物の回収
 
@@ -55,7 +56,7 @@ R2でabortが成功した直後にD1の`multipart_cleanup_closed`更新が失敗
 
 全体を1つのmaintenance taskで実行し、前後で既存監査を無効にする。task開始後のepoch/revision/tokenへ束縛し、admissionの取得、R2 HEAD、native送信直前、各対象の間で再確認する。送信grantを返す前に停止が変わった場合は`not_started`を記録する。実際のR2完了が停止変更後に届いた場合も終了証拠を保存し、その後の古い修復は中断する。
 
-出力は`kind/pending`と、uploadでは`cleanup/held`、画像では`cleanup`、予約では`released`、outboxでは`failed`、GCでは`cleanup`、孤立走査では`inventory`を含む。GCはclaimed/deleted/retried/r2Callsに加え、orphanで置換観測のchangedを返す。走査はclaimed/examined/observed/advanced/completed/r2Callsを返す。`held`はこの回の事前照合で保留したmultipart件数。`r2Calls`はI/O予算を取得した回数であり、native成功回数ではない。内部token・key・handle・cursorはCLI出力に含めない。
+出力は`kind/pending`と、uploadでは`cleanup/held`、画像・アーカイブ索引では`cleanup`、予約では`released`、outboxでは`failed`、GCでは`cleanup`、孤立走査では`inventory`を含む。GCはclaimed/deleted/retried/r2Callsに加え、orphanで置換観測のchangedを返す。走査はclaimed/examined/observed/advanced/completed/r2Callsを返す。`held`はこの回の事前照合で保留したmultipart件数。`r2Calls`はI/O予算を取得した回数であり、native成功回数ではない。内部token・key・handle・cursorはCLI出力に含めない。
 
 対象が残っていれば`pending=true`、CLI終了code 2。走査対象にならない未期限upload、未知handle、GCへの引渡し済み実体、参照付き予約、未対応通知も含めた保守的な残存判定である。同じコマンドを繰り返せば必ず解消するという意味ではない。GC候補へ正しく引き渡せた状態は、残存していても全監査の条件を満たし得る。再開の可否は[FTS再構築・全監査・最終fence](DATABASE_RESTORE_RECOVERY.md)で別に判定し、この修復コマンドだけでは受付もGCも開かない。
 

@@ -69,7 +69,7 @@ beforeEach(() => {
   const repair = control.repairDomain.getMockImplementation();
   control.repairDomain.mockImplementation(async (...args) => {
     const raw = await repair(...args);
-    if (args[2] === "images")
+    if (args[2] === "images" || args[2] === "archives")
       raw.repair.cleanup = {
         inspected: 1,
         retired: 1,

@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-[Bookshelfのアーカイブ読み取り基盤](ARCHIVE_READER.md)を追加しました。ZIP/CBZ・EPUBコンテナを上限付きRangeで索引化し、STORE/DEFLATE・通常ZIP64を扱います。危険なパスやサイズ偽装を拒否し、選んだentryのヘッダー一致・展開サイズ・CRCを検査します。R2原本差替え・現在認可の失効・中断を確認しました。schema0076・通常79table・151 API route。索引保存/Queue・ページ配信・本棚/PDF/EPUB画面・読書位置は次の接続対象です。Bookshelf全体は未完成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[アーカイブ索引の保存](ARCHIVE_READER.md)を新しいZIP/CBZ/EPUBアップロードのQueueへ接続しました。固定した原本から索引を作り、SHA付きJSONを不変保存します。二重PUT防止、物理容量の予約・会計、祖先の非表示と現在認可の再検査、不要索引の回収・復元後修復を追加しました。schema0077・通常81table・151 API route。既存ファイルの索引要求、ページ配信、Library API・本棚/PDF/EPUB画面、読書位置は開発中です。運用修復と実環境gateも残っています。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
 
