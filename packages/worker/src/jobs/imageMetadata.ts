@@ -1,3 +1,4 @@
+import { mediaContentType } from "../../../shared/src/media";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import {
@@ -6,6 +7,9 @@ import {
   inspectImage,
 } from "../media/images/inspect";
 import { type ImageReadBudget, imageObjectSource } from "../media/images/r2Source";
+import { sniffMediaContainer } from "../media/sniff";
+import { TRACK_METADATA_GENERATOR, TRACK_METADATA_LIMITS } from "../media/tracks/common";
+import { inspectTracks } from "../media/tracks/inspect";
 import type { EventRow } from "./outboxAuthority";
 
 export interface ImageNode {
@@ -66,20 +70,32 @@ export async function imageMetadataStatements(
   };
   await guard();
   const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
-  const image = await inspectImage(
-    imageObjectSource(
-      env.BLOBS,
-      { key: node.key, size: node.size, etag: node.etag },
-      signal,
-      guard,
-      budget,
-    ),
-  );
+  const original = { key: node.key, size: node.size, etag: node.etag };
+  const imageSource = imageObjectSource(env.BLOBS, original, signal, guard, budget);
+  let trackCandidate = false;
+  const image = await inspectImage({
+    size: node.size,
+    read: async (at, length) => {
+      const bytes = await imageSource.read(at, length);
+      if (at === 0) {
+        const kind = sniffMediaContainer(bytes)?.container;
+        trackCandidate = kind === "mp4" || kind === "webm" || kind === "ogg";
+      }
+      return bytes;
+    },
+  });
+  const track =
+    !image && trackCandidate
+      ? await inspectTracks(
+          imageObjectSource(env.BLOBS, original, signal, guard, budget, TRACK_METADATA_LIMITS),
+        )
+      : null;
   signal.throwIfAborted();
   // Even the no-image result belongs to this exact current blob and source authorization.
   const result: SqlStatement[] = [
     hold,
     { sql: "DELETE FROM node_media WHERE node_id=?", values: [node.id] },
+    { sql: "DELETE FROM node_audio WHERE node_id=? AND blob_id<>?", values: [node.id, node.blob] },
   ];
   if (image)
     result.push(
@@ -103,6 +119,44 @@ export async function imageMetadataStatements(
         values: [image.mime, node.blob, event.owner_id],
       },
     );
+  if (track) {
+    result.push(
+      {
+        sql: "INSERT INTO node_media(node_id,blob_id,generator_version,width,height,duration_ms) VALUES(?,?,?,?,?,?)",
+        values: [
+          node.id,
+          node.blob,
+          TRACK_METADATA_GENERATOR,
+          track.width,
+          track.height,
+          track.durationMs,
+        ],
+      },
+      {
+        sql: "UPDATE blobs SET mime_sniffed=? WHERE id=? AND owner_id=?",
+        values: [mediaContentType(track.media), node.blob, event.owner_id],
+      },
+    );
+    if (track.media.kind === "audio")
+      result.push({
+        sql: `INSERT INTO node_audio(node_id,blob_id,generator_version,duration_ms,codec,title_extracted,artist_extracted,album_extracted,track_number,disc_number)
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET generator_version=excluded.generator_version,duration_ms=excluded.duration_ms,codec=excluded.codec,
+        title_extracted=excluded.title_extracted,artist_extracted=excluded.artist_extracted,album_extracted=excluded.album_extracted,track_number=excluded.track_number,disc_number=excluded.disc_number
+        WHERE node_audio.blob_id=excluded.blob_id`,
+        values: [
+          node.id,
+          node.blob,
+          TRACK_METADATA_GENERATOR,
+          track.durationMs,
+          "opus",
+          track.title ?? null,
+          track.artist ?? null,
+          track.album ?? null,
+          track.trackNumber ?? null,
+          track.discNumber ?? null,
+        ],
+      });
+  }
   return {
     statements: result,
     ...(image ? { source: { node: { ...node, etag: node.etag }, image, guard } } : {}),

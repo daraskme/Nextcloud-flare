@@ -17,6 +17,7 @@ export function imageObjectSource(
   signal: AbortSignal,
   authorize: () => Promise<void>,
   budget: ImageReadBudget,
+  limits: { bytes: number; reads: number } = IMAGE_METADATA_LIMITS,
 ): ImageSource {
   return {
     size: object.size,
@@ -45,10 +46,7 @@ export function imageObjectSource(
         signal.throwIfAborted();
         await authorize();
         signal.throwIfAborted();
-        if (
-          budget.reads >= IMAGE_METADATA_LIMITS.reads ||
-          budget.bytes + length > IMAGE_METADATA_LIMITS.bytes
-        )
+        if (budget.reads >= limits.reads || budget.bytes + length > limits.bytes)
           throw new Error("image_invocation_budget_exceeded");
         budget.reads++;
         budget.bytes += length;

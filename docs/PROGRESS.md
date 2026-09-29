@@ -1,8 +1,10 @@
 # 開発進捗
 
-[大きいプレビューの要求時生成](LARGE_THUMBNAILS.md)をGalleryへ接続しました。開いた画像だけにlg1600を要求し、所有者・内部共有・公開リンクでプレビューと原本を切り替えられます。同じ原本への要求を集約し、現在の閲覧権限をQueueの生成・公開時にも検査します。schema0072・通常79table・149 route。動画情報・player、Bookshelf/Audio、未知nativeや失効した生成要求の運用修復は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[AV1・Opusの情報抽出と動画再生](TRACK_METADATA.md)を接続しました。MP4/WebMのAV1動画（8/10-bit、Opus付き／音声なし）をGalleryで開き、所有者・内部共有・公開リンクの原本URLから再生します。再生不可時は同じ認可のダウンロードを提供します。OpusのOgg/WebM/MP4情報と限定タグは既存DBへ保存し、Filesから原本を開いて再生できます。schema0072・通常79table・149 routeを維持します。Audio専用UIと位置保存、Bookshelf、既存データ再抽出/copy引継ぎ、運用修復は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[大きいプレビューの要求時生成](LARGE_THUMBNAILS.md)をGalleryへ接続しました。開いた画像だけにlg1600を要求し、所有者・内部共有・公開リンクでプレビューと原本を切り替えられます。同じ原本への要求を集約し、現在の閲覧権限をQueueの生成・公開時にも検査します。schema0072・通常79table・149 route。動画情報・player、Bookshelf/Audio、未知nativeや失効した生成要求の運用修復は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [Galleryの画像一覧と閲覧](GALLERY.md)を所有者・内部共有・公開リンクへ接続しました。撮影日時順の200件ページ、グリッド／リスト、再帰切替、原本ライトボックスと前後移動に対応します。現在の原本・生成version・認可を固定し、サムネイル取得は画面付近の同時4件に制限します。50,000候補の読み取り行数gateが未達のため、設計に従い通常10,000候補へ縮小します。schema0071・通常79table・147 routeを維持します。lg要求時生成、動画情報・player、Bookshelf/Audioと運用の残件は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

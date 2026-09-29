@@ -1,6 +1,25 @@
 # 実装進捗
 
-## 大きいプレビューの要求時生成（今回）
+## AV1・Opusの情報抽出と動画再生（今回）
+
+[動画・音声情報](TRACK_METADATA.md)のbounded parserをMP4/WebM/Oggへ追加し、元upload/PUTの現在の認可・node/parent/blob・claim・epochを検査するQueueへ接続した。AV1の実profile/level/tier/8/10/12-bitとOpus構成から正規形のcodecs付きMIMEを保存し、既存node_media/node_audioへ寸法・時間・限定タグを確定する。1MiBのOpus header packetを分割ページから一度だけ組み立て、音声payloadのlacingはメタデータ構造数へ算入しない。MP4のmdatはoffsetで飛ばす。schema0072・79通常table・149 route、migration・依存追加なし。
+
+GalleryにAV1動画を追加し、共有に束縛した原本URLを直接videoへ渡す。native controlsで再生・一時停止・シーク・音量を扱い、canPlayTypeと実errorの両方で原本ダウンロードへ案内する。詳細の終了やerrorでpause/src解除/loadを行う。contentのdownload=1は同じ認可・Range・budgetの後にattachmentへ切り替える。public bundleのmodule allowlistを広げず、CSP media-srcは固定content originとselfだけへ限定した。
+
+- Node4file/117件成功（495ms、/tmp/ncf-tracks-unit-final-2.log）。新規parser37件に、9実エンコード形式、90秒のOpus、codec正規形、偽装/truncated/CRC破損、360回のheader変異、R2障害、1GBの疎なmdatを飛ばしたmoov読取りを含む。既存画像・条件付きRange・media契約も成功。
+- native初回は既存画像/Galleryの37件が成功し、新規14件中10件が失敗した（/tmp/ncf-tracks-native-1.log）。9件は配信planの旧MIME検査がcodecs parameterを拒否したため、正規形だけを許可した。残る1件は最終batchのfixtureを、書込み認可が許容するhidden親から元parentを変える競合へ修正した。Galleryは従来どおりhidden祖先を除外する。
+- 修正後native3file/22件成功（15.73秒、/tmp/ncf-tracks-native-2.log）。新規14件、content token/attachment HEAD、public asset境界を含む。9形式のD1/R2確定・Range実bytes、Images不使用、容量不変、現在の資格情報/parent/blob競合、ACK喪失と重複消費、共有の読取りcounterを確認した。
+- 最終parserでnative3file/22件成功（63.09秒、/tmp/ncf-tracks-native-final.log）。新規14件の再確認と既存content lease/budget8件を含む。ここまでのnativeは重複を除き67件成功。
+- Browser7件成功（2.6分、/tmp/ncf-tracks-browser-1.log）。6種類のAV1原本（MP4/WebM、8/10-bit、Opus有無）の実decode/再生/シーク、Range bytes照合、native errorと事前非対応からの実download、終了時の停止・src解除、内部共有/匿名リンクと停止後の404、既存画像Galleryとlgを検証した。mobile/publicのスクリーンショットも確認済み。
+- FilesからのOpus原本再生1件成功（36.3秒、/tmp/ncf-tracks-audio-browser-3.log）。Ogg/WebM/MP4の実再生・シークを確認した。初回は原本CSPのdefault-srcがmediaを禁止し、media-srcだけの修正ではsandboxのopaque originがCORSで拒否された。解析済みAV1/Opusだけmedia-src selfとsandbox allow-same-originを設定し、スクリプト禁止は維持した。sandbox内Promise callbackを待つ中間テストは中断し、Playwrightからnative stateをpollする検証へ修正した。
+- 単一host browser6件成功。初回は既存AVIF/lg、Opus原本再生とスクリプト禁止、HTML/SVGの添付限定の5件が成功（1.9分、/tmp/ncf-tracks-single-host.log）。AV1のdecode/再生/シーク後のHTTP検証がNode側のテスト用host解決で失敗したため、同じbrowserからのfetchへ修正。AV1とRange attachment・不正query拒否の1件も成功（28.9秒、/tmp/ncf-tracks-single-host-final.log）。今回のbrowserは重複を除き14件成功。
+- CSP修正後のnative2file/17件成功（13.77秒、/tmp/ncf-tracks-native-csp-final.log）。新規14件に既存blob-read3件を加え、認識済みメディアのCSP、未対応原本の従来CSP/attachmentと実bytes、Range/HEAD/条件付き配信を確認した。今回のnativeは重複を除き70件、Node117件・browser14件と合わせ関連201件成功。全suiteは実行していない。
+- 最終の型・lint722file成功（/tmp/ncf-tracks-types-complete-2.log、/tmp/ncf-tracks-lint-complete-2.log）。契約/設定検査も成功（/tmp/ncf-tracks-contracts.log、/tmp/ncf-tracks-config.log）。
+- 最終Web build/Worker dry-run成功（/tmp/ncf-tracks-build-complete.log）。schema0072・79通常table・149 routeを維持し、remote適用は行っていない。
+
+Audio専用一覧/playerと位置保存、その他の音声形式、Bookshelf、既存データ再抽出/copy引継ぎ、未知nativeと失効要求の運用修復は継続する。ローカルChrome以外のbrowser/OSと実Cloudflareの確認は未実施。remote resource/secret/migration/deploy変更なし。pushは前回の自動承認審査拒否後の承認待ち。
+
+## 大きいプレビューの要求時生成
 
 [lg1600の要求時生成](LARGE_THUMBNAILS.md)を所有者・内部共有・公開リンクへ接続した。画像を開いたときのPOSTは現在の閲覧者・元node/parent/blob・共有versionを保存し、同じ原本/variant/generatorのOutboxへ集約する。短い受付permitを返してからQueueへ送る。Queueで現在の認可を原本読取り・有料変換・保存・公開・完了にも照合し、既存の費用記録と公開再開、invocationの2有料試行・25秒上限を共有する。
 

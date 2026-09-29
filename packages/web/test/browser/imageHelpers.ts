@@ -7,9 +7,14 @@ export async function login(page: Page) {
   });
   await page.goto("/files");
 }
-export async function upload(page: Page, filename: string, parentId?: string) {
+export async function upload(
+  page: Page,
+  filename: string,
+  parentId?: string,
+  fixtureKind: "images" | "tracks" = "images",
+) {
   const encoded = readFileSync(
-    new URL(`../../../worker/test/fixtures/images/${filename}`, import.meta.url),
+    new URL(`../../../worker/test/fixtures/${fixtureKind}/${filename}`, import.meta.url),
   ).toString("base64");
   return page.evaluate(
     async ({ encoded, parentId }) => {

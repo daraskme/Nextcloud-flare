@@ -109,6 +109,87 @@ test("single host Gallery switches a generated large preview back to the same-or
   await expect(img).toHaveAttribute("src", new RegExp(`^${origin}/c/`));
 });
 
+test("single host Gallery plays and seeks AV1 and offers an authenticated attachment", async ({
+  page,
+}) => {
+  test.setTimeout(180000);
+  await owner(page);
+  const media = await uploadImage(page, "av1-opus.webm", undefined, "tracks");
+  await page.goto("/gallery");
+  await page.getByRole("button", { name: `${media.name}を表示` }).click();
+  const video = page.getByRole("dialog", { name: "動画の詳細" }).locator("video");
+  await expect(video).toHaveAttribute("src", new RegExp(`^${origin}/c/`));
+  await expect.poll(() => video.evaluate((el) => (el as HTMLVideoElement).videoWidth)).toBe(160);
+  await video.evaluate(async (el) => {
+    const v = el as HTMLVideoElement;
+    v.muted = true;
+    await v.play();
+  });
+  await expect
+    .poll(() => video.evaluate((el) => (el as HTMLVideoElement).currentTime))
+    .toBeGreaterThan(0.15);
+  await video.evaluate((el) => {
+    const v = el as HTMLVideoElement;
+    v.pause();
+    v.currentTime = 1.2;
+  });
+  await expect
+    .poll(() =>
+      video.evaluate((el) => {
+        const v = el as HTMLVideoElement;
+        return !v.seeking && Math.abs(v.currentTime - 1.2) < 0.1;
+      }),
+    )
+    .toBe(true);
+  const url = await video.getAttribute("src");
+  const result = await page.evaluate(async (url) => {
+    const response = await fetch(`${url}?download=1`, { headers: { Range: "bytes=0-15" } });
+    return {
+      status: response.status,
+      disposition: response.headers.get("Content-Disposition"),
+      length: (await response.arrayBuffer()).byteLength,
+      invalid: await Promise.all(
+        ["download=0", "download=1&download=1", "download=1&variant=sm"].map(
+          async (query) => (await fetch(`${url}?${query}`)).status,
+        ),
+      ),
+    };
+  }, url);
+  expect(result.status).toBe(206);
+  expect(result.disposition).toMatch(/^attachment;/);
+  expect(result.length).toBe(16);
+  expect(result.invalid).toEqual([404, 404, 404]);
+});
+
+test("single host Files plays an Opus original while scripts stay disabled", async ({ page }) => {
+  await owner(page);
+  const media = await uploadImage(page, "opus.ogg", undefined, "tracks");
+  await page.goto("/files");
+  await page.getByRole("button", { name: `${media.name}の操作`, exact: true }).click();
+  const opening = page.waitForEvent("popup");
+  await page.getByRole("menuitem", { name: "ファイルを開く・保存", exact: true }).click();
+  const popup = await opening;
+  try {
+    await popup.waitForURL(new RegExp(`^${origin}/c/`));
+    const player = popup.locator("audio,video");
+    await expect(player).toHaveCount(1);
+    await player.evaluate((el) => {
+      const m = el as HTMLMediaElement;
+      m.muted = true;
+      void m.play();
+      const script = document.createElement("script");
+      script.textContent = 'document.body.dataset.scriptExecuted = "yes"';
+      document.body.append(script);
+    });
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLMediaElement).currentTime))
+      .toBeGreaterThan(0.15);
+    expect(await popup.evaluate(() => document.body.dataset.scriptExecuted)).toBeUndefined();
+  } finally {
+    await popup.close();
+  }
+});
+
 test("single host serves private Files and anonymous public downloads with isolated authority", async ({
   page,
   browser,

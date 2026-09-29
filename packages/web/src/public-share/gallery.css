@@ -167,6 +167,22 @@
   height: 100%;
   object-fit: contain;
 }
+.gallery-video {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.gallery-video video {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+.gallery-video a {
+  color: #d0dfd3;
+}
 .gallery-lightbox p {
   font-size: 13px;
   color: #d0dfd3;

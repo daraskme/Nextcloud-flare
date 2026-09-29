@@ -192,7 +192,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   expect(httpRead.headers.get("Access-Control-Allow-Origin")).toBe(contentEnv.APP_ORIGIN);
   expect(new TextDecoder().decode(await httpRead.arrayBuffer())).toBe("abc");
   const httpHead = await handleContentHttp(
-    new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
+    new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}?download=1`, {
       method: "HEAD",
       headers: { Cookie: httpCookie },
     }),
@@ -201,6 +201,7 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   );
   expect(httpHead.status).toBe(200);
   expect(httpHead.headers.get("Content-Length")).toBe("3");
+  expect(httpHead.headers.get("Content-Disposition")).toMatch(/^attachment;/);
   expect(httpHead.body).toBeNull();
   expect(await env.BUDGETS.get(env.BUDGETS.idFromName(ids.budget)).status()).toMatchObject({
     requests: 6,

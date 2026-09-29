@@ -1,3 +1,4 @@
+import { parsedMediaContentType } from "../../../shared/src/media";
 import {
   type AuthorizedNode,
   authorizationAssertion,
@@ -373,7 +374,8 @@ function validatePlan(plan: BlobReadPlan): void {
     !plan.r2Etag ||
     plan.r2Etag.length > 256 ||
     !/^"[A-Za-z0-9._:-]{1,200}"$/.test(plan.contentEtag) ||
-    !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(plan.mime) ||
+    (!/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(plan.mime) &&
+      !parsedMediaContentType(plan.mime)) ||
     !plan.name ||
     new TextEncoder().encode(plan.name).byteLength > 255
   )
@@ -399,6 +401,13 @@ function safeInline(mime: string): boolean {
 
 function responseHeaders(plan: BlobReadPlan, etag = plan.contentEtag): Headers {
   const disposition = safeInline(plan.mime) ? "inline" : "attachment";
+  const media = parsedMediaContentType(plan.mime);
+  // Native media documents reload their original URL. Keep that origin for CORS,
+  // while scripts and all other sandbox capabilities remain disabled.
+  const mediaPolicy =
+    media?.kind === "audio" || media?.kind === "video"
+      ? "media-src 'self'; sandbox allow-same-origin"
+      : "sandbox";
   const encodedName = encodeURIComponent(plan.name).replace(
     /['()*]/g,
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
@@ -407,7 +416,7 @@ function responseHeaders(plan: BlobReadPlan, etag = plan.contentEtag): Headers {
     "Accept-Ranges": "bytes",
     "Cache-Control": "private, no-store",
     "Content-Disposition": `${disposition}; filename*=UTF-8''${encodedName}; filename="download"`,
-    "Content-Security-Policy": "default-src 'none'; sandbox; frame-ancestors 'none'",
+    "Content-Security-Policy": `default-src 'none'; ${mediaPolicy}; frame-ancestors 'none'`,
     "Content-Type": plan.mime,
     ETag: etag,
     "Referrer-Policy": "no-referrer",

@@ -18,13 +18,13 @@ EXIFは最大64KiB、IFDごと256entry、文字列1KiBまで。IFD0とExif IFD�
 
 メタデータ・判別済みMIME・Outbox completedは同じD1 transactionで確定する。古いblobのメタデータを現行結果と混在させず、重複配信はcompletedを照会して終了する。応答喪失もD1のterminalを読み戻す。原本bytes・quota/ref・既存content ticket/budgetは変更しない。画像判別後は既存原本配信が判別済みimage MIMEを使う。
 
-WebDAV PUTも利用者申告のContent-Typeをinline mediaの証拠にしない。新しいPUTはtext/plain以外をapplication/octet-streamとして確定し、解析した画像だけをimage MIMEへ更新する。動画/音声/PDFの抽出が未接続の間は原本添付として保存・配信する。既存のblobの再判別とMIME移行は後続の既存データ再抽出へ含める。
+WebDAV PUTも利用者申告のContent-Typeをinline mediaの証拠にしない。新しいPUTはtext/plain以外をapplication/octet-streamとして確定し、解析した画像だけをimage MIMEへ更新する。[AV1/Opusのtrack抽出](TRACK_METADATA.md)も接続済みで、解析に成功した原本だけをcodec付きMIMEへ更新する。その他の未対応動画/音声/PDFは原本添付として保存・配信する。既存のblobの再判別とMIME移行は後続の既存データ再抽出へ含める。
 
 ## 次の接続
 
-- [Images変換の内部実行部](IMAGE_TRANSFORMS.md)でsm256/md768/lg1600を生成・検査する。generation resultの費用/claim/physical会計・R2終了記録と[Queue自動生成](IMAGE_QUEUE.md)は接続済み。配信、Gallery API・画面は未実装。
+- [Images変換の内部実行部](IMAGE_TRANSFORMS.md)でsm256/md768/lg1600を生成・検査する。generation resultの費用/claim/physical会計・R2終了記録と[Queue自動生成](IMAGE_QUEUE.md)は接続済み。配信、Gallery API・画面も接続済み。
 - 既存ファイルの再抽出、COW/cross-owner copy・move後のメタデータ引継ぎと再抽出を接続する。今回のOutbox対象は新しいupload/PUTの原本書込み。
-- AVIFのExif item、複数段の派生画像、動画/音声のtrack・tag・duration抽出、Bookshelf/AudioとAV1/Opusの実再生は後続。
+- AV1/Opusのtrack・限定tag・duration抽出とGalleryのAV1再生は接続済み。AVIFのExif item、複数段の派生画像、その他の音声形式・Bookshelf/Audio専用UIは後続。
 - Imagesへの入力は別途20MB・12,000px・40MP・frame1の制限を適用する。原本とサムネイルの対応可否を混同せず、AVIF変換不可時も原本閲覧を接続する。
 
 検証の正本は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。仕様参照: [AVIF](https://aomediacodec.github.io/av1-avif/)、[PNG](https://www.w3.org/TR/png-3/)、[WebP](https://developers.google.com/speed/webp/docs/riff_container)、[CIPA Exif](https://www.cipa.jp/e/std/std-sec.html)。

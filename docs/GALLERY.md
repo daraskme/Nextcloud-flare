@@ -1,6 +1,6 @@
 # Galleryの画像一覧と閲覧
 
-2026-09-29。JPEG/PNG/WebP/AVIFの画像一覧を所有者・内部共有・公開リンクへ接続した。グリッド／リスト、フォルダー直下／再帰、200件ごとの前後ページ、原本ライトボックスと前後移動・矢印キー・Escapeを提供する。[lg要求時生成とプレビュー／原本切り替え](LARGE_THUMBNAILS.md)も接続した。動画metadata/playerと既存データの再抽出は後続。
+2026-09-29。JPEG/PNG/WebP/AVIFの画像一覧を所有者・内部共有・公開リンクへ接続した。グリッド／リスト、フォルダー直下／再帰、200件ごとの前後ページ、原本ライトボックスと前後移動・矢印キー・Escapeを提供する。[lg要求時生成とプレビュー／原本切り替え](LARGE_THUMBNAILS.md)も接続した。[AV1/Opus情報抽出と動画player](TRACK_METADATA.md)も接続した。動画は静的なプレースホルダーから開き、認可済み原本URLで再生・シークし、未対応端末には原本ダウンロードを提供する。既存データの再抽出は後続。
 
 ## 一覧と現在の認可
 
@@ -9,9 +9,9 @@
 
 `gallery.read`の集合認可で現在のcredential・share version・root到達性・全祖先の未削除／非表示を検査し、ページSELECTと同じbatchでも再検査する。ユーザーの別所有者の一覧には明示した内部共有が必須。名前や画像情報を親共有から補わない。
 
-画像情報は`node_media.blob_id = nodes.current_blob_id`かつ`image-metadata-v1`に限定し、所有者が一致するcommitted/gc_candidate blobの検査済みimage MIMEだけを返す。撮影日時（なければ更新日時）降順・ID昇順。GPSやraw EXIF/providerエラーは返さない。thumbnailのready/pending/unsupported/failedは現在のsm生成versionのD1記録から表示する。実bytesの取得には別途[サムネイル配信](THUMBNAIL_DELIVERY.md)の完全な検査が必要。
+画像情報は`node_media.blob_id = nodes.current_blob_id`かつ`image-metadata-v1`、動画情報は現在blobかつ`track-metadata-v1`に限定し、所有者が一致するcommitted/gc_candidate blobの検査済みimage MIMEまたはAV1 codec付きvideo MIMEを返す。撮影日時（なければ更新日時）降順・ID昇順。GPSやraw EXIF/providerエラーは返さない。thumbnailのready/pending/unsupported/failedは現在のsm生成versionのD1記録から表示する。実bytesの取得には別途[サムネイル配信](THUMBNAIL_DELIVERY.md)の完全な検査が必要。
 
-HMACカーソルは専用typeとし、principal/credential・share/version・root/space/owner・epoch・tree generation・metadata generator・再帰指定・候補上限・末尾sort/idを固定する。有効期限10分。改変、別一覧のtoken、別root/credential/versionへの転用を拒否する。新たに画像情報の抽出が完了した項目は一覧の更新で確認する。
+HMACカーソルは専用typeとし、principal/credential・share/version・root/space/owner・epoch・tree generation・画像/動画一覧version・再帰指定・候補上限・末尾sort/idを固定する。有効期限10分。改変、別一覧のtoken、別root/credential/versionへの転用を拒否する。新たに画像情報の抽出が完了した項目は一覧の更新で確認する。
 
 ## 候補上限と実測
 

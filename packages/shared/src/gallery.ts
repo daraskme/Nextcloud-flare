@@ -7,6 +7,7 @@ export interface GalleryItem {
   mime: string;
   width: number;
   height: number;
+  durationMs?: number | null;
   takenAt: number | null;
   updatedAt: number;
   orientation: number | null;

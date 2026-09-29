@@ -53,6 +53,42 @@ export function mediaContentType(media: MediaDescriptor): string {
   throw new Error("unsupported_media_descriptor");
 }
 
+/** Only the canonical parameters emitted by the server's bounded track parsers are accepted. */
+export function parsedMediaContentType(type: string): MediaDescriptor | null {
+  if (type === "image/avif") return { kind: "image", codec: "avif" };
+  const audio = /^audio\/(mp4|webm|ogg); codecs="(Opus|opus)"$/.exec(type);
+  if (audio) {
+    const media: MediaDescriptor = {
+      kind: "audio",
+      codec: "opus",
+      container: audio[1] as "mp4" | "webm" | "ogg",
+    };
+    return mediaContentType(media) === type ? media : null;
+  }
+  const video =
+    /^video\/(mp4|webm); codecs="av01\.([0-2])\.(\d{2})([MH])\.(08|10|12)(?:,(Opus|opus))?"$/.exec(
+      type,
+    );
+  if (!video) return null;
+  try {
+    const media: MediaDescriptor = {
+      kind: "video",
+      container: video[1] as "mp4" | "webm",
+      codec: "av1",
+      configuration: {
+        profile: Number(video[2]) as 0 | 1 | 2,
+        level: Number(video[3]),
+        tier: video[4] as "M" | "H",
+        bitDepth: Number(video[5]) as 8 | 10 | 12,
+      },
+      audio: video[6] ? "opus" : null,
+    };
+    return mediaContentType(media) === type ? media : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Hints for file picking only. Extension and client MIME never authorize inline delivery. */
 export const PREENCODED_MEDIA_ACCEPT = ".avif,.avifs,.mp4,.m4a,.webm,.opus,.ogg,.oga";
 

@@ -69,10 +69,14 @@ export async function handleContentHttp(
   const url = new URL(request.url);
   if (url.origin !== env.CONTENT_ORIGIN) return problem(404, "not_found");
   const variant = url.searchParams.get("variant");
+  const download = url.searchParams.get("download") === "1";
   if (
     url.hash ||
     (url.search &&
-      ([...url.searchParams.keys()].join(",") !== "variant" || !thumbnailVariant(variant))) ||
+      !(
+        ([...url.searchParams.keys()].join(",") === "variant" && thumbnailVariant(variant)) ||
+        ([...url.searchParams.keys()].join(",") === "download" && download)
+      )) ||
     (url.pathname === "/session" && url.search)
   )
     return problem(404, "not_found");
@@ -155,6 +159,11 @@ export async function handleContentHttp(
       request,
       thumbnailVariant(variant) ? variant : undefined,
     );
+    if (download && response.ok) {
+      const disposition = response.headers.get("Content-Disposition");
+      if (disposition)
+        response.headers.set("Content-Disposition", disposition.replace(/^inline;/, "attachment;"));
+    }
     return reply(response);
   } catch (error) {
     if (error instanceof Error && error.message === "budget_exceeded")

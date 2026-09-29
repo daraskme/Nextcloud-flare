@@ -32,12 +32,15 @@ export class ImageReader {
   #bytes = 0;
   #reads = 0;
   #structures = 0;
-  constructor(private source: ImageSource) {
+  constructor(
+    private source: ImageSource,
+    private limits: { bytes: number; reads: number; structures: number } = IMAGE_METADATA_LIMITS,
+  ) {
     this.size = source.size;
     valid(Number.isSafeInteger(this.size) && this.size >= 0);
   }
   step() {
-    valid(++this.#structures <= IMAGE_METADATA_LIMITS.structures);
+    valid(++this.#structures <= this.limits.structures);
   }
   async read(offset: number, length: number): Promise<Uint8Array> {
     valid(
@@ -45,7 +48,7 @@ export class ImageReader {
         Number.isSafeInteger(length) &&
         offset >= 0 &&
         length >= 0 &&
-        length <= IMAGE_METADATA_LIMITS.bytes &&
+        length <= this.limits.bytes &&
         offset + length <= this.size,
     );
     const result = new Uint8Array(length);
@@ -54,8 +57,8 @@ export class ImageReader {
       let page = this.#pages.get(start);
       if (!page) {
         const count = Math.min(32768, this.size - start);
-        valid(++this.#reads <= IMAGE_METADATA_LIMITS.reads);
-        valid((this.#bytes += count) <= IMAGE_METADATA_LIMITS.bytes);
+        valid(++this.#reads <= this.limits.reads);
+        valid((this.#bytes += count) <= this.limits.bytes);
         try {
           page = await this.source.read(start, count);
         } catch (cause) {

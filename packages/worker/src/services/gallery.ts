@@ -4,9 +4,11 @@ import type { GalleryCursorTokens } from "../auth/galleryCursor";
 import { assertExists, atomicBatch, primary } from "../db/primary";
 import { IMAGE_METADATA_GENERATOR } from "../media/images/inspect";
 import { IMAGE_TRANSFORM_GENERATOR } from "../media/images/transform";
+import { TRACK_METADATA_GENERATOR } from "../media/tracks/common";
 
 // The 50,000 candidate gate must pass before raising the production scan limit.
 export const GALLERY_CANDIDATES = 10_000;
+const GALLERY_GENERATOR = "gallery-images-tracks-v1";
 
 /** Indexed successor traversal bounds work even when one folder has millions of children. */
 export function galleryStatement(recursive: boolean, limit = GALLERY_CANDIDATES) {
@@ -39,20 +41,21 @@ export function galleryStatement(recursive: boolean, limit = GALLERY_CANDIDATES)
   ), page AS MATERIALIZED (
     SELECT n.id,n.name,n.current_blob_id AS currentBlobId,n.revision,n.updated_at AS updatedAt,
       b.size,b.mime_sniffed AS mime,m.width,m.height,m.taken_at AS takenAt,m.orientation,
-      m.camera_make AS cameraMake,m.camera_model AS cameraModel,
+      m.camera_make AS cameraMake,m.camera_model AS cameraModel,m.duration_ms AS durationMs,
       COALESCE(m.taken_at,n.updated_at) AS sortTime
     FROM scope s CROSS JOIN nodes n ON n.id=s.id
-    JOIN node_media m ON m.node_id=n.id AND m.blob_id=n.current_blob_id AND m.generator_version=?4
+    JOIN node_media m ON m.node_id=n.id AND m.blob_id=n.current_blob_id
     JOIN blobs b ON b.id=m.blob_id AND b.owner_id=?3 AND b.state IN ('committed','gc_candidate')
     WHERE n.hidden=0 AND n.kind='file' AND m.width>0 AND m.height>0
-      AND b.mime_sniffed IN ('image/jpeg','image/png','image/webp','image/avif')
+      AND ((m.generator_version=?4 AND b.mime_sniffed IN ('image/jpeg','image/png','image/webp','image/avif'))
+        OR (m.generator_version='${TRACK_METADATA_GENERATOR}' AND (b.mime_sniffed GLOB 'video/mp4; codecs="av01.*"' OR b.mime_sniffed GLOB 'video/webm; codecs="av01.*"')))
       AND (?6 IS NULL OR COALESCE(m.taken_at,n.updated_at)<?6 OR (COALESCE(m.taken_at,n.updated_at)=?6 AND n.id>?7))
     ORDER BY sortTime DESC,n.id LIMIT 201
   ) SELECT (SELECT COUNT(*) FROM scope) AS scanned,
     (SELECT json_group_array(json_object('id',p.id,'name',p.name,'currentBlobId',p.currentBlobId,
       'revision',p.revision,'updatedAt',p.updatedAt,'size',p.size,'mime',p.mime,'width',p.width,'height',p.height,
-      'takenAt',p.takenAt,'orientation',p.orientation,'cameraMake',p.cameraMake,'cameraModel',p.cameraModel,'sortTime',p.sortTime,
-      'thumbnail',CASE WHEN d.state='failed' THEN CASE WHEN d.error_code GLOB 'image_unsupported_*' THEN 'unsupported' ELSE 'failed' END
+      'takenAt',p.takenAt,'orientation',p.orientation,'cameraMake',p.cameraMake,'cameraModel',p.cameraModel,'sortTime',p.sortTime,'durationMs',p.durationMs,
+      'thumbnail',CASE WHEN p.mime LIKE 'video/%' THEN 'unsupported' WHEN d.state='failed' THEN CASE WHEN d.error_code GLOB 'image_unsupported_*' THEN 'unsupported' ELSE 'failed' END
         WHEN d.state='ready' AND x.state='published' AND c.retired_at IS NULL AND c.seal_token IS NULL
           AND c.settled_at IS NULL AND c.image_id IS NOT NULL THEN 'ready' ELSE 'pending' END))
       FROM page p LEFT JOIN derivative_results d ON d.blob_id=p.currentBlobId AND d.kind='thumbnail' AND d.variant='sm' AND d.generator_version=?5
@@ -102,7 +105,7 @@ export async function listGallery(
       claim.credentialId !== principal.credential_id ||
       claim.epoch !== principal.epoch ||
       claim.generation !== root.tree_generation ||
-      claim.generator !== IMAGE_METADATA_GENERATOR ||
+      claim.generator !== GALLERY_GENERATOR ||
       claim.recursive !== recursive ||
       claim.limit !== GALLERY_CANDIDATES ||
       claim.shareId !== selected?.id ||
@@ -145,7 +148,7 @@ export async function listGallery(
           credentialId: principal.credential_id,
           epoch: principal.epoch,
           generation: root.tree_generation,
-          generator: IMAGE_METADATA_GENERATOR,
+          generator: GALLERY_GENERATOR,
           recursive,
           limit: GALLERY_CANDIDATES,
           lastSort: last.sortTime,
