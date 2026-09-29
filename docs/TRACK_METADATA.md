@@ -26,6 +26,6 @@ Galleryは現在blobとimage/track generatorが一致する画像・AV1動画を
 
 ## 残件
 
-[Audio一覧・再生位置API](AUDIO.md)は接続済み。Audio専用UI/player・position自動保存、MP3/FLAC/WAV等のタグ、Bookshelf、既存メディアの再抽出とcopy後の引継ぎは後続。WebMのClusterより後ろだけに置かれたmetadata、複数映像／複数音声・未対応codec、Oggの大きな原本の終端時間推定は現在のparser対象外。対応外の原本を削除せず添付として保持する。Header解析は全bitstreamのデコード検証ではなく、端末の再生成功は実playerで確認する。
+[Audio一覧・常駐player・再生位置APIと自動保存/再開](AUDIO.md)は接続済み。MP3/FLAC/WAV等のタグ、Bookshelf、既存メディアの再抽出とcopy後の引継ぎは後続。WebMのClusterより後ろだけに置かれたmetadata、複数映像／複数音声・未対応codec、Oggの大きな原本の終端時間推定は現在のparser対象外。対応外の原本を削除せず添付として保持する。Header解析は全bitstreamのデコード検証ではなく、端末の再生成功は実playerで確認する。
 
 仕様参照：[AV1 ISOBMFF](https://aomediacodec.github.io/av1-isobmff/)、[MP4 Opus](https://opus-codec.org/docs/opus_in_isobmff.html)、[Matroska codec mappings](https://www.matroska.org/technical/codec_specs.html)、[Matroska elements](https://www.matroska.org/technical/elements.html)、[Ogg Opus RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html)、[Ogg RFC 3533](https://www.rfc-editor.org/rfc/rfc3533.html)。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。実Cloudflare・他browser/OSの保証は別途必要。

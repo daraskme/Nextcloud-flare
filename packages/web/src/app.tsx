@@ -36,6 +36,7 @@ import type { InternalShare, SelectedShare } from "../../shared/src/shares";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { DeadLettersDialog } from "./features/admin/DeadLettersDialog";
+import { PrivateAudio } from "./features/audio/PrivateAudio";
 import {
   CopyDestinationSelect,
   ownDestination,
@@ -60,6 +61,7 @@ import {
   type TrashItem,
   zipErrorMessage,
 } from "./lib/api";
+import { useAudioPlayer } from "./public-share/audio";
 
 type Action =
   | { kind: "create" }
@@ -680,6 +682,7 @@ function FileList({
 }
 
 export function App() {
+  const audioPlayer = useAudioPlayer();
   const query = useQueryClient();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
@@ -692,16 +695,26 @@ export function App() {
   const authExpired =
     account.error instanceof ApiError && [401, 403].includes(account.error.status);
   const me = authExpired ? undefined : account.data;
+  const audio = pathname === "/audio" || pathname.startsWith("/audio/");
+  useEffect(() => {
+    void audioPlayer.close(false);
+  }, [me?.id, me?.epoch, audioPlayer]);
   const gallery = pathname === "/gallery" || pathname.startsWith("/gallery/");
   const trash = pathname === "/trash";
   const shared = pathname === "/shared" || pathname.startsWith("/shared/");
   const sharedPath = /^\/shared(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(pathname);
-  const parentId = /^\/(?:files|gallery)\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
+  const parentId =
+    /^\/(?:files|gallery|audio)\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
   const searching =
-    !trash && !shared && !gallery && searchTerm?.scopeId === parentId && !!searchTerm.query;
+    !trash &&
+    !shared &&
+    !gallery &&
+    !audio &&
+    searchTerm?.scopeId === parentId &&
+    !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [actionScope, setActionScope] = useState<SharedActionScope | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
@@ -721,7 +734,7 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && !trash && !shared && !gallery && !searching,
+    enabled: !!me && !trash && !shared && !gallery && !audio && !searching,
     retry: false,
   });
   const results = useInfiniteQuery({
@@ -879,6 +892,7 @@ export function App() {
       .finally(() => setZipBusy(false));
   };
   const logout = async () => {
+    void audioPlayer.close(false);
     setLoggingOut(true);
     try {
       await api.logout();
@@ -935,7 +949,7 @@ export function App() {
         <nav aria-label="メインナビゲーション">
           <Link
             to="/files"
-            className={!trash && !shared && !gallery ? "nav-link active" : "nav-link"}
+            className={!trash && !shared && !gallery && !audio ? "nav-link active" : "nav-link"}
           >
             <HardDrive size={19} />
             マイドライブ
@@ -944,6 +958,10 @@ export function App() {
           <Link to="/gallery" className={gallery ? "nav-link active" : "nav-link"}>
             <FileImage size={19} />
             ギャラリー
+          </Link>
+          <Link to="/audio" className={audio ? "nav-link active" : "nav-link"}>
+            <FileAudio size={19} />
+            オーディオ
           </Link>
           <Link to="/shared" className={shared ? "nav-link active" : "nav-link"}>
             <Users size={19} />
@@ -1161,6 +1179,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : audio ? (
+            <PrivateAudio account={me} rootId={parentId} />
           ) : gallery ? (
             <PrivateGallery account={me} rootId={parentId} />
           ) : shared ? (
@@ -1188,6 +1208,15 @@ export function App() {
                   className="gallery-open"
                 >
                   このフォルダーをギャラリーで開く
+                </Link>
+              )}
+              {!trash && (
+                <Link
+                  to="/audio/$folderId"
+                  params={{ folderId: parentId }}
+                  className="gallery-open"
+                >
+                  このフォルダーをオーディオで開く
                 </Link>
               )}
               <div className="list-toolbar">

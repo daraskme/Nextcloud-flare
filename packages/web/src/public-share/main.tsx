@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { AudioProvider } from "./audio";
 import { PublicClient } from "./client";
 import { PublicApp } from "./view";
 import "./style.css";
@@ -16,7 +17,11 @@ function openLink() {
     /^[A-Za-z0-9_-]{43}$/.test(fragment) ? fragment : null,
   );
   fragment = "";
-  root.render(<PublicApp key={++generation} client={client} />);
+  root.render(
+    <AudioProvider key={++generation}>
+      <PublicApp client={client} />
+    </AudioProvider>,
+  );
 }
 openLink();
 addEventListener("hashchange", () => {

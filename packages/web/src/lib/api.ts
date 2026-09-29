@@ -1,8 +1,10 @@
+import type { AudioPage, PlaybackState } from "../../../shared/src/audio";
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
 import type { GalleryPage } from "../../../shared/src/gallery";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
+import { type AudioClient, audioOriginal } from "../public-share/audioClient";
 import type { GalleryClient } from "../public-share/gallery";
 import {
   galleryOriginal,
@@ -157,6 +159,71 @@ export class ApiClient {
   #csrf: { token: string; until: number } | undefined;
   #csrfFlight: Promise<string> | undefined;
   #lifetime = new AbortController();
+
+  audioClient(
+    account: Account,
+    rootId: string,
+    share?: SelectedShare & { spaceId: string },
+  ): AudioClient {
+    const lifetime = this.#lifetime;
+    const active = (signal: AbortSignal) =>
+      AbortSignal.any([signal, lifetime.signal, AbortSignal.timeout(30000)]);
+    const selection = share ? { id: share.id, version: share.version } : undefined;
+    const list = (id: string, cursor: string | null, signal: AbortSignal) => {
+      const query = new URLSearchParams();
+      if (cursor) query.set("cursor", cursor);
+      if (share) {
+        query.set("shareId", share.id);
+        query.set("shareVersion", String(share.version));
+      }
+      return this.request<AudioPage>(`/api/v1/nodes/${id}/tracks${query.size ? `?${query}` : ""}`, {
+        signal: active(signal),
+      });
+    };
+    const post = async <T>(path: string, method: string, body: unknown, signal: AbortSignal) => {
+      const token = await this.csrf();
+      active(signal).throwIfAborted();
+      return this.request<T>(path, {
+        method,
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+        body: JSON.stringify(body),
+        signal: active(signal),
+      });
+    };
+    return {
+      scope: JSON.stringify([account.id, account.epoch, rootId, share?.id, share?.version]),
+      signal: lifetime.signal,
+      list: (cursor, signal) => list(rootId, cursor, signal),
+      current: (id, signal) => list(id, null, signal),
+      original: async (item, signal) => {
+        const { ticket } = await post<{ ticket: string }>(
+          "/api/v1/content-session",
+          "POST",
+          {
+            purpose: "content",
+            ttlSeconds: 300,
+            targets: [{ nodeId: item.id, spaceId: share?.spaceId ?? account.spaceId }],
+            ...(selection ? { share: selection } : {}),
+          },
+          signal,
+        );
+        return audioOriginal(account.contentOrigin, ticket, item, active(signal));
+      },
+      save: (item, generator, positionMs, previousUpdatedAt, signal) =>
+        post<PlaybackState>(
+          `/api/v1/nodes/${item.id}/playback-state`,
+          "PUT",
+          {
+            blobId: item.currentBlobId,
+            generator,
+            positionMs,
+            previousUpdatedAt,
+            ...(selection ? { share: selection } : {}),
+          },
+          signal,
+        ),
+    };
+  }
 
   galleryClient(
     account: Account,

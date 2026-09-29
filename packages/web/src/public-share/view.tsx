@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { zipFailureMessage } from "../../../shared/src/zips";
+import { AudioLibrary, useAudioPlayer } from "./audio";
 import {
   PublicClient,
   PublicError,
@@ -35,8 +36,25 @@ function SharedGallery({
   );
   return <Gallery key={`${root.sessionId}:${nodeId}`} client={transport} />;
 }
+function SharedAudio({
+  client,
+  root,
+  nodeId,
+}: {
+  client: PublicClient;
+  root: SharedRoot;
+  nodeId: string;
+}) {
+  const transport = useMemo(
+    () => client.audioClient(root, nodeId),
+    [client, root.sessionId, root.contentOrigin, nodeId],
+  );
+  return <AudioLibrary key={transport.scope} client={transport} />;
+}
 export function PublicApp({ client }: { client: PublicClient }) {
   const [gallery, setGallery] = useState(false);
+  const [audio, setAudio] = useState(false);
+  const audioPlayer = useAudioPlayer();
   const [root, setRoot] = useState<PublicRoot | null>(null);
   const [trail, setTrail] = useState<SharedNode[]>([]);
   const [page, setPage] = useState<SharedChildren | null>(null);
@@ -71,6 +89,8 @@ export function PublicApp({ client }: { client: PublicClient }) {
   const failed = useCallback(
     (error: unknown) => {
       if (client.lifetime.signal.aborted) return;
+      if (error instanceof PublicError && [401, 403, 404, 410].includes(error.status))
+        void audioPlayer.close(false);
       if (error instanceof PublicError && error.status === 429) {
         setRetry(error.retryAfter);
         setMessage("しばらく待ってから、もう一度お試しください。");
@@ -86,7 +106,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
         setMessage("接続を確認できませんでした。しばらくしてから再試行してください。");
       }
     },
-    [client],
+    [client, audioPlayer],
   );
   const open = useCallback(
     async (value: string, notice = "") => {
@@ -414,10 +434,29 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 更新
               </button>
             </div>
-            <button className="quiet" disabled={locked} onClick={() => setGallery((x) => !x)}>
+            <button
+              className="quiet"
+              disabled={locked}
+              onClick={() => {
+                setAudio(false);
+                setGallery((x) => !x);
+              }}
+            >
               {gallery ? "ファイル一覧へ戻る" : "ギャラリーで表示"}
             </button>
-            {gallery && current ? (
+            <button
+              className="quiet"
+              disabled={locked}
+              onClick={() => {
+                setGallery(false);
+                setAudio((x) => !x);
+              }}
+            >
+              {audio ? "ファイル一覧へ戻る" : "オーディオで表示"}
+            </button>
+            {audio && current ? (
+              <SharedAudio client={client} root={root} nodeId={current.id} />
+            ) : gallery && current ? (
               <SharedGallery client={client} root={root} nodeId={current.id} />
             ) : (
               <>

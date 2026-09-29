@@ -1,8 +1,10 @@
 # 開発進捗
 
-[Audioの曲一覧と再生位置API](AUDIO.md)を接続しました。所有者・内部共有・公開リンクで現在のOpus情報を一覧し、ログイン利用者は本人の再生位置だけを保存できます。原本差し替え・共有解除・別タブの先行保存を検査します。schema0072・通常79table・149 routeを維持します。専用一覧画面・常駐player・自動保存と再開は次の接続対象です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[Audioの一覧と常駐プレーヤー](AUDIO.md)を所有者・内部共有・公開リンクへ接続しました。画面を移動してもOpus原本の再生を継続し、ログイン利用者は15秒ごとと一時停止時に本人の位置を保存して再開できます。保存競合では上書きせず現在の位置を再取得します。共有解除・ログアウトと配信期限に合わせて音声を破棄します。追加音声形式・cover・override編集、Bookshelf、運用修復と実環境検証は継続します。検証記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[Audioの曲一覧と再生位置API](AUDIO.md)を接続しました。所有者・内部共有・公開リンクで現在のOpus情報を一覧し、ログイン利用者は本人の再生位置だけを保存できます。原本差し替え・共有解除・別タブの先行保存を検査します。schema0072・通常79table・149 routeを維持します。専用一覧画面・常駐player・自動保存と再開は次の接続対象です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [AV1・Opusの情報抽出と動画再生](TRACK_METADATA.md)を接続しました。MP4/WebMのAV1動画（8/10-bit、Opus付き／音声なし）をGalleryで開き、所有者・内部共有・公開リンクの原本URLから再生します。再生不可時は同じ認可のダウンロードを提供します。OpusのOgg/WebM/MP4情報と限定タグは既存DBへ保存し、Filesから原本を開いて再生できます。schema0072・通常79table・149 routeを維持します。Audio専用UIと位置保存、Bookshelf、既存データ再抽出/copy引継ぎ、運用修復は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

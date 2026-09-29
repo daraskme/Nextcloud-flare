@@ -1,5 +1,7 @@
+import type { AudioPage } from "../../../shared/src/audio";
 import type { GalleryPage } from "../../../shared/src/gallery";
 import { zipDownloadPath } from "../../../shared/src/zips";
+import { type AudioClient, audioOriginal } from "./audioClient";
 import type { GalleryClient } from "./gallery";
 import { galleryOriginal, largeThumbnailReady, readGalleryThumbnail } from "./galleryMedia";
 
@@ -79,6 +81,51 @@ export class PublicError extends Error {
 }
 export class PublicClient {
   readonly lifetime = new AbortController();
+  audioClient(root: SharedRoot, nodeId: string): AudioClient {
+    const headers = { "Share-Session": root.sessionId };
+    const active = (signal: AbortSignal) =>
+      AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(30000)]);
+    const list = (id: string, cursor: string | null, signal: AbortSignal) => {
+      const query = new URLSearchParams({ nodeId: id });
+      if (cursor) query.set("cursor", cursor);
+      return this.request<AudioPage>(
+        `/tracks?${query}`,
+        "GET",
+        undefined,
+        undefined,
+        headers,
+        undefined,
+        active(signal),
+      );
+    };
+    return {
+      scope: JSON.stringify([this.id, root.sessionId, nodeId]),
+      signal: this.lifetime.signal,
+      list: (cursor, signal) => list(nodeId, cursor, signal),
+      current: (id, signal) => list(id, null, signal),
+      original: async (item, signal) => {
+        const { token } = await this.request<{ token: string }>(
+          "/csrf",
+          "POST",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          active(signal),
+        );
+        const { ticket } = await this.request<{ ticket: string }>(
+          "/content-session",
+          "POST",
+          { nodeIds: [item.id], ttlSeconds: 300 },
+          token,
+          headers,
+          undefined,
+          active(signal),
+        );
+        return audioOriginal(root.contentOrigin, ticket, item, active(signal));
+      },
+    };
+  }
   galleryClient(root: SharedRoot, nodeId: string): GalleryClient {
     const active = (signal: AbortSignal) =>
       AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(30000)]);

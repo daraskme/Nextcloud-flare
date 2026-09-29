@@ -8,7 +8,7 @@ import { privateAssets } from "./privateManifest";
 
 const assets = new Set<string>(privateAssets);
 const pages =
-  /^(?:\/|\/(?:files|gallery)(?:\/[A-Za-z0-9_-]{1,128})?|\/trash|\/shared(?:\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?)?)$/;
+  /^(?:\/|\/(?:files|gallery|audio)(?:\/[A-Za-z0-9_-]{1,128})?|\/trash|\/shared(?:\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?)?)$/;
 
 export function privateAssetRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;

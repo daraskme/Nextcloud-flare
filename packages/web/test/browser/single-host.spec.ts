@@ -4,6 +4,36 @@ import { open as openPublic } from "./publicShareHelpers";
 import { fileContent, rootFile, writeTestFile } from "./uploadHelpers";
 
 const origin = "https://app.ncf.test:8880";
+test("single host Audio saves and resumes an Opus track in the persistent player", async ({
+  page,
+}) => {
+  await owner(page);
+  const media = await uploadImage(page, "long.opus", undefined, "tracks");
+  await page.goto(`/audio/${media.node.id}`);
+  const play = () => page.getByRole("button", { name: `${media.name}を再生`, exact: true }).click();
+  await play();
+  const player = page.getByRole("region", { name: "オーディオプレーヤー" });
+  await expect(player.getByRole("button", { name: "一時停止", exact: true })).toBeEnabled();
+  expect(await page.locator("audio").getAttribute("src")).toBe(
+    `${origin}/c/${media.node.id}/${media.node.currentBlobId}`,
+  );
+  await page.locator("audio").evaluate((el) => {
+    (el as HTMLAudioElement).currentTime = 32;
+  });
+  const saving = page.waitForResponse(
+    (r) => r.url().endsWith("/playback-state") && r.status() === 200,
+  );
+  await player.getByRole("button", { name: "一時停止", exact: true }).click();
+  await saving;
+  await page.reload();
+  await play();
+  await expect(player.getByRole("button", { name: "一時停止", exact: true })).toBeEnabled();
+  expect(
+    await page.locator("audio").evaluate((el) => (el as HTMLAudioElement).currentTime),
+  ).toBeGreaterThanOrEqual(32);
+  await player.getByRole("button", { name: "プレーヤーを閉じる" }).click();
+  expect(await page.locator("audio").getAttribute("src")).toBeNull();
+});
 async function owner(page: Page) {
   await page.request.post("https://127.0.0.1:8880/__test__/access-login", {
     headers: { Host: "app.ncf.test:8880" },

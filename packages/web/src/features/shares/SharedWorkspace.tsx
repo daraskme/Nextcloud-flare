@@ -24,6 +24,7 @@ import {
   formatBytes,
   zipErrorMessage,
 } from "../../lib/api";
+import { PrivateAudio } from "../audio/PrivateAudio";
 import { PrivateGallery } from "../gallery/PrivateGallery";
 import { uploads } from "../uploads/manager";
 
@@ -141,6 +142,7 @@ function SharedContent({
   const selected = { id: share.id, version: share.version };
   const id = nodeId ?? share.rootNodeId;
   const [gallery, setGallery] = useState(false);
+  const [audio, setAudio] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [uploadFailure, setUploadFailure] = useState("");
   const [zipFailure, setZipFailure] = useState("");
@@ -331,10 +333,29 @@ function SharedContent({
               event.target.value = "";
             }}
           />
-          <Button onClick={() => setGallery((x) => !x)}>
+          <Button
+            onClick={() => {
+              setAudio(false);
+              setGallery((x) => !x);
+            }}
+          >
             {gallery ? "ファイル一覧へ戻る" : "ギャラリーで表示"}
           </Button>
-          {gallery ? (
+          <Button
+            onClick={() => {
+              setGallery(false);
+              setAudio((x) => !x);
+            }}
+          >
+            {audio ? "ファイル一覧へ戻る" : "オーディオで表示"}
+          </Button>
+          {audio ? (
+            <PrivateAudio
+              account={account}
+              rootId={id}
+              share={{ ...selected, spaceId: share.spaceId }}
+            />
+          ) : gallery ? (
             <PrivateGallery
               account={account}
               rootId={id}

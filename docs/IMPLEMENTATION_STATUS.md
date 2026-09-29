@@ -1,6 +1,20 @@
 # 実装進捗
 
-## Audio一覧と利用者別再生位置API（今回）
+## Audio専用画面・常駐プレーヤー（今回）
+
+[Audio](AUDIO.md)を所有者の専用route、選択した内部共有、公開リンクへ接続した。直下の現在のOpus曲を200件ずつ読み、最大2,000曲。共通playerは一覧の外に1つのnative audioを保持し、SPA遷移でも同じ原本URLの再生を続ける。前後移動・再生/一時停止・音量・現在時間・閉じる・原本downloadを提供する。追加の依存や公開bundle境界の拡張はない。
+
+選択時に元blob/generatorと本人の位置を再取得する。保存は15秒ごと・一時停止・曲変更・閉じる時に直列化し、待機中の位置を最新へまとめる。409や応答喪失では自動再送せず、明示的な再読を案内する。匿名には保存処理を渡さない。Content-Sessionは実Cookie receipt期限を使い、再生中に残り30秒以内ならCookieだけ更新しsrcを維持する。15秒ごとに現在の認可/原本も再検査し、拒否・logout・共有を閉じる・期限到来でbufferとpending要求を破棄する。pagehideは保存を試みるが、browser終了時の最終保存を保証しない。
+
+- Node新規16件成功（2file、208ms、/tmp/ncf-audio-ui-unit-2.log）。再開・直列化・保存競合・ACK喪失・前後移動・終了時0保存・遅い選択/配信応答・logout・公開共有失効・更新時src維持・応答のない更新中の期限停止・decoder不可・元URL/期限/認可receiptを確認した。
+- 通常browserの新規4件とGallery既存2件成功。位置保存・SPA継続・再読・他tabの保存競合・音量・logout、read共有の本人位置・匿名の保存なし・共有close/解除・decoder不可downloadの3件は1.9分（/tmp/ncf-audio-ui-browser-2.log）。Ogg/WebM/MP4全3コンテナの実native再生と206/Rangeの1件、Gallery grid/list/recursive/lightbox/共有の2件は1.5分（/tmp/ncf-audio-ui-browser-formats.log）。390pxの所有者/匿名画面も確認した。初回3件は2成功・1件がAccess logout先へ移動した後のDOM待機でtimeoutした。試験内でlogout遷移に204を返し、元documentでsrc解除を検査するよう修正した。
+- 単一host browser新規1件成功（34.8秒、/tmp/ncf-audio-ui-single-host.log）。同じhostの原本URL、保存・reload再開・閉じる時のsrc解除を実HTTPで確認した。
+- Native既存29件成功（Audio24 + public assets5、9.61秒、/tmp/ncf-audio-ui-native.log）。現在の認可・状態CAS・cursor・共有/匿名APIと公開assetのSRI/境界を再確認した。重複を除く関連検証は52件成功。
+- 最終型検査・lint737file・契約/設定検査成功（/tmp/ncf-audio-ui-types-complete.log、/tmp/ncf-audio-ui-lint-complete.log、/tmp/ncf-audio-ui-contracts.log、/tmp/ncf-audio-ui-config.log）。最終Web buildとWorker dry-runも成功（/tmp/ncf-audio-ui-build-final.log）。
+
+schema0072・79通常table・149 API routeを維持。新しいprivate SPA routeだけを明示allowlistへ追加した。MP3/FLAC/WAV/M4A等の追加parser、cover、override編集/検索同期、2,000曲と非音声混在folderの実D1/描画負荷gate、Bookshelf、既存media再抽出/copy引継ぎ、運用修復と実環境確認は継続する。全suite・実Cloudflareへの適用は未実施。pushは以前の自動承認審査拒否後の承認待ちのまま、ローカルcommitへ保持する。
+
+## Audio一覧と利用者別再生位置API
 
 [Audio](AUDIO.md)の既存tracks routeを所有者・内部共有・匿名リンクへ接続した。現在のOpus原本・generatorと一致する曲だけを直下200件ずつ、最大2,000曲返す。専用cursorは閲覧者・資格情報・root・共有version・epoch・tree generation・generator・返却済み件数を保持する。匿名一覧は利用者の再生位置を含まない。
 

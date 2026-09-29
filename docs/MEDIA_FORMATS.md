@@ -31,7 +31,8 @@ server derivative は既存の WebP / metadata 除去 / budget / claim fence に
 - [サムネイル変換の内部実行部](IMAGE_TRANSFORMS.md): 条件付きR2ストリームから静止画sm/md/lg WebPを生成・検査する。JPEG/PNG/WebP/AVIF/10-bit・alpha・EXIF除去をローカルで検証済み。費用claim・sm/mdのQueue・R2保存/配信へ接続済み。[lg受付](LARGE_THUMBNAILS.md)も接続済み。実環境検証は残る。
 - [Gallery](GALLERY.md): Queue生成済み画像を所有者・内部共有・公開リンクのgrid/list/lightboxへ接続。原本AVIFの表示、thumbnail unsupported時のplaceholder、現在のblob/generator・認可を確認する。
 - [AV1/Opusの情報抽出と動画再生](TRACK_METADATA.md): MP4/WebMのAV1とOgg/WebM/MP4のOpusをbounded parserで解析し、現在の原本と認可に束縛したMIME・寸法・時間・限定タグを保存する。Galleryの動画player、FilesからのOpus原本再生、認可済み原本ダウンロードへ接続。
-- 未接続: Audio専用一覧/playerと位置保存、その他の音声形式、既存データ再抽出/copy後の引継ぎ、Bookshelf。各phaseの残件を継続する。
+- [Audio一覧・常駐player・利用者別の位置保存/再開](AUDIO.md): 所有者・内部共有・公開リンクへ接続。SPA遷移中の再生、Content-Session更新、競合時の明示的な再読を扱う。
+- 未接続: その他の音声形式、既存データ再抽出/copy後の引継ぎ、Bookshelf。各phaseの残件を継続する。
 - 必須 fixture: AVIF 静止画/sequence、AV1 MP4/WebM（音声なし/Opus付き、8/10-bit）、Opus Ogg/WebM/MP4、偽装拡張子/truncated header、seek/Range、再生不可表示、AVIF derivative unavailable 時の原本表示。
 - Chrome/Edge/Firefox/Safari、desktop/mobile の実行時可否を support matrix に記録する。browser 名だけで再生成功としない。
 
