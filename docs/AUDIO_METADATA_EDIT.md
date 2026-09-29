@@ -20,6 +20,6 @@ LockDOのnode write permit、ControlDOのmutation枠、operation claimを利用�
 
 ## 継続する作業
 
-編集はAudioの表示overrideとFilesの検索文字列へ反映する。[検索同期](AUDIO_SEARCH.md)は抽出・編集・改名・MOVE・原本上書き・同一所有者COPY・ごみ箱復元へ接続した。既存曲の一括再索引と所有者間COPYの音声引継ぎは継続する。原本のID3等への書戻しは行わない。
+編集はAudioの表示overrideとFilesの検索文字列へ反映する。[検索同期](AUDIO_SEARCH.md)は抽出・編集・改名・MOVE・原本上書き・同一所有者COPY・ごみ箱復元へ接続した。所有者間COPYの新しいv2受付でも抽出値とoverrideを固定して引き継ぎ、コピー先で個別に編集/resetできる。既存曲の一括再索引は継続する。原本のID3等への書戻しは行わない。
 
 schema0074・通常79table・149 API route。検索用データのcolumnは先行migration0074で追加し、検索接続ではmigrationと依存を追加しない。現在のテスト結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。

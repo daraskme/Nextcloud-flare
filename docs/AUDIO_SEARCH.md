@@ -1,6 +1,6 @@
 # 音声タグの検索
 
-2026-09-29。migration0074で`node_audio`に検索用の正規化データを追加した。原本の音声タグ抽出と利用者のoverride編集・resetで、現在の曲名・artist・albumから同時に生成する。現在はFilesの検索API/FTSへ接続し、ファイル名と実効3fieldを検索対象にする。対象は新しく抽出・編集された音声と、その同一所有者内コピー。旧データの一括再構築と所有者間COPYへのmetadata引継ぎは未接続。
+2026-09-29。migration0074で`node_audio`に検索用の正規化データを追加した。原本の音声タグ抽出と利用者のoverride編集・resetで、現在の曲名・artist・albumから同時に生成する。現在はFilesの検索API/FTSへ接続し、ファイル名と実効3fieldを検索対象にする。対象は新しく抽出・編集された音声と、その同一所有者内コピー、および新しいv2受付による所有者間COPY。旧データの一括再構築は未接続。
 
 ## 保存する情報
 
@@ -30,10 +30,11 @@ cache versionはaudio-tags-2。FTS接続前のv1/空cache、実効タグ・gener
 
 検索カーソルの版は名前の正規化versionと音声cache versionを含む。FTS接続前に発行したカーソルは署名が正しくても拒否し、画面は先頭から読み直す。通常の索引更新ではtree generationでも古いページを拒否する。
 
+所有者間COPYは[manifest v2](COPY_JOBS.md)へ接続済み。受付時の抽出値/overrideと再生成したcacheを固定し、新しいblobへ引き継ぐ。以前のv1受付分は元の契約を維持し、後からsourceのタグを追加しない。
+
 ## 残る接続
 
 - 既存cacheなしの音声とv1/旧versionを上限付きで再構築する。現在はタグを保存し直すと、その1件を最新の索引へ更新できる。
-- 所有者間COPYの受付manifestへ音声metadataを固定し、公開時にその値を新しいblobへ引き継ぐ。公開時のsource最新値を読み直して代用しない。
 - 最大長の音声タグと大量音声での実D1負荷gate、media全体の再抽出運用。
 
 検証結果は[実装進捗](IMPLEMENTATION_STATUS.md)を参照。実Cloudflareへのmigration・配備は未実施。

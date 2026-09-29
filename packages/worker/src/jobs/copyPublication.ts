@@ -5,6 +5,8 @@ import { destinationPrincipal } from "../auth/transferScope";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
+import { audioSearchSuffix } from "../search/projection";
+import { COPY_AUDIO_FIELDS } from "../services/copyAudio";
 import { copySnapshotAssertions, type PreparedCopy } from "../services/copyPreparation";
 import { commitMutationStatements, type MutationOutcome } from "../services/fsMutation";
 import { boundedSubtreeCte } from "../services/subtree";
@@ -40,13 +42,14 @@ function allocations(plan: PreparedCopy, jobId: string) {
   }));
 }
 
-/** Bound JSON values independently of metadata size; preserve parent-before-child order. */
+/** 64 KiB groups, or one bounded audio row; preserve parent-before-child order. */
 function groups<T>(items: readonly T[]): T[][] {
   const result: T[][] = [];
   let group: T[] = [],
     bytes = 2;
   for (const item of items) {
     const size = new TextEncoder().encode(JSON.stringify(item)).byteLength + 1;
+    if (size > 512 * 1024) throw new Error("copy_manifest_too_large");
     if (group.length && (bytes + size > 65536 || group.length === 256)) {
       result.push(group);
       group = [];
@@ -93,8 +96,13 @@ function metadata(plan: PreparedCopy, jobId: string) {
     };
   });
   const props = plan.source.properties.map((p) => ({ ...p, nodeId: ids.get(p.nodeId)! }));
+  const audio = (plan.source.audio ?? []).map((a) => ({
+    ...a,
+    nodeId: ids.get(a.nodeId)!,
+    blobId: blobs.get(a.blobId)!,
+  }));
   const search = nodes.map((n) => ({ id: n.id, ...searchName(n.name) }));
-  return { nodes, props, search, root: nodes[0]!.id };
+  return { nodes, props, audio, search, root: nodes[0]!.id };
 }
 
 function publicationStatements(
@@ -245,6 +253,18 @@ function publicationStatements(
       },
       changes(group.length),
     );
+  for (const group of groups(data.audio))
+    st.push(
+      {
+        sql: `INSERT INTO node_audio(${Object.values(COPY_AUDIO_FIELDS).join(",")},search_text_norm,search_tokens,search_source,search_version)
+          SELECT ${Object.keys(COPY_AUDIO_FIELDS)
+            .map((key) => `json_extract(value,'$.${key}')`)
+            .join(",")},
+          json_extract(value,'$.search.textNorm'),json_extract(value,'$.search.tokens'),json_extract(value,'$.search.source'),json_extract(value,'$.search.version') FROM json_each(?)`,
+        values: [JSON.stringify(group)],
+      },
+      changes(group.length),
+    );
   mark("props");
   st.push(
     {
@@ -265,7 +285,12 @@ function publicationStatements(
   for (const group of groups(data.search))
     st.push(
       {
-        sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) SELECT json_extract(value,'$.id'),?,json_extract(value,'$.textNorm'),json_extract(value,'$.tokens'),json_extract(value,'$.version'),1 FROM json_each(?)",
+        // Read only the destination metadata inserted above, never the current source rows.
+        sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+          SELECT json_extract(e.value,'$.id'),?,
+            json_extract(e.value,'$.textNorm')||${audioSearchSuffix("text_norm", "json_extract(e.value,'$.id')")},
+            json_extract(e.value,'$.tokens')||${audioSearchSuffix("tokens", "json_extract(e.value,'$.id')")},
+            json_extract(e.value,'$.version'),1 FROM json_each(?) e`,
         values: [plan.destination.spaceId, JSON.stringify(group)],
       },
       changes(group.length),

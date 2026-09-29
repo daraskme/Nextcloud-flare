@@ -1,6 +1,22 @@
 # 実装進捗
 
-## 音声タグの検索とファイル操作との同期（今回）
+## 所有者間コピーの音声metadata引継ぎ（今回）
+
+[所有者間COPY](COPY_JOBS.md)の新しい受付をmanifest v2へ進め、現在の原本に対応する音声の抽出値・override・時間・codec・track/disc番号を固定した。sourceの旧cacheを信頼せず、実効タグから検索cacheを再生成して同じmanifestへ保存する。公開時は新しいnode/blob IDへ対応付け、Audio一覧とFilesの検索index/FTSをnamespaceと一括確定する。受付後のsource編集・metadata削除で内容を置き換えず、COW aliasごとのタグを保持する。利用者の再生位置はコピーしない。
+
+raw audioを値取得前のSQL予算へ含め、正規化で膨張する文字列は1件ずつ加算して8 MiB以内で停止する。全体10,000 node・10,000 property、manifest chunk64 KiBと1,000 statement上限は維持する。音声snapshotの再照合を既存の48 node groupへ組み込み、追加/削除/同じ長さの値変更でも受付を取り消す。公開の既存props段階で音声rowを挿入し、10個のmarkerを維持する。受付済みv1は音声を後から補わずに再開し、v1への音声混入・v2の音声配列欠落・未知versionは拒否する。
+
+- Node39件成功（4file、3.33秒、/tmp/ncf-copy-audio-unit.log）。新しい10件は元タグとoverrideの分離、かな/casefold、現在の検索version、凍結、overrideで隠れている抽出値を含む1 KiB上限、不正surrogate、番号/時間のsafe integer、generator/codec/IDを確認する。既存cache/schemaも成功。
+- Native関連211件成功。初回4file/102件では既存87件と新規11件が成功し、新規4件はfixtureが保存済みをreadyと誤認した3例と、成功用の120曲が正規化後8 MiBを超えた1例で失敗（77.40秒、/tmp/ncf-copy-audio-native-1.log）。段階的なstored→readyを待ち、上限内の成功用fixtureを32曲＋元1曲へ修正した。300曲の上限超過試験は別に維持し、制限や製品の判定は変更していない。
+- 修正後5file/124件が全成功（137.61秒、/tmp/ncf-copy-audio-native-2.log）。音声19件と既存HTTP・lifecycle・Queue・予算を含む。実R2のOpusコピー、新しいblob ID、受付後の編集/削除との分離、タグ検索・copy先reset・FTS整合・利用者位置を移さないこと・重複/ACK喪失・参照/容量を確認した。33曲の大きいタグを20chunk超のmanifestから公開・検索でき、raw超過は値取得前に拒否する。旧v1の実保存body/digestからの再開・公開と、不正version/配列の拒否も検証した。
+- 公開の索引挿入を、同じbatchで保存したコピー先のcacheを参照する形に整理した。大きいタグを再びJSONで送らず、sourceの最新値も参照しない。最終の音声/公開54件も成功（61.70秒、/tmp/ncf-copy-audio-native-final.log）。旧manifest用fixtureのバッファ型修正後の4件も再確認して成功（7.71秒、/tmp/ncf-copy-audio-native-legacy-final.log）。同じ試験は件数へ再加算していない。
+- Browser関連3件成功。初回は既存の応答喪失/reload、編集共有宛の取消し/retryの2件が成功し、新規音声試験は再生ボタンを曲名で指定したselectorで失敗した（2.6分、/tmp/ncf-copy-audio-browser.log）。コピー先に受付時の曲名が表示され、検索にも反映されていることは確認済みだった。実際のaccessible nameであるファイル名へ修正し、21.0秒の実行で成功（起動込み48.5秒、/tmp/ncf-copy-audio-browser-final.log）。最終SQL/buildでも音声1件が成功（21.4秒、起動込み49.0秒、/tmp/ncf-copy-audio-browser-complete.log）。実upload/抽出→元タグ編集→read共有からコピー受付→元タグ再編集→Queue転送/公開→コピー先の固定タグ検索とnative currentTimeの進行を確認した。前後の画面は/tmp/ncf-copy-audio-browser-before・after・completeに保存し、コピー先と再生中の表示を目視確認した。重複を除く関連試験は253件成功。
+- typecheck、lint（767file）、verify:contracts、verify:config成功（/tmp/ncf-copy-audio-{types-complete,lint-complete,contracts,config}.log）。旧manifest用fixtureのArrayBufferLike型をコピー所有のArrayBufferへ明示して型エラーを解消した。
+- 最終Web両入口/Worker dry-run build成功（/tmp/ncf-copy-audio-build-final.log、Worker 1,915.63 KiB・gzip404.42 KiB）。
+
+schema0074・通常79table・149 API route、migration/依存の追加なし。既存音声の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、未知native等の運用修復、全suite・実Cloudflare/他OS gateは継続する。リモートへのmigration/deployは未実施。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## 音声タグの検索とファイル操作との同期（先行071d001）
 
 [音声タグ検索](AUDIO_SEARCH.md)を既存の検索API/FTSへ接続した。曲名・artist・albumの実効値をファイル名と合わせて検索し、抽出・override編集/reset、改名・MOVE・同一所有者COPY・ごみ箱復元で同じtransaction内に更新する。DAV PUT・single/multipart上書きでは、次の抽出を待たず旧原本のタグを検索対象から外す。同一所有者のファイル/再帰COPYは現在の原本に対応する抽出値・override・cacheを保持する。
 

@@ -170,7 +170,11 @@ export async function loadCopyJobManifest(db: D1Database, id: string): Promise<S
     const operands = JSON.parse(row.operands_json),
       result = JSON.parse(row.result_json);
     if (
-      plan.version !== 1 ||
+      ![1, 2].includes(plan.version) ||
+      (plan.version === 1
+        ? plan.source.audio !== undefined || plan.overwrite?.audio !== undefined
+        : !Array.isArray(plan.source.audio) ||
+          (plan.overwrite !== null && !Array.isArray(plan.overwrite.audio))) ||
       plan.principal.kind !== "user" ||
       plan.principal.user_id !== row.principal_id ||
       plan.principal.credential_id !== row.credential_id ||

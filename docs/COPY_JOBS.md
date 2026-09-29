@@ -1,6 +1,6 @@
 # 所有者をまたぐコピー
 
-更新: 2026-09-28。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。実保存成功後に失ったobject観測の修復も内部実装した。Queueからの実行・再開と証明済み精算を接続した。停止後の自動巡回・既知中止/観測修復も接続した。RESTでの受付・進捗照会・取消と、画面での宛先選択・ジョブ表示・同一タブreload後の追跡を接続した。停止後の明示的retryもRESTと画面へ接続した。未知結果やpart/handle観測の修復、native attemptの再試行管理とタブ終了後の追跡復元は後続。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
+更新: 2026-09-29。永続job/manifest/Outboxの内部受付、期限付きclaim、固定source読取り、単一/multipart転送と途中再開に、固定manifestの一括公開と成功時の保持精算を追加した。取消し・期限/epoch/予算による停止と、未着手/未送信証明/保存済みの精算を内部実装した。既知multipartの中止・精算を追加した。実保存成功後に失ったobject観測の修復も内部実装した。Queueからの実行・再開と証明済み精算を接続した。停止後の自動巡回・既知中止/観測修復も接続した。RESTでの受付・進捗照会・取消と、画面での宛先選択・ジョブ表示・同一タブreload後の追跡を接続した。停止後の明示的retryもRESTと画面へ接続した。未知結果やpart/handle観測の修復、native attemptの再試行管理とタブ終了後の追跡復元は後続。最終要件は[DESIGN](DESIGN.md)と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md)を維持する。
 
 ## コピー開始時の固定
 
@@ -8,7 +8,11 @@
 
 対象にはノード構成、保存名と正規化名、revision、client mtime、hidden、現在のblob、dead propertiesを含める。blobは保存キー・サイズ・保存済みETag・content ETag・hash・MIMEを保持し、記録済みの物理サイズとownerの一致を検査する。コピー元rootの外のparent IDは結果に含めない。Depth 0はcollectionとその属性だけ、Depth infinityは全配下を固定する。上書き対象も別のsnapshotとして固定する。
 
+2026-09-29以降のmanifest v2は、現在のblob・track-metadata-v1・codec/MIMEに一致する音声metadataも固定する。抽出タグとoverride6field、時間、codec、track/disc番号を保持し、実効タグから検索cacheを作り直して保存する。元の旧/不正cacheを複製せず、受理済みsnapshotからコピー先Audio一覧とFiles検索を構築する。再生位置は利用者固有のためコピーしない。受付前のmetadata追加・削除・値変更は全nodeの既存group検査に含め、statement数を音声件数ぶん増やさない。受付後の元タグ変更は固定値へ影響しない。
+
 コピー元と上書き対象を合わせて10,000 node・10,000 property、UTF-8で8 MiBまでのメタデータを扱う。走査には索引付きsuccessor walkと10,001件目の検出を使い、上限超過を切り捨てて成功扱いにしない。大きすぎる属性は値をWorkerへ読み出す前に検出する。深さは絶対depth 64まで。8 MiBを超える対象はまだ受け付けず、この準備の成功をジョブ完了とはしない。
+
+音声のraw JSONも値を取得する前の予算検査へ含める。正規化によるUnicode展開後のcacheは1件ずつ全体bytesへ加算し、8 MiBを超える前に停止する。rawの抽出/override各fieldは1 KiB、時間/番号は非負safe integerに限る。最後にsourceとoverwriteを含むmanifest全体の実UTF-8 bytesを検査する。
 
 返却するplanと全配下は凍結し、SHA-256 digestを付ける。`copyPreparationAssertions` は生成元のrequest-local proofだけを受け付け、複製・JSON読戻し・偽造したobjectを認可の代わりにできない。開始を確定する同じD1 batchで、両側の資格情報・共有・世代・全メタデータ・現在の名前衝突を再検査する。構成追加、属性の同じ長さでの置換、content変更、共有停止も拒否する。
 
@@ -29,6 +33,8 @@
 job IDは元credentialとidempotency keyに対応するoperation IDから固定する。要求内容には両側の選択share、親、source、保存名、depth、上書き対象、lock token hashを束縛する。再送では現在のcredentialと元/先の権限を検査し、元のjob IDを返す。途中でsourceの内容が変わっても新しいmanifestや追加予約を作らない。異なる要求へのkey再利用は拒否する。応答喪失は既存のoperation照合へ接続し、記録を確認できない間は`commit_unknown`を維持する。
 
 manifest本文は最大8 MiB、64 KiBずつ最大128個のBLOB行へ保存する。`jobs/copyManifest.ts` は8行ずつ読み、サイズ・連番・SHA-256・operation/owner/credential/選択・保持対応を照合する。D1のBLOBがnumber配列として返ることを考慮し、全chunkを同時に配列化しない。読戻したobjectは凍結するが、request-local authorization proofは与えない。次の実行段階では現行権限を改めて検査する。
+
+受付済みv1は従来どおり読み戻し・公開できる。v1へ後から音声情報を追加せず、現在のsourceからの補完もしない。v2は音声配列を必須とし、v1に音声配列が混入したbody、v2の配列欠落、未知versionはdigestが一致しても拒否する。新しい受付・明示的retryはv2を使う。
 
 ## REST受付・進捗・取消
 
@@ -101,6 +107,8 @@ part進捗は`{v:1,blob,offset}`として確定し、leaseを取り直しても�
 schemaでも、staging blob・実在bytes/hash/ETag・single PUTまたはmultipart completeのnative成功receipt・pending native不在・元pin・転送先予約・現在のpermit/claimを照合する。native結果が不明なkeyや未転送blobを完了へ進めない。コピー元の内容・名前・属性が受付後に変わっても、公開する値は固定manifestから構築する。memberが元subtree外へ移動・削除された場合は公開を拒否し、保持を残す。
 
 公開batchでは予約をused quotaへ変換し、親から子の順に全node、dead properties、検索index/FTSを作り、親revision・tree generation・activity・node.created Outbox・10 step・完了receiptを確定する。コピー元rootは通常folderへ変換する。aliasはコピー先でも一つのblobを共有し、unique bytesだけを計上する。上書き対象はtrashへ移し、配下lock/shared session・関連content session/ticketを停止する。trashの元blob参照と使用量は保持する。
+
+v2の音声metadataはnode/blob IDをコピー先へ置き換え、既存props段階と同じtransactionへ追加する。aliasごとのoverrideを保持し、rootの新しい名前にも実効タグを足してFTSへ登録する。検索索引の挿入では、このbatchで保存したコピー先の有効なcacheを参照し、大きいタグをJSONで再送しない。sourceの最新rowは読まない。10個のoperation markerと既存の公開receipt契約は維持する。JSONのgroupは通常64 KiB/256件以下とし、正規化後の大きい音声rowは単独group（最大512 KiB）で送る。原本転送に失敗した場合や公開の最終検査が失敗した場合に、音声だけを公開することはない。
 
 同じbatchの中でjobとcopy.requested Outboxをcompletedにし、成功が証明されたmultipart情報・保持対応・元pin・実行leaseを除去する。失敗時には公開node、予約解除、source ref減算もすべてrollbackする。応答を失ってもDB receiptから照合し、再送でnodeやactivityを増やさない。完了後の照会とnode.created consumerも、元のsource選択とコピー先選択で再認可する。成功時のlease解放は完了receiptに対して冪等。受付202と公開201/204の意味は変えない。
 

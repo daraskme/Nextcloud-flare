@@ -12,6 +12,15 @@ import {
   transferDestination,
 } from "../auth/transferScope";
 import { assertExists, atomicBatch, type SqlStatement } from "../db/primary";
+import {
+  COPY_AUDIO_AT_NODE,
+  COPY_AUDIO_JSON,
+  COPY_AUDIO_MATCH,
+  type CopyAudio,
+  type CopyAudioInput,
+  copyAudioInput,
+  freezeCopyAudio,
+} from "./copyAudio";
 import { boundedSubtreeCte } from "./subtree";
 
 export const COPY_PREPARATION_LIMITS = Object.freeze({
@@ -67,9 +76,11 @@ export interface CopySnapshot {
   readonly entries: readonly Entry[];
   readonly blobs: readonly Blob[];
   readonly properties: readonly Property[];
+  /** Absent only on a previously accepted v1 manifest. */
+  readonly audio?: readonly CopyAudio[];
 }
 export interface PreparedCopy {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly principal: User;
   readonly destination: TransferDestination;
   readonly destinationParentId: string;
@@ -90,7 +101,7 @@ function snapshotCte(depth: "0" | "infinity") {
     ? boundedSubtreeCte(COPY_PREPARATION_LIMITS.nodes + 1)
     : "WITH scope AS MATERIALIZED (SELECT id,kind,0 AS depth FROM nodes WHERE id=?1 AND space_id=?2 AND owner_id=?3 AND deleted_at IS NULL)";
 }
-function dataCte(depth: "0" | "infinity") {
+function dataCte(depth: "0" | "infinity", audio = true) {
   return `${snapshotCte(depth)}, members AS MATERIALIZED (
     SELECT n.* FROM scope s CROSS JOIN nodes n ON n.id=s.id
   ), source_blobs AS MATERIALIZED (
@@ -101,10 +112,18 @@ function dataCte(depth: "0" | "infinity") {
   ), props AS MATERIALIZED (
     SELECT p.node_id AS nodeId,p.namespace,p.name,p.value_xml AS value FROM scope s
       CROSS JOIN node_props p ON p.node_id=s.id LIMIT ${COPY_PREPARATION_LIMITS.properties + 1}
-  )`;
+  )${
+    audio
+      ? `, audio AS MATERIALIZED (
+    SELECT n.id,${COPY_AUDIO_JSON} AS metadata FROM members n
+      CROSS JOIN node_audio a ON a.node_id=n.id CROSS JOIN blobs b ON b.id=a.blob_id
+    WHERE ${COPY_AUDIO_MATCH}
+  )`
+      : ""
+  }`;
 }
-function censusSql(depth: "0" | "infinity") {
-  return `${dataCte(depth)} SELECT
+function censusSql(depth: "0" | "infinity", audio = true) {
+  return `${dataCte(depth, audio)} SELECT
     (SELECT COUNT(*) FROM members) AS nodes,
     (SELECT COUNT(*) FROM props) AS properties,
     (SELECT COUNT(*) FROM source_blobs) AS blobs,
@@ -113,7 +132,8 @@ function censusSql(depth: "0" | "infinity") {
       WHERE ${depth === "infinity" ? "s.depth=64 OR" : ""} c.space_id<>?2 OR c.owner_id<>?3) AS incomplete,
     (SELECT COALESCE(SUM(512+length(CAST(name AS BLOB))+length(CAST(name_ci AS BLOB))),0) FROM members)
       +(SELECT COALESCE(SUM(512+length(CAST(key AS BLOB))+length(CAST(etag AS BLOB))+length(CAST(contentEtag AS BLOB))+length(CAST(COALESCE(mime,'') AS BLOB))),0) FROM source_blobs)
-      +(SELECT COALESCE(SUM(128+length(CAST(namespace AS BLOB))+length(CAST(name AS BLOB))+length(CAST(value AS BLOB))),0) FROM props) AS metadataBytes`;
+      +(SELECT COALESCE(SUM(128+length(CAST(namespace AS BLOB))+length(CAST(name AS BLOB))+length(CAST(value AS BLOB))),0) FROM props)
+      ${audio ? "+(SELECT COALESCE(SUM(1+length(CAST(metadata AS BLOB))),0) FROM audio)" : ""} AS metadataBytes`;
 }
 interface Census {
   nodes: number;
@@ -143,7 +163,7 @@ async function snapshot(db: D1Database, authority: AuthorizedNode, depth: "0" | 
     counts.metadataBytes > COPY_PREPARATION_LIMITS.metadataBytes
   )
     throw new Error("copy_manifest_too_large");
-  // The budget assertion precedes materializing property values in this same transaction.
+  // The budget assertion precedes materializing property/audio values in this transaction.
   const rows = await atomicBatch(db, [
     authorizationAssertion(authority),
     assertExists(`SELECT 1 FROM (${census}) WHERE ${withinBudget}`, values),
@@ -153,8 +173,9 @@ async function snapshot(db: D1Database, authority: AuthorizedNode, depth: "0" | 
     },
     { sql: `${dataCte(depth)} SELECT * FROM source_blobs ORDER BY id`, values },
     { sql: `${dataCte(depth)} SELECT * FROM props ORDER BY nodeId,namespace,name`, values },
+    { sql: `${dataCte(depth)} SELECT metadata FROM audio ORDER BY id`, values },
   ]);
-  const result: CopySnapshot = Object.freeze({
+  const base = {
     rootId: node.id,
     spaceId: node.space_id,
     ownerId: node.owner_id,
@@ -166,8 +187,18 @@ async function snapshot(db: D1Database, authority: AuthorizedNode, depth: "0" | 
     properties: Object.freeze(
       (rows[4]!.results as unknown as Property[]).map((row) => Object.freeze(row)),
     ),
-  });
-  return result;
+  };
+  // Normalization can expand Unicode input. Account for each result before retaining it,
+  // rather than materializing an unbounded array from a bounded raw snapshot.
+  let bytes = new TextEncoder().encode(JSON.stringify(base)).length + 12;
+  const audio: CopyAudio[] = [];
+  for (const row of rows[5]!.results as unknown as { metadata: string }[]) {
+    const item = freezeCopyAudio(JSON.parse(row.metadata) as CopyAudioInput);
+    bytes += new TextEncoder().encode(JSON.stringify(item)).length + 1;
+    if (bytes > COPY_PREPARATION_LIMITS.metadataBytes) throw new Error("copy_manifest_too_large");
+    audio.push(item);
+  }
+  return Object.freeze({ ...base, audio: Object.freeze(audio) });
 }
 
 function grouped<T>(
@@ -185,10 +216,11 @@ export function copySnapshotAssertions(
   value: CopySnapshot,
   depth: "0" | "infinity",
 ): SqlStatement[] {
+  const audio = new Map(value.audio?.map((a) => [a.nodeId, copyAudioInput(a)]));
   // Drive each join from the bounded ID set. A space-first plan rescans all nodes per group.
   return [
     assertExists(
-      `SELECT 1 FROM (${censusSql(depth)}) WHERE ${withinBudget} AND nodes=?4 AND properties=?5 AND blobs=?6`,
+      `SELECT 1 FROM (${censusSql(depth, value.audio !== undefined)}) WHERE ${withinBudget} AND nodes=?4 AND properties=?5 AND blobs=?6`,
       [
         value.rootId,
         value.spaceId,
@@ -198,16 +230,19 @@ export function copySnapshotAssertions(
         value.blobs.length,
       ],
     ),
-    ...grouped(value.entries, (json, count) =>
-      assertExists(
-        `SELECT 1 WHERE (SELECT COUNT(*) FROM json_each(?1) e CROSS JOIN nodes n ON n.id=json_extract(e.value,'$.id')
+    ...grouped(
+      value.entries.map((entry) => ({ ...entry, audio: audio.get(entry.id) ?? null })),
+      (json, count) =>
+        assertExists(
+          `SELECT 1 WHERE (SELECT COUNT(*) FROM json_each(?1) e CROSS JOIN nodes n ON n.id=json_extract(e.value,'$.id')
       WHERE n.space_id=?2 AND n.owner_id=?3 AND n.deleted_at IS NULL
         AND (CASE WHEN n.id=?4 THEN NULL ELSE n.parent_id END) IS json_extract(e.value,'$.parentId')
         AND n.name=json_extract(e.value,'$.name') AND n.name_ci=json_extract(e.value,'$.nameCi') AND n.kind=json_extract(e.value,'$.kind')
         AND n.revision=json_extract(e.value,'$.revision') AND n.current_blob_id IS json_extract(e.value,'$.blobId')
-        AND n.client_mtime IS json_extract(e.value,'$.mtime') AND n.hidden=json_extract(e.value,'$.hidden'))=?5`,
-        [json, value.spaceId, value.ownerId, value.rootId, count],
-      ),
+        AND n.client_mtime IS json_extract(e.value,'$.mtime') AND n.hidden=json_extract(e.value,'$.hidden')
+        ${value.audio === undefined ? "" : `AND ${COPY_AUDIO_AT_NODE} IS json_extract(e.value,'$.audio')`})=?5`,
+          [json, value.spaceId, value.ownerId, value.rootId, count],
+        ),
     ),
     ...grouped(value.blobs, (json, count) =>
       assertExists(
@@ -311,7 +346,7 @@ export async function prepareCrossOwnerCopy(
   )
     throw new Error("copy_manifest_too_large");
   const body = Object.freeze({
-    version: 1 as const,
+    version: 2 as const,
     principal,
     destination,
     destinationParentId: target.parent.id,

@@ -12,7 +12,7 @@ export const AUDIO_SEARCH_MATCH = `a.blob_id=n.current_blob_id
 /** Fixed application SQL only. A cache for a previous blob never contributes to a new original. */
 export function audioSearchSuffix(
   field: "text_norm" | "tokens",
-  node: "si.node_id" | "cm.copied_node_id",
+  node: "si.node_id" | "cm.copied_node_id" | "json_extract(e.value,'$.id')",
 ) {
   const separator = field === "text_norm" ? "char(10)" : "' '";
   return `COALESCE((SELECT ${separator}||a.search_${field}

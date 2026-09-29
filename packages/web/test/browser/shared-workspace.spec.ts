@@ -1,6 +1,7 @@
 import { open } from "node:fs/promises";
 import { type Browser, expect, type Page, type Route, test } from "@playwright/test";
 import { searchFiles } from "./fileHelpers";
+import { upload as uploadMedia } from "./imageHelpers";
 import { fileContent, writeTestFile } from "./uploadHelpers";
 
 async function setup(
@@ -609,6 +610,86 @@ async function deliverCopy(page: Page, id: string, steps?: number) {
   expect(response.status(), await response.text()).toBe(200);
   return response.json();
 }
+
+test("cross-owner audio copy preserves accepted tags for search and native playback", async ({
+  page: owner,
+  browser,
+}, info) => {
+  const f = await setup(owner, "音声コピー", "read");
+  const media = await uploadMedia(owner, "opus.ogg", f.child, "tracks");
+  const edit = async (title: string) => {
+    await owner.goto(`/audio/${media.node.id}`);
+    await owner.getByRole("button", { name: `${media.name}のタグを編集`, exact: true }).click();
+    const dialog = owner.getByRole("dialog");
+    await dialog.getByLabel("曲名", { exact: true }).fill(title);
+    await dialog.getByLabel("アーティスト", { exact: true }).fill("コピーした演奏者");
+    await dialog.getByRole("button", { name: "タグを保存", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+  };
+  await edit("受付時の曲名");
+  const context = await recipientContext(browser),
+    page = await context.newPage();
+  try {
+    await page.goto(`/shared/${f.share.id}`);
+    await page.getByRole("button", { name: "このフォルダーをコピー" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByLabel("保存するドライブ")).toHaveAttribute("aria-busy", "false");
+    await dialog.getByLabel("名前", { exact: true }).fill("音声を保存");
+    const accepted = page.waitForResponse(
+      (r) =>
+        r.request().method() === "POST" &&
+        new URL(r.url()).pathname === `/api/v1/nodes/${f.root}/copy`,
+    );
+    await dialog.getByRole("button", { name: "コピー先を選択", exact: true }).click();
+    const response = await accepted;
+    expect(response.status()).toBe(202);
+    const job = (await response.json()).result.jobId;
+    await edit("受付後の別の曲名");
+    expect(await deliverCopy(page, job)).toBe("completed");
+    const copied = await page.evaluate(
+      async ({ job, name }) => {
+        const json = async (path: string) => {
+          const r = await fetch(path);
+          if (!r.ok) throw new Error(`copied_${r.status}`);
+          return r.json();
+        };
+        const status = await json(`/api/v1/jobs/${job}`);
+        const root = status.publishedRootId as string;
+        const child = (await json(`/api/v1/nodes/${root}/children`)).children[0];
+        const node = (await json(`/api/v1/nodes/${child.id}/children`)).children.find(
+          (n: { name: string }) => n.name === name,
+        );
+        for (const q of ["受付時の曲名", "コピーした演奏者"]) {
+          const hits = await json(`/api/v1/search?${new URLSearchParams({ scopeId: root, q })}`);
+          if (!hits.items.some((n: { id: string }) => n.id === node.id))
+            throw new Error("copied_tag_missing");
+        }
+        const changed = await json(
+          `/api/v1/search?${new URLSearchParams({ scopeId: root, q: "受付後の別の曲名" })}`,
+        );
+        if (changed.items.length) throw new Error("copied_tag_changed");
+        return node;
+      },
+      { job, name: media.name },
+    );
+    expect(copied.currentBlobId).not.toBe(media.node.currentBlobId);
+    await page.goto(`/audio/${copied.id}`);
+    await expect(
+      page
+        .getByRole("region", { name: "オーディオ", exact: true })
+        .getByText("受付時の曲名", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: `${media.name}を再生`, exact: true }).click();
+    const player = page.getByRole("region", { name: "オーディオプレーヤー" });
+    await expect(player.getByText("受付時の曲名", { exact: true })).toBeVisible();
+    await expect
+      .poll(() => page.locator("audio").evaluate((a: HTMLAudioElement) => a.currentTime))
+      .toBeGreaterThan(0.1);
+    await page.screenshot({ path: info.outputPath("copied-audio.png") });
+  } finally {
+    await context.close();
+  }
+});
 
 test("cross-owner copy from a read-only shared root survives lost acceptance, storage failure and reload", async ({
   page: owner,
