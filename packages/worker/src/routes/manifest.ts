@@ -1038,6 +1038,16 @@ export const ROUTES = [
   {
     host: "app",
     method: "GET",
+    template: "/api/v1/public/shares/:shareId/library",
+    auth: ["share"],
+    operation: "library.read",
+    operands: ["share", "root", "cursor"],
+    adminOnly: false,
+    csrf: "same-origin-json",
+  },
+  {
+    host: "app",
+    method: "GET",
     template: "/api/v1/public/shares/:shareId/library/:nodeId",
     auth: ["share"],
     operation: "library.read",

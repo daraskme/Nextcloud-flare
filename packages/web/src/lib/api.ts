@@ -2,11 +2,17 @@ import type { AudioPage, PlaybackState } from "../../../shared/src/audio";
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
 import type { GalleryPage } from "../../../shared/src/gallery";
-import type { ArchiveBook, PageReadingState } from "../../../shared/src/library";
+import type {
+  ArchiveBook,
+  LibraryPage,
+  LibraryRoots,
+  PageReadingState,
+} from "../../../shared/src/library";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
 import { type AudioClient, audioOriginal } from "../public-share/audioClient";
 import type { BookClient } from "../public-share/bookClient";
+import type { BookshelfClient } from "../public-share/bookshelf";
 import type { GalleryClient } from "../public-share/gallery";
 import {
   galleryOriginal,
@@ -331,6 +337,63 @@ export class ApiClient {
           }),
           signal: active(signal),
         });
+      },
+    };
+  }
+
+  libraryRoots(signal: AbortSignal) {
+    return this.request<LibraryRoots>("/api/v1/library/roots", {
+      signal: AbortSignal.any([signal, this.#lifetime.signal, AbortSignal.timeout(30000)]),
+    });
+  }
+  async libraryRoot(nodeId: string, add: boolean) {
+    const signal = AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(30000)]),
+      token = await this.csrf();
+    signal.throwIfAborted();
+    return this.request<{ nodeId: string; registered: boolean }>(
+      `/api/v1/library/roots${add ? "" : `/${nodeId}`}`,
+      {
+        method: add ? "POST" : "DELETE",
+        signal,
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+        ...(add ? { body: JSON.stringify({ nodeId }) } : {}),
+      },
+    );
+  }
+  bookshelfClient(
+    account: Account,
+    rootId: string,
+    share?: SelectedShare & { spaceId: string },
+  ): BookshelfClient {
+    const lifetime = this.#lifetime.signal;
+    return {
+      rootId,
+      lifetime,
+      list: (cursor, signal) => {
+        const query = new URLSearchParams({ scopeRoot: rootId });
+        if (cursor) query.set("cursor", cursor);
+        if (share) {
+          query.set("shareId", share.id);
+          query.set("shareVersion", String(share.version));
+        }
+        return this.request<LibraryPage>(`/api/v1/library/items?${query}`, {
+          signal: AbortSignal.any([signal, lifetime, AbortSignal.timeout(30000)]),
+        });
+      },
+      book: (item) => {
+        lifetime.throwIfAborted();
+        return this.bookClient(account, item, share);
+      },
+      original: async (item, target) => {
+        lifetime.throwIfAborted();
+        return this.openFile(
+          account,
+          item,
+          target,
+          share
+            ? { spaceId: share.spaceId, share: { id: share.id, version: share.version } }
+            : undefined,
+        );
       },
     };
   }

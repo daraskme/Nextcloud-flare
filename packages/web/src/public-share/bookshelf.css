@@ -1,0 +1,124 @@
+.bookshelf {
+  margin-top: 20px;
+  min-width: 0;
+}
+.bookshelf-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bookshelf h2 {
+  margin: 0;
+  font-size: 24px;
+}
+.bookshelf-heading p,
+.bookshelf-description p {
+  margin: 6px 0;
+  color: #596579;
+  font-size: 13px;
+}
+.bookshelf-items {
+  list-style: none;
+  margin: 20px 0;
+  padding: 0;
+  border: 1px solid #d9dee7;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.bookshelf-items li {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  background: #fff;
+  border-bottom: 1px solid #e6eaf0;
+}
+.bookshelf-items li:last-child {
+  border-bottom: 0;
+}
+.bookshelf-format {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 72px;
+  flex-shrink: 0;
+  background: #f7eee8;
+  color: #9c573a;
+  border-radius: 4px 10px 10px 4px;
+  box-shadow: inset 4px 0 #e4c8b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+.bookshelf-description {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.bookshelf h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.bookshelf-actions,
+.bookshelf-pagination,
+.library-roots {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.bookshelf-pagination {
+  justify-content: center;
+}
+.bookshelf button,
+.library-roots button {
+  font: inherit;
+  color: #25324a;
+  background: #fff;
+  border: 1px solid #bcc5d2;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.bookshelf button:disabled,
+.library-roots button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.bookshelf button:focus-visible,
+.library-roots button:focus-visible {
+  outline: 2px solid #3976cb;
+  outline-offset: 2px;
+}
+.library-roots {
+  margin: 16px 0;
+}
+.library-roots > h2 {
+  width: 100%;
+  margin: 0;
+  font-size: 16px;
+}
+.library-root {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  max-width: 100%;
+}
+.library-root a {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .bookshelf-items li {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px;
+  }
+  .bookshelf-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .bookshelf-format {
+    width: 44px;
+    height: 60px;
+  }
+}

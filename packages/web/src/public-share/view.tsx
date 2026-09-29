@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { LibraryItem } from "../../../shared/src/library";
 import { zipFailureMessage } from "../../../shared/src/zips";
 import { AudioLibrary, useAudioPlayer } from "./audio";
 import { BookReader } from "./book";
+import { Bookshelf } from "./bookshelf";
 import {
   PublicClient,
   PublicError,
@@ -53,6 +55,23 @@ function SharedAudio({
   );
   return <AudioLibrary key={transport.scope} client={transport} />;
 }
+function SharedLibrary({
+  client,
+  root,
+  nodeId,
+  folder,
+}: {
+  client: PublicClient;
+  root: SharedRoot;
+  nodeId: string;
+  folder: (item: LibraryItem) => void;
+}) {
+  const transport = useMemo(
+    () => client.bookshelfClient(root, nodeId),
+    [client, root.sessionId, nodeId],
+  );
+  return <Bookshelf key={nodeId} client={transport} folder={folder} />;
+}
 function SharedBook({
   client,
   root,
@@ -86,6 +105,7 @@ function SharedBook({
 export function PublicApp({ client }: { client: PublicClient }) {
   const [book, setBook] = useState<SharedNode | null>(null);
   const [extracting, setExtracting] = useState<SharedNode | null>(null);
+  const [library, setLibrary] = useState(false);
   const [gallery, setGallery] = useState(false);
   const [audio, setAudio] = useState(false);
   const audioPlayer = useAudioPlayer();
@@ -474,6 +494,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
               className="quiet"
               disabled={locked}
               onClick={() => {
+                setLibrary(false);
                 setAudio(false);
                 setGallery((x) => !x);
               }}
@@ -484,11 +505,23 @@ export function PublicApp({ client }: { client: PublicClient }) {
               className="quiet"
               disabled={locked}
               onClick={() => {
+                setLibrary(false);
                 setGallery(false);
                 setAudio((x) => !x);
               }}
             >
               {audio ? "ファイル一覧へ戻る" : "オーディオで表示"}
+            </button>
+            <button
+              className="quiet"
+              disabled={locked}
+              onClick={() => {
+                setAudio(false);
+                setGallery(false);
+                setLibrary((value) => !value);
+              }}
+            >
+              {library ? "ファイル一覧へ戻る" : "本棚で表示"}
             </button>
             {book && (
               <SharedBook
@@ -508,7 +541,14 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 close={() => setExtracting(null)}
               />
             )}
-            {audio && current ? (
+            {library && current ? (
+              <SharedLibrary
+                client={client}
+                root={root}
+                nodeId={current.id}
+                folder={(item) => void browse([...trail, item])}
+              />
+            ) : audio && current ? (
               <SharedAudio client={client} root={root} nodeId={current.id} />
             ) : gallery && current ? (
               <SharedGallery client={client} root={root} nodeId={current.id} />

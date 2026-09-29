@@ -25,6 +25,7 @@ export async function acquireAccountMutation(
     | "queue.requeue"
     | "playback.write"
     | "reading.write"
+    | "library.roots"
     | "app-password.create"
     | "app-password.revoke"
     | "app-password.rotate"

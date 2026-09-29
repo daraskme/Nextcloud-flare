@@ -47,6 +47,7 @@ import { clearCopyRecords, rememberCopy } from "./features/copy/records";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { PrivateBook } from "./features/library/PrivateBook";
+import { PrivateLibrary } from "./features/library/PrivateLibrary";
 import { LinkShareDialog } from "./features/shares/LinkShareDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
 import { type SharedActionScope, SharedWorkspace } from "./features/shares/SharedWorkspace";
@@ -706,6 +707,7 @@ export function App() {
   const authExpired =
     account.error instanceof ApiError && [401, 403].includes(account.error.status);
   const me = authExpired ? undefined : account.data;
+  const library = pathname === "/library" || pathname.startsWith("/library/");
   const audio = pathname === "/audio" || pathname.startsWith("/audio/");
   useEffect(() => {
     void audioPlayer.close(false);
@@ -715,7 +717,7 @@ export function App() {
   const shared = pathname === "/shared" || pathname.startsWith("/shared/");
   const sharedPath = /^\/shared(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(pathname);
   const parentId =
-    /^\/(?:files|gallery|audio)\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
+    /^\/(?:files|gallery|audio|library)\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
@@ -724,6 +726,7 @@ export function App() {
     !shared &&
     !gallery &&
     !audio &&
+    !library &&
     searchTerm?.scopeId === parentId &&
     !!searchTerm.query;
   const [book, setBook] = useState<FileNode | null>(null);
@@ -746,7 +749,7 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && !trash && !shared && !gallery && !audio && !searching,
+    enabled: !!me && !trash && !shared && !gallery && !audio && !library && !searching,
     retry: false,
   });
   const results = useInfiniteQuery({
@@ -966,7 +969,9 @@ export function App() {
         <nav aria-label="メインナビゲーション">
           <Link
             to="/files"
-            className={!trash && !shared && !gallery && !audio ? "nav-link active" : "nav-link"}
+            className={
+              !trash && !shared && !gallery && !audio && !library ? "nav-link active" : "nav-link"
+            }
           >
             <HardDrive size={19} />
             マイドライブ
@@ -975,6 +980,10 @@ export function App() {
           <Link to="/gallery" className={gallery ? "nav-link active" : "nav-link"}>
             <FileImage size={19} />
             ギャラリー
+          </Link>
+          <Link to="/library" className={library ? "nav-link active" : "nav-link"}>
+            <File size={19} />
+            本棚
           </Link>
           <Link to="/audio" className={audio ? "nav-link active" : "nav-link"}>
             <FileAudio size={19} />
@@ -1025,7 +1034,9 @@ export function App() {
             </span>
             <span>パーソナルスペース</span>
             <ChevronRight size={14} />
-            <span className="muted">{shared ? "共有された項目" : "ファイル"}</span>
+            <span className="muted">
+              {shared ? "共有された項目" : library ? "本棚" : "ファイル"}
+            </span>
           </div>
           <div className="account-menu">
             <span className="account-email">{me?.email}</span>
@@ -1104,7 +1115,9 @@ export function App() {
               </div>
               <div className="page-heading">
                 <div>
-                  <p className="eyebrow">{trash ? "TRASH" : "YOUR FILES, YOUR SPACE"}</p>
+                  <p className="eyebrow">
+                    {trash ? "TRASH" : library ? "YOUR BOOKSHELF" : "YOUR FILES, YOUR SPACE"}
+                  </p>
                   <h1>{title}</h1>
                   <p>
                     {trash
@@ -1196,6 +1209,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : library ? (
+            <PrivateLibrary account={me} rootId={parentId} />
           ) : audio ? (
             <PrivateAudio account={me} rootId={parentId} />
           ) : gallery ? (
@@ -1234,6 +1249,15 @@ export function App() {
                   className="gallery-open"
                 >
                   このフォルダーをオーディオで開く
+                </Link>
+              )}
+              {!trash && (
+                <Link
+                  to="/library/$folderId"
+                  params={{ folderId: parentId }}
+                  className="gallery-open"
+                >
+                  このフォルダーを本棚で開く
                 </Link>
               )}
               <div className="list-toolbar">

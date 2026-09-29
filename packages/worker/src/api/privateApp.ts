@@ -27,6 +27,7 @@ import {
   libraryReadRoute,
   libraryStateRoute,
 } from "./library";
+import { handleLibraryListHttp, handleLibraryRootsHttp, libraryShelfRoute } from "./libraryShelf";
 import { handleMediaExtractionHttp, mediaExtractionRoute } from "./mediaExtraction";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
@@ -62,6 +63,7 @@ export function privateAppRoute(request: Request): boolean {
     audioReadRoute(request) ||
     libraryReadRoute(request) ||
     libraryStateRoute(request) ||
+    libraryShelfRoute(request) ||
     playbackRoute(request) ||
     audioMetadataRoute(request) ||
     searchRoute(request) ||
@@ -98,6 +100,7 @@ export async function handlePrivateAppHttp(
       !galleryRoute(request) &&
       !audioReadRoute(request) &&
       !libraryReadRoute(request) &&
+      !libraryShelfRoute(request) &&
       !trashRoute(request) &&
       !deadLetterReadRoute(request) &&
       !uploadReadRoute(request) &&
@@ -116,6 +119,7 @@ export async function handlePrivateAppHttp(
   const gallery = galleryRoute(request);
   const audio = audioReadRoute(request);
   const library = libraryReadRoute(request);
+  const shelf = libraryShelfRoute(request);
   const reading = libraryStateRoute(request);
   const playback = playbackRoute(request);
   const audioMetadata = audioMetadataRoute(request);
@@ -142,6 +146,7 @@ export async function handlePrivateAppHttp(
     !gallery &&
     !audio &&
     !library &&
+    !shelf &&
     !reading &&
     !playback &&
     !audioMetadata &&
@@ -319,6 +324,17 @@ export async function handlePrivateAppHttp(
       },
       dependencies.csrf,
     );
+  if (shelf) {
+    const principal = {
+      kind: "user" as const,
+      user_id: session.user_id,
+      credential_id: session.credential_id,
+      epoch: session.epoch,
+    };
+    return url.pathname === "/api/v1/library/items"
+      ? handleLibraryListHttp(request, env, principal, dependencies.cursors)
+      : handleLibraryRootsHttp(request, env, principal, dependencies.csrf);
+  }
   if (library)
     return handleLibraryBookHttp(request, env, {
       kind: "user",

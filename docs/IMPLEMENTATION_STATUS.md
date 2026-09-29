@@ -1,6 +1,22 @@
 # 実装進捗
 
-## ZIP/CBZの読書位置の保存・再開（今回）
+## 本棚一覧・登録フォルダーと共有画面（今回）
+
+[本棚](ARCHIVE_READER.md)をprivateの `/library`、Filesのフォルダー導線、内部/公開共有へ接続した。現在のblob・公開索引に一致するZIP/CBZを読み、保存した本人の位置から再開できる。フォルダー内の移動、未準備/失敗/非対応形式の表示と原本への導線、個人の登録フォルダーの追加/解除を提供する。表紙の画像生成はまだ行わない。登録は本人所有のroot/folderを32件までとし、共有は共有画面から開く。
+
+一覧は可視子の索引から1,000候補と続行確認1件を先に固定し、200件ずつ返す。専用の署名cursorは利用者・credential・選択share・root/owner/space・epoch/tree generation・索引versionへ固定する。書籍のない範囲でも続行でき、総冊数をAudioの2,000件上限へ合わせない。画面は現在の200件だけを描画する。登録操作はCSRF、現在の利用者/所有権、mutation受付、凍結と件数上限を最終batchで照合し、追加/解除と応答喪失後の再送を冪等に処理する。利用できなくなった登録は名前を伏せて解除できる。
+
+- Node6file/46件成功（`/tmp/ncf-shelf-unit-final.log`）。専用cursorの署名・期限・用途/世代/余分なfield、内部共有とpublic unlockの搬送、認証終了後の登録/原本/reader操作抑止、公開側の保存writer不在と、既存reader/API/public source境界を確認した。
+- Native関連4file/105件成功（重複除外）。最初の4file/105件中104件が成功し、不変archive indexを試験から変更しようとした1件だけがDB triggerで拒否された（110.74秒、`/tmp/ncf-shelf-native-1.log`）。不変性の拒否を明示検証し、現行Library世代との不一致を別に作るfixtureへ修正。本棚14件が成功（25.64秒、`/tmp/ncf-shelf-native-2.log`）。ページ配信・読書位置・認可の既存91件は初回で成功している。
+- 本棚のNative検証は、212冊の重複なしページング、各50,050件の通常/非表示ファイルによる疎な先頭/後半の探索、空pageの続行、共有範囲外・資格/祖先/原本/共有の競合、本人位置の非開示、登録上限/再送/応答喪失/凍結、CSRFとHTTP queryを含む。D1のrows_readは先頭10,000以下・後半1,500未満のgateを通過した。実Cloudflareの負荷試験ではない。
+- Chrome初回は8件中7件成功（2.6分、`/tmp/ncf-shelf-browser-1.log`）。所有者の登録→reload→読書→保存/再開→解除、390pxの公開共有で子フォルダーへ移動して読む/取消後に一覧を消す、内部read共有で子フォルダーへ移動して本人位置を保存する操作と、既存reader4件が成功した。空pageの試験はNode側の `route.fetch` がローカルhostnameを解決できず失敗したため、ブラウザで取得済みの実一覧から模擬2ページを返すfixtureへ修正した。初回artifactは `/tmp/ncf-shelf-browser-first-results` に保存し、desktop/mobileの本棚を目視確認した。
+- typecheck、lint846file、契約/設定検査とWeb両入口/Worker dry-run build成功。`/tmp/ncf-shelf-typecheck-final.log`、`/tmp/ncf-shelf-lint.log`、`/tmp/ncf-shelf-contracts-final.log`、`/tmp/ncf-shelf-config.log`、`/tmp/ncf-shelf-build.log`。Worker2,077.96KiB・gzip438.65KiB。公開sourceの許可境界を拡大していない。
+- 修正後の空page・次/前への移動1件もChromeで成功（32.9秒、`/tmp/ncf-shelf-browser-window.log`）。本棚/readerのChromeは重複除外8件。空pageのUI検証だけ応答を模擬し、サーバー側の実cursor/探索境界はNativeで検証している。再実行artifactは `/tmp/ncf-shelf-browser-window-results`。
+- 最終公開asset/SRIと公開共有閲覧の回帰2file/13件も成功（8.76秒、`/tmp/ncf-shelf-public-final.log`）。関連試験は合計172件（Node46・Native118・Chrome8、重複除外）。
+
+schema0077・通常81table・152 API route。追加routeはpublicの本棚一覧1件、既存のLibrary/roots契約と表を使い、migration/依存追加・remote変更なし。表紙/page thumb、PDF/EPUB/folder reader、CFI位置、既存原本の索引要求/COPY連携、運用修復と実環境gateは未完了。全suite、全browser、operator drillの再実行ではない。pushは既存の自動承認審査拒否後の明示承認待ち。
+
+## ZIP/CBZの読書位置の保存・再開（先行55daa6a）
 
 [画像リーダー](ARCHIVE_READER.md)へ利用者別の保存位置を接続した。所有者と内部read共有の受信者は本人/node/現在blobと索引hashに結び付けて保存し、次回の閲覧でそのページへ戻る。公開リンクとapp passwordには位置を返さない。実際に読み込めた画像だけを5秒まとめて保存し、閉じる際は送信完了を待つ。競合や保存失敗は画像を残して案内し、再読み込みまたは保存せず閉じる操作を提供する。
 

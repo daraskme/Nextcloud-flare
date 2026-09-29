@@ -1,9 +1,10 @@
 import type { AudioPage } from "../../../shared/src/audio";
 import type { GalleryPage } from "../../../shared/src/gallery";
-import type { ArchiveBook } from "../../../shared/src/library";
+import type { ArchiveBook, LibraryPage } from "../../../shared/src/library";
 import { zipDownloadPath } from "../../../shared/src/zips";
 import { type AudioClient, audioOriginal } from "./audioClient";
 import type { BookClient } from "./bookClient";
+import type { BookshelfClient } from "./bookshelf";
 import type { GalleryClient } from "./gallery";
 import { galleryOriginal, largeThumbnailReady, readGalleryThumbnail } from "./galleryMedia";
 
@@ -143,6 +144,35 @@ export class PublicClient {
           undefined,
           active(signal),
         );
+      },
+    };
+  }
+  bookshelfClient(root: SharedRoot, nodeId: string): BookshelfClient {
+    const lifetime = this.lifetime.signal,
+      headers = { "Share-Session": root.sessionId };
+    return {
+      rootId: nodeId,
+      lifetime,
+      list: (cursor, signal) => {
+        const query = new URLSearchParams({ nodeId });
+        if (cursor) query.set("cursor", cursor);
+        return this.request<LibraryPage>(
+          `/library?${query}`,
+          "GET",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          AbortSignal.any([signal, lifetime, AbortSignal.timeout(30000)]),
+        );
+      },
+      book: (item) => {
+        lifetime.throwIfAborted();
+        return this.bookClient(root, item);
+      },
+      original: async (item, target) => {
+        lifetime.throwIfAborted();
+        return this.download(root, item, target);
       },
     };
   }

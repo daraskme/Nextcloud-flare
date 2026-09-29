@@ -10,7 +10,7 @@ import { ARCHIVE_LIMITS } from "../media/archive/format";
 import { archiveObjectSource } from "../media/archive/r2Source";
 import type { PageTarget } from "./pageManifest";
 
-const SOURCE = `FROM nodes n JOIN blobs original ON original.id=n.current_blob_id AND original.owner_id=n.owner_id
+export const ARCHIVE_BOOK_SOURCE = `FROM nodes n JOIN blobs original ON original.id=n.current_blob_id AND original.owner_id=n.owner_id
   JOIN blob_storage os ON os.blob_id=original.id
   JOIN library_items l ON l.node_id=n.id AND l.blob_id=original.id
   JOIN archive_index ai ON ai.node_id=n.id AND ai.blob_id=original.id AND ai.generator_version=l.generator_version
@@ -19,8 +19,7 @@ const SOURCE = `FROM nodes n JOIN blobs original ON original.id=n.current_blob_i
   JOIN blobs b ON b.id=x.output_blob_id AND b.owner_id=n.owner_id
   JOIN blob_storage s ON s.blob_id=b.id JOIN blob_pins p ON p.pin_id=x.pin_id AND p.blob_id=b.id
   JOIN archive_derivative_cleanup c ON c.archive_id=x.id
-  WHERE (n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?)
-    AND (n.kind='file' AND n.hidden=0 AND n.deleted_at IS NULL)
+  WHERE (n.kind='file' AND n.hidden=0 AND n.deleted_at IS NULL)
     AND (original.state IN ('committed','gc_candidate') AND os.removed_at IS NULL)
     AND (os.bytes=original.size AND os.r2_etag IS NOT NULL)
     AND (original.r2_key='u/'||n.owner_id||'/b/'||original.id)
@@ -40,6 +39,7 @@ const SOURCE = `FROM nodes n JOIN blobs original ON original.id=n.current_blob_i
     AND EXISTS(SELECT 1 FROM r2_write_attempts w WHERE w.kind='archive.put' AND w.state='succeeded'
       AND w.epoch=x.epoch AND w.owner_id=x.owner_id AND w.r2_key=b.r2_key AND w.source_ref=json_array(x.id,x.write_attempt_id))
     AND NOT EXISTS(SELECT 1 FROM r2_write_attempts WHERE r2_key=b.r2_key AND state='pending')`;
+const SOURCE = `${ARCHIVE_BOOK_SOURCE} AND (n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?)`;
 const FENCE = `SELECT 1 ${SOURCE} AND (x.id=? AND b.sha256_verified=? AND b.size=? AND s.r2_etag=?
   AND original.size=? AND os.r2_etag=? AND l.page_count=?)`;
 

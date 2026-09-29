@@ -476,6 +476,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/api/v1/public/shares/:shareId/zips/:zipId` | share | `zip.read` | `share,manifest,nodes,blobs,budgetId,ticket` | false | public-form |
 | app | GET | `/api/v1/public/shares/:shareId/gallery` | share | `gallery.read` | `share,root,candidates,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/public/shares/:shareId/tracks` | share | `audio.read` | `share,root,tracks,cursor` | false | same-origin-json |
+| app | GET | `/api/v1/public/shares/:shareId/library` | share | `library.read` | `share,root,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/public/shares/:shareId/library/:nodeId` | share | `library.read` | `share,node,blob,index` | false | same-origin-json |
 | app | GET | `/api/v1/public/shares/:shareId/library/:nodeId/pages/:page` | share | `library.read` | `share,node,blob,index,page` | false | same-origin-json |
 | app | HEAD | `/api/v1/public/shares/:shareId/library/:nodeId/pages/:page` | share | `library.read` | `share,node,blob,index,page` | false | same-origin-json |
@@ -876,7 +877,7 @@ app origin
 - inner CSP は `default-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`。publication 由来 script を許可しない。
 - pagination は browser/CFI round-trip gate 合格後の v1 option、未合格なら v1.1。固定 layout、media overlay、JS依存EPUB、vertical pagination保証は非目標。Bookshelf v1 UI は cover/list、open、TOC、前回位置 resume、共有閲覧を必須とする。
 
-[ZIP/CBZリーダー](ARCHIVE_READER.md)は公開済みの不変索引からページを配信し、所有者・内部共有・公開リンクで閲覧できる。認証ユーザーの位置は本人/node/現在blobと索引hashへ束縛して保存・再開する。内部read共有でも本人の位置だけを更新し、公開リンク/app passwordへ保存位置を返さない。更新時刻のCAS、現在の権限・索引とmutation admissionの最終照合を要求する。本棚専用一覧・登録root、他形式のreaderとEPUB CFI位置は後続。
+[ZIP/CBZリーダー](ARCHIVE_READER.md)は公開済みの不変索引からページを配信し、所有者・内部共有・公開リンクで閲覧できる。認証ユーザーの位置は本人/node/現在blobと索引hashへ束縛して保存・再開する。内部read共有でも本人の位置だけを更新し、公開リンク/app passwordへ保存位置を返さない。更新時刻のCAS、現在の権限・索引とmutation admissionの最終照合を要求する。本棚一覧は可視子1,000候補ずつのkeyset探索・返却200件とし、専用cursorを現在の権限とtree generationへ固定する。書籍以外の多い範囲でも空pageのcursorから続行する。本人所有の登録rootは32件まで。内部/公開共有の一覧は共有画面から開き、個人の登録へ追加しない。表紙生成、他形式のreaderとEPUB CFI位置は後続。
 
 ### 9A.3 Audio
 

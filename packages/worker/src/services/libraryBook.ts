@@ -23,7 +23,7 @@ interface StoredState {
   position: string;
   updatedAt: number;
 }
-function readingState(
+export function readingState(
   row: StoredState | undefined,
   book: { indexHash: string; pageCount: number },
 ): PageReadingState | null {

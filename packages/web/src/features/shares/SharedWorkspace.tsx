@@ -28,6 +28,7 @@ import {
 import { PrivateAudio } from "../audio/PrivateAudio";
 import { PrivateGallery } from "../gallery/PrivateGallery";
 import { PrivateBook } from "../library/PrivateBook";
+import { PrivateLibrary } from "../library/PrivateLibrary";
 import { uploads } from "../uploads/manager";
 
 export interface SharedActionScope {
@@ -144,6 +145,9 @@ function SharedContent({
   const selected = { id: share.id, version: share.version };
   const id = nodeId ?? share.rootNodeId;
   const [book, setBook] = useState<FileNode | null>(null);
+  const [library, setLibrary] = useState(
+    () => new URLSearchParams(window.location.search).get("view") === "library",
+  );
   const [gallery, setGallery] = useState(false);
   const [audio, setAudio] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -351,6 +355,7 @@ function SharedContent({
           />
           <Button
             onClick={() => {
+              setLibrary(false);
               setAudio(false);
               setGallery((x) => !x);
             }}
@@ -359,13 +364,29 @@ function SharedContent({
           </Button>
           <Button
             onClick={() => {
+              setLibrary(false);
               setGallery(false);
               setAudio((x) => !x);
             }}
           >
             {audio ? "ファイル一覧へ戻る" : "オーディオで表示"}
           </Button>
-          {audio ? (
+          <Button
+            onClick={() => {
+              setAudio(false);
+              setGallery(false);
+              setLibrary((value) => !value);
+            }}
+          >
+            {library ? "ファイル一覧へ戻る" : "本棚で表示"}
+          </Button>
+          {library ? (
+            <PrivateLibrary
+              account={account}
+              rootId={id}
+              share={{ ...selected, spaceId: share.spaceId }}
+            />
+          ) : audio ? (
             <PrivateAudio
               account={account}
               rootId={id}

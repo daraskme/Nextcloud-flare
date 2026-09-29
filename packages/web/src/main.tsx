@@ -14,10 +14,17 @@ const routeTree = root.addChildren([
   createRoute({ getParentRoute: () => root, path: "/gallery/$folderId" }),
   createRoute({ getParentRoute: () => root, path: "/audio" }),
   createRoute({ getParentRoute: () => root, path: "/audio/$folderId" }),
+  createRoute({ getParentRoute: () => root, path: "/library" }),
+  createRoute({ getParentRoute: () => root, path: "/library/$folderId" }),
   createRoute({ getParentRoute: () => root, path: "/trash" }),
   createRoute({ getParentRoute: () => root, path: "/shared" }),
   createRoute({ getParentRoute: () => root, path: "/shared/$shareId" }),
-  createRoute({ getParentRoute: () => root, path: "/shared/$shareId/$nodeId" }),
+  createRoute({
+    getParentRoute: () => root,
+    path: "/shared/$shareId/$nodeId",
+    validateSearch: (search: Record<string, unknown>): { view?: "library" } =>
+      search.view === "library" ? { view: "library" } : {},
+  }),
 ]);
 const router = createRouter({ routeTree });
 declare module "@tanstack/react-router" {

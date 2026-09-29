@@ -14,7 +14,9 @@ export const libraryStateRoute = (r: Request) =>
   r.method === "PUT" && STATE.test(new URL(r.url).pathname);
 const BOOK = /^\/api\/v1\/library\/([A-Za-z0-9_-]{1,128})$/;
 export const libraryReadRoute = (r: Request) =>
-  r.method === "GET" && BOOK.test(new URL(r.url).pathname);
+  r.method === "GET" &&
+  BOOK.test(new URL(r.url).pathname) &&
+  !["/api/v1/library/items", "/api/v1/library/roots"].includes(new URL(r.url).pathname);
 
 /** Metadata requires the same live original/output proofs used for page tickets. */
 export async function handleLibraryBookHttp(

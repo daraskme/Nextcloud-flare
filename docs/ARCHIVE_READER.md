@@ -1,6 +1,6 @@
 # ZIP/CBZ・EPUBコンテナの読み取り基盤
 
-アーカイブの索引解析・エントリのストリーム展開に加え、新しいZIP/CBZ/EPUBアップロードのQueue索引化と不変R2保存を接続した。schema0077・通常81table・151 API route。現在の閲覧権限に固定したZIP/CBZの詳細API・ページ配信とFilesからの画像リーダー、利用者別の読書位置の保存・再開を接続した。本棚専用一覧、PDF・EPUB本文は未実装。
+アーカイブの索引解析・エントリのストリーム展開に加え、新しいZIP/CBZ/EPUBアップロードのQueue索引化と不変R2保存を接続した。schema0077・通常81table・152 API route。現在の閲覧権限に固定したZIP/CBZの詳細API・ページ配信と画像リーダー、利用者別の読書位置の保存・再開、本棚一覧と個人の登録フォルダーを接続した。表紙サムネイル、PDF・EPUB本文は後続。
 
 ## 実装済み
 
@@ -49,11 +49,21 @@ Outboxの完了時に`archive_index`と`library_items`を一括反映する。�
 
 画面は画像を実際に読み込めたページだけを5秒まとめて保存する。通信は直列化し、途中のページ移動は最後の位置へまとめる。閉じるときは送信完了を待ち、保存に失敗した場合は画像を残して案内し、「保存せず閉じる」を選べる。再読み込みでは送信中の処理を終えてから保存済みのページを取得する。409や結果不明の通信エラーを自動再送しない。画面が非表示になった際も送信するが、タブやブラウザの強制終了前の保存完了は保証しない。認証lifetime終了時は保存を中断する。
 
+## 本棚一覧と登録フォルダー
+
+`GET /api/v1/library/items?scopeRoot=:nodeId&cursor=...` は直下のフォルダーとZIP/CBZ/EPUB/PDF、非対応のCBR/RAR/7zを名前順に返す。内部共有では `shareId/shareVersion` を必須にし、公開リンクは `GET /api/v1/public/shares/:shareId/library?nodeId=...&cursor=...` と元の `Share-Session` を使う。公開のnodeId省略時は共有root。共有範囲の外、upload-only、非表示/削除済み祖先、失効資格・maintenanceを拒否する。公開一覧に個人の読書位置を出さない。
+
+可視子の索引から最大1,000候補と続行確認1件を先に取得し、その範囲だけで形式・原本・metadata・公開索引を照合する。返却は最大200件と続行確認1件。書籍が見つからないページにも続行cursorを返す。後半のページも `(name_ci,id)` のseekで取得し、非表示ファイルを候補やcursorに含めない。専用の10分HMAC cursorは利用者/credential・選択share・root/space/owner・epoch/tree generationと索引versionへ固定し、Audio/通常Filesのcursorと交換できない。書籍の総数を2,000件で打ち切らない。
+
+ZIP/CBZの「読む」は詳細/配信と共通の公開原本・出力receipt・pin・回収状態の条件を満たすものだけに表示する。書籍名・著者・シリーズの実効metadataと、現在blob/索引hashの本人の読書位置を添える。未準備/失敗/非対応を区別し、原本を開く導線を残す。PDF/EPUB本文は現段階では原本で開く。新しい画面は `/library` と `/library/:folderId`、Filesのフォルダー導線、内部共有/公開共有の「本棚で表示」から開く。表示中の200件だけを保持するページ送りとし、フォルダー内への移動、読書状態の再表示、更新と失敗案内に対応する。表紙画像はまだ生成しない。
+
+登録は `GET/POST /api/v1/library/roots`、`DELETE /api/v1/library/roots/:nodeId`。本人が所有するroot/folderを最大32件登録できる。内容やnode revisionを変えず、本人のspaceでmutation受付とCSRF・現在のsession・node認可・上限を最終batchで再検査する。追加/解除の再送は冪等。GETは最大32候補を個別に現在認可し、最終batchで全proofを再検査する。削除/非表示で利用できなくなった登録は名前を返さず、本人の登録だけ解除できる。内部/公開共有は共有画面から閲覧し、個人の登録へ追加しない。
+
 ## 次の接続
 
 1. 既存ファイルの索引要求、現在の読者での再抽出、COPY先との連携、失敗状態の案内を接続する。今回の自動索引化は新しいアップロードの元イベントを対象とする。
-2. 本棚一覧/登録root API、entry配信、表紙/ページthumb、app-hostページAPIを接続する。
-3. 本棚専用画面、フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shellとCFI位置を接続する。
+2. entry配信、表紙/ページthumb、app-hostページAPIを接続する。
+3. フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shellとCFI位置を接続する。
 
 ## 参照仕様
 

@@ -19,6 +19,7 @@ import { hasEmptyBody } from "./emptyBody";
 import { handleGalleryHttp } from "./gallery";
 import { handleLargeThumbnailHttp } from "./largeThumbnail";
 import { handleLibraryBookHttp } from "./library";
+import { handleLibraryListHttp } from "./libraryShelf";
 import { handleMediaExtractionHttp } from "./mediaExtraction";
 import { publicShareContent } from "./publicShareContent";
 import {
@@ -34,7 +35,7 @@ import { handleUploadHttp, publicUploadRoute } from "./uploads";
 import { handleZipHttp, publicZipRoute } from "./zips";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|gallery|tracks|content-session|(?:content|thumb|media|library)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|gallery|tracks|library|content-session|(?:content|thumb|media|library)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -60,6 +61,7 @@ export const publicShareRoute = (request: Request) => {
         (!action ||
           action === "gallery" ||
           action === "tracks" ||
+          action === "library" ||
           action.startsWith("library/") ||
           action.startsWith("children/"))) ||
         (["GET", "HEAD"].includes(request.method) &&
@@ -133,6 +135,7 @@ async function routePublicShareHttp(
         !action.startsWith("thumb/") &&
         action !== "gallery" &&
         action !== "tracks" &&
+        action !== "library" &&
         !(upload && request.method === "GET")) ||
       url.hash
     )
@@ -195,17 +198,17 @@ async function routePublicShareHttp(
         return problem(412, "precondition_failed");
       return handleLibraryBookHttp(request, env, publicPrincipal(session), action.slice(8));
     }
-    if (action === "gallery" || action === "tracks") {
+    if (action === "gallery" || action === "tracks" || action === "library") {
       if (!session) return problem(401, "unauthorized");
       if (request.headers.get("Share-Session") !== session.claims.session_id)
         return problem(412, "precondition_failed");
-      return (action === "gallery" ? handleGalleryHttp : handleAudioListHttp)(
-        request,
-        env,
-        publicPrincipal(session),
-        dependencies.cursors,
-        session.rootNodeId,
-      );
+      return (
+        action === "gallery"
+          ? handleGalleryHttp
+          : action === "library"
+            ? handleLibraryListHttp
+            : handleAudioListHttp
+      )(request, env, publicPrincipal(session), dependencies.cursors, session.rootNodeId);
     }
     if (action.startsWith("thumb/") || action.startsWith("media/")) {
       if (!session) return problem(401, "unauthorized");
