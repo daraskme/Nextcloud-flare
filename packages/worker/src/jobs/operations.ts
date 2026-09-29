@@ -126,6 +126,7 @@ function sameIntent(row: OperationRow, intent: OperationIntent, steps: number): 
     row.space_id === intent.spaceId &&
     row.kind === intent.kind &&
     row.request_digest === intent.digest &&
+    row.epoch === intent.principal.epoch &&
     row.operands_json === intent.operands &&
     row.expected_steps === steps
   );
@@ -327,6 +328,7 @@ export async function lookupOperation(
     row.credential_id !== principal.credential_id ||
     row.principal_kind !== principal.kind ||
     row.principal_id !== principalId(principal) ||
+    row.epoch !== principal.epoch ||
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
     (row.kind !== "node.create" &&
       row.kind !== "dav.mkcol" &&

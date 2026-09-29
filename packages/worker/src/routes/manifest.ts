@@ -15,7 +15,7 @@ export const ROUTES = [
   {
     host: "app",
     method: "GET",
-    template: "/assets/:asset",
+    template: "/private-assets/:asset",
     auth: ["access"],
     operation: "spa.read",
     operands: ["currentUser", "assetManifest"],
@@ -1498,7 +1498,7 @@ export const ROUTES = [
   {
     host: "content",
     method: "GET",
-    template: "/reader/:asset",
+    template: "/reader-assets/:asset",
     auth: ["public"],
     operation: "reader.shell",
     operands: ["readerAssetManifest"],
