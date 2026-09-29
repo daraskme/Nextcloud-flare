@@ -1,11 +1,13 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { Principal } from "../auth/authorize";
+import { acceptContentTicket } from "../auth/contentAccept";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { type ContentTicketTarget, issueContentTicket } from "../services/contentTicket";
 import { cancelContentTicket } from "../services/contentTicketCancel";
+import { thumbnailVariant } from "../services/thumbnailManifest";
 import { hasEmptyBody } from "./emptyBody";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -17,6 +19,7 @@ async function readRequest(request: Request): Promise<{
   purpose: "content" | "thumb" | "page" | "zip" | "track";
   ttlSeconds: number;
   share?: { id: string; version: number };
+  delivery?: "app";
 }> {
   if (request.headers.get("Content-Type") !== "application/json" || !request.body)
     throw new Error("invalid_ticket_body");
@@ -47,7 +50,10 @@ async function readRequest(request: Request): Promise<{
     throw new Error("invalid_ticket_body");
   const body = value as Record<string, unknown>;
   if (
-    Object.keys(body).some((key) => !["targets", "purpose", "ttlSeconds", "share"].includes(key)) ||
+    Object.keys(body).some(
+      (key) => !["targets", "purpose", "ttlSeconds", "share", "delivery"].includes(key),
+    ) ||
+    (body.delivery !== undefined && (body.delivery !== "app" || body.purpose !== "thumb")) ||
     !Array.isArray(body.targets) ||
     body.targets.length < 1 ||
     body.targets.length > 1_000 ||
@@ -63,14 +69,20 @@ async function readRequest(request: Request): Promise<{
       throw new Error("invalid_ticket_body");
     const target = entry as Record<string, unknown>;
     if (
-      Object.keys(target).sort().join(",") !== "nodeId,spaceId" ||
+      Object.keys(target).sort().join(",") !==
+        (body.purpose === "thumb" ? "nodeId,spaceId,variant" : "nodeId,spaceId") ||
+      (body.purpose === "thumb" && !thumbnailVariant(target.variant)) ||
       typeof target.nodeId !== "string" ||
       !ID.test(target.nodeId) ||
       typeof target.spaceId !== "string" ||
       !ID.test(target.spaceId)
     )
       throw new Error("invalid_ticket_body");
-    return { nodeId: target.nodeId, spaceId: target.spaceId };
+    return {
+      nodeId: target.nodeId,
+      spaceId: target.spaceId,
+      ...(thumbnailVariant(target.variant) ? { variant: target.variant } : {}),
+    };
   });
   let share: { id: string; version: number } | undefined;
   if (body.share !== undefined) {
@@ -92,6 +104,7 @@ async function readRequest(request: Request): Promise<{
     purpose: body.purpose as "content" | "thumb" | "page" | "zip" | "track",
     ttlSeconds: body.ttlSeconds as number,
     ...(share ? { share } : {}),
+    ...(body.delivery === "app" ? { delivery: "app" as const } : {}),
   };
 }
 
@@ -152,7 +165,13 @@ export async function handlePrivateContentTicketHttp(
       Math.min(Date.now() + body.ttlSeconds * 1000, credentialExpiresAt),
       body.share,
     );
-    return Response.json(issued, {
+    let receipt: unknown = issued;
+    if (body.delivery === "app") {
+      const accepted = await acceptContentTicket(env, tokens, issued.ticket);
+      const { ticket: _ticket, ...rest } = issued;
+      receipt = { ...rest, sessionId: accepted.sessionId };
+    }
+    return Response.json(receipt, {
       status: 201,
       headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
     });
@@ -164,7 +183,12 @@ export async function handlePrivateContentTicketHttp(
     }
     if (
       error instanceof Error &&
-      ["content_ticket_commit_unknown", "content_budget_commit_unknown"].includes(error.message)
+      [
+        "content_ticket_commit_unknown",
+        "content_budget_commit_unknown",
+        "thumbnail_not_ready",
+        "content_session_commit_unknown",
+      ].includes(error.message)
     )
       return problem(503, "not_ready");
     return problem(404, "not_found");

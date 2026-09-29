@@ -1,6 +1,11 @@
 import type { ContentPurpose } from "../auth/contentSession";
 import type { AccountMutationEnv } from "./accountMutation";
 import { trackedR2Write } from "./r2Write";
+import {
+  parseThumbnailManifest,
+  type ThumbnailManifest,
+  thumbnailBudgetKey,
+} from "./thumbnailManifest";
 import { parseZipManifest, type ZipTargetManifest, zipBudgetKey } from "./zipManifest";
 
 const MAX_MANIFEST_BYTES = 1_048_576;
@@ -21,7 +26,7 @@ export interface BlobTargetManifest {
   readonly targets: readonly TargetEntry[];
 }
 
-export type TargetManifest = BlobTargetManifest | ZipTargetManifest;
+export type TargetManifest = BlobTargetManifest | ZipTargetManifest | ThumbnailManifest;
 
 export interface BudgetTarget {
   readonly key: string;
@@ -34,10 +39,12 @@ export async function manifestBudgetTargets(
 ): Promise<readonly BudgetTarget[]> {
   return manifest.v === 2
     ? [{ key: await zipBudgetKey(manifest), size: manifest.outputBytes }]
-    : manifest.targets.map((target) => ({
-        key: `${target.purpose}:${target.blobId}`,
-        size: target.size,
-      }));
+    : manifest.v === 3
+      ? manifest.targets.map((target) => ({ key: thumbnailBudgetKey(target), size: target.size }))
+      : manifest.targets.map((target) => ({
+          key: `${target.purpose}:${target.blobId}`,
+          size: target.size,
+        }));
 }
 
 export interface TargetManifestRecord {
@@ -164,6 +171,7 @@ export function parseTargetManifest(bytes: ArrayBuffer, totalBytes: number): Tar
     throw new Error("invalid_target_manifest");
   const manifest = parsed as Record<string, unknown>;
   if (manifest.v === 2) return parseZipManifest(manifest, totalBytes);
+  if (manifest.v === 3) return parseThumbnailManifest(manifest, totalBytes);
   if (
     Object.keys(manifest).sort().join(",") !== "targets,v" ||
     manifest.v !== 1 ||
@@ -214,6 +222,8 @@ export function manifestContains(
   manifest: TargetManifest,
   target: Omit<TargetEntry, "size"> & { readonly size?: number },
 ): boolean {
+  // Generation-bound thumbnails must be matched by the dedicated reader, never as v1 originals.
+  if (manifest.v === 3) return false;
   return manifest.targets.some(
     (entry) =>
       entry.spaceId === target.spaceId &&

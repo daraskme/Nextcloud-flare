@@ -213,7 +213,8 @@ it("does not use another unlock, another principal, a wrong purpose or an unlist
   });
   expect((await t.http(request)).status).toBe(404);
   for (const [principal, purpose] of [
-    [publicPrincipal(t.session), "thumb"],
+    // Thumbnail issuance now requires a published derivative; page remains a generic wrong purpose.
+    [publicPrincipal(t.session), "page"],
     [accessPrincipal(t.owner), "content"],
   ] as const) {
     const issued = await issueContentTicket(

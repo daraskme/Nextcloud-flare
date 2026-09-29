@@ -8,6 +8,7 @@ import { issueContentTicket } from "../services/contentTicket";
 import { cancelContentTicket } from "../services/contentTicketCancel";
 import { listNodeChildren, readNode } from "../services/nodeRead";
 import type { ShareSession } from "../services/shareUnlock";
+import { thumbnailVariant } from "../services/thumbnailManifest";
 import { hasEmptyBody } from "./emptyBody";
 import { readShareBody } from "./shares";
 
@@ -106,8 +107,13 @@ export async function publicShareTicket(
     }
     const input = (await readShareBody(request, 262144)) as Record<string, unknown>;
     const appDelivery = input.delivery === "app";
+    const purpose = input.purpose === undefined ? "content" : input.purpose;
     if (
-      Object.keys(input).some((key) => !["nodeIds", "ttlSeconds", "delivery"].includes(key)) ||
+      Object.keys(input).some(
+        (key) => !["nodeIds", "ttlSeconds", "delivery", "purpose", "variant"].includes(key),
+      ) ||
+      !["content", "thumb"].includes(purpose as string) ||
+      (purpose === "thumb" ? !thumbnailVariant(input.variant) : input.variant !== undefined) ||
       (input.delivery !== undefined &&
         (!appDelivery || !new URL(request.url).pathname.endsWith("/content-session"))) ||
       !Array.isArray(input.nodeIds) ||
@@ -127,8 +133,12 @@ export async function publicShareTicket(
       env.BLOBS,
       tokens,
       publicPrincipal(session),
-      input.nodeIds.map((nodeId) => ({ nodeId, spaceId: session.spaceId })),
-      "content",
+      input.nodeIds.map((nodeId) => ({
+        nodeId,
+        spaceId: session.spaceId,
+        ...(thumbnailVariant(input.variant) ? { variant: input.variant } : {}),
+      })),
+      purpose as "content" | "thumb",
       Math.min(Date.now() + (input.ttlSeconds as number) * 1000, session.claims.exp * 1000),
     );
     if (appDelivery) {

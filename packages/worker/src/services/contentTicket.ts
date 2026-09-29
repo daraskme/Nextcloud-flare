@@ -9,6 +9,7 @@ import { type ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion, shareCoverageBatchAssertions } from "../auth/shareCoverage";
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, atomicBatch, type SqlStatement } from "../db/primary";
+import type { ImageVariant } from "../media/images/transform";
 import {
   type AccountMutationEnv,
   acquireAccountMutation,
@@ -17,11 +18,23 @@ import {
 import { prepareAuthorizedNodeBlobRead } from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
 import { trackedR2Write } from "./r2Write";
-import { stageTargetManifest, type TargetEntry, type TargetManifestRecord } from "./targetManifest";
+import {
+  stageEncodedTargetManifest,
+  stageTargetManifest,
+  type TargetEntry,
+  type TargetManifestRecord,
+} from "./targetManifest";
+import {
+  encodeThumbnailManifest,
+  type ThumbnailTarget,
+  thumbnailVariant,
+} from "./thumbnailManifest";
+import { prepareAuthorizedThumbnailRead, thumbnailBatchAssertions } from "./thumbnailRead";
 
 export interface ContentTicketTarget {
   readonly spaceId: string;
   readonly nodeId: string;
+  readonly variant?: ImageVariant;
 }
 
 export interface IssuedContentTicket {
@@ -145,8 +158,12 @@ export async function issueContentTicket(
       : share;
   const proofs: (AuthorizedNode & { readonly operation: "node.read" })[] = [];
   const entries: TargetEntry[] = [];
+  const thumbnails: ThumbnailTarget[] = [];
+  const thumbnailGuards: SqlStatement[] = [];
   let ownerId: string | null = null;
   for (const target of targets) {
+    if (purpose === "thumb" ? !thumbnailVariant(target.variant) : target.variant !== undefined)
+      throw new Error("invalid_content_ticket_request");
     const proof = await authorizeNode(db, principal, {
       operation: "node.read",
       spaceId: target.spaceId,
@@ -162,11 +179,19 @@ export async function issueContentTicket(
       throw new Error("content_ticket_mixed_owners");
     ownerId = proof.node.owner_id;
     if (selectedShare) await atomicBatch(db, [shareCoverageAssertion(proof.node, selectedShare)]);
-    const blob = await prepareAuthorizedNodeBlobRead(db, proof);
+    const thumbnail =
+      purpose === "thumb"
+        ? await prepareAuthorizedThumbnailRead(db, proof, target.variant!)
+        : undefined;
+    const blob = thumbnail?.blob ?? (await prepareAuthorizedNodeBlobRead(db, proof));
     const object = await bucket.head(blob.key);
     if (!object || object.size !== blob.size || object.etag !== blob.r2Etag)
       throw new Error("content_ticket_blob_unavailable");
     proofs.push(proof as AuthorizedNode & { readonly operation: "node.read" });
+    if (thumbnail) {
+      thumbnails.push(thumbnail.target);
+      thumbnailGuards.push(thumbnail.guard);
+    }
     entries.push({
       spaceId: proof.node.space_id,
       nodeId: proof.node.id,
@@ -178,11 +203,11 @@ export async function issueContentTicket(
   const first = proofs[0];
   if (!first || !ownerId) throw new Error("invalid_content_ticket_request");
   const budget = await ensureContentBudget(env, first, expiresAt, share);
-  const record = await stageTargetManifest(bucket, entries, {
-    env,
-    ownerId,
-    epoch: principal.epoch,
-  });
+  const write = { env, ownerId, epoch: principal.epoch };
+  const record =
+    purpose === "thumb"
+      ? await stageEncodedTargetManifest(bucket, await encodeThumbnailManifest(thumbnails), write)
+      : await stageTargetManifest(bucket, entries, write);
   return publishContentTicket(
     env,
     bucket,
@@ -197,6 +222,7 @@ export async function issueContentTicket(
       expiresAt: exp * 1000,
       guards: [
         ...authorizationBatchAssertions(proofs),
+        ...thumbnailBatchAssertions(thumbnailGuards),
         ...(selectedShare
           ? shareCoverageBatchAssertions(
               proofs.map((proof) => proof.node),

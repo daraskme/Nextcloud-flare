@@ -459,8 +459,8 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/api/v1/public/shares/:shareId/children/:nodeId` | share | `share.read` | `share,node,ancestors,children` | false | same-origin-json |
 | app | GET | `/api/v1/public/shares/:shareId/content/:nodeId` | share | `share.read` | `share,node,ancestors,blob` | false | same-origin-json |
 | app | HEAD | `/api/v1/public/shares/:shareId/content/:nodeId` | share | `share.read` | `share,node,ancestors,blob` | false | same-origin-json |
-| app | GET | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `share.read` | `share,node,ancestors,blob` | false | same-origin-json |
-| app | HEAD | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `share.read` | `share,node,ancestors,blob` | false | same-origin-json |
+| app | GET | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `share.read` | `share,node,ancestors,blob,variant` | false | same-origin-json |
+| app | HEAD | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `share.read` | `share,node,ancestors,blob,variant` | false | same-origin-json |
 | app | POST | `/api/v1/public/shares/:shareId/unlock` | public | `share.unlock` | `share` | false | public-form |
 | app | POST | `/api/v1/public/shares/:shareId/logout` | share | `share.logout` | `share,session` | false | public-form |
 | app | POST | `/api/v1/public/shares/:shareId/tickets` | share | `share.read` | `share,session,targetSetId,targetSetHash,budgetId` | false | public-form |
@@ -498,8 +498,8 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | UNLOCK | `/dav/*path` | app_password | `dav.unlock` | `source,ancestors,lock` | false | dav |
 | content | OPTIONS | `/session` | public | `content.session.accept` | `requestOrigin` | false | cross-origin-content |
 | content | POST | `/session` | public | `content.session.accept` | `signedTicket,targetSetId,targetSetHash,budgetId` | false | cross-origin-content |
-| content | GET | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob,budgetId` | false | cross-origin-content |
-| content | HEAD | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob` | false | same-origin-json |
+| content | GET | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob,budgetId,variant` | false | cross-origin-content |
+| content | HEAD | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob,variant` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/pages/:page` | content_cookie | `content.read` | `session,node,blob,index,page` | false | same-origin-json |
 | content | HEAD | `/c/:nodeId/:blobId/pages/:page` | content_cookie | `content.read` | `session,node,blob,index,page` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |
@@ -813,6 +813,7 @@ upload-only は create/upload receipt/status だけを許可し、list/read/over
 
 1. Access 認証 SPA または share UI は、許可する node/blob/purpose の bounded target 集合を R2 manifest として保存し、その ID/ref/hash/total bytes/credential/epoch を D1 に保存する。ticket には集合本体でなく `target_set_id + hash`、purpose=`content|thumb|page|zip|track`、epoch、credential/share version、`budget_id` を入れる。
    `target_sets.manifest_ref` は `target-sets/<target_set_id>` の R2 object を指し、SHA-256 hex を `manifest_hash` に保存する。manifest v1 は `{ "v":1, "targets":[{ "spaceId", "nodeId", "blobId", "purpose", "size" }] }`。UTF-8 JSON≤1MiB、1–1,000件、重複禁止、`total_bytes` は全 `size` の和と一致させる。配信時は object の hash と node/blob/purpose/size を確認し、D1 batch で hash/ref と現行認可を再確認する。復旧監査も object の内容を照合する。
+   サムネイルはmanifest v3（各targetに原本blobId・imageId・variant・generator・実出力size）を使い、公開済みの不変生成物だけを許可する。v1のthumbを原本配信へ読み替えない。現行認可と公開世代をbudget待機後・R2 HEAD/GET後も再検査し、allowanceは`thumb:image_<imageId>`で重複除去する。app方式では元Access/共有credentialに束縛した`Content-Session`を返し、同じhostから取得する。詳細は[THUMBNAIL_DELIVERY](THUMBNAIL_DELIVERY.md)。
 2. app は audience=`CONTENT_ORIGIN`、expiry≤600秒かつ share expiry 以下の署名 ticket を返す。ticket は個別 cancel 可能で、`content_sessions.revoked_at` と ticket cancel row を毎 request 検査する。
 3. browser は `POST <CONTENT_ORIGIN>/session` を `credentials:'include'` で呼ぶ。§5.1 の OPTIONS/POST 固定 allowlist CORS を使う。
 4. content origin は署名した opaque session ID の `__Host-ncf_cs` を `Secure; HttpOnly; SameSite=None; Path=/; Max-Age≤600` で設定する。`content_sessions` は user/share/credential/target set/budget/ticket ID/expiry/revoked_at を持ち、各配信 request で発行元 ticket の現行状態を再確認する。

@@ -1,6 +1,22 @@
 # 実装進捗
 
-## Queueからのサムネイル自動生成（今回）
+## サムネイル配信と世代固定チケット（今回）
+
+[サムネイル配信](THUMBNAIL_DELIVERY.md)を既存のprivate/public thumb routeとcontent hostへ接続した。manifest v3で原本blob・公開済みimageId・variant・generator・実出力bytesを固定する。app方式は元Access/共有credentialに束縛したContent-Sessionを返す。原本用Cookieと共存し、thumbチケットを原本へ流用しない。BudgetDOは生成世代で重複排除し、COW別名・別manifest・再発行でもallowanceを増やさない。
+
+発行最終batchは現在の認可と公開世代を再検査する。配信はbudget待機後、R2 HEAD後とGET後にも認可・原本・公開状態を確認する。HEAD/Range/304/416と有限leaseの既存会計を使用する。schema0071・通常79table・147 route、migration/依存追加なし。lgは保存済みの場合だけ配信可能で、lazy生成、Gallery API/UI、1,000件の性能測定と実環境検証は未完了。
+
+- 新規nativeの初期試験でD1の式の深さ100の上限を確認した。WHERE条件を括弧で分割し、最終batchは32件ずつJSON入力からCOUNT/HAVINGで照合する形へ修正した。nested NOT EXISTS方式でも上限を超えるため使用しない。公開済み世代・pin・native終了の条件は維持した。
+- fixtureの重複Content-Sessionヘッダーと、trash操作に未受付のLockDOを渡していた点を修正後、新規native15件成功（20.87秒、/tmp/ncf-thumb-native-6.log）。R2待機中の失効、最終公開競合、34件のCOW別名を含む。
+- 内部共有の異なる受信者とgrant停止を追加し、配信・ticket・budget・session・lease・manifest・原本・公開共有のnative8fileを検証。初回は58/59件成功（/tmp/ncf-thumb-native-final.log）。既存の用途違い試験が旧thumb発行を使っていたため、汎用の別用途pageへ変更し、本物のthumbチケットで公開原本を取得できない検査を新規試験へ追加した。修正後の2file/35件成功（36.46秒、/tmp/ncf-thumb-native-final-2.log）。この組合せで8file/59件成功。
+- 既存BudgetDO・ZIP HTTP・公開共有read・content mutation admissionのnative4file/115件も成功（77.91秒、/tmp/ncf-thumb-native-compat.log）。関連nativeは重複を除く12file/174件。
+- manifestのNode4file/55件成功（562ms、/tmp/ncf-thumb-unit-2.log）。v1/v2維持、v3の厳密な項目・世代・variant・size・総量・順序固定・COW重複排除を検証した。
+- 型検査、lint694file、契約/設定検査、Web build/Worker dry-run成功（/tmp/ncf-thumb-{types-final-3,lint-final-2,contracts-final,config,build}.log）。
+- browser3件成功（1.4分、/tmp/ncf-thumb-browser.log）。実upload→Queue→本人用app/content hostのWebP decode、匿名AVIFのWebP thumbnailと原本Cookieの共存、6形式の原本decodeを確認した。ローカルTLS証明書の接続警告は出たが、assertionと終了は成功した。Node55 + native174 + browser3 = 重複を除く関連232件成功。全test suiteや実Cloudflareでの検証ではない。
+
+remote resource/secret/migration/deploy変更なし。pushは前回の自動承認審査拒否後の承認待ち。
+
+## Queueからのサムネイル自動生成（先行4a9ceb1）
 
 [画像Queue](IMAGE_QUEUE.md)をupload/DAV完了通知へ接続した。検査済みmetadataからsm/mdを計画し、元のactor/credential・親・原本・claimで再認可しながら条件付きR2入力を読む。費用記録と独立DOで重複変換を防ぎ、成功済みは公開再開へ渡す。variantの公開/既知失敗を最終batchで照合し、metadata・MIME・Outbox terminalを一括確定する。
 

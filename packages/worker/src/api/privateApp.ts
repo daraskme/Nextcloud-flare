@@ -22,6 +22,7 @@ import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
 import { handleShareHttp, shareRoute } from "./shares";
 import { handleStatsHttp, statsRoute } from "./stats";
+import { handleThumbnailHttp, thumbnailRoute } from "./thumbnails";
 import { handleTrashHttp, trashRoute } from "./trash";
 import { handleUploadHttp, uploadReadRoute, uploadRoute } from "./uploads";
 import { handleZipHttp, zipRoute } from "./zips";
@@ -44,6 +45,7 @@ export function privateAppRoute(request: Request): boolean {
   return (
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
+    thumbnailRoute(request) ||
     searchRoute(request) ||
     statsRoute(request) ||
     trashRoute(request) ||
@@ -74,6 +76,7 @@ export async function handlePrivateAppHttp(
     url.origin !== env.APP_ORIGIN ||
     (url.search &&
       !nodeReadRoute(request) &&
+      !thumbnailRoute(request) &&
       !trashRoute(request) &&
       !deadLetterReadRoute(request) &&
       !uploadReadRoute(request) &&
@@ -87,6 +90,7 @@ export async function handlePrivateAppHttp(
   const accountRead = url.pathname === "/api/v1/me" && request.method === "GET";
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
+  const thumbnail = thumbnailRoute(request);
   const search = searchRoute(request);
   const stats = statsRoute(request);
   const trashRead = trashRoute(request);
@@ -105,6 +109,7 @@ export async function handlePrivateAppHttp(
     !accountRead &&
     !logout &&
     !nodeRead &&
+    !thumbnail &&
     !search &&
     !stats &&
     !trashRead &&
@@ -254,6 +259,18 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.listCursors,
+    );
+  if (thumbnail)
+    return handleThumbnailHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      url.pathname.split("/")[4]!,
     );
   if (nodeMutation)
     return handleNodeMutationHttp(

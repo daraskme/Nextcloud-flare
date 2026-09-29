@@ -24,11 +24,12 @@ import {
 } from "./publicShareMutations";
 import { publicPrincipal, publicShareRead, publicShareTicket } from "./publicShareRead";
 import { readShareBody } from "./shares";
+import { handleThumbnailHttp } from "./thumbnails";
 import { handleUploadHttp, publicUploadRoute } from "./uploads";
 import { handleZipHttp, publicZipRoute } from "./zips";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|content\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|(?:content|thumb)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -51,7 +52,8 @@ export const publicShareRoute = (request: Request) => {
     publicZipRoute(request) ||
     (!!match &&
       ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
-        (["GET", "HEAD"].includes(request.method) && action.startsWith("content/")) ||
+        (["GET", "HEAD"].includes(request.method) &&
+          (action.startsWith("content/") || action.startsWith("thumb/"))) ||
         (request.method === "POST" &&
           ["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action)) ||
         (request.method === "PATCH" && /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)) ||
@@ -114,7 +116,10 @@ async function routePublicShareHttp(
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return problem(400, "bad_request");
     const upload = publicUploadRoute(request);
     if (
-      (url.search && !action.startsWith("children/") && !(upload && request.method === "GET")) ||
+      (url.search &&
+        !action.startsWith("children/") &&
+        !action.startsWith("thumb/") &&
+        !(upload && request.method === "GET")) ||
       url.hash
     )
       return problem(400, "bad_request");
@@ -169,6 +174,12 @@ async function routePublicShareHttp(
       if (request.headers.get("Share-Session") !== session.claims.session_id)
         return problem(412, "precondition_failed");
       return publicShareContent(request, env, session, action.slice(8));
+    }
+    if (action.startsWith("thumb/")) {
+      if (!session) return problem(401, "unauthorized");
+      if (request.headers.get("Share-Session") !== session.claims.session_id)
+        return problem(412, "precondition_failed");
+      return handleThumbnailHttp(request, env, publicPrincipal(session), action.slice(6));
     }
     if (operation || upload || action === "nodes" || action.startsWith("nodes/")) {
       if (!session) return problem(401, "unauthorized");

@@ -1,6 +1,6 @@
 # アップロード後のサムネイル生成
 
-2026-09-29。`jobs/imageQueue.ts`を通常upload・匿名upload・WebDAV PUTのOutbox consumerへ接続した。画像情報の抽出と同じ原本・親・保存時のactor/credential・claim・epochを使い、sm256とmd768のWebPを生成する。lg1600の要求時生成、thumb配信とGallery画面は後続。
+2026-09-29。`jobs/imageQueue.ts`を通常upload・匿名upload・WebDAV PUTのOutbox consumerへ接続した。画像情報の抽出と同じ原本・親・保存時のactor/credential・claim・epochを使い、sm256とmd768のWebPを生成する。生成済みの[thumb配信](THUMBNAIL_DELIVERY.md)も接続済み。lg1600の要求時生成とGallery画面は後続。
 
 ## 通常の処理
 
@@ -20,6 +20,6 @@ Queue invocation全体で25秒、metadataの2MiB/64 GET、有料変換の試行2
 
 サイズまたはanimation制限は有料呼出し前に、`derivative_results.failed`・`attempts=0`・`image_unsupported_*`として記録する。画像情報と原本は保持する。nativeが明示的に終了した失敗は費用を保持し、`attempts=1`・`image_transform_failed`を記録する。AVIFの明示的なbinding拒否は`image_unsupported_binding`とする。生のproviderエラーを保存しない。
 
-未知native・保存bytes喪失・preparedの観測欠落では完了を推測しない。これらの修復、明示的な有料再試行予算、lg受付・thumb配信・Gallery API/UIは未完了。失敗した変換をQueue再配信だけで再課金することはない。既存のDLQ/再送経路は維持する。
+未知native・保存bytes喪失・preparedの観測欠落では完了を推測しない。これらの修復、明示的な有料再試行予算、lg受付・Gallery API/UIは未完了。失敗した変換をQueue再配信だけで再課金することはない。既存のDLQ/再送経路は維持する。
 
 schema0071・通常79table・147 route、依存・migrationの追加なし。検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。ローカルImages/R2/D1/DOの検証であり、実CloudflareのAVIF対応・費用・配備の証明ではない。

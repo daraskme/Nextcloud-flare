@@ -112,7 +112,7 @@ it.each(["size", "target", "path", "order", "version", "serializer", "extra"])(
     if (change === "serializer") value.serializer = "deflate-v1";
     if (change === "extra") value.secret = true;
     expect(() => parse({ ...encoded, json: JSON.stringify(value) })).toThrow(
-      /invalid_(zip|target)_manifest/,
+      /invalid_(zip|target|thumbnail)_manifest/,
     );
   },
 );

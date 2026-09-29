@@ -5,6 +5,7 @@ import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { streamBudgetedContentBlob } from "../services/blobRead";
+import { thumbnailVariant } from "../services/thumbnailManifest";
 
 const NODE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -67,7 +68,14 @@ export async function handleContentHttp(
 ): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin !== env.CONTENT_ORIGIN) return problem(404, "not_found");
-  if (url.search || url.hash) return problem(404, "not_found");
+  const variant = url.searchParams.get("variant");
+  if (
+    url.hash ||
+    (url.search &&
+      ([...url.searchParams.keys()].join(",") !== "variant" || !thumbnailVariant(variant))) ||
+    (url.pathname === "/session" && url.search)
+  )
+    return problem(404, "not_found");
   const origin = request.headers.get("Origin");
   if (url.pathname === "/session") {
     if (request.method !== "OPTIONS" && request.method !== "POST") return problem(404, "not_found");
@@ -143,8 +151,9 @@ export async function handleContentHttp(
       request.headers.get("Cookie"),
       node.spaceId,
       nodeId,
-      "content",
+      variant ? "thumb" : "content",
       request,
+      thumbnailVariant(variant) ? variant : undefined,
     );
     return reply(response);
   } catch (error) {

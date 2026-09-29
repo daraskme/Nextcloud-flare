@@ -9,9 +9,11 @@ import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
+import type { ImageVariant } from "../media/images/transform";
 import { parseRange } from "../platform/range";
 import { streamLeasedContent } from "./contentStream";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
+import { prepareAuthorizedThumbnailRead } from "./thumbnailRead";
 
 /** A current D1 node/blob plan; callers must also check purpose, content session and budget. */
 export interface BlobReadPlan {
@@ -51,6 +53,7 @@ export interface ContentBlobGrant {
   readonly ticketId: string;
   readonly purpose: ContentPurpose;
   readonly share?: { readonly id: string; readonly version: number };
+  readonly variant?: ImageVariant;
 }
 
 export interface ContentBlobPlan {
@@ -58,6 +61,7 @@ export interface ContentBlobPlan {
   readonly budgetId: string;
   readonly sessionId: string;
   readonly epoch: number;
+  readonly authorize?: () => Promise<void>;
 }
 
 /** Resolve the signed host-only cookie to a D1 principal, then apply all content read guards. */
@@ -69,6 +73,7 @@ export async function prepareCookieBlobRead(
   spaceId: string,
   nodeId: string,
   purpose: ContentPurpose,
+  variant?: ImageVariant,
 ): Promise<ContentBlobPlan> {
   const sessionId = await tokens.verifyCookie(cookieHeader);
   const session = await primary(db)
@@ -120,6 +125,7 @@ export async function prepareCookieBlobRead(
     sessionId,
     ticketId: session.ticketId,
     purpose,
+    ...(variant ? { variant } : {}),
     ...(session.shareId && session.userId && session.shareVersion
       ? { share: { id: session.shareId, version: session.shareVersion } }
       : {}),
@@ -156,16 +162,29 @@ export async function prepareContentBlobRead(
     .first<TargetManifestRecord & { budgetId: string }>();
   if (!record) throw new Error("content_not_available");
   const manifest = await loadTargetManifest(bucket, record);
+  const thumbnail =
+    manifest.v === 3 && grant.purpose === "thumb"
+      ? manifest.targets.find(
+          (t) =>
+            t.spaceId === spaceId &&
+            t.nodeId === nodeId &&
+            t.blobId === authorized.node.current_blob_id &&
+            t.variant === grant.variant,
+        )
+      : undefined;
   if (
-    !manifestContains(manifest, {
-      spaceId,
-      nodeId,
-      blobId: authorized.node.current_blob_id,
-      purpose: grant.purpose,
-    })
+    grant.purpose === "thumb"
+      ? !thumbnail
+      : grant.variant !== undefined ||
+        !manifestContains(manifest, {
+          spaceId,
+          nodeId,
+          blobId: authorized.node.current_blob_id,
+          purpose: grant.purpose,
+        })
   )
     throw new Error("content_not_available");
-  const blob = await resolveBlobRead(db, authorized, [
+  const guards = [
     contentSessionAssertion(principal, grant.sessionId, grant.ticketId, grant.purpose, grant.share),
     ...(grant.share || principal.kind === "link_share"
       ? [
@@ -192,8 +211,13 @@ export async function prepareContentBlobRead(
         record.budgetId,
       ],
     ),
-  ]);
+  ];
+  const derivative = thumbnail
+    ? await prepareAuthorizedThumbnailRead(db, authorized, thumbnail.variant, guards, thumbnail)
+    : undefined;
+  const blob = derivative?.blob ?? (await resolveBlobRead(db, authorized, guards));
   if (
+    !derivative &&
     !manifestContains(manifest, {
       spaceId,
       nodeId,
@@ -208,6 +232,17 @@ export async function prepareContentBlobRead(
     budgetId: record.budgetId,
     sessionId: grant.sessionId,
     epoch: principal.epoch,
+    ...(derivative
+      ? {
+          authorize: async () => {
+            await atomicBatch(db, [
+              authorizationAssertion(authorized),
+              ...guards,
+              derivative.guard,
+            ]);
+          },
+        }
+      : {}),
   });
 }
 
@@ -237,6 +272,7 @@ export async function streamBudgetedContentBlob(
   nodeId: string,
   purpose: ContentPurpose,
   request: Request,
+  variant?: ImageVariant,
 ): Promise<Response> {
   request.signal.throwIfAborted();
   const plan = await prepareCookieBlobRead(
@@ -247,6 +283,7 @@ export async function streamBudgetedContentBlob(
     spaceId,
     nodeId,
     purpose,
+    variant,
   );
   return streamBudgetedBlobPlan(bucket, budgets, plan, request);
 }
@@ -270,7 +307,14 @@ export async function streamBudgetedBlobPlan(
     bytes,
   });
   return streamLeasedContent(
-    (signal, deadline) => streamImmutableBlob(bucket, plan.blob, request, { signal, deadline }),
+    async (signal, deadline) => {
+      await plan.authorize?.();
+      return streamImmutableBlob(bucket, plan.blob, request, {
+        signal,
+        deadline,
+        ...(plan.authorize ? { authorize: plan.authorize } : {}),
+      });
+    },
     bytes,
     lease.expiresAt,
     request.signal,
@@ -314,7 +358,15 @@ async function resolveBlobRead(
 
 function validatePlan(plan: BlobReadPlan): void {
   if (
-    !/^u\/[A-Za-z0-9_-]{1,128}\/b\/[A-Za-z0-9_-]{1,128}$/.test(plan.key) ||
+    (!/^u\/[A-Za-z0-9_-]{1,128}\/b\/[A-Za-z0-9_-]{1,128}$/.test(plan.key) &&
+      !(
+        plan.mime === "image/webp" &&
+        plan.size > 0 &&
+        plan.size <= 12 * 1024 * 1024 &&
+        /^u\/[A-Za-z0-9_-]{1,128}\/d\/[A-Za-z0-9_-]{1,128}\/image-webp-v1\/(?:sm|md|lg)\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(
+          plan.key,
+        )
+      )) ||
     plan.key.length > 1024 ||
     !Number.isSafeInteger(plan.size) ||
     plan.size < 0 ||
@@ -372,6 +424,7 @@ export async function streamImmutableBlob(
     readonly etag?: string;
     readonly signal?: AbortSignal;
     readonly deadline?: number;
+    readonly authorize?: () => Promise<void>;
   } = {},
 ): Promise<Response> {
   const signal = options.signal ?? request.signal;
@@ -389,6 +442,8 @@ export async function streamImmutableBlob(
   active();
   if (!object || object.size !== plan.size || object.etag !== plan.r2Etag)
     throw new Error("blob_storage_mismatch");
+  await options.authorize?.();
+  active();
   const headers = responseHeaders(plan, etag);
   if (ifNoneMatch(request.headers.get("If-None-Match"), etag))
     return new Response(null, { status: 304, headers });
@@ -410,6 +465,7 @@ export async function streamImmutableBlob(
     range.kind === "range" ? { range: { offset: range.offset, length: range.length } } : undefined,
   );
   try {
+    await options.authorize?.();
     active();
   } catch (error) {
     void body?.body.cancel(error).catch(() => undefined);

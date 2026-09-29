@@ -222,7 +222,10 @@ export class BudgetDO extends DurableObject<Env> {
     let targets = this.#manifest?.key === manifestKey ? this.#manifest.targets : undefined;
     if (!targets) {
       const manifest = await loadTargetManifest(this.env.BLOBS, authority);
-      if (manifest.v === 2 && authority.purpose !== "zip")
+      if (
+        (manifest.v === 2 && authority.purpose !== "zip") ||
+        (manifest.v === 3 && authority.purpose !== "thumb")
+      )
         throw new Error("budget_authorization_denied");
       targets = await manifestBudgetTargets(manifest);
       // R2 I/O may outlive a ticket/session. Recheck the exact D1 record before granting bytes.
