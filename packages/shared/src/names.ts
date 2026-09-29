@@ -39,10 +39,9 @@ export function normalizeSearchText(input: string): string {
     .normalize("NFC");
 }
 
-/** Initial folder-name index. Media metadata composition is added by its own bounded parser. */
-export function searchName(input: string): { textNorm: string; tokens: string; version: string } {
-  const { name } = portableName(input);
-  const textNorm = normalizeSearchText(name);
+/** Callers bound text before normalization; metadata is not subject to filename syntax. */
+export function searchText(input: string): { textNorm: string; tokens: string; version: string } {
+  const textNorm = normalizeSearchText(input);
   const scalars = [...textNorm];
   const tokens =
     scalars.length === 1
@@ -52,4 +51,8 @@ export function searchName(input: string): { textNorm: string; tokens: string; v
           .map((char, i) => char + scalars[i + 1])
           .join(" ");
   return { textNorm, tokens, version: SEARCH_NAME_VERSION };
+}
+
+export function searchName(input: string): { textNorm: string; tokens: string; version: string } {
+  return searchText(portableName(input).name);
 }

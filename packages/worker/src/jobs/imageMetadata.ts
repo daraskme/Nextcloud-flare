@@ -10,6 +10,7 @@ import { type ImageReadBudget, imageObjectSource } from "../media/images/r2Sourc
 import { sniffMediaContainer } from "../media/sniff";
 import { TRACK_METADATA_GENERATOR, TRACK_METADATA_LIMITS } from "../media/tracks/common";
 import { inspectTracks } from "../media/tracks/inspect";
+import { AUDIO_OVERRIDE_SNAPSHOT, audioSearchTags } from "../search/audio";
 import type { EventRow } from "./outboxAuthority";
 
 export interface ImageNode {
@@ -137,11 +138,30 @@ export async function imageMetadataStatements(
         values: [mediaContentType(track.media), node.blob, event.owner_id],
       },
     );
-    if (track.media.kind === "audio")
+    if (track.media.kind === "audio") {
+      const snapshot = await primary(env.DB)
+        .prepare(AUDIO_OVERRIDE_SNAPSHOT)
+        .bind(node.id)
+        .first<string>("snapshot");
+      const previous =
+        snapshot === null
+          ? null
+          : (JSON.parse(snapshot) as [string, string | null, string | null, string | null]);
+      const overrides = previous?.[0] === node.blob ? previous : null;
+      const search = audioSearchTags({
+        title: overrides?.[1] ?? track.title ?? null,
+        artist: overrides?.[2] ?? track.artist ?? null,
+        album: overrides?.[3] ?? track.album ?? null,
+      });
+      // This must precede the stale-blob DELETE above; a concurrent edit retries the whole event.
+      result.unshift(
+        assertExists(`SELECT 1 WHERE (${AUDIO_OVERRIDE_SNAPSHOT}) IS ?`, [node.id, snapshot]),
+      );
       result.push({
-        sql: `INSERT INTO node_audio(node_id,blob_id,generator_version,duration_ms,codec,title_extracted,artist_extracted,album_extracted,track_number,disc_number)
-        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET generator_version=excluded.generator_version,duration_ms=excluded.duration_ms,codec=excluded.codec,
-        title_extracted=excluded.title_extracted,artist_extracted=excluded.artist_extracted,album_extracted=excluded.album_extracted,track_number=excluded.track_number,disc_number=excluded.disc_number
+        sql: `INSERT INTO node_audio(node_id,blob_id,generator_version,duration_ms,codec,title_extracted,artist_extracted,album_extracted,track_number,disc_number,search_text_norm,search_tokens,search_source,search_version)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET generator_version=excluded.generator_version,duration_ms=excluded.duration_ms,codec=excluded.codec,
+        title_extracted=excluded.title_extracted,artist_extracted=excluded.artist_extracted,album_extracted=excluded.album_extracted,track_number=excluded.track_number,disc_number=excluded.disc_number,
+        search_text_norm=excluded.search_text_norm,search_tokens=excluded.search_tokens,search_source=excluded.search_source,search_version=excluded.search_version
         WHERE node_audio.blob_id=excluded.blob_id`,
         values: [
           node.id,
@@ -154,8 +174,13 @@ export async function imageMetadataStatements(
           track.album ?? null,
           track.trackNumber ?? null,
           track.discNumber ?? null,
+          search.textNorm,
+          search.tokens,
+          search.source,
+          search.version,
         ],
       });
+    }
   }
   return {
     statements: result,

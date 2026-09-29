@@ -1,6 +1,18 @@
 # 実装進捗
 
-## 音声タグの編集と確定競合（今回）
+## 音声タグの検索用データ保存（今回）
+
+[検索準備](AUDIO_SEARCH.md)としてmigration0074で`node_audio`にtext/tokens/source/versionを追加した。原本の抽出とoverride編集・resetで実効3fieldから同時保存する。名前と共通のNFKC・casefold・かな統一・bigramを利用し、metadataの記号は保持する。raw field 1KiB、text64KiB・tokens192KiB・source32KiB・version128Bの上限を確認する。抽出は同じblobのoverride tupleを確定前に再照合し、行の追加・変更・削除が入った場合は原子的に取り消して再試行する。
+
+- Node全体2,047件を確認。初回114fileでは2,008件成功・39件失敗、local HTTPの`listen EPERM`とCLI子processの出力を取得できない制限が出た（230.78秒、/tmp/ncf-audio-search-cache-unit.log）。失敗した10fileを必要なローカル実行権限で再実行し、425件全成功（4.29秒、/tmp/ncf-audio-search-cache-unit-retry.log）。試験・製品の条件は変更していない。新規12件はUnicode展開・記号/field境界・不正値、SQLのUTF-8上限、元タグ一致、旧cache、migration停止条件を確認する。
+- Native99件全成功（5file、66.30秒、/tmp/ncf-audio-search-cache-native.log）。実D1/R2/Queueの全既存音声形式、同じ/異なるblobのoverride引継ぎ、確定前のinsert/update/delete競合と再試行、タグ編集/reset/認可/ACK喪失とrollback、画像・Audio一覧・schemaを確認した。
+- ローカルoperator drill成功（/tmp/ncf-audio-search-cache-operator.log）。79tableのexport/restoreで4columnの値が保持され、復旧snapshotの検証・epoch採用・全監査・受付とGC再開まで完了した。保存先は`.wrangler/operator-drill-5uS2Zf`。Cloudflare provider応答はfixtureであり、実環境へ変更していない。
+- Browser1件成功（37.2秒、/tmp/ncf-audio-search-cache-browser.log）。実upload後のタグ編集・競合検出・resetと再生中の原本保持を確認した。重複を除く確認済み試験は2,147件。
+- typecheck、lint、verify:contracts、verify:config、Web両入口とWorker dry-run build成功（/tmp/ncf-audio-search-cache-{types,lint,contracts,config,build}.log）。schema contractを再生成し、79通常tableとFK索引・operation catalogueを確認した。
+
+検索API/FTSは引き続きファイル名を対象とする。cacheの保存を先行し、改名/MOVE/上書き/COPY/復元との検索同期、既存行の再構築と旧operation receiptの互換性を次に扱う。schema0074・通常79table・149 API route。既存metadataは移行時に保持し、新cacheを空の未生成状態とする。cover、Bookshelf、運用修復、全native/browser suite・実Cloudflare/他OSのgateは継続する。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## 音声タグの編集と確定競合
 
 [音声タグの編集](AUDIO_METADATA_EDIT.md)を既存PATCH route、専用library:write/edit認可、LockDO permitとoperation receipt、private画面へ接続した。曲名・artist・albumのoverrideを抽出値と分離し、空欄で元に戻す。現在の原本・revision・metadata snapshot・元credential/選択共有・DAV lock・epoch/claimを確定batchで再確認し、5段階の更新と監査を一括確定する。原本bytes・参照/容量・利用者の再生位置は変更しない。タグの検索文字列への同期は後続で、今回は既存filename索引のrevisionだけを進める。
 

@@ -6,6 +6,7 @@ import { AudioCursorTokens } from "../../src/auth/audioCursor";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { GalleryCursorTokens } from "../../src/auth/galleryCursor";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
+import { AUDIO_SEARCH_CURRENT, AUDIO_SEARCH_VERSION } from "../../src/search/audio";
 import { listAudio, savePlayback } from "../../src/services/audio";
 import { prepareNodeBlobRead, streamImmutableBlob } from "../../src/services/blobRead";
 import { listGallery } from "../../src/services/gallery";
@@ -118,7 +119,15 @@ it.each(fixtureNames)(
                     : "opus",
         title_extracted: "テスト曲",
         artist_extracted: "Local fixture",
+        search_version: AUDIO_SEARCH_VERSION,
       });
+      expect(
+        await env.DB.prepare(
+          `SELECT search_text_norm FROM node_audio a WHERE a.node_id=? AND ${AUDIO_SEARCH_CURRENT}`,
+        )
+          .bind(f.node.id)
+          .first<string>("search_text_norm"),
+      ).toContain("てすと曲\nlocal fixture");
       const audioTokens = new AudioCursorTokens(
         await contentKeyRing("test", {
           test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
@@ -209,3 +218,75 @@ it("recovers the metadata completion ACK and does not repeat R2 inspection", asy
   expect(await consumeOutbox(f.app, f.event)).toBe("completed");
   expect(f.get).toHaveBeenCalledTimes(reads);
 });
+
+it.each([false, true])(
+  "binds extracted search text to same-blob overrides (stale=%s)",
+  async (stale) => {
+    const f = await fixture(trackBytes("opus.ogg"));
+    await env.DB.prepare(
+      "INSERT INTO node_audio(node_id,blob_id,generator_version,title_override,artist_override) VALUES(?,?,'track-metadata-v1','私の曲','My Artist')",
+    )
+      .bind(f.node.id, stale ? f.ids.blob : f.node.blob)
+      .run();
+    expect(await consumeOutbox(f.app, f.event)).toBe("completed");
+    expect(await f.audio()).toMatchObject({
+      title_extracted: "テスト曲",
+      title_override: stale ? null : "私の曲",
+      artist_override: stale ? null : "My Artist",
+      search_version: AUDIO_SEARCH_VERSION,
+    });
+    const text = await env.DB.prepare(
+      `SELECT search_text_norm FROM node_audio a WHERE a.node_id=? AND ${AUDIO_SEARCH_CURRENT}`,
+    )
+      .bind(f.node.id)
+      .first<string>("search_text_norm");
+    expect(text).toContain(stale ? "てすと曲\nlocal fixture" : "私の曲\nmy artist");
+  },
+);
+it.each(["insert", "update", "delete"])(
+  "retries an extraction when an override row changes before publication: %s",
+  async (change) => {
+    const f = await fixture(trackBytes("opus.ogg"));
+    const insert = () =>
+      env.DB.prepare(
+        "INSERT INTO node_audio(node_id,blob_id,generator_version,title_override) VALUES(?,?,'track-metadata-v1','before')",
+      )
+        .bind(f.node.id, f.node.blob)
+        .run();
+    if (change !== "insert") await insert();
+    const db = injectBatch(
+      (sql) => sql.includes("INSERT INTO node_audio"),
+      async () => {
+        if (change === "insert") await insert();
+        else
+          await env.DB.prepare(
+            change === "update"
+              ? "UPDATE node_audio SET title_override='after' WHERE node_id=?"
+              : "DELETE FROM node_audio WHERE node_id=?",
+          )
+            .bind(f.node.id)
+            .run();
+      },
+      false,
+    );
+    expect(await consumeOutbox({ ...f.app, DB: db }, f.event)).toBe("retry");
+    expect(await f.metadata()).toBeNull();
+    if (change === "delete") expect(await f.audio()).toBeNull();
+    else
+      expect(await f.audio()).toMatchObject({
+        title_override: change === "insert" ? "before" : "after",
+        search_version: "",
+      });
+    await env.DB.prepare("UPDATE outbox SET claim_expires_at=0 WHERE outbox_id=?")
+      .bind(f.event)
+      .run();
+    expect(await consumeOutbox(f.app, f.event)).toBe("completed");
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM node_audio a WHERE a.node_id=? AND ${AUDIO_SEARCH_CURRENT}`,
+      )
+        .bind(f.node.id)
+        .first("n"),
+    ).toBe(1);
+  },
+);

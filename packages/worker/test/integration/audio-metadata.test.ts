@@ -14,6 +14,7 @@ import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
 import { lookupOperation } from "../../src/jobs/operations";
 import { TRACK_METADATA_GENERATOR as generator } from "../../src/media/tracks/common";
+import { AUDIO_SEARCH_CURRENT, audioSearchTags } from "../../src/search/audio";
 import { listAudio } from "../../src/services/audio";
 import { editAudioMetadata } from "../../src/services/audioMetadata";
 import { foundationFixture } from "../fixtures/foundation";
@@ -94,6 +95,8 @@ it("edits only overrides with a durable audited receipt, replays once and resets
     title_override: "修正した曲",
     artist_override: "演奏者",
     album_override: null,
+    search_text_norm: "修正した曲\n演奏者\nalbum",
+    search_source: JSON.stringify(["修正した曲", "演奏者", "Album"]),
   });
   expect((await t.list()).items[0]).toMatchObject({
     title: "修正した曲",
@@ -135,6 +138,20 @@ it("edits only overrides with a durable audited receipt, replays once and resets
     artist: "Artist",
     metadata: { revision: 3 },
   });
+  const reset = audioSearchTags({ title: "元の曲", artist: "Artist", album: "Album" });
+  expect(await t.row()).toMatchObject({
+    search_text_norm: reset.textNorm,
+    search_tokens: reset.tokens,
+    search_source: reset.source,
+    search_version: reset.version,
+  });
+  expect(
+    await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM node_audio a WHERE a.node_id=? AND ${AUDIO_SEARCH_CURRENT}`,
+    )
+      .bind(t.f.ids.file)
+      .first("n"),
+  ).toBe(1);
   await expect(t.save({ ...t.input, title: "other" })).rejects.toThrow("idempotency_conflict");
 });
 it("rejects old revisions, stale blobs and unsupported metadata before writing", async () => {
@@ -227,7 +244,14 @@ it.each(["revision", "metadata", "credential", "epoch", "hidden", "lock"])(
     );
     const result = await t.save(t.input, t.principal, t.key, db);
     expect(result).not.toMatchObject({ kind: "terminal", operation: { state: "committed" } });
-    expect(await t.row()).toMatchObject({ title_override: null, artist_override: null });
+    expect(await t.row()).toMatchObject({
+      title_override: null,
+      artist_override: null,
+      search_version: "",
+      search_text_norm: "",
+      search_tokens: "",
+      search_source: "",
+    });
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE affected_id=?")
         .bind(t.f.ids.file)

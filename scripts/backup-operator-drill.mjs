@@ -223,6 +223,17 @@ try {
     .bind(fixture.ids.file, fixture.ids.space)
     .run();
   await env.DB.prepare("INSERT INTO search_fts(search_fts) VALUES('rebuild')").run();
+  const audioCache = {
+    search_text_norm: "保存した曲\nartist",
+    search_tokens: "保存 存し した た曲 ar rt ti is st",
+    search_source: JSON.stringify(["保存した曲", "Artist", null]),
+    search_version: "audio-cache-drill",
+  };
+  await env.DB.prepare(
+    "INSERT INTO node_audio(node_id,blob_id,generator_version,title_override,artist_extracted,search_text_norm,search_tokens,search_source,search_version) VALUES(?,?,'track-metadata-v1','保存した曲','Artist',?,?,?,?)",
+  )
+    .bind(fixture.ids.file, fixture.ids.blob, ...Object.values(audioCache))
+    .run();
   const before = (await query("SELECT maintenance,gc_paused,gc_operator_paused FROM control"))[0];
   let id = crypto.randomUUID();
   const clientEnv = await harness.getWorker("operator-client").getEnv();
@@ -306,6 +317,16 @@ try {
   await restoreGeneration({ directory: download.directory, target });
   const restored = new DatabaseSync(target);
   try {
+    assert.deepEqual(
+      {
+        ...restored
+          .prepare(
+            "SELECT search_text_norm,search_tokens,search_source,search_version FROM node_audio WHERE node_id=?",
+          )
+          .get(fixture.ids.file),
+      },
+      audioCache,
+    );
     assert.deepEqual(
       { ...restored.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get() },
       { used_bytes: 3, reserved_bytes: 5, physical_bytes: 3 },

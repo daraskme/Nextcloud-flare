@@ -1045,6 +1045,8 @@ scope root を `search.read` で認可し、祖先・credential・epoch・tree g
 
 scope または hits が上限到達なら `truncated:true` を返し count/facet を確定値にしない。索引が欠落・旧normalization version・未来のnode revisionの場合も、該当行を返さず不完全さを通知する。`search_index.revision` は最後の検索テキスト更新時のnode revisionであり、子一覧の更新だけで進んだ親のrevisionとは一致しなくてもよい。rename/moveは現行node proofと旧FTS値のdeleteを同じbatchで確認して新しい索引へ進め、索引が現行nodeより未来なら拒否する。media metadata のparser/同期と索引version再構築運用、実D1の予算gateは残る。
 
+migration0074で音声metadataの実効3fieldを正規化したcacheを`node_audio`に保存する。詳細は[AUDIO_SEARCH](AUDIO_SEARCH.md)。抽出/編集とcacheは同じbatchで確定し、source JSONとversionで古いcacheを判別する。現在は検索base/FTSへ未接続で、rename/MOVE/原本上書き/COPY/restoreと既存行の再構築を揃えてから検索対象へ追加する。
+
 ### 12.3 Gallery / media list
 
 recursive Gallery は CTE candidate **LIMIT 50000**（gate 未合格時10,000）を SQL で強制し、current blob と generator を集合 guard して keyset 200件を返す。

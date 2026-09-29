@@ -8,7 +8,7 @@
 
 現在のnode/blob・track-metadata-v1・codec/MIME・node revisionを確認する。専用`audio.metadata.write`はlibrary:write/editの認可を使い、匿名・app password・service、read共有、暗黙の別共有、非表示・削除された祖先、失効した資格情報を拒否する。共有rootが音声fileでも編集できるが、名前や原本の変更権限は拡張しない。
 
-LockDOのnode write permit、ControlDOのmutation枠、operation claimを利用する。最終D1 batchで元credential/選択共有・node/parent/blob/revision/tree generation・metadataの抽出値とoverride・現行MIME・DAV lock・epoch/permit/claimを再照合する。override、node revision、tree generation、既存検索行のrevision、activity、5つのstep marker、operation terminalを同時確定する。既存の検索文字列は維持する。DB-only処理なので新しいOutboxやR2書込みは発行しない。
+LockDOのnode write permit、ControlDOのmutation枠、operation claimを利用する。最終D1 batchで元credential/選択共有・node/parent/blob/revision/tree generation・metadataの抽出値とoverride・現行MIME・DAV lock・epoch/permit/claimを再照合する。override、node revision、tree generation、既存検索行のrevision、activity、5つのstep marker、operation terminalを同時確定する。migration0074以降は実効タグの[検索用cache](AUDIO_SEARCH.md)も同じ更新で保存する。既存の検索文字列は維持し、cacheからFTSへの接続は後続。DB-only処理なので新しいOutboxやR2書込みは発行しない。
 
 同じkey/入力は元の確定receiptを返し、異なる入力は409。古いrevision/blob/generatorや先行編集を上書きしない。commit ACK喪失時は既存operation照会で確定を確認し、判定不能ならOperation-Id付き503とする。未知の結果のpermitを早期解放しない。operation照会も元のcredential/選択共有と現在の原本へのedit権限を必要とする。
 

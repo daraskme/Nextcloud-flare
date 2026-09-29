@@ -1,4 +1,4 @@
-import type { AudioMetadataUpdate, AudioTags } from "../../../shared/src/audio";
+import type { AudioMetadata, AudioMetadataUpdate, AudioTags } from "../../../shared/src/audio";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import { assertCreateLocks } from "../auth/locks";
 import { assertOpenPermit } from "../db/permits";
@@ -18,6 +18,7 @@ import {
   operationIntent,
 } from "../jobs/operations";
 import { TRACK_METADATA_GENERATOR } from "../media/tracks/common";
+import { audioSearchTags } from "../search/audio";
 import { AUDIO_MATCH, AUDIO_METADATA, audioStatement } from "./audio";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
@@ -131,6 +132,12 @@ export async function editAudioMetadata(
     const metadata = (read.at(-1)!.results[0] as { metadataJson?: unknown } | undefined)
       ?.metadataJson;
     if (typeof metadata !== "string") throw new AudioMetadataConflict();
+    const extracted = (JSON.parse(metadata) as AudioMetadata).extracted;
+    const search = audioSearchTags({
+      title: input.title ?? extracted.title,
+      artist: input.artist ?? extracted.artist,
+      album: input.album ?? extracted.album,
+    });
     const claimed = await claimOperation(env.DB, intent, permit, proof, AUDIO_METADATA_STEPS);
     if (claimed.kind !== "claimed") {
       outcome = await terminal();
@@ -144,8 +151,19 @@ export async function editAudioMetadata(
         kind: "audio_metadata",
         affectedId: nodeId,
         statement: {
-          sql: "UPDATE node_audio SET title_override=?,artist_override=?,album_override=? WHERE node_id=? AND blob_id=? AND generator_version=?",
-          values: [input.title, input.artist, input.album, nodeId, input.blobId, input.generator],
+          sql: "UPDATE node_audio SET title_override=?,artist_override=?,album_override=?,search_text_norm=?,search_tokens=?,search_source=?,search_version=? WHERE node_id=? AND blob_id=? AND generator_version=?",
+          values: [
+            input.title,
+            input.artist,
+            input.album,
+            search.textNorm,
+            search.tokens,
+            search.source,
+            search.version,
+            nodeId,
+            input.blobId,
+            input.generator,
+          ],
         },
       },
       {
