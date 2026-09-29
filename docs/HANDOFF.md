@@ -1,8 +1,10 @@
 # セッション引き継ぎ
 
-[既存ファイルのメディア情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFiles画面へ接続しました。現在の読者で原本を解析し、音声タグ・画像寸法・動画情報・MIME・検索索引を一括反映します。編集済みタグを保持し、再実行で原本を再走査しません。schema0076・通常79table・151 API route。自動一括再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[Bookshelfのアーカイブ読み取り基盤](ARCHIVE_READER.md)を追加しました。ZIP/CBZ・EPUBコンテナを上限付きRangeで索引化し、STORE/DEFLATE・通常ZIP64を扱います。危険なパスやサイズ偽装を拒否し、選んだentryのヘッダー一致・展開サイズ・CRCを検査します。R2原本差替え・現在認可の失効・中断を確認しました。schema0076・通常79table・151 API route。索引保存/Queue・ページ配信・本棚/PDF/EPUB画面・読書位置は次の接続対象です。Bookshelf全体は未完成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[既存ファイルのメディア情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFiles画面へ接続しました。現在の読者で原本を解析し、音声タグ・画像寸法・動画情報・MIME・検索索引を一括反映します。編集済みタグを保持し、再実行で原本を再走査しません。schema0076・通常79table・151 API route。自動一括再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

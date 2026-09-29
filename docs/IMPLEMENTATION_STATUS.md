@@ -1,6 +1,16 @@
 # 実装進捗
 
-## 既存ファイルのメディア情報抽出（今回）
+## Bookshelfのアーカイブ読み取り基盤（今回）
+
+[ZIP/CBZ・EPUBコンテナの読み取り基盤](ARCHIVE_READER.md)を追加した。末尾/central directoryのbounded Rangeから不変indexを作り、STORE/DEFLATEと通常ZIP64を扱う。パス・重複・local header範囲・暗号化・サイズ上限を検査し、ページ候補を自然順にする。選んだentryだけを条件付きR2 Rangeで読み、local/central header・descriptorを照合してnative展開し、配信前のchunk上限とEOFのCRCを確認する。現在認可のcallback、読み取り予算、原本差替え、期限とcancelを処理する。
+
+- Node関連109件成功（3file、0.642秒、/tmp/ncf-archive-unit-verified.log）。新規90件でUTF-8/CP437/Unicode extra、STORE/DEFLATE・32/64bit・descriptor署名の組合せ、危険な名前・重複・symlink・未対応flag/method、offset overflowと4GiB超offset、10,000件・8GiB合計・8MiB索引上限、CRC/サイズ偽装、中断/失効、R2の遅い応答・range不一致と予算を検証した。既存ZIP manifest19件も成功。
+- Native関連31件成功（2file、6.77秒、/tmp/ncf-archive-native-complete.log）。新規11件で実ローカルR2の条件付きRange、native DEFLATE、64MiBの全出力と最大64KiB単位の受取、CRC異常・過大出力・切れた/余分な圧縮データ、原本差替え・認可失効・abortを確認した。既存STORE export20件も成功し、その日本語名・descriptor付き出力も新しいreaderで開いた。破損DEFLATE試験ではworkerdがincomplete dataの診断を出すが、本文は期待どおり失敗し、runnerは全件成功。writableとreadableの両方の拒否を明示処理する。
+- typecheck、lint（802file）、verify:contracts、verify:config成功（/tmp/ncf-archive-{types-complete,lint-complete,contracts,config}.log）。全suite、browser、build、operator drillの再実行ではない。新規モジュールはAPI/UIやDB書込みへまだ接続していないため、今回はparser・native R2/展開・型と契約を検証した。
+
+重複を除く関連試験は140件（Node109・Native31）。schema0076・通常79table・151 API routeを維持し、migration・依存の追加なし。Libraryの索引保存・Outbox/claim/容量精算・永続JSONの検証、現在認可とcontent hostに固定したページ配信、画像形式検査、Bookshelf/PDF/EPUB UIと読書位置は後続。Bookshelf全体の完成ではない。実環境のmigration/deployは実施していない。pushは自動承認審査拒否後の明示承認待ちで、ローカルcommitへ保持する。
+
+## 既存ファイルのメディア情報抽出（先行7706740）
 
 [原本の情報抽出](MEDIA_EXTRACTION.md)を、所有者・内部共有・公開リンクのFilesへ接続した。音声metadataがなくAudioに出ない古い原本を、現在の閲覧者でQueueへ要求できる。画像・動画もuploadと同じ上限付きparserを使う。新しいprivate/public POST mediaと`media.extract` operationを追加し、node/blob/generatorの固定Outboxへ集約する。0076はcatalogue・Outboxの終端JSON列・部分一意索引を追加し、通常79tableを維持する。API routeは151。
 

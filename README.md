@@ -1,5 +1,7 @@
 # Next-cloud-flare
 
+[本棚のアーカイブ読み取り基盤](docs/ARCHIVE_READER.md)を追加しました。ZIP/CBZ・EPUBコンテナの上限付き索引解析と、CRCを検査するページ単位の展開に対応します。索引保存・生成ジョブ・配信API・本棚画面への接続は開発中です。
+
 [音声タグの検索](docs/AUDIO_SEARCH.md)へ既存曲の再索引を接続しました。定期保守が保存済みタグを少しずつ索引へ反映し、途中から再開します。[所有者間コピー](docs/COPY_JOBS.md)でも受付時の音声情報を引き継ぎます。[埋め込み表紙](docs/AUDIO_COVERS.md)も新しいMP3/FLAC/MP4/Oggから抽出し、Audio一覧と常駐playerへ表示します。既存音声や所有者間コピー先でも、プレーヤーから表紙を読み込めます。[古いファイルの情報抽出](docs/MEDIA_EXTRACTION.md)もFilesから要求できます。自動一括再抽出、Bookshelfと運用の残件は開発中です。
 
 [公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0076・通常79table・151 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
