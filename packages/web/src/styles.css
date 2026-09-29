@@ -759,7 +759,8 @@ h1 {
   font-weight: 550;
   color: #657184;
 }
-.field-label input {
+.field-label input,
+.field-label select {
   display: block;
   width: 100%;
   padding: 12px;
@@ -768,6 +769,19 @@ h1 {
   margin-top: 9px;
   color: #465468;
   font-size: 14px;
+  background: #fff;
+}
+.share-create,
+.share-result {
+  display: grid;
+  gap: 16px;
+}
+.share-create > p,
+.share-result > p {
+  margin: 0;
+  color: #758090;
+  font-size: 13px;
+  line-height: 1.7;
 }
 .dialog-actions {
   margin-top: 27px;

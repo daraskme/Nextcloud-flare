@@ -17,6 +17,7 @@ import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
+import { handleShareHttp, shareRoute } from "./shares";
 import { handleStatsHttp, statsRoute } from "./stats";
 import { handleTrashHttp, trashRoute } from "./trash";
 import { handleUploadHttp, uploadReadRoute, uploadRoute } from "./uploads";
@@ -43,6 +44,7 @@ export function privateAppRoute(request: Request): boolean {
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
+    shareRoute(request) ||
     uploadRoute(request) ||
     (request.method === "POST" &&
       (url.pathname === "/api/v1/csrf" ||
@@ -80,6 +82,7 @@ export async function handlePrivateAppHttp(
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
+  const share = shareRoute(request);
   const upload = uploadRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
@@ -94,6 +97,7 @@ export async function handlePrivateAppHttp(
     !trashRead &&
     !nodeMutation &&
     !appPassword &&
+    !share &&
     !upload &&
     !ticketIssue &&
     !ticketCancel
@@ -162,6 +166,7 @@ export async function handlePrivateAppHttp(
       dependencies.csrf,
       dependencies.appPasswordPepper,
     );
+  if (share) return handleShareHttp(request, env, session, dependencies.csrf);
   if (search)
     return handleSearchHttp(
       request,

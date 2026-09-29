@@ -3,7 +3,10 @@ import { handleContentHttp } from "./api/content";
 import { davPath, handleDavHttp } from "./api/dav";
 import { handlePrivateAppHttp, privateAppRoute } from "./api/privateApp";
 import { privateAppDependencies } from "./api/privateAppConfig";
+import { publicShareDependencies } from "./api/publicShareConfig";
+import { handlePublicShareHttp, publicShareApiRoute } from "./api/publicShares";
 import { privateAssetRoute, servePrivateApp } from "./assets/privateApp";
+import { publicShareAssetRoute, servePublicShare } from "./assets/publicShare";
 import { appPasswordPepperRing } from "./auth/appPassword";
 import { ContentTokens, contentKeyRing } from "./auth/contentTokens";
 import { globalKdf } from "./auth/globalKdf";
@@ -70,6 +73,22 @@ export default {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
         return handlePrivateAppHttp(request, env, epoch, await privateAppDependencies(env, epoch));
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    if (new URL(request.url).origin === env.APP_ORIGIN && publicShareApiRoute(request)) {
+      try {
+        const epoch = await admittedEpoch(env);
+        if (epoch === null) return problem(503, "not_ready");
+        return handlePublicShareHttp(request, env, epoch, await publicShareDependencies(env));
+      } catch {
+        return problem(503, "not_ready");
+      }
+    }
+    if (new URL(request.url).origin === env.APP_ORIGIN && publicShareAssetRoute(request)) {
+      try {
+        return await servePublicShare(request, env);
       } catch {
         return problem(503, "not_ready");
       }

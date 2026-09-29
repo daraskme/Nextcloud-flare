@@ -117,7 +117,13 @@ export async function listNodeChildren(
   tokens: NodeCursorTokens,
   cursor?: string,
 ) {
-  if (principal.kind !== "user") throw new Error("node_unavailable");
+  const cursorSubject =
+    principal.kind === "user"
+      ? principal.user_id
+      : principal.kind === "link_share"
+        ? principal.share_id
+        : undefined;
+  if (!cursorSubject) throw new Error("node_unavailable");
   const proof = await nodeProof(db, principal, parentId);
   const parent = proof.node;
   if (parent.kind === "file") throw new Error("node_not_folder");
@@ -129,7 +135,7 @@ export async function listNodeChildren(
       claims.parentId !== parent.id ||
       claims.spaceId !== parent.space_id ||
       claims.ownerId !== parent.owner_id ||
-      claims.userId !== principal.user_id ||
+      claims.userId !== cursorSubject ||
       claims.credentialId !== principal.credential_id ||
       claims.epoch !== principal.epoch ||
       claims.generation !== parent.tree_generation
@@ -184,7 +190,7 @@ export async function listNodeChildren(
           parentId: parent.id,
           spaceId: parent.space_id,
           ownerId: parent.owner_id,
-          userId: principal.user_id,
+          userId: cursorSubject,
           credentialId: principal.credential_id,
           epoch: principal.epoch,
           generation: parent.tree_generation,

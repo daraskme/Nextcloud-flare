@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { publicAssets } from "../../src/assets/publicManifest";
+import { publicShareAssetRoute } from "../../src/assets/publicShare";
 import {
   privateSpaPath,
   ROUTE_BINDINGS,
@@ -62,5 +64,17 @@ describe("route binding coverage", () => {
       "/unknown",
     ])
       expect(privateSpaPath(path)).toBe(false);
+  });
+
+  it("serves only exact public share shell and versioned asset paths", () => {
+    for (const path of ["/s", "/s/share_123", ...publicAssets])
+      expect(publicShareAssetRoute(new Request(`https://app.invalid${path}`))).toBe(true);
+    for (const path of [
+      "/s/share/child",
+      "/private-assets/app.js",
+      "/public-assets/unknown.js",
+      "/api/v1/public/shares/share_123",
+    ])
+      expect(publicShareAssetRoute(new Request(`https://app.invalid${path}`))).toBe(false);
   });
 });
