@@ -306,6 +306,11 @@ export function validateClaimAuthorization(
       authorized.node.id === operands.nodeId &&
       authorized.parentId === operands.parentId &&
       authorized.node.space_id === intent.spaceId) ||
+    (intent.kind === "audio.metadata.write" &&
+      authorized.operation === "audio.metadata.write" &&
+      authorized.node.id === operands.nodeId &&
+      authorized.node.space_id === intent.spaceId &&
+      authorized.node.current_blob_id === operands.blobId) ||
     (intent.kind === "dav.proppatch" &&
       authorized.operation === "node.props.write" &&
       authorized.node.id === operands.nodeId &&
@@ -466,6 +471,7 @@ export async function lookupOperation(
       row.kind !== "node.restore" &&
       row.kind !== "node.purge" &&
       row.kind !== "node.rename" &&
+      row.kind !== "audio.metadata.write" &&
       row.kind !== "dav.proppatch")
   )
     return null;
@@ -673,6 +679,15 @@ export async function lookupOperation(
           upload: row.kind === "upload.complete",
         });
       }
+    } else if (row.kind === "audio.metadata.write") {
+      if (typeof operands.nodeId !== "string" || typeof operands.blobId !== "string") return null;
+      const authorized = await prove(principal, {
+        operation: "audio.metadata.write",
+        nodeId: operands.nodeId,
+        spaceId: row.space_id,
+      });
+      if (!("node" in authorized) || authorized.node.current_blob_id !== operands.blobId)
+        return null;
     } else {
       if (typeof operands.nodeId !== "string") return null;
       await prove(principal, {
@@ -714,7 +729,13 @@ export async function lookupOperation(
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&
-      ["node.rename", "node.move", "dav.move", "thumbnail.request"].includes(row.kind) &&
+      [
+        "node.rename",
+        "node.move",
+        "dav.move",
+        "thumbnail.request",
+        "audio.metadata.write",
+      ].includes(row.kind) &&
       result.nodeId !== operands.nodeId
     )
       return null;

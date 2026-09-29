@@ -849,7 +849,7 @@ React、TypeScript、Vite、Tailwind、shadcn/ui、TanStack Router/Query/Virtual
 
 folder 内画像/動画、任意 recursive を対象にし keyset 最大200件。`node_media` は `width,height,taken_at,duration_ms,orientation,dominant_color` と bounded camera 情報だけ。GPS破棄。thumbnail は sm256/md768/lg1600、lg は lazy unique claim。recursive 候補は SQL で50,000を強制し、§15 gate 未合格時は10,000へ縮小する。v1 UI は grid/list、folder/recursive 切替、lightbox、次/前、共有閲覧を必須とし、高度 layout は v1.1。
 
-現在の[Gallery画像閲覧](GALLERY.md)は撮影日時順の一覧と基本UI・共有へ接続済み。50,000候補のローカルD1 rows_read gateが未達のため、上記の縮小条件に従い通常10,000候補を使う。[lg要求時生成とプレビュー／原本切り替え](LARGE_THUMBNAILS.md)も接続済み。[AV1/Opusの情報抽出とGalleryの動画再生](TRACK_METADATA.md)も接続済み。[Audio専用UI・常駐player・利用者別位置の保存/再開](AUDIO.md)も接続済み。追加形式・cover・override編集は継続する。
+現在の[Gallery画像閲覧](GALLERY.md)は撮影日時順の一覧と基本UI・共有へ接続済み。50,000候補のローカルD1 rows_read gateが未達のため、上記の縮小条件に従い通常10,000候補を使う。[lg要求時生成とプレビュー／原本切り替え](LARGE_THUMBNAILS.md)も接続済み。[AV1/Opusの情報抽出とGalleryの動画再生](TRACK_METADATA.md)も接続済み。[Audio専用UI・常駐player・利用者別位置の保存/再開](AUDIO.md)も接続済み。追加形式・[override編集](AUDIO_METADATA_EDIT.md)は原本/revision/認可/lockを確認するPATCHと画面へ接続済み。coverとタグの検索同期は継続する。
 
 2026-09-22 確定要件: 事前エンコード済みの AVIF 画像と AV1 動画（MP4/WebM、Opus 音声付き/音声無し）を必須対応とする。原本を保持し、画像表示/動画再生は認可済み content URL へ直接接続する。実 codec/bit depth を取得して再生可否を判定し、未対応端末では download 導線を提供する。詳細は [`MEDIA_FORMATS.md`](MEDIA_FORMATS.md)。
 

@@ -7,7 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { AudioPage } from "../../../shared/src/audio";
+import type { AudioPage, AudioTrack } from "../../../shared/src/audio";
 import { type AudioClient, readAudioPage } from "./audioClient";
 import { AudioPlayer, audioDenied } from "./audioPlayer";
 import "./audio.css";
@@ -126,7 +126,15 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function AudioLibrary({ client }: { client: AudioClient }) {
+export function AudioLibrary({
+  client,
+  onEdit,
+  refresh = 0,
+}: {
+  client: AudioClient;
+  onEdit?: (item: AudioTrack) => void;
+  refresh?: number;
+}) {
   const player = useAudioPlayer();
   const playing = useSyncExternalStore(player.subscribe, player.getSelectionSnapshot);
   const [page, setPage] = useState<AudioPage | null>(null);
@@ -157,7 +165,7 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
   useEffect(() => {
     void load(null);
     return () => request.current?.abort();
-  }, [client]);
+  }, [client, refresh]);
   return (
     <section className="audio-library" aria-label="オーディオ">
       <header>
@@ -208,6 +216,16 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
                 {item.durationMs === null ? "—" : audioTime(item.durationMs / 1000)}
               </span>
             </button>
+            {page.canEdit && onEdit && (
+              <button
+                type="button"
+                className="audio-edit"
+                aria-label={`${item.name}のタグを編集`}
+                onClick={() => onEdit(item)}
+              >
+                タグを編集
+              </button>
+            )}
           </li>
         ))}
       </ol>

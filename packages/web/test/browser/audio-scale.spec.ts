@@ -135,16 +135,18 @@ test("2,000 real Audio tracks remain usable during playback with maximal text fi
       await target.screenshot({ path: info.outputPath(`audio-scale-${scope}.png`) });
       await player.getByRole("button", { name: "前の曲", exact: true }).click();
       await expect(player.getByRole("button", { name: "一時停止", exact: true })).toBeEnabled();
-      await expect(library.locator(".audio-selected button")).toHaveAttribute(
-        "aria-label",
-        "001998.opusを再生",
-      );
+      await expect(
+        library
+          .locator(".audio-selected")
+          .getByRole("button", { name: "001998.opusを再生", exact: true }),
+      ).toBeVisible();
       await player.getByRole("button", { name: "次の曲", exact: true }).click();
       await expect(player.getByRole("button", { name: "一時停止", exact: true })).toBeEnabled();
-      await expect(library.locator(".audio-selected button")).toHaveAttribute(
-        "aria-label",
-        "001999.opusを再生",
-      );
+      await expect(
+        library
+          .locator(".audio-selected")
+          .getByRole("button", { name: "001999.opusを再生", exact: true }),
+      ).toBeVisible();
       await expect(player.getByRole("button", { name: "次の曲", exact: true })).toBeDisabled();
       await assertClosing(target);
       await expect(library.locator(".audio-selected")).toHaveCount(0);

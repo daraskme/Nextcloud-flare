@@ -1,10 +1,21 @@
-import type { AudioPage, AudioTrack, PlaybackState } from "../../../shared/src/audio";
+import type {
+  AudioMetadataUpdate,
+  AudioPage,
+  AudioTrack,
+  PlaybackState,
+} from "../../../shared/src/audio";
 
 export interface AudioClient {
   readonly scope: string;
   readonly signal: AbortSignal;
   list(cursor: string | null, signal: AbortSignal): Promise<AudioPage>;
   current(id: string, signal: AbortSignal): Promise<AudioPage>;
+  edit?(
+    id: string,
+    key: string,
+    update: AudioMetadataUpdate,
+    signal: AbortSignal,
+  ): Promise<unknown>;
   original(item: AudioTrack, signal: AbortSignal): Promise<{ url: string; expiresAt: number }>;
   save?(
     item: AudioTrack,

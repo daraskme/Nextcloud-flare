@@ -124,6 +124,40 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1000000);
 });
+it("refreshes edited display tags without reloading the native source or changing playback position", async () => {
+  const f = fixture();
+  await f.select();
+  f.media.currentTime = 18;
+  const loads = f.media.loads,
+    src = f.media.src,
+    selection = f.player.getSelectionSnapshot();
+  f.player.updateQueue(
+    f.client,
+    page([{ ...items[0]!, title: "edited", artist: "new artist" }, items[1]!]),
+  );
+  expect(f.player.getSnapshot().track).toMatchObject({ title: "edited", artist: "new artist" });
+  expect(f.media.loads).toBe(loads);
+  expect(f.media.src).toBe(src);
+  expect(f.media.currentTime).toBe(18);
+  expect(f.player.getSelectionSnapshot()).toBe(selection);
+  f.player.updateQueue(
+    f.client,
+    page([{ ...items[0]!, currentBlobId: "replacement", title: "wrong original" }]),
+  );
+  expect(f.player.getSnapshot().track?.title).toBe("edited");
+  f.player.refreshMetadata(
+    f.client,
+    page([{ ...items[0]!, title: "edited beyond the first page" }]),
+  );
+  expect(f.player.getSnapshot().track?.title).toBe("edited beyond the first page");
+  expect(f.media.loads).toBe(loads);
+  expect(f.media.currentTime).toBe(18);
+  f.player.refreshMetadata(
+    { ...f.client, scope: "other" },
+    page([{ ...items[0]!, title: "other scope" }]),
+  );
+  expect(f.player.getSnapshot().track?.title).toBe("edited beyond the first page");
+});
 afterEach(() => {
   for (const p of players.splice(0)) p.dispose();
   vi.useRealTimers();

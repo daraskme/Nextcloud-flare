@@ -186,7 +186,22 @@ export class AudioPlayer {
     const s = this.#session;
     if (s?.client.scope !== client.scope || s.generator !== page.generator) return;
     this.#queue = page.items.slice(0, 2000);
+    this.refreshMetadata(client, page);
     this.#navigation();
+  }
+  refreshMetadata(client: AudioClient, page: AudioPage) {
+    const s = this.#session;
+    if (s?.client.scope !== client.scope || s.generator !== page.generator) return;
+    const current = page.items.find(
+      (item) =>
+        item.id === s.item.id &&
+        item.currentBlobId === s.item.currentBlobId &&
+        item.mime === s.item.mime,
+    );
+    if (current) {
+      s.item = current;
+      this.#patch({ track: current });
+    }
   }
   #navigation() {
     const index = this.#queue.findIndex((x) => x.id === this.#session?.item.id);

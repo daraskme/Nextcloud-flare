@@ -15,6 +15,7 @@ import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioReadRoute, handleAudioListHttp, handlePlaybackHttp, playbackRoute } from "./audio";
+import { audioMetadataRoute, handleAudioMetadataHttp } from "./audioMetadata";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
@@ -52,6 +53,7 @@ export function privateAppRoute(request: Request): boolean {
     galleryRoute(request) ||
     audioReadRoute(request) ||
     playbackRoute(request) ||
+    audioMetadataRoute(request) ||
     searchRoute(request) ||
     statsRoute(request) ||
     trashRoute(request) ||
@@ -102,6 +104,7 @@ export async function handlePrivateAppHttp(
   const gallery = galleryRoute(request);
   const audio = audioReadRoute(request);
   const playback = playbackRoute(request);
+  const audioMetadata = audioMetadataRoute(request);
   const search = searchRoute(request);
   const stats = statsRoute(request);
   const trashRead = trashRoute(request);
@@ -124,6 +127,7 @@ export async function handlePrivateAppHttp(
     !gallery &&
     !audio &&
     !playback &&
+    !audioMetadata &&
     !search &&
     !stats &&
     !trashRead &&
@@ -286,7 +290,7 @@ export async function handlePrivateAppHttp(
       },
       dependencies.cursors,
     );
-  if (audio || playback) {
+  if (audio || playback || audioMetadata) {
     const principal = {
       kind: "user" as const,
       user_id: session.user_id,
@@ -295,7 +299,9 @@ export async function handlePrivateAppHttp(
     };
     return audio
       ? handleAudioListHttp(request, env, principal, dependencies.cursors)
-      : handlePlaybackHttp(request, env, principal, dependencies.csrf);
+      : audioMetadata
+        ? handleAudioMetadataHttp(request, env, principal, dependencies.csrf)
+        : handlePlaybackHttp(request, env, principal, dependencies.csrf);
   }
   if (thumbnail)
     if (request.method === "POST")

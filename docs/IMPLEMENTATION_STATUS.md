@@ -1,6 +1,18 @@
 # 実装進捗
 
-## AAC・Vorbisの解析・一覧・原本再生（今回）
+## 音声タグの編集と確定競合（今回）
+
+[音声タグの編集](AUDIO_METADATA_EDIT.md)を既存PATCH route、専用library:write/edit認可、LockDO permitとoperation receipt、private画面へ接続した。曲名・artist・albumのoverrideを抽出値と分離し、空欄で元に戻す。現在の原本・revision・metadata snapshot・元credential/選択共有・DAV lock・epoch/claimを確定batchで再確認し、5段階の更新と監査を一括確定する。原本bytes・参照/容量・利用者の再生位置は変更しない。タグの検索文字列への同期は後続で、今回は既存filename索引のrevisionだけを進める。
+
+- Node38件成功（4file、0.98秒、/tmp/ncf-audio-edit-unit-final.log）。表示値のNFC・1KiB・制御文字/不正surrogate・null/空欄、入力revision/generator、一覧の索引上限と既存client/playerを確認。タグ更新ではnative src・load回数・位置・選択snapshotを保持し、異なる原本やscopeのタグを採用しない。
+- Native関連122件成功。初回5file/107件は106件成功、HTTP fixtureがCsrfTokens.issueの引数を省略して1件失敗（/tmp/ncf-audio-edit-native-1.log）。正しいOrigin/Sec-Fetch-Site/requestとtoken receiptを用いて修正し、タグ編集11 + locks14の25件成功（13.68秒、/tmp/ncf-audio-edit-native-2.log）。既存Audio/budget・全principal認可・rename、タグ編集・reset・同key再送、選択した内部edit共有/read拒否、最終batchでのrevision/抽出値/失効/停止/hidden/lock競合、ACK喪失を検証した。
+- 同じ保存intentがpermit取得中に先行確定するケースを追加し、修正前のaudio_metadata_conflictを再現（/tmp/ncf-audio-edit-concurrent-red.log）。同じkeyと全intentが一致する終端receiptだけを再照会して返すよう修正。タグ編集の最終12件成功（8.36秒、/tmp/ncf-audio-edit-native-final.log）。別key・別入力・原本変更・認可失効への拒否条件は維持した。
+- Browser関連7件成功。新規の実upload/編集・保存/再読込・別タブ競合・reset・390px表示と既存Audio5件は初回に成功したが、2,000曲試験は新しい編集ボタンも選択する古いselectorで失敗した（6/7件成功、/tmp/ncf-audio-edit-browser-1.log）。再生ボタンをaccessible nameで指定し、編集dialogの中央配置と、一覧先頭に戻っても再生中のタグを更新する処理を確認した。修正後の編集/規模2件成功（1.7分、/tmp/ncf-audio-edit-browser-2.log）。2,000曲/CPU4倍で追加最大1,032/789ms、frame待ちp95 17.4/17.2ms、45回のScriptDuration 7.8/10.8ms、player高77/170px（所有者/公開）。gateは緩めていない。編集画面を目視確認し、前後の画像/測定値は/tmp/ncf-audio-edit-browser-before・afterへ保存した。
+- 最終build後の公開asset/SRI native5件成功（2.64秒、/tmp/ncf-audio-edit-assets.log）。重複を除く関連試験は172件成功。typecheck・lint（759file）・verify:contracts・verify:config・Web両入口/Worker dry-run buildも成功（/tmp/ncf-audio-edit-{types-4,lint-verified,contracts,config,build}.log）。
+
+schema0073・通常79table・149 API route、migration/依存の追加なし。新しいOutbox・R2処理を発行しない。検索の抽出/override同期、改名/MOVE/上書き/COPYとの整合、cover、Bookshelf、再抽出、運用修復と全suite・実Cloudflare/他OS gateは継続する。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## AAC・Vorbisの解析・一覧・原本再生
 
 [AAC（M4A/MP4）・Vorbis（Ogg）](AAC_VORBIS.md)を既存のupload/DAV完了Outbox、一覧、位置保存と原本playerへ追加した。AACはesdsのdescriptorとAudioSpecificConfig、PCE、SBR/PSを上限付きで確認し、LC/HE/HE v2の正規MIMEを区別する。VorbisはOggの3header、codebook/floor/residue/mapping/modeを検査し、復号tableを作らず構成と表示タグを取得する。全体の読取り予算、現在の認可/blob、codec/MIMEの組合せを維持する。
 

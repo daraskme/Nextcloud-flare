@@ -47,6 +47,8 @@
 }
 .audio-tracks li {
   border-bottom: 1px solid #dfe7ed;
+  display: flex;
+  align-items: center;
 }
 .audio-tracks li > button {
   display: flex;
@@ -57,6 +59,13 @@
   background: transparent;
   border: 0;
   padding: 16px 12px;
+  min-width: 0;
+}
+.audio-tracks li > .audio-edit {
+  width: auto;
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 12px 8px;
 }
 .audio-tracks li > button:hover,
 .audio-selected {

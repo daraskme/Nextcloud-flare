@@ -14,7 +14,7 @@ import { acquireAccountMutation, commitAccountMutation } from "./accountMutation
 export const AUDIO_TRACK_LIMIT = 2000;
 export const AUDIO_CANDIDATE_LIMIT = 1000;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const AUDIO_MATCH = `a.blob_id=n.current_blob_id AND a.generator_version=?4
+export const AUDIO_MATCH = `a.blob_id=n.current_blob_id AND a.generator_version=?4
   AND b.id=a.blob_id AND b.owner_id=n.owner_id AND b.state IN ('committed','gc_candidate')
   AND ((a.codec='opus' AND b.mime_sniffed IN ('audio/ogg; codecs="opus"','audio/webm; codecs="opus"','audio/mp4; codecs="Opus"'))
     OR (a.codec='mp3' AND b.mime_sniffed='audio/mpeg')
@@ -50,6 +50,10 @@ async function authority(db: D1Database, principal: Principal, nodeId: string, w
   return proof;
 }
 
+export const AUDIO_METADATA = `json_object('revision',n.revision,
+  'extracted',json_object('title',a.title_extracted,'artist',a.artist_extracted,'album',a.album_extracted),
+  'overrides',json_object('title',a.title_override,'artist',a.artist_override,'album',a.album_override))`;
+
 export function audioStatement(file: boolean, limit: number, after = false) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 201) throw new Error("invalid_audio_limit");
   const projection = `SELECT n.id,n.name,n.name_ci AS nameCi,n.current_blob_id AS currentBlobId,
@@ -57,7 +61,7 @@ export function audioStatement(file: boolean, limit: number, after = false) {
     COALESCE(a.title_override,a.title_extracted,n.name) AS title,
     COALESCE(a.artist_override,a.artist_extracted) AS artist,
     COALESCE(a.album_override,a.album_extracted) AS album,a.track_number AS trackNumber,a.disc_number AS discNumber,
-    p.position_ms AS positionMs,p.updated_at AS stateUpdatedAt`;
+    p.position_ms AS positionMs,p.updated_at AS stateUpdatedAt${file ? `,${AUDIO_METADATA} AS metadataJson` : ""}`;
   if (file)
     return `${projection} FROM nodes n
     JOIN node_audio a ON a.node_id=n.id JOIN blobs b ON ${AUDIO_MATCH}
@@ -139,9 +143,22 @@ export async function listAudio(
     lastId = c.lastId;
     emitted = c.emitted;
   }
+  let editProof: Awaited<ReturnType<typeof authorizeNode>> | undefined;
+  if (principal.kind === "user") {
+    try {
+      editProof = await authorizeNode(db, principal, {
+        operation: "node.props.write",
+        nodeId: rootId,
+        spaceId: root.space_id,
+      });
+    } catch {
+      /* A read grant remains usable without editing metadata. */
+    }
+  }
   const count = Math.min(200, AUDIO_TRACK_LIMIT - emitted);
   const results = await atomicBatch(db, [
     authorizationAssertion(proof),
+    ...(editProof ? [authorizationAssertion(editProof)] : []),
     {
       sql: audioStatement(root.kind === "file", count + 1, lastName !== null),
       values: [
@@ -157,6 +174,7 @@ export async function listAudio(
   ]);
   type Row = Omit<AudioTrack, "playback"> & {
     nameCi: string;
+    metadataJson?: string;
     positionMs: number | null;
     stateUpdatedAt: number | null;
   };
@@ -192,8 +210,9 @@ export async function listAudio(
     rootId,
     treeGeneration: root.tree_generation,
     generator: TRACK_METADATA_GENERATOR,
-    items: page.map(({ nameCi: _name, positionMs, stateUpdatedAt, ...item }) => ({
+    items: page.map(({ nameCi: _name, metadataJson, positionMs, stateUpdatedAt, ...item }) => ({
       ...item,
+      ...(editProof && metadataJson ? { metadata: JSON.parse(metadataJson) } : {}),
       playback:
         positionMs !== null && stateUpdatedAt !== null
           ? { positionMs, updatedAt: stateUpdatedAt }
@@ -202,6 +221,7 @@ export async function listAudio(
     nextCursor,
     limitReached: more && nextCursor === null,
     trackLimit: AUDIO_TRACK_LIMIT,
+    canEdit: !!editProof,
   };
 }
 

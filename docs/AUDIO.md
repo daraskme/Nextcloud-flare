@@ -9,7 +9,11 @@
 - 直下の曲を名前・ID順に最大200件ずつ返す。単一ファイルrootも扱う。1フォルダーにつき最大2,000曲で、上限による終了は`limitReached`で明示する。再帰一覧ではない。
 - `cursor`は専用HMAC用途・audienceで、利用者・資格情報・space/owner・root・選択共有/version・epoch・tree generation・metadata generator・最後の名前/ID・返却済み曲数に束縛する。10分で失効し、Files/Gallery cursorは流用できない。
 - 現在のblobと`track-metadata-v1`、解析済みcodec/MIMEが一致する`node_audio`だけを返す。Opus（Ogg/WebM/MP4）、MP3、FLAC、WAV、AAC（M4A/MP4）、Vorbis（Ogg）を対象とする。非表示・削除されたnode/祖先、失効した共有・資格情報を除外し、最終SELECTと同じbatchで再検査する。
-- title/artist/albumはoverride、抽出値の順に使い、titleがなければファイル名を使う。override編集API/UIは未接続。`playback`は現在の利用者・node・blobの状態だけを返し、匿名共有では常にnull。
+- title/artist/albumはoverride、抽出値の順に使い、titleがなければファイル名を使う。[override編集API/UI](AUDIO_METADATA_EDIT.md)を所有者・選択した内部edit共有へ接続済み。`playback`は現在の利用者・node・blobの状態だけを返し、匿名共有では常にnull。
+
+## タグ編集
+
+[音声タグの編集](AUDIO_METADATA_EDIT.md)で曲名・アーティスト・アルバムの表示値を変更できる。空欄で抽出値へ戻す。現在の原本・revision・選択共有とDAV lockを確定batchで確認し、競合や保存結果不明時は現在のタグを読み直す。単一fileのtracks応答は編集可能な利用者だけに抽出値/override/revisionを返し、一覧にはcanEditのhintを付ける。タグの検索文字列への同期は後続。
 
 ## 再生位置
 
@@ -57,6 +61,6 @@ Content-Sessionは300秒を要求し、実際のCookie receipt期限に従う。
 
 ## 残件
 
-coverの抽出・変換、override編集・検索索引との同期は継続する。原本OpusのFiles経由再生は[TRACK_METADATA](TRACK_METADATA.md)、追加形式の範囲と限界は[MP3/FLAC/WAV](AUDIO_FORMATS.md)と[AAC/Vorbis](AAC_VORBIS.md)を参照。
+override編集は接続済み。coverの抽出・変換と、抽出値/overrideの検索索引への同期は継続する。原本OpusのFiles経由再生は[TRACK_METADATA](TRACK_METADATA.md)、追加形式の範囲と限界は[MP3/FLAC/WAV](AUDIO_FORMATS.md)と[AAC/Vorbis](AAC_VORBIS.md)を参照。
 
 ローカルD1の候補探索gateと2,000曲のChrome描画gateは上記で検証済み。実Cloudflareの負荷・適用と、他OS/browser・実モバイル機器の確認は後続。

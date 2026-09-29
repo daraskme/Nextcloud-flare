@@ -65,7 +65,7 @@ export interface NodeWritePermitRequest {
   nodeId: string;
   principal: Principal;
   lockTokens: readonly string[];
-  operation?: "node.props.write" | "node.content.write";
+  operation?: "node.props.write" | "node.content.write" | "audio.metadata.write";
 }
 export interface TrashPermitRequest {
   requestId: string;

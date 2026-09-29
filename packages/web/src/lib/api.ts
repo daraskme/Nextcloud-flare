@@ -209,6 +209,20 @@ export class ApiClient {
         );
         return audioOriginal(account.contentOrigin, ticket, item, active(signal));
       },
+      edit: async (id, key, update, signal) => {
+        const token = await this.csrf();
+        active(signal).throwIfAborted();
+        return this.request(`/api/v1/nodes/${id}/audio`, {
+          method: "PATCH",
+          signal: active(signal),
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+            "Idempotency-Key": key,
+          },
+          body: JSON.stringify({ ...update, ...(selection ? { share: selection } : {}) }),
+        });
+      },
       save: (item, generator, positionMs, previousUpdatedAt, signal) =>
         post<PlaybackState>(
           `/api/v1/nodes/${item.id}/playback-state`,
