@@ -1,5 +1,5 @@
 import type { AudioPage, AudioTrack } from "../../../shared/src/audio";
-import type { AudioClient } from "./audioClient";
+import { type AudioClient, audioCoverRequestState } from "./audioClient";
 
 export interface AudioSnapshot {
   track: AudioTrack | null;
@@ -13,10 +13,14 @@ export interface AudioSnapshot {
   reload: boolean;
   previous: boolean;
   next: boolean;
+  coverBusy: boolean;
+  coverMessage: string;
 }
 interface AudioSelection {
   scope: string;
   trackId: string | null;
+  blobId: string | null;
+  cover: AudioTrack["cover"];
 }
 interface Session {
   client: AudioClient;
@@ -34,6 +38,7 @@ interface Session {
   renewal?: Promise<void> | undefined;
   expiresAt: number;
   expiry?: ReturnType<typeof setTimeout>;
+  coverKey?: string;
 }
 const empty = (): AudioSnapshot => ({
   track: null,
@@ -47,6 +52,8 @@ const empty = (): AudioSnapshot => ({
   reload: false,
   previous: false,
   next: false,
+  coverBusy: false,
+  coverMessage: "",
 });
 export function audioDenied(error: unknown) {
   return (
@@ -60,7 +67,7 @@ export function audioDenied(error: unknown) {
 /** One native element lives outside route content. No original is copied into a Blob URL. */
 export class AudioPlayer {
   #snapshot = empty();
-  #selection: AudioSelection = { scope: "", trackId: null };
+  #selection: AudioSelection = { scope: "", trackId: null, blobId: null, cover: undefined };
   #listeners = new Set<() => void>();
   #session: Session | null = null;
   #retiring = new Set<Session>();
@@ -120,8 +127,15 @@ export class AudioPlayer {
     this.#snapshot = { ...this.#snapshot, ...value };
     const { scope, track } = this.#snapshot;
     const trackId = track?.id ?? null;
-    if (scope !== this.#selection.scope || trackId !== this.#selection.trackId)
-      this.#selection = { scope, trackId };
+    const blobId = track?.currentBlobId ?? null,
+      cover = track?.cover;
+    if (
+      scope !== this.#selection.scope ||
+      trackId !== this.#selection.trackId ||
+      blobId !== this.#selection.blobId ||
+      cover !== this.#selection.cover
+    )
+      this.#selection = { scope, trackId, blobId, cover };
     for (const listener of this.#listeners) listener();
   }
   #live(s: Session) {
@@ -210,6 +224,44 @@ export class AudioPlayer {
     current.throwIfAborted();
     return blob;
   };
+  async requestCover() {
+    const s = this.#session;
+    if (!s?.client.requestCover || this.#snapshot.coverBusy) return;
+    this.#patch({ coverBusy: true, coverMessage: "" });
+    s.coverKey ??= crypto.randomUUID();
+    try {
+      const receipt = await s.client.requestCover(
+        s.item,
+        s.coverKey,
+        AbortSignal.any([s.stop.signal, s.client.signal, AbortSignal.timeout(30000)]),
+      );
+      if (!this.#live(s)) return;
+      const state = audioCoverRequestState(receipt, s.item);
+      const item = await this.#current(s);
+      if (!this.#live(s)) return;
+      s.item = state === "pending" ? { ...item, cover: "pending" } : item;
+      this.#patch({
+        track: s.item,
+        coverMessage:
+          state === "pending"
+            ? "表紙を生成しています。しばらくして確認してください。"
+            : state === "absent"
+              ? "読み取れる埋め込み表紙がありません。"
+              : state === "ready"
+                ? ""
+                : "この音声の表紙を生成できませんでした。",
+      });
+    } catch (error) {
+      if (!this.#live(s)) return;
+      if (audioDenied(error)) {
+        void this.close(false);
+        return;
+      }
+      this.#patch({ coverMessage: "表紙の状態を確認できませんでした。もう一度確認してください。" });
+    } finally {
+      if (this.#live(s)) this.#patch({ coverBusy: false });
+    }
+  }
   refreshMetadata(client: AudioClient, page: AudioPage) {
     const s = this.#session;
     if (s?.client.scope !== client.scope || s.generator !== page.generator) return;

@@ -12,12 +12,13 @@ export async function upload(
   filename: string,
   parentId?: string,
   fixtureKind: "images" | "tracks" = "images",
+  metadata: "current" | "legacy-audio" = "current",
 ) {
   const encoded = readFileSync(
     new URL(`../../../worker/test/fixtures/${fixtureKind}/${filename}`, import.meta.url),
   ).toString("base64");
   return page.evaluate(
-    async ({ encoded, parentId }) => {
+    async ({ encoded, parentId, metadata }) => {
       const json = async (path: string, options?: RequestInit) => {
         const response = await fetch(path, options);
         if (!response.ok) throw new Error(`fixture_http_${response.status}`);
@@ -54,10 +55,14 @@ export async function upload(
         body: "{}",
       });
       // This existing local fixture drives the real Outbox producer/consumer without a remote Queue.
-      const consumed = await json(`/__test__/dead-letter-dispatch/${operation.id}_event`, {
-        method: "POST",
-      });
-      if (consumed.acked !== 1) throw new Error("fixture_metadata_not_completed");
+      if (metadata === "legacy-audio")
+        await json(`/__test__/legacy-audio/${operation.result.nodeId}`, { method: "POST" });
+      else {
+        const consumed = await json(`/__test__/dead-letter-dispatch/${operation.id}_event`, {
+          method: "POST",
+        });
+        if (consumed.acked !== 1) throw new Error("fixture_metadata_not_completed");
+      }
       const node = await json(`/api/v1/nodes/${operation.result.nodeId}`);
       return { node, me, name } as {
         node: { id: string; currentBlobId: string };
@@ -65,7 +70,7 @@ export async function upload(
         name: string;
       };
     },
-    { encoded, parentId },
+    { encoded, parentId, metadata },
   );
 }
 

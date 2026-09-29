@@ -3,7 +3,7 @@ import { selectedShare } from "../../../shared/src/shares";
 import type { Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
-import { requestLargeThumbnail } from "../services/requestLargeThumbnail";
+import { requestThumbnail } from "../services/requestLargeThumbnail";
 import { readJsonObject } from "./jsonBody";
 
 export async function handleLargeThumbnailHttp(
@@ -45,7 +45,7 @@ export async function handleLargeThumbnailHttp(
       Object.keys(body).some((key) => !["blobId", "variant", "share"].includes(key)) ||
       typeof body.blobId !== "string" ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(body.blobId) ||
-      body.variant !== "lg" ||
+      (body.variant !== "lg" && body.variant !== "sm") ||
       !key ||
       !/^[\x21-\x7e]{1,200}$/.test(key)
     )
@@ -54,7 +54,7 @@ export async function handleLargeThumbnailHttp(
       if (principal.kind !== "user") return problem(400, "bad_request");
       principal = { ...principal, selected_share: selectedShare(body.share) };
     }
-    const receipt = await requestLargeThumbnail(env, principal, nodeId, body.blobId, key);
+    const receipt = await requestThumbnail(env, principal, nodeId, body.blobId, key, body.variant);
     return Response.json(receipt, {
       status: receipt.state === "pending" ? 202 : 200,
       headers: {

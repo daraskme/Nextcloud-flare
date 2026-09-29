@@ -16,9 +16,9 @@ import { type ImageReadBudget, imageObjectSource } from "../media/images/r2Sourc
 import { sniffMediaContainer } from "../media/sniff";
 import { TRACK_METADATA_GENERATOR, TRACK_METADATA_LIMITS } from "../media/tracks/common";
 import { inspectTracks } from "../media/tracks/inspect";
-import { hex } from "../platform/stream";
 import { AUDIO_OVERRIDE_SNAPSHOT, audioSearchTags } from "../search/audio";
 import { nodeSearchSteps } from "../search/projection";
+import { inspectAudioCover } from "./audioCover";
 import type { EventRow } from "./outboxAuthority";
 
 export interface ImageNode {
@@ -105,20 +105,9 @@ export async function imageMetadataStatements(
         )
       : null;
   signal.throwIfAborted();
-  const artwork = track?.media.kind === "audio" ? track.cover?.bytes : undefined;
-  const coverImage = artwork
-    ? await inspectImage({
-        size: artwork.length,
-        read: async (offset, length) => artwork.subarray(offset, offset + length),
-      })
-    : null;
-  const cover =
-    coverImage && artwork
-      ? {
-          bytes: artwork,
-          sha256: hex(await crypto.subtle.digest("SHA-256", new Uint8Array(artwork))),
-        }
-      : undefined;
+  const artwork = await inspectAudioCover(track),
+    coverImage = artwork?.image,
+    cover = artwork?.cover;
   // Even the no-image result belongs to this exact current blob and source authorization.
   const result: SqlStatement[] = [
     hold,

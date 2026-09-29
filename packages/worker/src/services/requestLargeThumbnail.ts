@@ -1,10 +1,13 @@
-import type { LargeThumbnailReceipt } from "../../../shared/src/largeThumbnail";
+import type {
+  LargeThumbnailReceipt,
+  ThumbnailRequestReceipt,
+} from "../../../shared/src/largeThumbnail";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import { freezePrincipal } from "../auth/selectedShare";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
-import { IMAGE_REQUEST_SOURCE, imageRequestKey } from "../jobs/imageRequestAuthority";
+import { imageRequestKey, imageRequestSpec } from "../jobs/imageRequestAuthority";
 import {
   assertOperationClaim,
   claimOperation,
@@ -12,20 +15,20 @@ import {
   operationIntent,
 } from "../jobs/operations";
 import { dispatchOutbox } from "../jobs/outbox";
-import { IMAGE_METADATA_GENERATOR } from "../media/images/inspect";
-import { IMAGE_TRANSFORM_GENERATOR } from "../media/images/transform";
 import { commitMutationStatements } from "./fsMutation";
 
 /** Enqueue only. Native generation, R2 storage and publication happen in the saved-reader job. */
-export async function requestLargeThumbnail(
+export async function requestThumbnail(
   env: Pick<Env, "DB" | "CONTROL" | "LOCKS" | "JOBS">,
   principal: Principal,
   nodeId: string,
   blobId: string,
   requestKey: string,
-): Promise<LargeThumbnailReceipt> {
+  variant: "lg" | "sm",
+): Promise<ThumbnailRequestReceipt> {
   principal = freezePrincipal(principal);
   if (
+    !["lg", "sm"].includes(variant) ||
     !["user", "link_share"].includes(principal.kind) ||
     ![nodeId, blobId].every((id) => /^[A-Za-z0-9_-]{1,128}$/.test(id))
   )
@@ -52,55 +55,66 @@ export async function requestLargeThumbnail(
     throw new Error("authorization_denied");
   const n = proof.node,
     ownerId = n.owner_id,
-    key = await imageRequestKey(blobId);
-  const source = assertExists(IMAGE_REQUEST_SOURCE, [
-    nodeId,
-    n.parent_id!,
-    blobId,
-    ownerId,
-    IMAGE_METADATA_GENERATOR,
-  ]);
+    key = await imageRequestKey(blobId, variant),
+    spec = imageRequestSpec(variant);
+  const source = assertExists(spec.source, [nodeId, n.parent_id!, blobId, ownerId, spec.metadata]);
   const operands = {
     nodeId,
     parentId: n.parent_id!,
     blobId,
-    variant: "lg",
-    generator: IMAGE_TRANSFORM_GENERATOR,
+    variant,
+    generator: spec.generator,
   };
+  if (
+    !(await primary(env.DB)
+      .prepare(spec.source)
+      .bind(...source.values!)
+      .first())
+  )
+    throw new Error("invalid_image_request");
   const intent = await operationIntent(
     principal,
     requestKey,
     spaceId,
     "thumbnail.request",
-    { nodeId, blobId, variant: "lg" },
+    { nodeId, blobId, variant },
     operands,
   );
   const existing = await findOperationIntent(env.DB, intent, 1);
-  const read = async (): Promise<LargeThumbnailReceipt | null> => {
+  const read = async (): Promise<ThumbnailRequestReceipt | null> => {
     const records = await atomicBatch(env.DB, [
       authorizationAssertion(proof),
       source,
       {
         sql: `SELECT CASE
         WHEN d.state='ready' AND x.state='published' AND c.retired_at IS NULL AND c.seal_token IS NULL AND c.settled_at IS NULL AND c.image_id IS NOT NULL THEN 'ready'
+        WHEN d.state='failed' AND d.error_code='image_cover_absent' THEN 'absent'
         WHEN d.state='failed' THEN CASE WHEN d.error_code GLOB 'image_unsupported_*' THEN 'unsupported' ELSE 'failed' END
         WHEN t.state='failed' THEN 'failed'
         WHEN e.state='failed' THEN 'failed'
         WHEN t.id IS NOT NULL OR e.outbox_id IS NOT NULL OR d.id IS NOT NULL THEN 'pending'
         ELSE NULL END AS state
-        FROM (SELECT 1) LEFT JOIN derivative_results d ON d.blob_id=? AND d.kind='thumbnail' AND d.variant='lg' AND d.generator_version=?
+        FROM (SELECT 1) LEFT JOIN derivative_results d ON d.blob_id=? AND d.kind=? AND d.variant=? AND d.generator_version=?
         LEFT JOIN image_derivative_objects x ON x.result_id=d.id LEFT JOIN image_derivative_cleanup c ON c.image_id=x.id
-        LEFT JOIN image_transform_attempts t ON t.blob_id=? AND t.variant='lg' AND t.generator_version=? AND t.state<>'not_started'
+        LEFT JOIN image_transform_attempts t ON t.blob_id=? AND t.variant=? AND t.generator_version=? AND t.state<>'not_started'
         LEFT JOIN outbox e ON e.outbox_id=? AND e.kind='image.requested' AND e.payload_ref=?`,
-        values: [blobId, IMAGE_TRANSFORM_GENERATOR, blobId, IMAGE_TRANSFORM_GENERATOR, key, key],
+        values: [
+          blobId,
+          spec.kind,
+          variant,
+          spec.generator,
+          blobId,
+          variant,
+          spec.generator,
+          key,
+          key,
+        ],
       },
     ]);
     const state = (
-      records.at(-1)?.results[0] as { state: LargeThumbnailReceipt["state"] | null } | undefined
+      records.at(-1)?.results[0] as { state: ThumbnailRequestReceipt["state"] | null } | undefined
     )?.state;
-    return state
-      ? { nodeId, blobId, variant: "lg", generator: IMAGE_TRANSFORM_GENERATOR, state }
-      : null;
+    return state ? { nodeId, blobId, variant, generator: spec.generator, state } : null;
   };
   const prior = await read();
   if (prior) return prior;
@@ -166,4 +180,22 @@ export async function requestLargeThumbnail(
       /* Cron retries the same durable ID. */
     }
   return accepted;
+}
+
+/** Preserve the existing lg service contract and request bytes. */
+export async function requestLargeThumbnail(
+  env: Pick<Env, "DB" | "CONTROL" | "LOCKS" | "JOBS">,
+  principal: Principal,
+  nodeId: string,
+  blobId: string,
+  requestKey: string,
+): Promise<LargeThumbnailReceipt> {
+  return (await requestThumbnail(
+    env,
+    principal,
+    nodeId,
+    blobId,
+    requestKey,
+    "lg",
+  )) as LargeThumbnailReceipt;
 }

@@ -208,6 +208,63 @@ it("rejects a cover for a different original and stops before GET when preparati
   expect(load).not.toHaveBeenCalled();
 });
 
+it("requests then confirms the same cover without reloading playback or changing the request key", async () => {
+  const f = fixture();
+  const receipt = (state: string) => ({
+    nodeId: "one",
+    blobId: "blob-one",
+    variant: "sm",
+    generator: "audio-cover-webp-v1",
+    state,
+  });
+  const request = vi
+    .fn()
+    .mockResolvedValueOnce(receipt("pending"))
+    .mockResolvedValueOnce(receipt("ready"));
+  f.client.requestCover = request;
+  await f.select();
+  f.media.currentTime = 27;
+  const loads = f.media.loads,
+    src = f.media.src;
+  await f.player.requestCover();
+  expect(f.player.getSnapshot()).toMatchObject({ track: { cover: "pending" }, coverBusy: false });
+  f.client.current = vi.fn(async () => page([{ ...track(), cover: "ready" }]));
+  await f.player.requestCover();
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(request.mock.calls[0]![1]).toBe(request.mock.calls[1]![1]);
+  expect(f.player.getSnapshot()).toMatchObject({ track: { cover: "ready" }, coverMessage: "" });
+  expect(f.player.getSelectionSnapshot()).toMatchObject({ blobId: "blob-one", cover: "ready" });
+  expect(f.media.loads).toBe(loads);
+  expect(f.media.src).toBe(src);
+  expect(f.media.currentTime).toBe(27);
+});
+it.each(["close", "next track", "logout"])(
+  "does not revive a cover request after %s",
+  async (action) => {
+    const f = fixture(),
+      response = deferred<unknown>();
+    f.client.requestCover = vi.fn(async () => response.promise);
+    await f.select();
+    const request = f.player.requestCover();
+    expect(f.player.getSnapshot().coverBusy).toBe(true);
+    await f.player.requestCover();
+    expect(f.client.requestCover).toHaveBeenCalledOnce();
+    if (action === "close") await f.player.close(false);
+    else if (action === "next track") await f.player.skip(1);
+    else f.lifetime.abort();
+    response.resolve({
+      nodeId: "one",
+      blobId: "blob-one",
+      variant: "sm",
+      generator: "audio-cover-webp-v1",
+      state: "ready",
+    });
+    await request;
+    expect(f.player.getSnapshot().track?.id).not.toBe("one");
+    expect(f.player.getSnapshot().coverBusy).toBe(false);
+  },
+);
+
 it("resumes the current user's position, checkpoints, pauses and serializes next-track writes", async () => {
   const f = fixture();
   f.saved.set("one", { positionMs: 12000, updatedAt: 1 });
@@ -234,12 +291,22 @@ it("keeps the list selection stable during playback updates and changes it on na
   f.player.subscribe(() => {
     const selection = f.player.getSelectionSnapshot();
     const current = f.player.getSnapshot();
-    expect(selection).toEqual({ scope: current.scope, trackId: current.track?.id ?? null });
+    expect(selection).toEqual({
+      scope: current.scope,
+      trackId: current.track?.id ?? null,
+      blobId: current.track?.currentBlobId ?? null,
+      cover: current.track?.cover,
+    });
     observed.push(selection);
   });
   await f.select();
   const selected = f.player.getSelectionSnapshot();
-  expect(selected).toEqual({ scope: "owner:root", trackId: "one" });
+  expect(selected).toEqual({
+    scope: "owner:root",
+    trackId: "one",
+    blobId: "blob-one",
+    cover: undefined,
+  });
   f.media.currentTime = 27;
   f.media.dispatchEvent(new Event("timeupdate"));
   f.player.volume(0.3);
@@ -248,16 +315,31 @@ it("keeps the list selection stable during playback updates and changes it on na
   expect(f.player.getSelectionSnapshot()).toBe(selected);
   expect(observed.every((x) => x === selected)).toBe(true);
   await f.player.skip(1);
-  expect(f.player.getSelectionSnapshot()).toEqual({ scope: "owner:root", trackId: "two" });
+  expect(f.player.getSelectionSnapshot()).toEqual({
+    scope: "owner:root",
+    trackId: "two",
+    blobId: "blob-two",
+    cover: undefined,
+  });
   await f.player.skip(-1);
   const back = f.player.getSelectionSnapshot();
   expect(back).toEqual(selected);
   const otherScope = { ...f.client, scope: "share:root" };
   await f.player.select(otherScope, page(), items[0]!);
-  expect(f.player.getSelectionSnapshot()).toEqual({ scope: "share:root", trackId: "one" });
+  expect(f.player.getSelectionSnapshot()).toEqual({
+    scope: "share:root",
+    trackId: "one",
+    blobId: "blob-one",
+    cover: undefined,
+  });
   expect(f.player.getSelectionSnapshot()).not.toBe(back);
   f.lifetime.abort();
-  expect(f.player.getSelectionSnapshot()).toEqual({ scope: "", trackId: null });
+  expect(f.player.getSelectionSnapshot()).toEqual({
+    scope: "",
+    trackId: null,
+    blobId: null,
+    cover: undefined,
+  });
   expect(observed.at(-1)).toBe(f.player.getSelectionSnapshot());
 });
 it("coalesces saves while a receipt is pending and uses the returned CAS value", async () => {

@@ -1,8 +1,10 @@
 # 開発進捗
 
-[音声の埋め込み表紙](AUDIO_COVERS.md)を、抽出・WebP変換・保存・配信・Audio一覧と常駐playerへ接続しました。新しいMP3・FLAC・M4A/MP4・Ogg Opus/Vorbisを対象に、現在の原本と閲覧権限を確認します。既存の変換記録・容量予約・回収処理を共有し、再実行で変換を重複させません。schema0075・通常79table・149 API route。既存原本の表紙再抽出と所有者間COPY後の再生成、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[既存音声の表紙再抽出](AUDIO_COVERS.md)を、所有者・内部共有・公開リンクのプレーヤーへ接続しました。現在の閲覧権限で要求し、所有者間COPY先の新しい原本からも生成します。表紙なしを記録して再走査を避け、完了時は一覧とplayerの画像を更新します。原本・編集した曲名・再生位置を保持します。schema0075・通常79table・149 API routeを維持します。音声metadata自体の再抽出、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[音声の埋め込み表紙](AUDIO_COVERS.md)を、抽出・WebP変換・保存・配信・Audio一覧と常駐playerへ接続しました。新しいMP3・FLAC・M4A/MP4・Ogg Opus/Vorbisを対象に、現在の原本と閲覧権限を確認します。既存の変換記録・容量予約・回収処理を共有し、再実行で変換を重複させません。schema0075・通常79table・149 API route。既存原本の表紙再抽出と所有者間COPY後の再生成、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [既存音声の再索引](AUDIO_SEARCH.md)を定期保守へ接続しました。保存済みの実効タグから検索cache・base索引・FTSを一括修復します。ControlDOへ進行位置を保存し、1回32候補・最大8件・5秒で少しずつ進めます。原本・編集値・再生位置は変更せず、競合や停止・backup/restore凍結を再検査します。schema0074・通常79table・149 API route。cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

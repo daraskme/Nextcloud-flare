@@ -27,8 +27,18 @@ thumbnail manifest v3に表紙generatorと出力世代を固定する。既存�
 
 一覧はreadyの表紙だけに500曲単位でチケットを用意し、画面付近の画像GETを同時4件までに制限する。画像は44px角。音声原本をBlob化せず、表紙だけにobject URLを使う。非表示・再読込・曲変更・閉じる・client終了時に要求を止め、object URLを解放する。変換中・なし・取得失敗でも再生操作を使える。
 
+## 既存音声・コピー先からの要求
+
+現在の音声metadataがある原本は、playerの「表紙を読み込む」から抽出を要求できる。所有者・明示した内部共有・公開リンクに対応し、元uploadの資格情報へ依存しない。所有者間COPYで新しいblobになった原本も、コピー先で引き継いだmetadataと現在の所有権から生成する。原本・曲名の抽出値/override・検索cache・再生位置・node revisionを変更しない。
+
+既存のprivate/public POST thumbへ `{blobId,variant:'sm',share?}` とCSRF・Idempotency-Keyを送る。画像用lgの要求契約は維持する。sm要求は表紙sm/mdの組を生成する。generatorはserverが固定し、クライアント画像を受け取らない。通知IDはblob/sm/audio-cover-webp-v1から固定し、別名・別利用者・並行consumerも同じ有料試行へ集約する。
+
+HTTPは受付と状態照会だけで、生成はQueueへ任せる。pendingは202、ready/absent/unsupported/failedは200。読み取り上限内で選択できる表紙がない場合は、変換0回の結果を保存し、reload後に同じ原本を再走査しない。WAV/WebMは表紙抽出未対応としてunsupportedにする。invocation予算切れ・認可失効・原本変更・未知nativeは「表紙なし」と確定しない。
+
+playerは自動pollせず、pending後の「表紙を確認」で同じ要求keyを使う。完了すると選択中の原本に一致する一覧の1行とplayerだけを更新し、ページ数・音声src・再生時刻を保持する。曲変更・終了・logout後の遅い応答は破棄する。保存した閲覧者が失効した要求は別利用者へ自動付替えせず、既存lgと同じretry/DLQ・保留契約に従う。
+
 ## 移行と残件
 
 0075はimage_derivative_start triggerだけを置換し、既知のgeneratorとkindの対応を検査する。通常79table・149公開routeを維持する。適用時はmaintenance、backup/restore未凍結、未終了permit/operation/admission/R2/KDF/Imagesなしを要求する。旧migrationを変更しない。実Cloudflareへの適用は未実施。
 
-既存完了済み原本の表紙再抽出、所有者間COPY後の新blobでの再生成、WAV内ID3・WebM attachmentの表紙抽出は未実装。同一所有者COPYの同じblobは既存の表紙を参照できる。PNG以外の実埋め込み形式や巨大タグ・多種類のencoder、実Cloudflare Images、他OS/browserの検証は追加が必要。実施した試験は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。
+既存完了済み音声とCOPY先の表紙は上記の明示要求で生成できる。音声metadata自体が欠けた原本の再抽出・自動一括処理、WAV内ID3・WebM attachmentの表紙抽出は未実装。同一所有者COPYの同じblobは既存の表紙を参照できる。PNG以外の実埋め込み形式や巨大タグ・多種類のencoder、実Cloudflare Images、他OS/browserの検証は追加が必要。実施した試験は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とする。

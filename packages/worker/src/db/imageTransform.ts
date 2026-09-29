@@ -1,4 +1,8 @@
-import { imageRequestAuthority, imageRequestOperands } from "../jobs/imageRequestAuthority";
+import {
+  imageRequestAuthority,
+  imageRequestOperands,
+  imageRequestSpec,
+} from "../jobs/imageRequestAuthority";
 import { nodeEventAuthority, readOutboxEvent } from "../jobs/outboxAuthority";
 import { type ImageTransformFailureReceipt, imageFailureJson } from "../media/images/failure";
 import {
@@ -206,7 +210,7 @@ export async function imageTransformAuthority(db: D1Database, g: ImageTransformR
       o = imageRequestOperands(row);
     if (
       !authority ||
-      g.variant !== "lg" ||
+      !(imageRequestSpec(o.variant).variants as readonly string[]).includes(g.variant) ||
       g.generator !== o.generator ||
       row.epoch !== g.epoch ||
       row.owner_id !== g.ownerId ||

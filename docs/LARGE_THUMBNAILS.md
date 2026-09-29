@@ -4,7 +4,7 @@
 
 ## 受付と一意性
 
-privateは`POST /api/v1/nodes/:nodeId/thumb`、publicは`POST /api/v1/public/shares/:shareId/thumb/:nodeId`。同一origin、現在のAccessまたは共有Cookie/Share-Session、CSRF、Idempotency-Keyを必須とする。8KiB以下のJSONで`{blobId,variant:'lg',share?}`だけを受ける。`share`は内部共有の明示選択用。クライアント生成画像や任意のgenerator・R2 keyを受け取らない。
+privateは`POST /api/v1/nodes/:nodeId/thumb`、publicは`POST /api/v1/public/shares/:shareId/thumb/:nodeId`。同一origin、現在のAccessまたは共有Cookie/Share-Session、CSRF、Idempotency-Keyを必須とする。画像には8KiB以下のJSONで`{blobId,variant:'lg',share?}`を受ける。現在の音声metadataがある原本は`variant:'sm'`で[埋め込み表紙](AUDIO_COVERS.md)を要求できる。`share`は内部共有の明示選択用。クライアント生成画像や任意のgenerator・R2 keyを受け取らない。
 
 現在の`gallery.read`認可、全祖先の非表示／削除、固定node/parent/blob、検査済みの画像metadata generator、所有spaceを受付batchで照合する。読み取り権限の`thumbnail.request` operationと`image.requested` Outboxを一括保存する。namespace permitは受付だけに使い、Queue送信前に返す。画像変換やR2保存中は保持しない。
 

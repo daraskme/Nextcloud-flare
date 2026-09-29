@@ -196,6 +196,24 @@ export class ApiClient {
       list: (cursor, signal) => list(rootId, cursor, signal),
       current: (id, signal) => list(id, null, signal),
       prepareCovers: this.galleryClient(account, rootId, share).prepare,
+      requestCover: async (item, key, signal) => {
+        const token = await this.csrf();
+        active(signal).throwIfAborted();
+        return this.request(`/api/v1/nodes/${item.id}/thumb`, {
+          method: "POST",
+          signal: active(signal),
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+            "Idempotency-Key": key,
+          },
+          body: JSON.stringify({
+            blobId: item.currentBlobId,
+            variant: "sm",
+            ...(selection ? { share: selection } : {}),
+          }),
+        });
+      },
       original: async (item, signal) => {
         const { ticket } = await post<{ ticket: string }>(
           "/api/v1/content-session",

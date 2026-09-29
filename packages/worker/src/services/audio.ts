@@ -57,7 +57,8 @@ export function audioStatement(file: boolean, limit: number, after = false) {
     b.mime_sniffed AS mime,a.duration_ms AS durationMs,
     COALESCE(a.title_override,a.title_extracted,n.name) AS title,
     COALESCE(a.artist_override,a.artist_extracted) AS artist,
-    COALESCE((SELECT CASE d.state WHEN 'ready' THEN 'ready' WHEN 'failed' THEN 'failed' ELSE 'pending' END
+    COALESCE((SELECT CASE WHEN d.state='failed' AND d.error_code='image_cover_absent' THEN 'absent'
+      WHEN d.state='ready' THEN 'ready' WHEN d.state='failed' THEN 'failed' ELSE 'pending' END
       FROM derivative_results d WHERE d.blob_id=n.current_blob_id AND d.kind='cover' AND d.variant='sm'
         AND d.generator_version='${AUDIO_COVER_GENERATOR}'),'none') AS cover,
     COALESCE(a.album_override,a.album_extracted) AS album,a.track_number AS trackNumber,a.disc_number AS discNumber,

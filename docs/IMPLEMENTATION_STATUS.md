@@ -1,6 +1,20 @@
 # 実装進捗
 
-## 音声の埋め込み表紙（今回）
+## 既存音声・コピー先からの表紙要求（今回）
+
+[既存音声の表紙要求](AUDIO_COVERS.md)を所有者・内部共有・公開リンクのplayerへ接続した。現在の音声metadataがある原本に対して既存POST thumbへsmを要求し、Queueでsm/mdを生成する。元uploadの資格情報に依存せず、受付した現在の閲覧者の認可・node/parent/blob/etagを処理中と確定前に再検査する。所有者間COPYの新blobも、引継ぎ済みmetadataとコピー先の所有権を使う。画像用lgのrequest ID・旧operation intentを維持し、表紙はblobごとの固定IDへ集約する。
+
+読み取り上限内で選べる表紙がない結果も変換0回で保存し、再読込で走査を繰り返さない。WAV/WebMは表紙抽出未対応として扱う。invocation予算切れや認可失効を表紙なしと確定しない。既存の有料試行・保存・容量予約・回収処理を共用し、原本・抽出タグ/override・検索cache・node revisionは変えない。playerの確認操作で選択中の原本に一致する一覧の行と表紙を更新し、音声src・再生時刻・一覧ページを保持する。自動pollは行わず、曲変更・終了・logout後の応答は破棄する。
+
+- Node関連89件成功。5file/84件（0.531秒、/tmp/ncf-cover-request-unit-2.log）でplayer/client、Gallery loader、埋め込み画像、費用記録を確認した。初回web37件のうち1件は選択状態へ追加したblob/coverを旧期待値が含まないため失敗し、時刻更新時の参照同一性検査を保持して更新した。さらに受付receipt検査とpending→ready、同じkeyの再利用、重複操作抑止、曲変更/終了/logout後の応答破棄を追加し、player/clientの33件が成功（0.156秒、/tmp/ncf-cover-request-web-unit-final.log）。件数は重複を除く。
+- Native関連88件成功。最初の3file/28件（58.89秒、/tmp/ncf-cover-request-native-1.log）は新しい要求5件と既存lg14件・新upload表紙9件。次の4file/63件（36.78秒、/tmp/ncf-cover-request-native-2.log）は要求6件と所有者間COPY・Audio一覧/探索予算57件。最後に要求8件が成功（14.88秒、/tmp/ncf-cover-request-native-complete.log）。旧DAV資格失効後の現在読者、表紙なしの再走査防止、予算切れ後の再開、受付読者の失効、ACK喪失、実COPYの新blobと編集値保持、COW別名/並行consumerの有料重複防止、WAVの未対応判定を確認した。
+- 新しいChrome4件成功（1.6分、/tmp/ncf-cover-request-browser-1.log）。test-only fixtureで表紙導入前の音声metadataを用意し、所有者・内部共有・公開リンクから実HTTP受付→Queue→変換→確認操作→一覧/playerの画像decodeを検証した。音声srcの保持、同じIdempotency-Key、横のはみ出し防止、表紙なしのreload後の再要求防止も確認した。所有者・390pxの公開画面を目視確認し、artifactを/tmp/ncf-cover-request-browser-artifactsへ保存した。
+- 既存のAudio2,000曲と画像lgのChrome3件も成功（2.2分、/tmp/ncf-cover-request-browser-regression.log）。CPU4倍制限で所有者/公開のpage追加最大1,199/1,166ms、frame p95は17.0/17.1ms、45更新script18.4/32.4ms、player高76.8/219px。表紙なし一覧の負荷検査であり、2,000枚の画像転送を測定したものではない。内部共有の表紙画面と公開大量一覧も目視確認し、回帰artifactを/tmp/ncf-cover-request-regression-artifactsへ保存した。
+- typecheck、lint（783file）、verify:contracts、verify:config成功（/tmp/ncf-cover-request-{types-final-complete,lint-complete,contracts-complete,config-complete}.log）。Web両入口/Worker dry-run build成功（Worker1,934.90KiB・gzip408.99KiB、/tmp/ncf-cover-request-build.log）。最終公開asset/SRI検査5件も成功（3.78秒、/tmp/ncf-cover-request-assets.log）。重複を除く関連試験は189件（Node89・Native93・Chrome7）。全suiteとoperator drillの再実行ではない。
+
+schema0075・通常79table・149 API route、migration・依存の追加なし。音声metadata自体が欠けた原本の再抽出/自動一括処理、WAV/WebM表紙、Bookshelf、未知native等の運用修復、実Cloudflare/他OS/browser gateは継続する。保存した要求読者が失効したジョブは別読者へ自動付替えしない。pushは自動承認審査拒否後の明示承認待ちで、ローカルcommitに保持する。
+
+## 音声の埋め込み表紙（先行67a49db）
 
 [埋め込み表紙](AUDIO_COVERS.md)を、新しいMP3/FLAC/MP4・M4A/Ogg Opus・Vorbisのupload/DAV PUTから抽出し、sm/md WebPへ変換してAudio一覧と常駐playerへ表示する。表紙は通常画像と同じImages受付・終了記録・R2保存・容量予約・pin・回収処理を使う。原本tupleと表紙の長さ/SHA-256を変換に固定し、有料試行2回/25秒と読み取り上限を共有する。thumbnail manifest v3と現在認可を使い、所有者・内部共有・公開リンクへ配信する。0075はgenerator/kindの対応を認めるtrigger置換のみで、通常79table・149公開routeを維持する。
 

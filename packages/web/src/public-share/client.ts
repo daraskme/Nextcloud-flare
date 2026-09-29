@@ -104,6 +104,26 @@ export class PublicClient {
       list: (cursor, signal) => list(nodeId, cursor, signal),
       current: (id, signal) => list(id, null, signal),
       prepareCovers: this.galleryClient(root, nodeId).prepare,
+      requestCover: async (item, key, signal) => {
+        const { token } = await this.request<{ token: string }>(
+          "/csrf",
+          "POST",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          active(signal),
+        );
+        return this.request(
+          `/thumb/${item.id}`,
+          "POST",
+          { blobId: item.currentBlobId, variant: "sm" },
+          token,
+          { ...headers, "Idempotency-Key": key },
+          undefined,
+          active(signal),
+        );
+      },
       original: async (item, signal) => {
         const { token } = await this.request<{ token: string }>(
           "/csrf",

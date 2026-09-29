@@ -10,6 +10,7 @@ export interface AudioClient {
   readonly signal: AbortSignal;
   list(cursor: string | null, signal: AbortSignal): Promise<AudioPage>;
   current(id: string, signal: AbortSignal): Promise<AudioPage>;
+  requestCover?(item: AudioTrack, key: string, signal: AbortSignal): Promise<unknown>;
   prepareCovers?(
     items: AudioTrack[],
     signal: AbortSignal,
@@ -28,6 +29,28 @@ export interface AudioClient {
     previousUpdatedAt: number | null,
     signal: AbortSignal,
   ): Promise<PlaybackState>;
+}
+
+export function audioCoverRequestState(value: unknown, item: AudioTrack) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("invalid_cover_receipt");
+  const r = value as {
+    nodeId?: unknown;
+    blobId?: unknown;
+    variant?: unknown;
+    generator?: unknown;
+    state?: unknown;
+  };
+  if (
+    r.nodeId !== item.id ||
+    r.blobId !== item.currentBlobId ||
+    r.variant !== "sm" ||
+    r.generator !== "audio-cover-webp-v1" ||
+    typeof r.state !== "string" ||
+    !["pending", "ready", "absent", "unsupported", "failed"].includes(r.state)
+  )
+    throw new Error("invalid_cover_receipt");
+  return r.state as "pending" | "ready" | "absent" | "unsupported" | "failed";
 }
 
 /** An empty server window is continuation, not an empty folder. Bound each user action. */

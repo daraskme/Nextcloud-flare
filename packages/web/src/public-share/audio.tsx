@@ -51,6 +51,19 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               {state.track.cover === "ready" && (
                 <AudioCover item={state.track} load={player.cover} />
               )}
+              {[undefined, "none", "pending"].includes(state.track.cover) && (
+                <button
+                  type="button"
+                  disabled={state.coverBusy}
+                  onClick={() => void player.requestCover()}
+                >
+                  {state.coverBusy
+                    ? "表紙を確認中…"
+                    : state.track.cover === "pending"
+                      ? "表紙を確認"
+                      : "表紙を読み込む"}
+                </button>
+              )}
               <div className="audio-now">
                 <strong title={state.track.title}>{state.track.title}</strong>
                 <small title={state.track.artist || state.track.name}>
@@ -119,6 +132,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               {state.message}
             </p>
           )}
+          {state.coverMessage && (
+            <p className="audio-message" role="status">
+              {state.coverMessage}
+            </p>
+          )}
           {state.reload && (
             <button type="button" onClick={() => void player.reload()}>
               保存済みの位置から再開
@@ -170,6 +188,28 @@ export function AudioLibrary({
     void load(null);
     return () => request.current?.abort();
   }, [client, refresh]);
+  useEffect(() => {
+    if (playing.scope !== client.scope || !playing.trackId || !playing.cover) return;
+    setPage((previous) => {
+      if (
+        !previous?.items.some(
+          (item) =>
+            item.id === playing.trackId &&
+            item.currentBlobId === playing.blobId &&
+            item.cover !== playing.cover,
+        )
+      )
+        return previous;
+      return {
+        ...previous,
+        items: previous.items.map((item) =>
+          item.id === playing.trackId && item.currentBlobId === playing.blobId
+            ? { ...item, cover: playing.cover! }
+            : item,
+        ),
+      };
+    });
+  }, [client.scope, playing]);
   return (
     <section className="audio-library" aria-label="オーディオ">
       <header>

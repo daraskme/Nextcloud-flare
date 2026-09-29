@@ -1,10 +1,36 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { AudioPage, AudioTrack } from "../../../shared/src/audio";
-import { type AudioClient, audioOriginal, readAudioPage } from "../../src/public-share/audioClient";
+import {
+  type AudioClient,
+  audioCoverRequestState,
+  audioOriginal,
+  readAudioPage,
+} from "../../src/public-share/audioClient";
 
 afterEach(() => vi.unstubAllGlobals());
 const item = { id: "node", currentBlobId: "blob" } as AudioTrack;
 const signal = () => new AbortController().signal;
+it("validates cover receipts against the exact original and fixed generator before updating artwork", () => {
+  const receipt = {
+    nodeId: item.id,
+    blobId: item.currentBlobId,
+    variant: "sm",
+    generator: "audio-cover-webp-v1",
+    state: "ready",
+  };
+  for (const state of ["pending", "ready", "absent", "failed", "unsupported"])
+    expect(audioCoverRequestState({ ...receipt, state }, item)).toBe(state);
+  for (const change of [
+    { nodeId: "other" },
+    { blobId: "old" },
+    { variant: "lg" },
+    { generator: "image-webp-v1" },
+    { state: "done" },
+  ])
+    expect(() => audioCoverRequestState({ ...receipt, ...change }, item)).toThrow(
+      "invalid_cover_receipt",
+    );
+});
 function audioPage(items: AudioTrack[] = [], nextCursor: string | null = null): AudioPage {
   return {
     rootId: "folder",
