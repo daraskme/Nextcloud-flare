@@ -879,7 +879,7 @@ MP3/FLAC/OGG/Opus/M4A/MP4/WAV の bounded tag parser。通常 head≤2MiB+tail12
 
 Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、client MIME/拡張子だけで codec を確定しない。再エンコードを原本再生の前提にしない。MP4 の codec parameter は `Opus`、Ogg/WebM は `opus` とする。
 
-[Audio一覧と再生位置API](AUDIO.md)はOpusを対象に接続済み。専用画面・常駐player・自動保存／再開も接続済み。追加形式・cover・override編集は継続する。
+[Audio一覧と再生位置API](AUDIO.md)はOpusを対象に接続済み。0073の可視子索引で1,000候補+続行確認1件ずつ探索し、空pageでもkeysetで続行する。返却上限2,000曲を維持し、非表示項目をcursorへ含めない。専用画面・常駐player・自動保存／再開も接続済み。追加形式・cover・override編集は継続する。
 
 ### 9A.4 共通認可 / job
 
@@ -1350,8 +1350,11 @@ release ごとに environment 別 Cloudflare 運用 inventory を version 管理
 | children 10,000 / PROPFIND Depth:1 | ≤2 preflight | ≤4 | ≤10,100 | ≤150ms | stream前507 |
 | search scope/candidate10,000 | ≤3 | ≤12 | ≤20,000 | ≤250ms | max200 / `truncated:true` |
 | Gallery candidate50,000 | ≤3 | ≤12 | ≤60,000 | ≤300ms | max200、未達ならcandidate10,000 |
+| Audio 候補1,000+続行確認1 / page≤200 | 1（一覧SELECT） | 7 | ≤10,000 | ≤100ms | 空pageもcursorで続行、tracks≤2,000 |
 | ancestor depth64 | 1 | 2 | ≤65 | ≤50ms | EffectiveLive true |
 | MOVE src+dst depth64 | ≤4 | ≤16 | ≤260 | ≤150ms | cycle/epoch/CAS proof |
+
+Audio行は一覧SELECTだけの予算で、認可取得は別に検証する。画面の空page自動続行は1操作最大3回である。
 
 200件/pageは「返却200=rows_read200」ではなく、covering keyset indexによりM≤450を実測する契約。`IN`分割 fixtureは99/100/101/2,000 IDsで各statement≤100 bindを検査する。
 

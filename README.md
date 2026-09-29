@@ -1,13 +1,13 @@
 # Next-cloud-flare
 
-[公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0072・通常79table・149 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
+[公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0073・通常79table・149 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
 
 Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
 [設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。
 
 [公開編集の再開](docs/PUBLIC_EDIT_RECOVERY.md)は、作成・改名・削除を再読み込み後も同じキーで確認します。
 
-[画像メタデータ](docs/IMAGE_METADATA.md)は、新しいupload・WebDAV PUTからJPEG/PNG/WebP/AVIFを判別し、寸法と許可したEXIFだけを保存します。[サムネイル変換](docs/IMAGE_TRANSFORMS.md)と[生成物の保存](docs/IMAGE_DERIVATIVES.md)の内部処理を実装しました。[生成物の回収](docs/IMAGE_DERIVATIVE_CLEANUP.md)を専用Cronと復元CLIへ接続しました。保存済みのサムネイルは、同じ通知の新しい処理要求から公開を再開できます。[Queueからのsm/md自動生成](docs/IMAGE_QUEUE.md)と[サムネイル配信](docs/THUMBNAIL_DELIVERY.md)を接続しました。現在の原本・閲覧権限に束縛し、所有者・内部共有・公開リンクへ配信します。[Galleryの画像一覧・グリッド／リスト・ライトボックス・共有閲覧](docs/GALLERY.md)も接続しました。[lgの要求時生成とプレビュー／原本切り替え](docs/LARGE_THUMBNAILS.md)も接続しました。[AV1動画のGallery再生とOpusの情報抽出・原本再生](docs/TRACK_METADATA.md)も接続しました。[Audioの曲一覧・利用者別再生位置API](docs/AUDIO.md)も接続しました。Audioの追加形式・cover・override編集、Bookshelf、既存データ再抽出と運用修復は開発中です。
+[画像メタデータ](docs/IMAGE_METADATA.md)は、新しいupload・WebDAV PUTからJPEG/PNG/WebP/AVIFを判別し、寸法と許可したEXIFだけを保存します。[サムネイル変換](docs/IMAGE_TRANSFORMS.md)と[生成物の保存](docs/IMAGE_DERIVATIVES.md)の内部処理を実装しました。[生成物の回収](docs/IMAGE_DERIVATIVE_CLEANUP.md)を専用Cronと復元CLIへ接続しました。保存済みのサムネイルは、同じ通知の新しい処理要求から公開を再開できます。[Queueからのsm/md自動生成](docs/IMAGE_QUEUE.md)と[サムネイル配信](docs/THUMBNAIL_DELIVERY.md)を接続しました。現在の原本・閲覧権限に束縛し、所有者・内部共有・公開リンクへ配信します。[Galleryの画像一覧・グリッド／リスト・ライトボックス・共有閲覧](docs/GALLERY.md)も接続しました。[lgの要求時生成とプレビュー／原本切り替え](docs/LARGE_THUMBNAILS.md)も接続しました。[AV1動画のGallery再生とOpusの情報抽出・原本再生](docs/TRACK_METADATA.md)も接続しました。[Audioの曲一覧・常駐player・利用者別再生位置](docs/AUDIO.md)も接続しました。大量の通常/非表示項目があるfolderも1,000候補ずつ探索し、続きの曲を省略せず取得します。Audioの追加形式・cover・override編集、Bookshelf、既存データ再抽出と運用修復は開発中です。
 
 [サムネイル変換](docs/IMAGE_TRANSFORMS.md)の内部処理は3サイズのWebPを生成・検査します。[費用・終了記録](docs/IMAGE_COSTS.md)で重複変換を防ぎ、明示的に終了した失敗も記録し、未確定の変換をバックアップ・復旧の判定に含めます。保存・Queue自動生成・生成済みサムネイル配信は接続済みです。Galleryの画像・AV1動画閲覧は接続済みです。Audio専用画面・常駐player・位置保存/再開も接続済みです。追加形式・cover・override編集とBookshelfは開発中です。
 

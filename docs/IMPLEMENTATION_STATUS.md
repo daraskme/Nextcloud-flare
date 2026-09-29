@@ -1,6 +1,20 @@
 # 実装進捗
 
-## Audio専用画面・常駐プレーヤー（今回）
+## Audio一覧の候補探索と読み取り予算（今回）
+
+[Audio](AUDIO.md)のdata SELECTへ1,000候補と続行確認1件の上限を入れた。0073の可視子部分索引で親・space・owner・name/idをseekし、hidden/deletedの兄弟をcursorへ入れない。metadataと原本を結合する前に候補窓をmaterializeする。201曲目があれば返した200曲目を境界にし、曲が少なければ窓の最後から続行する。空pageのnextCursorも有効で、フォルダー後方を省略しない。画面は最大3つの空pageまで自動続行し、その後は明示的に続きを読み込める。利用者別位置・認可・原本・2,000曲上限を維持する。
+
+- 修正前のローカルD1再現: 音声のない10,001項目でrows_read=10,002（/tmp/ncf-audio-budget-red.log）。1回のqueryを1万行以内にする検査が失敗することを確認した。
+- Native36件成功（Audio24 + 新規budget7 + schema5、20.22秒、/tmp/ncf-audio-budget-native-2.log）。可視50,051 + hidden50,000項目で、初回1,000候補は5,005行、49,999番目の後ろの窓は262行。tuple seekの実plan、空窓と境界の曲の取りこぼしなし、終端に不要cursorを付けないこと、古いmetadata、密集した現在の曲と本人位置、最終batchのcredential/世代変更を確認した。初回は28成功・2件がテストfixtureで失敗し、EXPLAINのtuple表記と、同一blob参照を上限以上に増やしていた古いmetadata fixtureを修正した。予算や本番の参照制限は緩めていない。
+- 候補すべてのMIMEが不適切な場合と、900候補の後に有効な100曲がある場合も追加して、新規budget7件を再実行し成功（7.65秒、/tmp/ncf-audio-budget-native-final.log）。いずれもrows_read≤10,000を検査する。値は一覧SELECTだけで、認可取得と全page合計の予算とは区別する。実Cloudflareのduration gateは未検証。
+- Node96件成功（5file、40.57秒、/tmp/ncf-audio-budget-unit-1.log）。schema/FK/export/purge、backup freeze、cursorと、新規のindex移行/rename/move/hidden追随、稼働中migration拒否、UIの3request制限/終端/世代変更/中断/同cursor拒否を確認した。Node URL型の明示とmock引数型の修正後、新規/変更fileの11件も成功（1.40秒、/tmp/ncf-audio-budget-unit-final.log）。
+- Browser5件成功（1.7分、/tmp/ncf-audio-budget-browser.log）。新規の空page試験は一覧応答を模擬し、3回で待機→明示続行→実uploadした原本の再生を確認する。既存4件は実HTTPでOpus全3コンテナのRange、SPA再生/保存/再開/競合/logout、内部共有/匿名/解除、downloadを検証した。重複を除く関連テストは137件成功。
+- ローカルbackup:operator-drill成功（/tmp/ncf-audio-budget-operator-drill.log、.wrangler/operator-drill-QNELdf/report.json）。0073を含む79tableのschema/snapshot/SQL/FK/FTS検証、epoch採用、段階再開まで確認した。Time Travel/S3応答は模擬で、実環境の復元試験ではない。
+- 最終型・lint739file・契約・設定検査成功（/tmp/ncf-audio-budget-types-complete.log、/tmp/ncf-audio-budget-lint.log、/tmp/ncf-audio-budget-contracts.log、/tmp/ncf-audio-budget-config.log）。最終Web build/Worker dry-runも成功（/tmp/ncf-audio-budget-build-final.log）。
+
+schema0073・通常79table・149 API route。新しいtable/依存はなく、既存row・参照会計は変更しない。migrationの停止条件は0072を引き継ぐ。実環境への適用と全suiteは未実施。2,000曲でのbrowser負荷、追加音声形式/cover/override編集、Bookshelf、既存metadata再抽出/copy引継ぎ、運用修復とrelease gateは継続する。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## Audio専用画面・常駐プレーヤー
 
 [Audio](AUDIO.md)を所有者の専用route、選択した内部共有、公開リンクへ接続した。直下の現在のOpus曲を200件ずつ読み、最大2,000曲。共通playerは一覧の外に1つのnative audioを保持し、SPA遷移でも同じ原本URLの再生を続ける。前後移動・再生/一時停止・音量・現在時間・閉じる・原本downloadを提供する。追加の依存や公開bundle境界の拡張はない。
 

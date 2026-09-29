@@ -3,6 +3,38 @@ import { login, upload } from "./imageHelpers";
 import { open as openPublic } from "./publicShareHelpers";
 
 test.setTimeout(180000);
+test("Audio bounds empty-window scanning and lets the user continue to a real track", async ({
+  page,
+}) => {
+  await login(page);
+  const media = await upload(page, "long.opus", undefined, "tracks");
+  const actual = await page.evaluate(
+    async (id) => (await fetch(`/api/v1/nodes/${id}/tracks`)).json(),
+    media.me.rootNodeId,
+  );
+  const cursors: (string | null)[] = [];
+  await page.route(`**/api/v1/nodes/${media.me.rootNodeId}/tracks*`, async (route) => {
+    cursors.push(new URL(route.request().url()).searchParams.get("cursor"));
+    await route.fulfill({
+      json:
+        cursors.length <= 3
+          ? { ...actual, items: [], nextCursor: `window-${cursors.length}` }
+          : {
+              ...actual,
+              items: actual.items.filter((x: { id: string }) => x.id === media.node.id),
+              nextCursor: null,
+            },
+    });
+  });
+  await page.goto("/audio");
+  await expect(page.getByText("まだ曲が見つかっていません。", { exact: false })).toBeVisible();
+  expect(cursors).toEqual([null, "window-1", "window-2"]);
+  await expect(page.getByText("再生できる曲がありません。", { exact: false })).toHaveCount(0);
+  await page.getByRole("button", { name: "続けて曲を探す", exact: true }).click();
+  await page.getByRole("button", { name: `${media.name}を再生`, exact: true }).click();
+  await playing(page);
+  expect(cursors).toEqual([null, "window-1", "window-2", "window-3"]);
+});
 async function playing(page: Page) {
   await expect(
     page

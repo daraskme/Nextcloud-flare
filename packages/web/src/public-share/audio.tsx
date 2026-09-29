@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { AudioPage } from "../../../shared/src/audio";
-import type { AudioClient } from "./audioClient";
+import { type AudioClient, readAudioPage } from "./audioClient";
 import { AudioPlayer, audioDenied } from "./audioPlayer";
 import "./audio.css";
 
@@ -139,16 +139,7 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
     setBusy(true);
     setError("");
     try {
-      const next = await client.list(previous?.nextCursor ?? null, signal);
-      signal.throwIfAborted();
-      if (
-        previous &&
-        (previous.generator !== next.generator ||
-          previous.treeGeneration !== next.treeGeneration ||
-          previous.rootId !== next.rootId)
-      )
-        throw new Error("audio_list_changed");
-      const result = { ...next, items: [...(previous?.items ?? []), ...next.items].slice(0, 2000) };
+      const result = await readAudioPage(client, previous, signal);
       setPage(result);
       player.updateQueue(client, result);
     } catch (failure) {
@@ -178,8 +169,11 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
       </header>
       {error && <p role="alert">{error}</p>}
       {busy && <p role="status">曲を読み込んでいます…</p>}
-      {page?.items.length === 0 && (
+      {page?.items.length === 0 && !page.nextCursor && (
         <p>再生できる曲がありません。ファイル一覧から音声のあるフォルダーを開いてください。</p>
+      )}
+      {page?.items.length === 0 && page.nextCursor && (
+        <p role="status">まだ曲が見つかっていません。続けて読み込むと、次の項目を確認します。</p>
       )}
       <ol className="audio-tracks">
         {page?.items.map((item) => (
@@ -211,11 +205,13 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
       </ol>
       {page?.nextCursor && (
         <button type="button" disabled={busy} onClick={() => void load(page)}>
-          曲をもっと表示
+          {page.items.length ? "曲をもっと表示" : "続けて曲を探す"}
         </button>
       )}
       {page?.limitReached && (
-        <p role="status">2,000曲まで表示しました。フォルダーを分けて残りの曲を開いてください。</p>
+        <p role="status">
+          2,000曲まで表示しました。残りの項目はフォルダーを分けて確認してください。
+        </p>
       )}
     </section>
   );

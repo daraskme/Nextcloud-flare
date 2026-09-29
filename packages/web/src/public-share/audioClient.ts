@@ -15,6 +15,32 @@ export interface AudioClient {
   ): Promise<PlaybackState>;
 }
 
+/** An empty server window is continuation, not an empty folder. Bound each user action. */
+export async function readAudioPage(
+  client: AudioClient,
+  previous: AudioPage | null,
+  signal: AbortSignal,
+) {
+  let page = previous;
+  const priorCount = previous?.items.length ?? 0;
+  for (let requests = 0; requests < 3; requests++) {
+    const next = await client.list(page?.nextCursor ?? null, signal);
+    signal.throwIfAborted();
+    if (
+      page &&
+      (page.generator !== next.generator ||
+        page.treeGeneration !== next.treeGeneration ||
+        page.rootId !== next.rootId)
+    )
+      throw new Error("audio_list_changed");
+    if (next.nextCursor && next.nextCursor === page?.nextCursor)
+      throw new Error("audio_cursor_stalled");
+    page = { ...next, items: [...(page?.items ?? []), ...next.items].slice(0, 2000) };
+    if (page.items.length > priorCount || !page.nextCursor) return page;
+  }
+  return page!;
+}
+
 /** Native media keeps its original URL; only the small session receipt is materialized. */
 export async function audioOriginal(
   origin: string,

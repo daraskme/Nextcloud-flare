@@ -12,6 +12,7 @@ import { TRACK_METADATA_GENERATOR } from "../media/tracks/common";
 import { acquireAccountMutation, commitAccountMutation } from "./accountMutation";
 
 export const AUDIO_TRACK_LIMIT = 2000;
+export const AUDIO_CANDIDATE_LIMIT = 1000;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const AUDIO_MATCH = `a.blob_id=n.current_blob_id AND a.generator_version=?4 AND a.codec='opus'
   AND b.id=a.blob_id AND b.owner_id=n.owner_id AND b.state IN ('committed','gc_candidate')
@@ -44,21 +45,54 @@ async function authority(db: D1Database, principal: Principal, nodeId: string, w
   return proof;
 }
 
-export function audioStatement(file: boolean, limit: number) {
+export function audioStatement(file: boolean, limit: number, after = false) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 201) throw new Error("invalid_audio_limit");
-  return `SELECT n.id,n.name,n.name_ci AS nameCi,n.current_blob_id AS currentBlobId,
+  const projection = `SELECT n.id,n.name,n.name_ci AS nameCi,n.current_blob_id AS currentBlobId,
     b.mime_sniffed AS mime,a.duration_ms AS durationMs,
     COALESCE(a.title_override,a.title_extracted,n.name) AS title,
     COALESCE(a.artist_override,a.artist_extracted) AS artist,
     COALESCE(a.album_override,a.album_extracted) AS album,a.track_number AS trackNumber,a.disc_number AS discNumber,
-    p.position_ms AS positionMs,p.updated_at AS stateUpdatedAt
-    FROM nodes n ${file ? "" : "INDEXED BY nodes_children_keyset"}
+    p.position_ms AS positionMs,p.updated_at AS stateUpdatedAt`;
+  if (file)
+    return `${projection} FROM nodes n
     JOIN node_audio a ON a.node_id=n.id JOIN blobs b ON ${AUDIO_MATCH}
     LEFT JOIN user_playback_state p ON p.user_id=?5 AND p.node_id=n.id AND p.blob_id=n.current_blob_id
-    WHERE ${file ? "n.id=?1" : "n.parent_id=?1"} AND n.space_id=?2 AND n.owner_id=?3
+    WHERE n.id=?1 AND n.space_id=?2 AND n.owner_id=?3
       AND n.deleted_at IS NULL AND n.hidden=0 AND n.kind='file'
-      AND (?6 IS NULL OR (n.name_ci,n.id)>(?6,?7))
+      AND ?6 IS NULL AND ?7 IS NULL
     ORDER BY n.name_ci,n.id LIMIT ${limit}`;
+  // Bound before joining/filtering audio metadata. Include one probe for continuation.
+  // Separate first/next SQL keeps a late cursor an index seek rather than an OR scan.
+  return `WITH candidates AS MATERIALIZED (
+    SELECT id,name,name_ci,current_blob_id,owner_id,kind
+    FROM nodes INDEXED BY nodes_audio_candidates
+    WHERE parent_id=?1 AND space_id=?2 AND owner_id=?3 AND deleted_at IS NULL AND hidden=0
+      AND ${after ? "(name_ci,id)>(?6,?7)" : "?6 IS NULL AND ?7 IS NULL"}
+    ORDER BY name_ci,id LIMIT ${AUDIO_CANDIDATE_LIMIT + 1}
+  ), scanned AS MATERIALIZED (
+    SELECT * FROM candidates ORDER BY name_ci,id LIMIT ${AUDIO_CANDIDATE_LIMIT}
+  ), page AS MATERIALIZED (
+    ${projection} FROM scanned n
+    CROSS JOIN node_audio a ON a.node_id=n.id CROSS JOIN blobs b ON ${AUDIO_MATCH}
+    LEFT JOIN user_playback_state p ON p.user_id=?5 AND p.node_id=n.id AND p.blob_id=n.current_blob_id
+    WHERE n.kind='file' ORDER BY n.name_ci,n.id LIMIT ${limit}
+  ) SELECT (SELECT COUNT(*) FROM scanned) AS scanned,
+    (SELECT COUNT(*) FROM candidates)>${AUDIO_CANDIDATE_LIMIT} AS moreCandidates,
+    (SELECT name_ci FROM scanned ORDER BY name_ci DESC,id DESC LIMIT 1) AS lastNameCi,
+    (SELECT id FROM scanned ORDER BY name_ci DESC,id DESC LIMIT 1) AS lastId,
+    (SELECT json_group_array(json_object('id',p.id,'name',p.name,'nameCi',p.nameCi,
+      'currentBlobId',p.currentBlobId,'mime',p.mime,'durationMs',p.durationMs,'title',p.title,
+      'artist',p.artist,'album',p.album,'trackNumber',p.trackNumber,'discNumber',p.discNumber,
+      'positionMs',p.positionMs,'stateUpdatedAt',p.stateUpdatedAt))
+      FROM (SELECT * FROM page ORDER BY nameCi,id) p) AS items`;
+}
+
+export interface AudioScan {
+  scanned: number;
+  moreCandidates: number;
+  lastNameCi: string | null;
+  lastId: string | null;
+  items: string;
 }
 
 export async function listAudio(
@@ -104,7 +138,7 @@ export async function listAudio(
   const results = await atomicBatch(db, [
     authorizationAssertion(proof),
     {
-      sql: audioStatement(root.kind === "file", count + 1),
+      sql: audioStatement(root.kind === "file", count + 1, lastName !== null),
       values: [
         rootId,
         root.space_id,
@@ -121,10 +155,17 @@ export async function listAudio(
     positionMs: number | null;
     stateUpdatedAt: number | null;
   };
-  const rows = results.at(-1)!.results as unknown as Row[];
+  const records = results.at(-1)!.results;
+  const scan = root.kind === "file" ? null : (records[0] as unknown as AudioScan);
+  const rows = scan ? (JSON.parse(scan.items) as Row[]) : (records as unknown as Row[]);
   const page = rows.slice(0, count),
-    last = page.at(-1),
-    more = rows.length > count;
+    moreTracks = rows.length > count,
+    last = moreTracks
+      ? page.at(-1)
+      : scan?.lastId
+        ? { id: scan.lastId, nameCi: scan.lastNameCi! }
+        : undefined,
+    more = moreTracks || !!scan?.moreCandidates;
   const nextCursor =
     more && last && emitted + page.length < AUDIO_TRACK_LIMIT
       ? await tokens.issue({

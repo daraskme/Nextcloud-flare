@@ -43,3 +43,5 @@ FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` �
 `0058` は既知copy multipartの中止attempt/epoch/開始時刻/期限と未送信履歴の索引を追加する（75table）。精算receiptへabortedを追加し、全旧行・16依存trigger・freezeを保存する。中止準備、native grant、精算で先行nativeの終了と正確なidentityを照合する。欠落・unknown・timeoutでは保持を返さない。適用前提と旧Workerへのrollback時の停止維持は0057と同じ。
 
 `0072` は`thumbnail.request` operationと`image.requested`のpayload部分一意索引を追加する（通常79table）。原本blob・lg・generatorの同じ要求は、別名や閲覧者が異なっても既存通知へ集約する。失敗・失効を新しい有料試行の許可へ読み替えない。停止・未凍結・未終了permit/operation/admission/R2/KDF/Imagesなしで適用し、旧Workerへのrollbackでも停止を維持する。[大きいプレビュー](../../../docs/LARGE_THUMBNAILS.md)を参照。
+
+`0073` はAudio候補探索用の可視子部分索引を追加する（通常79table）。親・space・owner・名前/IDでseekし、非表示/削除済みの大量兄弟を走査せず、cursorへも含めない。既存行・会計・tableを変更しない。適用前の停止・未凍結・未終了処理なしとrollbackの停止維持は0072と同じ。[Audio](../../../docs/AUDIO.md)を参照。
