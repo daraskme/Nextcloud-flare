@@ -1,6 +1,20 @@
 # 実装進捗
 
-## AV1・Opusの情報抽出と動画再生（今回）
+## Audio一覧と利用者別再生位置API（今回）
+
+[Audio](AUDIO.md)の既存tracks routeを所有者・内部共有・匿名リンクへ接続した。現在のOpus原本・generatorと一致する曲だけを直下200件ずつ、最大2,000曲返す。専用cursorは閲覧者・資格情報・root・共有version・epoch・tree generation・generator・返却済み件数を保持する。匿名一覧は利用者の再生位置を含まない。
+
+既存playback-state PUTをAccess/CSRF付きで接続した。read共有でも本人の位置を保存でき、所有者の状態は変えない。user/node/blobで保存し、最終batchで現在の認可・parent/blob・metadata・期待した更新時刻を照合する。ControlDOの共有枠は原本所有spaceで取得し、状態更新とreceipt・枠返却を一括確定する。先行保存は409で拒否し、古いblobの本人の位置は次回保存で整理する。
+
+- 新規native24件と既存認可/Galleryを合わせ3file/80件成功（16.24秒、/tmp/ncf-audio-api-native-2.log）。2,000曲上限、cursor改変・用途転用・tree変更、override表示、利用者別状態、read共有、同時保存、原本差し替え、最終batchの資格情報/非表示祖先/parent/blob/generator/epoch/共有失効、ACK喪失、invalid position、CSRFと匿名sessionを確認した。初回は23件成功・1件がテストのCSRF発行method指定で失敗し、POSTへ修正して解消した。
+- Browser1件成功（28.9秒、/tmp/ncf-audio-api-browser.log）。実upload/Queueから抽出したOpusをtracks APIで読み、所有者の保存と再読、古いタブの409、read共有の受信者だけの保存、共有解除後のread/write404を確認した。ローカルHTTPのAccess/CSRF/private router/ControlDOを通る。Audio画面のE2Eではない。
+- Node5件成功（136ms、/tmp/ncf-audio-api-unit.log）。専用audienceと用途、10分の失効、署名改変、署名済みでも無効なaudience/generator/count/追加fieldを拒否する。audience追加後のnative24件も再確認して成功（7.23秒、/tmp/ncf-audio-api-native-final.log）。重複を除く関連検証は86件成功。
+- 契約/設定検査成功（/tmp/ncf-audio-api-contracts.log、/tmp/ncf-audio-api-config.log）。
+- 最終の型・lint729file・Web build/Worker dry-run成功（/tmp/ncf-audio-api-types-complete.log、/tmp/ncf-audio-api-lint-complete.log、/tmp/ncf-audio-api-build-final.log）。
+
+schema0072・79通常table・149 routeを維持。Audio専用画面・常駐player、SPA遷移とsession更新、自動保存/再開、追加音声形式・cover・override編集、Bookshelf、運用修復と実環境検証は継続する。全suiteと実Cloudflareへの適用は未実施。pushは前回の自動承認審査拒否後の承認待ち。
+
+## AV1・Opusの情報抽出と動画再生
 
 [動画・音声情報](TRACK_METADATA.md)のbounded parserをMP4/WebM/Oggへ追加し、元upload/PUTの現在の認可・node/parent/blob・claim・epochを検査するQueueへ接続した。AV1の実profile/level/tier/8/10/12-bitとOpus構成から正規形のcodecs付きMIMEを保存し、既存node_media/node_audioへ寸法・時間・限定タグを確定する。1MiBのOpus header packetを分割ページから一度だけ組み立て、音声payloadのlacingはメタデータ構造数へ算入しない。MP4のmdatはoffsetで飛ばす。schema0072・79通常table・149 route、migration・依存追加なし。
 

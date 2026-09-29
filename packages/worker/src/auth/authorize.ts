@@ -77,6 +77,8 @@ export type NodeRequest =
         | "node.read"
         | "search.read"
         | "gallery.read"
+        | "audio.read"
+        | "playback_state.write"
         | "node.rename"
         | "node.trash"
         | "node.props.write"
@@ -105,7 +107,7 @@ export type AuthorizedNode =
       readonly node: LiveNode;
     }
   | {
-      readonly operation: "search.read" | "gallery.read";
+      readonly operation: "search.read" | "gallery.read" | "audio.read" | "playback_state.write";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -228,21 +230,23 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?9 IS NULL OR n.parent_id=?9)
       AND (?10 IS NULL OR n.current_blob_id=?10)
       AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(deleted_at IS NULL)=1
-        AND (?6<>'gallery.read' OR MIN(hidden=0)=1)
+        AND (?6 NOT IN ('gallery.read','audio.read','playback_state.write') OR MIN(hidden=0)=1)
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
       AND (?6 NOT IN ('node.create','node.rename','node.trash','node.props.write','node.content.write') OR ctl.maintenance=0)
       AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
       AND (?6 NOT IN ('node.rename','node.trash') OR n.parent_id IS NOT NULL)
       AND (?6<>'node.content.write' OR n.kind='file')
       AND (?6<>'gallery.read' OR (p.kind IN ('user','app_password','link_share') AND ctl.maintenance=0))
+      AND (?6<>'audio.read' OR (p.kind IN ('user','app_password','link_share') AND ctl.maintenance=0))
+      AND (?6<>'playback_state.write' OR (p.kind='user' AND n.kind='file' AND ctl.maintenance=0))
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
-        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','gallery.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
+        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','gallery.read','audio.read','playback_state.write','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE (u.id=n.owner_id AND p.selected_id IS NULL) OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE (?6<>'node.trash' OR p.selected_id IS NOT NULL)
                 AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
-        OR (p.kind='link_share' AND ?6 IN ('node.read','gallery.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
+        OR (p.kind='link_share' AND ?6 IN ('node.read','gallery.read','audio.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
             WHERE c.id=p.credential_id AND c.kind='share'
@@ -290,6 +294,8 @@ function nodeAuthorization(
       "node.read",
       "search.read",
       "gallery.read",
+      "audio.read",
+      "playback_state.write",
       "node.create",
       "node.rename",
       "node.trash",
@@ -330,17 +336,19 @@ function nodeAuthorization(
       owner_only: request.ownerOnly === true,
       upload_action: request.upload === true,
     }),
-    request.operation === "gallery.read"
+    request.operation === "gallery.read" || request.operation === "audio.read"
       ? "library:read"
-      : request.operation === "node.create"
-        ? "node:create"
-        : request.operation === "node.trash"
-          ? "node:delete"
-          : request.operation === "node.rename" ||
-              request.operation === "node.props.write" ||
-              request.operation === "node.content.write"
-            ? "node:write"
-            : "node:read",
+      : request.operation === "playback_state.write"
+        ? "state:write"
+        : request.operation === "node.create"
+          ? "node:create"
+          : request.operation === "node.trash"
+            ? "node:delete"
+            : request.operation === "node.rename" ||
+                request.operation === "node.props.write" ||
+                request.operation === "node.content.write"
+              ? "node:write"
+              : "node:read",
     request.operation === "node.create"
       ? "create"
       : request.operation === "node.trash"

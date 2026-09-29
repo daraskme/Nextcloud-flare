@@ -14,6 +14,7 @@ import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
+import { audioReadRoute, handleAudioListHttp, handlePlaybackHttp, playbackRoute } from "./audio";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
@@ -49,6 +50,8 @@ export function privateAppRoute(request: Request): boolean {
     nodeReadRoute(request) ||
     thumbnailRoute(request) ||
     galleryRoute(request) ||
+    audioReadRoute(request) ||
+    playbackRoute(request) ||
     searchRoute(request) ||
     statsRoute(request) ||
     trashRoute(request) ||
@@ -81,6 +84,7 @@ export async function handlePrivateAppHttp(
       !nodeReadRoute(request) &&
       !thumbnailRoute(request) &&
       !galleryRoute(request) &&
+      !audioReadRoute(request) &&
       !trashRoute(request) &&
       !deadLetterReadRoute(request) &&
       !uploadReadRoute(request) &&
@@ -96,6 +100,8 @@ export async function handlePrivateAppHttp(
   const nodeRead = nodeReadRoute(request);
   const thumbnail = thumbnailRoute(request);
   const gallery = galleryRoute(request);
+  const audio = audioReadRoute(request);
+  const playback = playbackRoute(request);
   const search = searchRoute(request);
   const stats = statsRoute(request);
   const trashRead = trashRoute(request);
@@ -116,6 +122,8 @@ export async function handlePrivateAppHttp(
     !nodeRead &&
     !thumbnail &&
     !gallery &&
+    !audio &&
+    !playback &&
     !search &&
     !stats &&
     !trashRead &&
@@ -278,6 +286,17 @@ export async function handlePrivateAppHttp(
       },
       dependencies.cursors,
     );
+  if (audio || playback) {
+    const principal = {
+      kind: "user" as const,
+      user_id: session.user_id,
+      credential_id: session.credential_id,
+      epoch: session.epoch,
+    };
+    return audio
+      ? handleAudioListHttp(request, env, principal, dependencies.cursors)
+      : handlePlaybackHttp(request, env, principal, dependencies.csrf);
+  }
   if (thumbnail)
     if (request.method === "POST")
       return handleLargeThumbnailHttp(

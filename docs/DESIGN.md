@@ -879,6 +879,8 @@ MP3/FLAC/OGG/Opus/M4A/MP4/WAV の bounded tag parser。通常 head≤2MiB+tail12
 
 Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、client MIME/拡張子だけで codec を確定しない。再エンコードを原本再生の前提にしない。MP4 の codec parameter は `Opus`、Ogg/WebM は `opus` とする。
 
+[Audio一覧と再生位置API](AUDIO.md)はOpusを対象に接続済み。専用画面・常駐player・自動保存／再開・追加形式・cover・override編集は継続する。
+
 ### 9A.4 共通認可 / job
 
 全media routeはEffectiveLive、capability root、current blob、generation、credential scopeを検査する。index/tag/sanitize/thumb jobはoutbox、saved principal、epoch、fenced result claimを使いstale結果を公開しない。
