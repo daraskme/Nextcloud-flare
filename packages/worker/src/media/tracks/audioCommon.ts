@@ -1,5 +1,6 @@
 import { ascii, type ImageReader, valid, view } from "../images/reader";
 import { type TrackTags, tag } from "./common";
+import { commentCover } from "./cover";
 
 export const AUDIO_HEAD_BYTES = 2097152;
 export function head(r: ImageReader, at: number, length: number) {
@@ -24,6 +25,7 @@ export function vorbisComments(bytes: Uint8Array, tags: TrackTags, r: ImageReade
     const size = d.getUint32(at, true);
     at += 4;
     valid(at + size <= bytes.length);
+    commentCover(bytes.subarray(at, at + size), tags);
     if (size <= 1100) {
       const field = bytes.subarray(at, at + size),
         equals = field.indexOf(61);

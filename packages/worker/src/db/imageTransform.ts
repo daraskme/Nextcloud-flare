@@ -2,10 +2,13 @@ import { imageRequestAuthority, imageRequestOperands } from "../jobs/imageReques
 import { nodeEventAuthority, readOutboxEvent } from "../jobs/outboxAuthority";
 import { type ImageTransformFailureReceipt, imageFailureJson } from "../media/images/failure";
 import {
+  AUDIO_COVER_GENERATOR,
   IMAGE_OUTPUT_BYTES,
   IMAGE_TRANSFORM_GENERATOR,
   IMAGE_VARIANTS,
+  type ImageGenerator,
   type ImageVariant,
+  imageGenerator,
 } from "../media/images/transform";
 import { assertExists, primary, type SqlStatement } from "./primary";
 
@@ -17,7 +20,7 @@ export interface ImageTransformRequest {
   outboxId: string;
   claimToken: string;
   variant: ImageVariant;
-  generator: typeof IMAGE_TRANSFORM_GENERATOR;
+  generator: ImageGenerator;
   deadline: number;
   expiresAt: number;
   source: {
@@ -29,6 +32,8 @@ export interface ImageTransformRequest {
     /** Fixed output geometry from the inspected source; these are transformation parameters. */
     width: number;
     height: number;
+    /** Exact embedded bytes from this original's bounded metadata parser. */
+    cover?: { bytes: number; sha256: string };
   };
 }
 export interface ImageTransformGrant extends ImageTransformRequest {
@@ -56,7 +61,7 @@ export function validateImageTransform(r: ImageTransformRequest) {
     !Number.isSafeInteger(r.epoch) ||
     r.epoch < 1 ||
     !Object.hasOwn(IMAGE_VARIANTS, r.variant) ||
-    r.generator !== IMAGE_TRANSFORM_GENERATOR ||
+    !imageGenerator(r.generator) ||
     !Number.isSafeInteger(r.deadline) ||
     !Number.isSafeInteger(r.expiresAt) ||
     r.expiresAt < r.deadline ||
@@ -69,7 +74,16 @@ export function validateImageTransform(r: ImageTransformRequest) {
     r.source.etag.length > 256 ||
     !Number.isSafeInteger(r.source.size) ||
     r.source.size < 1 ||
-    r.source.size > 20_000_000 ||
+    (r.generator === IMAGE_TRANSFORM_GENERATOR &&
+      (r.source.size > 20_000_000 || r.source.cover !== undefined)) ||
+    (r.generator === AUDIO_COVER_GENERATOR &&
+      (!r.source.cover ||
+        r.variant === "lg" ||
+        !Number.isSafeInteger(r.source.cover.bytes) ||
+        r.source.cover.bytes < 1 ||
+        r.source.cover.bytes > 20_000_000 ||
+        r.source.cover.bytes > r.source.size ||
+        !/^[a-f0-9]{64}$/.test(r.source.cover.sha256))) ||
     ![r.source.width, r.source.height].every(
       (n) => Number.isSafeInteger(n) && n > 0 && n <= IMAGE_VARIANTS[r.variant],
     )
@@ -144,6 +158,7 @@ export function imageTransformValues(g: ImageTransformGrant) {
       size: s.size,
       width: s.width,
       height: s.height,
+      ...(s.cover ? { cover: { bytes: s.cover.bytes, sha256: s.cover.sha256 } } : {}),
     }),
     g.startedAt,
     g.deadline,

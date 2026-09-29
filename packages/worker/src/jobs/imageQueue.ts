@@ -8,12 +8,15 @@ import type { Env } from "../env";
 import { imageFailureJson } from "../media/images/failure";
 import { openImageObject } from "../media/images/objectStream";
 import {
+  AUDIO_COVER_GENERATOR,
   IMAGE_TRANSFORM_GENERATOR,
+  type ImageTransformPlan,
   ImageTransformUnsupported,
   type ImageVariant,
   planInspectedImage,
   transformImage,
 } from "../media/images/transform";
+import { hex } from "../platform/stream";
 import { trackedImageTransform } from "../services/imageTransform";
 import { resumeImageDerivative, storeImageDerivative } from "./imageDerivative";
 import type { PreparedImageMetadata } from "./imageMetadata";
@@ -34,26 +37,28 @@ export async function generateOutboxImages(
   budget: ImageGenerationBudget,
   variants: readonly ImageVariant[] = ["sm", "md"],
 ): Promise<readonly SqlStatement[]> {
-  const { node, image, guard } = source;
+  const { node, image, guard, cover } = source;
+  const generator = cover ? AUDIO_COVER_GENERATOR : IMAGE_TRANSFORM_GENERATOR;
+  const kind = cover ? "cover" : "thumbnail";
   const statements: SqlStatement[] = [];
   const cost = (variant: ImageVariant) =>
     primary(env.DB)
       .prepare(`SELECT * FROM image_transform_attempts
         WHERE blob_id=? AND variant=? AND generator_version=? AND state<>'not_started'`)
-      .bind(node.blob, variant, IMAGE_TRANSFORM_GENERATOR)
+      .bind(node.blob, variant, generator)
       .first<Record<string, unknown>>();
   const failedResult = (variant: ImageVariant, id: string, code: string, attempts: number) => {
     statements.push(
       {
         sql: `INSERT INTO derivative_results(id,blob_id,kind,variant,generator_version,state,
           claim_token,claim_expires_at,epoch,attempts,error_code)
-          VALUES(?,?,'thumbnail',?,?,'failed',?,?,?,?,?)
+          VALUES(?,?,'${kind}',?,?,'failed',?,?,?,?,?)
           ON CONFLICT(kind,blob_id,variant,generator_version) DO NOTHING`,
         values: [
           id,
           node.blob,
           variant,
-          IMAGE_TRANSFORM_GENERATOR,
+          generator,
           claimToken,
           deadline,
           event.epoch,
@@ -62,11 +67,11 @@ export async function generateOutboxImages(
         ],
       },
       assertExists(
-        `SELECT 1 FROM derivative_results d WHERE id=? AND blob_id=? AND kind='thumbnail'
+        `SELECT 1 FROM derivative_results d WHERE id=? AND blob_id=? AND kind='${kind}'
           AND variant=? AND generator_version=? AND state='failed' AND error_code=? AND attempts=?
           AND r2_key IS NULL AND size IS NULL AND epoch=?
           AND NOT EXISTS(SELECT 1 FROM image_derivative_objects WHERE result_id=d.id)`,
-        [id, node.blob, variant, IMAGE_TRANSFORM_GENERATOR, code, attempts, event.epoch],
+        [id, node.blob, variant, generator, code, attempts, event.epoch],
       ),
     );
   };
@@ -81,7 +86,9 @@ export async function generateOutboxImages(
       grant.source.parentId !== node.parent ||
       grant.source.key !== node.key ||
       grant.source.etag !== node.etag ||
-      grant.source.size !== node.size
+      grant.source.size !== node.size ||
+      JSON.stringify(grant.source.cover ?? null) !==
+        JSON.stringify(cover ? { bytes: cover.bytes.length, sha256: cover.sha256 } : null)
     )
       throw new Error("image_job_conflict");
     const failure = JSON.parse(row.failure_json as string);
@@ -119,21 +126,24 @@ export async function generateOutboxImages(
         expiresAt: deadline,
       });
     } else {
-      let plan;
+      let plan: ImageTransformPlan;
       try {
-        plan = planInspectedImage(image, node.size, variant);
+        plan = {
+          ...planInspectedImage(image, cover?.bytes.length ?? node.size, variant),
+          generator,
+        };
       } catch (error) {
         if (!(error instanceof ImageTransformUnsupported)) throw error;
         statements.push(
           assertExists(
             `SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM image_transform_attempts
             WHERE blob_id=? AND variant=? AND generator_version=? AND state<>'not_started')`,
-            [node.blob, variant, IMAGE_TRANSFORM_GENERATOR],
+            [node.blob, variant, generator],
           ),
         );
         failedResult(
           variant,
-          `image_skip_${node.blob}_${variant}`,
+          `image_skip_${cover ? "cover_" : ""}${node.blob}_${variant}`,
           "image_unsupported_" + error.reason,
           0,
         );
@@ -158,7 +168,7 @@ export async function generateOutboxImages(
             outboxId: event.id,
             claimToken,
             variant,
-            generator: IMAGE_TRANSFORM_GENERATOR,
+            generator,
             expiresAt: deadline,
             source: {
               nodeId: node.id,
@@ -168,6 +178,7 @@ export async function generateOutboxImages(
               size: node.size,
               width: plan.width,
               height: plan.height,
+              ...(cover ? { cover: { bytes: cover.bytes.length, sha256: cover.sha256 } } : {}),
             },
           },
           async (signal, failure) => {
@@ -175,7 +186,23 @@ export async function generateOutboxImages(
           },
           async (signal) => {
             // No Images invocation can occur here. A failed GET/authority check is not_started.
-            input = await openImageObject(env.BLOBS, node, signal, guard);
+            if (cover) {
+              await guard();
+              signal.throwIfAborted();
+              if (
+                cover.bytes.length !== plan.sourceBytes ||
+                hex(await crypto.subtle.digest("SHA-256", new Uint8Array(cover.bytes))) !==
+                  cover.sha256
+              )
+                throw new Error("image_cover_mismatch");
+              signal.throwIfAborted();
+              input = new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(cover.bytes);
+                  controller.close();
+                },
+              });
+            } else input = await openImageObject(env.BLOBS, node, signal, guard);
           },
         );
       } catch (error) {
@@ -198,8 +225,8 @@ export async function generateOutboxImages(
         `SELECT 1 FROM image_derivative_objects x JOIN derivative_results d ON d.id=x.result_id
         JOIN image_derivative_cleanup c ON c.image_id=x.id
         WHERE x.id=? AND x.source_blob_id=? AND x.state='published' AND c.retired_at IS NULL
-          AND d.state='ready' AND d.kind='thumbnail' AND d.blob_id=? AND d.variant=? AND d.generator_version=?`,
-        [prior.id as string, node.blob, node.blob, variant, IMAGE_TRANSFORM_GENERATOR],
+          AND d.state='ready' AND d.kind='${kind}' AND d.blob_id=? AND d.variant=? AND d.generator_version=?`,
+        [prior.id as string, node.blob, node.blob, variant, generator],
       ),
     );
   }

@@ -9,6 +9,7 @@ import {
   type TrackTags,
   tag,
 } from "./common";
+import { offerCover, optionalCover } from "./cover";
 
 interface Box {
   type: string;
@@ -162,7 +163,7 @@ export async function mp4Tracks(r: ImageReader): Promise<TrackMetadata> {
   valid(video || audio);
   valid(!video || !audio || audio.codec === "opus");
   const tags: TrackTags = {};
-  // The iTunes display subset only; no artwork, arbitrary atoms, URLs or GPS are retained.
+  // Display tags and embedded artwork only; arbitrary atoms, URLs and GPS are omitted.
   const udta = top.filter((b) => b.type === "udta");
   valid(udta.length <= 1);
   if (udta[0]) {
@@ -175,6 +176,18 @@ export async function mp4Tracks(r: ImageReader): Promise<TrackMetadata> {
       valid(lists.length <= 1);
       if (lists[0])
         for (const field of boxes(bytes, lists[0].start, lists[0].end, r)) {
+          if (field.type === "covr" && !video) {
+            optionalCover(() => {
+              for (const value of boxes(bytes, field.start, field.end, r))
+                if (
+                  value.type === "data" &&
+                  value.end - value.start > 8 &&
+                  [13, 14].includes(d.getUint32(value.start))
+                )
+                  offerCover(tags, bytes.subarray(value.start + 8, value.end), 3);
+            });
+            continue;
+          }
           const key = (
             { "©nam": "TITLE", "©ART": "ARTIST", "©alb": "ALBUM" } as Record<string, string>
           )[field.type];

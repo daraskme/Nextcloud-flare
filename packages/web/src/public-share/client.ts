@@ -103,6 +103,7 @@ export class PublicClient {
       signal: this.lifetime.signal,
       list: (cursor, signal) => list(nodeId, cursor, signal),
       current: (id, signal) => list(id, null, signal),
+      prepareCovers: this.galleryClient(root, nodeId).prepare,
       original: async (item, signal) => {
         const { token } = await this.request<{ token: string }>(
           "/csrf",

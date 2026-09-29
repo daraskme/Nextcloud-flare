@@ -43,6 +43,7 @@ it.each([
   { purpose: "content" },
   { variant: "huge" },
   { generator: "client-thumb" },
+  { generator: "audio-cover-webp-v1", variant: "lg" },
   { imageId: "../../x" },
   { blobId: "a/b" },
   { size: 0 },

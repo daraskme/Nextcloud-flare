@@ -195,6 +195,7 @@ export class ApiClient {
       signal: lifetime.signal,
       list: (cursor, signal) => list(rootId, cursor, signal),
       current: (id, signal) => list(id, null, signal),
+      prepareCovers: this.galleryClient(account, rootId, share).prepare,
       original: async (item, signal) => {
         const { ticket } = await post<{ ticket: string }>(
           "/api/v1/content-session",

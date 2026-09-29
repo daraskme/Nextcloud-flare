@@ -10,6 +10,12 @@ import { type ImageMetadata, inspectImage } from "./inspect";
 import { ascii, type ImageSource, view } from "./reader";
 
 export const IMAGE_TRANSFORM_GENERATOR = "image-webp-v1";
+export const AUDIO_COVER_GENERATOR = "audio-cover-webp-v1";
+export type ImageGenerator = typeof IMAGE_TRANSFORM_GENERATOR | typeof AUDIO_COVER_GENERATOR;
+export const IMAGE_RESULT_KIND_SQL = `CASE t.generator_version WHEN '${IMAGE_TRANSFORM_GENERATOR}' THEN 'thumbnail' WHEN '${AUDIO_COVER_GENERATOR}' THEN 'cover' END`;
+export function imageGenerator(value: unknown): value is ImageGenerator {
+  return value === IMAGE_TRANSFORM_GENERATOR || value === AUDIO_COVER_GENERATOR;
+}
 export const IMAGE_VARIANTS = Object.freeze({ sm: 256, md: 768, lg: 1600 });
 export type ImageVariant = keyof typeof IMAGE_VARIANTS;
 export const IMAGE_OUTPUT_BYTES = 12 * 1024 * 1024;
@@ -21,7 +27,7 @@ export class ImageTransformUnsupported extends Error {
 }
 export interface ImageTransformPlan {
   readonly variant: ImageVariant;
-  readonly generator: typeof IMAGE_TRANSFORM_GENERATOR;
+  readonly generator: ImageGenerator;
   readonly source: Readonly<ImageMetadata>;
   readonly sourceBytes: number;
   readonly width: number;
@@ -175,7 +181,7 @@ export async function transformImage(
   const run = async () => {
     signal.throwIfAborted();
     if (
-      plan.generator !== IMAGE_TRANSFORM_GENERATOR ||
+      !imageGenerator(plan.generator) ||
       !Object.hasOwn(IMAGE_VARIANTS, plan.variant) ||
       !Number.isSafeInteger(plan.width) ||
       !Number.isSafeInteger(plan.height) ||

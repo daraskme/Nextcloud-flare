@@ -16,6 +16,7 @@ import { type ImageReadBudget, imageObjectSource } from "../media/images/r2Sourc
 import { sniffMediaContainer } from "../media/sniff";
 import { TRACK_METADATA_GENERATOR, TRACK_METADATA_LIMITS } from "../media/tracks/common";
 import { inspectTracks } from "../media/tracks/inspect";
+import { hex } from "../platform/stream";
 import { AUDIO_OVERRIDE_SNAPSHOT, audioSearchTags } from "../search/audio";
 import { nodeSearchSteps } from "../search/projection";
 import type { EventRow } from "./outboxAuthority";
@@ -30,7 +31,12 @@ export interface ImageNode {
 }
 export interface PreparedImageMetadata {
   statements: readonly SqlStatement[];
-  source?: { node: ImageNode & { etag: string }; image: ImageMetadata; guard: () => Promise<void> };
+  source?: {
+    node: ImageNode & { etag: string };
+    image: ImageMetadata;
+    guard: () => Promise<void>;
+    cover?: { bytes: Uint8Array; sha256: string };
+  };
 }
 const SOURCE = `SELECT n.id,n.name,n.revision,n.current_blob_id AS blob,n.parent_id AS parent,b.r2_key AS key,b.size,s.r2_etag AS etag
   FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
@@ -99,6 +105,20 @@ export async function imageMetadataStatements(
         )
       : null;
   signal.throwIfAborted();
+  const artwork = track?.media.kind === "audio" ? track.cover?.bytes : undefined;
+  const coverImage = artwork
+    ? await inspectImage({
+        size: artwork.length,
+        read: async (offset, length) => artwork.subarray(offset, offset + length),
+      })
+    : null;
+  const cover =
+    coverImage && artwork
+      ? {
+          bytes: artwork,
+          sha256: hex(await crypto.subtle.digest("SHA-256", new Uint8Array(artwork))),
+        }
+      : undefined;
   // Even the no-image result belongs to this exact current blob and source authorization.
   const result: SqlStatement[] = [
     hold,
@@ -202,6 +222,15 @@ export async function imageMetadataStatements(
   }
   return {
     statements: result,
-    ...(image ? { source: { node: { ...node, etag: node.etag }, image, guard } } : {}),
+    ...(image || (coverImage && cover)
+      ? {
+          source: {
+            node: { ...node, etag: node.etag },
+            image: (image ?? coverImage)!,
+            guard,
+            ...(cover ? { cover } : {}),
+          },
+        }
+      : {}),
   };
 }

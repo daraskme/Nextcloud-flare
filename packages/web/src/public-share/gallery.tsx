@@ -5,9 +5,11 @@ import "./gallery.css";
 export interface GalleryClient {
   list(recursive: boolean, cursor: string | null, signal: AbortSignal): Promise<GalleryPage>;
   prepare(
-    items: GalleryItem[],
+    items: Pick<GalleryItem, "id" | "currentBlobId">[],
     signal: AbortSignal,
-  ): Promise<(item: GalleryItem, signal: AbortSignal) => Promise<Blob>>;
+  ): Promise<
+    (item: Pick<GalleryItem, "id" | "currentBlobId">, signal: AbortSignal) => Promise<Blob>
+  >;
   original(item: GalleryItem, signal: AbortSignal): Promise<string>;
   preview(item: GalleryItem, signal: AbortSignal): Promise<Blob | null>;
 }

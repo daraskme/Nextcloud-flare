@@ -189,6 +189,27 @@ export class AudioPlayer {
     this.refreshMetadata(client, page);
     this.#navigation();
   }
+  cover = async (item: AudioTrack, signal: AbortSignal): Promise<Blob> => {
+    const s = this.#session;
+    if (
+      !s ||
+      s.item.id !== item.id ||
+      s.item.currentBlobId !== item.currentBlobId ||
+      !s.client.prepareCovers
+    )
+      throw new Error("cover_unavailable");
+    const current = AbortSignal.any([
+      signal,
+      s.stop.signal,
+      s.client.signal,
+      AbortSignal.timeout(30000),
+    ]);
+    const load = await s.client.prepareCovers([item], current);
+    current.throwIfAborted();
+    const blob = await load(item, current);
+    current.throwIfAborted();
+    return blob;
+  };
   refreshMetadata(client: AudioClient, page: AudioPage) {
     const s = this.#session;
     if (s?.client.scope !== client.scope || s.generator !== page.generator) return;

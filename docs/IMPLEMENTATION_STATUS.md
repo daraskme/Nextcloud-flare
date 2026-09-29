@@ -1,6 +1,20 @@
 # 実装進捗
 
-## 既存音声の自動再索引（今回）
+## 音声の埋め込み表紙（今回）
+
+[埋め込み表紙](AUDIO_COVERS.md)を、新しいMP3/FLAC/MP4・M4A/Ogg Opus・Vorbisのupload/DAV PUTから抽出し、sm/md WebPへ変換してAudio一覧と常駐playerへ表示する。表紙は通常画像と同じImages受付・終了記録・R2保存・容量予約・pin・回収処理を使う。原本tupleと表紙の長さ/SHA-256を変換に固定し、有料試行2回/25秒と読み取り上限を共有する。thumbnail manifest v3と現在認可を使い、所有者・内部共有・公開リンクへ配信する。0075はgenerator/kindの対応を認めるtrigger置換のみで、通常79table・149公開routeを維持する。
+
+- Node関連374件を確認。最初の11file/337件は335件成功し、新migrationの凍結fixture2件が準備中に失敗した（33.21秒、/tmp/ncf-audio-cover-unit-final.log）。正規のbackup_runs/UUIDを用意し、migration・費用記録・Web controller等5file/73件が成功（2.52秒、/tmp/ncf-audio-cover-unit-final-2.log）。表紙の実バイト一致、ID3各version、壊れた/過大/URL型表紙、front優先、metadata予算、旧source JSON、100MB原本を許可する変換grantと表紙の別上限、lg拒否、schema保持を確認した。最後に曲変更・終了・logout後の遅い画像応答4件を追加し、player19件が成功（/tmp/ncf-audio-cover-player-unit.log）。
+- Native関連198件成功。最初の4file/59件（78.76秒、/tmp/ncf-audio-cover-native-1.log）で5形式の実Images変換・WebP配信・quota/ref・ACK喪失・原本差し替え拒否と既存image Queue/保存/配信を確認した。続く7file/146件（116.05秒、/tmp/ncf-audio-cover-native-final.log）は表紙の既知失敗・原本読取中の認可失効を追加し、Audio一覧/rows_read予算、track抽出、Images費用、画像回収、Galleryを確認した。件数は重複を除く。
+- Chrome10件成功。最初の実行は所有者のMP3/FLAC/M4A/Opus表示・再生・SPA移動4件が成功したが、Vorbis upload中にrunnerがSIGTERM（exit143）で終了した（/tmp/ncf-audio-cover-browser-1.log）。原因は確定しておらず、途中終了を成功扱いにしない。残留した今回のlocal serverだけを終了し、未完了のVorbisと共有2件を再実行して成功（1.7分、/tmp/ncf-audio-cover-browser-remaining-2.log）。内部共有・公開リンクの表紙GETと共有解除後の拒否、player画像/原本破棄を確認した。
+- 既存タグ編集・2,000曲・Galleryのbrowser4件も成功（2.5分、/tmp/ncf-audio-cover-browser-regression.log）。CPU4倍制限の2,000曲で所有者/公開のpage追加最大1,136/901ms、frame p95は両方17.3ms、45更新script26.4/39.0ms、player高76.8/170px。表紙なしの既存大量一覧gateであり、2,000枚の画像転送負荷の測定ではない。所有者・390px内部共有/公開の表紙を目視確認し、artifactを/tmp/ncf-audio-cover-browser-{first,sharing,regression}-artifactsへ保存した。
+- typecheck、lint（779file）、verify:contracts、verify:config成功。Web両入口/Worker dry-run build成功（Worker1,930.99KiB・gzip408.22KiB、/tmp/ncf-audio-cover-build.log）。schema contract再生成で79通常table・FK索引・operation catalogueを確認した。
+
+- ローカルoperator drill成功（/tmp/ncf-audio-cover-operator.log、保存先.wrangler/operator-drill-W4yCuZ）。0075を含む79tableのexport・隔離復元・snapshot照合・epoch採用・全監査・受付/GC再開を確認した。Images状態は空のfixtureで、provider応答は模擬であり、実Cloudflareは変更していない。最終公開asset/SRI検査5件も成功（3.46秒、/tmp/ncf-audio-cover-assets.log）。重複を除く関連試験は587件（Node374、Native203、Chrome10）。全suiteの再実行ではない。
+
+依存・公開routeは追加していない。既存完了原本の表紙再抽出、所有者間COPY後の新blobでの表紙再生成、WAV/WebM表紙、Bookshelf、運用修復と実Cloudflare/他OS/browser gateは継続する。pushは自動承認審査拒否後の明示承認待ちで、ローカルcommitに保持する。
+
+## 既存音声の自動再索引（先行28244ef）
 
 [音声検索](AUDIO_SEARCH.md)の旧/空cacheを、既存の画像保守Cronから上限付きで再構築する。ControlDOのlocal SQLiteへ進行位置と実行tokenを保持し、eviction後も続行する。primary keyで32候補と終端確認1件を取得し、修復・対象外・失敗を合わせて8件、5秒のdispatch期限を上限とする。失敗行の前で停止せず、終端後の次の周回で再確認する。epoch/version変更では先頭へ戻り、遅れた処理は後続leaseの位置やtokenを変更しない。
 

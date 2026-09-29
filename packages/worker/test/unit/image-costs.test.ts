@@ -135,3 +135,36 @@ it("canonicalizes only bounded failure facts, excluding native error bodies", ()
     imageTerminalJson(grant(), "failed", null, { kind: "output_rejected", code: null }),
   ).toEqual({ output: null, failure: '{"kind":"output_rejected","code":null}' });
 });
+
+it("binds cover costs to the exact embedded bytes without limiting the full audio to 20 MB", () => {
+  const g = grant();
+  g.generator = "audio-cover-webp-v1";
+  g.source.size = 100_000_000;
+  g.source.cover = { bytes: 999, sha256: "a".repeat(64) };
+  expect(() => validateImageTransformGrant(g)).not.toThrow();
+  const json = imageTransformValues(g)[9];
+  expect(JSON.parse(json as string)).toMatchObject({ size: 100_000_000, cover: g.source.cover });
+  g.source.cover.sha256 = "b".repeat(64);
+  expect(imageTransformValues(g)[9]).not.toBe(json);
+  for (const cover of [
+    undefined,
+    { bytes: 0, sha256: "a".repeat(64) },
+    { bytes: 20_000_001, sha256: "a".repeat(64) },
+    { bytes: 999, sha256: "bad" },
+  ])
+    expect(() => {
+      const source = { ...g.source };
+      if (cover) source.cover = cover;
+      else delete source.cover;
+      validateImageTransformGrant({ ...g, source });
+    }).toThrow();
+  expect(() => validateImageTransformGrant({ ...g, variant: "lg" })).toThrow();
+  expect(() => validateImageTransformGrant({ ...g, source: { ...g.source, size: 998 } })).toThrow();
+  expect(() =>
+    validateImageTransformGrant({
+      ...g,
+      generator: "image-webp-v1",
+      source: { ...g.source, size: 999 },
+    }),
+  ).toThrow();
+});

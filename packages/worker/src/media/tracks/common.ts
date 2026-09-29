@@ -4,6 +4,7 @@ import {
   type MediaDescriptor,
 } from "../../../../shared/src/media";
 import { ascii, valid, view } from "../images/reader";
+import type { EmbeddedCover } from "./cover";
 
 export const TRACK_METADATA_GENERATOR = "track-metadata-v1";
 export const TRACK_METADATA_LIMITS = Object.freeze({
@@ -12,6 +13,7 @@ export const TRACK_METADATA_LIMITS = Object.freeze({
   structures: 8192,
 });
 export interface TrackTags {
+  cover?: EmbeddedCover;
   title?: string;
   artist?: string;
   album?: string;
@@ -69,7 +71,7 @@ export function durationMs(ticks: number, scale: number) {
   valid(Number.isSafeInteger(result) && result >= 0);
   return result;
 }
-/** Store just bounded display tags; arbitrary metadata, GPS and embedded pictures are omitted. */
+/** Store only bounded display tags; embedded pictures have a separate bounded parser. */
 export function tag(tags: TrackTags, name: string, bytes: Uint8Array) {
   if (bytes.length > 1024) return;
   let value: string;

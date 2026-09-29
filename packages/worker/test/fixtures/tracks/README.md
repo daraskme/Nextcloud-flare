@@ -40,3 +40,18 @@ ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=2' -ac 2 -c:a 
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a libvorbis -q:a 2 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 -metadata disc=1 tone.ogg
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=2' -ac 2 -c:a libvorbis -q:a 3 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 tone-stereo.ogg
 ```
+
+`cover.mp3`, `cover.flac`, `cover.m4a`, `cover.opus` and `cover.ogg` add the locally generated `../images/pattern.png` to the corresponding two-second audio above. `encodedCovers.ts` contains exactly these bytes. The embedded PNG bytes, dimensions and audio identity are checked independently in Node tests; Workers and browser tests use real Images conversion and thumbnail delivery.
+
+```sh
+ffmpeg -i tone.mp3 -i ../images/pattern.png -map 0:a -map 1:v -c copy -id3v2_version 3 -disposition:v attached_pic -metadata:s:v title='Cover' -metadata:s:v comment='Cover (front)' cover.mp3
+ffmpeg -i tone.flac -i ../images/pattern.png -map 0:a -map 1:v -c copy -disposition:v attached_pic -metadata:s:v title='Cover' -metadata:s:v comment='Cover (front)' cover.flac
+ffmpeg -i tone.m4a -i ../images/pattern.png -map 0:a -map 1:v -c copy -disposition:v attached_pic -movflags +faststart cover.m4a
+```
+
+For Ogg, write a FLAC PICTURE block with big-endian fields: picture type 3, MIME length 9 and `image/png`, description length 0, four zero geometry/depth/palette integers, then the exact PNG byte length and bytes. Its canonical base64 is the `METADATA_BLOCK_PICTURE` value in `cover.ffmetadata` (first line `;FFMETADATA1`). The parser inspects the real image dimensions instead of trusting the optional declared geometry.
+
+```sh
+ffmpeg -i opus.ogg -i cover.ffmetadata -map_metadata 1 -map 0:a -c copy cover.opus
+ffmpeg -i tone.ogg -i cover.ffmetadata -map_metadata 1 -map 0:a -c copy cover.ogg
+```

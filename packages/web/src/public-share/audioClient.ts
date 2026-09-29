@@ -10,6 +10,10 @@ export interface AudioClient {
   readonly signal: AbortSignal;
   list(cursor: string | null, signal: AbortSignal): Promise<AudioPage>;
   current(id: string, signal: AbortSignal): Promise<AudioPage>;
+  prepareCovers?(
+    items: AudioTrack[],
+    signal: AbortSignal,
+  ): Promise<(item: AudioTrack, signal: AbortSignal) => Promise<Blob>>;
   edit?(
     id: string,
     key: string,

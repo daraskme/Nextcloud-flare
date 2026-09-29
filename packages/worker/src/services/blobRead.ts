@@ -364,7 +364,7 @@ function validatePlan(plan: BlobReadPlan): void {
         plan.mime === "image/webp" &&
         plan.size > 0 &&
         plan.size <= 12 * 1024 * 1024 &&
-        /^u\/[A-Za-z0-9_-]{1,128}\/d\/[A-Za-z0-9_-]{1,128}\/image-webp-v1\/(?:sm|md|lg)\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(
+        /^u\/[A-Za-z0-9_-]{1,128}\/d\/[A-Za-z0-9_-]{1,128}\/(?:image-webp-v1\/(?:sm|md|lg)|audio-cover-webp-v1\/(?:sm|md))\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(
           plan.key,
         )
       )) ||

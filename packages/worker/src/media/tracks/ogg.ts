@@ -1,5 +1,6 @@
 import { ascii, type ImageReader, valid, view } from "../images/reader";
 import { durationMs, opusConfiguration, type TrackMetadata, type TrackTags, tag } from "./common";
+import { commentCover } from "./cover";
 import { vorbisIdentification, vorbisSetup, vorbisTags } from "./vorbis";
 
 function crc(bytes: Uint8Array) {
@@ -25,6 +26,7 @@ function comments(bytes: Uint8Array, tags: TrackTags, r: ImageReader) {
     const size = d.getUint32(at, true);
     at += 4;
     valid(at + size <= bytes.length);
+    commentCover(bytes.subarray(at, at + size), tags);
     if (size <= 1100) {
       const field = bytes.subarray(at, at + size),
         equals = field.indexOf(61);

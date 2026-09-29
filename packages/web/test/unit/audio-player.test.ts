@@ -163,6 +163,51 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it.each(["close", "next track", "logout"])(
+  "discards a late cover response after %s",
+  async (action) => {
+    const f = fixture(),
+      body = deferred<Blob>();
+    let request: AbortSignal | undefined;
+    const load = vi.fn(async (_item: AudioTrack, signal: AbortSignal) => {
+      request = signal;
+      return body.promise;
+    });
+    f.client.prepareCovers = vi.fn(async () => load);
+    await f.select();
+    const result = f.player.cover(items[0]!, new AbortController().signal);
+    const rejected = expect(result).rejects.toThrow();
+    await Promise.resolve();
+    expect(load).toHaveBeenCalledOnce();
+    if (action === "close") await f.player.close(false);
+    else if (action === "next track") await f.player.skip(1);
+    else f.lifetime.abort();
+    expect(request?.aborted).toBe(true);
+    // Simulate a transport that completes despite cancellation: these bytes must not revive artwork.
+    body.resolve(new Blob(["late"]));
+    await rejected;
+    expect(f.player.getSnapshot().track?.id).not.toBe(items[0]!.id);
+  },
+);
+
+it("rejects a cover for a different original and stops before GET when preparation returns after close", async () => {
+  const f = fixture(),
+    prepared = deferred<(item: AudioTrack, signal: AbortSignal) => Promise<Blob>>();
+  const load = vi.fn(async () => new Blob(["cover"]));
+  f.client.prepareCovers = vi.fn(async () => prepared.promise);
+  await f.select();
+  await expect(
+    f.player.cover({ ...items[0]!, currentBlobId: "replaced" }, new AbortController().signal),
+  ).rejects.toThrow("cover_unavailable");
+  expect(f.client.prepareCovers).not.toHaveBeenCalled();
+  const result = f.player.cover(items[0]!, new AbortController().signal);
+  const rejected = expect(result).rejects.toThrow();
+  await f.player.close(false);
+  prepared.resolve(load);
+  await rejected;
+  expect(load).not.toHaveBeenCalled();
+});
+
 it("resumes the current user's position, checkpoints, pauses and serializes next-track writes", async () => {
   const f = fixture();
   f.saved.set("one", { positionMs: 12000, updatedAt: 1 });

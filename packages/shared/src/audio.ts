@@ -15,6 +15,7 @@ export interface AudioTrack {
   trackNumber: number | null;
   discNumber: number | null;
   playback: PlaybackState | null;
+  cover?: "ready" | "pending" | "failed" | "none";
   metadata?: AudioMetadata;
 }
 

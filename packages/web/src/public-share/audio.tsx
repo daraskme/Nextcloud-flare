@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { AudioPage, AudioTrack } from "../../../shared/src/audio";
 import { type AudioClient, readAudioPage } from "./audioClient";
+import { AudioCover, AudioCovers } from "./audioCover";
 import { AudioPlayer, audioDenied } from "./audioPlayer";
 import "./audio.css";
 
@@ -47,6 +48,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         <section className="audio-player" aria-label="オーディオプレーヤー">
           {state.track && (
             <>
+              {state.track.cover === "ready" && (
+                <AudioCover item={state.track} load={player.cover} />
+              )}
               <div className="audio-now">
                 <strong title={state.track.title}>{state.track.title}</strong>
                 <small title={state.track.artist || state.track.name}>
@@ -187,48 +191,56 @@ export function AudioLibrary({
       {page?.items.length === 0 && page.nextCursor && (
         <p role="status">まだ曲が見つかっていません。続けて読み込むと、次の項目を確認します。</p>
       )}
-      <ol className="audio-tracks">
-        {page?.items.map((item) => (
-          <li
-            key={item.id}
-            className={
-              playing.scope === client.scope && playing.trackId === item.id ? "audio-selected" : ""
-            }
-          >
-            <button
-              type="button"
-              aria-label={`${item.name}を再生`}
-              onClick={() => void player.select(client, page, item)}
+      <AudioCovers items={page?.items ?? []} client={client}>
+        <ol className="audio-tracks">
+          {page?.items.map((item) => (
+            <li
+              key={item.id}
+              className={
+                playing.scope === client.scope && playing.trackId === item.id
+                  ? "audio-selected"
+                  : ""
+              }
             >
-              <span aria-hidden="true">▶</span>
-              <span className="audio-description">
-                <strong title={item.title}>{item.title}</strong>
-                <small title={[item.artist, item.album].filter(Boolean).join(" · ") || item.name}>
-                  {[item.artist, item.album].filter(Boolean).join(" · ") || item.name}
-                </small>
-                {item.title !== item.name && (
-                  <small className="audio-filename" title={item.name}>
-                    {item.name}
-                  </small>
-                )}
-              </span>
-              <span className="audio-time">
-                {item.durationMs === null ? "—" : audioTime(item.durationMs / 1000)}
-              </span>
-            </button>
-            {page.canEdit && onEdit && (
               <button
                 type="button"
-                className="audio-edit"
-                aria-label={`${item.name}のタグを編集`}
-                onClick={() => onEdit(item)}
+                aria-label={`${item.name}を再生`}
+                onClick={() => void player.select(client, page, item)}
               >
-                タグを編集
+                {item.cover === "ready" ? (
+                  <AudioCover item={item} />
+                ) : (
+                  <span aria-hidden="true">▶</span>
+                )}
+                <span className="audio-description">
+                  <strong title={item.title}>{item.title}</strong>
+                  <small title={[item.artist, item.album].filter(Boolean).join(" · ") || item.name}>
+                    {[item.artist, item.album].filter(Boolean).join(" · ") || item.name}
+                  </small>
+                  {item.title !== item.name && (
+                    <small className="audio-filename" title={item.name}>
+                      {item.name}
+                    </small>
+                  )}
+                </span>
+                <span className="audio-time">
+                  {item.durationMs === null ? "—" : audioTime(item.durationMs / 1000)}
+                </span>
               </button>
-            )}
-          </li>
-        ))}
-      </ol>
+              {page.canEdit && onEdit && (
+                <button
+                  type="button"
+                  className="audio-edit"
+                  aria-label={`${item.name}のタグを編集`}
+                  onClick={() => onEdit(item)}
+                >
+                  タグを編集
+                </button>
+              )}
+            </li>
+          ))}
+        </ol>
+      </AudioCovers>
       {page?.nextCursor && (
         <button type="button" disabled={busy} onClick={() => void load(page)}>
           {page.items.length ? "曲をもっと表示" : "続けて曲を探す"}

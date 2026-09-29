@@ -1,6 +1,7 @@
 import { ascii, ImageFormatError, type ImageReader, valid, view } from "../images/reader";
 import { AUDIO_HEAD_BYTES, head, textTag } from "./audioCommon";
 import { durationMs, type TrackMetadata, type TrackTags } from "./common";
+import { AUDIO_COVER_BYTES, id3Cover, optionalCover } from "./cover";
 
 function syncsafe(b: Uint8Array, at: number) {
   valid(at + 4 <= b.length);
@@ -129,16 +130,25 @@ async function id3(r: ImageReader, tags: TrackTags) {
     at += headerSize;
     valid(length > 0 && at + length <= bytes.length);
     const key = keys[name];
-    if (key && length <= 4096 && !(format & (version === 4 ? 12 : 192))) {
-      let data = bytes.subarray(at, at + length);
-      if (version === 4 && (format & 2 || flags & 128)) data = unsync(data);
-      if (format & (version === 4 ? 64 : 32)) data = data.subarray(1);
-      if (version === 4 && format & 1) {
-        const count = syncsafe(data, 0);
-        data = data.subarray(4);
-        valid(data.length === count);
-      }
-      textFrame(tags, key, data, version);
+    const picture = name === "APIC" || name === "PIC";
+    if (
+      ((key && length <= 4096) || (picture && length <= AUDIO_COVER_BYTES)) &&
+      !(format & (version === 4 ? 12 : 192))
+    ) {
+      const parse = () => {
+        let data = bytes.subarray(at, at + length);
+        if (version === 4 && (format & 2 || flags & 128)) data = unsync(data);
+        if (format & (version === 4 ? 64 : 32)) data = data.subarray(1);
+        if (version === 4 && format & 1) {
+          const count = syncsafe(data, 0);
+          data = data.subarray(4);
+          valid(data.length === count);
+        }
+        if (picture) id3Cover(data, tags, version);
+        else textFrame(tags, key!, data, version);
+      };
+      if (picture) optionalCover(parse);
+      else parse();
     }
     at += length;
   }

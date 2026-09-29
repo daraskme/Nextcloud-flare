@@ -1,8 +1,10 @@
 # 開発進捗
 
-[既存音声の再索引](AUDIO_SEARCH.md)を定期保守へ接続しました。保存済みの実効タグから検索cache・base索引・FTSを一括修復します。ControlDOへ進行位置を保存し、1回32候補・最大8件・5秒で少しずつ進めます。原本・編集値・再生位置は変更せず、競合や停止・backup/restore凍結を再検査します。schema0074・通常79table・149 API route。cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[音声の埋め込み表紙](AUDIO_COVERS.md)を、抽出・WebP変換・保存・配信・Audio一覧と常駐playerへ接続しました。新しいMP3・FLAC・M4A/MP4・Ogg Opus/Vorbisを対象に、現在の原本と閲覧権限を確認します。既存の変換記録・容量予約・回収処理を共有し、再実行で変換を重複させません。schema0075・通常79table・149 API route。既存原本の表紙再抽出と所有者間COPY後の再生成、WAV/WebM表紙、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[既存音声の再索引](AUDIO_SEARCH.md)を定期保守へ接続しました。保存済みの実効タグから検索cache・base索引・FTSを一括修復します。ControlDOへ進行位置を保存し、1回32候補・最大8件・5秒で少しずつ進めます。原本・編集値・再生位置は変更せず、競合や停止・backup/restore凍結を再検査します。schema0074・通常79table・149 API route。cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [所有者間COPY](COPY_JOBS.md)へ音声metadataの引継ぎを追加しました。新しいmanifest v2で受付時の抽出値・override・時間・番号と検索cacheを固定し、コピー先のAudio一覧・Files検索へ同時反映します。元タグが受付後に変わっても固定値を維持し、旧v1ジョブも従来の契約で再開します。rawと正規化後を含む8 MiB上限を検査します。schema0074・通常79table・149 API route。既存曲の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

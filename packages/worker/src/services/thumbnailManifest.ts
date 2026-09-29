@@ -1,7 +1,9 @@
 import {
+  AUDIO_COVER_GENERATOR,
   IMAGE_OUTPUT_BYTES,
-  IMAGE_TRANSFORM_GENERATOR,
+  type ImageGenerator,
   type ImageVariant,
+  imageGenerator,
 } from "../media/images/transform";
 import type { EncodedTargetManifest, TargetEntry } from "./targetManifest";
 
@@ -11,7 +13,7 @@ export interface ThumbnailTarget extends TargetEntry {
   readonly purpose: "thumb";
   readonly imageId: string;
   readonly variant: ImageVariant;
-  readonly generator: typeof IMAGE_TRANSFORM_GENERATOR;
+  readonly generator: ImageGenerator;
 }
 export interface ThumbnailManifest {
   readonly v: 3;
@@ -53,8 +55,9 @@ export function parseThumbnailManifest(
       typeof target.imageId !== "string" ||
       !UUID.test(target.imageId) ||
       target.purpose !== "thumb" ||
-      target.generator !== IMAGE_TRANSFORM_GENERATOR ||
+      !imageGenerator(target.generator) ||
       !thumbnailVariant(target.variant) ||
+      (target.generator === AUDIO_COVER_GENERATOR && target.variant === "lg") ||
       !Number.isSafeInteger(target.size) ||
       target.size < 1 ||
       target.size > IMAGE_OUTPUT_BYTES

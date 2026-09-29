@@ -1,6 +1,7 @@
-import { ascii, type ImageReader, valid, view } from "../images/reader";
+import { ascii, ImageFormatError, type ImageReader, valid, view } from "../images/reader";
 import { AUDIO_HEAD_BYTES, head, vorbisComments } from "./audioCommon";
 import { durationMs, type TrackMetadata, type TrackTags } from "./common";
+import { flacCover } from "./cover";
 
 /** STREAMINFO and bounded display comments, followed by a checked first audio frame header. */
 export async function flacTracks(r: ImageReader): Promise<TrackMetadata> {
@@ -15,6 +16,7 @@ export async function flacTracks(r: ImageReader): Promise<TrackMetadata> {
     samples = 0,
     maxBlock = 0;
   const tags: TrackTags = {};
+  const pictures: { at: number; size: number }[] = [];
   while (!last) {
     r.step();
     const h = await head(r, at, 4),
@@ -44,7 +46,7 @@ export async function flacTracks(r: ImageReader): Promise<TrackMetadata> {
       valid(!comments);
       comments = true;
       vorbisComments(await head(r, at, size), tags, r);
-    }
+    } else if (type === 6) pictures.push({ at, size });
     at += size;
   }
   const b = await head(r, at, Math.min(32, r.size - at)),
@@ -88,6 +90,16 @@ export async function flacTracks(r: ImageReader): Promise<TrackMetadata> {
     for (let i = 0; i < 8; i++) crc = ((crc << 1) ^ (crc & 128 ? 7 : 0)) & 255;
   }
   valid(b[p] === crc && at + p + 3 < r.size);
+  // Spend only the remaining inspection budget after the audio identity is proven.
+  for (const picture of pictures) {
+    if (tags.cover?.type === 3) break;
+    try {
+      flacCover(await head(r, picture.at, picture.size), tags);
+    } catch (error) {
+      if (error instanceof ImageFormatError) break;
+      throw error;
+    }
+  }
   return {
     media: { kind: "audio", container: "flac", codec: "flac" },
     width: null,

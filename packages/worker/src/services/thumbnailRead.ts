@@ -1,6 +1,13 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { assertExists, atomicBatch, type SqlStatement } from "../db/primary";
-import { IMAGE_TRANSFORM_GENERATOR, type ImageVariant } from "../media/images/transform";
+import {
+  AUDIO_COVER_GENERATOR,
+  IMAGE_RESULT_KIND_SQL,
+  IMAGE_TRANSFORM_GENERATOR,
+  type ImageGenerator,
+  type ImageVariant,
+  imageGenerator,
+} from "../media/images/transform";
 import type { BlobReadPlan } from "./blobRead";
 import { type ThumbnailTarget, thumbnailVariant } from "./thumbnailManifest";
 
@@ -13,8 +20,8 @@ const SOURCE = `FROM nodes n JOIN blobs original ON original.id=n.current_blob_i
   JOIN image_derivative_cleanup c ON c.image_id=x.id
   WHERE (n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?)
     AND (n.kind='file' AND n.hidden=0 AND n.deleted_at IS NULL AND original.state IN ('committed','gc_candidate'))
-    AND (t.variant=? AND t.generator_version=? AND t.state='succeeded')
-    AND (d.kind='thumbnail' AND d.variant=t.variant AND d.generator_version=t.generator_version)
+    AND (t.variant=? AND t.generator_version=COALESCE(?,CASE WHEN original.mime_sniffed LIKE 'audio/%' THEN '${AUDIO_COVER_GENERATOR}' ELSE '${IMAGE_TRANSFORM_GENERATOR}' END) AND t.state='succeeded')
+    AND (d.kind=(${IMAGE_RESULT_KIND_SQL}) AND d.variant=t.variant AND d.generator_version=t.generator_version)
     AND (d.state='ready' AND x.state='published' AND b.state='committed' AND b.ref_count=1)
     AND (b.id='image_'||t.id AND d.id=b.id AND d.size=b.size AND d.r2_key=b.r2_key)
     AND b.r2_key='u/'||n.owner_id||'/d/'||original.id||'/'||t.generator_version||'/'||t.variant||'/'||t.id
@@ -67,7 +74,7 @@ export async function prepareAuthorizedThumbnailRead(
       expected.nodeId !== n.id ||
       expected.blobId !== n.current_blob_id ||
       expected.variant !== variant ||
-      expected.generator !== IMAGE_TRANSFORM_GENERATOR ||
+      !imageGenerator(expected.generator) ||
       expected.purpose !== "thumb")
   )
     throw new Error("content_not_available");
@@ -77,7 +84,7 @@ export async function prepareAuthorizedThumbnailRead(
     n.revision,
     n.current_blob_id,
     variant,
-    IMAGE_TRANSFORM_GENERATOR,
+    expected?.generator ?? null,
   ];
   const suffix = expected ? " AND t.id=? AND b.size=?" : "";
   const bindings = [...values, ...(expected ? [expected.imageId, expected.size] : [])];
@@ -86,25 +93,32 @@ export async function prepareAuthorizedThumbnailRead(
     ...extra,
     {
       sql: `SELECT b.r2_key AS key,b.size,s.r2_etag AS r2Etag,b.content_etag AS contentEtag,
-      'image/webp' AS mime,'thumbnail.webp' AS name,t.id AS imageId ${SOURCE}${suffix}`,
+      'image/webp' AS mime,'thumbnail.webp' AS name,t.id AS imageId,t.generator_version AS generator ${SOURCE}${suffix}`,
       values: bindings,
     },
   ]);
   const row = batches[extra.length + 1]?.results[0] as
-    | (BlobReadPlan & { imageId: string })
+    | (BlobReadPlan & { imageId: string; generator: ImageGenerator })
     | undefined;
   if (!row) throw new Error(expected ? "content_not_available" : "thumbnail_not_ready");
-  const { imageId, ...blob } = row;
+  const { imageId, generator, ...blob } = row;
   const target: ThumbnailTarget = {
     spaceId: n.space_id,
     nodeId: n.id,
     blobId: n.current_blob_id,
     purpose: "thumb",
     variant,
-    generator: IMAGE_TRANSFORM_GENERATOR,
+    generator,
     imageId,
     size: blob.size,
   };
-  const guard = assertExists(FENCE, [...values, imageId, blob.size, blob.r2Etag, blob.contentEtag]);
+  const guard = assertExists(FENCE, [
+    ...values.slice(0, 5),
+    generator,
+    imageId,
+    blob.size,
+    blob.r2Etag,
+    blob.contentEtag,
+  ]);
   return { blob: Object.freeze(blob), target: Object.freeze(target), guard };
 }

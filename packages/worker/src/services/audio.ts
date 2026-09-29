@@ -8,6 +8,7 @@ import type { AudioCursorTokens } from "../auth/audioCursor";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
+import { AUDIO_COVER_GENERATOR } from "../media/images/transform";
 import { AUDIO_CODEC_MIME } from "../media/tracks/audioSql";
 import { TRACK_METADATA_GENERATOR } from "../media/tracks/common";
 import { acquireAccountMutation, commitAccountMutation } from "./accountMutation";
@@ -56,6 +57,9 @@ export function audioStatement(file: boolean, limit: number, after = false) {
     b.mime_sniffed AS mime,a.duration_ms AS durationMs,
     COALESCE(a.title_override,a.title_extracted,n.name) AS title,
     COALESCE(a.artist_override,a.artist_extracted) AS artist,
+    COALESCE((SELECT CASE d.state WHEN 'ready' THEN 'ready' WHEN 'failed' THEN 'failed' ELSE 'pending' END
+      FROM derivative_results d WHERE d.blob_id=n.current_blob_id AND d.kind='cover' AND d.variant='sm'
+        AND d.generator_version='${AUDIO_COVER_GENERATOR}'),'none') AS cover,
     COALESCE(a.album_override,a.album_extracted) AS album,a.track_number AS trackNumber,a.disc_number AS discNumber,
     p.position_ms AS positionMs,p.updated_at AS stateUpdatedAt${file ? `,${AUDIO_METADATA} AS metadataJson` : ""}`;
   if (file)
@@ -88,7 +92,7 @@ export function audioStatement(file: boolean, limit: number, after = false) {
     (SELECT json_group_array(json_object('id',p.id,'name',p.name,'nameCi',p.nameCi,
       'currentBlobId',p.currentBlobId,'mime',p.mime,'durationMs',p.durationMs,'title',p.title,
       'artist',p.artist,'album',p.album,'trackNumber',p.trackNumber,'discNumber',p.discNumber,
-      'positionMs',p.positionMs,'stateUpdatedAt',p.stateUpdatedAt))
+      'positionMs',p.positionMs,'stateUpdatedAt',p.stateUpdatedAt,'cover',p.cover))
       FROM (SELECT * FROM page ORDER BY nameCi,id) p) AS items`;
 }
 

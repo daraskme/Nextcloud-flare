@@ -14,7 +14,11 @@ import {
 } from "../db/primary";
 import { CONTROL_NAME } from "../do/controlName";
 import type { Env } from "../env";
-import type { ImageTransformOutput } from "../media/images/transform";
+import {
+  AUDIO_COVER_GENERATOR,
+  IMAGE_RESULT_KIND_SQL,
+  type ImageTransformOutput,
+} from "../media/images/transform";
 import { hex } from "../platform/stream";
 import { trackedR2Write } from "../services/r2Write";
 import {
@@ -142,10 +146,11 @@ export async function prepareImageDerivative(
         values: [id(grant), claim.blobId],
       },
       {
-        sql: "INSERT INTO derivative_results(id,blob_id,kind,variant,generator_version,state,claim_token,claim_expires_at,epoch,attempts,r2_key,size) VALUES(?,?,'thumbnail',?,?,'running',?,?,?,1,?,?)",
+        sql: "INSERT INTO derivative_results(id,blob_id,kind,variant,generator_version,state,claim_token,claim_expires_at,epoch,attempts,r2_key,size) VALUES(?,?,?,?,?,'running',?,?,?,1,?,?)",
         values: [
           id(grant),
           grant.blobId,
+          grant.generator === AUDIO_COVER_GENERATOR ? "cover" : "thumbnail",
           grant.variant,
           grant.generator,
           grant.claimToken,
@@ -232,7 +237,7 @@ export async function publishImageDerivative(env: ImageStoreEnv, c: ImageDerivat
     assertExists(
       `SELECT 1 FROM image_transform_attempts t JOIN derivative_results d ON d.id=?
       WHERE t.id=? AND t.state='succeeded' AND t.output_json=? AND d.state='running' AND d.blob_id=t.blob_id
-      AND d.kind='thumbnail' AND d.variant=t.variant AND d.generator_version=t.generator_version
+      AND d.kind=(${IMAGE_RESULT_KIND_SQL}) AND d.variant=t.variant AND d.generator_version=t.generator_version
       AND d.claim_token=t.claim_token AND d.claim_expires_at=t.expires_at AND d.epoch=t.epoch
       AND t.expires_at>${CLOCK}+1000`,
       [id(c.grant), c.grant.id, imageOutputJson(c.grant, c.output)],
@@ -356,7 +361,7 @@ export async function resumeImageDerivative(
       JOIN blob_pins p ON p.pin_id=x.pin_id JOIN reservations r ON r.id=x.reservation_id
       JOIN image_derivative_cleanup cleanup ON cleanup.image_id=x.id JOIN control ctl ON ctl.singleton=1
       WHERE x.id=? AND x.state=? AND d.state=? AND t.state='succeeded' AND t.output_json=?
-      AND d.blob_id=t.blob_id AND d.kind='thumbnail' AND d.variant=t.variant AND d.generator_version=t.generator_version
+      AND d.blob_id=t.blob_id AND d.kind=(${IMAGE_RESULT_KIND_SQL}) AND d.variant=t.variant AND d.generator_version=t.generator_version
       AND d.claim_token IS ? AND d.claim_expires_at IS ? AND d.epoch=t.epoch AND d.attempts=1
       AND b.owner_id=x.owner_id AND b.size=d.size AND b.size=json_extract(t.output_json,'$.bytes')
       AND b.r2_key=d.r2_key AND b.r2_key=? AND b.mime_sniffed='image/webp' AND b.state=? AND b.ref_count=1
