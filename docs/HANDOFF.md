@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-25。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-09-29。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -24,6 +24,8 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 `reviews/` と REVIEW_LOG は判断経緯。通常の再開時に全レビューを読み直す必要はない。
 
 ## 今回の再開点
+
+読み取り専用公開linkを接続した。所有者はFiles UIから期限付きlinkを作成・無効化でき、public shellはfragment capabilityをshare Cookieへ交換してmetadataとfolder childrenを表示する。share/session/version/epoch/root coverageを各requestで再検査し、public CSRF logout、独立したcontent hash付きassets、未実装routeの404を維持する。file download、password/upload-only/internal share、shared DAV、ZIP/mediaは後続。[PUBLIC_SHARES](PUBLIC_SHARES.md)
 
 前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 

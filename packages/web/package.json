@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build && node ../../scripts/generate-private-assets.mjs",
+    "build": "vite build && node ../../scripts/generate-private-assets.mjs && node ../../scripts/generate-public-assets.mjs",
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },

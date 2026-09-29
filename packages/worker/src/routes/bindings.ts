@@ -1,6 +1,12 @@
 import type { AuthMode, CsrfProfile, RouteContract } from "@next-cloud-flare/shared/contracts";
 
-export type RouteHandler = "private-app" | "private-assets" | "dav" | "content" | "unavailable";
+export type RouteHandler =
+  | "private-app"
+  | "public-share"
+  | "private-assets"
+  | "dav"
+  | "content"
+  | "unavailable";
 export type RouteCacheProfile = "private-no-store" | "public-immutable";
 export type RouteFallbackPolicy = "none" | "private-spa-exact";
 export type AssetNamespace = "private" | "public" | "reader";
@@ -119,11 +125,11 @@ export const ROUTE_BINDINGS = [
   ...bindings(appAccess, "bound", "private-assets", ["app GET /private-assets/:asset"], {
     assetNamespace: "private",
   }),
-  ...bindings(appPublic, "unavailable", "unavailable", ["app GET /public-assets/:asset"], {
+  ...bindings(appPublic, "bound", "public-share", ["app GET /public-assets/:asset"], {
     assetNamespace: "public",
     cache: "public-immutable",
   }),
-  ...bindings(appPublic, "unavailable", "unavailable", ["app GET /s", "app GET /s/:shareId"]),
+  ...bindings(appPublic, "bound", "public-share", ["app GET /s", "app GET /s/:shareId"]),
   ...bindings(appAccess, "bound", "private-app", [
     "app GET /api/v1/me",
     "app POST /api/v1/auth/logout",
@@ -151,9 +157,26 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/app-passwords",
     "app POST /api/v1/app-passwords",
     "app DELETE /api/v1/app-passwords/:credentialId",
+    "app GET /api/v1/shares",
+    "app POST /api/v1/shares",
+    "app GET /api/v1/shares/:shareId",
+    "app DELETE /api/v1/shares/:shareId",
   ]),
   ...bindings(appAccessCsrf, "bound", "private-app", ["app POST /api/v1/csrf"]),
   ...bindings(appOperation, "bound", "private-app", ["app GET /api/v1/operations/:id"]),
+  ...bindings(appShare, "bound", "public-share", [
+    "app GET /api/v1/public/shares/:shareId",
+    "app GET /api/v1/public/shares/:shareId/children/:nodeId",
+  ]),
+  ...bindings(appPublicForm, "bound", "public-share", [
+    "app POST /api/v1/public/shares/:shareId/unlock",
+  ]),
+  ...bindings(appShareForm, "bound", "public-share", [
+    "app POST /api/v1/public/shares/:shareId/logout",
+  ]),
+  ...bindings(appShareCsrf, "bound", "public-share", [
+    "app POST /api/v1/public/shares/:shareId/csrf",
+  ]),
   ...bindings(appAccess, "unavailable", "unavailable", [
     "app GET /api/v1/recent",
     "app GET /api/v1/starred",
@@ -186,11 +209,7 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/library/roots",
     "app POST /api/v1/library/roots",
     "app DELETE /api/v1/library/roots/:nodeId",
-    "app GET /api/v1/shares",
-    "app POST /api/v1/shares",
-    "app GET /api/v1/shares/:shareId",
     "app PATCH /api/v1/shares/:shareId",
-    "app DELETE /api/v1/shares/:shareId",
     "app GET /api/v1/tags",
     "app POST /api/v1/tags",
     "app PATCH /api/v1/tags/:tagId",
@@ -211,8 +230,6 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/automation/nodes/:nodeId",
   ]),
   ...bindings(appShare, "unavailable", "unavailable", [
-    "app GET /api/v1/public/shares/:shareId",
-    "app GET /api/v1/public/shares/:shareId/children/:nodeId",
     "app GET /api/v1/public/shares/:shareId/content/:nodeId",
     "app HEAD /api/v1/public/shares/:shareId/content/:nodeId",
     "app GET /api/v1/public/shares/:shareId/thumb/:nodeId",
@@ -225,11 +242,7 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken",
     "app HEAD /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken",
   ]),
-  ...bindings(appPublicForm, "unavailable", "unavailable", [
-    "app POST /api/v1/public/shares/:shareId/unlock",
-  ]),
   ...bindings(appShareForm, "unavailable", "unavailable", [
-    "app POST /api/v1/public/shares/:shareId/logout",
     "app POST /api/v1/public/shares/:shareId/tickets",
     "app DELETE /api/v1/public/shares/:shareId/tickets/:ticketId",
     "app POST /api/v1/public/shares/:shareId/content-session",
@@ -244,9 +257,6 @@ export const ROUTE_BINDINGS = [
     "app PUT /api/v1/public/shares/:shareId/uploads/:uploadId/parts/:partNumber",
     "app POST /api/v1/public/shares/:shareId/uploads/:uploadId/complete",
     "app DELETE /api/v1/public/shares/:shareId/uploads/:uploadId",
-  ]),
-  ...bindings(appShareCsrf, "unavailable", "unavailable", [
-    "app POST /api/v1/public/shares/:shareId/csrf",
   ]),
   ...bindings(appDav, "bound", "dav", [
     "app OPTIONS /dav",

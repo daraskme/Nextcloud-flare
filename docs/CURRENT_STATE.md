@@ -1,6 +1,6 @@
 # 現在の実装状態
 
-更新: 2026-09-25。直近の到達点は[PROGRESS](PROGRESS.md)。
+更新: 2026-09-29。直近の到達点は[PROGRESS](PROGRESS.md)。
 
 前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
@@ -28,6 +28,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| 読み取り専用公開リンク | owner作成/一覧/参照/無効化、fragment unlock、share Cookie、metadata/children、public CSRF/logout、独立shell/assets、Files共有dialog | focused Node11/workerd5件、全体Node710/workerd2,106件。capability/session/version/epoch/root coverage、owner分離、失効、hashed assetsとexact route | download ticket/content-session、password/upload-only/internal share、shared DAV、media/ZIP、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer実設置・外部通知・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer設置・外部通知・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
@@ -109,7 +110,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 共有作成・編集・解除、内部共有、公開link、password/unlock、upload-only共有の完全なHTTP surface。
+- 公開linkのdownload ticket/content-session、password、upload-only、内部共有、shared DAVを含む完全なHTTP surface。読み取り専用linkの作成/無効化・unlock・metadata/childrenは[PUBLIC_SHARES](PUBLIC_SHARES.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
@@ -117,7 +118,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 ### UI
 
 - File System Access handle、詳細preview。
-- share管理、media metadata検索、大量gridの仮想化。
+- 既存share管理、password/upload-only/internal share、media metadata検索、大量gridの仮想化。新規読み取り専用linkの発行/無効化は接続済み。
 - Gallery/lightbox、Bookshelf/EPUB reader、Audio player。
 - AVIF/AV1/Opusの実browser再生試験とfallback。
 

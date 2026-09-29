@@ -93,6 +93,19 @@ export interface UploadReceipt {
   nextAfter?: number | null;
   revision?: number;
 }
+export interface LinkShare {
+  id: string;
+  rootNodeId: string | null;
+  version: number;
+  disabledAt: number | null;
+  expiresAt: number | null;
+  createdAt: number;
+  actions: readonly string[];
+}
+export interface CreatedLinkShare extends LinkShare {
+  secret: string;
+  shareUrl: string;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -161,6 +174,7 @@ export class ApiClient {
         response.headers.get("Operation-Id"),
       );
     }
+    if (response.status === 204) return undefined as T;
     if (value === null) throw new Error("invalid_api_response");
     return value as T;
   }
@@ -240,6 +254,26 @@ export class ApiClient {
       `/api/v1/stats?scopeId=${encodeURIComponent(scopeId)}`,
       signal ? { signal } : {},
     );
+  }
+  shares(signal?: AbortSignal) {
+    return this.request<{ shares: LinkShare[] }>("/api/v1/shares", signal ? { signal } : {});
+  }
+  createShare(rootNodeId: string, spaceId: string, ttlDays: number) {
+    return this.json<CreatedLinkShare>("/api/v1/shares", "POST", {
+      rootNodeId,
+      spaceId,
+      ttlDays,
+    });
+  }
+  async disableShare(shareId: string): Promise<void> {
+    const token = await this.csrf();
+    await this.request(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+    });
   }
   path(id: string, signal?: AbortSignal) {
     return this.request<{ path: Breadcrumb[] }>(

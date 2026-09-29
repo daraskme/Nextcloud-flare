@@ -25,6 +25,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   Search,
+  Share2,
   Trash2,
   Upload,
   X,
@@ -48,6 +49,7 @@ import {
 type Action =
   | { kind: "create" }
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
+  | { kind: "share"; node: Pick<FileNode, "id" | "name"> }
   | { kind: "overwrite"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
@@ -263,7 +265,7 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Exclude<Action, { kind: "overwrite" }>;
+  action: Exclude<Action, { kind: "overwrite" | "share" }>;
   account: Account;
   parentId: string;
   onClose: () => void;
@@ -423,6 +425,149 @@ function OperationDialog({
   );
 }
 
+function ShareDialog({
+  node,
+  account,
+  onClose,
+}: {
+  node: Pick<FileNode, "id" | "name">;
+  account: Account;
+  onClose: () => void;
+}) {
+  const query = useQueryClient();
+  const existing = useQuery({
+    queryKey: ["shares", account.id, account.epoch],
+    queryFn: ({ signal }) => api.shares(signal),
+    retry: false,
+  });
+  const [ttlDays, setTtlDays] = useState(30);
+  const [created, setCreated] = useState<{ id: string; url: string } | null>(null);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState("");
+  const [copied, setCopied] = useState(false);
+  const activeCount =
+    existing.data?.shares.filter(
+      (share) =>
+        share.rootNodeId === node.id &&
+        share.disabledAt === null &&
+        (share.expiresAt === null || share.expiresAt > Date.now()),
+    ).length ?? 0;
+  const create = async () => {
+    setPending(true);
+    setFailure("");
+    try {
+      const share = await api.createShare(node.id, account.spaceId, ttlDays);
+      setCreated({ id: share.id, url: share.shareUrl });
+      await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
+    } catch (error) {
+      setFailure(errorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  const disable = async () => {
+    if (!created) return;
+    setPending(true);
+    setFailure("");
+    try {
+      await api.disableShare(created.id);
+      setCreated(null);
+      setCopied(false);
+      await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
+    } catch (error) {
+      setFailure(errorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      title="共有リンク"
+      description={`「${node.name}」をリンクを知っている人に閲覧専用で共有します。`}
+      onOpenChange={(open) => {
+        if (!open && !pending) onClose();
+      }}
+    >
+      {created ? (
+        <div className="share-result">
+          <label className="field-label">
+            共有URL
+            <input readOnly value={created.url} onFocus={(event) => event.currentTarget.select()} />
+          </label>
+          <p>URLは安全のため、この画面を閉じると再表示できません。</p>
+          <div className="dialog-actions">
+            <Button
+              type="button"
+              variant="danger"
+              disabled={pending}
+              onClick={() => void disable()}
+            >
+              共有を停止
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={pending}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(created.url);
+                  setCopied(true);
+                } catch {
+                  setFailure("URLをコピーできませんでした。入力欄からコピーしてください。");
+                }
+              }}
+            >
+              {copied ? "コピーしました" : "URLをコピー"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="share-create">
+          {activeCount > 0 && (
+            <p className="notice">
+              この項目には有効な共有リンクが {activeCount} 件あります。秘密部分は再表示できません。
+            </p>
+          )}
+          <label className="field-label">
+            有効期間
+            <select
+              value={ttlDays}
+              disabled={pending}
+              onChange={(event) => setTtlDays(Number(event.target.value))}
+            >
+              <option value={7}>7日</option>
+              <option value={30}>30日</option>
+              <option value={90}>90日</option>
+              <option value={365}>365日</option>
+            </select>
+          </label>
+          <p>閲覧者はフォルダーとファイル名を確認できます。アップロードや変更はできません。</p>
+          <div className="dialog-actions">
+            <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
+              閉じる
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={pending}
+              onClick={() => void create()}
+            >
+              {pending ? <LoaderCircle className="spin" size={16} /> : <Share2 size={16} />}
+              リンクを作成
+            </Button>
+          </div>
+        </div>
+      )}
+      {failure && (
+        <p role="alert" className="form-error">
+          {failure}
+        </p>
+      )}
+    </Dialog>
+  );
+}
+
 function NodeMenu({
   node,
   act,
@@ -459,6 +604,7 @@ function NodeMenu({
           <Menu.Item onSelect={() => act({ kind: "rename", node })}>名前を変更</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "move", node })}>移動</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "copy", node })}>コピー</Menu.Item>
+          <Menu.Item onSelect={() => act({ kind: "share", node })}>共有リンク</Menu.Item>
           <Menu.Separator />
           <Menu.Item className="danger-text" onSelect={() => act({ kind: "trash", node })}>
             ごみ箱に移動
@@ -918,6 +1064,13 @@ export function App() {
             </div>
             {me && !trash && (
               <div className="heading-actions">
+                <Button
+                  disabled={!!recovery}
+                  onClick={() => act({ kind: "share", node: { id: parentId, name: title } })}
+                >
+                  <Share2 size={17} />
+                  共有
+                </Button>
                 <Button disabled={!!recovery} onClick={() => act({ kind: "create" })}>
                   <FolderPlus size={17} />
                   新規フォルダー
@@ -1214,7 +1367,15 @@ export function App() {
           onClose={() => setAction(null)}
         />
       )}
-      {action && action.kind !== "overwrite" && me && (
+      {action?.kind === "share" && me && (
+        <ShareDialog
+          key={JSON.stringify(action)}
+          node={action.node}
+          account={me}
+          onClose={() => setAction(null)}
+        />
+      )}
+      {action && action.kind !== "overwrite" && action.kind !== "share" && me && (
         <OperationDialog
           key={JSON.stringify(action)}
           action={action}
