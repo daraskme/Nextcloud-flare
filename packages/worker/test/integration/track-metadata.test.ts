@@ -1,10 +1,14 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { searchName } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { AudioCursorTokens } from "../../src/auth/audioCursor";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { GalleryCursorTokens } from "../../src/auth/galleryCursor";
+import { SearchCursorTokens } from "../../src/auth/searchCursor";
+import { UploadCapabilities } from "../../src/auth/uploadCapability";
+import { atomicBatch } from "../../src/db/primary";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { AUDIO_SEARCH_CURRENT, AUDIO_SEARCH_VERSION } from "../../src/search/audio";
 import { listAudio, savePlayback } from "../../src/services/audio";
@@ -12,6 +16,12 @@ import { prepareNodeBlobRead, streamImmutableBlob } from "../../src/services/blo
 import { listGallery } from "../../src/services/gallery";
 import { putFile } from "../../src/services/putFile";
 import { auditOwnerLedger } from "../../src/services/refs";
+import { searchNodes } from "../../src/services/search";
+import { completeSingleUpload } from "../../src/services/uploads/complete";
+import { writeSingleUpload } from "../../src/services/uploads/content";
+import { createSingleUpload } from "../../src/services/uploads/create";
+import { createMultipartUpload, writeMultipartPart } from "../../src/services/uploads/multipart";
+import { completeMultipartUpload } from "../../src/services/uploads/multipartComplete";
 import { davBucket, davPutFixture } from "../fixtures/davPut";
 import { encodedTracks, trackBytes } from "../fixtures/tracks/encoded";
 import { audioBytes, encodedAudio } from "../fixtures/tracks/encodedAudio";
@@ -64,13 +74,161 @@ async function fixture(bytes = trackBytes("av1-opus.mp4")) {
   const audio = () =>
     env.DB.prepare("SELECT * FROM node_audio WHERE node_id=?").bind(node.id).first();
   const list = () => listGallery(env.DB, principal, f.ids.folder, false, tokens);
-  return { ...f, app, event, node, get, input, principal, metadata, audio, list };
+  return {
+    ...f,
+    putInput: f.input,
+    app,
+    event,
+    node,
+    get,
+    input,
+    principal,
+    metadata,
+    audio,
+    list,
+  };
 }
 const fixtureNames = [...Object.keys(encodedTracks), ...Object.keys(encodedAudio)];
 const fixtureBytes = (name: string) =>
   name in encodedAudio
     ? audioBytes(name as keyof typeof encodedAudio)
     : trackBytes(name as keyof typeof encodedTracks);
+
+it("invalidates a real search page when extraction publishes tags, without advancing it on replay", async () => {
+  const f = await fixture(trackBytes("opus.ogg"));
+  const rows = Array.from({ length: 201 }, (_, i) => {
+      const name = `match${String(i).padStart(3, "0")}`;
+      return { id: crypto.randomUUID(), name, ...searchName(name) };
+    }),
+    json = JSON.stringify(rows);
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at) SELECT json_extract(value,'$.id'),?,?,?,json_extract(value,'$.name'),json_extract(value,'$.name'),'folder',1,1 FROM json_each(?)",
+      values: [f.ids.space, f.ids.user, f.ids.folder, json],
+    },
+    {
+      sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) SELECT json_extract(value,'$.id'),?,json_extract(value,'$.textNorm'),json_extract(value,'$.tokens'),json_extract(value,'$.version'),1 FROM json_each(?)",
+      values: [f.ids.space, json],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id IN (SELECT json_extract(value,'$.id') FROM json_each(?))",
+      values: [json],
+    },
+  ]);
+  const tokens = new SearchCursorTokens(
+    await contentKeyRing("test", {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    }),
+  );
+  const search = (cursor?: string) =>
+    searchNodes(env.DB, f.principal, f.ids.folder, "match", tokens, cursor);
+  const before = await search();
+  expect(before.items).toHaveLength(200);
+  expect(before.nextCursor).toBeTruthy();
+  expect(await consumeOutbox(f.app, f.event)).toBe("completed");
+  await expect(search(before.nextCursor!)).rejects.toThrow("invalid_search_cursor");
+  const after = await search();
+  expect(after.treeGeneration).toBeGreaterThan(before.treeGeneration);
+  expect(await consumeOutbox(f.app, f.event)).toBe("completed");
+  expect((await search(after.nextCursor!)).items).toHaveLength(1);
+});
+
+it.each(["dav", "single", "multipart"])(
+  "removes the previous blob's search tags immediately on %s overwrite",
+  async (mode) => {
+    const f = await fixture(trackBytes("opus.ogg"));
+    expect(await consumeOutbox(f.app, f.event)).toBe("completed");
+    const ring = await contentKeyRing("test", {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    });
+    const tokens = new SearchCursorTokens(ring),
+      capabilities = new UploadCapabilities(ring);
+    const search = async (q: string) =>
+      (await searchNodes(env.DB, f.principal, f.ids.folder, q, tokens)).items.map((n) => n.id);
+    expect(await search("テスト曲")).toContain(f.node.id);
+    let result: Awaited<ReturnType<typeof putFile>>;
+    if (mode === "dav")
+      result = await putFile(f.app, {
+        ...f.putInput,
+        requestId: crypto.randomUUID(),
+        nodeId: f.node.id,
+        expectedRevision: 1,
+        size: 3,
+        body: new Blob(["abc"]).stream(),
+      });
+    else {
+      const input = {
+        principal: f.principal,
+        requestId: crypto.randomUUID(),
+        spaceId: f.ids.space,
+        parentId: f.ids.folder,
+        name: f.putInput.name,
+        declaredSize: 3,
+        targetId: f.node.id,
+        targetRevision: 1,
+      };
+      const u = await (mode === "single" ? createSingleUpload : createMultipartUpload)(
+        f.app,
+        input,
+        capabilities,
+      );
+      if (mode === "single") {
+        await writeSingleUpload(
+          f.app,
+          f.principal,
+          u.id,
+          u.capability,
+          capabilities,
+          new Blob(["abc"]).stream(),
+          3,
+        );
+        result = await completeSingleUpload(
+          f.app,
+          f.principal,
+          u.id,
+          u.capability,
+          capabilities,
+          crypto.randomUUID(),
+          [],
+        );
+      } else {
+        await writeMultipartPart(
+          f.app,
+          f.principal,
+          u.id,
+          u.capability,
+          capabilities,
+          1,
+          "part1",
+          new Blob(["abc"]).stream(),
+          3,
+        );
+        await f.app.UPLOADS.get(f.app.UPLOADS.idFromName(u.id)).beginComplete({
+          uploadId: u.id,
+          principal: f.principal,
+          capability: u.capability,
+        });
+        result = await completeMultipartUpload(
+          f.app,
+          f.principal,
+          u.id,
+          u.capability,
+          capabilities,
+          crypto.randomUUID(),
+          [],
+        );
+      }
+    }
+    expect(result).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+    expect(await search("テスト曲")).not.toContain(f.node.id);
+    expect(await search("Local fixture")).not.toContain(f.node.id);
+    expect(await search(f.putInput.name)).toContain(f.node.id);
+    // Verify before consuming the new event, including an unsupported replacement original.
+    await env.DB.prepare(
+      "INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1)",
+    ).run();
+  },
+);
 it.each(fixtureNames)(
   "extracts %s atomically and serves actual immutable byte ranges",
   async (name) => {
@@ -128,6 +286,17 @@ it.each(fixtureNames)(
           .bind(f.node.id)
           .first<string>("search_text_norm"),
       ).toContain("てすと曲\nlocal fixture");
+      const searchTokens = new SearchCursorTokens(
+        await contentKeyRing("search", {
+          search: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+        }),
+      );
+      for (const q of ["ﾃｽﾄ曲", "LOCAL FIXTURE"])
+        expect(
+          (await searchNodes(env.DB, f.principal, f.ids.folder, q, searchTokens)).items.map(
+            (n) => n.id,
+          ),
+        ).toContain(f.node.id);
       const audioTokens = new AudioCursorTokens(
         await contentKeyRing("test", {
           test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
@@ -151,10 +320,10 @@ it.each(fixtureNames)(
     expect(await auditOwnerLedger(env.DB, f.ids.user)).toEqual(before);
   },
 );
-it.each(["credential", "parent", "blob"])(
+it.each(["credential", "parent", "blob", "name", "revision", "index"])(
   "refuses stale %s before publishing track metadata",
   async (change) => {
-    const f = await fixture();
+    const f = await fixture(trackBytes("opus.ogg"));
     const db = injectBatch(
       (sql) => sql.includes("INSERT INTO node_media"),
       async () => {
@@ -165,6 +334,20 @@ it.each(["credential", "parent", "blob"])(
         else if (change === "parent")
           await env.DB.prepare("UPDATE nodes SET parent_id=? WHERE id=?")
             .bind(f.ids.root, f.node.id)
+            .run();
+        else if (change === "name")
+          await env.DB.prepare(
+            "UPDATE nodes SET name='renamed.ogg',name_ci='renamed.ogg' WHERE id=?",
+          )
+            .bind(f.node.id)
+            .run();
+        else if (change === "revision")
+          await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?")
+            .bind(f.node.id)
+            .run();
+        else if (change === "index")
+          await env.DB.prepare("UPDATE search_index SET revision=revision+1 WHERE node_id=?")
+            .bind(f.node.id)
             .run();
         else
           await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?")

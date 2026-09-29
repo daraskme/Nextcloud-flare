@@ -1,6 +1,6 @@
 # Next-cloud-flare
 
-[音声タグの編集](docs/AUDIO_METADATA_EDIT.md)に加え、[検索用データの保存](docs/AUDIO_SEARCH.md)を実装しました。抽出・編集と同時に正規化し、競合時に古い情報を保存しないよう検査します。検索APIへの反映、改名・上書き・コピーとの同期、既存データの再構築は開発中です。表紙画像、Bookshelfと運用の残件も継続しています。
+[音声タグの検索](docs/AUDIO_SEARCH.md)をFilesへ接続しました。新しく抽出・編集した曲名・アーティスト・アルバムを検索でき、改名・移動・復元・同一所有者コピーでもタグを保持します。原本の上書きでは旧タグを検索から外します。既存曲の一括再索引、所有者間コピーの音声引継ぎ、表紙画像、Bookshelfと運用の残件は開発中です。
 
 [公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0074・通常79table・149 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
 

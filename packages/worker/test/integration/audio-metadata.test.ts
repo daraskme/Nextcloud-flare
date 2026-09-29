@@ -10,6 +10,7 @@ import { AudioCursorTokens } from "../../src/auth/audioCursor";
 import type { Principal } from "../../src/auth/authorize";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens } from "../../src/auth/csrf";
+import { SearchCursorTokens } from "../../src/auth/searchCursor";
 import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
 import { lookupOperation } from "../../src/jobs/operations";
@@ -17,6 +18,7 @@ import { TRACK_METADATA_GENERATOR as generator } from "../../src/media/tracks/co
 import { AUDIO_SEARCH_CURRENT, audioSearchTags } from "../../src/search/audio";
 import { listAudio } from "../../src/services/audio";
 import { editAudioMetadata } from "../../src/services/audioMetadata";
+import { searchNodes } from "../../src/services/search";
 import { foundationFixture } from "../fixtures/foundation";
 import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
@@ -76,6 +78,9 @@ async function fixture() {
 }
 it("edits only overrides with a durable audited receipt, replays once and resets to extracted values", async () => {
   const t = await fixture();
+  const search = (q: string) =>
+    searchNodes(env.DB, t.principal, t.f.ids.folder, q, new SearchCursorTokens(t.ring));
+  expect((await search("元の曲")).truncated).toBe(true);
   const before = await t.list();
   expect(before.canEdit).toBe(true);
   expect(before.items[0]?.metadata).toEqual({
@@ -116,7 +121,7 @@ it("edits only overrides with a durable audited receipt, replays once and resets
     )
       .bind(t.f.ids.file)
       .first("n"),
-  ).toBe(5);
+  ).toBe(7);
   expect(
     await env.DB.prepare("SELECT current_blob_id FROM nodes WHERE id=?")
       .bind(t.f.ids.file)
@@ -127,6 +132,10 @@ it("edits only overrides with a durable audited receipt, replays once and resets
       .bind(t.f.ids.file)
       .first("revision"),
   ).toBe(2);
+  expect((await search("修正した曲")).items.map((n) => n.id)).toEqual([t.f.ids.file]);
+  expect((await search("演奏者")).items.map((n) => n.id)).toEqual([t.f.ids.file]);
+  expect((await search("ALBUM")).truncated).toBe(false);
+  expect((await search("元の曲")).items).toEqual([]);
   await env.DB.prepare("INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1)").run();
   await t.save(
     { ...t.input, revision: 2, title: null, artist: null, album: null },
@@ -152,6 +161,8 @@ it("edits only overrides with a durable audited receipt, replays once and resets
       .bind(t.f.ids.file)
       .first("n"),
   ).toBe(1);
+  expect((await search("修正した曲")).items).toEqual([]);
+  expect((await search("元の曲")).items.map((n) => n.id)).toEqual([t.f.ids.file]);
   await expect(t.save({ ...t.input, title: "other" })).rejects.toThrow("idempotency_conflict");
 });
 it("rejects old revisions, stale blobs and unsupported metadata before writing", async () => {
@@ -202,7 +213,7 @@ it("requires the selected live edit grant and never substitutes another read or 
   expect(await lookupOperation(env.DB, receiver.principal, saved.operation.id)).toBeNull();
   await expect(owner.save(owner.input, p)).rejects.toThrow("authorization_denied");
 });
-it.each(["revision", "metadata", "credential", "epoch", "hidden", "lock"])(
+it.each(["revision", "metadata", "credential", "epoch", "hidden", "lock", "index"])(
   "rechecks %s in the final batch and leaves no partial metadata edit",
   async (kind) => {
     const t = await fixture();
@@ -211,6 +222,10 @@ it.each(["revision", "metadata", "credential", "epoch", "hidden", "lock"])(
       async () => {
         if (kind === "revision")
           await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?")
+            .bind(t.f.ids.file)
+            .run();
+        if (kind === "index")
+          await env.DB.prepare("UPDATE search_index SET revision=revision+1 WHERE node_id=?")
             .bind(t.f.ids.file)
             .run();
         if (kind === "metadata")

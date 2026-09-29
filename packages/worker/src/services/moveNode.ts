@@ -1,4 +1,4 @@
-import { portableName, searchName } from "@next-cloud-flare/shared/names";
+import { portableName } from "@next-cloud-flare/shared/names";
 import {
   type AuthorizedNode,
   authorizationAssertion,
@@ -26,6 +26,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { updateNodeSearch } from "../search/projection";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_MOVE_MAX_NODES = 1_000;
@@ -91,7 +92,6 @@ function moveStatements(
   if (!["node.move", "dav.move"].includes(claim.intent.kind) || claim.steps !== MOVE_NODE_STEPS)
     throw new Error("invalid_mutation_plan");
   const name = portableName(inputName);
-  const search = searchName(name.name);
   const node = source.node;
   const sourceParentId = source.parentId;
   const destinationParentId = destination.parent.id;
@@ -302,19 +302,7 @@ function moveStatements(
     {
       kind: "search_index",
       affectedId: node.id,
-      statement: {
-        sql: `UPDATE search_index SET text_norm=?,tokens=?,normalization_version=?,revision=?
-          WHERE node_id=? AND revision<=? AND space_id=?`,
-        values: [
-          search.textNorm,
-          search.tokens,
-          search.version,
-          node.revision + 1,
-          node.id,
-          node.revision,
-          node.space_id,
-        ],
-      },
+      statement: updateNodeSearch(node.id, node.space_id, name.name, node.revision),
       assertion: assertOneChange,
     },
     {

@@ -19,11 +19,12 @@ import {
 } from "../jobs/operations";
 import { TRACK_METADATA_GENERATOR } from "../media/tracks/common";
 import { audioSearchTags } from "../search/audio";
+import { nodeSearchSteps } from "../search/projection";
 import { AUDIO_MATCH, AUDIO_METADATA, audioStatement } from "./audio";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-export const AUDIO_METADATA_STEPS = 5;
+export const AUDIO_METADATA_STEPS = 7;
 export function audioMetadataUpdate(input: AudioMetadataUpdate): AudioMetadataUpdate {
   const invalid = () => new Error("invalid_audio_metadata");
   if (
@@ -182,14 +183,7 @@ export async function editAudioMetadata(
           values: [spaceId, proof.node.tree_generation],
         },
       },
-      {
-        kind: "search_index",
-        affectedId: nodeId,
-        statement: {
-          sql: "UPDATE search_index SET revision=? WHERE node_id=? AND space_id=? AND revision<=?",
-          values: [input.revision + 1, nodeId, spaceId, input.revision],
-        },
-      },
+      ...nodeSearchSteps(nodeId, spaceId, proof.node.name, input.revision),
       {
         kind: "activity",
         affectedId: nodeId,

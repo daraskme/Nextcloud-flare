@@ -26,11 +26,12 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { audioSearchSuffix } from "../search/projection";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_COPY_MAX_NODES = 1_000;
 export const DAV_COPY_MAX_BYTES = 10 * 1024 * 1024 * 1024;
-export const COPY_NODE_STEPS = 18;
+export const COPY_NODE_STEPS = 19;
 type ReadAuthority = Extract<
   AuthorizedNode,
   { operation: "node.read" | "automation.list" | "automation.metadata.read" }
@@ -277,12 +278,32 @@ function copyStatements(
       assertion: assertOneChange,
     },
     {
+      kind: "audio_metadata",
+      affectedId: rootCopy,
+      statement: {
+        sql: `INSERT INTO node_audio(node_id,blob_id,generator_version,duration_ms,codec,title_extracted,artist_extracted,album_extracted,title_override,artist_override,album_override,track_number,disc_number,search_text_norm,search_tokens,search_source,search_version)
+          SELECT cm.copied_node_id,a.blob_id,a.generator_version,a.duration_ms,a.codec,a.title_extracted,a.artist_extracted,a.album_extracted,a.title_override,a.artist_override,a.album_override,a.track_number,a.disc_number,a.search_text_norm,a.search_tokens,a.search_source,a.search_version
+          FROM copy_members cm JOIN nodes n ON n.id=cm.copied_node_id
+          JOIN node_audio a ON a.node_id=cm.source_node_id AND a.blob_id=n.current_blob_id
+          WHERE cm.copy_op_id=?`,
+        values: [op],
+      },
+      assertion: assertExists(
+        `SELECT 1 WHERE
+        (SELECT COUNT(*) FROM node_audio WHERE node_id IN (SELECT copied_node_id FROM copy_members WHERE copy_op_id=?1))=
+        (SELECT COUNT(*) FROM copy_members cm JOIN nodes n ON n.id=cm.copied_node_id JOIN node_audio a ON a.node_id=cm.source_node_id AND a.blob_id=n.current_blob_id WHERE cm.copy_op_id=?1)`,
+        [op],
+      ),
+    },
+    {
       kind: "search_index",
       affectedId: rootCopy,
       statement: {
         sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
-      SELECT cm.copied_node_id,si.space_id,CASE WHEN cm.depth=0 THEN ? ELSE si.text_norm END,CASE WHEN cm.depth=0 THEN ? ELSE si.tokens END,CASE WHEN cm.depth=0 THEN ? ELSE si.normalization_version END,1
-      FROM copy_members cm JOIN search_index si ON si.node_id=cm.source_node_id WHERE cm.copy_op_id=? ORDER BY cm.depth,cm.source_node_id`,
+      SELECT cm.copied_node_id,si.space_id,CASE WHEN cm.depth=0 THEN ?||${audioSearchSuffix("text_norm", "cm.copied_node_id")} ELSE si.text_norm END,CASE WHEN cm.depth=0 THEN ?||${audioSearchSuffix("tokens", "cm.copied_node_id")} ELSE si.tokens END,CASE WHEN cm.depth=0 THEN ? ELSE si.normalization_version END,1
+      FROM copy_members cm JOIN search_index si ON si.node_id=cm.source_node_id
+      JOIN nodes source ON source.id=cm.source_node_id AND source.space_id=si.space_id AND si.revision<=source.revision
+      WHERE cm.copy_op_id=? ORDER BY cm.depth,cm.source_node_id`,
         values: [search.textNorm, search.tokens, search.version, op],
       },
       assertion: assertExists(
@@ -416,7 +437,7 @@ export async function copyNode(
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||
       terminalSlot.kind !== operationKind ||
-      terminalSlot.expected_steps !== COPY_NODE_STEPS ||
+      ![COPY_NODE_STEPS, 18].includes(terminalSlot.expected_steps) ||
       operands.sourceNodeId !== request.sourceNodeId ||
       operands.parentId !== request.destinationParentId ||
       operands.name !== name.name ||

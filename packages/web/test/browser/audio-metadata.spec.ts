@@ -6,6 +6,15 @@ test("owner edits audio tags, preserves the native source, detects a competing e
 }) => {
   await login(page);
   const media = await upload(page, "long.opus", undefined, "tracks");
+  const search = (q: string) =>
+    page.evaluate(
+      async ({ scopeId, q }) => {
+        const r = await fetch(`/api/v1/search?${new URLSearchParams({ scopeId, q })}`);
+        if (!r.ok) throw new Error(`search_${r.status}`);
+        return (await r.json()).items.map((n: { id: string }) => n.id) as string[];
+      },
+      { scopeId: media.me.rootNodeId, q },
+    );
   await page.goto(`/audio/${media.node.id}`);
   await page.getByRole("button", { name: `${media.name}を再生`, exact: true }).click();
   const player = page.getByRole("region", { name: "オーディオプレーヤー" });
@@ -26,6 +35,17 @@ test("owner edits audio tags, preserves the native source, detects a competing e
   ).toBeVisible();
   await expect(player.getByText("夜の曲 <live>", { exact: true })).toBeVisible();
   expect(await page.locator("audio").getAttribute("src")).toBe(src);
+  expect(await search("夜の曲 <live>")).toContain(media.node.id);
+  expect(await search("演奏者")).toContain(media.node.id);
+  const searchPage = await page.context().newPage();
+  await searchPage.goto("/files");
+  await searchPage.getByRole("searchbox", { name: "このフォルダー内を検索" }).fill("夜の曲 <live>");
+  await searchPage.getByRole("button", { name: "検索", exact: true }).click();
+  await expect(
+    searchPage.getByRole("button", { name: `${media.name}の操作`, exact: true }),
+  ).toBeVisible();
+  await searchPage.screenshot({ path: "test-results/audio-tag-search.png" });
+  await searchPage.close();
   await page.getByRole("button", { name: `${media.name}のタグを編集`, exact: true }).click();
   await expect(editor.getByLabel("曲名", { exact: true })).toHaveValue("夜の曲 <live>");
   await page.evaluate(async (id) => {
@@ -50,6 +70,8 @@ test("owner edits audio tags, preserves the native source, detects a competing e
     });
     if (r.status !== 200) throw new Error(`competing_edit_${r.status}`);
   }, media.node.id);
+  expect(await search("夜の曲 <live>")).not.toContain(media.node.id);
+  expect(await search("別タブの曲")).toContain(media.node.id);
   await editor.getByLabel("曲名", { exact: true }).fill("古い編集");
   await editor.getByRole("button", { name: "タグを保存", exact: true }).click();
   await expect(editor.getByRole("alert")).toContainText("別の変更が先に保存されました");
@@ -64,6 +86,7 @@ test("owner edits audio tags, preserves the native source, detects a competing e
   await editor.getByRole("button", { name: "タグを保存", exact: true }).click();
   await expect(editor).not.toBeVisible();
   await page.reload();
+  expect(await search("別タブの曲")).not.toContain(media.node.id);
   await page.getByRole("button", { name: `${media.name}のタグを編集`, exact: true }).click();
   await expect(editor.getByLabel("曲名", { exact: true })).toHaveValue("");
   await expect(editor.getByLabel("アーティスト", { exact: true })).toHaveValue("");

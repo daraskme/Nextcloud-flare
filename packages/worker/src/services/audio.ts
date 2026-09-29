@@ -8,6 +8,7 @@ import type { AudioCursorTokens } from "../auth/audioCursor";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import { assertExists, assertOneChange, atomicBatch, primary } from "../db/primary";
 import type { Env } from "../env";
+import { AUDIO_CODEC_MIME } from "../media/tracks/audioSql";
 import { TRACK_METADATA_GENERATOR } from "../media/tracks/common";
 import { acquireAccountMutation, commitAccountMutation } from "./accountMutation";
 
@@ -16,12 +17,7 @@ export const AUDIO_CANDIDATE_LIMIT = 1000;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 export const AUDIO_MATCH = `a.blob_id=n.current_blob_id AND a.generator_version=?4
   AND b.id=a.blob_id AND b.owner_id=n.owner_id AND b.state IN ('committed','gc_candidate')
-  AND ((a.codec='opus' AND b.mime_sniffed IN ('audio/ogg; codecs="opus"','audio/webm; codecs="opus"','audio/mp4; codecs="Opus"'))
-    OR (a.codec='mp3' AND b.mime_sniffed='audio/mpeg')
-    OR (a.codec='flac' AND b.mime_sniffed='audio/flac')
-    OR (a.codec='pcm' AND b.mime_sniffed='audio/wav')
-    OR (a.codec='vorbis' AND b.mime_sniffed='audio/ogg; codecs="vorbis"')
-    OR (a.codec='aac' AND b.mime_sniffed IN ('audio/mp4; codecs="mp4a.40.2"','audio/mp4; codecs="mp4a.40.5"','audio/mp4; codecs="mp4a.40.29"')))`;
+  AND ${AUDIO_CODEC_MIME}`;
 
 async function authority(db: D1Database, principal: Principal, nodeId: string, write = false) {
   if (

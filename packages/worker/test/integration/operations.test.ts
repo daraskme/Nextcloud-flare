@@ -7,6 +7,7 @@ import {
   assertOperationClaim,
   claimOperation,
   digestJson,
+  findOperationIntent,
   lookupOperation,
   operationIntent,
   operationRow,
@@ -20,6 +21,80 @@ beforeAll(async () => {
 beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
+
+it.each([
+  ["audio.metadata.write", 5, 7],
+  ["dav.put", 8, 10],
+  ["upload.complete", 8, 10],
+  ["node.copy", 18, 19],
+  ["dav.copy", 18, 19],
+] as const)(
+  "replays historical terminal %s receipts without resuming old unfinished plans",
+  async (kind, oldSteps, steps) => {
+    for (const state of ["committed", "failed"] as const) {
+      const f = await fixture();
+      const operation =
+        kind === "audio.metadata.write"
+          ? "audio.metadata.write"
+          : kind.endsWith("copy")
+            ? "node.read"
+            : "node.content.write";
+      const proof = await authorizeNode(env.DB, f.principal, {
+        operation,
+        nodeId: f.ids.file,
+        spaceId: f.ids.space,
+      });
+      const operands = kind.endsWith("copy")
+        ? { sourceNodeId: f.ids.file, parentId: f.ids.folder }
+        : { nodeId: f.ids.file, parentId: f.ids.folder, blobId: f.ids.blob };
+      const intent = await operationIntent(
+        f.principal,
+        f.key,
+        f.ids.space,
+        kind,
+        { version: 1 },
+        operands,
+      );
+      await claimOperation(env.DB, intent, f.permit, proof, oldSteps);
+      await expect(findOperationIntent(env.DB, intent, steps)).rejects.toThrow(
+        "idempotency_conflict",
+      );
+      await expect(claimOperation(env.DB, intent, f.permit, proof, steps)).rejects.toThrow(
+        "idempotency_conflict",
+      );
+      await env.DB.prepare("UPDATE operations SET state=?,result_json=?,error_code=? WHERE op_id=?")
+        .bind(
+          state,
+          state === "committed" ? JSON.stringify({ status: 200, nodeId: f.ids.file }) : null,
+          state === "failed" ? "fixture_failed" : null,
+          intent.id,
+        )
+        .run();
+      expect(await findOperationIntent(env.DB, intent, steps)).toMatchObject({
+        state,
+        expected_steps: oldSteps,
+      });
+      expect(await claimOperation(env.DB, intent, f.permit, proof, steps)).toMatchObject({
+        kind: "terminal",
+        row: { state, expected_steps: oldSteps },
+      });
+      const changed = await operationIntent(
+        f.principal,
+        f.key,
+        f.ids.space,
+        kind,
+        { version: 2 },
+        operands,
+      );
+      await expect(findOperationIntent(env.DB, changed, steps)).rejects.toThrow(
+        "idempotency_conflict",
+      );
+      await expect(findOperationIntent(env.DB, intent, steps + 1)).rejects.toThrow(
+        "idempotency_conflict",
+      );
+    }
+  },
+);
 
 async function fixture(kind: "user" | "link_share" = "user") {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);

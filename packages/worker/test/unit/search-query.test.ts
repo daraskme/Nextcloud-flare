@@ -3,7 +3,7 @@ import { base64url } from "jose";
 import { expect, it } from "vitest";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
-import { SearchCursorTokens } from "../../src/auth/searchCursor";
+import { SEARCH_CURSOR_VERSION, SearchCursorTokens } from "../../src/auth/searchCursor";
 import { searchQuery } from "../../src/search/query";
 
 it.each(["ｶﾀｶﾅＡＢＣ", "Straße", "ヷ", "😀かな", "éé"])(
@@ -57,7 +57,7 @@ it("separates search cursors from listing cursors and binds exact claims and exp
     lastNameCi: "foo",
     lastId: "last",
     query: "foo",
-    version: searchQuery("foo").version,
+    version: SEARCH_CURSOR_VERSION,
   };
   const token = await cursor.issue(claims);
   expect(await cursor.verify(token)).toMatchObject(claims);
@@ -65,4 +65,17 @@ it("separates search cursors from listing cursors and binds exact claims and exp
   await expect(new SearchCursorTokens(ring, () => now + 600_000).verify(token)).rejects.toThrow();
   await expect(cursor.verify(`${token.slice(0, -3)}xxx`)).rejects.toThrow();
   await expect(cursor.issue({ ...claims, version: "old" })).rejects.toThrow();
+  // A correctly signed pre-audio cursor must also be refused after the result semantics change.
+  const [header, body] = token.split(".");
+  const old = {
+    ...JSON.parse(new TextDecoder().decode(base64url.decode(body!))),
+    version: searchQuery("foo").version,
+  };
+  const input = `${header}.${base64url.encode(JSON.stringify(old))}`;
+  const signature = base64url.encode(
+    new Uint8Array(
+      await crypto.subtle.sign("HMAC", ring.keys.get("test")!, new TextEncoder().encode(input)),
+    ),
+  );
+  await expect(cursor.verify(`${input}.${signature}`)).rejects.toThrow("invalid_search_cursor");
 });

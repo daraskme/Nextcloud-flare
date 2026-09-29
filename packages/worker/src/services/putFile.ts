@@ -19,6 +19,7 @@ import {
   operationIntent,
 } from "../jobs/operations";
 import { consumeKnownLength } from "../platform/stream";
+import { nodeSearchSteps } from "../search/projection";
 import {
   type DavUploadRow,
   davPublicationStatements,
@@ -42,7 +43,7 @@ import { trackedR2Write } from "./r2Write";
 
 export const DAV_PUT_MAX_BYTES = 95_000_000;
 export const DAV_PUT_CREATE_STEPS = 10;
-export const DAV_PUT_OVERWRITE_STEPS = 8;
+export const DAV_PUT_OVERWRITE_STEPS = 10;
 
 type ContentAuthority = Extract<AuthorizedNode, { operation: "node.content.write" }>;
 
@@ -283,14 +284,7 @@ function overwriteStatements(
         values: [blob, op, node.id, authorized.parentId, node.revision, node.current_blob_id],
       },
     },
-    {
-      kind: "search_index",
-      affectedId: node.id,
-      statement: {
-        sql: "UPDATE search_index SET revision=? WHERE node_id=? AND revision=? AND space_id=?",
-        values: [node.revision + 1, node.id, node.revision, node.space_id],
-      },
-    },
+    ...nodeSearchSteps(node.id, node.space_id, node.name, node.revision),
     {
       kind: "activity",
       affectedId: node.id,

@@ -1,8 +1,10 @@
 # 開発進捗
 
-[音声タグの検索準備](AUDIO_SEARCH.md)として、抽出値とoverrideから検索用データを同時保存する処理を追加しました。Unicode正規化とfield上限、元タグとの一致、抽出中の競合時の再試行を実装しています。schema0074・通常79table・149 API route。検索API/FTS、改名・MOVE・上書き・COPY・復元との同期、既存データ再構築は次の接続対象です。cover、Bookshelf、運用修復と実環境gateも継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[音声タグの検索](AUDIO_SEARCH.md)をFilesへ接続しました。新しく抽出・編集した曲名・アーティスト・アルバムを検索でき、改名・MOVE・復元と同一所有者COPYでタグを保持します。単一/分割upload・DAV上書きでは旧原本のタグを直ちに外します。schema0074・通常79table・149 API route。既存曲の一括再索引、所有者間COPYの音声引継ぎ、cover、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[音声タグの検索準備](AUDIO_SEARCH.md)として、抽出値とoverrideから検索用データを同時保存する処理を追加しました。Unicode正規化とfield上限、元タグとの一致、抽出中の競合時の再試行を実装しています。schema0074・通常79table・149 API route。検索API/FTS、改名・MOVE・上書き・COPY・復元との同期、既存データ再構築は次の接続対象です。cover、Bookshelf、運用修復と実環境gateも継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [音声タグの編集](AUDIO_METADATA_EDIT.md)を所有者・明示選択した内部edit共有へ接続しました。曲名・アーティスト・アルバムを修正し、空欄で原本からの抽出値へ戻せます。現在の原本とrevision、元の認可、DAV lockを再確認し、override・更新世代・監査・確定receiptを同時保存します。保存後も同じ原本の再生を維持します。schema0073・通常79table・149 API route。タグの検索同期、cover、Bookshelf、既存原本の再抽出/copy引継ぎ、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

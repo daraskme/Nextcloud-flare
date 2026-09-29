@@ -1,5 +1,11 @@
 import { mediaContentType } from "../../../shared/src/media";
-import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import {
+  assertExists,
+  assertOneChange,
+  atomicBatch,
+  primary,
+  type SqlStatement,
+} from "../db/primary";
 import type { Env } from "../env";
 import {
   IMAGE_METADATA_GENERATOR,
@@ -11,6 +17,7 @@ import { sniffMediaContainer } from "../media/sniff";
 import { TRACK_METADATA_GENERATOR, TRACK_METADATA_LIMITS } from "../media/tracks/common";
 import { inspectTracks } from "../media/tracks/inspect";
 import { AUDIO_OVERRIDE_SNAPSHOT, audioSearchTags } from "../search/audio";
+import { nodeSearchSteps } from "../search/projection";
 import type { EventRow } from "./outboxAuthority";
 
 export interface ImageNode {
@@ -25,7 +32,7 @@ export interface PreparedImageMetadata {
   statements: readonly SqlStatement[];
   source?: { node: ImageNode & { etag: string }; image: ImageMetadata; guard: () => Promise<void> };
 }
-const SOURCE = `SELECT n.id,n.current_blob_id AS blob,n.parent_id AS parent,b.r2_key AS key,b.size,s.r2_etag AS etag
+const SOURCE = `SELECT n.id,n.name,n.revision,n.current_blob_id AS blob,n.parent_id AS parent,b.r2_key AS key,b.size,s.r2_etag AS etag
   FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
   LEFT JOIN blob_storage s ON s.blob_id=b.id AND s.bytes=b.size AND s.removed_at IS NULL
   JOIN operation_steps step ON step.affected_id=b.id AND step.kind='blob'
@@ -57,14 +64,14 @@ export async function imageMetadataStatements(
   const node = await primary(env.DB)
     .prepare(SOURCE)
     .bind(...values)
-    .first<ImageNode>();
+    .first<ImageNode & { name: string; revision: number }>();
   // An event superseded by another content write must never inspect or adopt that write's blob.
   if (!node) return { statements: [] };
   if (!env.BLOBS || !node.etag) throw new Error("image_source_unavailable");
   const hold = assertExists(
     SOURCE +
-      " AND n.current_blob_id=? AND n.parent_id=? AND b.r2_key=? AND b.size=? AND s.r2_etag=?",
-    [...values, node.blob, node.parent, node.key, node.size, node.etag],
+      " AND n.current_blob_id=? AND n.parent_id=? AND b.r2_key=? AND b.size=? AND s.r2_etag=? AND n.name=? AND n.revision=?",
+    [...values, node.blob, node.parent, node.key, node.size, node.etag, node.name, node.revision],
   );
   const guard = async () => {
     await atomicBatch(env.DB, [...authority, claim, hold]);
@@ -180,6 +187,17 @@ export async function imageMetadataStatements(
           search.version,
         ],
       });
+      result.push(
+        ...nodeSearchSteps(node.id, event.space_id, node.name, node.revision).flatMap((step) => [
+          step.statement,
+          assertOneChange,
+        ]),
+        {
+          sql: "UPDATE spaces SET tree_generation=tree_generation+1 WHERE id=? AND owner_id=?",
+          values: [event.space_id, event.owner_id],
+        },
+        assertOneChange,
+      );
     }
   }
   return {

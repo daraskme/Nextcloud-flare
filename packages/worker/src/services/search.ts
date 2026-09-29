@@ -1,6 +1,7 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import type { SearchCursorTokens } from "../auth/searchCursor";
+import { SEARCH_CURSOR_VERSION, type SearchCursorTokens } from "../auth/searchCursor";
 import { assertExists, atomicBatch, primary } from "../db/primary";
+import { AUDIO_SEARCH_MATCH } from "../search/projection";
 import { searchQuery } from "../search/query";
 import { BOUNDED_SUBTREE_CTE } from "./subtree";
 
@@ -21,13 +22,16 @@ interface SearchRow {
 export function searchStatement(indexed: boolean): string {
   return `${BOUNDED_SUBTREE_CTE}, eligible AS MATERIALIZED (
     SELECT n.id,n.parent_id,n.name,n.name_ci,n.kind,n.revision,n.current_blob_id,n.updated_at,
-      si.rowid AS index_id,si.text_norm,si.normalization_version,si.revision AS index_revision
+      si.rowid AS index_id,si.text_norm,si.normalization_version,si.revision AS index_revision,
+      (EXISTS(SELECT 1 FROM node_audio a WHERE a.node_id=n.id AND a.blob_id=n.current_blob_id)
+        AND NOT EXISTS(SELECT 1 FROM node_audio a JOIN blobs b ON b.id=a.blob_id
+          WHERE a.node_id=n.id AND ${AUDIO_SEARCH_MATCH})) AS audio_stale
     FROM scope s CROSS JOIN nodes n ON n.id=s.id
       LEFT JOIN search_index si ON si.node_id=n.id AND si.space_id=?2
     WHERE s.id<>?1 AND n.kind IN ('folder','file')
   ), hits AS MATERIALIZED (
     SELECT e.* FROM eligible e WHERE e.index_id IS NOT NULL
-      AND e.normalization_version=?4 AND e.index_revision<=e.revision
+      AND e.normalization_version=?4 AND e.index_revision<=e.revision AND e.audio_stale=0
       ${indexed ? "AND EXISTS(SELECT 1 FROM search_fts WHERE rowid=e.index_id AND search_fts MATCH ?5)" : ""}
       LIMIT 10000
   ), page AS (
@@ -38,7 +42,7 @@ export function searchStatement(indexed: boolean): string {
     ORDER BY h.name_ci,h.id LIMIT 201
   ) SELECT (SELECT COUNT(*) FROM scope) AS scopeCount,
     (SELECT COUNT(*) FROM hits) AS hitCount,
-    (SELECT COUNT(*) FROM eligible WHERE index_id IS NULL OR normalization_version<>?4 OR index_revision>revision) AS staleCount,
+    (SELECT COUNT(*) FROM eligible WHERE index_id IS NULL OR normalization_version<>?4 OR index_revision>revision OR audio_stale=1) AS staleCount,
     (SELECT json_group_array(json_object('id',id,'parentId',parent_id,'name',name,'nameCi',name_ci,
       'kind',kind,'revision',revision,'currentBlobId',current_blob_id,'updatedAt',updated_at,
       'size',size,'mime',mime_sniffed)) FROM page) AS items`;
@@ -80,7 +84,7 @@ export async function searchNodes(
       claims.epoch !== principal.epoch ||
       claims.generation !== scope.tree_generation ||
       claims.query !== query.text ||
-      claims.version !== query.version
+      claims.version !== SEARCH_CURSOR_VERSION
     )
       throw new Error("invalid_search_cursor");
     lastName = claims.lastNameCi;
@@ -123,7 +127,7 @@ export async function searchNodes(
           epoch: principal.epoch,
           generation: scope.tree_generation,
           query: query.text,
-          version: query.version,
+          version: SEARCH_CURSOR_VERSION,
           lastNameCi: last.nameCi,
           lastId: last.id,
         })

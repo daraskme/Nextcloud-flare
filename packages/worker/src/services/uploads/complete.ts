@@ -14,6 +14,7 @@ import {
   operationIntent,
   validateClaimAuthorization,
 } from "../../jobs/operations";
+import { nodeSearchSteps } from "../../search/projection";
 import {
   commitMutationStatements,
   type MutationOutcome,
@@ -169,14 +170,7 @@ function steps(
               ],
             },
           },
-          {
-            kind: "search_index",
-            affectedId: nodeId,
-            statement: {
-              sql: "UPDATE search_index SET revision=revision+1 WHERE node_id=? AND revision=?",
-              values: [nodeId, row.target_revision],
-            },
-          },
+          ...nodeSearchSteps(nodeId, row.space_id, authority.node.name, row.target_revision),
         ]),
     {
       kind: "upload",
@@ -295,7 +289,7 @@ async function completeUpload(
     authorized.node.revision !== row.target_revision
   )
     throw new Error("upload_target_changed");
-  const expectedSteps = row.target_id ? 8 : 10;
+  const expectedSteps = 10;
   const intent = await operationIntent(
     principal,
     requestId,

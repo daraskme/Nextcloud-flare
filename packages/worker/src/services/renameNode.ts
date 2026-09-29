@@ -1,4 +1,4 @@
-import { portableName, searchName } from "@next-cloud-flare/shared/names";
+import { portableName } from "@next-cloud-flare/shared/names";
 import {
   type AuthorizedNode,
   authorizationAssertion,
@@ -17,6 +17,7 @@ import {
   type OperationClaim,
   operationIntent,
 } from "../jobs/operations";
+import { updateNodeSearch } from "../search/projection";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const RENAME_NODE_STEPS = 8;
@@ -48,7 +49,6 @@ export function renameMutationPlan(
   lockHashes: readonly string[],
 ): RenamePlan {
   const name = portableName(inputName);
-  const search = searchName(name.name);
   const op = claim.intent.id;
   const node = authorized.node;
   const parentId = authorized.parentId;
@@ -93,19 +93,7 @@ export function renameMutationPlan(
     {
       kind: "search_index",
       affectedId: node.id,
-      statement: {
-        sql: `UPDATE search_index SET text_norm=?,tokens=?,normalization_version=?,revision=?
-          WHERE node_id=? AND revision<=? AND space_id=?`,
-        values: [
-          search.textNorm,
-          search.tokens,
-          search.version,
-          node.revision + 1,
-          node.id,
-          node.revision,
-          node.space_id,
-        ],
-      },
+      statement: updateNodeSearch(node.id, node.space_id, name.name, node.revision),
     },
     {
       kind: "search_fts_insert",

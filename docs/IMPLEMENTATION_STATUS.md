@@ -1,6 +1,20 @@
 # 実装進捗
 
-## 音声タグの検索用データ保存（今回）
+## 音声タグの検索とファイル操作との同期（今回）
+
+[音声タグ検索](AUDIO_SEARCH.md)を既存の検索API/FTSへ接続した。曲名・artist・albumの実効値をファイル名と合わせて検索し、抽出・override編集/reset、改名・MOVE・同一所有者COPY・ごみ箱復元で同じtransaction内に更新する。DAV PUT・single/multipart上書きでは、次の抽出を待たず旧原本のタグを検索対象から外す。同一所有者のファイル/再帰COPYは現在の原本に対応する抽出値・override・cacheを保持する。
+
+抽出は元のname/revisionとoverride snapshotを最終batchで再照合し、検索索引の未来revisionは抽出/編集/COPY/復元でも拒否する。抽出確定時にtree generationを進めて検索cursorを失効させ、完了eventの再送では進めない。cursorにも音声検索のversionを含め、正しく署名された旧filename-only cursorを拒否する。旧operationの終端receiptは、全intentが一致する既知の段階数だけ再送を認める。旧claimed planや変更された入力は受け付けない。
+
+- Node関連71件成功（5file、2.09秒、/tmp/ncf-audio-search-live-unit.log）。cache/schema・metadata・query/nameを確認。cursor version追加後のquery13件も成功（174ms、/tmp/ncf-audio-search-live-cursor-unit.log）。正しい署名を持つ旧cursorの拒否を含む。
+- Native関連270件を確認。初回12file/265件は261件成功、追加fixtureのDAV入力名とLockDO adapter不足で4件失敗（220秒、/tmp/ncf-audio-search-live-native-1.log）。fixtureを正して競合試験を増やした6file/140件は139件成功し、残ったDAV入力名1箇所も修正。DAV/single/multipart上書き3件が成功した（/tmp/ncf-audio-search-live-native-2.log、/tmp/ncf-audio-search-live-overwrite-final.log）。製品の検査条件は緩めていない。
+- Nativeでは実D1/R2/Queueによる全対応音声のタグ検索、かな/casefold/記号、override/reset、旧cacheのtruncated、改名/MOVE/COPY/衝突時復元、原本上書き直後の旧タグ除去、FTS整合、最終確定競合、旧終端receipt互換性を確認した。201候補の実cursor試験を追加し、抽出確定で旧cursorが失効し、完了event再送後は新cursorが有効なことも成功（/tmp/ncf-audio-search-live-cursor.log）。最終cursor versionでsearch/track-metadataの42件も成功（34.46秒、/tmp/ncf-audio-search-live-native-cursor.log）。
+- Browser3件成功（1.8分、/tmp/ncf-audio-search-live-browser-final.log）。実upload後の曲名/artist検索、別tabでのFiles検索、競合編集後/reset後の旧タグ除去、再生src保持、既存の入れ子検索からの上書き/保存場所、201件paginationと世代競合/認可失効を確認した。初回は2件成功し、音声検索の表示自体は正しかったが、ファイル名と種別をまとめたボタンへgetByTextを使うselectorだけが失敗した。既存Files試験と同じaccessible name指定に修正し、検査条件は維持した。前後のartifactは/tmp/ncf-audio-search-live-browser-before・afterへ保存し、タグ検索の画面を目視確認した。重複を除く関連試験は344件成功。
+- typecheck、lint（764file）、verify:contracts、verify:config、Web両入口/Worker dry-run build成功（/tmp/ncf-audio-search-live-{types-cursor,lint-cursor,contracts,config,build-final}.log）。
+
+schema0074・通常79table・149 API routeを維持し、migration/依存は追加していない。FTS同時更新を保証するcache versionはaudio-tags-2。旧/空cacheは検索対象から外しtruncatedを返す。既存行のbounded再索引、別所有者COPYでの受付時metadataの固定・引継ぎ、cover、Bookshelf、運用修復、全suite・実Cloudflare/他OSのgateは継続する。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## 音声タグの検索用データ保存（先行f3701fc）
 
 [検索準備](AUDIO_SEARCH.md)としてmigration0074で`node_audio`にtext/tokens/source/versionを追加した。原本の抽出とoverride編集・resetで実効3fieldから同時保存する。名前と共通のNFKC・casefold・かな統一・bigramを利用し、metadataの記号は保持する。raw field 1KiB、text64KiB・tokens192KiB・source32KiB・version128Bの上限を確認する。抽出は同じblobのoverride tupleを確定前に再照合し、行の追加・変更・削除が入った場合は原子的に取り消して再試行する。
 

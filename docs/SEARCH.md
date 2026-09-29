@@ -1,6 +1,6 @@
 # フォルダー配下の検索
 
-更新: 2026-09-24。ローカル実装・検証の記録。リモート配備は未実施。
+更新: 2026-09-29。ローカル実装・検証の記録。リモート配備は未実施。
 
 ## HTTP と画面
 
@@ -15,6 +15,8 @@ Files の検索欄は Enter または「検索」で送信する。「検索を�
 子孫の走査は同じ space/owner の生きた親子関係だけをたどる。削除した祖先を越えず、共有範囲外の祖先名・候補数・順位を返さない。検索結果のページ順は `name_ci,id` で固定し、全索引の文書統計に依存する BM25 順位は使わない。無権限の文書が増えても、検索範囲内の順位や cursor が変わらないためである。
 
 cursor は検索専用の署名用途を持ち、正規化後の query、索引 version、scope/space/owner、user/credential、epoch、tree generation、最後の名前と ID に結び付ける。有効期限は10分。他用途・他条件への流用、改変、古い世代は409。query/parameter 不正は400、認可拒否は404、署名設定欠落は503。応答は `private, no-store`。
+
+カーソルのversionは名前の正規化と音声索引のversionを組み合わせる。音声タグ検索への更新前のカーソルを再利用せず、検索対象が異なるページを継ぎ足さない。
 
 ## 正規化と文字列一致
 
@@ -40,4 +42,4 @@ scope を確定してから、各索引 rowid に限定した FTS lookup を行�
 
 Node は正規化、literal query、fallback、byte 上限、cursor 用途/期限/改変を検証する。workerd は実 D1 の階層・200件 keyset・scope10,000上限・他 owner・削除祖先・internal grant・待機中失効・旧索引と rename/move の同期を検証する。ブラウザーは実 API の検索・保存先保持・上書き・再検索・201件 pagination・世代競合と認証拒否を確認する。件数と最終結果は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を参照。
 
-現在の索引入力は名前。media metadata の parser/同期、検索索引 version の再構築運用、共有管理画面、実 D1 の rows_read≤20,000/duration≤250ms と負荷試験は残る。所有folderの要求時集計は[FOLDER_STATS](FOLDER_STATS.md)へ接続し、索引付き走査を共通化した。ローカルの fixture 件数や所要時間を実 D1 の予算合格とは扱わない。D1 migration・依存追加はない。
+現在の索引入力は名前と、[抽出/編集で確定した音声タグ](AUDIO_SEARCH.md)。同一所有者COPY、改名/MOVE/復元、単一・分割・DAV上書きの同期も接続した。旧音声cacheの一括再構築、所有者間COPYの音声引継ぎ、他media metadataの同期、検索索引versionの再構築運用、実D1のrows_read≤20,000/duration≤250msと音声負荷試験は残る。所有folderの要求時集計は[FOLDER_STATS](FOLDER_STATS.md)へ接続し、索引付き走査を共通化した。ローカルの fixture 件数や所要時間を実 D1 の予算合格とは扱わない。D1 migration・依存追加はない。

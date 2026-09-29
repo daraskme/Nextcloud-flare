@@ -1,10 +1,10 @@
-# 音声タグの検索準備
+# 音声タグの検索
 
-2026-09-29。migration0074で`node_audio`に検索用の正規化データを追加した。原本の音声タグ抽出と利用者のoverride編集・resetで、現在の曲名・artist・albumから同時に生成する。検索API/FTSへの接続は後続で、現在の検索結果はファイル名を対象とする。
+2026-09-29。migration0074で`node_audio`に検索用の正規化データを追加した。原本の音声タグ抽出と利用者のoverride編集・resetで、現在の曲名・artist・albumから同時に生成する。現在はFilesの検索API/FTSへ接続し、ファイル名と実効3fieldを検索対象にする。対象は新しく抽出・編集された音声と、その同一所有者内コピー。旧データの一括再構築と所有者間COPYへのmetadata引継ぎは未接続。
 
 ## 保存する情報
 
-`search_text_norm`、`search_tokens`、`search_source`、`search_version`を保存する。各fieldの実効値は`override ?? extracted`で、sourceは曲名・artist・albumの順のJSON配列。名前のfallbackはこのcacheへ含めず、将来の索引更新で現行ファイル名と組み合わせる。
+`search_text_norm`、`search_tokens`、`search_source`、`search_version`を保存する。各fieldの実効値は`override ?? extracted`で、sourceは曲名・artist・albumの順のJSON配列。名前のfallbackはこのcacheへ含めず、索引更新で現行ファイル名と組み合わせる。
 
 NFKC・Unicode17 casefold・カタカナ/ひらがなの統一・bigram生成は既存の名前検索と共有する。metadataにはファイル名の禁止記号制約を適用せず、スラッシュ・コロン・引用符も保持する。field間は改行で区切る。検索queryは制御文字を拒否するため、隣り合うfieldをまたいだ偽のsubstring一致を作らない。
 
@@ -14,17 +14,26 @@ NFKC・Unicode17 casefold・カタカナ/ひらがなの統一・bigram生成は
 
 抽出は同じblobのoverrideだけを引き継ぐ。保存前に既存rowのblobとoverride3値を固定し、確定batchの最初に再照合する。読み取り後のinsert/update/deleteを検知すると、metadataとcacheを一切確定せずOutboxを再試行する。元の認可、現在のblob、Range/ETag、claim/epochと読み取り予算の検査も維持する。
 
-利用者の編集は既存のmetadata snapshot検査と同じbatchでoverrideとcacheを更新する。resetでは最新の抽出値から再生成する。5段階のoperation receiptとidempotencyの形式は変更しない。
+利用者の編集は既存のmetadata snapshot検査と同じbatchでoverrideとcacheを更新する。resetでは最新の抽出値から再生成する。編集は旧FTS削除・base更新・新FTS挿入を加えた7段階のoperation receiptを保存する。以前の5段階で確定/失敗した同一intentは再送できるが、旧段階数の未確定planは新手順で再開しない。DAV/upload上書きの8→10、同一所有者COPYの18→19も同じ明示的な互換性を持つ。
 
-`AUDIO_SEARCH_CURRENT`はcacheのversionと実効3値のJSON一致を検査する内部SQL式。将来の索引更新では、これに加えてnodeの現在blob、generator、codec/MIME、認可範囲を確認する必要がある。この式単独は現在の原本や閲覧権限の証明にはならない。
+`AUDIO_SEARCH_CURRENT`はcacheのversionと実効3値のJSON一致を検査する内部SQL式。索引更新では、これに加えてnodeの現在blob、generator、codec/MIME、認可範囲を確認する。この式単独は現在の原本や閲覧権限の証明にはならない。
 
 migrationはmaintenance中で、open permit・claimed operation・未閉鎖mutation枠・未終了R2/KDF/Images試行とbackup/restore凍結がない場合だけ実行する。通常79table・149 API routeは維持する。既存タグは保存したまま、新columnは空文字にする。旧データを正規化済みと推測しない。既存のbackup/restore凍結triggerは追加columnにも適用され、export/restoreは4columnをそのまま扱う。
 
-## 次の接続
+## 索引の同期
 
-- 抽出/override確定と同じtransactionでFTS旧値削除・base索引更新・FTS新値挿入を行う。
-- 改名・MOVE・ごみ箱復元では実効タグを保持し、原本の上書きでは旧blobのタグを即時に外す。
-- 同一所有者COPYと、受付時metadataを固定する所有者間COPYへ引き継ぐ。
-- 既存cacheなしの音声と旧versionを、上限付きで再構築する。既存のoperation receiptを壊さず、競合と再試行を検証する。
+抽出/override確定と同じtransactionでFTS旧値削除・base索引更新・FTS新値挿入を行う。各段階の更新件数を確認し、索引欠落・未来のrevision・処理中の改名を検知すると全体を取り消す。抽出の確定もtree generationを進め、検索カーソルが古い結果を継ぎ足さないようにする。
+
+改名・MOVE・ごみ箱復元は現在の名前と有効なcacheを再合成する。同じ所有者のCOPYは現在のblobに一致するnode_audioをコピーし、rootの新しい名前にもタグを含める。単一upload・multipart upload・WebDAV PUTの上書きは新しいblobに一致しない旧cacheを除き、Queue処理の前に旧タグを検索から外す。
+
+cache versionはaudio-tags-2。FTS接続前のv1/空cache、実効タグ・generator・codec/MIMEの不一致がある現在の音声metadataは不完全と判定する。その行を検索結果から除き、truncated:trueを返す。音声以外の名前索引versionは変えない。検索は既存の範囲認可、scope/hits10,000、200件page、最終substring判定を維持する。
+
+検索カーソルの版は名前の正規化versionと音声cache versionを含む。FTS接続前に発行したカーソルは署名が正しくても拒否し、画面は先頭から読み直す。通常の索引更新ではtree generationでも古いページを拒否する。
+
+## 残る接続
+
+- 既存cacheなしの音声とv1/旧versionを上限付きで再構築する。現在はタグを保存し直すと、その1件を最新の索引へ更新できる。
+- 所有者間COPYの受付manifestへ音声metadataを固定し、公開時にその値を新しいblobへ引き継ぐ。公開時のsource最新値を読み直して代用しない。
+- 最大長の音声タグと大量音声での実D1負荷gate、media全体の再抽出運用。
 
 検証結果は[実装進捗](IMPLEMENTATION_STATUS.md)を参照。実Cloudflareへのmigration・配備は未実施。

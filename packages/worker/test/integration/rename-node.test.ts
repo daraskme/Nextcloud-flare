@@ -7,11 +7,13 @@ import { handleNodeMutationHttp, nodeMutationRoute } from "../../src/api/nodeMut
 import { authorizeNode, type Principal } from "../../src/auth/authorize";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { lockTokenHashes } from "../../src/auth/locks";
+import { SearchCursorTokens } from "../../src/auth/searchCursor";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { claimOperation, operationIntent } from "../../src/jobs/operations";
+import { editAudioMetadata } from "../../src/services/audioMetadata";
 import { copyNode } from "../../src/services/copyNode";
 import { createFolder } from "../../src/services/createFolder";
 import { commitMutationStatements } from "../../src/services/fsMutation";
@@ -24,12 +26,182 @@ import {
   renameNode,
 } from "../../src/services/renameNode";
 import { restoreTrash } from "../../src/services/restoreTrash";
+import { searchNodes } from "../../src/services/search";
 import { trashNode } from "../../src/services/trashNode";
 import { foundationFixture } from "../fixtures/foundation";
 import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
+
+it("preserves effective audio searches through rename, MOVE, file/subtree COPY and a colliding trash restore", async () => {
+  const { f, principal } = await seeded(),
+    app = admitted(),
+    q = searchName("File");
+  await atomicBatch(env.DB, [
+    { sql: "UPDATE blobs SET mime_sniffed='audio/mpeg' WHERE id=?", values: [f.ids.blob] },
+    {
+      sql: "INSERT INTO node_audio(node_id,blob_id,generator_version,codec,title_extracted) VALUES(?,?,'track-metadata-v1','mp3','原本の曲')",
+      values: [f.ids.file, f.ids.blob],
+    },
+    {
+      sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)",
+      values: [f.ids.file, f.ids.space, q.textNorm, q.tokens, q.version],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [f.ids.file],
+    },
+  ]);
+  const tokens = new SearchCursorTokens(
+    await csrfKeyRing("test", {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    }),
+  );
+  const search = async (text: string) => {
+    const result = await searchNodes(env.DB, principal, f.ids.root, text, tokens);
+    expect(result.truncated).toBe(false);
+    return result.items.map((n) => n.id);
+  };
+  const committed = (r: Awaited<ReturnType<typeof copyNode>>) => {
+    expect(r).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+    if (r.kind !== "terminal" || !r.operation.result?.nodeId) throw new Error("missing_node");
+    return r.operation.result.nodeId;
+  };
+  committed(
+    await editAudioMetadata(app, principal, f.ids.file, crypto.randomUUID(), {
+      blobId: f.ids.blob,
+      generator: "track-metadata-v1",
+      revision: 1,
+      title: "カタカナ: Straße / live",
+      artist: "Artist",
+      album: "Album",
+    }),
+  );
+  expect(await search("ｶﾀｶﾅ: STRASSE / live")).toEqual([f.ids.file]);
+  const common = { principal, spaceId: f.ids.space, lockTokens: [] };
+  committed(
+    await renameNode(app, {
+      ...common,
+      idempotencyKey: crypto.randomUUID(),
+      nodeId: f.ids.file,
+      name: "renamed.mp3",
+    }),
+  );
+  expect(await search("File")).toEqual([]);
+  expect(await search("renamed.mp3")).toEqual([f.ids.file]);
+  expect(await search("STRASSE")).toEqual([f.ids.file]);
+  committed(
+    await moveNode(app, {
+      ...common,
+      requestId: crypto.randomUUID(),
+      nodeId: f.ids.file,
+      destinationParentId: f.ids.root,
+      name: "moved.mp3",
+    }),
+  );
+  const copied = committed(
+    await copyNode(app, {
+      ...common,
+      requestId: crypto.randomUUID(),
+      sourceNodeId: f.ids.file,
+      destinationParentId: f.ids.folder,
+      name: "copy.mp3",
+      depth: "infinity",
+    }),
+  );
+  const copiedFolder = committed(
+    await copyNode(app, {
+      ...common,
+      requestId: crypto.randomUUID(),
+      sourceNodeId: f.ids.folder,
+      destinationParentId: f.ids.root,
+      name: "copied folder",
+      depth: "infinity",
+    }),
+  );
+  const beforeIndexRevision = await env.DB.prepare(
+    "SELECT revision FROM search_index WHERE node_id=?",
+  )
+    .bind(f.ids.file)
+    .first<number>("revision");
+  await env.DB.prepare("UPDATE search_index SET revision=revision+1 WHERE node_id=?")
+    .bind(f.ids.file)
+    .run();
+  expect(
+    await copyNode(app, {
+      ...common,
+      requestId: crypto.randomUUID(),
+      sourceNodeId: f.ids.file,
+      destinationParentId: f.ids.folder,
+      name: "rejected copy.mp3",
+      depth: "infinity",
+    }),
+  ).not.toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM nodes WHERE parent_id=? AND name='rejected copy.mp3'",
+    )
+      .bind(f.ids.folder)
+      .first("n"),
+  ).toBe(0);
+  await env.DB.prepare("UPDATE search_index SET revision=? WHERE node_id=?")
+    .bind(beforeIndexRevision, f.ids.file)
+    .run();
+  expect(await search("STRASSE")).toHaveLength(3);
+  expect(await search("copy.mp3")).toContain(copied);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM node_audio a JOIN nodes n ON n.id=a.node_id WHERE n.parent_id=? AND a.title_override=?",
+    )
+      .bind(copiedFolder, "カタカナ: Straße / live")
+      .first("n"),
+  ).toBe(1);
+  const trash = await trashNode(app, {
+    ...common,
+    requestId: crypto.randomUUID(),
+    nodeId: f.ids.file,
+  });
+  if (trash.kind !== "terminal") throw new Error("missing_trash");
+  expect(await search("STRASSE")).toHaveLength(2);
+  committed(
+    await createFolder(app, {
+      ...common,
+      idempotencyKey: crypto.randomUUID(),
+      parentId: f.ids.root,
+      name: "moved.mp3",
+    }),
+  );
+  const restoreRequest = {
+    ...common,
+    requestId: crypto.randomUUID(),
+    trashOpId: trash.operation.id,
+    destinationParentId: f.ids.root,
+  };
+  await env.DB.prepare("UPDATE search_index SET revision=revision+1 WHERE node_id=?")
+    .bind(f.ids.file)
+    .run();
+  expect(await restoreTrash(app, restoreRequest)).not.toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed" },
+  });
+  expect(
+    await env.DB.prepare("SELECT deleted_at FROM nodes WHERE id=?")
+      .bind(f.ids.file)
+      .first("deleted_at"),
+  ).not.toBeNull();
+  await env.DB.prepare("UPDATE search_index SET revision=? WHERE node_id=?")
+    .bind(beforeIndexRevision, f.ids.file)
+    .run();
+  committed(await restoreTrash(app, { ...restoreRequest, requestId: crypto.randomUUID() }));
+  expect(await search("STRASSE")).toHaveLength(3);
+  expect(
+    await env.DB.prepare("SELECT name FROM nodes WHERE id=?")
+      .bind(f.ids.file)
+      .first<string>("name"),
+  ).toContain("restored");
+  await env.DB.prepare("INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1)").run();
+});
 
 async function seeded() {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
@@ -148,6 +320,8 @@ function admitted(overloaded = false): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
             invoke((lock) => lock.acquireCreate(request)),
           acquireRename: (request: Parameters<LockDO["acquireRename"]>[0]) =>
             invoke((lock) => lock.acquireRename(request)),
+          acquireNodeWrite: (request: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
+            invoke((lock) => lock.acquireNodeWrite(request)),
           acquireMove: (request: Parameters<LockDO["acquireMove"]>[0]) =>
             invoke((lock) => lock.acquireMove(request)),
           acquireCopy: (request: Parameters<LockDO["acquireCopy"]>[0]) =>

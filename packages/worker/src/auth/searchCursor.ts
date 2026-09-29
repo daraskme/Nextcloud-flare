@@ -1,6 +1,10 @@
 import { SEARCH_NAME_VERSION } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
+import { AUDIO_SEARCH_VERSION } from "../search/audio";
 import type { ContentKeyRing } from "./contentTokens";
+
+// Result membership changes when audio indexing changes, even if name normalization does not.
+export const SEARCH_CURSOR_VERSION = `${SEARCH_NAME_VERSION}:${AUDIO_SEARCH_VERSION}`;
 
 export interface SearchCursorClaims {
   readonly scopeId: string;
@@ -26,7 +30,7 @@ function valid(value: SearchCursorClaims, now: number): boolean {
     typeof value.query === "string" &&
     value.query.length > 0 &&
     value.query.length <= 256 &&
-    value.version === SEARCH_NAME_VERSION &&
+    value.version === SEARCH_CURSOR_VERSION &&
     ID.test(value.spaceId) &&
     ID.test(value.ownerId) &&
     ID.test(value.userId) &&

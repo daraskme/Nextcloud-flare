@@ -1,7 +1,8 @@
 import type { AudioTags } from "../../../shared/src/audio";
 import { SEARCH_NAME_VERSION, searchText } from "../../../shared/src/names";
 
-export const AUDIO_SEARCH_VERSION = `audio-tags-1-${SEARCH_NAME_VERSION}`;
+// v2 caches are published together with the base index and FTS. v1 predates that connection.
+export const AUDIO_SEARCH_VERSION = `audio-tags-2-${SEARCH_NAME_VERSION}`;
 export const AUDIO_SEARCH_LIMITS = Object.freeze({
   fieldBytes: 1024,
   textBytes: 65536,

@@ -1,4 +1,4 @@
-import { portableName, searchName } from "@next-cloud-flare/shared/names";
+import { portableName } from "@next-cloud-flare/shared/names";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import { assertCreateLocks, lockTokenHashes } from "../auth/locks";
 import { assertOpenPermit } from "../db/permits";
@@ -16,6 +16,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { updateNodeSearch } from "../search/projection";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -166,7 +167,6 @@ function statements(
     throw new Error("invalid_mutation_plan");
   const clock = "strftime('%s','now')*1000";
   const op = claim.intent.id;
-  const search = searchName(name.name);
   const steps = [
     {
       kind: "restore_claim",
@@ -246,10 +246,7 @@ function statements(
     {
       kind: "search_index",
       id: rootId,
-      statement: {
-        sql: "UPDATE search_index SET text_norm=?,tokens=?,normalization_version=?,revision=revision+1 WHERE node_id=?",
-        values: [search.textNorm, search.tokens, search.version, rootId],
-      },
+      statement: updateNodeSearch(rootId, claim.intent.spaceId, name.name),
       assertion: assertOneChange,
     },
     {

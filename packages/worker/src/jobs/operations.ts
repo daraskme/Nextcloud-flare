@@ -186,7 +186,20 @@ function sameIntent(row: OperationRow, intent: OperationIntent, steps: number): 
     row.kind === intent.kind &&
     row.request_digest === intent.digest &&
     row.operands_json === intent.operands &&
-    row.expected_steps === steps
+    compatibleTerminalSteps(row, steps)
+  );
+}
+
+/** Explicit historical receipts only; an old unfinished plan must never resume with new steps. */
+function compatibleTerminalSteps(row: OperationRow, steps: number): boolean {
+  if (row.expected_steps === steps) return true;
+  if (row.state === "claimed") return false;
+  return (
+    (row.kind === "audio.metadata.write" && steps === 7 && row.expected_steps === 5) ||
+    (["dav.put", "upload.complete"].includes(row.kind) &&
+      steps === 10 &&
+      row.expected_steps === 8) ||
+    (["node.copy", "dav.copy"].includes(row.kind) && steps === 19 && row.expected_steps === 18)
   );
 }
 
