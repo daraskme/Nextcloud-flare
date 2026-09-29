@@ -1,5 +1,6 @@
 import { ascii, type ImageReader, valid, view } from "../images/reader";
 import { durationMs, opusConfiguration, type TrackMetadata, type TrackTags, tag } from "./common";
+import { vorbisIdentification, vorbisSetup, vorbisTags } from "./vorbis";
 
 function crc(bytes: Uint8Array) {
   let sum = 0;
@@ -42,7 +43,12 @@ export async function oggTracks(r: ImageReader): Promise<TrackMetadata> {
     continued = false,
     packetBytes = 0,
     packets = 0,
-    preSkip = 0;
+    preSkip = 0,
+    rate = 48000,
+    channels = 0,
+    headers = 2,
+    modes = 0;
+  let codec: "opus" | "vorbis" = "opus";
   let duration: number | null = null,
     lastGranule = 0n;
   const tags: TrackTags = {};
@@ -69,16 +75,20 @@ export async function oggTracks(r: ImageReader): Promise<TrackMetadata> {
     valid(crc(page) === d.getUint32(22, true));
     let start = 27 + lacing.length;
     for (const size of lacing) {
-      if (packets < 2) {
+      if (packets < headers) {
         r.step();
         valid((packetBytes += size) <= 1048576);
         parts.push(page.subarray(start, start + size));
+      } else if (codec === "vorbis" && !continued) {
+        valid(size > 0 && !(page[start]! & 1));
+        const width = modes === 1 ? 0 : Math.ceil(Math.log2(modes));
+        valid(((page[start]! >> 1) & (2 ** width - 1)) < modes);
       }
       start += size;
       continued = size === 255;
       if (!continued) {
-        // Once both headers are complete, lacing only counts packets; never allocate per sample.
-        if (packets < 2) {
+        // Once headers are complete, lacing only counts packets; never allocate per sample.
+        if (packets < headers) {
           const packet = new Uint8Array(packetBytes);
           let copied = 0;
           for (const part of parts) {
@@ -86,10 +96,20 @@ export async function oggTracks(r: ImageReader): Promise<TrackMetadata> {
             copied += part.length;
           }
           if (packets === 0) {
-            const config = opusConfiguration(packet);
-            preSkip = config.preSkip;
+            if (ascii(packet, 0, Math.min(8, packet.length)) === "OpusHead") {
+              const config = opusConfiguration(packet);
+              preSkip = config.preSkip;
+            } else {
+              const config = vorbisIdentification(packet);
+              codec = "vorbis";
+              channels = config.channels;
+              rate = config.rate;
+              headers = 3;
+            }
             valid(at === 0 && lacing.length === 1);
-          } else comments(packet, tags, r);
+          } else if (codec === "opus") comments(packet, tags, r);
+          else if (packets === 1) vorbisTags(packet, tags, r);
+          else modes = vorbisSetup(packet, channels, r);
           parts = [];
           packetBytes = 0;
         }
@@ -106,19 +126,19 @@ export async function oggTracks(r: ImageReader): Promise<TrackMetadata> {
       valid(
         at === r.size &&
           !continued &&
-          packets >= 3 &&
+          packets > headers &&
           granule !== 0xffffffffffffffffn &&
           granule >= BigInt(preSkip),
       );
       valid(granule <= BigInt(Number.MAX_SAFE_INTEGER));
-      duration = durationMs(Number(granule) - preSkip, 48000);
+      duration = durationMs(Number(granule) - preSkip, rate);
       break;
     }
-    if (packets >= 2 && r.size > 2097152) break;
+    if (packets >= headers && r.size > 2097152) break;
   }
-  valid(packets >= 2 && (at < r.size || duration !== null));
+  valid(packets >= headers && (at < r.size || duration !== null));
   return {
-    media: { kind: "audio", container: "ogg", codec: "opus" },
+    media: { kind: "audio", container: "ogg", codec },
     width: null,
     height: null,
     durationMs: duration,

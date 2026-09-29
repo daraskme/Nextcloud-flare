@@ -1,4 +1,6 @@
+import type { MediaDescriptor } from "../../../../shared/src/media";
 import { ascii, type ImageReader, valid, view } from "../images/reader";
+import { aacEsds } from "./aac";
 import {
   av1Configuration,
   durationMs,
@@ -89,7 +91,7 @@ export async function mp4Tracks(r: ImageReader): Promise<TrackMetadata> {
   let video:
       | { width: number; height: number; configuration: ReturnType<typeof av1Configuration> }
       | undefined,
-    audio = false;
+    audio: Extract<MediaDescriptor, { kind: "audio" }> | undefined;
   const ids = new Set<number>();
   for (const track of tracks) {
     const children = boxes(bytes, track.start, track.end, r),
@@ -136,15 +138,29 @@ export async function mp4Tracks(r: ImageReader): Promise<TrackMetadata> {
         configuration: av1Configuration(bytes.subarray(config.start, config.end)),
       };
     } else {
-      valid(!audio && entry.type === "Opus" && entry.end - s >= 28 && d.getUint16(s + 8) === 0);
-      valid(d.getUint16(s + 18) === 16 && d.getUint32(s + 24) === 48000 * 65536);
-      const config = one(boxes(bytes, s + 28, entry.end, r), "dOps");
-      const opus = opusConfiguration(bytes.subarray(config.start, config.end), true);
-      valid(opus.channels === d.getUint16(s + 16));
-      audio = true;
+      valid(
+        !audio && entry.end - s >= 28 && d.getUint16(s + 8) === 0 && d.getUint16(s + 18) === 16,
+      );
+      const configs = boxes(bytes, s + 28, entry.end, r);
+      valid(!configs.some((x) => x.type === "sinf"));
+      if (entry.type === "Opus") {
+        valid(d.getUint32(s + 24) === 48000 * 65536);
+        const config = one(configs, "dOps");
+        const opus = opusConfiguration(bytes.subarray(config.start, config.end), true);
+        valid(opus.channels === d.getUint16(s + 16));
+        audio = { kind: "audio", container: "mp4", codec: "opus" };
+      } else {
+        valid(entry.type === "mp4a");
+        const config = one(configs, "esds"),
+          aac = aacEsds(bytes.subarray(config.start, config.end), r);
+        valid([aac.channels, aac.outputChannels].includes(d.getUint16(s + 16)));
+        valid([aac.coreRate, aac.rate].some((rate) => d.getUint32(s + 24) === rate * 65536));
+        audio = aac.media;
+      }
     }
   }
   valid(video || audio);
+  valid(!video || !audio || audio.codec === "opus");
   const tags: TrackTags = {};
   // The iTunes display subset only; no artwork, arbitrary atoms, URLs or GPS are retained.
   const udta = top.filter((b) => b.type === "udta");
@@ -194,7 +210,7 @@ export async function mp4Tracks(r: ImageReader): Promise<TrackMetadata> {
           configuration: video.configuration,
           audio: audio ? "opus" : null,
         }
-      : { kind: "audio", container: "mp4", codec: "opus" },
+      : audio!,
     width: video?.width ?? null,
     height: video?.height ?? null,
     durationMs: duration,

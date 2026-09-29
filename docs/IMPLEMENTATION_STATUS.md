@@ -1,6 +1,19 @@
 # 実装進捗
 
-## MP3・FLAC・WAVの解析・一覧・原本再生（今回）
+## AAC・Vorbisの解析・一覧・原本再生（今回）
+
+[AAC（M4A/MP4）・Vorbis（Ogg）](AAC_VORBIS.md)を既存のupload/DAV完了Outbox、一覧、位置保存と原本playerへ追加した。AACはesdsのdescriptorとAudioSpecificConfig、PCE、SBR/PSを上限付きで確認し、LC/HE/HE v2の正規MIMEを区別する。VorbisはOggの3header、codebook/floor/residue/mapping/modeを検査し、復号tableを作らず構成と表示タグを取得する。全体の読取り予算、現在の認可/blob、codec/MIMEの組合せを維持する。
+
+- Node171件成功（8file、1.47秒、/tmp/ncf-aac-vorbis-unit.log）。AAC-LCのmonoとPCE付きstereo、Vorbis mono/stereoの実合成音源を確認。SBR/PS構成、不正descriptor/codec、切断・変異・I/O障害、setupを直接破損させた拒否、Ogg pageをまたぐsetup・継続flag欠落・header欠落・chain拒否を検証した。1GB仮想Vorbisは64KiB以内の読取りで時間をnullにする。既存MP3/FLAC/WAV・AV1/Opus・画像・索引・player/clientも再確認した。
+- Native59件成功（3file、31.89秒、/tmp/ncf-aac-vorbis-native-1.log）。実D1/R2/Queueからの抽出、タグ/時間/MIME、認可されたRange原本、一覧/本人位置、重複配信での読取りと会計を確認した。AACの3profileとVorbisのcodec/MIME対応を位置保存の最終検査にも適用し、不一致を拒否した。候補1,000件とrows_read gateも維持した。
+- Browser12件成功（3.4分、/tmp/ncf-aac-vorbis-browser.log）。7音源をそれぞれ実uploadし、所有者と匿名公開390px幅で日本語タグ・206/Range・正規MIME・native currentTimeの進行・close後のsrc解除を検証。新しい4音源はAAC-LC mono、末尾moov/PCE付きstereo、Vorbis mono/stereo。既存のOpus3container、空page続行、SPA継続/保存/再開/競合/logout、内部/公開共有の失効とdownload fallbackも通った。
+- 最終build後の公開asset/SRI native5件成功（3.08秒、/tmp/ncf-aac-vorbis-assets.log）。重複を除く関連試験は247件成功。typecheck・lint（752file）・verify:contracts・verify:config・Web両入口/Worker dry-run buildも成功（/tmp/ncf-aac-vorbis-{types,lint-final,contracts,config,build}.log）。
+
+初回Node試験は不正ES flagのmutation offsetを1byte誤り、合法のES_IDを変えていたため69/70件成功だった（/tmp/ncf-aac-vorbis-unit-1.log）。offsetを正してsetup直接検査を追加した72件が成功し、上記のpage継続と関連回帰を含む171件も成功。製品側の上限や拒否条件は緩めていない。
+
+HE-AACは構成・MIME/APIまでの検証で、実HE音源の復号を確認していない。header解析は全bitstreamの復号保証ではない。schema0073・通常79table・149 API route・track-metadata-v1を維持し、migration/依存の追加なし。cover・override編集/検索、既存原本の再抽出/copy引継ぎ、Bookshelfと運用修復、全suite・実Cloudflare・他OS/browserのgateは継続する。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## MP3・FLAC・WAVの解析・一覧・原本再生
 
 [追加音声形式](AUDIO_FORMATS.md)を既存の通常/匿名upload・WebDAV PUTの完了Outboxへ接続した。headerを解析してcodec/MIMEを確定し、現在の原本・認可と同じbatchでmetadataを保存する。MP3のID3v2.2/2.3/2.4・ID3v1、FLACのSTREAMINFO/Vorbis comment、WAVEのPCM/IEEE float/extensibleとLIST INFOを扱う。head2MiB、MP3 tail128B、field1KiBとinvocation全体4MiB/128 GETの上限を維持し、時間を確定できない大きなMP3はnullを返す。
 

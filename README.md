@@ -1,6 +1,6 @@
 # Next-cloud-flare
 
-[MP3・FLAC・WAV](docs/AUDIO_FORMATS.md)の情報抽出・Audio一覧・原本再生を追加しました。既存のOpusと同じ常駐player、利用者別位置、共有認可を使います。AAC/Vorbis・表紙画像・タグ編集、Bookshelfと運用の残件は開発を継続しています。
+[AAC（M4A/MP4）・Vorbis（Ogg）](docs/AAC_VORBIS.md)の情報抽出・Audio一覧・原本再生を追加しました。MP3・FLAC・WAV・Opusと同じ常駐player、利用者別位置、共有認可を使います。表紙画像・タグ編集、Bookshelfと運用の残件は開発を継続しています。
 
 [公開リンク](docs/PUBLIC_SHARES.md)の匿名認証、所有者管理、一覧・原本保存、編集/削除、アップロードと再開を接続しています。秘密値/passwordの検証、共有Cookie、CSRF、logout、試行回数制限と共有範囲の認可を適用します。schema0073・通常79table・149 route。検証結果は[IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)を参照してください。
 

@@ -136,6 +136,10 @@ it.each([
   ["mp3", "audio/mpeg"],
   ["flac", "audio/flac"],
   ["pcm", "audio/wav"],
+  ["aac", 'audio/mp4; codecs="mp4a.40.2"'],
+  ["aac", 'audio/mp4; codecs="mp4a.40.5"'],
+  ["aac", 'audio/mp4; codecs="mp4a.40.29"'],
+  ["vorbis", 'audio/ogg; codecs="vorbis"'],
 ])(
   "binds the %s codec to its exact parsed MIME for listing and position writes",
   async (codec, mime) => {

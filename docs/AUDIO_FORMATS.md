@@ -22,6 +22,6 @@ ID3はsyncsafe長、UTF-16 BOM・UTF-8・ISO-8859-1、全体／frame単位のuns
 
 Header解析は全bitstreamの復号・CRC検査ではない。MP3 free-format/Layer I・IIは対象外で、Xing/Infoから時間を確定できずhead内にも全frameが収まらない場合は時間をnullにする。VBRI専用の時間取得、encoder delay/paddingによるgapless時間補正は未接続。FLAC総sample数0も時間不明。WAVEはlittle-endian RIFFで、RF64/RIFX・圧縮codecは対象外。大きなdataの後ろにあるINFOは取得しない。INFOのencoding宣言がないため、UTF-8として読めない表示値は省略する。
 
-M4A/MP4のAAC、Ogg Vorbis等の追加codec、cover、override編集/検索同期、既存原本の再抽出/copy引継ぎは継続する。実Cloudflare・他OS/browserの対応表は未検証。
+[AAC（M4A/MP4）・Vorbis（Ogg）](AAC_VORBIS.md)は後続で接続済み。cover、override編集/検索同期、既存原本の再抽出/copy引継ぎは継続する。実Cloudflare・他OS/browserの対応表は未検証。
 
 仕様参照：[ID3v2.3](https://id3.org/id3v2.3.0)、[ID3v2.4](https://id3.org/id3v2.4.0-structure)、[FLAC RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html)、[WAVEFORMATEX](https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatex)、[WAVEFORMATEXTENSIBLE](https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatextensible)。MP3 frame/Xingの確認は[FFmpegのheader実装](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/mpegaudiodecheader.c)・[LAMEのVBR tag実装](https://github.com/lameproject/lame/blob/master/libmp3lame/VbrTag.c)を参照した。

@@ -9,6 +9,13 @@ export type MediaDescriptor =
       readonly audio: "opus" | null;
     }
   | { readonly kind: "audio"; readonly container: "ogg" | "webm" | "mp4"; readonly codec: "opus" }
+  | { readonly kind: "audio"; readonly container: "ogg"; readonly codec: "vorbis" }
+  | {
+      readonly kind: "audio";
+      readonly container: "mp4";
+      readonly codec: "aac";
+      readonly objectType: 2 | 5 | 29;
+    }
   | { readonly kind: "audio"; readonly container: "mp3"; readonly codec: "mp3" }
   | { readonly kind: "audio"; readonly container: "flac"; readonly codec: "flac" }
   | { readonly kind: "audio"; readonly container: "wav"; readonly codec: "pcm" };
@@ -39,6 +46,9 @@ export function av1CodecString(config: Av1Configuration): string {
 export function mediaContentType(media: MediaDescriptor): string {
   if (media.kind === "image" && media.codec === "avif") return "image/avif";
   if (media.kind === "audio") {
+    if (media.container === "ogg" && media.codec === "vorbis") return 'audio/ogg; codecs="vorbis"';
+    if (media.container === "mp4" && media.codec === "aac" && [2, 5, 29].includes(media.objectType))
+      return `audio/mp4; codecs="mp4a.40.${media.objectType}"`;
     if (media.container === "mp3" && media.codec === "mp3") return "audio/mpeg";
     if (media.container === "flac" && media.codec === "flac") return "audio/flac";
     if (media.container === "wav" && media.codec === "pcm") return "audio/wav";
@@ -64,6 +74,16 @@ export function mediaContentType(media: MediaDescriptor): string {
 /** Only the canonical parameters emitted by the server's bounded track parsers are accepted. */
 export function parsedMediaContentType(type: string): MediaDescriptor | null {
   if (type === "image/avif") return { kind: "image", codec: "avif" };
+  if (type === 'audio/ogg; codecs="vorbis"')
+    return { kind: "audio", container: "ogg", codec: "vorbis" };
+  const aac = /^audio\/mp4; codecs="mp4a\.40\.(2|5|29)"$/.exec(type);
+  if (aac)
+    return {
+      kind: "audio",
+      container: "mp4",
+      codec: "aac",
+      objectType: Number(aac[1]) as 2 | 5 | 29,
+    };
   if (type === "audio/mpeg") return { kind: "audio", container: "mp3", codec: "mp3" };
   if (type === "audio/flac") return { kind: "audio", container: "flac", codec: "flac" };
   if (type === "audio/wav") return { kind: "audio", container: "wav", codec: "pcm" };

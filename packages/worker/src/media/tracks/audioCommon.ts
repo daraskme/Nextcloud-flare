@@ -10,7 +10,7 @@ export function textTag(tags: TrackTags, name: string, text: string) {
   tag(tags, name, new TextEncoder().encode(text.replace(/\0+$/, "")));
 }
 /** FLAC's Vorbis comments omit the framing bit used by Vorbis packets. */
-export function vorbisComments(bytes: Uint8Array, tags: TrackTags, r: ImageReader) {
+export function vorbisComments(bytes: Uint8Array, tags: TrackTags, r: ImageReader, exact = true) {
   valid(bytes.length >= 8);
   const d = view(bytes);
   let at = 4 + d.getUint32(0, true);
@@ -32,5 +32,6 @@ export function vorbisComments(bytes: Uint8Array, tags: TrackTags, r: ImageReade
     }
     at += size;
   }
-  valid(at === bytes.length);
+  if (exact) valid(at === bytes.length);
+  return at;
 }

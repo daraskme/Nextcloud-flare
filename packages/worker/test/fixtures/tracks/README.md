@@ -31,3 +31,12 @@ ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a pcm_s1
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=22050:duration=2' -c:a libmp3lame -b:a 32k -id3v2_version 4 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 tone-mpeg2.mp3
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=11025:duration=2' -c:a libmp3lame -b:a 16k -id3v2_version 0 -write_xing 0 tone-mpeg25.mp3
 ```
+
+AAC and Vorbis fixtures below are also included in `encodedAudio.ts`. The AAC files use AAC-LC: mono at 48 kHz with faststart, and stereo at 44.1 kHz with a Program Config Element and trailing moov. Vorbis uses mono at 48 kHz and stereo at 44.1 kHz. Actual HE-AAC playback is not covered by these fixtures; SBR/PS configuration parsing has separate synthetic unit tests.
+
+```sh
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a aac -b:a 64k -movflags +faststart -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 -metadata disc=1 tone.m4a
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=2' -ac 2 -c:a aac -b:a 96k -aac_pce 1 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 tone-pce.m4a
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a libvorbis -q:a 2 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 -metadata disc=1 tone.ogg
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=2' -ac 2 -c:a libvorbis -q:a 3 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 tone-stereo.ogg
+```

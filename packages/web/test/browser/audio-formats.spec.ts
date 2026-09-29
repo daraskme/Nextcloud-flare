@@ -2,31 +2,39 @@ import { expect, test } from "@playwright/test";
 import { login, upload } from "./imageHelpers";
 import { open as openPublic } from "./publicShareHelpers";
 
-test("MP3, FLAC and WAV from real uploads play as authorized originals for owner and public link", async ({
-  page,
-  browser,
-}) => {
-  test.setTimeout(180000);
-  await login(page);
-  const anonymous = await browser.newContext({
-    ignoreHTTPSErrors: true,
-    viewport: { width: 390, height: 844 },
-  });
-  await anonymous.addCookies([
-    {
-      name: "ncf-test-user",
-      value: "anonymous",
-      domain: ".ncf.test",
-      path: "/",
-      secure: true,
-      httpOnly: true,
-      sameSite: "Lax",
-    },
-  ]);
-  const guest = await anonymous.newPage();
-  try {
-    for (const format of ["mp3", "flac", "wav"]) {
-      const media = await upload(page, `tone.${format}`, undefined, "tracks");
+for (const [filename, mime] of [
+  ["tone.mp3", "audio/mpeg"],
+  ["tone.flac", "audio/flac"],
+  ["tone.wav", "audio/wav"],
+  ["tone.m4a", 'audio/mp4; codecs="mp4a.40.2"'],
+  ["tone-pce.m4a", 'audio/mp4; codecs="mp4a.40.2"'],
+  ["tone.ogg", 'audio/ogg; codecs="vorbis"'],
+  ["tone-stereo.ogg", 'audio/ogg; codecs="vorbis"'],
+] as const)
+  test(`${filename} upload plays as authorized original for owner and public link`, async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(180000);
+    await login(page);
+    const anonymous = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      viewport: { width: 390, height: 844 },
+    });
+    await anonymous.addCookies([
+      {
+        name: "ncf-test-user",
+        value: "anonymous",
+        domain: ".ncf.test",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ]);
+    const guest = await anonymous.newPage();
+    try {
+      const media = await upload(page, filename, undefined, "tracks");
       const link = await page.evaluate(async (rootNodeId) => {
         const { token } = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
         const r = await fetch("/api/v1/shares", {
@@ -56,9 +64,7 @@ test("MP3, FLAC and WAV from real uploads play as authorized originals for owner
         await target.getByRole("button", { name: `${media.name}を再生`, exact: true }).click();
         const response = await received;
         expect(response.status()).toBe(206);
-        expect(response.headers()["content-type"]).toBe(
-          `audio/${format === "mp3" ? "mpeg" : format}`,
-        );
+        expect(response.headers()["content-type"]).toBe(mime);
         expect(response.request().headers().range).toMatch(/^bytes=/);
         const controls = target.getByRole("region", { name: "オーディオプレーヤー" });
         await expect(controls.getByRole("button", { name: "一時停止", exact: true })).toBeEnabled();
@@ -70,8 +76,7 @@ test("MP3, FLAC and WAV from real uploads play as authorized originals for owner
         await controls.getByRole("button", { name: "プレーヤーを閉じる" }).click();
         expect(await target.locator("audio").getAttribute("src")).toBeNull();
       }
+    } finally {
+      await anonymous.close();
     }
-  } finally {
-    await anonymous.close();
-  }
-});
+  });

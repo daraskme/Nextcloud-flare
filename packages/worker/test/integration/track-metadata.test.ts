@@ -111,7 +111,11 @@ it.each(fixtureNames)(
               ? "flac"
               : name === "tone.wav"
                 ? "pcm"
-                : "opus",
+                : name.endsWith("m4a")
+                  ? "aac"
+                  : name.startsWith("tone") && name.endsWith("ogg")
+                    ? "vorbis"
+                    : "opus",
         title_extracted: "テスト曲",
         artist_extracted: "Local fixture",
       });
