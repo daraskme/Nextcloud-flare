@@ -47,6 +47,43 @@ async function share(page: Page, nodeId: string, internal = false) {
     { nodeId, internal },
   );
 }
+test("a copied book opens immediately and starts with its own reading position", async ({
+  page,
+}, info) => {
+  await login(page);
+  const book = await uploadBook(page),
+    me = await page.evaluate(() => fetch("/api/v1/me").then((r) => r.json())),
+    copyName = `コピー-${book.name}`;
+  await page.goto(`/library/${me.rootNodeId}`);
+  await page.getByRole("button", { name: `${book.name}を読む`, exact: true }).click();
+  await decoded(page, 1);
+  await page.getByRole("button", { name: "次のページ", exact: true }).click();
+  await decoded(page, 2);
+  await page.getByRole("button", { name: "書籍を閉じる" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.goto("/files");
+  await page.getByRole("button", { name: `${book.name}の操作`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "コピー", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("名前", { exact: true }).fill(copyName);
+  await dialog.getByRole("button", { name: "コピー先を選択", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: `${copyName}の操作`, exact: true })).toBeVisible();
+  await page.goto(`/library/${me.rootNodeId}`);
+  await page.getByRole("button", { name: `${copyName}を読む`, exact: true }).click();
+  await decoded(page, 1);
+  await page.screenshot({ path: info.outputPath("copied-book-reader.png") });
+  await page.getByRole("button", { name: "書籍を閉じる" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.reload();
+  await page.getByRole("button", { name: `${book.name}を読む`, exact: true }).click();
+  await decoded(page, 2);
+  await page.getByRole("button", { name: "書籍を閉じる" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: `${copyName}を読む`, exact: true }).click();
+  await decoded(page, 1);
+  await page.getByRole("button", { name: "書籍を閉じる" }).click();
+});
 test("registered bookshelves survive reload, open the saved reading position, and can be removed", async ({
   page,
 }, info) => {

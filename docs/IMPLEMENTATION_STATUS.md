@@ -1,6 +1,22 @@
 # 実装進捗
 
-## 本棚一覧・登録フォルダーと共有画面（今回）
+## 同じ所有者内の書籍COPY（今回）
+
+[書籍COPY](ARCHIVE_READER.md)で、コピー先から保存済みのZIP/CBZ/EPUB索引を使えるようにした。同じowner/space/blobに限り、ページ配信と共通の原本tuple・公開出力・hash/容量・保存receipt・pin・回収状態の証明をCOPYの最終transaction内で照合する。単一ファイル、フォルダーと再コピーを扱い、R2の追加PUT・物理予約を行わない。表示名・著者・シリーズは独立したmetadataへ引き継ぎ、読書位置はコピーしない。ファイル名由来のタイトルはコピー先の名前に合わせる。EPUBはコンテナ索引まで。
+
+COPY計画は21step。旧18/19stepの同一intentの終端receiptは再照会でき、旧未完了計画のstep差替えを拒否する。大量コピーの検証で、COPY/MOVEが一覧のhash計算に一般の16KiB intent制限を使い、1,000件上限より先に拒否する問題も見つかった。1,000件・各ID128文字の専用digestへ変更し、以前のhash bytesとoperation本文の制限を維持した。
+
+- Node3file/37件成功（13.40秒、`/tmp/ncf-copy-library-unit.log`）。最大長ID1,000件、超過/不正ID、旧hash/順序/空一覧、一般intent上限と転送先・共有選択の互換性を確認した。
+- Nativeは重複除外8file/164件成功。最終のCOPY/MOVE・共有転送4file/77件は95.17秒（`/tmp/ncf-copy-library-native-complete.log`）。書籍11件で400冊の一括COPYとMOVE、単一/フォルダー/再コピー、実索引の読戻し、表示metadataと位置の独立、追加R2書込み/物理容量なし、EPUBコンテナ、旧世代/ページ数不一致/欠落索引、rollback、確定応答喪失、元原本の上書き・共有解除を確認した。
+- 旧receipt/operationの26件は`/tmp/ncf-copy-library-native-final.log`、ページ配信24件・読書位置23件・本棚14件は`/tmp/ncf-copy-library-native-2.log`で成功。初期のD1式深度超過を検査条件のグループ化で修正した。検索行不足・長いLIKE・未解放の許可があったfixtureを修正し、400冊のテストが露出した製品のdigest上限も修正した。初回の失敗を成功件数へ加算していない。
+- typecheck、lint、契約/設定検査とWeb両入口/Worker dry-run build成功。`/tmp/ncf-copy-library-typecheck-complete.log`、`/tmp/ncf-copy-library-lint-complete.log`、`/tmp/ncf-copy-library-contracts-complete.log`、`/tmp/ncf-copy-library-config-complete.log`、`/tmp/ncf-copy-library-build.log`。Worker2,081.22KiB・gzip439.43KiB。
+
+
+- Chrome1件成功（50.2秒、`/tmp/ncf-copy-library-browser.log`）。実UIでFilesからコピーし、本棚で即時に読めること、コピー元の2ページ目とコピー先の1ページ目を独立保存しreload後も再開できることを確認した。画面も目視確認し、artifactは `/tmp/ncf-copy-library-browser-results` に保存した。ローカルTLSの診断出力を含むがrunnerは成功。関連試験は合計202件（Node37・Native164・Chrome1、重複除外）。
+
+schema0077・通常81table・152 API route。migration/依存/remote変更なし。既存原本の明示的な索引要求、未索引/旧COPY/所有者をまたぐCOPY先の索引、表紙/page thumb、PDF/EPUB/folder reader、運用修復と実環境gateは後続。全suite・全browser・operator drillの検証ではない。pushは既存の自動承認審査拒否後の明示承認待ち。
+
+## 本棚一覧・登録フォルダーと共有画面（先行6ec3a5c）
 
 [本棚](ARCHIVE_READER.md)をprivateの `/library`、Filesのフォルダー導線、内部/公開共有へ接続した。現在のblob・公開索引に一致するZIP/CBZを読み、保存した本人の位置から再開できる。フォルダー内の移動、未準備/失敗/非対応形式の表示と原本への導線、個人の登録フォルダーの追加/解除を提供する。表紙の画像生成はまだ行わない。登録は本人所有のroot/folderを32件までとし、共有は共有画面から開く。
 

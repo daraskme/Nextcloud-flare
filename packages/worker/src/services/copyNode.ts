@@ -19,7 +19,6 @@ import type { Env } from "../env";
 import {
   assertOperationClaim,
   claimOperation,
-  digestJson,
   findOperationIntent,
   lookupOperation,
   type OperationClaim,
@@ -27,11 +26,13 @@ import {
   operationRow,
 } from "../jobs/operations";
 import { audioSearchSuffix } from "../search/projection";
+import { copyLibrarySteps } from "./copyLibrary";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
+import { TRANSFER_MAX_NODES, transferManifestDigest } from "./transferManifestDigest";
 
-export const DAV_COPY_MAX_NODES = 1_000;
+export const DAV_COPY_MAX_NODES = TRANSFER_MAX_NODES;
 export const DAV_COPY_MAX_BYTES = 10 * 1024 * 1024 * 1024;
-export const COPY_NODE_STEPS = 19;
+export const COPY_NODE_STEPS = 21;
 type ReadAuthority = Extract<
   AuthorizedNode,
   { operation: "node.read" | "automation.list" | "automation.metadata.read" }
@@ -295,6 +296,7 @@ function copyStatements(
         [op],
       ),
     },
+    ...copyLibrarySteps(op, rootCopy),
     {
       kind: "search_index",
       affectedId: rootCopy,
@@ -437,7 +439,7 @@ export async function copyNode(
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||
       terminalSlot.kind !== operationKind ||
-      ![COPY_NODE_STEPS, 18].includes(terminalSlot.expected_steps) ||
+      ![COPY_NODE_STEPS, 19, 18].includes(terminalSlot.expected_steps) ||
       operands.sourceNodeId !== request.sourceNodeId ||
       operands.parentId !== request.destinationParentId ||
       operands.name !== name.name ||
@@ -503,10 +505,10 @@ export async function copyNode(
       depth: request.depth,
       manifestCount: manifest.ids.length,
       manifestBytes: manifest.bytes,
-      manifestDigest: await digestJson(manifest.ids),
+      manifestDigest: await transferManifestDigest(manifest.ids),
       overwriteTargetId: overwrite?.node.id ?? null,
       overwriteCount: overwriteManifest.ids.length,
-      overwriteDigest: await digestJson(overwriteManifest.ids),
+      overwriteDigest: await transferManifestDigest(overwriteManifest.ids),
     },
     {
       sourceNodeId: request.sourceNodeId,
@@ -574,7 +576,7 @@ export async function copyNode(
     if (
       current.props !== manifest.props ||
       current.bytes !== manifest.bytes ||
-      (await digestJson(current.ids)) !== (await digestJson(manifest.ids))
+      (await transferManifestDigest(current.ids)) !== (await transferManifestDigest(manifest.ids))
     )
       throw new Error("authorization_denied");
     const currentOverwriteManifest = currentOverwrite
@@ -582,7 +584,8 @@ export async function copyNode(
       : Object.freeze({ ids: [] as string[], bytes: 0, props: 0 });
     if (
       currentOverwriteManifest.bytes !== overwriteManifest.bytes ||
-      (await digestJson(currentOverwriteManifest.ids)) !== (await digestJson(overwriteManifest.ids))
+      (await transferManifestDigest(currentOverwriteManifest.ids)) !==
+        (await transferManifestDigest(overwriteManifest.ids))
     )
       throw new Error("authorization_denied");
     const claimed = await claimOperation(

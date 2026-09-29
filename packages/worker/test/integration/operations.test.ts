@@ -20,6 +20,10 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
+  // These claim/replay fixtures deliberately leave permits open; isolate the global 32-slot pool.
+  await env.DB.prepare(
+    "UPDATE mutation_admissions SET state='closed' WHERE state IN ('waiting','active')",
+  ).run();
 });
 
 it.each([
@@ -28,6 +32,10 @@ it.each([
   ["upload.complete", 8, 10],
   ["node.copy", 18, 19],
   ["dav.copy", 18, 19],
+  ["node.copy", 18, 21],
+  ["dav.copy", 18, 21],
+  ["node.copy", 19, 21],
+  ["dav.copy", 19, 21],
 ] as const)(
   "replays historical terminal %s receipts without resuming old unfinished plans",
   async (kind, oldSteps, steps) => {

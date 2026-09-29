@@ -27,7 +27,7 @@ Outboxの完了時に`archive_index`と`library_items`を一括反映する。�
 
 期限切れ/旧epochの未公開索引と、原本が物理削除へ進んだ公開済み索引を回収する。ControlDOの永続sealで今後の書込みを止め、実容量の記録または上限付きHEADの後だけ予約とpinを解放する。実体があれば35日のバックアップ猶予を付けてGCへ渡す。原本が残る公開済み索引は保持する。1回最大8件・25秒、HEADはleaseにつき1回・索引世代につき64回。独立履歴欠落や未知PUTは保留する。既存の奇数分Cronで画像回収と先行順を交互にし、復元後は`repair-restored --kind archives`から同じ回収を使う。
 
-0077は停止・未凍結・native処理の終了を要求し、既存R2 receiptとguard・既存archive indexを保持する。新しい2表はbackup/restore凍結と全テーブルexportへ含める。`archive_index.r2_key`の単独uniqueを外し、将来の同一所有者COPYで同じ出力を参照できる形にしたが、COPYのLibrary接続はまだ実装していない。
+0077は停止・未凍結・native処理の終了を要求し、既存R2 receiptとguard・既存archive indexを保持する。新しい2表はbackup/restore凍結と全テーブルexportへ含める。`archive_index.r2_key`の単独uniqueを外し、同一所有者COPYで同じ不変出力を参照する。
 
 ## ZIP/CBZのページ配信と画像リーダー
 
@@ -59,9 +59,19 @@ ZIP/CBZの「読む」は詳細/配信と共通の公開原本・出力receipt�
 
 登録は `GET/POST /api/v1/library/roots`、`DELETE /api/v1/library/roots/:nodeId`。本人が所有するroot/folderを最大32件登録できる。内容やnode revisionを変えず、本人のspaceでmutation受付とCSRF・現在のsession・node認可・上限を最終batchで再検査する。追加/解除の再送は冪等。GETは最大32候補を個別に現在認可し、最終batchで全proofを再検査する。削除/非表示で利用できなくなった登録は名前を返さず、本人の登録だけ解除できる。内部/公開共有は共有画面から閲覧し、個人の登録へ追加しない。
 
+## 同じ所有者内のCOPY
+
+`node.copy` / `dav.copy` は、コピー先が同じowner/space/blobを参照するときだけ、索引と書籍metadataを名前空間の同じtransactionへ追加する。単一書籍・再帰フォルダー・コピー先からの再コピーに対応する。原本tuple、公開済み出力のhash/容量/receipt/pin/回収状態をページ配信と共通のSQLで照合する。索引が未準備、不整合、旧世代の場合も原本のCOPYは成立し、索引を引き継がない。
+
+R2の再読込み・PUTや新しい物理容量予約は行わず、共有する原本と不変索引を使う。抽出タイトルが元のファイル名と同じならコピー先の名前へ変え、表示名・著者・シリーズのoverrideは独立した行へ複製する。個人の読書位置は複製しない。元のnodeの上書き/非表示後もコピー先の現在認可とblobで読める。EPUBはコンテナ索引だけを引き継ぎ、本文は引き続き原本で開く。
+
+COPY/MOVEのsource・上書き先一覧は最大1,000件・各ID128文字の専用digestで照合する。一般のoperation本文の16KiB上限を一覧全体へ誤適用しない。既存の小さい一覧と同じJSON bytes/hashを保ち、件数・10GiB・参照数・SQL/leaseの既存上限は維持する。
+
+COPYの新しい計画は21step。以前の18/19stepの終端receiptは同じintentで再照会できるが、旧版の未完了計画を新しいstep数で再開しない。所有者をまたぐCOPYは別blob/keyになるため、元の索引を流用しない。コピー前に索引がなかった場合、旧COPY先の関連付け、所有者をまたぐCOPY先の索引生成は、既存原本の明示的な索引要求とともに後続。
+
 ## 次の接続
 
-1. 既存ファイルの索引要求、現在の読者での再抽出、COPY先との連携、失敗状態の案内を接続する。今回の自動索引化は新しいアップロードの元イベントを対象とする。
+1. 既存ファイルの索引要求、現在の読者での再抽出、未索引/旧COPY/所有者をまたぐCOPY先との連携、失敗状態の案内を接続する。今回の自動索引化は新しいアップロードの元イベントを対象とする。
 2. entry配信、表紙/ページthumb、app-hostページAPIを接続する。
 3. フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shellとCFI位置を接続する。
 

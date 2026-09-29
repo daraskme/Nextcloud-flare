@@ -1,6 +1,6 @@
 # 現在の実装状態
 
-[アーカイブ索引の保存](ARCHIVE_READER.md)を新しいZIP/CBZ/EPUBアップロードのQueueへ接続しました。固定した原本から索引を作り、SHA付きJSONを不変保存します。二重PUT防止、物理容量の予約・会計、祖先の非表示と現在認可の再検査、不要索引の回収・復元後修復を追加しました。schema0077・通常81table・151 API route。既存ファイルの索引要求、ページ配信、Library API・本棚/PDF/EPUB画面、読書位置は開発中です。運用修復と実環境gateも残っています。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+同じ所有者内の書籍COPYに本棚を接続しました。保存済みのZIP/CBZ/EPUB索引を原本とともに参照し、ZIP/CBZはコピー後すぐ読めます。タイトル・著者・シリーズの設定を引き継ぎ、読書位置はコピー先で独立して保存します。schema0077・通常81table・152 API route。既存ファイルの索引要求、所有者をまたぐCOPY先の再索引、表紙生成、PDF/EPUB本文、フォルダー画像リーダー、運用修復と実環境gateは未完成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
 

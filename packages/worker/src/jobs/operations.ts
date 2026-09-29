@@ -199,7 +199,9 @@ function compatibleTerminalSteps(row: OperationRow, steps: number): boolean {
     (["dav.put", "upload.complete"].includes(row.kind) &&
       steps === 10 &&
       row.expected_steps === 8) ||
-    (["node.copy", "dav.copy"].includes(row.kind) && steps === 19 && row.expected_steps === 18)
+    (["node.copy", "dav.copy"].includes(row.kind) &&
+      ((steps === 19 && row.expected_steps === 18) ||
+        (steps === 21 && [18, 19].includes(row.expected_steps))))
   );
 }
 

@@ -19,7 +19,6 @@ import type { Env } from "../env";
 import {
   assertOperationClaim,
   claimOperation,
-  digestJson,
   findOperationIntent,
   lookupOperation,
   type OperationClaim,
@@ -28,8 +27,9 @@ import {
 } from "../jobs/operations";
 import { updateNodeSearch } from "../search/projection";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
+import { TRANSFER_MAX_NODES, transferManifestDigest } from "./transferManifestDigest";
 
-export const DAV_MOVE_MAX_NODES = 1_000;
+export const DAV_MOVE_MAX_NODES = TRANSFER_MAX_NODES;
 export const DAV_MOVE_MAX_BYTES = 10 * 1024 * 1024 * 1024;
 export const MOVE_NODE_STEPS = 19;
 type RenameAuthority = Extract<AuthorizedNode, { operation: "node.rename" }>;
@@ -501,10 +501,10 @@ export async function moveNode(
       name: name.name,
       manifestCount: manifest.ids.length,
       manifestBytes: manifest.bytes,
-      manifestDigest: await digestJson(manifest.ids),
+      manifestDigest: await transferManifestDigest(manifest.ids),
       overwriteTargetId: overwrite?.node.id ?? null,
       overwriteCount: overwriteManifest.ids.length,
-      overwriteDigest: await digestJson(overwriteManifest.ids),
+      overwriteDigest: await transferManifestDigest(overwriteManifest.ids),
     },
     {
       nodeId: request.nodeId,
@@ -567,7 +567,8 @@ export async function moveNode(
     const currentManifest = await moveManifest(env.DB, request.nodeId, request.spaceId);
     if (
       currentManifest.bytes !== manifest.bytes ||
-      (await digestJson(currentManifest.ids)) !== (await digestJson(manifest.ids))
+      (await transferManifestDigest(currentManifest.ids)) !==
+        (await transferManifestDigest(manifest.ids))
     )
       throw new Error("authorization_denied");
     const currentOverwriteManifest = currentOverwrite
@@ -575,7 +576,8 @@ export async function moveNode(
       : Object.freeze({ ids: [] as string[], bytes: 0 });
     if (
       currentOverwriteManifest.bytes !== overwriteManifest.bytes ||
-      (await digestJson(currentOverwriteManifest.ids)) !== (await digestJson(overwriteManifest.ids))
+      (await transferManifestDigest(currentOverwriteManifest.ids)) !==
+        (await transferManifestDigest(overwriteManifest.ids))
     )
       throw new Error("authorization_denied");
     const claimed = await claimOperation(
