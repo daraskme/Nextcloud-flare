@@ -2,7 +2,7 @@ export const MEDIA_SNIFF_BYTES = 65_536;
 const MAX_HEADER_BYTES = 4096;
 export type MediaContainer =
   | { container: "avif"; animated: boolean }
-  | { container: "mp4" | "webm" | "ogg" };
+  | { container: "mp4" | "webm" | "ogg" | "mp3" | "flac" | "wav" };
 
 function ascii(bytes: Uint8Array, offset: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -89,6 +89,14 @@ function webm(bytes: Uint8Array): MediaContainer | null {
  */
 export function sniffMediaContainer(prefix: Uint8Array): MediaContainer | null {
   if (prefix.byteLength > MEDIA_SNIFF_BYTES) throw new RangeError("media_sniff_budget_exceeded");
+  if (prefix.length >= 4 && ascii(prefix, 0, 4) === "fLaC") return { container: "flac" };
+  if (prefix.length >= 12 && ascii(prefix, 0, 4) === "RIFF" && ascii(prefix, 8, 4) === "WAVE")
+    return { container: "wav" };
+  if (
+    prefix.length >= 10 &&
+    (ascii(prefix, 0, 3) === "ID3" || (prefix[0] === 255 && (prefix[1]! & 230) === 226))
+  )
+    return { container: "mp3" };
   const iso = bmff(prefix);
   if (iso) return iso;
   const ebml = webm(prefix);

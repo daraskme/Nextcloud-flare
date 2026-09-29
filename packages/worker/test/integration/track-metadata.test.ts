@@ -2,15 +2,18 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { AudioCursorTokens } from "../../src/auth/audioCursor";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { GalleryCursorTokens } from "../../src/auth/galleryCursor";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
+import { listAudio, savePlayback } from "../../src/services/audio";
 import { prepareNodeBlobRead, streamImmutableBlob } from "../../src/services/blobRead";
 import { listGallery } from "../../src/services/gallery";
 import { putFile } from "../../src/services/putFile";
 import { auditOwnerLedger } from "../../src/services/refs";
 import { davBucket, davPutFixture } from "../fixtures/davPut";
 import { encodedTracks, trackBytes } from "../fixtures/tracks/encoded";
+import { audioBytes, encodedAudio } from "../fixtures/tracks/encodedAudio";
 import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(() => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
@@ -62,10 +65,15 @@ async function fixture(bytes = trackBytes("av1-opus.mp4")) {
   const list = () => listGallery(env.DB, principal, f.ids.folder, false, tokens);
   return { ...f, app, event, node, get, input, principal, metadata, audio, list };
 }
-it.each(Object.keys(encodedTracks) as (keyof typeof encodedTracks)[])(
+const fixtureNames = [...Object.keys(encodedTracks), ...Object.keys(encodedAudio)];
+const fixtureBytes = (name: string) =>
+  name in encodedAudio
+    ? audioBytes(name as keyof typeof encodedAudio)
+    : trackBytes(name as keyof typeof encodedTracks);
+it.each(fixtureNames)(
   "extracts %s atomically and serves actual immutable byte ranges",
   async (name) => {
-    const f = await fixture(trackBytes(name)),
+    const f = await fixture(fixtureBytes(name)),
       before = await auditOwnerLedger(env.DB, f.ids.user);
     expect(await consumeOutbox(f.app, f.event)).toBe("completed");
     expect(f.input).not.toHaveBeenCalled();
@@ -74,7 +82,9 @@ it.each(Object.keys(encodedTracks) as (keyof typeof encodedTracks)[])(
       generator_version: "track-metadata-v1",
     });
     const plan = await prepareNodeBlobRead(env.DB, f.principal, f.ids.space, f.node.id);
-    expect(plan.mime).toMatch(/^(?:video|audio)\/(?:mp4|webm|ogg); codecs="/);
+    expect(plan.mime).toMatch(
+      /^(?:(?:video|audio)\/(?:mp4|webm|ogg); codecs="|audio\/(?:mpeg|flac|wav)$)/,
+    );
     const response = await streamImmutableBlob(
       env.BLOBS,
       plan,
@@ -85,7 +95,7 @@ it.each(Object.keys(encodedTracks) as (keyof typeof encodedTracks)[])(
     expect(response.headers.get("Content-Security-Policy")).toBe(
       "default-src 'none'; media-src 'self'; sandbox allow-same-origin; frame-ancestors 'none'",
     );
-    expect(new Uint8Array(await response.arrayBuffer())).toEqual(trackBytes(name).slice(80, 128));
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(fixtureBytes(name).slice(80, 128));
     const gallery = await f.list();
     if (name.startsWith("av1"))
       expect(gallery.items).toMatchObject([
@@ -94,10 +104,33 @@ it.each(Object.keys(encodedTracks) as (keyof typeof encodedTracks)[])(
     else {
       expect(gallery.items).toEqual([]);
       expect(await f.audio()).toMatchObject({
-        codec: "opus",
+        codec:
+          name === "tone.mp3"
+            ? "mp3"
+            : name === "tone.flac"
+              ? "flac"
+              : name === "tone.wav"
+                ? "pcm"
+                : "opus",
         title_extracted: "テスト曲",
         artist_extracted: "Local fixture",
       });
+      const audioTokens = new AudioCursorTokens(
+        await contentKeyRing("test", {
+          test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+        }),
+      );
+      const listing = await listAudio(env.DB, f.principal, f.ids.folder, audioTokens);
+      expect(listing.items).toMatchObject([{ id: f.node.id, mime: plan.mime, title: "テスト曲" }]);
+      const saved = await savePlayback(f.app, f.principal, f.node.id, {
+        blobId: f.node.blob,
+        generator: "track-metadata-v1",
+        positionMs: 1000,
+        previousUpdatedAt: null,
+      });
+      expect(
+        (await listAudio(env.DB, f.principal, f.node.id, audioTokens)).items[0]?.playback,
+      ).toEqual(saved);
     }
     const reads = f.get.mock.calls.length;
     expect(await consumeOutbox(f.app, f.event)).toBe("completed");

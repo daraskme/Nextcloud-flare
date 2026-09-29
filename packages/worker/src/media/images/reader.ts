@@ -42,6 +42,19 @@ export class ImageReader {
   step() {
     valid(++this.#structures <= this.limits.structures);
   }
+  /** ID3v1 is exactly 128 trailing bytes; do not fetch an entire distant cache page. */
+  async readTail128(): Promise<Uint8Array> {
+    if (this.size < 128) return new Uint8Array();
+    valid(++this.#reads <= this.limits.reads && (this.#bytes += 128) <= this.limits.bytes);
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.source.read(this.size - 128, 128);
+    } catch (cause) {
+      throw new Error("image_source_unavailable", { cause });
+    }
+    if (bytes.length !== 128) throw new Error("image_source_length_mismatch");
+    return bytes;
+  }
   async read(offset: number, length: number): Promise<Uint8Array> {
     valid(
       Number.isSafeInteger(offset) &&

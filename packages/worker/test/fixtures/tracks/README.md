@@ -16,8 +16,18 @@ ffmpeg -i opus.ogg -c copy -metadata title='テスト曲' -metadata artist='Loca
 
 AV1 configuration is Main profile, level index 0, main tier, 8-bit or 10-bit. Opus is mono at 48 kHz. The MP4 without audio places moov after mdat; a sparse unit fixture expands mdat to 1 GB to verify that media bytes are skipped. Tests also mutate headers, ranges, codec parameters and Ogg checksums. These samples do not replace a cross-browser/OS support matrix.
 
-`long.opus` is a 90-second, low-bitrate stream used only by Node parser tests. It verifies that audio packet counts do not consume the metadata-structure budget; page CRC and header bounds still apply.
+`long.opus` is a 90-second, low-bitrate stream used by Node parser and browser player tests. It verifies that audio packet counts do not consume the metadata-structure budget; page CRC and header bounds still apply.
 
 ```sh
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=90' -c:a libopus -application voip -b:a 6k long.opus
+```
+
+Additional two-second audio fixtures use the same synthetic 440 Hz tone. `encodedAudio.ts` contains base64 of `tone.mp3`, `tone.flac` and `tone.wav` for Workers tests. The MPEG-2/2.5 samples exercise lower sample rates, ID3v2.4 and a stream without ID3/Xing. WAV is mono 16-bit PCM; Node tests also construct PCM extensible and IEEE float containers. All commands below were run locally with FFmpeg 9.0.1.
+
+```sh
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a libmp3lame -b:a 64k -id3v2_version 3 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 -metadata disc=1 tone.mp3
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a flac -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 -metadata disc=1 tone.flac
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:a pcm_s16le -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 tone.wav
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=22050:duration=2' -c:a libmp3lame -b:a 32k -id3v2_version 4 -metadata title='テスト曲' -metadata artist='Local fixture' -metadata album='Test album' -metadata track=2 tone-mpeg2.mp3
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=11025:duration=2' -c:a libmp3lame -b:a 16k -id3v2_version 0 -write_xing 0 tone-mpeg25.mp3
 ```

@@ -163,7 +163,7 @@ export function AudioLibrary({ client }: { client: AudioClient }) {
       <header>
         <div>
           <h2>曲一覧</h2>
-          <p>このフォルダーの音声を再生します。対応形式：Opus（Ogg・WebM・MP4）</p>
+          <p>このフォルダーの音声を再生します。対応形式：MP3・FLAC・WAV・Opus（Ogg・WebM・MP4）</p>
         </div>
         <button type="button" disabled={busy} onClick={() => void load(null)}>
           曲一覧を更新

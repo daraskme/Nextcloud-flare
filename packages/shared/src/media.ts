@@ -8,7 +8,10 @@ export type MediaDescriptor =
       readonly configuration: Av1Configuration;
       readonly audio: "opus" | null;
     }
-  | { readonly kind: "audio"; readonly container: "ogg" | "webm" | "mp4"; readonly codec: "opus" };
+  | { readonly kind: "audio"; readonly container: "ogg" | "webm" | "mp4"; readonly codec: "opus" }
+  | { readonly kind: "audio"; readonly container: "mp3"; readonly codec: "mp3" }
+  | { readonly kind: "audio"; readonly container: "flac"; readonly codec: "flac" }
+  | { readonly kind: "audio"; readonly container: "wav"; readonly codec: "pcm" };
 
 export interface Av1Configuration {
   readonly profile: 0 | 1 | 2;
@@ -35,6 +38,11 @@ export function av1CodecString(config: Av1Configuration): string {
 
 export function mediaContentType(media: MediaDescriptor): string {
   if (media.kind === "image" && media.codec === "avif") return "image/avif";
+  if (media.kind === "audio") {
+    if (media.container === "mp3" && media.codec === "mp3") return "audio/mpeg";
+    if (media.container === "flac" && media.codec === "flac") return "audio/flac";
+    if (media.container === "wav" && media.codec === "pcm") return "audio/wav";
+  }
   if (
     media.kind === "audio" &&
     media.codec === "opus" &&
@@ -56,6 +64,9 @@ export function mediaContentType(media: MediaDescriptor): string {
 /** Only the canonical parameters emitted by the server's bounded track parsers are accepted. */
 export function parsedMediaContentType(type: string): MediaDescriptor | null {
   if (type === "image/avif") return { kind: "image", codec: "avif" };
+  if (type === "audio/mpeg") return { kind: "audio", container: "mp3", codec: "mp3" };
+  if (type === "audio/flac") return { kind: "audio", container: "flac", codec: "flac" };
+  if (type === "audio/wav") return { kind: "audio", container: "wav", codec: "pcm" };
   const audio = /^audio\/(mp4|webm|ogg); codecs="(Opus|opus)"$/.exec(type);
   if (audio) {
     const media: MediaDescriptor = {
@@ -90,7 +101,8 @@ export function parsedMediaContentType(type: string): MediaDescriptor | null {
 }
 
 /** Hints for file picking only. Extension and client MIME never authorize inline delivery. */
-export const PREENCODED_MEDIA_ACCEPT = ".avif,.avifs,.mp4,.m4a,.webm,.opus,.ogg,.oga";
+export const PREENCODED_MEDIA_ACCEPT =
+  ".avif,.avifs,.mp4,.m4a,.webm,.opus,.ogg,.oga,.mp3,.flac,.wav";
 
 export interface NativeMediaProbe {
   canPlayType(kind: "audio" | "video", contentType: string): "" | "maybe" | "probably";

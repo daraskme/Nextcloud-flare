@@ -1,8 +1,10 @@
 # 開発進捗
 
-[Audioの2,000曲表示](AUDIO.md)をローカルChromeで検証し、再生時刻の更新による一覧全体の再描画を抑えました。長いタグでも一覧と固定プレーヤーの高さを保ちます。所有者画面とスマホ幅の公開リンクで、実APIによる200件ずつの読み込み・上限・再生・前後移動・終了を確認しました。schema0073・通常79table・149 API routeを維持します。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[MP3・FLAC・WAVの情報抽出と再生](AUDIO_FORMATS.md)を追加しました。原本ヘッダーと読み取り上限を検査し、曲名・artist・album・時間を既存の一覧と常駐playerへ接続します。所有者と公開リンクで実際の原本を再生し、利用者別位置の保存も確認しました。schema0073・通常79table・149 API routeを維持します。AAC/Vorbis、cover・override編集、Bookshelf、既存原本の再抽出と運用修復、実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[Audioの2,000曲表示](AUDIO.md)をローカルChromeで検証し、再生時刻の更新による一覧全体の再描画を抑えました。長いタグでも一覧と固定プレーヤーの高さを保ちます。所有者画面とスマホ幅の公開リンクで、実APIによる200件ずつの読み込み・上限・再生・前後移動・終了を確認しました。schema0073・通常79table・149 API routeを維持します。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [Audio一覧の探索量](AUDIO.md)を制限しました。表示可能な項目の索引から1回につき1,000候補と続行確認1件を読み、音声以外や非表示の項目が大量にあっても全件走査を避けます。空ページもカーソルで続けられ、画面は最大3回まで自動で進みます。2,000曲上限と現在の認可・原本・再生位置の検査は維持します。schema0073・通常79table・149 API route。追加形式・cover・override編集、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 

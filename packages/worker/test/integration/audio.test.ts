@@ -132,6 +132,31 @@ it("returns current tags, prefers overrides, and separates each user's position 
     true,
   );
 });
+it.each([
+  ["mp3", "audio/mpeg"],
+  ["flac", "audio/flac"],
+  ["pcm", "audio/wav"],
+])(
+  "binds the %s codec to its exact parsed MIME for listing and position writes",
+  async (codec, mime) => {
+    const t = await fixture();
+    await env.DB.prepare("UPDATE node_audio SET codec=? WHERE node_id=?")
+      .bind(codec, t.f.ids.file)
+      .run();
+    await env.DB.prepare("UPDATE blobs SET mime_sniffed=? WHERE id=?")
+      .bind(mime, t.f.ids.blob)
+      .run();
+    expect((await t.list()).items[0]?.mime).toBe(mime);
+    await savePlayback(t.app, t.principal, t.f.ids.file, t.input);
+    await env.DB.prepare("UPDATE blobs SET mime_sniffed='audio/webm; codecs=\"opus\"' WHERE id=?")
+      .bind(t.f.ids.blob)
+      .run();
+    expect((await t.list()).items).toEqual([]);
+    await expect(
+      savePlayback(t.app, t.principal, t.f.ids.file, { ...t.input, positionMs: 0 }),
+    ).rejects.toThrow();
+  },
+);
 it("pages by name/id with scoped cursors and stops at 2,000 tracks", async () => {
   const t = await fixture();
   await t.add(2002);

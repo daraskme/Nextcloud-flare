@@ -79,7 +79,7 @@ export async function imageMetadataStatements(
       const bytes = await imageSource.read(at, length);
       if (at === 0) {
         const kind = sniffMediaContainer(bytes)?.container;
-        trackCandidate = kind === "mp4" || kind === "webm" || kind === "ogg";
+        trackCandidate = !!kind && kind !== "avif";
       }
       return bytes;
     },
@@ -148,7 +148,7 @@ export async function imageMetadataStatements(
           node.blob,
           TRACK_METADATA_GENERATOR,
           track.durationMs,
-          "opus",
+          track.media.codec,
           track.title ?? null,
           track.artist ?? null,
           track.album ?? null,

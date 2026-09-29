@@ -1,6 +1,19 @@
 # 実装進捗
 
-## Audioの2,000曲描画と長いタグ（今回）
+## MP3・FLAC・WAVの解析・一覧・原本再生（今回）
+
+[追加音声形式](AUDIO_FORMATS.md)を既存の通常/匿名upload・WebDAV PUTの完了Outboxへ接続した。headerを解析してcodec/MIMEを確定し、現在の原本・認可と同じbatchでmetadataを保存する。MP3のID3v2.2/2.3/2.4・ID3v1、FLACのSTREAMINFO/Vorbis comment、WAVEのPCM/IEEE float/extensibleとLIST INFOを扱う。head2MiB、MP3 tail128B、field1KiBとinvocation全体4MiB/128 GETの上限を維持し、時間を確定できない大きなMP3はnullを返す。
+
+Audio SELECTと位置保存の最終検査はcodecと正規MIMEを対応させる。所有者・内部共有・公開リンクの同じplayerが新形式を受け付け、原本を再エンコードせずnative Rangeで読む。未対応端末は既存のdownload fallbackを使う。schema0073・通常79table・149 route・track-metadata-v1を維持し、migration/依存を追加しない。
+
+- Node155件成功（7file、1.36秒、/tmp/ncf-audio-formats-unit-2.log）。3形式の実合成音源、MPEG 2/2.5、ID3文字encoding・unsynchronization・extended header/footer・v1優先順位、FLAC境界/CRC、WAVE extensible/floatと破損入力を検証。変異入力・I/O失敗、1GBのMP3/WAVでhead/tailの上限を確認した。既存の画像/AV1/Opus/parser・索引・player/clientも再確認した。
+- Native51件成功（3file、30.38秒、/tmp/ncf-audio-formats-native-1.log）。実R2/D1/Queueからの抽出、誤った申告MIMEの正規化、Range bytes・CSP、Audio一覧と本人位置、再配信の非重複、参照/容量会計を検証。codec/MIME不一致を一覧/保存双方で拒否する3例を追加した。候補1,000件の索引/rows_read gateも維持した。
+- Browser6件成功（2.9分、/tmp/ncf-audio-formats-browser.log）。新規1件は実uploadで作成したMP3/FLAC/WAVを所有者と匿名公開390px幅で再生し、抽出した日本語名、206/Range・MIME、native currentTimeの進行と閉じた後のsrc解除を確認した。既存5件はOpus3container、空窓、保存/SPA継続/再開/競合/logout、内部・公開共有/解除とdownload fallbackを再確認した。
+- 最終build後の公開asset/SRI native5件成功（3.59秒、/tmp/ncf-audio-formats-assets.log）。重複を除く関連試験は217件成功。typecheck・lint（748file）・verify:contracts・verify:config・Web両入口/Worker dry-run buildも成功（/tmp/ncf-audio-formats-{types-final,lint,contracts,config,build}.log）。
+
+型検査の初回はWorkers型定義のTextDecoder必須ignoreBOM指定で失敗し、既定と同じfalseを明示して解消した。parserと製品の予算は緩めていない。対応外のcodec・MP3のgapless/VBRI時間補正、AAC/Vorbis、cover・override編集/検索、既存原本の再抽出/copy引継ぎ、Bookshelfと運用修復は継続する。全suite・実Cloudflare・他OS/browserは未検証。pushは以前の自動承認審査拒否後の承認待ちで、ローカルcommitに保持する。
+
+## Audioの2,000曲描画と長いタグ
 
 [Audio](AUDIO.md)の一覧が再生時刻・音量・一時停止のたびに全2,000行を再描画していたため、scope/選択曲IDだけの安定したsnapshotを追加した。常駐playerの状態更新は維持する。曲名・artist/album・ファイル名は省略表示にし、全文をDOM/titleへ残す。最大長のタグで一覧や固定playerが縦に広がる問題も修正した。
 

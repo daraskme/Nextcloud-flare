@@ -14,9 +14,12 @@ import { acquireAccountMutation, commitAccountMutation } from "./accountMutation
 export const AUDIO_TRACK_LIMIT = 2000;
 export const AUDIO_CANDIDATE_LIMIT = 1000;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const AUDIO_MATCH = `a.blob_id=n.current_blob_id AND a.generator_version=?4 AND a.codec='opus'
+const AUDIO_MATCH = `a.blob_id=n.current_blob_id AND a.generator_version=?4
   AND b.id=a.blob_id AND b.owner_id=n.owner_id AND b.state IN ('committed','gc_candidate')
-  AND b.mime_sniffed IN ('audio/ogg; codecs="opus"','audio/webm; codecs="opus"','audio/mp4; codecs="Opus"')`;
+  AND ((a.codec='opus' AND b.mime_sniffed IN ('audio/ogg; codecs="opus"','audio/webm; codecs="opus"','audio/mp4; codecs="Opus"'))
+    OR (a.codec='mp3' AND b.mime_sniffed='audio/mpeg')
+    OR (a.codec='flac' AND b.mime_sniffed='audio/flac')
+    OR (a.codec='pcm' AND b.mime_sniffed='audio/wav'))`;
 
 async function authority(db: D1Database, principal: Principal, nodeId: string, write = false) {
   if (
