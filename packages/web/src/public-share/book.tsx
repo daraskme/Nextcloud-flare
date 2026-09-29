@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { type BookClient, openBook } from "./bookClient";
+import { ReadingPositionWriter, type ReadingStatus } from "./readingPosition";
 import "./book.css";
 
 export function BookReader({
@@ -16,7 +17,12 @@ export function BookReader({
   originalMessage?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const writer = useRef<ReadingPositionWriter | null>(null);
+  const generation = useRef(0);
+  const [readingStatus, setReadingStatus] = useState<ReadingStatus | null>(null);
+  const [settling, setSettling] = useState(false);
   useEffect(() => {
+    generation.current += 1;
     const element = dialog.current,
       previous = document.activeElement;
     element?.showModal();
@@ -37,6 +43,8 @@ export function BookReader({
     setSession(null);
     setMessage("");
     setLoading(true);
+    setReadingStatus(null);
+    setSettling(false);
     const expire = () => {
       setSession(null);
       setLoading(false);
@@ -45,6 +53,7 @@ export function BookReader({
     let expiresAt = 0;
     const visibility = () => {
       if (expiresAt && Date.now() >= expiresAt) expire();
+      if (document.visibilityState === "hidden") void writer.current?.flush();
     };
     const revoked = () => {
       setSession(null);
@@ -57,8 +66,20 @@ export function BookReader({
       .then((next) => {
         signal.throwIfAborted();
         expiresAt = next.expiresAt;
+        if (client.save) {
+          writer.current = new ReadingPositionWriter(
+            next.book,
+            client.save,
+            client.lifetime,
+            (status) => {
+              if (!stop.signal.aborted) setReadingStatus(status);
+            },
+          );
+        }
         setSession(next);
-        setPage((p) => Math.min(p, next.book.pageCount));
+        setPage((current) =>
+          client.save ? (next.book.reading?.page ?? 1) : Math.min(current, next.book.pageCount),
+        );
         expiry = setTimeout(expire, Math.max(0, expiresAt - Date.now()));
       })
       .catch(() => {
@@ -70,14 +91,39 @@ export function BookReader({
         }
       });
     return () => {
+      generation.current += 1;
       stop.abort();
+      writer.current?.abort();
+      writer.current = null;
       clearTimeout(expiry);
       client.lifetime.removeEventListener("abort", revoked);
       document.removeEventListener("visibilitychange", visibility);
     };
   }, [client, attempt]);
+  const dismiss = async () => {
+    if (settling) return;
+    if (!writer.current || writer.current.failed) {
+      close();
+      return;
+    }
+    setSettling(true);
+    const scope = generation.current;
+    await writer.current.finish();
+    if (scope !== generation.current) return;
+    setSettling(false);
+    if (!writer.current?.failed) close();
+  };
+  const reload = async () => {
+    if (settling) return;
+    setSettling(true);
+    const scope = generation.current;
+    await writer.current?.flush();
+    if (scope !== generation.current) return;
+    setSettling(false);
+    setAttempt((n) => n + 1);
+  };
   const move = (next: number) => {
-    if (!session || (next === page && !message)) return;
+    if (settling || !session || (next === page && !message)) return;
     setPage(Math.max(1, Math.min(next, session.book.pageCount)));
     setLoading(true);
     setMessage("");
@@ -87,19 +133,31 @@ export function BookReader({
       ref={dialog}
       className="book-reader"
       aria-label={session?.book.title ?? name}
-      onCancel={close}
+      onCancel={(event) => {
+        event.preventDefault();
+        void dismiss();
+      }}
     >
       <div className="book-heading">
         <div>
           <h2>{session?.book.title ?? name}</h2>
           <p>画像のページを順に読む</p>
         </div>
-        <button type="button" aria-label="書籍を閉じる" onClick={close}>
-          閉じる
+        <button
+          type="button"
+          aria-label="書籍を閉じる"
+          disabled={settling}
+          onClick={() => void dismiss()}
+        >
+          {writer.current?.failed ? "保存せず閉じる" : "閉じる"}
         </button>
       </div>
       <div className="book-controls">
-        <button type="button" disabled={!session || page === 1} onClick={() => move(page - 1)}>
+        <button
+          type="button"
+          disabled={settling || !session || page === 1}
+          onClick={() => move(page - 1)}
+        >
           前のページ
         </button>
         <label>
@@ -110,7 +168,7 @@ export function BookReader({
             min={1}
             max={session?.book.pageCount ?? 1}
             value={page}
-            disabled={!session}
+            disabled={settling || !session}
             onChange={(e) => {
               const next = Number(e.target.value);
               if (Number.isSafeInteger(next) && next >= 1 && next <= (session?.book.pageCount ?? 1))
@@ -121,7 +179,7 @@ export function BookReader({
         <span>/ {session?.book.pageCount ?? "—"}</span>
         <button
           type="button"
-          disabled={!session || page === session.book.pageCount}
+          disabled={settling || !session || page === session.book.pageCount}
           onClick={() => move(page + 1)}
         >
           次のページ
@@ -137,7 +195,10 @@ export function BookReader({
             alt={`${page}ページ`}
             crossOrigin="use-credentials"
             referrerPolicy="no-referrer"
-            onLoad={() => setLoading(false)}
+            onLoad={() => {
+              setLoading(false);
+              writer.current?.displayed(page);
+            }}
             onError={() => {
               setLoading(false);
               setMessage(
@@ -147,8 +208,22 @@ export function BookReader({
           />
         )}
       </div>
+      {readingStatus && (
+        <p
+          className="book-position"
+          role={readingStatus === "conflict" || readingStatus === "failed" ? "alert" : "status"}
+        >
+          {readingStatus === "pending"
+            ? "読書位置を保存しています…"
+            : readingStatus === "saved"
+              ? "読書位置を保存しました"
+              : readingStatus === "conflict"
+                ? "別の画面で読書位置が更新されました。再読み込みすると保存済みのページに戻ります。"
+                : "読書位置を保存できませんでした。再読み込みして保存状況を確認してください。"}
+        </p>
+      )}
       <div className="book-controls">
-        <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+        <button type="button" disabled={settling} onClick={() => void reload()}>
           再読み込み
         </button>
         {originalMessage && <p role="alert">{originalMessage}</p>}

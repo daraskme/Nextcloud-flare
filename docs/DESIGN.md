@@ -876,6 +876,8 @@ app origin
 - inner CSP は `default-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:`。publication 由来 script を許可しない。
 - pagination は browser/CFI round-trip gate 合格後の v1 option、未合格なら v1.1。固定 layout、media overlay、JS依存EPUB、vertical pagination保証は非目標。Bookshelf v1 UI は cover/list、open、TOC、前回位置 resume、共有閲覧を必須とする。
 
+[ZIP/CBZリーダー](ARCHIVE_READER.md)は公開済みの不変索引からページを配信し、所有者・内部共有・公開リンクで閲覧できる。認証ユーザーの位置は本人/node/現在blobと索引hashへ束縛して保存・再開する。内部read共有でも本人の位置だけを更新し、公開リンク/app passwordへ保存位置を返さない。更新時刻のCAS、現在の権限・索引とmutation admissionの最終照合を要求する。本棚専用一覧・登録root、他形式のreaderとEPUB CFI位置は後続。
+
 ### 9A.3 Audio
 
 MP3/FLAC/OGG/Opus/M4A/MP4/WAV の bounded tag parser。通常 head≤2MiB+tail128B、MP4 moov探索≤4MiB。cover の追加 Range は offset/length を検証し、≤20,000,000B かつ全体 budget 内だけ実行する。field≤1KiB、folder≤2,000 tracks。content-session Cookie + single Range で再生する。v1 UI は track list、play/pause、前/次、volume、position保存、共有再生を必須とし、timeline scrubber、queue高度操作、複数layoutは v1.1。

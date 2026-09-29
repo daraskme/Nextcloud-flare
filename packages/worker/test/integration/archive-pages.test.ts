@@ -17,6 +17,7 @@ import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
 import { createInternalShare } from "../../src/services/internalShares";
+import { readArchiveBook, saveReadingState } from "../../src/services/libraryBook";
 import { createLinkShare } from "../../src/services/linkShares";
 import { unlockShare } from "../../src/services/shareUnlock";
 import { loadTargetManifest } from "../../src/services/targetManifest";
@@ -299,6 +300,8 @@ it("exposes only a currently readable book through the private detail route", as
     title: "book.cbz",
     pageCount: 2,
     generator: "archive-index-v1",
+    indexHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    reading: null,
   });
   await env.DB.prepare("UPDATE nodes SET hidden=1 WHERE id=?").bind(f.ids.folder).run();
   expect((await handleLibraryBookHttp(r, f.app, f.principal)).status).toBe(404);
@@ -323,6 +326,22 @@ it("requires the library scope on an app password in addition to original-file r
   )
     .bind(principal.credential_id)
     .run();
+  const book = await readArchiveBook(env.DB, f.principal, f.node.id),
+    input = {
+      blobId: book.blobId,
+      generator: book.generator,
+      indexHash: book.indexHash,
+      page: 2,
+      previousUpdatedAt: null,
+    };
+  await saveReadingState(f.app, f.principal, f.node.id, input);
+  expect((await readArchiveBook(env.DB, principal, f.node.id)).reading).toBeNull();
+  await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'state:write')")
+    .bind(principal.credential_id)
+    .run();
+  await expect(saveReadingState(f.app, principal, f.node.id, input)).rejects.toThrow(
+    "authorization_denied",
+  );
   const issued = await issueContentTicket(
     f.app,
     env.BLOBS,
@@ -430,8 +449,18 @@ it("uses the real public read-link detail and page-ticket routes, then revokes c
     });
   const http = (r: Request) => handlePublicShareHttp(r, app, 1, deps);
   const detail = request(`/library/${f.node.id}`);
+  const book = await readArchiveBook(env.DB, f.principal, f.node.id);
+  await saveReadingState(f.app, f.principal, f.node.id, {
+    blobId: book.blobId,
+    generator: book.generator,
+    indexHash: book.indexHash,
+    page: 2,
+    previousUpdatedAt: null,
+  });
   expect(publicShareRoute(detail)).toBe(true);
-  expect((await http(detail)).status).toBe(200);
+  const metadata = await http(detail);
+  expect(metadata.status).toBe(200);
+  expect((await metadata.json<{ reading: unknown }>()).reading).toBeNull();
   const { token } = await (await http(request("/csrf"))).json<{ token: string }>();
   const issued = await http(
     request("/content-session", { nodeIds: [f.node.id], purpose: "page", ttlSeconds: 300 }, token),

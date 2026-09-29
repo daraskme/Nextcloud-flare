@@ -1,3 +1,4 @@
+import type { ArchiveBook } from "../../../shared/src/library";
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { assertExists, atomicBatch, type SqlStatement } from "../db/primary";
 import {
@@ -170,6 +171,7 @@ export async function prepareAuthorizedArchiveRead(
       title: row.title,
       pageCount: row.pageCount,
       generator: ARCHIVE_GENERATOR,
-    },
+      indexHash: row.sha256,
+    } satisfies Omit<ArchiveBook, "reading">,
   };
 }

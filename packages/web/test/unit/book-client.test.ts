@@ -15,6 +15,8 @@ function fixture() {
     title: "A book",
     pageCount: 2,
     generator: "archive-index-v1",
+    indexHash: "a".repeat(64),
+    reading: null,
   };
   const client: BookClient = {
     contentOrigin: "https://content.invalid",
@@ -53,6 +55,12 @@ it.each([
   { pageCount: 0 },
   { pageCount: 10001 },
   { generator: "future" },
+  { indexHash: "bad" },
+  { reading: { page: 0, updatedAt: 1 } },
+  { reading: { page: 3, updatedAt: 1 } },
+  { reading: { page: 1, updatedAt: -1 } },
+  { reading: { page: 1, updatedAt: Number.MAX_SAFE_INTEGER } },
+  { reading: { page: 1 } },
 ])("rejects a stale or malformed book: %j", async (change) => {
   const f = fixture();
   Object.assign(f.book, change);

@@ -1,11 +1,17 @@
 import { problem } from "@next-cloud-flare/shared/errors";
+import type { PageReadingUpdate } from "../../../shared/src/library";
 import { selectedShare } from "../../../shared/src/shares";
-import { authorizeNode, type Principal } from "../auth/authorize";
-import { primary } from "../db/primary";
+import type { Principal } from "../auth/authorize";
+import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
-import { prepareAuthorizedArchiveRead } from "../services/archiveRead";
+import { MutationUnavailableError } from "../services/accountMutation";
+import { ReadingConflict, readArchiveBook, saveReadingState } from "../services/libraryBook";
 import { hasEmptyBody } from "./emptyBody";
+import { readJsonObject } from "./jsonBody";
 
+const STATE = /^\/api\/v1\/library\/([A-Za-z0-9_-]{1,128})\/reading-state$/;
+export const libraryStateRoute = (r: Request) =>
+  r.method === "PUT" && STATE.test(new URL(r.url).pathname);
 const BOOK = /^\/api\/v1\/library\/([A-Za-z0-9_-]{1,128})$/;
 export const libraryReadRoute = (r: Request) =>
   r.method === "GET" && BOOK.test(new URL(r.url).pathname);
@@ -45,17 +51,7 @@ export async function handleLibraryBookHttp(
         selected_share: selectedShare({ id: shareId, version: Number(version) }),
       };
     }
-    const spaceId = await primary(env.DB)
-      .prepare("SELECT space_id FROM nodes WHERE id=?")
-      .bind(nodeId)
-      .first<string>("space_id");
-    if (!spaceId) return problem(404, "not_found");
-    const proof = await authorizeNode(env.DB, principal, {
-      operation: "library.read",
-      spaceId,
-      nodeId,
-    });
-    const { book } = await prepareAuthorizedArchiveRead(env.DB, proof);
+    const book = await readArchiveBook(env.DB, principal, nodeId);
     return Response.json(book, {
       headers: {
         "Cache-Control": "private, no-store",
@@ -67,5 +63,71 @@ export async function handleLibraryBookHttp(
     if (error instanceof Error && error.message === "archive_not_ready")
       return problem(503, "not_ready");
     return problem(404, "not_found");
+  }
+}
+
+export async function handleReadingStateHttp(
+  request: Request,
+  env: Env,
+  principal: Principal,
+  csrf: Pick<CsrfTokens, "verify">,
+) {
+  const url = new URL(request.url),
+    nodeId = STATE.exec(url.pathname)?.[1];
+  if (
+    request.method !== "PUT" ||
+    url.origin !== env.APP_ORIGIN ||
+    url.search ||
+    url.hash ||
+    !nodeId ||
+    principal.kind !== "user"
+  )
+    return problem(400, "bad_request");
+  try {
+    await csrf.verify(env.DB, request, {
+      kind: "access",
+      credentialId: principal.credential_id,
+      epoch: principal.epoch,
+    });
+  } catch {
+    return problem(403, "forbidden");
+  }
+  try {
+    const body = await readJsonObject(request);
+    if (
+      Object.keys(body).some(
+        (k) =>
+          !["blobId", "generator", "indexHash", "page", "previousUpdatedAt", "share"].includes(k),
+      )
+    )
+      return problem(400, "bad_request");
+    if (body.share !== undefined)
+      principal = { ...principal, selected_share: selectedShare(body.share) };
+    const state = await saveReadingState(
+      env,
+      principal,
+      nodeId,
+      body as unknown as PageReadingUpdate,
+    );
+    return Response.json(state, {
+      headers: {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+      },
+    });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "";
+    if (
+      error instanceof SyntaxError ||
+      ["invalid_body", "invalid_share_selection", "invalid_reading_update"].includes(code)
+    )
+      return problem(400, "bad_request");
+    if (error instanceof ReadingConflict) return problem(409, "conflict");
+    if (["authorization_denied", "content_not_available"].includes(code))
+      return problem(404, "not_found");
+    const response = problem(503, "not_ready");
+    if (error instanceof MutationUnavailableError) response.headers.set("Retry-After", "1");
+    return response;
   }
 }

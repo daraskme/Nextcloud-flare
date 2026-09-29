@@ -1,6 +1,20 @@
 # 実装進捗
 
-## ZIP/CBZのページ配信・Files画像リーダー（今回）
+## ZIP/CBZの読書位置の保存・再開（今回）
+
+[画像リーダー](ARCHIVE_READER.md)へ利用者別の保存位置を接続した。所有者と内部read共有の受信者は本人/node/現在blobと索引hashに結び付けて保存し、次回の閲覧でそのページへ戻る。公開リンクとapp passwordには位置を返さない。実際に読み込めた画像だけを5秒まとめて保存し、閉じる際は送信完了を待つ。競合や保存失敗は画像を残して案内し、再読み込みまたは保存せず閉じる操作を提供する。
+
+最終D1 batchでcredential・share選択・祖先/原本・公開索引・mutation admissionを再検査する。更新時刻と元JSONのCASで同時更新を保護し、所有者spaceの受付許可を使用する。原本上書きで旧位置を無効化し、新原本への保存時に本人の旧blob行だけを除去する。既存schema/catalogueを使い、新規migration/依存/remote変更なし。
+
+- Node4file/38件成功（`/tmp/ncf-reading-unit-final.log`）。書籍metadata/位置の検証、5秒の集約、送信の直列化、最新ページの保存、409/503後の自動再送防止、認証終了/中断、応答時刻の検証、閉じる際の送信、既存private APIと公開source境界を確認した。
+- Native4file/122件成功（91.34秒、`/tmp/ncf-reading-native.log`）。新規読書位置23件と既存ページ配信・認可・Audioの回帰。実DAV上書き→Queue→再索引で旧位置の無効化を確認し、利用者/共有間の分離、同時CAS、原本/索引/資格/祖先/共有/epoch/backup凍結の競合、確定応答喪失の照合、CSRFと不正bodyを検証した。既存予算/中断試験のworkerd診断を含むがrunnerは全件成功した。
+- Chrome4件成功（1.9分、`/tmp/ncf-reading-browser.log`）。所有者と内部共有で閉じる→開き直す際の位置再開、不正画像のページを保存しないこと、公開リンクの個人位置非開示と書込みなし、取消後の画像除去を実HTTPで確認した。別クライアントによる更新後の409と、模擬503時のページ保持・案内・保存せず閉じる操作も確認した。390pxの公開画面と競合画面を目視確認した。
+- typecheck、lint834file、契約・設定検査成功（`/tmp/ncf-reading-typecheck-final.log`、`/tmp/ncf-reading-{lint,contracts,config}.log`）。Web両入口/Worker dry-run build成功（2,057.87KiB・gzip433.42KiB、`/tmp/ncf-reading-build.log`）。公開bundleの許可境界を維持する。
+- 最終公開asset/SRI検査5件成功（`/tmp/ncf-reading-assets.log`）。関連試験は重複を除き169件（Node38・Native127・Chrome4）。ブラウザの画像を`/tmp/ncf-reading-browser-results`へ保存した。
+
+タブやブラウザの強制終了前の保存完了は保証しない。本棚専用一覧/登録root、PDF/EPUB/folder reader、CFI位置、既存原本の索引要求/COPY連携、表紙/page thumb等は後続。全suite、全browser、operator drill、実Cloudflareの検証ではない。schema0077・通常81table・151 route。pushは既存の自動承認審査拒否後の明示承認待ち。
+
+## ZIP/CBZのページ配信・Files画像リーダー（先行75f18f8）
 
 [ZIP/CBZの画像リーダー](ARCHIVE_READER.md)を所有者・内部共有・公開リンクのFilesへ接続した。公開済み索引から書籍の詳細を返し、1冊の原本/索引世代と全ページの展開bytesに固定したv4チケットで配信する。ページ番号は自然順で1から始め、現在のcredential/share・祖先非表示・原本blob・保存receipt・回収状態を配信中も確認する。画像本文の形式識別、サイズ/CRC検査、共通BudgetDOによるGET/HEAD/304の会計、single-host attachmentを適用した。UIはページ送り・番号指定・再読み込み・原本への切替に対応する。
 

@@ -21,7 +21,12 @@ import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { handleLargeThumbnailHttp } from "./largeThumbnail";
-import { handleLibraryBookHttp, libraryReadRoute } from "./library";
+import {
+  handleLibraryBookHttp,
+  handleReadingStateHttp,
+  libraryReadRoute,
+  libraryStateRoute,
+} from "./library";
 import { handleMediaExtractionHttp, mediaExtractionRoute } from "./mediaExtraction";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
@@ -56,6 +61,7 @@ export function privateAppRoute(request: Request): boolean {
     galleryRoute(request) ||
     audioReadRoute(request) ||
     libraryReadRoute(request) ||
+    libraryStateRoute(request) ||
     playbackRoute(request) ||
     audioMetadataRoute(request) ||
     searchRoute(request) ||
@@ -110,6 +116,7 @@ export async function handlePrivateAppHttp(
   const gallery = galleryRoute(request);
   const audio = audioReadRoute(request);
   const library = libraryReadRoute(request);
+  const reading = libraryStateRoute(request);
   const playback = playbackRoute(request);
   const audioMetadata = audioMetadataRoute(request);
   const search = searchRoute(request);
@@ -135,6 +142,7 @@ export async function handlePrivateAppHttp(
     !gallery &&
     !audio &&
     !library &&
+    !reading &&
     !playback &&
     !audioMetadata &&
     !search &&
@@ -298,6 +306,18 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.cursors,
+    );
+  if (reading)
+    return handleReadingStateHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
     );
   if (library)
     return handleLibraryBookHttp(request, env, {

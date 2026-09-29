@@ -2,7 +2,7 @@ import type { AudioPage, PlaybackState } from "../../../shared/src/audio";
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
 import type { GalleryPage } from "../../../shared/src/gallery";
-import type { ArchiveBook } from "../../../shared/src/library";
+import type { ArchiveBook, PageReadingState } from "../../../shared/src/library";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
 import { type AudioClient, audioOriginal } from "../public-share/audioClient";
@@ -304,6 +304,19 @@ export class ApiClient {
         this.request<ArchiveBook>(`/api/v1/library/${node.id}${query.size ? "?" + query : ""}`, {
           signal: active(signal),
         }),
+      save: async (update, signal) => {
+        const token = await this.csrf();
+        active(signal).throwIfAborted();
+        return this.request<PageReadingState>(`/api/v1/library/${node.id}/reading-state`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+          body: JSON.stringify({
+            ...update,
+            ...(share ? { share: { id: share.id, version: share.version } } : {}),
+          }),
+          signal: active(signal),
+        });
+      },
       ticket: async (signal) => {
         const token = await this.csrf();
         active(signal).throwIfAborted();

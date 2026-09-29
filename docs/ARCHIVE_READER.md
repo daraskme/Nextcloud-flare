@@ -1,6 +1,6 @@
 # ZIP/CBZ・EPUBコンテナの読み取り基盤
 
-アーカイブの索引解析・エントリのストリーム展開に加え、新しいZIP/CBZ/EPUBアップロードのQueue索引化と不変R2保存を接続した。schema0077・通常81table・151 API route。現在の閲覧権限に固定したZIP/CBZの詳細API・ページ配信とFilesからの画像リーダーを接続した。本棚専用一覧、読書位置、PDF・EPUB本文は未実装。
+アーカイブの索引解析・エントリのストリーム展開に加え、新しいZIP/CBZ/EPUBアップロードのQueue索引化と不変R2保存を接続した。schema0077・通常81table・151 API route。現在の閲覧権限に固定したZIP/CBZの詳細API・ページ配信とFilesからの画像リーダー、利用者別の読書位置の保存・再開を接続した。本棚専用一覧、PDF・EPUB本文は未実装。
 
 ## 実装済み
 
@@ -41,11 +41,19 @@ Outboxの完了時に`archive_index`と`library_items`を一括反映する。�
 - JPEG/PNG/GIF/WebPの本文signatureとAVIFのftypを先頭最大4KiBで識別する。拡張子は候補選択だけに使う。HTML/SVGは配信せず、出力名も判定した形式から作る。これはMIME識別であり完全な画像デコーダによる検証ではない。小さい画像は応答前にCRCまで、大きい画像のCRCはEOFで検査する。HEAD/304でも本文の形式と現在権限を確認する。
 - 全応答はprivate/no-store・nosniff・no-referrer、画像は隔離content hostでinline。single-hostではattachment、画面からは原本を開く。entry本文、ページthumb、app-hostページAPIはまだ接続していない。
 
+## 読書位置の保存・再開
+
+読書位置は `PUT /api/v1/library/:nodeId/reading-state` から認証ユーザー本人の `(user_id,node_id,blob_id)` に保存する。本文は現在の `blobId/generator/indexHash/page/previousUpdatedAt` と内部共有の選択だけを受け付ける。詳細APIは現在の原本・索引hashに一致する `reading: {page,updatedAt}` を返し、公開リンクとapp passwordでは常にnull。内部read共有の受信者も本人の位置だけを保存でき、所有者や他の受信者の位置を変更しない。
+
+書込みは所有者spaceのmutation admissionを取得し、現在の資格情報・明示選択share・祖先・原本・索引・凍結状態を最終batchで再検査する。JSONと更新時刻のCASにより同時更新の片方だけを確定し、古い画面には409を返す。原本上書きで旧位置を無効にし、新原本の保存時に本人の旧blob行を削除する。DB commitの応答喪失は正確なmutation receiptから照合する。
+
+画面は画像を実際に読み込めたページだけを5秒まとめて保存する。通信は直列化し、途中のページ移動は最後の位置へまとめる。閉じるときは送信完了を待ち、保存に失敗した場合は画像を残して案内し、「保存せず閉じる」を選べる。再読み込みでは送信中の処理を終えてから保存済みのページを取得する。409や結果不明の通信エラーを自動再送しない。画面が非表示になった際も送信するが、タブやブラウザの強制終了前の保存完了は保証しない。認証lifetime終了時は保存を中断する。
+
 ## 次の接続
 
 1. 既存ファイルの索引要求、現在の読者での再抽出、COPY先との連携、失敗状態の案内を接続する。今回の自動索引化は新しいアップロードの元イベントを対象とする。
 2. 本棚一覧/登録root API、entry配信、表紙/ページthumb、app-hostページAPIを接続する。
-3. 本棚専用画面、フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shell、利用者/node/blob別の読書位置を接続する。
+3. 本棚専用画面、フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shellとCFI位置を接続する。
 
 ## 参照仕様
 

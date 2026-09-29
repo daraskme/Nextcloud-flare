@@ -1,4 +1,4 @@
-import type { ArchiveBook } from "../../../shared/src/library";
+import type { ArchiveBook, PageReadingState, PageReadingUpdate } from "../../../shared/src/library";
 
 export interface BookClient {
   readonly contentOrigin: string;
@@ -7,6 +7,19 @@ export interface BookClient {
   readonly lifetime: AbortSignal;
   book(signal: AbortSignal): Promise<ArchiveBook>;
   ticket(signal: AbortSignal): Promise<{ ticket: string }>;
+  save?(update: PageReadingUpdate, signal: AbortSignal): Promise<PageReadingState>;
+}
+export function validReadingState(value: unknown, pageCount: number): value is PageReadingState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as PageReadingState;
+  return (
+    Number.isSafeInteger(state.page) &&
+    state.page >= 1 &&
+    state.page <= pageCount &&
+    Number.isSafeInteger(state.updatedAt) &&
+    state.updatedAt >= 0 &&
+    state.updatedAt < Number.MAX_SAFE_INTEGER
+  );
 }
 export async function openBook(client: BookClient, signal: AbortSignal) {
   const book = await client.book(signal),
@@ -21,11 +34,14 @@ export async function openBook(client: BookClient, signal: AbortSignal) {
     book.blobId !== client.blobId ||
     book.nodeId !== client.nodeId ||
     book.generator !== "archive-index-v1" ||
+    typeof book.indexHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(book.indexHash) ||
     !Number.isSafeInteger(book.pageCount) ||
     book.pageCount < 1 ||
     book.pageCount > 10000 ||
     typeof book.title !== "string" ||
-    book.title.length > 4096
+    book.title.length > 4096 ||
+    (book.reading !== null && !validReadingState(book.reading, book.pageCount))
   )
     throw new Error("book_unavailable");
   const { ticket } = await client.ticket(signal);
