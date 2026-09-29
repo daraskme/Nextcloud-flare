@@ -63,3 +63,19 @@ export async function upload(page: Page, filename: string, parentId?: string) {
     { encoded, parentId },
   );
 }
+
+/** Deliver the durable lg request through the same local Queue fixture as uploads. */
+export async function generateLarge(page: Page, blobId: string) {
+  const result = await page.evaluate(async (blobId) => {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify([blobId, "lg", "image-webp-v1"])),
+    );
+    const id =
+      "lg_" + Array.from(new Uint8Array(digest), (x) => x.toString(16).padStart(2, "0")).join("");
+    const response = await fetch(`/__test__/dead-letter-dispatch/${id}`, { method: "POST" });
+    if (!response.ok) throw new Error(`preview_dispatch_${response.status}`);
+    return response.json();
+  }, blobId);
+  if (result.acked !== 1) throw new Error("preview_generation_not_completed");
+}

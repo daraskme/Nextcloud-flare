@@ -84,6 +84,7 @@ export const OPERATIONS = {
   "zip.create": ["node:read"],
   "zip.read": ["node:read"],
   "gallery.read": ["library:read"],
+  "thumbnail.request": ["library:read"],
   "audio.read": ["library:read"],
   "library.read": ["library:read"],
   "library.write": ["library:write"],

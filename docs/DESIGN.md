@@ -300,6 +300,7 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `node.star` | `node:star` | `[currentUser,node]` |
 | `zip.create`,`zip.read` | `node:read` / download | `[root,manifest,nodes,blobs,budgetId]` |
 | `gallery.read`,`audio.read`,`library.read` | `library:read` / read | `[root,node?,currentBlob?,index?,cursor?]` |
+| `thumbnail.request` | `library:read` / read | `[node,parent,currentBlob,variant,generator]`。大型server previewのQueue受付のみ |
 | `library.write`,`audio.metadata.write` | `library:write` | `[node,currentBlob,extractedMetadata,override]` |
 | `reading_state.write` | `state:write` | `[currentUser,node,currentBlob,position]` |
 | `playback_state.write` | `state:write` | `[currentUser,node,currentBlob,position]` |
@@ -393,6 +394,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | HEAD | `/api/v1/nodes/:nodeId/content` | access | `node.read` | `node,ancestors,blob` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/thumb` | access | `node.read` | `node,ancestors,blob,variant` | false | same-origin-json |
 | app | HEAD | `/api/v1/nodes/:nodeId/thumb` | access | `node.read` | `node,ancestors,blob,variant` | false | same-origin-json |
+| app | POST | `/api/v1/nodes/:nodeId/thumb` | access | `thumbnail.request` | `node,ancestors,blob,variant,generator` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/preview` | access | `node.read` | `node,ancestors,blob` | false | same-origin-json |
 | app | HEAD | `/api/v1/nodes/:nodeId/preview` | access | `node.read` | `node,ancestors,blob` | false | same-origin-json |
 | app | POST | `/api/v1/nodes` | access | `node.create` | `parent,space` | false | same-origin-json |
@@ -461,6 +463,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | HEAD | `/api/v1/public/shares/:shareId/content/:nodeId` | share | `share.read` | `share,node,ancestors,blob` | false | same-origin-json |
 | app | GET | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `share.read` | `share,node,ancestors,blob,variant` | false | same-origin-json |
 | app | HEAD | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `share.read` | `share,node,ancestors,blob,variant` | false | same-origin-json |
+| app | POST | `/api/v1/public/shares/:shareId/thumb/:nodeId` | share | `thumbnail.request` | `share,node,ancestors,blob,variant,generator` | false | same-origin-json |
 | app | POST | `/api/v1/public/shares/:shareId/unlock` | public | `share.unlock` | `share` | false | public-form |
 | app | POST | `/api/v1/public/shares/:shareId/logout` | share | `share.logout` | `share,session` | false | public-form |
 | app | POST | `/api/v1/public/shares/:shareId/tickets` | share | `share.read` | `share,session,targetSetId,targetSetHash,budgetId` | false | public-form |
@@ -846,7 +849,7 @@ React、TypeScript、Vite、Tailwind、shadcn/ui、TanStack Router/Query/Virtual
 
 folder 内画像/動画、任意 recursive を対象にし keyset 最大200件。`node_media` は `width,height,taken_at,duration_ms,orientation,dominant_color` と bounded camera 情報だけ。GPS破棄。thumbnail は sm256/md768/lg1600、lg は lazy unique claim。recursive 候補は SQL で50,000を強制し、§15 gate 未合格時は10,000へ縮小する。v1 UI は grid/list、folder/recursive 切替、lightbox、次/前、共有閲覧を必須とし、高度 layout は v1.1。
 
-現在の[Gallery画像閲覧](GALLERY.md)は撮影日時順の一覧と基本UI・共有へ接続済み。50,000候補のローカルD1 rows_read gateが未達のため、上記の縮小条件に従い通常10,000候補を使う。動画metadata/player、lg要求時生成は未完了。
+現在の[Gallery画像閲覧](GALLERY.md)は撮影日時順の一覧と基本UI・共有へ接続済み。50,000候補のローカルD1 rows_read gateが未達のため、上記の縮小条件に従い通常10,000候補を使う。[lg要求時生成とプレビュー／原本切り替え](LARGE_THUMBNAILS.md)も接続済み。動画metadata/playerは未完了。
 
 2026-09-22 確定要件: 事前エンコード済みの AVIF 画像と AV1 動画（MP4/WebM、Opus 音声付き/音声無し）を必須対応とする。原本を保持し、画像表示/動画再生は認可済み content URL へ直接接続する。実 codec/bit depth を取得して再生可否を判定し、未対応端末では download 導線を提供する。詳細は [`MEDIA_FORMATS.md`](MEDIA_FORMATS.md)。
 

@@ -292,6 +292,65 @@ export class LockDO extends DurableObject<Env> {
     return permit;
   }
 
+  /** Only the short D1 request receipt holds this permit; the derivative job never does. */
+  async acquireThumbnail(request: {
+    requestId: string;
+    spaceId: string;
+    nodeId: string;
+    blobId: string;
+    principal: Principal;
+  }): Promise<Permit> {
+    request = { ...request, principal: freezePrincipal(request.principal) };
+    this.#canonical(request.spaceId);
+    if (
+      !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !["user", "link_share"].includes(request.principal.kind)
+    )
+      throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const proof = await authorizeNode(this.env.DB, request.principal, {
+      operation: "gallery.read",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (
+      proof.operation !== "gallery.read" ||
+      proof.node.kind !== "file" ||
+      proof.node.current_blob_id !== request.blobId ||
+      (request.principal.kind === "user" &&
+        !request.principal.selected_share &&
+        request.principal.user_id !== proof.node.owner_id)
+    )
+      throw new Error("authorization_denied");
+    const digest = JSON.stringify([
+      "thumbnail.request",
+      request.nodeId,
+      request.blobId,
+      request.principal,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(proof),
+    ]);
+  }
+
   async acquireRename(request: RenamePermitRequest): Promise<Permit> {
     this.#canonical(request.spaceId);
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");

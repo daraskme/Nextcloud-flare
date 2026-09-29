@@ -172,6 +172,12 @@
   color: #d0dfd3;
   overflow-wrap: anywhere;
 }
+.gallery-detail-mode {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
 @media (max-width: 520px) {
   .gallery-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

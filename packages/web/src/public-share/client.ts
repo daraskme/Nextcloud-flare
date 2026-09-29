@@ -1,7 +1,7 @@
 import type { GalleryPage } from "../../../shared/src/gallery";
 import { zipDownloadPath } from "../../../shared/src/zips";
 import type { GalleryClient } from "./gallery";
-import { galleryOriginal, readGalleryThumbnail } from "./galleryMedia";
+import { galleryOriginal, largeThumbnailReady, readGalleryThumbnail } from "./galleryMedia";
 
 export interface SharedNode {
   id: string;
@@ -133,6 +133,36 @@ export class PublicClient {
           signal,
         );
         return galleryOriginal(root.contentOrigin, ticket, item, active(signal));
+      },
+      preview: async (item, signal) => {
+        const { token } = await this.request<{ token: string }>(
+          "/csrf",
+          "POST",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          signal,
+        );
+        const receipt = await this.request<unknown>(
+          `/thumb/${item.id}`,
+          "POST",
+          { blobId: item.currentBlobId, variant: "lg" },
+          token,
+          { ...headers, "Idempotency-Key": crypto.randomUUID() },
+          undefined,
+          signal,
+        );
+        if (!largeThumbnailReady(receipt, item)) return null;
+        const session = await post<{ sessionId: string }>(
+          { nodeIds: [item.id], purpose: "thumb", variant: "lg", delivery: "app", ttlSeconds: 600 },
+          signal,
+        );
+        return readGalleryThumbnail(
+          `/api/v1/public/shares/${this.id}/thumb/${item.id}?variant=lg`,
+          { ...headers, "Content-Session": session.sessionId },
+          active(signal),
+        );
       },
     };
   }

@@ -1,10 +1,34 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { type Account, ApiClient } from "../../src/lib/api";
-import { galleryOriginal, readGalleryThumbnail } from "../../src/public-share/galleryMedia";
+import {
+  galleryOriginal,
+  largeThumbnailReady,
+  readGalleryThumbnail,
+} from "../../src/public-share/galleryMedia";
 
 afterEach(() => vi.unstubAllGlobals());
 const signal = () => new AbortController().signal;
 const path = "/api/v1/nodes/node/thumb?variant=sm";
+it("accepts only a preview receipt for this original, variant and known state", () => {
+  const item = { id: "node", currentBlobId: "blob" },
+    receipt = {
+      nodeId: "node",
+      blobId: "blob",
+      variant: "lg",
+      generator: "image-webp-v1",
+      state: "ready",
+    };
+  expect(largeThumbnailReady(receipt, item)).toBe(true);
+  expect(largeThumbnailReady({ ...receipt, state: "pending" }, item)).toBe(false);
+  expect(largeThumbnailReady({ ...receipt, state: "unsupported" }, item)).toBe(false);
+  for (const invalid of [
+    { ...receipt, nodeId: "other" },
+    { ...receipt, blobId: "old" },
+    { ...receipt, variant: "sm" },
+    { ...receipt, state: "unknown" },
+  ])
+    expect(() => largeThumbnailReady(invalid, item)).toThrow();
+});
 it("materializes only the declared WebP bytes and includes the selected session", async () => {
   const fetcher = vi.fn(
     async () =>

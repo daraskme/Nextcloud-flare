@@ -1,6 +1,6 @@
 # Galleryの画像一覧と閲覧
 
-2026-09-29。JPEG/PNG/WebP/AVIFの画像一覧を所有者・内部共有・公開リンクへ接続した。グリッド／リスト、フォルダー直下／再帰、200件ごとの前後ページ、原本ライトボックスと前後移動・矢印キー・Escapeを提供する。動画metadata/player、lg要求時生成と既存データの再抽出は後続。
+2026-09-29。JPEG/PNG/WebP/AVIFの画像一覧を所有者・内部共有・公開リンクへ接続した。グリッド／リスト、フォルダー直下／再帰、200件ごとの前後ページ、原本ライトボックスと前後移動・矢印キー・Escapeを提供する。[lg要求時生成とプレビュー／原本切り替え](LARGE_THUMBNAILS.md)も接続した。動画metadata/playerと既存データの再抽出は後続。
 
 ## 一覧と現在の認可
 
@@ -27,4 +27,4 @@ HMACカーソルは専用typeとし、principal/credential・share/version・roo
 
 変換未対応のAVIFも原本の詳細を開ける。失敗したthumbnailを原本の大量取得へ置き換えない。共有停止後の再読は一覧を消してエラーを表示し、古い応答を保存し直さない。
 
-schema0071・通常79table・147 API routeを維持。migration/依存追加なし。検証の正本は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+lg受付追加後はschema0072・通常79table・149 API route。依存追加なし。検証の正本は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。

@@ -246,6 +246,7 @@ export function validateClaimAuthorization(
     sourceNodeId?: unknown;
     sourceParentId?: unknown;
     nodeId?: unknown;
+    blobId?: unknown;
   };
   const create = [
     "node.create",
@@ -264,6 +265,12 @@ export function validateClaimAuthorization(
   const restore = intent.kind === "node.restore";
   const purge = intent.kind === "node.purge";
   const targetMatches =
+    (intent.kind === "thumbnail.request" &&
+      authorized.operation === "gallery.read" &&
+      authorized.node.id === operands.nodeId &&
+      authorized.node.parent_id === operands.parentId &&
+      authorized.node.current_blob_id === operands.blobId &&
+      authorized.node.space_id === intent.spaceId) ||
     (create &&
       authorized.operation === "node.create" &&
       authorized.parent.id === operands.parentId &&
@@ -452,6 +459,7 @@ export async function lookupOperation(
       row.kind !== "dav.move" &&
       row.kind !== "node.copy" &&
       row.kind !== "copy.enqueue" &&
+      row.kind !== "thumbnail.request" &&
       row.kind !== "copy.publish" &&
       row.kind !== "node.move" &&
       row.kind !== "node.trash" &&
@@ -486,6 +494,7 @@ export async function lookupOperation(
       sourceNodeId?: unknown;
       sourceParentId?: unknown;
       nodeId?: unknown;
+      blobId?: unknown;
     };
     const create = ["node.create", "dav.mkcol", "dav.lock", "copy.publish"].includes(row.kind);
     const publication =
@@ -516,7 +525,25 @@ export async function lookupOperation(
         .first();
       if (!bound) return null;
     }
-    if (row.kind === "dav.copy" || row.kind === "node.copy" || row.kind === "copy.enqueue") {
+    if (row.kind === "thumbnail.request") {
+      if (
+        typeof operands.nodeId !== "string" ||
+        typeof operands.parentId !== "string" ||
+        typeof operands.blobId !== "string"
+      )
+        return null;
+      const proof = await prove(principal, {
+        operation: "gallery.read",
+        nodeId: operands.nodeId,
+        spaceId: row.space_id,
+      });
+      if (
+        proof.operation !== "gallery.read" ||
+        proof.node.current_blob_id !== operands.blobId ||
+        proof.node.parent_id !== operands.parentId
+      )
+        return null;
+    } else if (row.kind === "dav.copy" || row.kind === "node.copy" || row.kind === "copy.enqueue") {
       if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
         return null;
       await prove(principal, {
@@ -659,7 +686,7 @@ export async function lookupOperation(
         ? (JSON.parse(row.result_json) as { status: number; nodeId?: string; jobId?: string })
         : null;
     const expectedStatus =
-      row.kind === "copy.enqueue"
+      row.kind === "copy.enqueue" || row.kind === "thumbnail.request"
         ? 202
         : row.kind === "dav.put" || row.kind === "upload.complete"
           ? typeof operands.nodeId === "string"
@@ -687,7 +714,7 @@ export async function lookupOperation(
     if (result && result.status !== expectedStatus) return null;
     if (
       result &&
-      ["node.rename", "node.move", "dav.move"].includes(row.kind) &&
+      ["node.rename", "node.move", "dav.move", "thumbnail.request"].includes(row.kind) &&
       result.nodeId !== operands.nodeId
     )
       return null;

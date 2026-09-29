@@ -1,6 +1,6 @@
 # サムネイルの保存と公開記録
 
-2026-09-29。`jobs/imageDerivative.ts`は、成功済みの[画像変換記録](IMAGE_COSTS.md)からWebP生成物を不変のR2 keyへ保存し、`derivative_results.ready`へ公開する内部処理。schema0070、通常78table・147 route。[Queueでのsm/md自動生成](IMAGE_QUEUE.md)へ接続済み。thumb byte配信、Gallery API/UIは未接続。
+2026-09-29。`jobs/imageDerivative.ts`は、成功済みの[画像変換記録](IMAGE_COSTS.md)からWebP生成物を不変のR2 keyへ保存し、`derivative_results.ready`へ公開する内部処理。schema0070、通常78table・147 route。[Queueでのsm/md自動生成](IMAGE_QUEUE.md)へ接続済み。[thumb配信](THUMBNAIL_DELIVERY.md)、[Gallery](GALLERY.md)、[lg要求時生成](LARGE_THUMBNAILS.md)も接続済み。
 
 ## 受付と容量
 

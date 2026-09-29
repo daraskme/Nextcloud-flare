@@ -1,3 +1,4 @@
+import { imageRequestAuthority, imageRequestOperands } from "../jobs/imageRequestAuthority";
 import { nodeEventAuthority, readOutboxEvent } from "../jobs/outboxAuthority";
 import { type ImageTransformFailureReceipt, imageFailureJson } from "../media/images/failure";
 import {
@@ -185,6 +186,42 @@ export async function confirmImageTransform(
 }
 export async function imageTransformAuthority(db: D1Database, g: ImageTransformRequest) {
   const row = await readOutboxEvent(db, g.outboxId);
+  if (row?.kind === "image.requested") {
+    const authority = await imageRequestAuthority(db, row),
+      o = imageRequestOperands(row);
+    if (
+      !authority ||
+      g.variant !== "lg" ||
+      g.generator !== o.generator ||
+      row.epoch !== g.epoch ||
+      row.owner_id !== g.ownerId ||
+      o.nodeId !== g.source.nodeId ||
+      o.parentId !== g.source.parentId ||
+      o.blobId !== g.blobId
+    )
+      throw new Error("image_transform_unauthorized");
+    return [
+      ...authority,
+      assertExists(
+        `SELECT 1 FROM outbox e JOIN nodes n ON n.id=?1 JOIN blobs b ON b.id=n.current_blob_id
+       JOIN blob_storage s ON s.blob_id=b.id AND s.bytes=b.size AND s.removed_at IS NULL
+       JOIN control c ON c.singleton=1 AND c.epoch=e.epoch AND c.maintenance=0
+       WHERE e.outbox_id=?2 AND e.claim_token=?3 AND e.claim_expires_at>=?4 AND e.epoch=?5
+       AND e.state IN ('dispatching','sent') AND n.current_blob_id=?6 AND b.r2_key=?7 AND b.size=?8 AND s.r2_etag=?9`,
+        [
+          g.source.nodeId,
+          g.outboxId,
+          g.claimToken,
+          g.expiresAt,
+          g.epoch,
+          g.blobId,
+          g.source.key,
+          g.source.size,
+          g.source.etag,
+        ],
+      ),
+    ];
+  }
   if (
     !row ||
     !["dav.put", "upload.complete"].includes(row.op_kind) ||

@@ -32,6 +32,7 @@ export async function generateOutboxImages(
   claimToken: string,
   deadline: number,
   budget: ImageGenerationBudget,
+  variants: readonly ImageVariant[] = ["sm", "md"],
 ): Promise<readonly SqlStatement[]> {
   const { node, image, guard } = source;
   const statements: SqlStatement[] = [];
@@ -100,7 +101,7 @@ export async function generateOutboxImages(
       1,
     );
   };
-  for (const variant of ["sm", "md"] as const) {
+  for (const variant of variants) {
     await guard();
     if (Date.now() >= deadline) throw new Error("image_job_deadline");
     let prior = await cost(variant);

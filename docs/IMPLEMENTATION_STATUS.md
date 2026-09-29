@@ -1,6 +1,23 @@
 # 実装進捗
 
-## Galleryの画像一覧・共有閲覧（今回）
+## 大きいプレビューの要求時生成（今回）
+
+[lg1600の要求時生成](LARGE_THUMBNAILS.md)を所有者・内部共有・公開リンクへ接続した。画像を開いたときのPOSTは現在の閲覧者・元node/parent/blob・共有versionを保存し、同じ原本/variant/generatorのOutboxへ集約する。短い受付permitを返してからQueueへ送る。Queueで現在の認可を原本読取り・有料変換・保存・公開・完了にも照合し、既存の費用記録と公開再開、invocationの2有料試行・25秒上限を共有する。
+
+Galleryは生成済みWebPのプレビューと原本URLを切り替えられる。生成中・非対応・失敗時は原本を表示し、開き直しまたは明示操作でプレビューを確認する。自動ポーリングはしない。中断とobject URL解放、WebP実bytesの12MiB上限を維持する。schema0072・通常79table・149 route。依存追加と公開bundle allowlistの拡張なし。
+
+- 新規native1file/14件成功（33.61秒、/tmp/ncf-large-native-2.log）。1920×1080原本から1600×900 WebPを生成し、元upload資格情報の失効後も現在の閲覧者で受付、COW別名と同時consumerの重複防止、受付ACK喪失、内部共有/匿名リンク、CSRF・範囲外・クライアント画像拒否、最終batchや生成前の失効、保存後の公開再開、既知の失敗、共有有料予算を検証した。初回は失効fixtureのテーブル名が誤っていたためsessionsへ修正した。
+- native回帰7file/178件成功（165.17秒、/tmp/ncf-large-native-regression.log）。画像Queue・費用・公開再開・operation・Outbox・DLQ再送・thumb配信を含む。
+- Node3file/91件成功（31.94秒、/tmp/ncf-large-unit.log）。migration/schema、Galleryのbounded WebPと受付結果検証、既存APIを確認した。
+- Browser4件成功（1.8分、/tmp/ncf-large-browser.log）。所有者・匿名リンクの1920×1080原本→1600×900 WebP→原本切り替え、object URL解放、390px表示と既存Galleryの内部共有・公開停止を検証した。/tmp/ncf-large-browserのmobile/publicスクリーンショットも確認した。
+- 単一host browser2件成功（1.6分、/tmp/ncf-large-single-host.log）。所有者・匿名のAVIF原本表示と、lg生成後のプレビュー→同一origin原本切り替えを確認した。上記と合わせ、今回の関連testは重複を除いて289件成功。全suiteは実行していない。
+- 型・lint713file・契約/設定検査成功（/tmp/ncf-large-types-final.log、/tmp/ncf-large-lint.log、/tmp/ncf-large-contracts-final.log、/tmp/ncf-large-config.log）。Web build/Worker dry-run成功（/tmp/ncf-large-build.log）。
+
+- backup:operator-drill成功（/tmp/ncf-large-operator-drill.log）。0072を含む79tableのschema・全table snapshot・SQL/FK/FTS検証、epoch採用と段階再開まで確認した。reportは.wrangler/operator-drill-20qvHC/report.json。ローカルservice bindingの検証で、Time Travel/S3のprovider応答は模擬。実Cloudflareへの適用試験ではない。
+
+保存された閲覧者の失効した要求を別閲覧者へ付け替える処理、未知nativeの運用修復・明示的な有料再試行は未実装で、保留時は原本を使う。動画情報/player・Bookshelf/Audioと既存の運用残件は継続する。リモート作成・secret投入・migration適用・deploy/pushは行っていない。pushは前回の自動承認審査拒否後の承認待ち。
+
+## Galleryの画像一覧・共有閲覧
 
 [Gallery](GALLERY.md)の画像APIを所有者・内部共有・公開リンクへ接続した。現在の原本とmetadata generatorを固定し、撮影日時（なければ更新日時）降順・ID昇順の200件ページを返す。専用HMACカーソルはcredential・共有version・root・epoch・tree generation・generator・再帰指定・候補上限も照合する。全祖先の非表示／削除状態と現在の認可を一覧SELECTと同じbatchで再検査する。
 

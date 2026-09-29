@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { upload as uploadImage } from "./imageHelpers";
+import { generateLarge, upload as uploadImage } from "./imageHelpers";
 import { open as openPublic } from "./publicShareHelpers";
 import { fileContent, rootFile, writeTestFile } from "./uploadHelpers";
 
@@ -83,6 +83,30 @@ test("single host Gallery decodes private and anonymous AVIF lightboxes", async 
   } finally {
     await context.close();
   }
+});
+
+test("single host Gallery switches a generated large preview back to the same-origin original", async ({
+  page,
+}) => {
+  test.setTimeout(180000);
+  await owner(page);
+  const image = await uploadImage(page, "pattern.png");
+  await page.goto("/gallery");
+  await page.getByRole("button", { name: `${image.name}を表示` }).click();
+  const img = page.getByRole("dialog", { name: "画像の詳細" }).locator("img");
+  const size = () =>
+    img.evaluate((el) => [
+      (el as HTMLImageElement).naturalWidth,
+      (el as HTMLImageElement).naturalHeight,
+    ]);
+  await expect.poll(size).toEqual([1920, 1080]);
+  await generateLarge(page, image.node.currentBlobId);
+  await page.getByRole("button", { name: "軽いプレビューを表示" }).click();
+  await expect.poll(size).toEqual([1600, 900]);
+  await expect(img).toHaveAttribute("src", /^blob:/);
+  await page.getByRole("button", { name: "原本を表示", exact: true }).click();
+  await expect.poll(size).toEqual([1920, 1080]);
+  await expect(img).toHaveAttribute("src", new RegExp(`^${origin}/c/`));
 });
 
 test("single host serves private Files and anonymous public downloads with isolated authority", async ({

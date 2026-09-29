@@ -1,6 +1,6 @@
 # サムネイルの配信
 
-2026-09-29。[Queue生成](IMAGE_QUEUE.md)で公開されたWebPを、元nodeの現在の閲覧権限で配信する。生成や有料再試行はGET/HEAD内で行わない。lgは保存済みの場合だけ配信でき、要求時の生成受付は後続。
+2026-09-29。[Queue生成](IMAGE_QUEUE.md)で公開されたWebPを、元nodeの現在の閲覧権限で配信する。生成や有料再試行はGET/HEAD内で行わない。lgは保存済みの生成物を配信し、[別POSTの要求時生成](LARGE_THUMBNAILS.md)へ接続済み。
 
 ## 対象とチケット
 
@@ -22,4 +22,4 @@ publicの対応content-sessionは、従来の`nodeIds`・`ttlSeconds`に`purpose
 
 応答はimage/webp・inline・nosniff・private,no-store。readyがない場合はチケット発行を503とし、既存対象との不一致は拒否する。原本や別variantへ自動fallbackしない。[Gallery](GALLERY.md)では公開済みsmを遅延取得し、準備中・非対応・失敗はplaceholderで示す。原本detailは利用者が開いた画像だけ取得する。
 
-schema0071・通常79table・147 routeを維持。routeのvariant operandを明記した。migration・依存追加なし。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。
+配信導入時はschema0071・通常79table・147 route。後続のlg受付でschema0072・149 routeとなる。routeのvariant operandを明記した。依存追加なし。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。

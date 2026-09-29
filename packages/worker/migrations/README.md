@@ -41,3 +41,5 @@ FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` �
 `0057` はcopy停止時刻/epochと不変の精算receiptを追加する（75table）。停止だけでは保持を返さず、未着手/明示的not_started/実保存とnative終了の証拠が揃うblobだけを精算する。copy保持中のnative receiptを自動削除しない。途中multipart/未知結果は保留する。新tableをbackup/restore freeze・export/purgeへ含め、移行条件は0056と同じ。
 
 `0058` は既知copy multipartの中止attempt/epoch/開始時刻/期限と未送信履歴の索引を追加する（75table）。精算receiptへabortedを追加し、全旧行・16依存trigger・freezeを保存する。中止準備、native grant、精算で先行nativeの終了と正確なidentityを照合する。欠落・unknown・timeoutでは保持を返さない。適用前提と旧Workerへのrollback時の停止維持は0057と同じ。
+
+`0072` は`thumbnail.request` operationと`image.requested`のpayload部分一意索引を追加する（通常79table）。原本blob・lg・generatorの同じ要求は、別名や閲覧者が異なっても既存通知へ集約する。失敗・失効を新しい有料試行の許可へ読み替えない。停止・未凍結・未終了permit/operation/admission/R2/KDF/Imagesなしで適用し、旧Workerへのrollbackでも停止を維持する。[大きいプレビュー](../../../docs/LARGE_THUMBNAILS.md)を参照。

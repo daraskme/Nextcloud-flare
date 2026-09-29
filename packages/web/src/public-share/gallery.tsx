@@ -9,6 +9,7 @@ export interface GalleryClient {
     signal: AbortSignal,
   ): Promise<(item: GalleryItem, signal: AbortSignal) => Promise<Blob>>;
   original(item: GalleryItem, signal: AbortSignal): Promise<string>;
+  preview(item: GalleryItem, signal: AbortSignal): Promise<Blob | null>;
 }
 type Loader = (item: GalleryItem, signal: AbortSignal) => Promise<Blob>;
 function limited(load: Loader): Loader {
@@ -81,7 +82,10 @@ function Lightbox({
   const dialog = useRef<HTMLDialogElement>(null),
     item = items[index]!,
     [url, setUrl] = useState<string | null>(null),
-    [error, setError] = useState(false);
+    [error, setError] = useState(false),
+    [original, setOriginal] = useState(false),
+    [preview, setPreview] = useState(false),
+    [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const element = dialog.current,
       previous = document.activeElement;
@@ -93,10 +97,23 @@ function Lightbox({
   }, []);
   useEffect(() => {
     const controller = new AbortController();
+    let object: string | undefined;
     setUrl(null);
     setError(false);
-    void client
-      .original(item, controller.signal)
+    setPreview(false);
+    const open = async () => {
+      if (!original) {
+        const blob = await client.preview(item, controller.signal).catch(() => null);
+        controller.signal.throwIfAborted();
+        if (blob) {
+          object = URL.createObjectURL(blob);
+          setPreview(true);
+          return object;
+        }
+      }
+      return client.original(item, controller.signal);
+    };
+    void open()
       .then((value) => {
         controller.signal.throwIfAborted();
         setUrl(value);
@@ -104,8 +121,11 @@ function Lightbox({
       .catch(() => {
         if (!controller.signal.aborted) setError(true);
       });
-    return () => controller.abort();
-  }, [item, client]);
+    return () => {
+      controller.abort();
+      if (object) URL.revokeObjectURL(object);
+    };
+  }, [item, client, original, refresh]);
   return (
     <dialog
       ref={dialog}
@@ -139,11 +159,25 @@ function Lightbox({
         )}
       </div>
       <p>
+        {preview ? "プレビュー · " : "原本 · "}
         {item.width} × {item.height}
         {item.takenAt !== null ? ` · ${new Date(item.takenAt).toLocaleString("ja-JP")}` : ""}
         {item.cameraMake ? ` · ${item.cameraMake}` : ""}
         {item.cameraModel ? ` ${item.cameraModel}` : ""}
       </p>
+      <div className="gallery-detail-mode">
+        <button disabled={!preview && original} onClick={() => setOriginal(true)}>
+          原本を表示
+        </button>
+        <button
+          onClick={() => {
+            setOriginal(false);
+            setRefresh((x) => x + 1);
+          }}
+        >
+          軽いプレビューを表示
+        </button>
+      </div>
       <footer>
         <button disabled={index === 0} onClick={() => select(index - 1)}>
           前の画像

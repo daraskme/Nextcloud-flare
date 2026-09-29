@@ -8,7 +8,7 @@ import { hasEmptyBody } from "./emptyBody";
 
 export function thumbnailRoute(request: Request) {
   return (
-    ["GET", "HEAD"].includes(request.method) &&
+    ["GET", "HEAD", "POST"].includes(request.method) &&
     /^\/api\/v1\/nodes\/[A-Za-z0-9_-]{1,128}\/thumb$/.test(new URL(request.url).pathname)
   );
 }

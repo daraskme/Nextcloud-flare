@@ -4,7 +4,11 @@ import type { GalleryPage } from "../../../shared/src/gallery";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
 import type { GalleryClient } from "../public-share/gallery";
-import { galleryOriginal, readGalleryThumbnail } from "../public-share/galleryMedia";
+import {
+  galleryOriginal,
+  largeThumbnailReady,
+  readGalleryThumbnail,
+} from "../public-share/galleryMedia";
 
 export interface Account {
   id: string;
@@ -218,6 +222,42 @@ export class ApiClient {
           signal,
         );
         return galleryOriginal(account.contentOrigin, ticket, item, active(signal));
+      },
+      preview: async (item, signal) => {
+        const token = await this.csrf();
+        active(signal).throwIfAborted();
+        const receipt = await this.request<unknown>(`/api/v1/nodes/${item.id}/thumb`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+            "Idempotency-Key": crypto.randomUUID(),
+          },
+          body: JSON.stringify({
+            blobId: item.currentBlobId,
+            variant: "lg",
+            ...(selection ? { share: selection } : {}),
+          }),
+          signal: active(signal),
+        });
+        if (!largeThumbnailReady(receipt, item)) return null;
+        const session = await post<{ sessionId: string }>(
+          {
+            purpose: "thumb",
+            delivery: "app",
+            ttlSeconds: 600,
+            targets: [
+              { nodeId: item.id, spaceId: share?.spaceId ?? account.spaceId, variant: "lg" },
+            ],
+            ...(selection ? { share: selection } : {}),
+          },
+          signal,
+        );
+        return readGalleryThumbnail(
+          `/api/v1/nodes/${item.id}/thumb?variant=lg`,
+          { "Content-Session": session.sessionId },
+          active(signal),
+        );
       },
     };
   }

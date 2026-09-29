@@ -16,6 +16,7 @@ import {
 } from "../services/shareUnlock";
 import { hasEmptyBody } from "./emptyBody";
 import { handleGalleryHttp } from "./gallery";
+import { handleLargeThumbnailHttp } from "./largeThumbnail";
 import { publicShareContent } from "./publicShareContent";
 import {
   PUBLIC_OPERATION,
@@ -57,7 +58,8 @@ export const publicShareRoute = (request: Request) => {
         (["GET", "HEAD"].includes(request.method) &&
           (action.startsWith("content/") || action.startsWith("thumb/"))) ||
         (request.method === "POST" &&
-          ["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action)) ||
+          (["unlock", "csrf", "logout", "tickets", "content-session", "nodes"].includes(action) ||
+            action.startsWith("thumb/"))) ||
         (request.method === "PATCH" && /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)) ||
         (request.method === "DELETE" &&
           (action.startsWith("tickets/") || /^nodes\/[A-Za-z0-9_-]{1,128}$/.test(action)))))
@@ -194,6 +196,14 @@ async function routePublicShareHttp(
       if (!session) return problem(401, "unauthorized");
       if (request.headers.get("Share-Session") !== session.claims.session_id)
         return problem(412, "precondition_failed");
+      if (request.method === "POST")
+        return handleLargeThumbnailHttp(
+          request,
+          env,
+          publicPrincipal(session),
+          action.slice(6),
+          csrf,
+        );
       return handleThumbnailHttp(request, env, publicPrincipal(session), action.slice(6));
     }
     if (operation || upload || action === "nodes" || action.startsWith("nodes/")) {

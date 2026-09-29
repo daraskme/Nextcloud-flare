@@ -1,6 +1,6 @@
 # サムネイル変換の実行部
 
-2026-09-29。Galleryのサムネイル生成へ使う内部実行部。`media/images/transform.ts`と`objectStream.ts`を追加した。通常uploadのmetadata確定は[IMAGE_METADATA](IMAGE_METADATA.md)、費用claimとnative終了記録は[IMAGE_COSTS](IMAGE_COSTS.md)へ接続済み。[生成物のR2保存](IMAGE_DERIVATIVES.md)も内部処理を実装済み。[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)も接続済み。[Queue自動生成](IMAGE_QUEUE.md)も接続済み。**未知nativeの運用修復、lgの要求時生成、配信、Gallery画面は未接続**。HTTP要求から有料変換を直接実行する経路はまだない。
+2026-09-29。Galleryのサムネイル生成へ使う内部実行部。`media/images/transform.ts`と`objectStream.ts`を追加した。通常uploadのmetadata確定は[IMAGE_METADATA](IMAGE_METADATA.md)、費用claimとnative終了記録は[IMAGE_COSTS](IMAGE_COSTS.md)へ接続済み。[生成物のR2保存](IMAGE_DERIVATIVES.md)も内部処理を実装済み。[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)も接続済み。[Queue自動生成](IMAGE_QUEUE.md)も接続済み。[lgの要求時生成](LARGE_THUMBNAILS.md)、[配信](THUMBNAIL_DELIVERY.md)、[Gallery](GALLERY.md)も接続済み。未知nativeの運用修復は後続。HTTP要求では生成を受け付け、有料変換はQueueで行う。
 
 ## 入出力
 
@@ -18,7 +18,7 @@
 
 1. 費用claimと成功/not_started/明示失敗の終了記録は接続済み。unknownの運用修復と失敗後の明示的な再試行予算は後続。timeoutだけでは未確定費用を解放せず、Images変換をR2 PUT成功として記録しない。
 2. 生成物の不変key、tracked R2保存、physical容量・終了記録、公開直前の原本・認可確認は[IMAGE_DERIVATIVES](IMAGE_DERIVATIVES.md)へ接続済み。pin解放・GCは[IMAGE_DERIVATIVE_CLEANUP](IMAGE_DERIVATIVE_CLEANUP.md)へ接続済み。新しいclaimによる公開再開は接続済み。未確定nativeの運用修復は後続。
-3. upload Outboxのsm/md生成は[Queue](IMAGE_QUEUE.md)へ接続済み。lgの要求時生成、thumb ticket/配信、Gallery API/UIと共有閲覧は後続。AVIF入力が実環境で非対応なら原本detailとgrid placeholderへ分岐する。
+3. upload Outboxのsm/md生成は[Queue](IMAGE_QUEUE.md)へ接続済み。lgの要求時生成、thumb ticket/配信、Gallery API/UIと共有閲覧も接続済み。AVIF入力が実環境で非対応なら原本detailとgrid placeholderへ分岐する。
 
 ## 参照
 

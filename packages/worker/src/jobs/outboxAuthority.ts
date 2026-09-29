@@ -43,7 +43,7 @@ export async function readOutboxEvent(db: D1Database, id: string): Promise<Event
     .first<EventRow>();
 }
 
-function savedPrincipal(row: EventRow): Principal | null {
+export function savedPrincipal(row: EventRow): Principal | null {
   try {
     if (!row.credential_id) return null;
     if (row.principal_kind === "user" || row.principal_kind === "app_password") {

@@ -1,6 +1,6 @@
 # 画像変換の費用・終了記録
 
-2026-09-29。画像変換の有料呼出しを重複させないための内部基盤。D1 schema0068で`image_transform_attempts`、0069で失敗の終了記録を追加し、0068/0069時点は通常77table・147 route。[生成物のR2保存](IMAGE_DERIVATIVES.md)は0070で追加済み（78table）。[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)は0071で追加済み（79table）。[Queueからのsm/md自動生成](IMAGE_QUEUE.md)は接続済み。未知nativeの運用修復、lg受付、thumb配信とGallery画面は後続で、公開HTTP内で有料変換を直接実行しない。
+2026-09-29。画像変換の有料呼出しを重複させないための内部基盤。D1 schema0068で`image_transform_attempts`、0069で失敗の終了記録を追加し、0068/0069時点は通常77table・147 route。[生成物のR2保存](IMAGE_DERIVATIVES.md)は0070で追加済み（78table）。[生成物の回収](IMAGE_DERIVATIVE_CLEANUP.md)は0071で追加済み（79table）。[Queueからのsm/md自動生成](IMAGE_QUEUE.md)は接続済み。[lg受付](LARGE_THUMBNAILS.md)、[thumb配信](THUMBNAIL_DELIVERY.md)、[Gallery](GALLERY.md)も接続済み。未知nativeの運用修復は後続で、公開HTTP内で有料変換を直接実行しない。
 
 ## 受付と費用の重複防止
 
@@ -35,4 +35,4 @@ timeout後も実結果を得られた場合は終了の事実を記録するが�
 
 0068は停止・未凍結・open permit/claimed operation/未閉鎖admission/未終了KDF/R2なしで適用する。0069はさらにpending画像変換なしを要求し、既存全列の完全一致を検査してテーブルを移行する。ControlDOは旧SQLite台帳を同期transactionで移行し、identity/cost key/grant/結果/mirror/履歴件数を保つ。適用前に独立DOの未精算も確認する。大量履歴での移行所要時間は未計測。export/purge順序とbackup/restore freezeを維持する。旧Workerへ戻す場合は停止を維持し、schemaとコードが整合する復元手順を使う。remote migrationは未実施。
 
-immutable derivative keyへのtracked R2保存とphysical容量、current node/blob/claim/epochでの結果公開、sm/md Queueは接続済み。次はlg lazy受付、thumb ticket/配信、Gallery API/UIを接続する。サムネイルは検査済み原本からサーバー側で生成する。
+immutable derivative keyへのtracked R2保存とphysical容量、current node/blob/claim/epochでの結果公開、sm/md Queueは接続済み。lg lazy受付、thumb ticket/配信、Gallery API/UIも接続済み。サムネイルは検査済み原本からサーバー側で生成する。

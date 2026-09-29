@@ -1,4 +1,22 @@
-/** Only a small, verified WebP thumbnail is materialized in browser memory. */
+import type { LargeThumbnailReceipt } from "../../../shared/src/largeThumbnail";
+
+export function largeThumbnailReady(value: unknown, item: { id: string; currentBlobId: string }) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("invalid_preview_receipt");
+  const r = value as LargeThumbnailReceipt;
+  if (
+    r.nodeId !== item.id ||
+    r.blobId !== item.currentBlobId ||
+    r.variant !== "lg" ||
+    typeof r.generator !== "string" ||
+    !/^[A-Za-z0-9_-]{1,64}$/.test(r.generator) ||
+    !["ready", "pending", "unsupported", "failed"].includes(r.state)
+  )
+    throw new Error("invalid_preview_receipt");
+  return r.state === "ready";
+}
+
+/** Only a bounded, verified WebP preview is materialized in browser memory. */
 export async function readGalleryThumbnail(
   path: string,
   headers: Record<string, string>,

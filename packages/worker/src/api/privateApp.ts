@@ -18,6 +18,7 @@ import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
+import { handleLargeThumbnailHttp } from "./largeThumbnail";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -277,6 +278,20 @@ export async function handlePrivateAppHttp(
       },
       dependencies.cursors,
     );
+  if (thumbnail)
+    if (request.method === "POST")
+      return handleLargeThumbnailHttp(
+        request,
+        env,
+        {
+          kind: "user",
+          user_id: session.user_id,
+          credential_id: session.credential_id,
+          epoch: session.epoch,
+        },
+        url.pathname.split("/")[4]!,
+        dependencies.csrf,
+      );
   if (thumbnail)
     return handleThumbnailHttp(
       request,

@@ -5,6 +5,7 @@ import { assertExists, assertOneChange, primary, type SqlStatement } from "../db
 import type { Env } from "../env";
 import { copyAuthorityStatements } from "../jobs/copyClaim";
 import { loadCopyJobManifest } from "../jobs/copyManifest";
+import { imageRequestAuthority } from "../jobs/imageRequestAuthority";
 import { digestJson } from "../jobs/operations";
 import { nodeEventAuthority, readOutboxEvent } from "../jobs/outboxAuthority";
 import { OUTBOX_REQUEUE_ELIGIBLE } from "../jobs/outboxRequeue";
@@ -82,6 +83,10 @@ export async function requeueDeadLetter(
           plan.digest,
         ]),
       );
+    } else if (event.kind === "image.requested") {
+      const saved = await imageRequestAuthority(db, event);
+      if (!saved) throw new Error("original_authority_unavailable");
+      authority = saved;
     } else {
       const statements = await nodeEventAuthority(db, event);
       if (!statements) throw new Error("original_authority_unavailable");
