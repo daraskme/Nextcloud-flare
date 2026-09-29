@@ -21,6 +21,7 @@ import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { handleLargeThumbnailHttp } from "./largeThumbnail";
+import { handleLibraryBookHttp, libraryReadRoute } from "./library";
 import { handleMediaExtractionHttp, mediaExtractionRoute } from "./mediaExtraction";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
@@ -54,6 +55,7 @@ export function privateAppRoute(request: Request): boolean {
     mediaExtractionRoute(request) ||
     galleryRoute(request) ||
     audioReadRoute(request) ||
+    libraryReadRoute(request) ||
     playbackRoute(request) ||
     audioMetadataRoute(request) ||
     searchRoute(request) ||
@@ -89,6 +91,7 @@ export async function handlePrivateAppHttp(
       !thumbnailRoute(request) &&
       !galleryRoute(request) &&
       !audioReadRoute(request) &&
+      !libraryReadRoute(request) &&
       !trashRoute(request) &&
       !deadLetterReadRoute(request) &&
       !uploadReadRoute(request) &&
@@ -106,6 +109,7 @@ export async function handlePrivateAppHttp(
   const mediaExtraction = mediaExtractionRoute(request);
   const gallery = galleryRoute(request);
   const audio = audioReadRoute(request);
+  const library = libraryReadRoute(request);
   const playback = playbackRoute(request);
   const audioMetadata = audioMetadataRoute(request);
   const search = searchRoute(request);
@@ -130,6 +134,7 @@ export async function handlePrivateAppHttp(
     !mediaExtraction &&
     !gallery &&
     !audio &&
+    !library &&
     !playback &&
     !audioMetadata &&
     !search &&
@@ -294,6 +299,13 @@ export async function handlePrivateAppHttp(
       },
       dependencies.cursors,
     );
+  if (library)
+    return handleLibraryBookHttp(request, env, {
+      kind: "user",
+      user_id: session.user_id,
+      credential_id: session.credential_id,
+      epoch: session.epoch,
+    });
   if (audio || playback || audioMetadata) {
     const principal = {
       kind: "user" as const,

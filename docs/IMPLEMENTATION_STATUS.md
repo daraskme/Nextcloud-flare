@@ -1,6 +1,17 @@
 # 実装進捗
 
-## アーカイブ索引のQueue保存・容量会計・回収（今回）
+## ZIP/CBZのページ配信・Files画像リーダー（今回）
+
+[ZIP/CBZの画像リーダー](ARCHIVE_READER.md)を所有者・内部共有・公開リンクのFilesへ接続した。公開済み索引から書籍の詳細を返し、1冊の原本/索引世代と全ページの展開bytesに固定したv4チケットで配信する。ページ番号は自然順で1から始め、現在のcredential/share・祖先非表示・原本blob・保存receipt・回収状態を配信中も確認する。画像本文の形式識別、サイズ/CRC検査、共通BudgetDOによるGET/HEAD/304の会計、single-host attachmentを適用した。UIはページ送り・番号指定・再読み込み・原本への切替に対応する。
+
+- Node関連164件成功（8file、重複除外）。page manifestの10,000ページ/8GiB/個別64MiB上限、世代固定、画像prefixとCRC error伝播、既存archive parser/codec/R2、private API/Gallery helper、書籍clientの原本差替え/不正URL/期限、公開source境界を確認した。`/tmp/ncf-page-unit.log`、`/tmp/ncf-book-client-unit.log`、`/tmp/ncf-book-client-boundary-unit.log`。
+- Native関連144件成功（10file、重複除外）。新規ページ配信24件ではSTORE/DEFLATE、AVIF、偽装HTML/SVG、自然順、HEAD/304とRange無視、原本/索引改変、credential/祖先/blob/epoch/result/ticketの変更、stream中の失効/CRC異常、チケット更新時の予算維持、app-password scope、内部共有の選択/取消、公開リンクの実HTTP経路を検証した。既存の認可・原本・thumbnail・ticket/session・BudgetDO・公開共有と、生成した公開asset/SRIの回帰も成功。thumbnail/ticket/session等の成功記録は`/tmp/ncf-page-native-final.log`。`/tmp/ncf-page-native-2.log`の旧page用途fixture 1件は、原本以外の用途を拒否する同じ意図でtrackへ更新し、`/tmp/ncf-page-public-regression.log`で19件成功。最終の書籍/認可等は`/tmp/ncf-page-native-2.log`、公開assetは`/tmp/ncf-book-public-assets.log`。
+- Chrome関連3件成功（1file、重複除外）。実upload→Queue索引→FilesのPNG/AVIF復号・ページ送り・不正画像拒否・閉じる操作、公開readリンクの390px表示と失効後の画像除去、内部read共有の受信者による閲覧を確認した。`/tmp/ncf-book-browser.log`では所有者/公開2件が成功し、内部共有のボタン名指定を修正して`/tmp/ncf-book-browser-internal.log`で残り1件が成功した。初回の画像/traceは`/tmp/ncf-book-browser-first-results`に保存。desktop/mobile画像を目視確認した。
+- typecheck、lint830file、契約・設定検査成功。`/tmp/ncf-book-{typecheck,lint,contracts,config}-final.log`。Web両入口とWorker dry-run build成功（2,050.01KiB・gzip432.05KiB、`/tmp/ncf-page-build-2.log`）。公開画面の初回buildがUI依存の境界検査で止まったため、既存Galleryと同じnative dialogと公開表示componentへ揃えた。許可する依存範囲は広げていない。
+
+関連試験は合計311件で、全suite・全browser・実Cloudflareの検証ではない。初期のD1式深度超過は条件を保持した括弧分割で解消し、公開CSRFのfixtureを空bodyに修正した。schema0077・通常81table・151 routeを維持し、新規migration/依存/remote変更なし。旧Workerへ戻すとv4チケットは読めず、最大10分で失効する。本棚専用一覧/登録root、読書位置、PDF・EPUB本文、folder images、既存原本の索引要求/COPY連携、表紙/page thumb・entry配信・app-hostページAPIは残る。運用修復と実環境gateも未完了。pushは既存の自動承認審査拒否後の明示承認待ち。
+
+## アーカイブ索引のQueue保存・容量会計・回収（先行35bb5b6）
 
 [アーカイブ索引](ARCHIVE_READER.md)を新しいZIP/CBZ/EPUBアップロードのOutboxへ接続した。原本のowner/blob/key/size/ETagに固定したJSONを検証し、SHA付き不変R2出力として保存する。保存済みprincipal・元blob step・現在のnode/祖先・epoch/claimを生成前後と公開batchで再検査する。独立DO履歴、物理専用予約、job pin、共通R2送信記録で二重PUTと根拠のない予約解放を防ぐ。公開済みの索引をLibrary metadataへ一括反映し、未公開/原本削除済みの索引はseal・実容量観測・35日猶予付きGCで回収する。復元CLIに`archives`を追加した。schema0077・通常81table・151 API route。
 

@@ -112,13 +112,14 @@ export async function publicShareTicket(
       Object.keys(input).some(
         (key) => !["nodeIds", "ttlSeconds", "delivery", "purpose", "variant"].includes(key),
       ) ||
-      !["content", "thumb"].includes(purpose as string) ||
+      !["content", "thumb", "page"].includes(purpose as string) ||
       (purpose === "thumb" ? !thumbnailVariant(input.variant) : input.variant !== undefined) ||
       (input.delivery !== undefined &&
         (!appDelivery || !new URL(request.url).pathname.endsWith("/content-session"))) ||
       !Array.isArray(input.nodeIds) ||
       input.nodeIds.length < 1 ||
       input.nodeIds.length > 1000 ||
+      (purpose === "page" && (input.nodeIds.length !== 1 || input.delivery !== undefined)) ||
       input.nodeIds.some((id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) ||
       new Set(input.nodeIds).size !== input.nodeIds.length ||
       !Number.isSafeInteger(input.ttlSeconds) ||
@@ -138,7 +139,7 @@ export async function publicShareTicket(
         spaceId: session.spaceId,
         ...(thumbnailVariant(input.variant) ? { variant: input.variant } : {}),
       })),
-      purpose as "content" | "thumb",
+      purpose as "content" | "thumb" | "page",
       Math.min(Date.now() + (input.ttlSeconds as number) * 1000, session.claims.exp * 1000),
     );
     if (appDelivery) {

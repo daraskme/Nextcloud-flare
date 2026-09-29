@@ -224,7 +224,8 @@ export class BudgetDO extends DurableObject<Env> {
       const manifest = await loadTargetManifest(this.env.BLOBS, authority);
       if (
         (manifest.v === 2 && authority.purpose !== "zip") ||
-        (manifest.v === 3 && authority.purpose !== "thumb")
+        (manifest.v === 3 && authority.purpose !== "thumb") ||
+        (manifest.v === 4 && authority.purpose !== "page")
       )
         throw new Error("budget_authorization_denied");
       targets = await manifestBudgetTargets(manifest);

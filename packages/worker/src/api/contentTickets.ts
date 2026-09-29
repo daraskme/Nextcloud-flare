@@ -57,6 +57,7 @@ async function readRequest(request: Request): Promise<{
     !Array.isArray(body.targets) ||
     body.targets.length < 1 ||
     body.targets.length > 1_000 ||
+    (body.purpose === "page" && body.targets.length !== 1) ||
     typeof body.purpose !== "string" ||
     !PURPOSES.has(body.purpose) ||
     !Number.isSafeInteger(body.ttlSeconds) ||
@@ -187,6 +188,7 @@ export async function handlePrivateContentTicketHttp(
         "content_ticket_commit_unknown",
         "content_budget_commit_unknown",
         "thumbnail_not_ready",
+        "archive_not_ready",
         "content_session_commit_unknown",
       ].includes(error.message)
     )

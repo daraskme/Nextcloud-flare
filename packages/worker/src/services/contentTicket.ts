@@ -1,5 +1,6 @@
 import {
   type AuthorizedNode,
+  authorizationAssertion,
   authorizationBatchAssertions,
   authorizeNode,
   type Principal,
@@ -15,8 +16,10 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
 } from "./accountMutation";
+import { prepareAuthorizedArchiveRead } from "./archiveRead";
 import { prepareAuthorizedNodeBlobRead } from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
+import { encodePageManifest, type PageTarget } from "./pageManifest";
 import { trackedR2Write } from "./r2Write";
 import {
   stageEncodedTargetManifest,
@@ -145,6 +148,7 @@ export async function issueContentTicket(
     !Array.isArray(targets) ||
     targets.length === 0 ||
     targets.length > 1_000 ||
+    (purpose === "page" && targets.length !== 1) ||
     !["content", "thumb", "page", "zip", "track"].includes(purpose) ||
     !Number.isSafeInteger(expiresAt) ||
     exp <= iat ||
@@ -159,6 +163,8 @@ export async function issueContentTicket(
   const proofs: (AuthorizedNode & { readonly operation: "node.read" })[] = [];
   const entries: TargetEntry[] = [];
   const thumbnails: ThumbnailTarget[] = [];
+  let page: PageTarget | undefined;
+  const pageGuards: SqlStatement[] = [];
   const thumbnailGuards: SqlStatement[] = [];
   let ownerId: string | null = null;
   for (const target of targets) {
@@ -187,6 +193,22 @@ export async function issueContentTicket(
     const object = await bucket.head(blob.key);
     if (!object || object.size !== blob.size || object.etag !== blob.r2Etag)
       throw new Error("content_ticket_blob_unavailable");
+    if (purpose === "page") {
+      const reader = await authorizeNode(
+        db,
+        share && (principal.kind === "user" || principal.kind === "app_password")
+          ? { ...principal, selected_share: share }
+          : principal,
+        { operation: "library.read", spaceId: target.spaceId, nodeId: target.nodeId },
+      );
+      const archive = await prepareAuthorizedArchiveRead(
+        db,
+        reader,
+        selectedShare ? [shareCoverageAssertion(proof.node, selectedShare)] : [],
+      );
+      page = (await archive.load(bucket, AbortSignal.timeout(25_000))).target;
+      pageGuards.push(authorizationAssertion(reader), archive.guard);
+    }
     proofs.push(proof as AuthorizedNode & { readonly operation: "node.read" });
     if (thumbnail) {
       thumbnails.push(thumbnail.target);
@@ -204,8 +226,9 @@ export async function issueContentTicket(
   if (!first || !ownerId) throw new Error("invalid_content_ticket_request");
   const budget = await ensureContentBudget(env, first, expiresAt, share);
   const write = { env, ownerId, epoch: principal.epoch };
-  const record =
-    purpose === "thumb"
+  const record = page
+    ? await stageEncodedTargetManifest(bucket, await encodePageManifest(page), write)
+    : purpose === "thumb"
       ? await stageEncodedTargetManifest(bucket, await encodeThumbnailManifest(thumbnails), write)
       : await stageTargetManifest(bucket, entries, write);
   return publishContentTicket(
@@ -223,6 +246,7 @@ export async function issueContentTicket(
       guards: [
         ...authorizationBatchAssertions(proofs),
         ...thumbnailBatchAssertions(thumbnailGuards),
+        ...pageGuards,
         ...(selectedShare
           ? shareCoverageBatchAssertions(
               proofs.map((proof) => proof.node),

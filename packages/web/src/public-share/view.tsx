@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { zipFailureMessage } from "../../../shared/src/zips";
 import { AudioLibrary, useAudioPlayer } from "./audio";
+import { BookReader } from "./book";
 import {
   PublicClient,
   PublicError,
@@ -52,7 +53,38 @@ function SharedAudio({
   );
   return <AudioLibrary key={transport.scope} client={transport} />;
 }
+function SharedBook({
+  client,
+  root,
+  node,
+  close,
+  original,
+  message,
+}: {
+  client: PublicClient;
+  root: SharedRoot;
+  node: SharedNode;
+  close: () => void;
+  original: () => void;
+  message: string;
+}) {
+  const transport = useMemo(
+    () => client.bookClient(root, node),
+    [client, root.sessionId, root.contentOrigin, node.id, node.currentBlobId],
+  );
+  return (
+    <BookReader
+      key={root.sessionId + node.id}
+      name={node.name}
+      client={transport}
+      close={close}
+      original={original}
+      originalMessage={message}
+    />
+  );
+}
 export function PublicApp({ client }: { client: PublicClient }) {
+  const [book, setBook] = useState<SharedNode | null>(null);
   const [extracting, setExtracting] = useState<SharedNode | null>(null);
   const [gallery, setGallery] = useState(false);
   const [audio, setAudio] = useState(false);
@@ -75,6 +107,7 @@ export function PublicApp({ client }: { client: PublicClient }) {
   const channel = useRef<BroadcastChannel | null>(null);
   const clear = useCallback(() => {
     client.close();
+    setBook(null);
     void forgetPublicUploads(client.id, root?.sessionId).catch(() => {});
     void forgetPublicEdits(client.id, root?.sessionId).catch(() => {});
     setRoot(null);
@@ -457,6 +490,16 @@ export function PublicApp({ client }: { client: PublicClient }) {
             >
               {audio ? "ファイル一覧へ戻る" : "オーディオで表示"}
             </button>
+            {book && (
+              <SharedBook
+                client={client}
+                root={root}
+                node={book}
+                close={() => setBook(null)}
+                original={() => void download(book)}
+                message={message}
+              />
+            )}
             {extracting && (
               <MediaExtraction
                 key={JSON.stringify([root.sessionId, extracting.id, extracting.currentBlobId])}
@@ -494,6 +537,19 @@ export function PublicApp({ client }: { client: PublicClient }) {
                         )}
                         <small>{node.kind === "file" ? size(node.size) : "フォルダー"}</small>
                       </div>
+                      {node.kind === "file" && /\.(zip|cbz)$/i.test(node.name) && (
+                        <button
+                          className="quiet"
+                          disabled={locked}
+                          onClick={() => {
+                            setMessage("");
+                            setBook(node);
+                          }}
+                          aria-label={`${node.name}を読む`}
+                        >
+                          読む
+                        </button>
+                      )}
                       {root.permissions.rename && node.id !== root.root.id && (
                         <button
                           className="rename"

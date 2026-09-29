@@ -1,6 +1,6 @@
 # 開発進捗
 
-[Bookshelfのアーカイブ読み取り基盤](ARCHIVE_READER.md)を追加しました。ZIP/CBZ・EPUBコンテナを上限付きRangeで索引化し、STORE/DEFLATE・通常ZIP64を扱います。危険なパスやサイズ偽装を拒否し、選んだentryのヘッダー一致・展開サイズ・CRCを検査します。R2原本差替え・現在認可の失効・中断を確認しました。schema0076・通常79table・151 API route。索引保存/Queue・ページ配信・本棚/PDF/EPUB画面・読書位置は次の接続対象です。Bookshelf全体は未完成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[ZIP/CBZの画像リーダー](ARCHIVE_READER.md)をFilesから開けるようにしました。新しいアップロードから保存した不変索引を使い、所有者・内部共有・公開リンクの現在権限でページを配信します。自然順のページ送り、番号指定、再読み込み、原本への切替に対応します。索引の世代・原本blob・展開bytesに固定したチケットと共通予算で、失効・差替え・不正画像・CRC異常を確認します。schema0077・通常81table・151 API route。本棚専用の一覧、読書位置、PDF/EPUB本文、既存ファイルの索引要求・COPY連携は未完成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
 

@@ -76,6 +76,20 @@ export async function prepareCookieBlobRead(
   purpose: ContentPurpose,
   variant?: ImageVariant,
 ): Promise<ContentBlobPlan> {
+  const { principal, grant } = await cookieContentGrant(db, tokens, cookieHeader, purpose);
+  return prepareContentBlobRead(db, bucket, principal, spaceId, nodeId, {
+    ...grant,
+    ...(variant ? { variant } : {}),
+  });
+}
+
+/** Resolve identity only; each reader must prove the current session, target and node before I/O. */
+export async function cookieContentGrant(
+  db: D1Database,
+  tokens: ContentTokens,
+  cookieHeader: string | null,
+  purpose: ContentPurpose,
+) {
   const sessionId = await tokens.verifyCookie(cookieHeader);
   const session = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
@@ -105,6 +119,9 @@ export async function prepareCookieBlobRead(
       user_id: session.userId,
       credential_id: session.credentialId,
       epoch: session.epoch,
+      ...(session.shareId && session.shareVersion
+        ? { selected_share: { id: session.shareId, version: session.shareVersion } }
+        : {}),
     };
   } else if (
     session.credentialKind === "share" &&
@@ -122,15 +139,15 @@ export async function prepareCookieBlobRead(
   } else {
     throw new Error("content_not_available");
   }
-  return prepareContentBlobRead(db, bucket, principal, spaceId, nodeId, {
+  const grant: ContentBlobGrant = {
     sessionId,
     ticketId: session.ticketId,
     purpose,
-    ...(variant ? { variant } : {}),
     ...(session.shareId && session.userId && session.shareVersion
       ? { share: { id: session.shareId, version: session.shareVersion } }
       : {}),
-  });
+  };
+  return { principal, grant };
 }
 
 /** Verify the immutable target manifest, then recheck all D1 authority in the blob plan batch. */

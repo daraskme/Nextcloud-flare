@@ -2,9 +2,11 @@ import type { AudioPage, PlaybackState } from "../../../shared/src/audio";
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
 import type { GalleryPage } from "../../../shared/src/gallery";
+import type { ArchiveBook } from "../../../shared/src/library";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
 import { type AudioClient, audioOriginal } from "../public-share/audioClient";
+import type { BookClient } from "../public-share/bookClient";
 import type { GalleryClient } from "../public-share/gallery";
 import {
   galleryOriginal,
@@ -277,6 +279,46 @@ export class ApiClient {
           },
           signal,
         ),
+    };
+  }
+
+  bookClient(
+    account: Account,
+    node: FileNode,
+    share?: SelectedShare & { spaceId: string },
+  ): BookClient {
+    const lifetime = this.#lifetime;
+    const active = (signal: AbortSignal) =>
+      AbortSignal.any([signal, lifetime.signal, AbortSignal.timeout(30000)]);
+    const query = new URLSearchParams();
+    if (share) {
+      query.set("shareId", share.id);
+      query.set("shareVersion", String(share.version));
+    }
+    return {
+      contentOrigin: account.contentOrigin,
+      blobId: node.currentBlobId ?? "",
+      nodeId: node.id,
+      lifetime: lifetime.signal,
+      book: (signal) =>
+        this.request<ArchiveBook>(`/api/v1/library/${node.id}${query.size ? "?" + query : ""}`, {
+          signal: active(signal),
+        }),
+      ticket: async (signal) => {
+        const token = await this.csrf();
+        active(signal).throwIfAborted();
+        return this.request<{ ticket: string }>("/api/v1/content-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+          body: JSON.stringify({
+            purpose: "page",
+            ttlSeconds: 600,
+            targets: [{ nodeId: node.id, spaceId: share?.spaceId ?? account.spaceId }],
+            ...(share ? { share: { id: share.id, version: share.version } } : {}),
+          }),
+          signal: active(signal),
+        });
+      },
     };
   }
 

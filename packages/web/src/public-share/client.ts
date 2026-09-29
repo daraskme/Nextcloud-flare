@@ -1,7 +1,9 @@
 import type { AudioPage } from "../../../shared/src/audio";
 import type { GalleryPage } from "../../../shared/src/gallery";
+import type { ArchiveBook } from "../../../shared/src/library";
 import { zipDownloadPath } from "../../../shared/src/zips";
 import { type AudioClient, audioOriginal } from "./audioClient";
+import type { BookClient } from "./bookClient";
 import type { GalleryClient } from "./gallery";
 import { galleryOriginal, largeThumbnailReady, readGalleryThumbnail } from "./galleryMedia";
 
@@ -102,6 +104,47 @@ export class PublicClient {
       undefined,
       active,
     );
+  }
+  bookClient(root: SharedRoot, node: SharedNode): BookClient {
+    const headers = { "Share-Session": root.sessionId };
+    const active = (signal: AbortSignal) =>
+      AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(30000)]);
+    return {
+      contentOrigin: root.contentOrigin,
+      blobId: node.currentBlobId ?? "",
+      nodeId: node.id,
+      lifetime: this.lifetime.signal,
+      book: (signal) =>
+        this.request<ArchiveBook>(
+          `/library/${node.id}`,
+          "GET",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          active(signal),
+        ),
+      ticket: async (signal) => {
+        const { token } = await this.request<{ token: string }>(
+          "/csrf",
+          "POST",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          active(signal),
+        );
+        return this.request<{ ticket: string }>(
+          "/content-session",
+          "POST",
+          { nodeIds: [node.id], purpose: "page", ttlSeconds: 600 },
+          token,
+          headers,
+          undefined,
+          active(signal),
+        );
+      },
+    };
   }
   audioClient(root: SharedRoot, nodeId: string): AudioClient {
     const headers = { "Share-Session": root.sessionId };

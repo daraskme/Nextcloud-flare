@@ -27,6 +27,7 @@ import {
 } from "../../lib/api";
 import { PrivateAudio } from "../audio/PrivateAudio";
 import { PrivateGallery } from "../gallery/PrivateGallery";
+import { PrivateBook } from "../library/PrivateBook";
 import { uploads } from "../uploads/manager";
 
 export interface SharedActionScope {
@@ -142,6 +143,7 @@ function SharedContent({
 } & SharedActions) {
   const selected = { id: share.id, version: share.version };
   const id = nodeId ?? share.rootNodeId;
+  const [book, setBook] = useState<FileNode | null>(null);
   const [gallery, setGallery] = useState(false);
   const [audio, setAudio] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -193,6 +195,10 @@ function SharedContent({
     }
   };
   const open = (file: FileNode) => {
+    if (file.kind === "file" && /\.(zip|cbz)$/i.test(file.name)) {
+      setBook(file);
+      return;
+    }
     const target = window.open("about:blank", "_blank");
     if (!target) {
       setFailure("ファイルを開くには、このサイトのポップアップを許可してください。");
@@ -228,6 +234,15 @@ function SharedContent({
   }
   return (
     <>
+      {book && !error && (
+        <PrivateBook
+          key={`${share.id}:${share.version}:${book.id}`}
+          account={account}
+          node={book}
+          share={{ ...selected, spaceId: share.spaceId }}
+          close={() => setBook(null)}
+        />
+      )}
       <div className="breadcrumbs" aria-label="パンくず">
         <Link to="/shared">共有された項目</Link>
         {!error &&

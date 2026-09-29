@@ -46,6 +46,7 @@ import { CopyJobsPanel } from "./features/copy/CopyJobsPanel";
 import { clearCopyRecords, rememberCopy } from "./features/copy/records";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
+import { PrivateBook } from "./features/library/PrivateBook";
 import { LinkShareDialog } from "./features/shares/LinkShareDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
 import { type SharedActionScope, SharedWorkspace } from "./features/shares/SharedWorkspace";
@@ -725,6 +726,7 @@ export function App() {
     !audio &&
     searchTerm?.scopeId === parentId &&
     !!searchTerm.query;
+  const [book, setBook] = useState<FileNode | null>(null);
   const [action, setAction] = useState<Action | null>(null);
   const [actionScope, setActionScope] = useState<SharedActionScope | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
@@ -828,6 +830,7 @@ export function App() {
     setSidebar(false);
     setAction(null);
     setActionScope(null);
+    setBook(null);
   }, [pathname]);
   useEffect(() => {
     const listener = (event: BeforeUnloadEvent) => {
@@ -873,6 +876,10 @@ export function App() {
     }
   };
   const openNode = (node: FileNode) => {
+    if (node.kind === "file" && /\.(zip|cbz)$/i.test(node.name)) {
+      setBook(node);
+      return;
+    }
     if (node.kind === "folder") {
       void navigate({ to: "/files/$folderId", params: { folderId: node.id } });
       return;
@@ -1563,6 +1570,14 @@ export function App() {
             refresh={refresh}
           />
         )}
+      {book && me && (
+        <PrivateBook
+          key={`${me.id}:${me.epoch}:${book.id}`}
+          account={me}
+          node={book}
+          close={() => setBook(null)}
+        />
+      )}
       {deadLettersOpen && me?.role === "app_admin" && (
         <DeadLettersDialog account={me} close={() => setDeadLettersOpen(false)} />
       )}

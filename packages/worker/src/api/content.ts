@@ -4,6 +4,7 @@ import type { ContentTokens } from "../auth/contentTokens";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
+import { streamCookieArchivePage } from "../services/archivePage";
 import { streamBudgetedContentBlob } from "../services/blobRead";
 import { thumbnailVariant } from "../services/thumbnailManifest";
 
@@ -132,10 +133,11 @@ export async function handleContentHttp(
       return cors(problem(400, "bad_request"), env.APP_ORIGIN);
     }
   }
-  const match = /^\/c\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+  const match = /^\/c\/([^/]+)\/([^/]+)(?:\/pages\/([1-9][0-9]{0,4}))?$/.exec(url.pathname);
   if (!match || (request.method !== "GET" && request.method !== "HEAD"))
     return problem(404, "not_found");
-  const [, nodeId, blobId] = match;
+  const [, nodeId, blobId, page] = match;
+  if (page && variant) return problem(404, "not_found");
   if (!nodeId || !blobId || !NODE_ID.test(nodeId) || !NODE_ID.test(blobId))
     return problem(404, "not_found");
   if (origin !== null && origin !== env.APP_ORIGIN) return problem(403, "forbidden");
@@ -147,18 +149,31 @@ export async function handleContentHttp(
       .bind(nodeId, blobId)
       .first<{ spaceId: string }>();
     if (!node) return reply(problem(404, "not_found"));
-    const response = await streamBudgetedContentBlob(
-      env.DB,
-      env.BLOBS,
-      env.BUDGETS,
-      tokens,
-      request.headers.get("Cookie"),
-      node.spaceId,
-      nodeId,
-      variant ? "thumb" : "content",
-      request,
-      thumbnailVariant(variant) ? variant : undefined,
-    );
+    const response = page
+      ? await streamCookieArchivePage(
+          env.DB,
+          env.BLOBS,
+          env.BUDGETS,
+          tokens,
+          node.spaceId,
+          nodeId,
+          blobId,
+          Number(page),
+          request,
+          download || env.APP_ORIGIN === env.CONTENT_ORIGIN,
+        )
+      : await streamBudgetedContentBlob(
+          env.DB,
+          env.BLOBS,
+          env.BUDGETS,
+          tokens,
+          request.headers.get("Cookie"),
+          node.spaceId,
+          nodeId,
+          variant ? "thumb" : "content",
+          request,
+          thumbnailVariant(variant) ? variant : undefined,
+        );
     if (download && response.ok) {
       const disposition = response.headers.get("Content-Disposition");
       if (disposition)

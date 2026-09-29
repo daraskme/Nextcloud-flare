@@ -1,6 +1,6 @@
 # ZIP/CBZ・EPUBコンテナの読み取り基盤
 
-アーカイブの索引解析・エントリのストリーム展開に加え、新しいZIP/CBZ/EPUBアップロードのQueue索引化と不変R2保存を接続した。schema0077・通常81table・151 API route。Library API・ページ配信・画面は開発中で、本棚全体はまだ利用できない。
+アーカイブの索引解析・エントリのストリーム展開に加え、新しいZIP/CBZ/EPUBアップロードのQueue索引化と不変R2保存を接続した。schema0077・通常81table・151 API route。現在の閲覧権限に固定したZIP/CBZの詳細API・ページ配信とFilesからの画像リーダーを接続した。本棚専用一覧、読書位置、PDF・EPUB本文は未実装。
 
 ## 実装済み
 
@@ -29,12 +29,26 @@ Outboxの完了時に`archive_index`と`library_items`を一括反映する。�
 
 0077は停止・未凍結・native処理の終了を要求し、既存R2 receiptとguard・既存archive indexを保持する。新しい2表はbackup/restore凍結と全テーブルexportへ含める。`archive_index.r2_key`の単独uniqueを外し、将来の同一所有者COPYで同じ出力を参照できる形にしたが、COPYのLibrary接続はまだ実装していない。
 
+## ZIP/CBZのページ配信と画像リーダー
+
+所有者・明示選択した内部共有・公開read/editリンクで、索引が公開済みのZIP/CBZをFilesから開ける。ページ送り、番号指定、期限切れ時の再読み込み、原本を開く操作がある。現在のblobと同じ書籍だけを表示し、画面を閉じた場合や認証のlifetime終了、チケット期限切れ時には画像を外す。公開画面は表示componentを共有し、private API clientを含まない。
+
+- 詳細は `GET /api/v1/library/:nodeId` と `GET /api/v1/public/shares/:shareId/library/:nodeId`。タイトル・現在blob・自然順ページ数を返す。内部共有は `shareId/shareVersion`、公開リンクは元の `Share-Session` を固定する。
+- `purpose: page` のチケットは1冊だけを対象にする。v4 manifestは原本node/blob、archive UUID、generator、index SHA/bytes、各ページの展開bytesと合計を固定する。一般のv1 page manifestやcontent/thumb cookieではページを取得できない。BudgetDOの対象は1冊につき1件で、10,000ページをDOへ保存しない。原本配信と同じ利用者予算を使い、同じ索引のticket更新で許容量を補充しない。
+- `GET/HEAD /c/:nodeId/:blobId/pages/:page` は1から始まる自然順ページ番号。Rangeは無視して200と全ページを返し、`Accept-Ranges: none` とする。GET/HEAD/304はいずれもrequest予算を予約する。展開bytesはmanifestから取得して索引GETより前に予約する。未知の中断やCRC失敗は予約量を保持する。
+- `library.read` は現在credential・選択share・EffectiveLive・祖先非表示・epoch・maintenanceを確認する。公開済み索引の原本tuple、R2出力・SHA・pin・保存receipt・回収状態を照合し、I/O前後とstream中も再検査する。復元後の有効な出力は元の生成epochのまま保持し、読者のepochは現在値を要求する。
+- 索引は1回・最大8MiBの条件付きRangeで再検証し、原本は最大5回・圧縮entry上限+67,000bytesまでの条件付きRangeで読む。local header・descriptor・DEFLATE・展開長・CRCの既存検査を使う。stream全体は共通の最大10分leaseに従う。
+- JPEG/PNG/GIF/WebPの本文signatureとAVIFのftypを先頭最大4KiBで識別する。拡張子は候補選択だけに使う。HTML/SVGは配信せず、出力名も判定した形式から作る。これはMIME識別であり完全な画像デコーダによる検証ではない。小さい画像は応答前にCRCまで、大きい画像のCRCはEOFで検査する。HEAD/304でも本文の形式と現在権限を確認する。
+- 全応答はprivate/no-store・nosniff・no-referrer、画像は隔離content hostでinline。single-hostではattachment、画面からは原本を開く。entry本文、ページthumb、app-hostページAPIはまだ接続していない。
+
 ## 次の接続
 
 1. 既存ファイルの索引要求、現在の読者での再抽出、COPY先との連携、失敗状態の案内を接続する。今回の自動索引化は新しいアップロードの元イベントを対象とする。
-2. 原本・索引世代・現在認可に固定したpage/entry配信、画像本文の形式検査、content host分離、表紙/ページthumb、private/internal/public Library APIを接続する。
-3. 本棚と画像リーダー、フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shell、利用者/node/blob別の読書位置を接続する。
+2. 本棚一覧/登録root API、entry配信、表紙/ページthumb、app-hostページAPIを接続する。
+3. 本棚専用画面、フォルダー書籍・PDF、EPUBのOPF/目次解析・サニタイズ・二重iframeのtrusted shell、利用者/node/blob別の読書位置を接続する。
 
 ## 参照仕様
+
+ページ画像のsignatureは[WHATWG MIME Sniffing](https://mimesniff.spec.whatwg.org/#matching-an-image-type-pattern)の対応形式を用い、AVIFは既存の上限付きftyp判定を再利用する。
 
 ZIPのrecord・ZIP64・descriptor・Unicode extraは[PKWARE APPNOTE](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)、native DEFLATEの形式と失敗条件は[WHATWG Compression Standard](https://compression.spec.whatwg.org/)を確認した。製品上限・認可・EPUB分離は[DESIGN](DESIGN.md) §9A/§10と[IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) Phase8Bに従う。設計追加レビューの古い案より現行DESIGNを優先する。
