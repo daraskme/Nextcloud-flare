@@ -820,7 +820,7 @@ upload-only は create/upload receipt/status だけを許可し、list/read/over
 5. 同じ user+share（private は user+credential）の session 更新・別 tab 発行は、期限内の既存 `budget_id` を再利用する。新 session で budget を増やさない。budget 上限は対象合計 bytes×3、1,024 requests/10分、parallel≤8。異なる対象へ移る場合は、有効期間内の認可manifestに含まれるpurpose/blob IDを重複排除したsize合計を用いる。同じ内容の新manifest・別tab・COW別名では加算せず、対象追加でも使用量・request/lease・期限をリセットしない。台帳は1,024対象までとし、leaseと合わせたSQLite容量を1MiBに制限する。詳細と移行境界は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)。
 6. `/c` content、thumb、page、entry、track、ZIP、対応 public route の全 byte/request/HEAD/Range を同じ BudgetDO へ接続する。BudgetDO storage は≤1MiB、lease TTL 10分、disconnect/cancel は明示精算し、漏れは alarm が回収する。各leaseは保存済みbyte期間・現行D1/sessionの期限内に収め、R2読み込みと応答bodyにもその期限を適用する。旧leaseが有効な間は会計期間の切替で台帳を破棄しない。`/c`の実装・検証範囲は[CONTENT_LEASES](CONTENT_LEASES.md)を参照。
 
-単一 host 構成も同じ host-only Cookie を使うが §10 の CSP/attachment 制限は維持する。fetch→blob URL は≤32MiB の plain text、sanitized Markdown input、pdf.js inputだけ。大容量 audio/video/image/EPUB を blob 化しない。
+単一 host 構成も同じ host-only Cookie を使うが §10 の CSP/attachment 制限は維持する。fetch→blob URL は≤32MiB の plain text、sanitized Markdown input、pdf.js inputだけ。大容量 audio/video/image/EPUB を blob 化しない。Galleryの生成済みsm WebPだけは、MIME検査・実bytes上限12MiB・同時4件の制限で一時object URLを作り、画面外やscope変更時に解放する。原本画像はcontent originのURLから直接表示する。
 
 ### 8.3 ZIP / ticket budgets
 
@@ -845,6 +845,8 @@ React、TypeScript、Vite、Tailwind、shadcn/ui、TanStack Router/Query/Virtual
 ### 9A.1 Gallery
 
 folder 内画像/動画、任意 recursive を対象にし keyset 最大200件。`node_media` は `width,height,taken_at,duration_ms,orientation,dominant_color` と bounded camera 情報だけ。GPS破棄。thumbnail は sm256/md768/lg1600、lg は lazy unique claim。recursive 候補は SQL で50,000を強制し、§15 gate 未合格時は10,000へ縮小する。v1 UI は grid/list、folder/recursive 切替、lightbox、次/前、共有閲覧を必須とし、高度 layout は v1.1。
+
+現在の[Gallery画像閲覧](GALLERY.md)は撮影日時順の一覧と基本UI・共有へ接続済み。50,000候補のローカルD1 rows_read gateが未達のため、上記の縮小条件に従い通常10,000候補を使う。動画metadata/player、lg要求時生成は未完了。
 
 2026-09-22 確定要件: 事前エンコード済みの AVIF 画像と AV1 動画（MP4/WebM、Opus 音声付き/音声無し）を必須対応とする。原本を保持し、画像表示/動画再生は認可済み content URL へ直接接続する。実 codec/bit depth を取得して再生可否を判定し、未対応端末では download 導線を提供する。詳細は [`MEDIA_FORMATS.md`](MEDIA_FORMATS.md)。
 

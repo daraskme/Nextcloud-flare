@@ -1,7 +1,10 @@
 import type { CopyJobStatus } from "../../../shared/src/copyJobs";
 import type { DeadLetterPage, DeadLetterRequeue } from "../../../shared/src/deadLetters";
+import type { GalleryPage } from "../../../shared/src/gallery";
 import type { InternalShare, SelectedShare } from "../../../shared/src/shares";
 import { zipDownloadPath, zipFailureMessage } from "../../../shared/src/zips";
+import type { GalleryClient } from "../public-share/gallery";
+import { galleryOriginal, readGalleryThumbnail } from "../public-share/galleryMedia";
 
 export interface Account {
   id: string;
@@ -150,6 +153,74 @@ export class ApiClient {
   #csrf: { token: string; until: number } | undefined;
   #csrfFlight: Promise<string> | undefined;
   #lifetime = new AbortController();
+
+  galleryClient(
+    account: Account,
+    rootId: string,
+    share?: SelectedShare & { spaceId: string },
+  ): GalleryClient {
+    const lifetime = this.#lifetime;
+    const active = (signal: AbortSignal) =>
+      AbortSignal.any([signal, lifetime.signal, AbortSignal.timeout(30000)]);
+    const selection = share ? { id: share.id, version: share.version } : undefined;
+    const post = async <T>(body: unknown, signal: AbortSignal) => {
+      const token = await this.csrf();
+      active(signal).throwIfAborted();
+      return this.request<T>("/api/v1/content-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+        body: JSON.stringify(body),
+        signal: active(signal),
+      });
+    };
+    return {
+      list: (recursive, cursor, signal) => {
+        const query = new URLSearchParams({ recursive: recursive ? "1" : "0" });
+        if (cursor) query.set("cursor", cursor);
+        if (share) {
+          query.set("shareId", share.id);
+          query.set("shareVersion", String(share.version));
+        }
+        return this.request<GalleryPage>(`/api/v1/nodes/${rootId}/gallery?${query}`, {
+          signal: active(signal),
+        });
+      },
+      prepare: async (items, signal) => {
+        const receipt = await post<{ sessionId: string }>(
+          {
+            purpose: "thumb",
+            delivery: "app",
+            ttlSeconds: 600,
+            targets: items.map((item) => ({
+              nodeId: item.id,
+              spaceId: share?.spaceId ?? account.spaceId,
+              variant: "sm",
+            })),
+            ...(selection ? { share: selection } : {}),
+          },
+          signal,
+        );
+        return (item, signal) =>
+          readGalleryThumbnail(
+            `/api/v1/nodes/${item.id}/thumb?variant=sm`,
+            { "Content-Session": receipt.sessionId },
+            active(signal),
+          );
+      },
+      original: async (item, signal) => {
+        const { ticket } = await post<{ ticket: string }>(
+          {
+            purpose: "content",
+            ttlSeconds: 300,
+            targets: [{ nodeId: item.id, spaceId: share?.spaceId ?? account.spaceId }],
+            ...(selection ? { share: selection } : {}),
+          },
+          signal,
+        );
+        return galleryOriginal(account.contentOrigin, ticket, item, active(signal));
+      },
+    };
+  }
 
   clear() {
     this.#lifetime.abort();

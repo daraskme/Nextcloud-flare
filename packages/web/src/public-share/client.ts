@@ -1,4 +1,7 @@
+import type { GalleryPage } from "../../../shared/src/gallery";
 import { zipDownloadPath } from "../../../shared/src/zips";
+import type { GalleryClient } from "./gallery";
+import { galleryOriginal, readGalleryThumbnail } from "./galleryMedia";
 
 export interface SharedNode {
   id: string;
@@ -76,6 +79,63 @@ export class PublicError extends Error {
 }
 export class PublicClient {
   readonly lifetime = new AbortController();
+  galleryClient(root: SharedRoot, nodeId: string): GalleryClient {
+    const active = (signal: AbortSignal) =>
+      AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(30000)]);
+    const headers = { "Share-Session": root.sessionId };
+    const post = async <T>(body: unknown, signal: AbortSignal) => {
+      const { token } = await this.request<{ token: string }>(
+        "/csrf",
+        "POST",
+        undefined,
+        undefined,
+        headers,
+        undefined,
+        signal,
+      );
+      return this.request<T>("/content-session", "POST", body, token, headers, undefined, signal);
+    };
+    return {
+      list: (recursive, cursor, signal) => {
+        const query = new URLSearchParams({ nodeId, recursive: recursive ? "1" : "0" });
+        if (cursor) query.set("cursor", cursor);
+        return this.request<GalleryPage>(
+          `/gallery?${query}`,
+          "GET",
+          undefined,
+          undefined,
+          headers,
+          undefined,
+          signal,
+        );
+      },
+      prepare: async (items, signal) => {
+        const receipt = await post<{ sessionId: string }>(
+          {
+            nodeIds: items.map((item) => item.id),
+            purpose: "thumb",
+            variant: "sm",
+            delivery: "app",
+            ttlSeconds: 600,
+          },
+          signal,
+        );
+        return (item, signal) =>
+          readGalleryThumbnail(
+            `/api/v1/public/shares/${this.id}/thumb/${item.id}?variant=sm`,
+            { ...headers, "Content-Session": receipt.sessionId },
+            active(signal),
+          );
+      },
+      original: async (item, signal) => {
+        const { ticket } = await post<{ ticket: string }>(
+          { nodeIds: [item.id], ttlSeconds: 300 },
+          signal,
+        );
+        return galleryOriginal(root.contentOrigin, ticket, item, active(signal));
+      },
+    };
+  }
   constructor(
     readonly id: string,
     private secret: string | null,

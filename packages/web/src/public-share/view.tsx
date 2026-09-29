@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { zipFailureMessage } from "../../../shared/src/zips";
 import {
   PublicClient,
@@ -6,9 +6,11 @@ import {
   type PublicRoot,
   type SharedChildren,
   type SharedNode,
+  type SharedRoot,
 } from "./client";
 import { PublicEditor } from "./editor";
 import { forgetPublicEdits } from "./editStore";
+import { Gallery } from "./gallery";
 import { forgetPublicUploads } from "./uploadStore";
 import { PublicUploads } from "./uploads";
 
@@ -18,7 +20,23 @@ function size(bytes: number | null) {
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
+function SharedGallery({
+  client,
+  root,
+  nodeId,
+}: {
+  client: PublicClient;
+  root: SharedRoot;
+  nodeId: string;
+}) {
+  const transport = useMemo(
+    () => client.galleryClient(root, nodeId),
+    [client, root.sessionId, root.contentOrigin, nodeId],
+  );
+  return <Gallery key={`${root.sessionId}:${nodeId}`} client={transport} />;
+}
 export function PublicApp({ client }: { client: PublicClient }) {
+  const [gallery, setGallery] = useState(false);
   const [root, setRoot] = useState<PublicRoot | null>(null);
   const [trail, setTrail] = useState<SharedNode[]>([]);
   const [page, setPage] = useState<SharedChildren | null>(null);
@@ -396,102 +414,111 @@ export function PublicApp({ client }: { client: PublicClient }) {
                 更新
               </button>
             </div>
-            <ul className="file-list">
-              {(current?.kind === "file" ? [current] : (page?.children ?? [])).map((node) => (
-                <li key={node.id}>
-                  <span
-                    className={`file-icon ${node.kind === "file" ? "document" : "folder"}`}
-                    aria-hidden="true"
-                  >
-                    {node.kind === "file" ? "↓" : "▰"}
-                  </span>
-                  <div className="file-info">
-                    {node.kind === "file" ? (
-                      <span className="filename">{node.name}</span>
-                    ) : (
-                      <button
-                        className="folder-name"
-                        disabled={locked}
-                        onClick={() => void browse([...trail, node])}
+            <button className="quiet" disabled={locked} onClick={() => setGallery((x) => !x)}>
+              {gallery ? "ファイル一覧へ戻る" : "ギャラリーで表示"}
+            </button>
+            {gallery && current ? (
+              <SharedGallery client={client} root={root} nodeId={current.id} />
+            ) : (
+              <>
+                <ul className="file-list">
+                  {(current?.kind === "file" ? [current] : (page?.children ?? [])).map((node) => (
+                    <li key={node.id}>
+                      <span
+                        className={`file-icon ${node.kind === "file" ? "document" : "folder"}`}
+                        aria-hidden="true"
                       >
-                        {node.name}
-                      </button>
-                    )}
-                    <small>{node.kind === "file" ? size(node.size) : "フォルダー"}</small>
-                  </div>
-                  {root.permissions.rename && node.id !== root.root.id && (
-                    <button
-                      className="rename"
-                      disabled={editLocked}
-                      aria-label={`${node.name}の名前を変更`}
-                      onClick={() => {
-                        setMessage("");
-                        setEditing({ node });
-                      }}
-                    >
-                      名前を変更
-                    </button>
-                  )}
-                  {node.kind === "file" && root.permissions.overwrite && (
-                    <button
-                      className="rename"
-                      disabled={editLocked || !node.currentBlobId}
-                      aria-label={`${node.name}を上書き`}
-                      onClick={() => {
-                        setMessage("");
-                        setUploading({ node });
-                      }}
-                    >
-                      上書き
-                    </button>
-                  )}
-                  {root.permissions.delete && node.id !== root.root.id && (
-                    <button
-                      className="rename"
-                      disabled={editLocked}
-                      aria-label={`${node.name}をごみ箱へ移動`}
-                      onClick={() => {
-                        setMessage("");
-                        setEditing({ node, remove: true });
-                      }}
-                    >
-                      ごみ箱へ移動
-                    </button>
-                  )}
-                  {node.kind !== "file" && (
-                    <button
-                      className="download"
-                      disabled={locked}
-                      onClick={() => void download(node)}
-                      aria-label={`${node.name}をZIPで保存`}
-                    >
-                      ZIPで保存 <span aria-hidden="true">↓</span>
-                    </button>
-                  )}
-                  {node.kind === "file" && (
-                    <button
-                      className="download"
-                      disabled={locked || !node.currentBlobId}
-                      onClick={() => void download(node)}
-                      aria-label={`${node.name}を開く・保存`}
-                    >
-                      開く・保存 <span aria-hidden="true">↗</span>
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            {!busy && current?.kind !== "file" && page?.children.length === 0 && (
-              <p className="empty">このフォルダーは空です。</p>
-            )}
-            {page?.nextCursor && (
-              <button
-                className="load-more"
-                disabled={locked}
-                onClick={() => void browse(trail, page.nextCursor)}
-              >
-                続きを表示
-              </button>
+                        {node.kind === "file" ? "↓" : "▰"}
+                      </span>
+                      <div className="file-info">
+                        {node.kind === "file" ? (
+                          <span className="filename">{node.name}</span>
+                        ) : (
+                          <button
+                            className="folder-name"
+                            disabled={locked}
+                            onClick={() => void browse([...trail, node])}
+                          >
+                            {node.name}
+                          </button>
+                        )}
+                        <small>{node.kind === "file" ? size(node.size) : "フォルダー"}</small>
+                      </div>
+                      {root.permissions.rename && node.id !== root.root.id && (
+                        <button
+                          className="rename"
+                          disabled={editLocked}
+                          aria-label={`${node.name}の名前を変更`}
+                          onClick={() => {
+                            setMessage("");
+                            setEditing({ node });
+                          }}
+                        >
+                          名前を変更
+                        </button>
+                      )}
+                      {node.kind === "file" && root.permissions.overwrite && (
+                        <button
+                          className="rename"
+                          disabled={editLocked || !node.currentBlobId}
+                          aria-label={`${node.name}を上書き`}
+                          onClick={() => {
+                            setMessage("");
+                            setUploading({ node });
+                          }}
+                        >
+                          上書き
+                        </button>
+                      )}
+                      {root.permissions.delete && node.id !== root.root.id && (
+                        <button
+                          className="rename"
+                          disabled={editLocked}
+                          aria-label={`${node.name}をごみ箱へ移動`}
+                          onClick={() => {
+                            setMessage("");
+                            setEditing({ node, remove: true });
+                          }}
+                        >
+                          ごみ箱へ移動
+                        </button>
+                      )}
+                      {node.kind !== "file" && (
+                        <button
+                          className="download"
+                          disabled={locked}
+                          onClick={() => void download(node)}
+                          aria-label={`${node.name}をZIPで保存`}
+                        >
+                          ZIPで保存 <span aria-hidden="true">↓</span>
+                        </button>
+                      )}
+                      {node.kind === "file" && (
+                        <button
+                          className="download"
+                          disabled={locked || !node.currentBlobId}
+                          onClick={() => void download(node)}
+                          aria-label={`${node.name}を開く・保存`}
+                        >
+                          開く・保存 <span aria-hidden="true">↗</span>
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {!busy && current?.kind !== "file" && page?.children.length === 0 && (
+                  <p className="empty">このフォルダーは空です。</p>
+                )}
+                {page?.nextCursor && (
+                  <button
+                    className="load-more"
+                    disabled={locked}
+                    onClick={() => void browse(trail, page.nextCursor)}
+                  >
+                    続きを表示
+                  </button>
+                )}
+              </>
             )}
           </>
         )}

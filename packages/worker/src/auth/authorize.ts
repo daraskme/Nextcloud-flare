@@ -76,6 +76,7 @@ export type NodeRequest =
       readonly operation:
         | "node.read"
         | "search.read"
+        | "gallery.read"
         | "node.rename"
         | "node.trash"
         | "node.props.write"
@@ -104,7 +105,7 @@ export type AuthorizedNode =
       readonly node: LiveNode;
     }
   | {
-      readonly operation: "search.read";
+      readonly operation: "search.read" | "gallery.read";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -185,10 +186,10 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     json_extract(?3,'$.selected_share.id') AS selected_id,json_extract(?3,'$.selected_share.version') AS selected_version,
     json_extract(?3,'$.service_principal_id') AS service_id,json_extract(?3,'$.token_expires_at') AS token_expiry,
     json_extract(?3,'$.access_iss') AS access_iss,json_extract(?3,'$.common_name') AS common_name),
-  a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
-    SELECT id,parent_id,space_id,owner_id,kind,deleted_at,0,'/'||id||'/' FROM nodes WHERE id=?1 AND space_id=?2
+  a(id,parent_id,space_id,owner_id,kind,deleted_at,hidden,depth,path) AS (
+    SELECT id,parent_id,space_id,owner_id,kind,deleted_at,hidden,0,'/'||id||'/' FROM nodes WHERE id=?1 AND space_id=?2
     UNION ALL
-    SELECT n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,a.depth+1,a.path||n.id||'/'
+    SELECT n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,n.hidden,a.depth+1,a.path||n.id||'/'
       FROM nodes n JOIN a ON n.id=a.parent_id
       WHERE a.depth<64 AND n.space_id=a.space_id AND n.owner_id=a.owner_id AND instr(a.path,'/'||n.id||'/')=0
   ),
@@ -227,19 +228,21 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?9 IS NULL OR n.parent_id=?9)
       AND (?10 IS NULL OR n.current_blob_id=?10)
       AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(deleted_at IS NULL)=1
+        AND (?6<>'gallery.read' OR MIN(hidden=0)=1)
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
       AND (?6 NOT IN ('node.create','node.rename','node.trash','node.props.write','node.content.write') OR ctl.maintenance=0)
       AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
       AND (?6 NOT IN ('node.rename','node.trash') OR n.parent_id IS NOT NULL)
       AND (?6<>'node.content.write' OR n.kind='file')
+      AND (?6<>'gallery.read' OR (p.kind IN ('user','app_password','link_share') AND ctl.maintenance=0))
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
-        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
+        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','gallery.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM user_authority u WHERE (u.id=n.owner_id AND p.selected_id IS NULL) OR EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE (?6<>'node.trash' OR p.selected_id IS NOT NULL)
                 AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
-        OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
+        OR (p.kind='link_share' AND ?6 IN ('node.read','gallery.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
             WHERE c.id=p.credential_id AND c.kind='share'
@@ -286,6 +289,7 @@ function nodeAuthorization(
     ![
       "node.read",
       "search.read",
+      "gallery.read",
       "node.create",
       "node.rename",
       "node.trash",
@@ -326,15 +330,17 @@ function nodeAuthorization(
       owner_only: request.ownerOnly === true,
       upload_action: request.upload === true,
     }),
-    request.operation === "node.create"
-      ? "node:create"
-      : request.operation === "node.trash"
-        ? "node:delete"
-        : request.operation === "node.rename" ||
-            request.operation === "node.props.write" ||
-            request.operation === "node.content.write"
-          ? "node:write"
-          : "node:read",
+    request.operation === "gallery.read"
+      ? "library:read"
+      : request.operation === "node.create"
+        ? "node:create"
+        : request.operation === "node.trash"
+          ? "node:delete"
+          : request.operation === "node.rename" ||
+              request.operation === "node.props.write" ||
+              request.operation === "node.content.write"
+            ? "node:write"
+            : "node:read",
     request.operation === "node.create"
       ? "create"
       : request.operation === "node.trash"

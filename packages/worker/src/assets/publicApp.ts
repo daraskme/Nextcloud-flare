@@ -72,7 +72,7 @@ export async function servePublicApp(request: Request, env: Env) {
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
         "X-Frame-Options": "DENY",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ${content.origin}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: ${content.origin}; connect-src 'self' ${content.origin}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'`,
       },
     });
   } catch {

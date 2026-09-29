@@ -44,6 +44,7 @@ import {
 import { CopyJobsPanel } from "./features/copy/CopyJobsPanel";
 import { clearCopyRecords, rememberCopy } from "./features/copy/records";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
+import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { LinkShareDialog } from "./features/shares/LinkShareDialog";
 import { ShareDialog } from "./features/shares/ShareDialog";
 import { type SharedActionScope, SharedWorkspace } from "./features/shares/SharedWorkspace";
@@ -691,14 +692,16 @@ export function App() {
   const authExpired =
     account.error instanceof ApiError && [401, 403].includes(account.error.status);
   const me = authExpired ? undefined : account.data;
+  const gallery = pathname === "/gallery" || pathname.startsWith("/gallery/");
   const trash = pathname === "/trash";
   const shared = pathname === "/shared" || pathname.startsWith("/shared/");
   const sharedPath = /^\/shared(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(pathname);
-  const parentId = /^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
+  const parentId = /^\/(?:files|gallery)\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
-  const searching = !trash && !shared && searchTerm?.scopeId === parentId && !!searchTerm.query;
+  const searching =
+    !trash && !shared && !gallery && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [actionScope, setActionScope] = useState<SharedActionScope | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
@@ -718,7 +721,7 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && !trash && !shared && !searching,
+    enabled: !!me && !trash && !shared && !gallery && !searching,
     retry: false,
   });
   const results = useInfiniteQuery({
@@ -930,10 +933,17 @@ export function App() {
         </Link>
         <div className="workspace-label">PERSONAL WORKSPACE</div>
         <nav aria-label="メインナビゲーション">
-          <Link to="/files" className={!trash && !shared ? "nav-link active" : "nav-link"}>
+          <Link
+            to="/files"
+            className={!trash && !shared && !gallery ? "nav-link active" : "nav-link"}
+          >
             <HardDrive size={19} />
             マイドライブ
             <span className="nav-dot" />
+          </Link>
+          <Link to="/gallery" className={gallery ? "nav-link active" : "nav-link"}>
+            <FileImage size={19} />
+            ギャラリー
           </Link>
           <Link to="/shared" className={shared ? "nav-link active" : "nav-link"}>
             <Users size={19} />
@@ -1151,6 +1161,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : gallery ? (
+            <PrivateGallery account={me} rootId={parentId} />
           ) : shared ? (
             <SharedWorkspace
               account={me}
@@ -1168,6 +1180,15 @@ export function App() {
                   scopeId={parentId}
                   close={() => setStatsScope(null)}
                 />
+              )}
+              {!trash && (
+                <Link
+                  to="/gallery/$folderId"
+                  params={{ folderId: parentId }}
+                  className="gallery-open"
+                >
+                  このフォルダーをギャラリーで開く
+                </Link>
               )}
               <div className="list-toolbar">
                 <div className="list-summary">

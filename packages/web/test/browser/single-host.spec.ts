@@ -1,4 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
+import { upload as uploadImage } from "./imageHelpers";
+import { open as openPublic } from "./publicShareHelpers";
 import { fileContent, rootFile, writeTestFile } from "./uploadHelpers";
 
 const origin = "https://app.ncf.test:8880";
@@ -25,6 +27,63 @@ async function downloaded(popup: Page, name: string, expected: string) {
   expect(Buffer.concat(chunks).toString()).toBe(expected);
   await popup.close();
 }
+
+test("single host Gallery decodes private and anonymous AVIF lightboxes", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(180000);
+  await owner(page);
+  const image = await uploadImage(page, "red.avif");
+  await page.goto("/gallery");
+  const view = async (target: Page) => {
+    const gallery = target.getByRole("region", { name: "ギャラリー" });
+    await expect(gallery.locator(".gallery-thumb img")).toHaveCount(1);
+    await gallery.getByRole("button", { name: `${image.name}を表示` }).click();
+    const img = target.getByRole("dialog", { name: "画像の詳細" }).locator("img");
+    await expect(img).toHaveAttribute("src", new RegExp(`^${origin}/c/`));
+    await expect
+      .poll(() =>
+        img.evaluate((image) => [
+          (image as HTMLImageElement).naturalWidth,
+          (image as HTMLImageElement).naturalHeight,
+        ]),
+      )
+      .toEqual([16, 12]);
+    await target.getByRole("button", { name: "画像を閉じる" }).click();
+  };
+  await view(page);
+  const share = await page.evaluate(async (nodeId) => {
+    const { token } = await fetch("/api/v1/csrf", { method: "POST" }).then((r) => r.json());
+    const response = await fetch("/api/v1/shares", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+      body: JSON.stringify({ kind: "link", rootNodeId: nodeId, role: "read" }),
+    });
+    if (response.status !== 201) throw new Error("single_gallery_share");
+    return response.json();
+  }, image.node.id);
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    await context.addCookies([
+      {
+        name: "ncf-test-user",
+        value: "anonymous",
+        domain: "app.ncf.test",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ]);
+    const guest = await context.newPage();
+    await openPublic(guest, `${origin}/s/${share.id}#${share.secret}`, image.name);
+    await guest.getByRole("button", { name: "ギャラリーで表示" }).click();
+    await view(guest);
+  } finally {
+    await context.close();
+  }
+});
 
 test("single host serves private Files and anonymous public downloads with isolated authority", async ({
   page,

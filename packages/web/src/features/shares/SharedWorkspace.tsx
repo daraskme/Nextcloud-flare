@@ -24,6 +24,7 @@ import {
   formatBytes,
   zipErrorMessage,
 } from "../../lib/api";
+import { PrivateGallery } from "../gallery/PrivateGallery";
 import { uploads } from "../uploads/manager";
 
 export interface SharedActionScope {
@@ -139,6 +140,7 @@ function SharedContent({
 } & SharedActions) {
   const selected = { id: share.id, version: share.version };
   const id = nodeId ?? share.rootNodeId;
+  const [gallery, setGallery] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [uploadFailure, setUploadFailure] = useState("");
   const [zipFailure, setZipFailure] = useState("");
@@ -329,137 +331,152 @@ function SharedContent({
               event.target.value = "";
             }}
           />
-          <div className="shared-list" aria-label="共有フォルダーの項目">
-            {files.map((file) => (
-              <article className="shared-row" key={file.id}>
-                {file.kind === "folder" ? <Folder size={24} /> : <File size={24} />}
-                {file.kind === "folder" ? (
-                  <Link
-                    className="shared-entry"
-                    to="/shared/$shareId/$nodeId"
-                    params={{ shareId: share.id, nodeId: file.id }}
-                  >
-                    <strong>{file.name}</strong>
-                    <span>フォルダー</span>
-                  </Link>
-                ) : (
-                  <button type="button" className="shared-entry" onClick={() => open(file)}>
-                    <strong>{file.name}</strong>
-                    <span>{formatBytes(file.size)} · 開く・保存</span>
-                  </button>
-                )}
-                <div className="shared-row-actions">
-                  {file.kind === "folder" && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`${file.name}をZIPで保存`}
-                      disabled={zipBusy}
-                      onClick={() => downloadZip(file.id)}
-                    >
-                      <Download size={16} />
-                    </Button>
-                  )}
-                  {(!editable || file.id === share.rootNodeId) && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`${file.name}をコピー`}
-                      disabled={writesBlocked}
-                      onClick={() =>
-                        onAction(
-                          { kind: "copy", node: file },
-                          { share, parentId: folder ? id : (file.parentId ?? null) },
-                        )
-                      }
-                    >
-                      <Copy size={16} />
-                    </Button>
-                  )}
-                  {editable && (
-                    <>
-                      {file.id !== share.rootNodeId && (
+          <Button onClick={() => setGallery((x) => !x)}>
+            {gallery ? "ファイル一覧へ戻る" : "ギャラリーで表示"}
+          </Button>
+          {gallery ? (
+            <PrivateGallery
+              account={account}
+              rootId={id}
+              share={{ ...selected, spaceId: share.spaceId }}
+            />
+          ) : (
+            <>
+              <div className="shared-list" aria-label="共有フォルダーの項目">
+                {files.map((file) => (
+                  <article className="shared-row" key={file.id}>
+                    {file.kind === "folder" ? <Folder size={24} /> : <File size={24} />}
+                    {file.kind === "folder" ? (
+                      <Link
+                        className="shared-entry"
+                        to="/shared/$shareId/$nodeId"
+                        params={{ shareId: share.id, nodeId: file.id }}
+                      >
+                        <strong>{file.name}</strong>
+                        <span>フォルダー</span>
+                      </Link>
+                    ) : (
+                      <button type="button" className="shared-entry" onClick={() => open(file)}>
+                        <strong>{file.name}</strong>
+                        <span>{formatBytes(file.size)} · 開く・保存</span>
+                      </button>
+                    )}
+                    <div className="shared-row-actions">
+                      {file.kind === "folder" && (
                         <Button
                           variant="ghost"
                           size="icon"
-                          aria-label={`${file.name}の名前を変更`}
+                          aria-label={`${file.name}をZIPで保存`}
+                          disabled={zipBusy}
+                          onClick={() => downloadZip(file.id)}
+                        >
+                          <Download size={16} />
+                        </Button>
+                      )}
+                      {(!editable || file.id === share.rootNodeId) && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`${file.name}をコピー`}
                           disabled={writesBlocked}
                           onClick={() =>
                             onAction(
-                              { kind: "rename", node: file },
+                              { kind: "copy", node: file },
                               { share, parentId: folder ? id : (file.parentId ?? null) },
                             )
                           }
                         >
-                          <Pencil size={16} />
+                          <Copy size={16} />
                         </Button>
                       )}
-                      {file.kind === "file" && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label={`${file.name}を上書き`}
-                          disabled={writesBlocked}
-                          onClick={() =>
-                            onAction(
-                              { kind: "overwrite", node: file },
-                              { share, parentId: folder ? id : (file.parentId ?? null) },
-                            )
-                          }
-                        >
-                          <Upload size={16} />
-                        </Button>
+                      {editable && (
+                        <>
+                          {file.id !== share.rootNodeId && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`${file.name}の名前を変更`}
+                              disabled={writesBlocked}
+                              onClick={() =>
+                                onAction(
+                                  { kind: "rename", node: file },
+                                  { share, parentId: folder ? id : (file.parentId ?? null) },
+                                )
+                              }
+                            >
+                              <Pencil size={16} />
+                            </Button>
+                          )}
+                          {file.kind === "file" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`${file.name}を上書き`}
+                              disabled={writesBlocked}
+                              onClick={() =>
+                                onAction(
+                                  { kind: "overwrite", node: file },
+                                  { share, parentId: folder ? id : (file.parentId ?? null) },
+                                )
+                              }
+                            >
+                              <Upload size={16} />
+                            </Button>
+                          )}
+                          {file.id !== share.rootNodeId && (
+                            <details className="shared-more">
+                              <summary aria-label={`${file.name}のその他の操作`}>
+                                <MoreHorizontal size={18} />
+                              </summary>
+                              <div className="shared-more-items">
+                                {(["move", "copy", "trash"] as const).map((kind) => (
+                                  <Button
+                                    key={kind}
+                                    variant="ghost"
+                                    disabled={writesBlocked}
+                                    onClick={(event) => {
+                                      event.currentTarget
+                                        .closest("details")
+                                        ?.removeAttribute("open");
+                                      onAction(
+                                        { kind, node: file },
+                                        { share, parentId: folder ? id : (file.parentId ?? null) },
+                                      );
+                                    }}
+                                  >
+                                    {kind === "move"
+                                      ? "移動"
+                                      : kind === "copy"
+                                        ? "コピー"
+                                        : "ごみ箱に移動"}
+                                  </Button>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </>
                       )}
-                      {file.id !== share.rootNodeId && (
-                        <details className="shared-more">
-                          <summary aria-label={`${file.name}のその他の操作`}>
-                            <MoreHorizontal size={18} />
-                          </summary>
-                          <div className="shared-more-items">
-                            {(["move", "copy", "trash"] as const).map((kind) => (
-                              <Button
-                                key={kind}
-                                variant="ghost"
-                                disabled={writesBlocked}
-                                onClick={(event) => {
-                                  event.currentTarget.closest("details")?.removeAttribute("open");
-                                  onAction(
-                                    { kind, node: file },
-                                    { share, parentId: folder ? id : (file.parentId ?? null) },
-                                  );
-                                }}
-                              >
-                                {kind === "move"
-                                  ? "移動"
-                                  : kind === "copy"
-                                    ? "コピー"
-                                    : "ごみ箱に移動"}
-                              </Button>
-                            ))}
-                          </div>
-                        </details>
-                      )}
-                    </>
-                  )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {!files.length && !children.hasNextPage && (
+                <div className="empty-state">
+                  <Folder size={42} />
+                  <h2>この共有フォルダーは空です</h2>
                 </div>
-              </article>
-            ))}
-          </div>
-          {!files.length && !children.hasNextPage && (
-            <div className="empty-state">
-              <Folder size={42} />
-              <h2>この共有フォルダーは空です</h2>
-            </div>
-          )}
-          {folder && children.hasNextPage && (
-            <div className="list-footer">
-              <Button
-                disabled={children.isFetchingNextPage}
-                onClick={() => void children.fetchNextPage()}
-              >
-                さらに読み込む
-              </Button>
-            </div>
+              )}
+              {folder && children.hasNextPage && (
+                <div className="list-footer">
+                  <Button
+                    disabled={children.isFetchingNextPage}
+                    onClick={() => void children.fetchNextPage()}
+                  >
+                    さらに読み込む
+                  </Button>
+                </div>
+              )}
+            </>
           )}
         </>
       )}

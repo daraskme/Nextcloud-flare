@@ -1,6 +1,24 @@
 # 実装進捗
 
-## サムネイル配信と世代固定チケット（今回）
+## Galleryの画像一覧・共有閲覧（今回）
+
+[Gallery](GALLERY.md)の画像APIを所有者・内部共有・公開リンクへ接続した。現在の原本とmetadata generatorを固定し、撮影日時（なければ更新日時）降順・ID昇順の200件ページを返す。専用HMACカーソルはcredential・共有version・root・epoch・tree generation・generator・再帰指定・候補上限も照合する。全祖先の非表示／削除状態と現在の認可を一覧SELECTと同じbatchで再検査する。
+
+UIはグリッド／リスト、直下／再帰、前後ページ、原本ライトボックス・前後移動・矢印キー・Escapeに対応する。画面付近の公開済みsmを同時4件以下で取得し、非表示・ページ移動・scope変更・logoutで中断してobject URLを解放する。原本はcontent-host URLを直接表示する。共有停止後の再読では古い一覧を消す。schema0071・通常79table・147 route、migration/依存追加なし。公開bundleのmodule allowlistを拡張しない。
+
+- native6file/93件成功（40.13秒、/tmp/ncf-gallery-native-regression.log）。Gallery12件に認可・node/shared read・thumb配信・public asset境界の回帰を含む。ページ順序・カーソル改変/転用・現在の原本/生成version・非表示/削除枝・最終batchの失効/世代変更・内部共有scope・公開link root範囲を検証した。
+- 最後にmetadata generatorのカーソル束縛を追加し、Gallery12件を再検証して成功（6.06秒、/tmp/ncf-gallery-native-final.log）。同じ12件なので加算しない。初期fixtureの存在しない削除列と1blobに50,050別名を与えるrefcount違反は、実trash operationと独立した画像blobへ修正した。
+- 50,050画像fixtureで候補50,000を測定すると、一覧SELECTはrows_read=550,203・154msとなり、設計§15.1の60,000行gateに失敗した（/tmp/ncf-gallery-gate.log）。設計の縮小条件に従い通常上限を10,000に設定。同じfixtureでは110,203行・34msだった。最終試験はgate判定に応じた上限とtruncatedを検証する。全認可込みや実Cloudflareのp95測定ではなく、50,000 gate合格とは扱わない。
+- Node3file/39件成功（247ms、/tmp/ncf-gallery-unit-final.log）。WebP MIME・実bytes・宣言長・12MiB上限・分割転送・中断・古いclientのlogout後利用拒否と既存API/ZIPを検証した。
+- 最初のbrowser試験で実HTTPのサムネイルがContent-Lengthなしの分割転送となることを確認した。宣言長があれば照合し、常に実bytesを上限内で数える読取りへ修正した。既存image metadata/thumbnailのbrowser3件は同runで成功（/tmp/ncf-gallery-browser-1.log）。
+- 修正後の所有者Gallery browser1件成功（/tmp/ncf-gallery-browser-final.log）。グリッド／リストの保持、再帰切替、実PNG/JPEG/AVIF原本decode、キーボード、390px横幅を確認した。同runの共有停止fixtureはDELETEに必須のContent-Typeがなく403となり、既存API契約に合わせた。修正後の共有browser1件成功（1.4分、/tmp/ncf-gallery-browser-revocation.log）。内部共有と匿名リンクでサムネイル・原本を表示し、共有停止後の一覧消去まで確認した。
+- 型・lint706file・契約/設定検査成功（/tmp/ncf-gallery-{types-final-2,lint-final-2,contracts-final,config-final}.log）。Web build/Worker dry-run成功（/tmp/ncf-gallery-build-final.log）。
+- 単一host構成のbrowser1件成功（1.4分、/tmp/ncf-gallery-single-host.log）。所有者と匿名の単一ファイル共有で、sm表示・同じoriginの原本URL・AVIFの16×12 decodeを確認した。関連検証はNode39 + native93 + browser6 = 重複を除き138件成功。
+- 公開画面の切替ボタンを既存の表示へ統一し、最終Gallery browser2件成功（1.4分、/tmp/ncf-gallery-browser-polish.log）。390pxの一覧と内部共有・匿名共有の画面を/tmp/ncf-gallery-browser-polish配下のPNGで目視確認した。最終の型・lint706file・Web build/Worker dry-runも成功（/tmp/ncf-gallery-{types-polish,lint-polish,build-polish}.log）。ローカルTLSの接続警告は出たが、assertionとプロセス終了は成功した。
+
+lg要求時生成、既存画像の再抽出/copy引継ぎ、動画metadata/player、Bookshelf/Audioと復旧・運用の残件は未完了。全test suiteと実Cloudflareでの検証は行っていない。remote resource/secret/migration/deploy変更なし。pushは前回の自動承認審査拒否後の承認待ち。
+
+## サムネイル配信と世代固定チケット（先行7728954）
 
 [サムネイル配信](THUMBNAIL_DELIVERY.md)を既存のprivate/public thumb routeとcontent hostへ接続した。manifest v3で原本blob・公開済みimageId・variant・generator・実出力bytesを固定する。app方式は元Access/共有credentialに束縛したContent-Sessionを返す。原本用Cookieと共存し、thumbチケットを原本へ流用しない。BudgetDOは生成世代で重複排除し、COW別名・別manifest・再発行でもallowanceを増やさない。
 

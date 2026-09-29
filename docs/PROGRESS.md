@@ -1,8 +1,10 @@
 # 開発進捗
 
-[サムネイル配信](THUMBNAIL_DELIVERY.md)を所有者・内部共有・公開リンクへ接続しました。生成済みWebPの世代とサイズをチケットに固定し、現在の閲覧権限・原本・共有状態を配信直前にも確認します。同じ生成物の別名や再発行では配信容量を加算しません。schema0071・通常79table・147 routeを維持します。次はGallery API/UIとlgの要求時生成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[Galleryの画像一覧と閲覧](GALLERY.md)を所有者・内部共有・公開リンクへ接続しました。撮影日時順の200件ページ、グリッド／リスト、再帰切替、原本ライトボックスと前後移動に対応します。現在の原本・生成version・認可を固定し、サムネイル取得は画面付近の同時4件に制限します。50,000候補の読み取り行数gateが未達のため、設計に従い通常10,000候補へ縮小します。schema0071・通常79table・147 routeを維持します。lg要求時生成、動画情報・player、Bookshelf/Audioと運用の残件は継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[サムネイル配信](THUMBNAIL_DELIVERY.md)を所有者・内部共有・公開リンクへ接続しました。生成済みWebPの世代とサイズをチケットに固定し、現在の閲覧権限・原本・共有状態を配信直前にも確認します。同じ生成物の別名や再発行では配信容量を加算しません。schema0071・通常79table・147 routeを維持します。次はGallery API/UIとlgの要求時生成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [アップロード後のサムネイル生成](IMAGE_QUEUE.md)をQueueへ接続しました。通常・匿名uploadとWebDAV PUTからsm256/md768のWebPを生成・保存し、成功済みの再配信では変換とPUTを重複させません。invocation全体で有料試行2回・25秒を共有し、非対応・既知の失敗は原本を残して記録します。未知結果は保留します。schema0071・通常79table・147 routeを維持します。次はthumb配信・Gallery API/UI・lgの要求時生成です。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
@@ -42,7 +44,7 @@ Files基本操作、単一/分割upload、trash/restore/purge、検索、WebDAV�
 
 前回の再試行はmigration0061で後継受付の一意索引と確定時検査を追加し、通常75table・147 routeを維持しています。依存追加はありません。検証の詳細は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を正とします。remote migration/deployは行っていません。
 
-次はGallery API/UIとlg要求時生成、page/track・media配信、copyのDLQ運用・未解決attemptの修復を進めます。ZIPの実環境・最大規模検証も残っています。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
+次はlg要求時生成、動画情報/playerとpage/track・media配信、copyのDLQ運用・未解決attemptの修復を進めます。ZIPの実環境・最大規模検証も残っています。復旧側の未知multipart全体閉鎖・予約/physical最終精算は、未記録処理の終了証拠が不足しており保留を維持します。旧backup修復、安全な中止、logical import、大規模DB/RTO・終了履歴の容量測定、通知/timer設置、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・staging・公開も残っています。
 
 先行dad1f95の[CI36455427980](https://github.com/daraskme/Nextcloud-flare/actions/runs/36455427980)は、Ubuntu・Windows全Node/4分割・通常/単一host browser・backup bindings/cliの全10jobが成功して終了しました。過去のWindows native失敗の根本原因が特定されたことを意味しません。
 

@@ -15,6 +15,7 @@ import {
   unlockShare,
 } from "../services/shareUnlock";
 import { hasEmptyBody } from "./emptyBody";
+import { handleGalleryHttp } from "./gallery";
 import { publicShareContent } from "./publicShareContent";
 import {
   PUBLIC_OPERATION,
@@ -29,7 +30,7 @@ import { handleUploadHttp, publicUploadRoute } from "./uploads";
 import { handleZipHttp, publicZipRoute } from "./zips";
 
 const ROUTE =
-  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|content-session|(?:content|thumb)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
+  /^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})(?:\/(unlock|logout|csrf|gallery|content-session|(?:content|thumb)\/[A-Za-z0-9_-]{1,128}|tickets(?:\/[A-Za-z0-9_-]{1,128})?|nodes(?:\/[A-Za-z0-9_-]{1,128}(?:\/zip)?)?|zips\/[A-Za-z0-9_-]{1,128}|children\/[A-Za-z0-9_-]{1,128}|uploads(?:\/up_[a-f0-9]{64}(?:\/(?:content|complete|parts\/[1-9][0-9]{0,4}))?)?))?$/;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -51,7 +52,8 @@ export const publicShareRoute = (request: Request) => {
     publicUploadRoute(request) ||
     publicZipRoute(request) ||
     (!!match &&
-      ((request.method === "GET" && (!action || action.startsWith("children/"))) ||
+      ((request.method === "GET" &&
+        (!action || action === "gallery" || action.startsWith("children/"))) ||
         (["GET", "HEAD"].includes(request.method) &&
           (action.startsWith("content/") || action.startsWith("thumb/"))) ||
         (request.method === "POST" &&
@@ -119,6 +121,7 @@ async function routePublicShareHttp(
       (url.search &&
         !action.startsWith("children/") &&
         !action.startsWith("thumb/") &&
+        action !== "gallery" &&
         !(upload && request.method === "GET")) ||
       url.hash
     )
@@ -174,6 +177,18 @@ async function routePublicShareHttp(
       if (request.headers.get("Share-Session") !== session.claims.session_id)
         return problem(412, "precondition_failed");
       return publicShareContent(request, env, session, action.slice(8));
+    }
+    if (action === "gallery") {
+      if (!session) return problem(401, "unauthorized");
+      if (request.headers.get("Share-Session") !== session.claims.session_id)
+        return problem(412, "precondition_failed");
+      return handleGalleryHttp(
+        request,
+        env,
+        publicPrincipal(session),
+        dependencies.cursors,
+        session.rootNodeId,
+      );
     }
     if (action.startsWith("thumb/")) {
       if (!session) return problem(401, "unauthorized");

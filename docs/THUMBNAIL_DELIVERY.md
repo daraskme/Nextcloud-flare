@@ -20,6 +20,6 @@ publicの対応content-sessionは、従来の`nodeIds`・`ttlSeconds`に`purpose
 
 発行時は現在の原本と公開済み世代、WebP metadata・実容量・checksum・pin・native終了・未退役を同じD1 batchで照合する。R2 HEAD後のチケット確定batchでも再確認する。複数の生成物は32件ごとのJSON入力とCOUNTで一括照合し、D1のstatement・binding・式の深さの上限を守る。34件の別名を実D1で検証したが、1,000件時の性能測定は未実施。配信時はmanifest hash・対象tuple・現在のcredential/共有/祖先/原本を確認し、budget待機後、R2 HEAD後、R2 GET後にも同じ認可と世代を再検査する。別の生成物へ暗黙に切り替えない。
 
-応答はimage/webp・inline・nosniff・private,no-store。readyがない場合はチケット発行を503とし、既存対象との不一致は拒否する。原本や別variantへ自動fallbackしない。Gallery側で原本detailとplaceholderを選ぶUIは後続。
+応答はimage/webp・inline・nosniff・private,no-store。readyがない場合はチケット発行を503とし、既存対象との不一致は拒否する。原本や別variantへ自動fallbackしない。[Gallery](GALLERY.md)では公開済みsmを遅延取得し、準備中・非対応・失敗はplaceholderで示す。原本detailは利用者が開いた画像だけ取得する。
 
 schema0071・通常79table・147 routeを維持。routeのvariant operandを明記した。migration・依存追加なし。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)へ記録する。

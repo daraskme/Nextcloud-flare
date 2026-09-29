@@ -17,6 +17,7 @@ import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { copyJobRoute, handleCopyJobHttp } from "./copyJobs";
 import { deadLetterReadRoute, deadLetterRoute, handleDeadLetterHttp } from "./deadLetters";
+import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -46,6 +47,7 @@ export function privateAppRoute(request: Request): boolean {
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
     thumbnailRoute(request) ||
+    galleryRoute(request) ||
     searchRoute(request) ||
     statsRoute(request) ||
     trashRoute(request) ||
@@ -77,6 +79,7 @@ export async function handlePrivateAppHttp(
     (url.search &&
       !nodeReadRoute(request) &&
       !thumbnailRoute(request) &&
+      !galleryRoute(request) &&
       !trashRoute(request) &&
       !deadLetterReadRoute(request) &&
       !uploadReadRoute(request) &&
@@ -91,6 +94,7 @@ export async function handlePrivateAppHttp(
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
   const thumbnail = thumbnailRoute(request);
+  const gallery = galleryRoute(request);
   const search = searchRoute(request);
   const stats = statsRoute(request);
   const trashRead = trashRoute(request);
@@ -110,6 +114,7 @@ export async function handlePrivateAppHttp(
     !logout &&
     !nodeRead &&
     !thumbnail &&
+    !gallery &&
     !search &&
     !stats &&
     !trashRead &&
@@ -259,6 +264,18 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.listCursors,
+    );
+  if (gallery)
+    return handleGalleryHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.cursors,
     );
   if (thumbnail)
     return handleThumbnailHttp(

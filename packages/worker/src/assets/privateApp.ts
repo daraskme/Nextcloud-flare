@@ -8,7 +8,7 @@ import { privateAssets } from "./privateManifest";
 
 const assets = new Set<string>(privateAssets);
 const pages =
-  /^(?:\/|\/files(?:\/[A-Za-z0-9_-]{1,128})?|\/trash|\/shared(?:\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?)?)$/;
+  /^(?:\/|\/(?:files|gallery)(?:\/[A-Za-z0-9_-]{1,128})?|\/trash|\/shared(?:\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?)?)$/;
 
 export function privateAssetRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
@@ -49,7 +49,7 @@ export async function servePrivateApp(
   headers.set("X-Frame-Options", "DENY");
   headers.set(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ${contentOrigin.origin}; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
   );
   return new Response(request.method === "HEAD" ? null : resource.body, {
     status: resource.status,
