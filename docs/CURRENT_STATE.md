@@ -1,8 +1,10 @@
 # 現在の実装状態
 
-[所有者間COPY](COPY_JOBS.md)へ音声metadataの引継ぎを追加しました。新しいmanifest v2で受付時の抽出値・override・時間・番号と検索cacheを固定し、コピー先のAudio一覧・Files検索へ同時反映します。元タグが受付後に変わっても固定値を維持し、旧v1ジョブも従来の契約で再開します。rawと正規化後を含む8 MiB上限を検査します。schema0074・通常79table・149 API route。既存曲の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[既存音声の再索引](AUDIO_SEARCH.md)を定期保守へ接続しました。保存済みの実効タグから検索cache・base索引・FTSを一括修復します。ControlDOへ進行位置を保存し、1回32候補・最大8件・5秒で少しずつ進めます。原本・編集値・再生位置は変更せず、競合や停止・backup/restore凍結を再検査します。schema0074・通常79table・149 API route。cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[所有者間COPY](COPY_JOBS.md)へ音声metadataの引継ぎを追加しました。新しいmanifest v2で受付時の抽出値・override・時間・番号と検索cacheを固定し、コピー先のAudio一覧・Files検索へ同時反映します。元タグが受付後に変わっても固定値を維持し、旧v1ジョブも従来の契約で再開します。rawと正規化後を含む8 MiB上限を検査します。schema0074・通常79table・149 API route。既存曲の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [音声タグの検索](AUDIO_SEARCH.md)をFilesへ接続しました。新しく抽出・編集した曲名・アーティスト・アルバムを検索でき、改名・MOVE・復元と同一所有者COPYでタグを保持します。単一/分割upload・DAV上書きでは旧原本のタグを直ちに外します。schema0074・通常79table・149 API route。既存曲の一括再索引、所有者間COPYの音声引継ぎ、cover、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
@@ -122,6 +124,8 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
+| 音声タグ検索と既存曲の再索引 | 抽出/編集・ファイル操作・所有者間COPYとの同期。定期保守による旧cache/base/FTSの修復、永続cursor・32候補/8件/5秒上限 | Unicode、競合/巻戻し、応答喪失、元データ/再生位置保持、途中再開・同時実行・停止、検索cursor失効。件数はIMPLEMENTATION_STATUS | 原本再抽出、他media、実D1負荷と進行表示。[詳細](AUDIO_SEARCH.md) |
+| AudioとGallery | 曲一覧・常駐player・本人の位置保存、タグ編集、MP3/FLAC/WAV/AAC/Vorbis/Opus。画像lightbox・AV1原本再生・サムネイル配信と共有閲覧 | ローカルD1/R2/QueueとChrome、Audio2,000曲・最大長タグ、所有者/共有/公開閲覧。詳細は各機能資料 | cover、Bookshelf、未対応codec、他OS/browserと実Cloudflare |
 | サムネイル変換の内部実行部 | 固定原本の入力計画、条件付きR2 stream、静止画sm/md/lg WebP、出力metadata非保持・寸法・hash・中断 | Nodeの上限/破損/失効/遅延、ローカルImagesのJPEG/PNG/WebP/AVIF/10-bit・3サイズ・alpha・EXIF除去 | 費用claim/native記録、Queue/R2保存・physical会計・配信、Gallery、実EXIF回転・品質・plan検証。[詳細](IMAGE_TRANSFORMS.md) |
 | 画像メタデータと原本MIME | 新しい通常/匿名upload・DAV PUTのOutbox、JPEG/PNG/WebP/AVIF header、EXIF whitelist、current blob/parent/claim、元uploadを確認した受け取り専用認可 | Nodeの破損/上限、実D1/R2の原子確定/応答喪失/失効、Chromeの6形式と匿名AVIF実decode | Images/サムネイル・Gallery API/UI、既存データ/copy/move、動画/音声、他browser・実環境。[詳細](IMAGE_METADATA.md) |
 | 公開リンクの所有者管理API/画面 | CRUD、閲覧/編集切替、期限、専用鍵によるpassword保存、秘密値更新、現行所有者の認可と共通受付、旧session/ticket失効、URLコピー | 実D1の権限変更・競合・rollback/応答喪失・cursor分離、実PBKDF2・Unicode・鍵切替、mobile browser操作 | 実環境。[詳細](PUBLIC_SHARES.md) |
@@ -238,8 +242,8 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 - File System Access handle、詳細preview。
 - コピー追跡のタブ終了後・別端末での復元、公開link管理、media metadata検索、大量gridの仮想化。
-- Gallery/lightbox、Bookshelf/EPUB reader、Audio player。
-- AVIF/AV1/Opusの実browser再生試験とfallback。
+- Bookshelf/EPUB reader、Audio cover、mediaの残る詳細表示・操作。Gallery/lightboxとAudio playerは上記の範囲を接続済み。
+- AVIF/AV1/Opusの他OS/browser検証と未対応環境のfallback整備。ローカルChromeの原本decode/再生は確認済み。
 
 ### 制御・運用
 
@@ -268,11 +272,11 @@ CI分割変更ae79ecaの[CI36387497530](https://github.com/daraskme/Nextcloud-fl
 
 ### 目標
 
-Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) の製品完了条件まで進める。ユーザー確認が不要なローカル実装、試験、通常commit、承認済みの`origin/codex/database-restore`への通常pushは継続する。
+Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATION_BRIEF](IMPLEMENTATION_BRIEF.md) の製品完了条件まで進める。ユーザー確認が不要なローカル実装、試験、通常commitは継続する。pushは以下の最新の承認状況に従う。
 
 ### 許可と禁止
 
-- 検証済みのまとまりはcommitし、`origin/codex/database-restore`へ通常pushしてよい。共有mainへのpushは自動承認レビューに拒否されている。
+- 検証済みのまとまりはローカルcommitする。`origin/codex/database-restore`へのpushは472e682まで実行済みだが、後続5854920は自動承認審査で「外部宛先へのコード送信の明示承認がない」と拒否された。daraskme/Nextcloud-flare・同branchへの送信を明示した承認質問は未回答のため、後続commitもpushしない。共有mainへのpushも自動承認レビューに拒否されている。
 - force pushはしない。
 - GitHubへのpushをCloudflare production deployの許可と解釈しない。
 - remote resource作成、remote D1 migration、secret設定、staging/production deployは、具体的な環境情報と実行段階の確認が必要。

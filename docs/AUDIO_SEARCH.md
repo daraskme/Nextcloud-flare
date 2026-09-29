@@ -1,6 +1,6 @@
 # 音声タグの検索
 
-2026-09-29。migration0074で`node_audio`に検索用の正規化データを追加した。原本の音声タグ抽出と利用者のoverride編集・resetで、現在の曲名・artist・albumから同時に生成する。現在はFilesの検索API/FTSへ接続し、ファイル名と実効3fieldを検索対象にする。対象は新しく抽出・編集された音声と、その同一所有者内コピー、および新しいv2受付による所有者間COPY。旧データの一括再構築は未接続。
+2026-09-29。migration0074で`node_audio`に検索用の正規化データを追加した。原本の音声タグ抽出と利用者のoverride編集・resetで、現在の曲名・artist・albumから同時に生成する。Filesの検索API/FTSへ接続し、ファイル名と実効3fieldを検索対象にする。新しく抽出・編集された音声、同一所有者内コピー、新しいv2受付による所有者間COPYに加え、既存データを定期保守から少しずつ再索引する。
 
 ## 保存する情報
 
@@ -32,9 +32,21 @@ cache versionはaudio-tags-2。FTS接続前のv1/空cache、実効タグ・gener
 
 所有者間COPYは[manifest v2](COPY_JOBS.md)へ接続済み。受付時の抽出値/overrideと再生成したcacheを固定し、新しいblobへ引き継ぐ。以前のv1受付分は元の契約を維持し、後からsourceのタグを追加しない。
 
+## 既存データの再索引
+
+既存の画像保守Cron（奇数分）の冒頭で、singleton ControlDOの`reindexAudioSearch`を呼ぶ。D1の音声primary keyを前回位置から33件までseekし、1回で最大32候補を確認する。修復・対象外・失敗の合計8件、期限5秒で打ち切り、画像保守には元の25秒期限の残りを使う。再索引が失敗しても画像保守を続行する。公開route・Cron設定・D1 migrationは増やさない。
+
+ControlDOのlocal SQLiteにepoch・cache version・最後のnode ID・実行token・期限を保存する。再起動でも位置を引き継ぎ、期限内の同時実行はbusyで返す。epoch/version変更で先頭へ戻す。各候補の前に進行位置を保存するため、不正タグや索引競合が後続を止めない。終端で先頭へ戻り、失敗や走査中の追加を次の周回で再確認する。`wrapped`は一周の到達を示し、全行の修復完了証明ではない。進行情報が失われても現在のcacheは書き直さない。古い処理は置き換わったtokenの位置やleaseを変更しない。
+
+対象は現在のblob・generator・codec/MIMEと一致する音声。空/v1/旧version/実効タグ不一致のcache、欠落したbase索引、古い名前正規化versionを修復する。実効3fieldのUTF-8上限をSQLのCASEで検査し、過大な値をWorkerへ返さない。未来revisionや別spaceの索引は採用しない。現在の原本に合わないmetadataや過大なタグは保存したまま対象外とし、原本の再抽出は行わない。
+
+各修復は所有者のsystem mutation枠へ接続する。確定batchでnode名/revision・blob・実効3値・修復の必要性・現在epoch・受付中・backup/restore凍結なし・期限を再照合する。旧FTS削除、cache更新、base作成/更新、新FTS挿入、tree generation更新を一括確定し、検索cursorを失効させる。commit応答喪失は同じmutation receiptで確定を判別する。元の抽出値・override、node revision、原本、参照/容量会計、再生位置は変更しない。
+
+進行は1回の予算と全件数に依存する。管理画面からの進行表示や手動加速、音声以外のbase/FTS修復、現在versionを偽装した破損cache/FTSの完全性検査はこの処理に含めない。後者は既存の復旧監査も必要になる。
+
 ## 残る接続
 
-- 既存cacheなしの音声とv1/旧versionを上限付きで再構築する。現在はタグを保存し直すと、その1件を最新の索引へ更新できる。
+- 原本に対して古い/不正なmetadataの再抽出、音声以外の索引再構築と運用画面。
 - 最大長の音声タグと大量音声での実D1負荷gate、media全体の再抽出運用。
 
 検証結果は[実装進捗](IMPLEMENTATION_STATUS.md)を参照。実Cloudflareへのmigration・配備は未実施。

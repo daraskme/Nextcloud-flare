@@ -1,8 +1,10 @@
 # セッション引き継ぎ
 
-[所有者間COPY](COPY_JOBS.md)へ音声metadataの引継ぎを追加しました。新しいmanifest v2で受付時の抽出値・override・時間・番号と検索cacheを固定し、コピー先のAudio一覧・Files検索へ同時反映します。元タグが受付後に変わっても固定値を維持し、旧v1ジョブも従来の契約で再開します。rawと正規化後を含む8 MiB上限を検査します。schema0074・通常79table・149 API route。既存曲の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
+[既存音声の再索引](AUDIO_SEARCH.md)を定期保守へ接続しました。保存済みの実効タグから検索cache・base索引・FTSを一括修復します。ControlDOへ進行位置を保存し、1回32候補・最大8件・5秒で少しずつ進めます。原本・編集値・再生位置は変更せず、競合や停止・backup/restore凍結を再検査します。schema0074・通常79table・149 API route。cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 ## 先行実装の記録
+
+[所有者間COPY](COPY_JOBS.md)へ音声metadataの引継ぎを追加しました。新しいmanifest v2で受付時の抽出値・override・時間・番号と検索cacheを固定し、コピー先のAudio一覧・Files検索へ同時反映します。元タグが受付後に変わっても固定値を維持し、旧v1ジョブも従来の契約で再開します。rawと正規化後を含む8 MiB上限を検査します。schema0074・通常79table・149 API route。既存曲の一括再索引、cover、他mediaの再抽出/copy、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
 [音声タグの検索](AUDIO_SEARCH.md)をFilesへ接続しました。新しく抽出・編集した曲名・アーティスト・アルバムを検索でき、改名・MOVE・復元と同一所有者COPYでタグを保持します。単一/分割upload・DAV上書きでは旧原本のタグを直ちに外します。schema0074・通常79table・149 API route。既存曲の一括再索引、所有者間COPYの音声引継ぎ、cover、Bookshelf、運用修復と実環境gateは継続します。検証は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照してください。
 
@@ -201,7 +203,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
 - private単一uploadのHTTP・D1予約・R2送信・原子的complete・abort・期限切れ回収・GC handoffは接続済み。multipartのD1予約/認可RPC/状態mirrorとR2 create/part送信は内部接続済み。multipartのR2 complete/HEAD・原子的新規/上書き公開は内部接続済み。既知IDのR2 abort・期限切れ回収は接続済み。private HTTPは接続済み。Files UIの一覧・操作・確認付き上書き/再開uploadは接続済み。未知object/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実環境のControlDO admission/Access/署名鍵設定、全route会計は未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
-- AVIF/AV1/Opus は形式基盤まで。実 track parser・配信経路・player/lightbox・ブラウザー実ファイル試験は未接続。
+- AVIF/AV1/Opusのparser・配信・Gallery/Audioの原本表示/再生とローカルChrome試験は接続済み。他OS/browser・実Cloudflareのgate、cover/Bookshelfと原本再抽出は残る。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。
 - app password 作成と DAV 認証には `APP_PASSWORD_PEPPERS` と `APP_PASSWORD_ACTIVE_KID` の pepper ring が必要。未設定なら 503。remote secret 登録は未完了。

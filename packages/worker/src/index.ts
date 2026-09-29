@@ -164,6 +164,16 @@ export default {
       return;
     }
     if (_event.cron === IMAGE_CLEANUP_CRON) {
+      if (Date.now() < deadline) {
+        try {
+          await env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME)).reindexAudioSearch(
+            epoch,
+            Math.min(deadline, Date.now() + 5000),
+          );
+        } catch {
+          console.warn("audio_reindex_deferred");
+        }
+      }
       if (Date.now() < deadline) await maintainImageDerivatives(env, epoch, { deadline });
       return;
     }

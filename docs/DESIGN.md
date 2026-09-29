@@ -1045,7 +1045,7 @@ scope root を `search.read` で認可し、祖先・credential・epoch・tree g
 
 scope または hits が上限到達なら `truncated:true` を返し count/facet を確定値にしない。索引が欠落・旧normalization version・未来のnode revisionの場合も、該当行を返さず不完全さを通知する。`search_index.revision` は最後の検索テキスト更新時のnode revisionであり、子一覧の更新だけで進んだ親のrevisionとは一致しなくてもよい。rename/moveは現行node proofと旧FTS値のdeleteを同じbatchで確認して新しい索引へ進め、索引が現行nodeより未来なら拒否する。media metadata のparser/同期と索引version再構築運用、実D1の予算gateは残る。
 
-migration0074で音声metadataの実効3fieldを正規化したcacheを`node_audio`に保存する。詳細は[AUDIO_SEARCH](AUDIO_SEARCH.md)。抽出/編集とcacheは同じbatchで確定し、source JSONとversionで古いcacheを判別する。新規抽出/編集でcache v2と検索base/FTSを同時確定し、rename/MOVE/原本上書き/同一所有者COPY/restoreへ同期する。所有者間COPYはmanifest v2で受付時の音声metadataと再生成したcacheを固定し、公開と同じbatchで新しいnode/blobとFTSへ引き継ぐ。旧cache/不一致metadataは不完全な行として除外し、truncated:trueを返す。旧音声の一括再索引は継続する。
+migration0074で音声metadataの実効3fieldを正規化したcacheを`node_audio`に保存する。詳細は[AUDIO_SEARCH](AUDIO_SEARCH.md)。抽出/編集とcacheは同じbatchで確定し、source JSONとversionで古いcacheを判別する。新規抽出/編集でcache v2と検索base/FTSを同時確定し、rename/MOVE/原本上書き/同一所有者COPY/restoreへ同期する。所有者間COPYはmanifest v2で受付時の音声metadataと再生成したcacheを固定し、公開と同じbatchで新しいnode/blobとFTSへ引き継ぐ。旧cache/不一致metadataは不完全な行として除外し、truncated:trueを返す。旧音声cacheは既存の画像保守CronからControlDOの永続cursorで再索引する。1回32候補・8修復・5秒、現在の原本/実効タグとepoch/停止/backup/restore状態を再照合し、cache/base/FTSとtree generationを一括確定する。原本再抽出と音声以外の再索引運用は継続する。
 
 ### 12.3 Gallery / media list
 

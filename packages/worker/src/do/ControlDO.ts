@@ -72,6 +72,7 @@ import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCle
 import type { ImageTransformFailureReceipt } from "../media/images/failure";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
+import { ControlAudioSearch } from "./controlAudioSearch";
 import {
   assertNoBackup,
   type BackupBarrierStatus,
@@ -165,6 +166,7 @@ export class ControlDO extends DurableObject<Env> {
   readonly #admission: ControlAdmission;
   readonly #kdf: ControlKdf;
   readonly #shareUnlock: ControlShareUnlock;
+  readonly #audioSearch: ControlAudioSearch;
   readonly #kdfSettlements: KdfSettlements;
   readonly #mutations: ControlMutations;
   readonly #backup: ControlBackup;
@@ -389,6 +391,11 @@ export class ControlDO extends DurableObject<Env> {
     this.#shareUnlock = new ControlShareUnlock(ctx.storage, (epoch) =>
       this.#admission.assertMutationOpen(epoch),
     );
+    this.#audioSearch = new ControlAudioSearch(
+      ctx.storage,
+      { DB: env.DB, systemControl: this },
+      (epoch) => this.#admission.assertMutationOpen(epoch),
+    );
     this.#kdf = new ControlKdf(
       env.DB,
       async (epoch) => {
@@ -508,6 +515,13 @@ export class ControlDO extends DurableObject<Env> {
       return { epoch: row.epoch, maintenance: true, gcPaused: true };
     }
     return this.#admission.status();
+  }
+
+  async reindexAudioSearch(expectedEpoch: number, deadline = Date.now() + 5000) {
+    const status = await this.status();
+    if (status.maintenance || status.epoch !== expectedEpoch)
+      throw new Error("audio_reindex_unavailable");
+    return this.#audioSearch.run(expectedEpoch, deadline);
   }
 
   /** Pin the selection outside D1 before any I/O. Preparation never authorizes an overwrite. */

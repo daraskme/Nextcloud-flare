@@ -104,6 +104,7 @@ function globalScope(admission: GlobalMutationAdmission): void {
     throw new Error("mutation_unavailable");
 }
 export const SYSTEM_MUTATION_KINDS = [
+  "audio.reindex",
   "copy.stop",
   "copy.cleanup",
   "copy.maintenance-claim",

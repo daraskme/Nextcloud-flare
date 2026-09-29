@@ -1,6 +1,21 @@
 # 実装進捗
 
-## 所有者間コピーの音声metadata引継ぎ（今回）
+## 既存音声の自動再索引（今回）
+
+[音声検索](AUDIO_SEARCH.md)の旧/空cacheを、既存の画像保守Cronから上限付きで再構築する。ControlDOのlocal SQLiteへ進行位置と実行tokenを保持し、eviction後も続行する。primary keyで32候補と終端確認1件を取得し、修復・対象外・失敗を合わせて8件、5秒のdispatch期限を上限とする。失敗行の前で停止せず、終端後の次の周回で再確認する。epoch/version変更では先頭へ戻り、遅れた処理は後続leaseの位置やtokenを変更しない。
+
+実効タグの大きさをSQLのCASEで確認してからWorkerへ返す。現在の原本/generator/codec/MIMEと合うmetadataに限り、旧cache、欠けたbase索引、古い名前正規化versionを修復する。未来revisionや別spaceの索引は拒否する。所有者のsystem mutation枠で、名前/revision/blob/実効タグとepoch・受付・backup/restore凍結・期限を再照合し、cache/base/FTS/tree generationを同時確定する。原本・抽出値・override・node revision・再生位置・参照/容量は変更しない。応答喪失は確定receiptで照会する。
+
+- Node59件成功（4file、2.14秒、/tmp/ncf-audio-reindex-unit.log）。既存の音声cache/schema・Unicode名前正規化・検索queryを確認した。
+- Native関連177件成功（8file、144.68秒、/tmp/ncf-audio-reindex-native-final.log）。新規38件は空/v1/旧cache・base欠落、タグ/名前検索、古いcursor失効、最大Unicode展開/全null、過大タグ、原本/generator/codec不一致、未来/別space索引拒否、foreground変更/停止/epoch/backupとの競合、復元凍結、最終段階失敗の全巻戻し、ACK喪失と二重更新拒否を確認した。DO側は8件修復/32件走査、eviction再開、invalid行を越えた続行、live/置換lease、期限/epoch/version変更、実singleton RPCと停止を確認した。既存の検索・音声編集・track抽出・所有者間COPY・画像回収・共通受付も成功した。
+- 最終の試験レビューで、Cronへ渡すepoch/期限のassertionを製品のcatchの外へ移し、後方seekのrows_read検査を実際の走査SQLへ接続した。再索引・画像保守・公開asset/SRIの63件が成功（4file、44.14秒、/tmp/ncf-audio-reindex-native-complete.log）。45曲で2周目は32件を33回のD1呼出しで確認し、41番目の後の4候補は実SQLのrows_read≤8。ローカルの小規模gateであり、実D1の負荷保証にはしない。重複を除く関連試験は241件成功（Node59・Native182）。
+- 初回57件では新fixtureのOpus MIMEがcodec指定を欠き、28件失敗・29件成功（67.59秒、/tmp/ncf-audio-reindex-native-1.log）。既存parserと同じMIMEへ修正した。次の37件は全assertionが成功したが、想定内の直接RPC拒否がrunnerの未処理エラー2件として報告された（20.30秒、/tmp/ncf-audio-reindex-native-2.log）。既存試験と同じDO内部での拒否検査へ直し、最終実行はexit 0・未処理エラーなし。製品の制限や判定は緩めていない。
+- typecheck・lint（772file）・verify:contracts・verify:config成功（/tmp/ncf-audio-reindex-{types-complete,lint-complete,contracts,config}.log）。
+- 最終Web両入口/Worker dry-run build成功（/tmp/ncf-audio-reindex-build-complete.log、Worker 1,924.14 KiB・gzip406.47 KiB）。
+
+schema0074・通常79table・149 API route、D1 migration/依存/公開route/新Cronの追加なし。UI変更・今回のbrowser再実行はない。全suite・実Cloudflareへの配備と負荷gate、原本再抽出、cover、Bookshelf、他mediaの索引/コピー、未知native等の運用修復は継続する。pushは自動承認審査拒否後の明示承認待ちで、ローカルcommitに保持する。
+
+## 所有者間コピーの音声metadata引継ぎ（先行82ca7b7）
 
 [所有者間COPY](COPY_JOBS.md)の新しい受付をmanifest v2へ進め、現在の原本に対応する音声の抽出値・override・時間・codec・track/disc番号を固定した。sourceの旧cacheを信頼せず、実効タグから検索cacheを再生成して同じmanifestへ保存する。公開時は新しいnode/blob IDへ対応付け、Audio一覧とFilesの検索index/FTSをnamespaceと一括確定する。受付後のsource編集・metadata削除で内容を置き換えず、COW aliasごとのタグを保持する。利用者の再生位置はコピーしない。
 

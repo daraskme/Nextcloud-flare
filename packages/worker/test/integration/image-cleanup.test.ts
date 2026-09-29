@@ -39,7 +39,10 @@ beforeEach(async () => {
   await evictDurableObject(control());
 });
 afterEach(() => vi.restoreAllMocks());
-function cleanupEnv(db = env.DB) {
+function cleanupEnv(
+  db = env.DB,
+  reindexAudioSearch = async (_epoch: number, _deadline: number) => {},
+) {
   const app = mutationEnv(db),
     base = app.CONTROL.get(app.CONTROL.idFromName(CONTROL_NAME));
   return {
@@ -48,6 +51,7 @@ function cleanupEnv(db = env.DB) {
       idFromName: app.CONTROL.idFromName.bind(app.CONTROL),
       get: () => ({
         ...base,
+        reindexAudioSearch,
         sealImageDerivative: async (epoch: number, id: string) => {
           const result = await runInDurableObject(control(), async (_, state) => {
             const seals = new ControlImageDerivatives(
@@ -400,26 +404,37 @@ it("keeps a seal across eviction and refuses a fresh writer after D1 loses the r
     }),
   ).rejects.toThrow("image_derivative_retired");
 });
-it("routes the dedicated Cron to bounded cleanup without other background work", async () => {
-  const f = await fixture();
-  await storeImageDerivative(f.app, f.grant.id, f.output);
-  await env.DB.prepare("UPDATE nodes SET current_blob_id=? WHERE id=?")
-    .bind(f.ids.blob, f.node.id)
-    .run();
-  await env.DB.prepare("UPDATE blobs SET state='deleted' WHERE id=?").bind(f.node.blob).run();
-  await f.due();
-  const app = cleanupEnv(),
-    send = vi.fn(),
-    list = vi.fn();
-  await worker.scheduled({ cron: IMAGE_CLEANUP_CRON } as ScheduledController, {
-    ...app,
-    JOBS: { send } as unknown as typeof env.JOBS,
-    BLOBS: davBucket({ list }),
-  });
-  expect(await f.row()).toMatchObject({ disposition: "stored" });
-  expect(send).not.toHaveBeenCalled();
-  expect(list).not.toHaveBeenCalled();
-});
+it.each([false, true])(
+  "runs bounded Audio reindex and image cleanup even if reindex fails: %s",
+  async (fail) => {
+    const f = await fixture();
+    await storeImageDerivative(f.app, f.grant.id, f.output);
+    await env.DB.prepare("UPDATE nodes SET current_blob_id=? WHERE id=?")
+      .bind(f.ids.blob, f.node.id)
+      .run();
+    await env.DB.prepare("UPDATE blobs SET state='deleted' WHERE id=?").bind(f.node.blob).run();
+    await f.due();
+    const reindex = vi.fn(async (_epoch: number, _deadline: number) => {
+      if (fail) throw new Error("reindex unavailable");
+    });
+    const startedAt = Date.now();
+    const app = cleanupEnv(env.DB, reindex),
+      send = vi.fn(),
+      list = vi.fn();
+    await worker.scheduled({ cron: IMAGE_CLEANUP_CRON } as ScheduledController, {
+      ...app,
+      JOBS: { send } as unknown as typeof env.JOBS,
+      BLOBS: davBucket({ list }),
+    });
+    expect(await f.row()).toMatchObject({ disposition: "stored" });
+    expect(send).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(reindex).toHaveBeenCalledTimes(1);
+    expect(reindex.mock.calls[0]![0]).toBe(1);
+    expect(reindex.mock.calls[0]![1]).toBeGreaterThan(startedAt);
+    expect(reindex.mock.calls[0]![1] - Date.now()).toBeLessThanOrEqual(5000);
+  },
+);
 it("never settles a late HEAD response after the claim was replaced", async () => {
   const f = await fixture();
   await f.stop();
