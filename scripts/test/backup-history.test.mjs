@@ -15,6 +15,7 @@ import {
   quote,
   schemaDigest,
   schemaQuery,
+  schemaTables,
   specs,
   tableDigests,
 } from "../backup/snapshot.mjs";
@@ -46,7 +47,7 @@ async function historical(last = 37) {
       "INSERT INTO backup_runs(id,epoch,state,created_at,barrier_token) VALUES(?,1,'exporting',1,?)",
     ).run(id, token);
     db.prepare("UPDATE control SET backup_token=?,backup_frozen=1").run(token);
-    const tableSpecs = specs(db),
+    const tableSpecs = specs(db, schemaTables(db)),
       lines = ["PRAGMA defer_foreign_keys=TRUE;"];
     const literal = (value) =>
       value === null

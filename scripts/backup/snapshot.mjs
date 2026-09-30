@@ -52,15 +52,18 @@ export function initialize(path, versions) {
     throw error;
   }
 }
-export function specs(db) {
-  const actual = db
+export function schemaTables(db) {
+  return db
     .prepare("PRAGMA table_list")
     .all()
     .filter((r) => r.type === "table" && !r.name.startsWith("sqlite_"))
     .map((r) => r.name)
     .sort();
-  assert.deepEqual(actual, [...exportTables].sort(), "backup_table_contract");
-  return exportTables.map((name) => {
+}
+export function specs(db, expected = exportTables) {
+  const actual = schemaTables(db);
+  assert.deepEqual(actual, [...expected].sort(), "backup_table_contract");
+  return expected.map((name) => {
     const columns = db.prepare(`PRAGMA table_info(${quote(name)})`).all();
     const keys = columns
       .filter((c) => c.pk)
@@ -237,7 +240,7 @@ export async function importData(db, chunks, tableSpecs) {
   try {
     // This function is only called on a newly created isolated target, never the source database.
     for (const t of triggerRows) db.exec(`DROP TRIGGER ${quote(t.name)}`);
-    for (const name of purgeOrder) db.exec(`DELETE FROM ${quote(name)}`);
+    for (const name of purgeOrder) if (byName.has(name)) db.exec(`DELETE FROM ${quote(name)}`);
     for await (const statement of statements(chunks)) {
       const row = parseInsert(statement);
       if (!row) continue;
