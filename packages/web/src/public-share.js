@@ -285,84 +285,165 @@ function pause(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function uploadFile(file, token, report) {
-  const mode = file.size === 0 || file.size <= 95_000_000 ? "single" : "multipart";
-  const createKey = crypto.randomUUID();
-  let created;
+class UploadPendingError extends Error {}
+
+function uploadEntry(file) {
+  return {
+    file,
+    mode: file.size === 0 || file.size <= 95_000_000 ? "single" : "multipart",
+    createKey: crypto.randomUUID(),
+    completeKey: crypto.randomUUID(),
+    uploadId: null,
+    capability: null,
+    ready: false,
+    singleWritten: false,
+    partBytes: null,
+    partCount: null,
+    partAttempts: new Map(),
+    completedParts: new Set(),
+  };
+}
+
+function resetUploadEntry(entry) {
+  Object.assign(entry, uploadEntry(entry.file));
+}
+
+async function ensureUploadReceipt(entry, token) {
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    created = await fetch(`/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads`, {
+    const created = await fetch(`/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads`, {
       method: "POST",
       credentials: "same-origin",
       cache: "no-store",
       redirect: "error",
       headers: {
         "Content-Type": "application/json",
-        "Idempotency-Key": createKey,
+        "Idempotency-Key": entry.createKey,
         "X-CSRF-Token": token,
       },
-      body: JSON.stringify({ mode, name: file.name, declared_size: file.size }),
+      body: JSON.stringify({
+        mode: entry.mode,
+        name: entry.file.name,
+        declared_size: entry.file.size,
+      }),
     });
-    if (created.status !== 202) break;
+    if (!created.ok) throw new RequestError(created.status);
+    const createdBody = await created.json();
+    const uploadId = createdBody.receiptId;
+    const capability = created.headers.get("Upload-Capability");
+    if (!uploadId || !capability) throw new Error("invalid_upload_receipt");
+    if (entry.uploadId && (entry.uploadId !== uploadId || entry.capability !== capability))
+      throw new Error("invalid_upload_receipt");
+    entry.uploadId = uploadId;
+    entry.capability = capability;
+    if (entry.mode === "multipart") {
+      entry.partBytes = Number(created.headers.get("Upload-Part-Bytes"));
+      entry.partCount = Number(created.headers.get("Upload-Part-Count"));
+      if (
+        !Number.isSafeInteger(entry.partBytes) ||
+        entry.partBytes < 1 ||
+        !Number.isSafeInteger(entry.partCount) ||
+        entry.partCount < 1
+      )
+        throw new Error("invalid_upload_plan");
+    }
+    if (created.status !== 202) {
+      entry.ready = true;
+      return;
+    }
     await pause(1_000);
   }
-  if (!created?.ok || created.status === 202) throw new RequestError(created?.status ?? 503);
-  const createdBody = await created.json();
-  const uploadId = createdBody.receiptId;
-  const capability = created.headers.get("Upload-Capability");
-  if (!uploadId || !capability) throw new Error("invalid_upload_receipt");
+  throw new UploadPendingError();
+}
+
+async function reconcileUpload(entry) {
+  if (!entry.uploadId || !entry.capability || !entry.ready) return false;
+  const response = await fetch(
+    `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(entry.uploadId)}`,
+    {
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      headers: { "Upload-Capability": entry.capability },
+    },
+  );
+  if (!response.ok) throw new RequestError(response.status);
+  const status = await response.json();
+  if (status.state === "completed") return true;
+  if (entry.mode === "single" && status.state === "completing") entry.singleWritten = true;
+  if (entry.mode === "multipart") {
+    for (const part of status.parts ?? []) {
+      if (part.state === "completed") entry.completedParts.add(part.partNumber);
+    }
+    if (status.state === "completing") {
+      for (let part = 1; part <= entry.partCount; part += 1) entry.completedParts.add(part);
+    }
+  }
+  return false;
+}
+
+async function writeMultipartEntry(entry, part, report) {
+  if (entry.completedParts.has(part)) return;
+  const start = (part - 1) * entry.partBytes;
+  const chunk = entry.file.slice(start, Math.min(entry.file.size, start + entry.partBytes));
+  const attemptId = entry.partAttempts.get(part) ?? crypto.randomUUID();
+  entry.partAttempts.set(part, attemptId);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const written = await fetch(
+      `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(entry.uploadId)}/parts/${part}`,
+      {
+        method: "PUT",
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "error",
+        headers: {
+          "Upload-Attempt-Id": attemptId,
+          "Upload-Capability": entry.capability,
+        },
+        body: chunk,
+      },
+    );
+    if (!written.ok) throw new RequestError(written.status);
+    const result = await written.json();
+    if (result.disposition === "completed") {
+      entry.completedParts.add(part);
+      report(Math.min(entry.file.size, start + chunk.size), entry.file.size);
+      return;
+    }
+    if (result.disposition !== "in_flight") throw new Error("invalid_upload_part");
+    await pause(1_000);
+  }
+  throw new UploadPendingError();
+}
+
+async function uploadFile(entry, token, report) {
+  if (!entry.ready) await ensureUploadReceipt(entry, token);
+  if (await reconcileUpload(entry)) return;
   let publicationStarted = false;
   try {
-    if (mode === "single") {
+    if (entry.mode === "single" && !entry.singleWritten) {
       const written = await fetch(
-        `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}/content`,
+        `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(entry.uploadId)}/content`,
         {
           method: "PUT",
           credentials: "same-origin",
           cache: "no-store",
           redirect: "error",
-          headers: { "Upload-Capability": capability },
-          body: file,
+          headers: { "Upload-Capability": entry.capability },
+          body: entry.file,
         },
       );
       if (!written.ok) throw new RequestError(written.status);
-      report(file.size, file.size);
-    } else {
-      const partBytes = Number(created.headers.get("Upload-Part-Bytes"));
-      const partCount = Number(created.headers.get("Upload-Part-Count"));
-      if (
-        !Number.isSafeInteger(partBytes) ||
-        partBytes < 1 ||
-        !Number.isSafeInteger(partCount) ||
-        partCount < 1
-      )
-        throw new Error("invalid_upload_plan");
-      for (let part = 1; part <= partCount; part += 1) {
-        const start = (part - 1) * partBytes;
-        const chunk = file.slice(start, Math.min(file.size, start + partBytes));
-        const written = await fetch(
-          `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}/parts/${part}`,
-          {
-            method: "PUT",
-            credentials: "same-origin",
-            cache: "no-store",
-            redirect: "error",
-            headers: {
-              "Upload-Attempt-Id": crypto.randomUUID(),
-              "Upload-Capability": capability,
-            },
-            body: chunk,
-          },
-        );
-        if (!written.ok) throw new RequestError(written.status);
-        report(Math.min(file.size, start + chunk.size), file.size);
-      }
+      entry.singleWritten = true;
+      report(entry.file.size, entry.file.size);
+    } else if (entry.mode === "multipart") {
+      for (let part = 1; part <= entry.partCount; part += 1)
+        await writeMultipartEntry(entry, part, report);
     }
     publicationStarted = true;
-    const completeKey = crypto.randomUUID();
     let completed;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       completed = await fetch(
-        `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}/complete`,
+        `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(entry.uploadId)}/complete`,
         {
           method: "POST",
           credentials: "same-origin",
@@ -370,8 +451,8 @@ async function uploadFile(file, token, report) {
           redirect: "error",
           headers: {
             "Content-Type": "application/json",
-            "Idempotency-Key": completeKey,
-            "Upload-Capability": capability,
+            "Idempotency-Key": entry.completeKey,
+            "Upload-Capability": entry.capability,
             "X-CSRF-Token": token,
           },
           body: "{}",
@@ -380,14 +461,22 @@ async function uploadFile(file, token, report) {
       if (completed.status !== 503) break;
       await pause(1_000);
     }
+    if (completed?.status === 503) throw new UploadPendingError();
     if (!completed?.ok) throw new RequestError(completed?.status ?? 503);
   } catch (error) {
-    if (!publicationStarted) await abortUpload(uploadId, capability, token).catch(() => {});
+    const abortable =
+      error instanceof RequestError && [400, 409, 413, 423, 507].includes(error.status);
+    if (!publicationStarted && abortable && entry.uploadId && entry.capability) {
+      await abortUpload(entry.uploadId, entry.capability, token);
+      resetUploadEntry(entry);
+    }
     throw error;
   }
 }
 
 function uploadError(error) {
+  if (error instanceof UploadPendingError)
+    return "送信状態を確認中です。少し待ってから同じボタンで再開してください。";
   if (!(error instanceof RequestError))
     return "送信を完了できませんでした。通信状態を確認して再試行してください。";
   if (error.status === 413 || error.status === 507)
@@ -401,6 +490,7 @@ function uploadError(error) {
 }
 
 function renderUploadShare(shell) {
+  let queue = [];
   const panel = element("div", { className: "upload-panel" });
   const intro = element("div", { className: "upload-intro" });
   intro.append(
@@ -425,34 +515,38 @@ function renderUploadShare(shell) {
   send.type = "button";
   send.disabled = true;
   input.addEventListener("change", () => {
-    const count = input.files?.length ?? 0;
-    send.disabled = count === 0;
-    status.textContent = count ? `${count}件のファイルを選択しました。` : "";
+    queue.push(...[...(input.files ?? [])].map(uploadEntry));
+    input.value = "";
+    send.disabled = queue.length === 0;
+    status.textContent = queue.length ? `${queue.length}件のファイルを選択しました。` : "";
     progress.value = 0;
   });
   send.addEventListener("click", async () => {
-    const files = [...(input.files ?? [])];
-    if (!files.length) return;
+    if (!queue.length) return;
     input.disabled = true;
     send.disabled = true;
-    progress.max = files.length;
+    const total = queue.length;
+    let completed = 0;
+    progress.max = total;
     progress.value = 0;
     try {
       const token = (await csrf()).token;
-      for (const [index, file] of files.entries()) {
-        status.textContent = `${index + 1}/${files.length}件目を送信しています…`;
-        await uploadFile(file, token, (done, total) => {
-          progress.value = index + (total ? done / total : 1);
+      while (queue.length) {
+        const entry = queue[0];
+        status.textContent = `${completed + 1}/${total}件目を送信しています…`;
+        await uploadFile(entry, token, (done, bytes) => {
+          progress.value = completed + (bytes ? done / bytes : 1);
         });
-        progress.value = index + 1;
+        queue.shift();
+        completed += 1;
+        progress.value = completed;
       }
-      status.textContent = `${files.length}件を受け付けました。`;
-      input.value = "";
+      status.textContent = `${total}件を受け付けました。`;
     } catch (error) {
       status.textContent = uploadError(error);
     } finally {
       input.disabled = false;
-      send.disabled = !(input.files?.length ?? 0);
+      send.disabled = queue.length === 0;
     }
   });
   panel.append(intro, input, choose, progress, status, send);

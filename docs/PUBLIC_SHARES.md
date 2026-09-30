@@ -41,7 +41,7 @@ file 選択時は share root 配下の file だけを target manifest に固定�
 
 upload-only shareは`create`と`upload` actionだけを持ち、metadata、children、ticket、content session、downloadを拒否する。recipientは既存nodeの指定や上書きをできず、share root直下への新規作成だけを要求できる。各receiptはowner quotaとshare `reservation_limit`を同じD1 transactionで予約し、share/session/version/epoch/expiryを作成・転送・状態照会・完了・中止の各段階で再検査する。公開受信は1件10 GiB、同時active 8件、shareあたり累計1,000件を上限とする。
 
-singleとmultipartはprivate uploadと同じimmutable R2、UploadDO、LockDO、operation terminalを使う。名前衝突はnamespace lock内で自動解決し、public responseはreceipt ID、状態、進行情報だけを返して、入力名・内部upload名・最終保存名を返さない。完了結果が不明な場合は同じIdempotency-Keyで再照会し、推測でabortや予約解放をしない。multipart初期化・中止・完了の進行中状態は202と`Retry-After`で返す。
+singleとmultipartはprivate uploadと同じimmutable R2、UploadDO、LockDO、operation terminalを使う。名前衝突はnamespace lock内で自動解決し、public responseはreceipt ID、状態、進行情報だけを返して、入力名・内部upload名・最終保存名を返さない。初期化・part・完了の結果が不明な場合はreceipt、capability、作成/part/完了のIdempotency-Keyを保持して同じ送信を再照会し、推測でabortや予約解放をしない。batch途中で完了したfileは再送queueから除外する。multipart初期化・中止・完了の進行中状態は202と`Retry-After`で返す。
 
 ## assets と cache
 
@@ -60,6 +60,7 @@ app origin の直接 content proxy、内部共有、shared DAV、ZIP、Gallery�
 - public ticket の CSRF、root coverage、target manifest、content Cookie 交換、budget 再利用、R2配信、ticket cancel 後の拒否。
 - upload-only作成、owner/share二重予約、single/multipart転送・完了・中止、bounded status、容量上限、read/list拒否。
 - namespace lock内の衝突回避、最終名非開示、同じIdempotency-Keyによる完了再試行。
+- 初期化/partの202再照合と、batch途中の失敗後に完了済みfileを重複送信しないqueue。
 - public CSRF、session失効、share version/disabled/expiry fence。
 - upload-only UIはfolderだけを選択可能にし、recipient UIはchildren/ticketを呼ばず、最終保存名を表示しない。
 - owner 以外の作成/参照/無効化拒否、無効化の一度だけの version 更新と派生 session 失効。
