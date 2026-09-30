@@ -55,7 +55,10 @@ function id3(title: string, artist: string, album: string): Uint8Array {
   return bytes;
 }
 
-async function fixture(content: Uint8Array, options: { put?: boolean; storageEtag?: string } = {}) {
+async function fixture(
+  content: Uint8Array,
+  options: { copy?: boolean; put?: boolean; storage?: boolean; storageEtag?: string } = {},
+) {
   const prefix = crypto.randomUUID();
   const f = foundationFixture(prefix, Date.now() - 1000);
   const key = `u/${f.ids.user}/b/${f.ids.blob}`;
@@ -80,15 +83,19 @@ async function fixture(content: Uint8Array, options: { put?: boolean; storageEta
   await atomicBatch(env.DB, base);
   const search = searchName("File");
   await atomicBatch(env.DB, [
-    {
-      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,?)",
-      values: [
-        f.ids.blob,
-        content.length,
-        options.storageEtag ?? object?.etag ?? "missing-etag",
-        Date.now() - 500,
-      ],
-    },
+    ...(options.storage === false
+      ? []
+      : [
+          {
+            sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,?)",
+            values: [
+              f.ids.blob,
+              content.length,
+              options.storageEtag ?? object?.etag ?? "missing-etag",
+              Date.now() - 500,
+            ],
+          },
+        ]),
     {
       sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)",
       values: [f.ids.file, f.ids.space, search.textNorm, search.tokens, search.version],
@@ -106,17 +113,22 @@ async function fixture(content: Uint8Array, options: { put?: boolean; storageEta
         op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,
         epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,
         created_at,updated_at,operands_json,result_json
-      ) VALUES(?,'user',?,?,?,'dav.put','committed','audio',1,?,?,?,1,1,1,?,?)`,
+      ) VALUES(?,'user',?,?,?,?, 'committed','audio',1,?,?,?,1,1,1,?,?)`,
       values: [
         eventId,
         f.ids.user,
         f.ids.credential,
         f.ids.space,
+        options.copy ? "node.copy" : "dav.put",
         permit.permit_id,
         permit.expires_at,
         permit.expires_at,
-        JSON.stringify({ parentId: f.ids.folder, nodeId: f.ids.file }),
-        JSON.stringify({ status: 204, nodeId: f.ids.file }),
+        JSON.stringify(
+          options.copy
+            ? { parentId: f.ids.folder, sourceNodeId: crypto.randomUUID() }
+            : { parentId: f.ids.folder, nodeId: f.ids.file },
+        ),
+        JSON.stringify({ status: options.copy ? 201 : 204, nodeId: f.ids.file }),
       ],
     },
     {
@@ -124,8 +136,8 @@ async function fixture(content: Uint8Array, options: { put?: boolean; storageEta
       values: [eventId, f.ids.file],
     },
     {
-      sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,'node.updated',?,'pending',1,1,1)",
-      values: [eventId, eventId, f.ids.file],
+      sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,?,?,'pending',1,1,1)",
+      values: [eventId, eventId, options.copy ? "node.created" : "node.updated", f.ids.file],
     },
   ]);
   await env.DB.prepare("UPDATE permits SET state='released' WHERE permit_id=?")
@@ -264,6 +276,25 @@ it.each(["missing", "identity", "deadline"] as const)(
     ).toBe("sent");
   },
 );
+
+it("completes logical copy events without requiring a new R2 object", async () => {
+  const f = await fixture(id3("Copied title", "Copied artist", "Copied album"), {
+    copy: true,
+    put: false,
+    storage: false,
+  });
+  expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM node_audio WHERE node_id=?")
+      .bind(f.file)
+      .first("n"),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT text_norm FROM search_index WHERE node_id=?")
+      .bind(f.file)
+      .first("text_norm"),
+  ).toBe("file");
+});
 
 it("fences an extraction result when the node changes to a newer blob", async () => {
   const f = await fixture(id3("Stale title", "Artist", "Album"));
