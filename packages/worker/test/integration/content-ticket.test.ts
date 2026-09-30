@@ -725,7 +725,7 @@ it("issues an internal-share ticket only for the selected share root", async () 
       now + 300_000,
       { id: shareId, version: 1 },
     );
-    expect(issued.budgetId).toBe(`u:${f.ids.user}:s:${shareId}`);
+    expect(issued.budgetId).toBe(`u:${f.ids.user}:s:${shareId}:v:1`);
     const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     expect(
       (
