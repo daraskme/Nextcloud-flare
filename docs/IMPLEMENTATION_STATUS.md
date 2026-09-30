@@ -3,6 +3,18 @@
 更新: 2026-09-29。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-09-29 Queue・media・ZIP・internal share統合
+
+upload-only共有後のmainへ、依存順にQueue dead-letter repair、audio metadata indexing、画像metadata/immutable thumbnail、bounded private ZIP、direct-user internal shareとread-only shared DAVを統合した。migrationは`0042`まで、通常tableは68、route契約は151。
+
+- Queueはdead-letter台帳、再投入履歴、管理者のbounded requeueを追加。
+- Audioはbounded ID3 metadata projectionと`purpose=track`の原本配信を追加。
+- Imageはwidth/height projection、immutable `sm256` WebP、`/thumb`のderivative-only配信を追加。
+- ZIPは既存content ticketへ`purpose=zip`を追加し、bounded tree、portable path、blob pin、exact STORE size、BudgetDO、`CONTENT_ORIGIN`の`/z/:targetSetId`を接続。
+- Internal shareはowner lifecycle、rename-stable recipient mount、read-only `/dav/Shared/<mount>`、share-version/epoch/ancestry fenceを追加。
+
+ZIP統合後のinternal share branchでlint、typecheck、route/config contracts、production build、51 affected integration tests、focused DAV unit tests、diff checkが成功。PR #8〜#12はいずれもUbuntu、Windows 2分割、browser、backupの全5 CIを通過してmainへ統合済み。remote migration・deploy・実Queue/DLQ・実Images codec・実OS DAV clientは未実施。
+
 ## 2026-09-29 upload-only公開link
 
 folder root向けupload-only shareをowner/public UIとWorker APIへ接続した。ownerは任意passwordとshare専用予約上限を設定でき、recipientはfolder内容を閲覧せずsingle/multipart receiptを作成・転送・完了・中止できる。各段階でshare session/version/epoch/expiryとupload capabilityを再検査し、owner quotaとshare reservationを原子的に予約する。既存node指定・上書き・read/downloadを拒否し、衝突解決後の保存名はpublic responseへ返さない。
@@ -31,7 +43,7 @@ folder root向けupload-only shareをowner/public UIとWorker APIへ接続した
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 5/6 公開リンク | owner管理、fragment capability、任意password保護、share Cookie、読み取り専用metadata/children/download、upload-only single/multipart受信、owner/share予約、独立hashed assets、Files共有dialog | capabilityとpasswordの分離、digest-only保存、ControlDO KDF、share/IP制限、R2配信、upload完了/中止/再試行、衝突時の自動改名と名前非開示を検証。internal share、remote secret、stagingは未接続。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
+| 5/6 共有 | 公開linkのowner管理、password/fragment、読み取り/download、upload-only受信に加え、direct-user internal share lifecycleとread-only shared DAV mount | 公開capability/KDF/R2/upload fence、内部shareのrecipient/action/version/ancestry/rename/revokeを検証。group/team、既存share管理UI、remote secret、stagingは未接続。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 4 期限切れSQL世代の明示回収 | 専用prune、D1/R2世代照合、35日超・20部品/100RPC、manifest最終削除・再実行 | Node12件・workerd26件を追加。全Node674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功。専用bindingドリルは67table・SQL11,322bytesで成功。実CLIドリルもSQL9,079bytesで成功し、期限内拒否・回収・再実行・receipt保持を確認。全check成功、Node674件＋workerd2,087件（99file、1,143.07s）の計2,761件。型・契約/設定検査・Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査を再確認しました。schema0039・67table・依存を維持。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 4 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。 実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。 timer設置・外部通知・期限切れ削除・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
@@ -113,9 +125,9 @@ folder root向けupload-only shareをowner/public UIとWorker APIへ接続した
 | 4 trash read/restore/purge/GC | trash一覧、restore、purgeを接続。purgeはmigration `0014`のmanifestからFK順・深さ降順に確定し、7日猶予candidate化。migration `0015`のGC claimはpause/epoch/ref/複数pinを原子的に再検査し、R2 delete/head後だけdeleted/physical精算 | REST冪等再送、別trash子、深いsubtree、Outboxに加え、実R2削除、複数pin、pause、delete応答喪失、lease再取得、一方向stateを実D1/R2で検証。基本Files UIは接続済み。GC稼働中restoreのpause holdは未接続 |
 | 2 folder create HTTP | `POST /api/v1/nodes` の bounded JSON、CSRF、Idempotency-Key を LockDO/permit/D1 の folder mutation に接続。`GET /api/v1/operations/:id` は同 credential の current operand/result を照合 | 実 LockDO/D1 の作成・再送・照会、CSRF 欠落、異 payload の409を workerd で検証。test-only admission であり実 ControlDO 再開は未実装 |
 | 2 Files mutation HTTP | private REST の `DELETE /nodes/:id`、`POST /nodes/:id/move`、`POST /nodes/:id/copy` を CSRF、bounded JSON、Idempotency-Key、LockDO、固定 subtree manifest、atomic trash/MOVE/COW COPY へ接続。REST operation は `node.trash` / `node.move` / `node.copy` として DAV と区別し、consumer・復旧監査も両 provenance を検証 | copy→move→trash、各 namespace 結果、Outbox 消費、operation kind、削除後の同一 DELETE 再送を実 D1/DO で検証。ローカル実ControlDOとFiles UIを接続済み。実環境は未検証 |
-| 6 content HTTP 基盤 | content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を ticket/Cookie、現行 D1 認可、BudgetDO、R2 に接続。exact Origin CORS、署名鍵と ControlDO/D1 admission の gate | handler で Cookie 発行から実 R2 配信を workerd 検証。ControlDO は maintenance 固定で実公開は停止、署名鍵・remote host inventory 未設定。page/entry/track/ZIP と全 route 会計は未完了 |
-| 0.3 ZIP | 同一 fflate STORE serializer の metadata dry-run、CRC vector、Unicode、0/1,000 entries、ZIP32 上限、bounded queue、cancel | ローカル実装済み |
-| 1.1 契約・schema | 58通常テーブル + FTS、147経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration と基盤契約を追加。全機能の状態遷移・認可は未完了 |
+| 6 content HTTP 基盤 | content host の `/session`、`/c/:nodeId/:blobId`、`/c/:nodeId/:blobId/thumb`、`/z/:targetSetId`をticket/Cookie、現行D1認可、BudgetDO、R2へ接続。`content`/`track`は原本、`thumb`はimmutable derivative、`zip`はmanifest固定集合 | Cookie交換から実R2配信、Range、thumbnail generation fence、ZIP path/blob再検査とcancelをworkerd検証。remote署名鍵・host inventoryは未設定。page/entry/video/public ZIPと全route会計は未完了 |
+| 0.3/6 ZIP | STORE serializerのdry-run/CRC/Unicode/cancelに加え、private ticketのbounded tree、portable path、blob pin、exact output size、BudgetDO、content-origin streaming | 0/1,000 entries、ZIP32上限、重複/overlap/path衝突、R2 metadata、lease/切断をローカル検証。public ZIP、ZIP64、persisted archive、選択UIは未実装 |
+| 1.1 契約・schema | 68通常テーブル + FTS、151経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration `0001`〜`0042`と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |
 | 1 ControlDO quiesce | 停止側 DO status→D1 maintenance/GC pause→permit revoke/claimed failed を atomic に収束。D1 応答喪失時の postcondition 照合、active job lease 診断、SQL 障害 rollback | 内部 RPC 実装。停止中GC drainはローカル接続済み。admission/再開と実環境は未完了 |

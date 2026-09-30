@@ -25,9 +25,9 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-読み取り専用とupload-onlyの公開linkを接続した。所有者はFiles UIから期限付き・任意passwordのlinkを作成・無効化できる。読み取り専用shareはfragment capabilityをshare Cookieへ交換し、metadata/childrenと分離content origin経由のdownloadを提供する。upload-only shareはfolder rootだけを対象に、owner/share二重予約、single/multipart転送、status、complete、abortをprivate upload基盤へ接続し、閲覧・上書きと最終保存名の公開を拒否する。share/session/version/epoch/root coverageを各requestで再検査し、public CSRF logout、独立したcontent hash付きassets、未実装routeの404を維持する。internal share、shared DAV、ZIP/mediaは後続。[PUBLIC_SHARES](PUBLIC_SHARES.md)
+読み取り専用/upload-only公開linkに加え、Queue dead-letter repair、audio metadata/track、画像metadata/thumbnail、bounded private ZIP、direct-user internal shareとread-only shared DAVをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/version/ancestry/epoch fenceを持ち、`/dav/Shared/<mount>`のPROPFIND/GET/HEAD/Rangeだけを許可する。ZIPは既存content ticket、BudgetDO、blob pin、exact STORE sizing、分離`CONTENT_ORIGIN`を再利用する。audio原本、thumbnail derivative、ZIP manifestのpurposeを相互流用しない。
 
-upload-onlyの公開share統合12件とowner share統合4件を含む関連5 file・118件が成功した。single/multipart完了、衝突時の自動改名、完了再試行、予約精算、CSRF、session/version/disabled/expiry fenceを含む。lint、型、契約/設定、Web/Worker buildも成功している。全suiteとbrowser E2EはこのfeatureのPR/CIで最終確認する。
+最新migrationは`0042`、通常tableは68、route契約は151。Queue/audio/image/ZIP/internal shareの各PRはUbuntu、Windows 2分割、browser、backupの全CIを通過した。ZIP統合後のinternal share branchではlint、typecheck、route/config contracts、production build、51 affected integration tests、focused DAV unit tests、diff checkも成功した。
 
 前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
@@ -37,16 +37,16 @@ maintainは日次取得・不足/鮮度補充と最終healthが正常な場合�
 
 Node22件・workerd13件を追加しました。全Node696件（40file、44.23s）、新しい走査13件と既存prune26件の計39件（19.40s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全9操作の権限拒否、5世代の実取得と期限切れ回収、破損警告とhealthの分離を確認しました。型検査とsystemd構文検査も成功。実CLIドリルもSQL9,079bytesで成功し、4世代補充と最終5世代の検証、自動回収・再送・receipt保持を確認しました。全checkが成功し、Node696件・workerd2,100件（100file、1,245.15s）、計2,796件を確認しました。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。実CLIの4世代補充を追加したためbackup CI上限を30分へ延長しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次は運用通知への接続と復旧手順の整備です。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は独立性の高い残機能を並列化する。候補はGallery/player UI、Bookshelf/EPUB page、video metadata/track、group/team share、public ZIP、残るQueue event/repairである。並行してtimer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF/multipart、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
-次のschema変更は0040以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
+次のschema変更は0043以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Phase 2 / WebDAV / Phase 3 の一部。67通常テーブル、migration `0001`〜`0039`、147 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。68通常テーブル、migration `0001`〜`0042`、151 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
-直近の追加: WebDAV の MKCOL / PROPPATCH / PUT / DELETE / COPY / MOVE / LOCK と、private Files REST の folder create / rename / trash / MOVE / COPY を原子的 namespace mutationへ接続した。REST/DAVそれぞれのoperation provenanceをOutbox consumerと復旧監査まで検証する。content ticket、Cookie、R2 target manifest、current blob配信もHTTPへ接続済み。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
+直近の追加: Queue dead-letter repair、audio metadata/track、画像metadata/thumbnail、private ZIP、direct-user internal shareとread-only shared DAV。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
 
 主要な内部成果物（最新状態は進捗表を参照）:
 
@@ -96,7 +96,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 公開・接続していないもの
 
-- content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。Files SPAは[FILES_UI](FILES_UI.md)の範囲を接続済み。147 route の存在は handler の完成を意味しない。
+- content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。Files SPAは[FILES_UI](FILES_UI.md)の範囲を接続済み。151 route の存在は handler の完成を意味しない。
 - **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
@@ -175,10 +175,10 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 
 以下の全体gateも引き続き必要:
 
-1. **outbox Queue 実サービス / repair**: `node.created` と `node.renamed` のローカル handler を基に実 Queue/DLQ/requeue を検証し、残る kind の saved operand/result CAS と chunk fencing を実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
+1. **outbox Queue 実サービス / repair**: dead-letter台帳とbounded requeueは実装済み。実 Queue/DLQ/retry exhaustionを検証し、残る kind の saved operand/result CAS と chunk fencingを実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
 2. **ControlDOの残る制御**: namespace以外のaccount mutation受付とbackup統合、終了証明を失ったKDFの運用収束・共有password/IP制限、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
-4. Phase 1 gate を閉じてから BRIEF の後続 phase を順に実装する。メディア形式の追加条件を維持し、最後に実環境 gate とリリース確認を行う。
+4. Audio metadata/track、画像thumbnail、private ZIPは接続済み。Gallery/player/reader UI、video/EPUB、public ZIP、group/team共有を進め、最後に実環境 gate とリリース確認を行う。
 
 フォルダー作成は current parent/revision/tree を読み、7 step を一括確定する内部サービス。SQL plan は server code のみで生成し、外部から任意 step/SQL を受け付けない。
 名前検索は private API と Files UI へ接続済み（[SEARCH](SEARCH.md)）。media metadata の全文索引・索引更新の運用・実 D1 の処理量/応答時間 gate は未完了。
