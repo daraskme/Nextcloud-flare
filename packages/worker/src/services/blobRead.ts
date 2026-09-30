@@ -214,7 +214,7 @@ export async function prepareContentBlobRead(
     ),
   ] as const;
   const blob =
-    grant.purpose === "content"
+    grant.purpose === "content" || grant.purpose === "track"
       ? await resolveBlobRead(db, authorized, assertions)
       : grant.purpose === "thumb"
         ? await resolveThumbnailRead(db, authorized, assertions)
