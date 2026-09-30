@@ -8,7 +8,15 @@ import {
   sharePasswordPepperRing,
 } from "../../src/auth/sharePassword";
 import { atomicBatch } from "../../src/db/primary";
-import { createShare, disableShare, listShares, readShare } from "../../src/services/shares";
+import {
+  createInternalShare,
+  createShare,
+  disableShare,
+  listSharedWithMe,
+  listShares,
+  readShare,
+  updateInternalShareActions,
+} from "../../src/services/shares";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
@@ -67,6 +75,115 @@ it("creates a one-time capability for an owner-authorized root and lists metadat
       spaceId: f.other.ids.space,
     }),
   ).rejects.toThrow("share_root_not_found");
+});
+
+it("manages a stable direct-user share mount and fails closed after revoke", async () => {
+  const f = await fixture();
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE users SET email=? WHERE id=?",
+      values: ["owner@example.invalid", f.owner.ids.user],
+    },
+    {
+      sql: "UPDATE users SET email=? WHERE id=?",
+      values: ["recipient@example.invalid", f.other.ids.user],
+    },
+  ]);
+  const created = await createInternalShare(mutationEnv(), f.session, {
+    rootNodeId: f.owner.ids.folder,
+    spaceId: f.owner.ids.space,
+    recipientEmail: "RECIPIENT@example.invalid",
+    actions: ["read", "download"],
+  });
+  expect(created).toMatchObject({
+    kind: "internal",
+    rootNodeId: f.owner.ids.folder,
+    recipientUserId: f.other.ids.user,
+    actions: ["read", "download"],
+    mountId: created.id,
+  });
+  expect(created.mountName).toMatch(/^[A-Z0-9]{26}-Folder$/);
+  expect(await listSharedWithMe(env.DB, f.otherSession)).toEqual([
+    expect.objectContaining({
+      shareId: created.id,
+      mountName: created.mountName,
+      actions: ["read", "download"],
+      root: expect.objectContaining({ id: f.owner.ids.folder, name: "Folder" }),
+    }),
+  ]);
+  await env.DB.prepare("UPDATE nodes SET name='Renamed',name_ci='renamed' WHERE id=?")
+    .bind(f.owner.ids.folder)
+    .run();
+  expect((await listSharedWithMe(env.DB, f.otherSession))[0]?.mountName).toBe(created.mountName);
+  const updated = await updateInternalShareActions(mutationEnv(), f.session, created.id, ["read"]);
+  expect(updated).toMatchObject({ version: 2, actions: ["read"], mountName: created.mountName });
+  expect(await listSharedWithMe(env.DB, f.otherSession)).toEqual([
+    expect.objectContaining({ shareVersion: 2, actions: ["read"] }),
+  ]);
+  await disableShare(mutationEnv(), f.session, created.id);
+  expect(await listSharedWithMe(env.DB, f.otherSession)).toEqual([]);
+});
+
+it("hides internal shares after maintenance, recipient disable, expiry, or ancestor trash", async () => {
+  const variants = ["maintenance", "recipient-disabled", "expired", "ancestor-trashed"] as const;
+  for (const variant of variants) {
+    const f = await fixture();
+    await env.DB.prepare("UPDATE users SET email=? WHERE id=?")
+      .bind(`${crypto.randomUUID()}@example.invalid`, f.other.ids.user)
+      .run();
+    const recipientEmail = await env.DB.prepare("SELECT email FROM users WHERE id=?")
+      .bind(f.other.ids.user)
+      .first<string>("email");
+    const shareRoot =
+      variant === "ancestor-trashed" ? `${crypto.randomUUID()}-shared-folder` : f.owner.ids.folder;
+    if (variant === "ancestor-trashed")
+      await env.DB.prepare(
+        `INSERT INTO nodes(
+          id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+        ) VALUES(?,?,?,?,'Shared folder','shared folder','folder',?,?)`,
+      )
+        .bind(
+          shareRoot,
+          f.owner.ids.space,
+          f.owner.ids.user,
+          f.owner.ids.folder,
+          Date.now(),
+          Date.now(),
+        )
+        .run();
+    const created = await createInternalShare(mutationEnv(), f.session, {
+      rootNodeId: shareRoot,
+      spaceId: f.owner.ids.space,
+      recipientEmail: recipientEmail!,
+      actions: ["read"],
+    });
+    if (variant === "maintenance") await env.DB.prepare("UPDATE control SET maintenance=1").run();
+    if (variant === "recipient-disabled")
+      await env.DB.prepare("UPDATE users SET disabled_at=? WHERE id=?")
+        .bind(Date.now(), f.other.ids.user)
+        .run();
+    if (variant === "expired")
+      await env.DB.prepare("UPDATE shares SET expires_at=? WHERE id=?").bind(0, created.id).run();
+    if (variant === "ancestor-trashed") {
+      const op = crypto.randomUUID();
+      await atomicBatch(env.DB, [
+        {
+          sql: `INSERT INTO trash_ops(
+                op_id,actor_id,space_id,root_node_id,state,created_at,epoch
+              ) VALUES(?,?,?,?,'trashed',?,1)`,
+          values: [op, f.owner.ids.user, f.owner.ids.space, f.owner.ids.folder, Date.now()],
+        },
+        {
+          sql: "UPDATE nodes SET deleted_at=?,deleted_op_id=? WHERE id=?",
+          values: [Date.now(), op, f.owner.ids.folder],
+        },
+      ]);
+    }
+    if (variant === "maintenance" || variant === "recipient-disabled")
+      await expect(listSharedWithMe(env.DB, f.otherSession)).rejects.toThrow();
+    else await expect(listSharedWithMe(env.DB, f.otherSession)).resolves.toEqual([]);
+    await env.DB.prepare("UPDATE control SET maintenance=0").run();
+  }
 });
 
 it("stores password KDF metadata without returning the password or digest", async () => {

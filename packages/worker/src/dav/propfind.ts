@@ -1,5 +1,5 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
-import { assertExists, atomicBatch, primary } from "../db/primary";
+import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import { davEtag } from "./etag";
 import type { DavPath } from "./path";
 import { type DavPropertyName, type PropfindRequest, validateDavXmlFragment } from "./xml";
@@ -57,7 +57,8 @@ function escapeXml(value: string): string {
 function href(path: DavPath, node: NodeRow, child: boolean): string {
   const parts = path.segments.map((segment) => encodeURIComponent(segment.name));
   if (child) parts.push(encodeURIComponent(node.name));
-  else if (parts.length > 0) parts[parts.length - 1] = encodeURIComponent(node.name);
+  else if (parts.length > 0 && !path.shared)
+    parts[parts.length - 1] = encodeURIComponent(node.name);
   const value = `/dav/${parts.join("/")}`;
   return node.kind === "file" ? value : `${value.replace(/\/$/, "")}/`;
 }
@@ -85,6 +86,7 @@ function liveValue(
   name: string,
   namesOnly: boolean,
   locks: readonly LockRow[],
+  readOnly: boolean,
 ): string | null {
   if (name === "getcontentlength" && node.kind !== "file") return null;
   if (namesOnly) return "";
@@ -106,9 +108,11 @@ function liveValue(
   if (name === "getlastmodified") return escapeXml(new Date(node.updatedAt).toUTCString());
   if (name === "creationdate") return escapeXml(new Date(node.createdAt).toISOString());
   if (name === "resourcetype") return node.kind === "file" ? "" : "<D:collection/>";
-  if (name === "lockdiscovery") return locks.map(activeLockValue).join("");
+  if (name === "lockdiscovery") return readOnly ? "" : locks.map(activeLockValue).join("");
   if (name === "supportedlock")
-    return "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>";
+    return readOnly
+      ? ""
+      : "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>";
   return null;
 }
 
@@ -136,6 +140,7 @@ function requestedProperties(
   node: NodeRow,
   props: readonly PropRow[],
   locks: readonly LockRow[],
+  readOnly: boolean,
 ): { found: string[]; missing: string[] } {
   const found: string[] = [];
   const missing: string[] = [];
@@ -153,7 +158,7 @@ function requestedProperties(
     if (seen.has(key)) continue;
     seen.add(key);
     if (property.namespace === DAV && (LIVE as readonly string[]).includes(property.name)) {
-      const value = liveValue(node, property.name, namesOnly, locks);
+      const value = liveValue(node, property.name, namesOnly, locks, readOnly);
       if (value === null) missing.push(davProperty(property.name, ""));
       else found.push(davProperty(property.name, value));
       continue;
@@ -179,7 +184,7 @@ function responseXml(
   props: readonly PropRow[],
   locks: readonly LockRow[],
 ): string {
-  const selected = requestedProperties(request, node, props, locks);
+  const selected = requestedProperties(request, node, props, locks, path.shared);
   const propstat = (properties: readonly string[], status: number, text: string) =>
     properties.length === 0
       ? ""
@@ -194,6 +199,7 @@ export async function propfindResponse(
   path: DavPath,
   depth: 0 | 1,
   request: PropfindRequest,
+  extra: readonly SqlStatement[] = [],
 ): Promise<Response> {
   if (authorized.operation !== "node.read") throw new Error("dav_node_unavailable");
   const nodeId = authorized.node.id;
@@ -228,6 +234,7 @@ export async function propfindResponse(
   )`;
   const batches = await atomicBatch(db, [
     authorizationAssertion(authorized),
+    ...extra,
     assertExists(
       `SELECT 1 WHERE ?=0 OR (SELECT COUNT(*) FROM nodes
         WHERE parent_id=? AND space_id=? AND owner_id=? AND deleted_at IS NULL)<=${MAX_CHILDREN}`,
@@ -260,9 +267,9 @@ export async function propfindResponse(
       ],
     },
   ]);
-  const nodes = (batches[2]?.results ?? []) as NodeRow[];
-  const props = (batches[3]?.results ?? []) as PropRow[];
-  const locks = (batches[4]?.results ?? []) as LockRow[];
+  const nodes = (batches[extra.length + 2]?.results ?? []) as NodeRow[];
+  const props = (batches[extra.length + 3]?.results ?? []) as PropRow[];
+  const locks = (batches[extra.length + 4]?.results ?? []) as LockRow[];
   if (nodes.length < 1 || nodes.length > MAX_CHILDREN + 1 || nodes[0]?.id !== nodeId)
     throw new Error("dav_data_invalid");
   for (const node of nodes) {

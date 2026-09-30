@@ -1,3 +1,4 @@
+import { portableName } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
 import { authorizationAssertion, authorizeNode } from "../auth/authorize";
 import { type AccessSession, assertLiveAccessCredential } from "../auth/sessions";
@@ -23,10 +24,18 @@ export interface CreateShareInput {
   readonly reservationLimitBytes?: number;
 }
 
+export interface CreateInternalShareInput {
+  readonly rootNodeId: string;
+  readonly spaceId: string;
+  readonly recipientEmail: string;
+  readonly actions: readonly string[];
+  readonly ttlDays?: number;
+}
+
 interface ShareRow {
   id: string;
+  kind: "link" | "upload_only" | "internal";
   rootNodeId: string | null;
-  kind: "link" | "upload_only";
   version: number;
   disabledAt: number | null;
   expiresAt: number | null;
@@ -34,6 +43,28 @@ interface ShareRow {
   passwordProtected: number;
   reservedBytes: number;
   reservationLimit: number;
+  actions: string;
+  recipientUserId: string | null;
+  recipientEmail: string | null;
+  mountName: string | null;
+}
+
+interface ShareOutput {
+  id: string;
+  kind: ShareRow["kind"];
+  rootNodeId: string | null;
+  version: number;
+  disabledAt: number | null;
+  expiresAt: number | null;
+  createdAt: number;
+  passwordProtected: boolean;
+  actions: string[];
+  reservedBytes?: number;
+  reservationLimit?: number;
+  recipientUserId?: string | null;
+  recipientEmail?: string | null;
+  mountId?: string;
+  mountName?: string | null;
 }
 
 function ulid(): string {
@@ -62,33 +93,59 @@ function currentAccess(session: AccessSession): SqlStatement[] {
   ];
 }
 
-function output(row: ShareRow) {
+function output(row: ShareRow): ShareOutput {
   return {
     id: row.id,
-    rootNodeId: row.rootNodeId,
     kind: row.kind,
+    rootNodeId: row.rootNodeId,
     version: row.version,
     disabledAt: row.disabledAt,
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
     passwordProtected: row.passwordProtected === 1,
-    reservedBytes: row.reservedBytes,
-    reservationLimit: row.reservationLimit,
-    actions:
-      row.kind === "link" ? (["read", "download"] as const) : (["create", "upload"] as const),
+    actions: orderedActions(row.kind, JSON.parse(row.actions) as string[]),
+    ...(row.kind === "internal"
+      ? {
+          recipientUserId: row.recipientUserId,
+          recipientEmail: row.recipientEmail,
+          mountId: row.id,
+          mountName: row.mountName,
+        }
+      : {
+          reservedBytes: row.reservedBytes,
+          reservationLimit: row.reservationLimit,
+        }),
   };
 }
+
+function canonicalActions(actions: readonly string[]) {
+  return ["read", "download"].filter((action) => actions.includes(action));
+}
+
+function orderedActions(kind: ShareRow["kind"], actions: readonly string[]) {
+  return (kind === "upload_only" ? ["create", "upload"] : ["read", "download"]).filter((action) =>
+    actions.includes(action),
+  );
+}
+
+const SHARE_SELECT = `SELECT sh.id,sh.kind,sh.root_node_id AS rootNodeId,sh.version,
+  sh.disabled_at AS disabledAt,sh.expires_at AS expiresAt,sh.created_at AS createdAt,
+  sh.password_digest IS NOT NULL AS passwordProtected,sh.reserved_bytes AS reservedBytes,
+  sh.reservation_limit AS reservationLimit,
+  COALESCE((SELECT json_group_array(action) FROM (
+    SELECT action FROM share_actions WHERE share_id=sh.id ORDER BY action
+  )),'[]') AS actions,
+  g.user_id AS recipientUserId,u.email AS recipientEmail,sh.mount_name AS mountName
+  FROM shares sh
+  LEFT JOIN share_grants g ON g.share_id=sh.id
+  LEFT JOIN users u ON u.id=g.user_id`;
 
 export async function listShares(db: D1Database, session: AccessSession) {
   const statements = currentAccess(session);
   await atomicBatch(db, statements);
   const rows = await primary(db)
-    .prepare(`SELECT id,root_node_id AS rootNodeId,kind,version,disabled_at AS disabledAt,
-      expires_at AS expiresAt,created_at AS createdAt,
-      password_digest IS NOT NULL AS passwordProtected,reserved_bytes AS reservedBytes,
-      reservation_limit AS reservationLimit
-      FROM shares WHERE owner_id=? AND kind IN ('link','upload_only')
-      ORDER BY created_at DESC,id DESC LIMIT 100`)
+    .prepare(`${SHARE_SELECT} WHERE sh.owner_id=? AND sh.kind IN ('link','upload_only','internal')
+      ORDER BY sh.created_at DESC,sh.id DESC LIMIT 100`)
     .bind(session.user_id)
     .all<ShareRow>();
   await atomicBatch(db, statements);
@@ -100,16 +157,294 @@ export async function readShare(db: D1Database, session: AccessSession, shareId:
   const statements = currentAccess(session);
   await atomicBatch(db, statements);
   const row = await primary(db)
-    .prepare(`SELECT id,root_node_id AS rootNodeId,kind,version,disabled_at AS disabledAt,
-      expires_at AS expiresAt,created_at AS createdAt,
-      password_digest IS NOT NULL AS passwordProtected,reserved_bytes AS reservedBytes,
-      reservation_limit AS reservationLimit
-      FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')`)
+    .prepare(`${SHARE_SELECT}
+      WHERE sh.id=? AND sh.owner_id=? AND sh.kind IN ('link','upload_only','internal')`)
     .bind(shareId, session.user_id)
     .first<ShareRow>();
   if (!row) throw new Error("share_not_found");
   await atomicBatch(db, statements);
   return output(row);
+}
+
+function validatedActions(actions: readonly string[]) {
+  if (
+    !Array.isArray(actions) ||
+    actions.length < 1 ||
+    actions.length > 2 ||
+    actions.some((action) => !["read", "download"].includes(action)) ||
+    new Set(actions).size !== actions.length ||
+    (actions.includes("download") && !actions.includes("read"))
+  )
+    throw new Error("invalid_share_request");
+  return canonicalActions(actions);
+}
+
+function stableMountName(shareId: string, rootName: string) {
+  const prefix = `${shareId.slice(3)}-`;
+  let suffix = "";
+  for (const character of rootName) {
+    if (new TextEncoder().encode(prefix + suffix + character).byteLength > 255) break;
+    suffix += character;
+  }
+  return portableName(prefix + (suffix || "Shared"));
+}
+
+export async function createInternalShare(
+  env: Env,
+  session: AccessSession,
+  input: CreateInternalShareInput,
+) {
+  if (
+    !ID.test(input.rootNodeId) ||
+    !ID.test(input.spaceId) ||
+    typeof input.recipientEmail !== "string" ||
+    input.recipientEmail.length < 3 ||
+    input.recipientEmail.length > 320 ||
+    (input.ttlDays !== undefined &&
+      (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365))
+  )
+    throw new Error("invalid_share_request");
+  const actions = validatedActions(input.actions);
+  const recipientEmail = input.recipientEmail.normalize("NFC").trim();
+  const recipients = await primary(env.DB)
+    .prepare(`SELECT id,email FROM users WHERE lower(email)=lower(?) AND disabled_at IS NULL
+      ORDER BY id LIMIT 2`)
+    .bind(recipientEmail)
+    .all<{ id: string; email: string }>();
+  const recipient = recipients.results.length === 1 ? recipients.results[0] : undefined;
+  if (!recipient || recipient.id === session.user_id) throw new Error("share_recipient_not_found");
+  const principal = {
+    kind: "user" as const,
+    user_id: session.user_id,
+    credential_id: session.credential_id,
+    epoch: session.epoch,
+  };
+  let root;
+  try {
+    root = await authorizeNode(env.DB, principal, {
+      operation: "node.read",
+      nodeId: input.rootNodeId,
+      spaceId: input.spaceId,
+    });
+  } catch {
+    throw new Error("share_root_not_found");
+  }
+  if (
+    root.operation !== "node.read" ||
+    root.node.owner_id !== session.user_id ||
+    root.node.kind !== "folder"
+  )
+    throw new Error("share_root_not_found");
+  const existing = await primary(env.DB)
+    .prepare(`SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
+      WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
+        AND sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+        AND g.user_id=? AND g.disabled_at IS NULL AND g.version=sh.version`)
+    .bind(session.user_id, root.node.id, recipient.id)
+    .first<number>();
+  if (existing !== null) throw new Error("share_exists");
+  const active = await primary(env.DB)
+    .prepare(`SELECT COUNT(*) AS count FROM shares WHERE owner_id=? AND kind='internal'
+      AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000)`)
+    .bind(session.user_id)
+    .first<number>("count");
+  if (active === null || active >= ACTIVE_SHARE_LIMIT) throw new Error("share_limit");
+  const id = ulid();
+  const mount = stableMountName(id, root.node.name);
+  const now = Date.now();
+  const expiresAt = now + (input.ttlDays ?? 30) * DAY_MS;
+  const admission = await acquireAccountMutation(
+    env,
+    session.user_id,
+    session.epoch,
+    "share.create",
+  );
+  await commitAccountMutation(env.DB, admission, session.user_id, [
+    ...currentAccess(session),
+    authorizationAssertion(root),
+    assertExists(
+      `SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL AND lower(email)=lower(?)
+        AND (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL AND lower(email)=lower(?))=1`,
+      [recipient.id, recipient.email, recipient.email],
+    ),
+    assertExists(
+      `SELECT 1 WHERE
+        (SELECT COUNT(*) FROM shares WHERE owner_id=? AND kind='internal'
+          AND disabled_at IS NULL
+          AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000))<?
+        AND NOT EXISTS(
+          SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
+          WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
+            AND sh.disabled_at IS NULL
+            AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+            AND g.user_id=? AND g.disabled_at IS NULL AND g.version=sh.version
+        )`,
+      [session.user_id, ACTIVE_SHARE_LIMIT, session.user_id, root.node.id, recipient.id],
+    ),
+    {
+      sql: `INSERT INTO shares(
+        id,owner_id,root_node_id,kind,expires_at,created_at,mount_name,mount_name_ci
+      ) VALUES(?,?,?,'internal',?,?,?,?)`,
+      values: [id, session.user_id, root.node.id, expiresAt, now, mount.name, mount.nameCi],
+    },
+    {
+      sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
+      values: [id, recipient.id],
+    },
+    ...actions.map((action) => ({
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,?)",
+      values: [id, action],
+    })),
+  ]);
+  return readShare(env.DB, session, id);
+}
+
+export async function updateInternalShareActions(
+  env: Env,
+  session: AccessSession,
+  shareId: string,
+  actionsInput: readonly string[],
+) {
+  if (!ID.test(shareId)) throw new Error("share_not_found");
+  const actions = validatedActions(actionsInput);
+  const row = await primary(env.DB)
+    .prepare(`SELECT sh.root_node_id AS rootNodeId,s.id AS spaceId
+      FROM shares sh JOIN nodes n ON n.id=sh.root_node_id
+      JOIN spaces s ON s.id=n.space_id AND s.owner_id=sh.owner_id
+      WHERE sh.id=? AND sh.owner_id=? AND sh.kind='internal'`)
+    .bind(shareId, session.user_id)
+    .first<{ rootNodeId: string; spaceId: string }>();
+  if (!row) throw new Error("share_not_found");
+  let root;
+  try {
+    root = await authorizeNode(
+      env.DB,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      { operation: "node.read", nodeId: row.rootNodeId, spaceId: row.spaceId },
+    );
+  } catch {
+    throw new Error("share_not_found");
+  }
+  const admission = await acquireAccountMutation(
+    env,
+    session.user_id,
+    session.epoch,
+    "share.update",
+  );
+  const clock = "strftime('%s','now')*1000";
+  await commitAccountMutation(env.DB, admission, session.user_id, [
+    ...currentAccess(session),
+    authorizationAssertion(root),
+    assertExists(
+      `SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind='internal'
+        AND root_node_id=? AND disabled_at IS NULL
+        AND (expires_at IS NULL OR expires_at>${clock})`,
+      [shareId, session.user_id, row.rootNodeId],
+    ),
+    { sql: "DELETE FROM share_actions WHERE share_id=?", values: [shareId] },
+    ...actions.map((action) => ({
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,?)",
+      values: [shareId, action],
+    })),
+    {
+      sql: "UPDATE shares SET version=version+1 WHERE id=? AND owner_id=? AND kind='internal'",
+      values: [shareId, session.user_id],
+    },
+    {
+      sql: "UPDATE share_grants SET version=(SELECT version FROM shares WHERE id=?) WHERE share_id=?",
+      values: [shareId, shareId],
+    },
+    {
+      sql: `UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,${clock})
+        WHERE share_id=?`,
+      values: [shareId],
+    },
+    {
+      sql: "UPDATE budgets SET state='revoked' WHERE share_id=? AND state='active'",
+      values: [shareId],
+    },
+  ]);
+  return readShare(env.DB, session, shareId);
+}
+
+export async function listSharedWithMe(db: D1Database, session: AccessSession) {
+  const result = await atomicBatch(db, [
+    ...currentAccess(session),
+    {
+      sql: `WITH RECURSIVE live_share(
+        shareId,shareVersion,mountName,rootId,spaceId,ownerId,rootName,rootKind,rootRevision,
+        recipientEmail,ownerEmail,depth,path,currentId,currentKind,parentId,deletedAt
+      ) AS (
+        SELECT sh.id,sh.version,sh.mount_name,n.id,n.space_id,n.owner_id,n.name,n.kind,n.revision,
+          recipient.email,owner.email,0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
+        FROM shares sh
+        JOIN share_grants g ON g.share_id=sh.id AND g.user_id=? AND g.disabled_at IS NULL
+          AND g.version=sh.version
+        JOIN users recipient ON recipient.id=g.user_id AND recipient.disabled_at IS NULL
+        JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
+        JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
+        JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=? AND ctl.maintenance=0
+        WHERE sh.kind='internal' AND sh.mount_name IS NOT NULL AND sh.disabled_at IS NULL
+          AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+          AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read')
+        UNION ALL
+        SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
+          a.rootKind,a.rootRevision,a.recipientEmail,a.ownerEmail,a.depth+1,a.path||p.id||'/',
+          p.id,p.kind,p.parent_id,p.deleted_at
+        FROM live_share a JOIN nodes p ON p.id=a.parentId
+        WHERE a.depth<64 AND p.space_id=a.spaceId AND p.owner_id=a.ownerId
+          AND instr(a.path,'/'||p.id||'/')=0
+      )
+      SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
+        a.rootKind,a.rootRevision,a.recipientEmail,a.ownerEmail,
+        (SELECT json_group_array(action) FROM (
+          SELECT action FROM share_actions WHERE share_id=a.shareId ORDER BY action
+        )) AS actions
+      FROM live_share a JOIN spaces sp ON sp.id=a.spaceId AND sp.owner_id=a.ownerId
+      GROUP BY a.shareId
+      HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(a.deletedAt IS NULL)=1
+        AND SUM(a.currentKind='root' AND a.parentId IS NULL AND a.currentId=sp.root_node_id)=1
+      ORDER BY a.mountName,a.shareId LIMIT 100`,
+      values: [session.user_id, session.epoch],
+    },
+  ]);
+  return (result.at(-1)?.results ?? []).map((raw) => {
+    const row = raw as {
+      shareId: string;
+      shareVersion: number;
+      mountName: string;
+      rootId: string;
+      spaceId: string;
+      ownerId: string;
+      rootName: string;
+      rootKind: "folder";
+      rootRevision: number;
+      recipientEmail: string;
+      ownerEmail: string;
+      actions: string;
+    };
+    return Object.freeze({
+      shareId: row.shareId,
+      shareVersion: row.shareVersion,
+      mountId: row.shareId,
+      mountName: row.mountName,
+      actions: canonicalActions(JSON.parse(row.actions) as string[]),
+      root: {
+        id: row.rootId,
+        spaceId: row.spaceId,
+        ownerId: row.ownerId,
+        name: row.rootName,
+        kind: row.rootKind,
+        revision: row.rootRevision,
+      },
+      owner: { id: row.ownerId, email: row.ownerEmail },
+    });
+  });
 }
 
 export async function createShare(
@@ -228,7 +563,9 @@ export async function disableShare(
 ): Promise<void> {
   if (!ID.test(shareId)) throw new Error("share_not_found");
   const exists = await primary(env.DB)
-    .prepare("SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')")
+    .prepare(
+      "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only','internal')",
+    )
     .bind(shareId, session.user_id)
     .first();
   if (!exists) throw new Error("share_not_found");
@@ -242,14 +579,19 @@ export async function disableShare(
   await commitAccountMutation(env.DB, admission, session.user_id, [
     ...currentAccess(session),
     assertExists(
-      "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')",
+      "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only','internal')",
       [shareId, session.user_id],
     ),
     {
       sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),
         version=CASE WHEN disabled_at IS NULL THEN version+1 ELSE version END
-        WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')`,
+        WHERE id=? AND owner_id=? AND kind IN ('link','upload_only','internal')`,
       values: [shareId, session.user_id],
+    },
+    {
+      sql: `UPDATE share_grants SET disabled_at=COALESCE(disabled_at,${clock})
+        WHERE share_id=?`,
+      values: [shareId],
     },
     {
       sql: `UPDATE share_sessions SET revoked_at=COALESCE(revoked_at,${clock})

@@ -28,6 +28,7 @@ export async function acquireAccountMutation(
     | "session.register"
     | "session.revoke"
     | "share.create"
+    | "share.update"
     | "share.disable"
     | "share.unlock"
     | "share.logout"

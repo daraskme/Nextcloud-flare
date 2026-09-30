@@ -182,18 +182,18 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       FROM nodes n JOIN a ON n.id=a.parent_id
       WHERE a.depth<64 AND n.space_id=a.space_id AND n.owner_id=a.owner_id AND instr(a.path,'/'||n.id||'/')=0
   ),
-  user_authority AS (
-    SELECT u.id FROM p JOIN credentials c ON c.id=p.credential_id AND c.kind='access'
+  user_authority(id,root_allowed) AS (
+    SELECT u.id,1 FROM p JOIN credentials c ON c.id=p.credential_id AND c.kind='access'
       JOIN sessions s ON s.id=c.session_id AND s.kind='access' JOIN users u ON u.id=s.user_id
       WHERE p.kind='user' AND u.id=p.user_id AND u.disabled_at IS NULL AND s.revoked_at IS NULL
         AND s.epoch=p.epoch AND s.expires_at>strftime('%s','now')*1000
     UNION ALL
-    SELECT u.id FROM p JOIN credentials c ON c.id=p.credential_id AND c.kind='app_password'
+    SELECT u.id,
+      (ap.root_node_id IS NULL OR EXISTS(SELECT 1 FROM a WHERE id=ap.root_node_id))
+      FROM p JOIN credentials c ON c.id=p.credential_id AND c.kind='app_password'
       JOIN app_passwords ap ON ap.id=c.app_password_id JOIN users u ON u.id=ap.user_id
       WHERE p.kind='app_password' AND u.id=p.user_id AND u.disabled_at IS NULL AND ap.revoked_at IS NULL
         AND ap.expires_at>strftime('%s','now')*1000
-        AND (ap.root_node_id IS NULL OR EXISTS(SELECT 1 FROM a WHERE id=ap.root_node_id))
-        AND (?6 NOT IN ('node.rename','node.trash') OR ap.root_node_id IS NULL OR ap.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM credential_scopes WHERE credential_id=c.id AND scope=?4)
   ),
   live_shares AS (
@@ -220,9 +220,16 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
         (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
-          SELECT 1 FROM user_authority u WHERE u.id=n.owner_id OR EXISTS(
+          SELECT 1 FROM user_authority u WHERE
+            (u.id=n.owner_id AND u.root_allowed=1
+              AND (?6 NOT IN ('node.rename','node.trash') OR p.kind<>'app_password'
+                OR NOT EXISTS(SELECT 1 FROM app_passwords ap
+                  WHERE ap.id=(SELECT app_password_id FROM credentials WHERE id=p.credential_id)
+                    AND ap.root_node_id=?1)))
+            OR (ctl.maintenance=0 AND EXISTS(
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
-              WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id AND g.disabled_at IS NULL AND g.version=sh.version)))
+              WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id
+                AND g.disabled_at IS NULL AND g.version=sh.version))))
         OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id

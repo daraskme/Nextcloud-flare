@@ -183,7 +183,6 @@ export const ROUTE_BINDINGS = [
   ...bindings(appAccess, "unavailable", "unavailable", [
     "app GET /api/v1/recent",
     "app GET /api/v1/starred",
-    "app GET /api/v1/shared-with-me",
     "app GET /api/v1/nodes/:nodeId/content",
     "app HEAD /api/v1/nodes/:nodeId/content",
     "app GET /api/v1/nodes/:nodeId/thumb",
@@ -212,7 +211,6 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/library/roots",
     "app POST /api/v1/library/roots",
     "app DELETE /api/v1/library/roots/:nodeId",
-    "app PATCH /api/v1/shares/:shareId",
     "app GET /api/v1/tags",
     "app POST /api/v1/tags",
     "app PATCH /api/v1/tags/:tagId",
@@ -221,6 +219,8 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/jobs/:jobId/cancel",
     "app POST /api/v1/jobs/:jobId/retry",
   ]),
+  ...bindings(appAccess, "bound", "private-app", ["app GET /api/v1/shared-with-me"]),
+  ...bindings(appAccess, "bound", "private-app", ["app PATCH /api/v1/shares/:shareId"]),
   ...bindings(appAdmin, "unavailable", "unavailable", [
     "app GET /api/v1/admin/dlq",
     "app POST /api/v1/admin/dlq/:jobId/requeue",

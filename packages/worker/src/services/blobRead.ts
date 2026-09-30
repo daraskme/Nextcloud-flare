@@ -44,8 +44,9 @@ export async function prepareNodeBlobRead(
 export async function prepareAuthorizedNodeBlobRead(
   db: D1Database,
   authorized: AuthorizedNode,
+  extra: readonly SqlStatement[] = [],
 ): Promise<BlobReadPlan> {
-  return resolveBlobRead(db, authorized, []);
+  return resolveBlobRead(db, authorized, extra);
 }
 
 export async function prepareAuthorizedNodeThumbnailRead(

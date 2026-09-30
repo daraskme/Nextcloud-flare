@@ -10,11 +10,12 @@ import {
   hashAppPassword,
 } from "../../src/auth/appPassword";
 import { lockTokenHashes } from "../../src/auth/locks";
-import { parseDavPath, resolveDavNode } from "../../src/dav/path";
+import { davReadAssertion, parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
+import { prepareAuthorizedNodeBlobRead } from "../../src/services/blobRead";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
@@ -1630,7 +1631,11 @@ it("parses bounded DAV paths with a single percent decode", () => {
   ]) {
     expect(() => parseDavPath(path)).toThrow("invalid_dav_path");
   }
-  expect(() => parseDavPath("/dav/Shared/mount")).toThrow("dav_shared_not_ready");
+  expect(parseDavPath("/dav/Shared/mount")).toMatchObject({
+    shared: true,
+    segments: [{ name: "Shared" }, { name: "mount" }],
+  });
+  expect(() => parseDavPath("/dav/Shared")).toThrow("invalid_dav_path");
 });
 
 it("resolves an app password DAV path relative to its authorized root", async () => {
@@ -1660,6 +1665,163 @@ it("resolves an app password DAV path relative to its authorized root", async ()
   await expect(resolveDavNode(env.DB, principal, parseDavPath("/dav/File"))).rejects.toThrow(
     "dav_node_unavailable",
   );
+});
+
+it("resolves a recipient shared mount outside its personal app-password root", async () => {
+  const { f: recipient, id, secret, ring, request } = await fixture("S");
+  const owner = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  await atomicBatch(env.DB, [
+    ...owner.statements,
+    {
+      sql: `INSERT INTO credential_scopes(credential_id,scope)
+        VALUES(?,'node:read'),(?,'node:create'),(?,'node:write'),(?,'node:delete')`,
+      values: [`ap:${id}`, `ap:${id}`, `ap:${id}`, `ap:${id}`],
+    },
+    {
+      sql: `INSERT INTO shares(
+        id,owner_id,root_node_id,kind,mount_name,mount_name_ci,created_at
+      ) VALUES(?,?,?,'internal','stable-Folder','stable-folder',?)`,
+      values: [`share-${crypto.randomUUID()}`, owner.ids.user, owner.ids.folder, Date.now()],
+    },
+  ]);
+  const share = await env.DB.prepare("SELECT id FROM shares WHERE owner_id=? AND kind='internal'")
+    .bind(owner.ids.user)
+    .first<string>("id");
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+      values: [share!, share!],
+    },
+    {
+      sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
+      values: [share!, recipient.ids.user],
+    },
+  ]);
+  const principal = await authenticateAppPassword(
+    mutationEnv(env.DB),
+    request(),
+    "https://app.invalid",
+    1,
+    ring,
+  );
+  const sharedFilePath = parseDavPath("/dav/Shared/stable-Folder/File");
+  expect((await resolveDavNode(env.DB, principal, sharedFilePath)).node.id).toBe(owner.ids.file);
+  expect(() => parseDavPath("/dav/Shared/stable-Folder/../File")).toThrow("invalid_dav_path");
+  const authorization = `Basic ${btoa(`${id}:${secret}`)}`;
+  const davEnv = admittedDavEnv();
+  const options = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/stable-Folder", {
+      method: "OPTIONS",
+      headers: { Authorization: authorization },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(options.status).toBe(200);
+  expect(options.headers.get("Allow")).toBe("OPTIONS, GET, HEAD, PROPFIND");
+  const propfind = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/stable-Folder", {
+      method: "PROPFIND",
+      headers: { Authorization: authorization, Depth: "1" },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(propfind.status).toBe(207);
+  const xml = await propfind.text();
+  expect(xml).toContain("<D:href>/dav/Shared/stable-Folder/</D:href>");
+  expect(xml).toContain("<D:href>/dav/Shared/stable-Folder/File</D:href>");
+  expect(xml).not.toContain(owner.ids.root);
+  const stored = await env.BLOBS.put(`u/${owner.ids.user}/b/${owner.ids.blob}`, "abc");
+  if (!stored) throw new Error("fixture_r2_put_failed");
+  await env.DB.prepare(
+    "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,?)",
+  )
+    .bind(owner.ids.blob, stored.etag, Date.now())
+    .run();
+  try {
+    const range = await handleDavHttp(
+      new Request("https://app.invalid/dav/Shared/stable-Folder/File", {
+        headers: { Authorization: authorization, Range: "bytes=1-2" },
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+    expect(range.status).toBe(206);
+    expect(new TextDecoder().decode(await range.arrayBuffer())).toBe("bc");
+    const head = await handleDavHttp(
+      new Request("https://app.invalid/dav/Shared/stable-Folder/File", {
+        method: "HEAD",
+        headers: { Authorization: authorization },
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+  } finally {
+    await env.BLOBS.delete(`u/${owner.ids.user}/b/${owner.ids.blob}`);
+  }
+  const staleDownloadProof = await resolveDavNode(env.DB, principal, sharedFilePath, "download");
+  await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='download'")
+    .bind(share)
+    .run();
+  await expect(
+    prepareAuthorizedNodeBlobRead(env.DB, staleDownloadProof, [
+      davReadAssertion(staleDownloadProof),
+    ]),
+  ).rejects.toThrow();
+  expect(
+    await handleDavHttp(
+      new Request("https://app.invalid/dav/Shared/stable-Folder/File", {
+        headers: { Authorization: authorization },
+      }),
+      davEnv,
+      1,
+      ring,
+    ),
+  ).toMatchObject({ status: 404 });
+  const response = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/stable-Folder/File", {
+      method: "DELETE",
+      headers: { Authorization: authorization },
+    }),
+    admittedDavEnv(),
+    1,
+    ring,
+  );
+  expect(response.status).toBe(405);
+  for (const method of ["COPY", "MOVE"]) {
+    const transfer = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: {
+          Authorization: authorization,
+          Destination: "https://app.invalid/dav/Shared/stable-Folder/Transferred",
+        },
+      }),
+      admittedDavEnv(),
+      1,
+      ring,
+    );
+    expect(transfer.status).toBe(405);
+  }
+  await env.DB.prepare("INSERT INTO share_actions(share_id,action) VALUES(?,'download')")
+    .bind(share)
+    .run();
+  const staleVersionProof = await resolveDavNode(env.DB, principal, sharedFilePath, "download");
+  await atomicBatch(env.DB, [
+    { sql: "UPDATE shares SET version=version+1 WHERE id=?", values: [share!] },
+    { sql: "UPDATE share_grants SET version=version+1 WHERE share_id=?", values: [share!] },
+  ]);
+  await expect(
+    prepareAuthorizedNodeBlobRead(env.DB, staleVersionProof, [davReadAssertion(staleVersionProof)]),
+  ).rejects.toThrow();
+  await expect(resolveDavNode(env.DB, principal, sharedFilePath)).resolves.toBeDefined();
 });
 
 it("rejects a DAV path whose node moves after its initial lookup", async () => {

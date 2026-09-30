@@ -6,6 +6,7 @@ import { parseDavLockTokenHeader } from "../dav/conditions";
 import { davEtag } from "../dav/etag";
 import { parseDavLockDepth, parseDavTimeout } from "../dav/lockProtocol";
 import {
+  davReadAssertion,
   parseDavPath,
   resolveDavCreateParent,
   resolveDavCredentialPath,
@@ -175,6 +176,8 @@ export async function handleDavHttp(
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;
   }
+  if (path.shared && !["OPTIONS", "GET", "HEAD", "PROPFIND"].includes(request.method))
+    return problem(405, "method_not_allowed");
   if (request.method === "MKCOL") {
     if (path.segments.length === 0) return problem(405, "method_not_allowed");
     if (
@@ -190,6 +193,7 @@ export async function handleDavHttp(
     const parentPath = {
       segments: path.segments.slice(0, -1),
       trailingSlash: true,
+      shared: path.shared,
     } as const;
     try {
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
@@ -276,6 +280,7 @@ export async function handleDavHttp(
         : await resolveDavCreateParent(env.DB, principal, {
             segments: path.segments.slice(0, -1),
             trailingSlash: true,
+            shared: path.shared,
           });
       const body =
         request.body ??
@@ -354,7 +359,12 @@ export async function handleDavHttp(
     }
   } else if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY"].includes(request.method)) {
     try {
-      resolved = await resolveDavNode(env.DB, principal, path);
+      resolved = await resolveDavNode(
+        env.DB,
+        principal,
+        path,
+        path.shared && ["GET", "HEAD"].includes(request.method) ? "download" : "read",
+      );
     } catch {
       return problem(404, "not_found");
     }
@@ -365,6 +375,7 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
+      if (destination.path.shared) return problem(405, "method_not_allowed");
       const depth = parseDavTransferDepth("COPY", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
       const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
@@ -490,6 +501,7 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
+      if (destination.path.shared) return problem(405, "method_not_allowed");
       parseDavTransferDepth("MOVE", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
       const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
@@ -569,8 +581,9 @@ export async function handleDavHttp(
     return new Response(null, {
       status: 200,
       headers: {
-        Allow:
-          "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
+        Allow: path.shared
+          ? "OPTIONS, GET, HEAD, PROPFIND"
+          : "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
         "MS-Author-Via": "DAV",
@@ -600,7 +613,14 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     }
     try {
-      return await propfindResponse(env.DB, resolved, path, Number(depth) as 0 | 1, propfind);
+      return await propfindResponse(
+        env.DB,
+        resolved,
+        path,
+        Number(depth) as 0 | 1,
+        propfind,
+        path.shared ? [davReadAssertion(resolved)] : [],
+      );
     } catch (error) {
       if (error instanceof Error && error.message === "mutation_unavailable") {
         const response = problem(503, "not_ready");
@@ -695,6 +715,7 @@ export async function handleDavHttp(
         const parent = await resolveDavCreateParent(env.DB, principal, {
           segments: path.segments.slice(0, -1),
           trailingSlash: true,
+          shared: path.shared,
         });
         const href = `/dav/${encodedPath}`;
         const created = await createLockedEmptyFile(env, {
@@ -817,7 +838,11 @@ export async function handleDavHttp(
     )
       return problem(404, "not_found");
     try {
-      const plan = await prepareAuthorizedNodeBlobRead(env.DB, resolved);
+      const plan = await prepareAuthorizedNodeBlobRead(
+        env.DB,
+        resolved,
+        path.shared ? [davReadAssertion(resolved)] : [],
+      );
       return await streamImmutableBlob(env.BLOBS, plan, request, { etag: davEtag(resolved.node) });
     } catch {
       return problem(503, "not_ready");
