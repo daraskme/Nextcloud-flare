@@ -14,7 +14,7 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
 } from "./accountMutation";
-import { prepareAuthorizedNodeBlobRead } from "./blobRead";
+import { prepareAuthorizedNodeBlobRead, prepareAuthorizedNodeThumbnailRead } from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
 import { stageTargetManifest, type TargetEntry, type TargetManifestRecord } from "./targetManifest";
 
@@ -161,7 +161,10 @@ export async function issueContentTicket(
       throw new Error("content_ticket_mixed_owners");
     ownerId = proof.node.owner_id;
     if (selectedShare) await atomicBatch(db, [shareCoverageAssertion(proof.node, selectedShare)]);
-    const blob = await prepareAuthorizedNodeBlobRead(db, proof);
+    const blob =
+      purpose === "thumb"
+        ? await prepareAuthorizedNodeThumbnailRead(db, proof)
+        : await prepareAuthorizedNodeBlobRead(db, proof);
     const object = await bucket.head(blob.key);
     if (!object || object.size !== blob.size || object.etag !== blob.r2Etag)
       throw new Error("content_ticket_blob_unavailable");

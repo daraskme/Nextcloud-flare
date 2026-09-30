@@ -292,6 +292,10 @@ export const ROUTE_BINDINGS = [
   ]),
   ...bindings(contentCookieCrossOrigin, "bound", "content", ["content GET /c/:nodeId/:blobId"]),
   ...bindings(contentCookie, "bound", "content", ["content HEAD /c/:nodeId/:blobId"]),
+  ...bindings(contentCookieCrossOrigin, "bound", "content", [
+    "content GET /c/:nodeId/:blobId/thumb",
+  ]),
+  ...bindings(contentCookie, "bound", "content", ["content HEAD /c/:nodeId/:blobId/thumb"]),
   ...bindings(contentCookie, "unavailable", "unavailable", [
     "content GET /c/:nodeId/:blobId/pages/:page",
     "content HEAD /c/:nodeId/:blobId/pages/:page",

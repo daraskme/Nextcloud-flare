@@ -256,6 +256,36 @@ it("refuses deletion while referenced and makes deleting irreversible", () => {
   );
 });
 
+it("enforces the fixed image metadata and immutable ready derivative shape", () => {
+  db.exec(
+    "INSERT INTO node_media(node_id,blob_id,generator_version,width,height) VALUES('f-f','f-b','image-metadata-v1',1,1)",
+  );
+  expect(() =>
+    db.exec(
+      "UPDATE node_media SET taken_at=1 WHERE node_id='f-f' AND generator_version='image-metadata-v1'",
+    ),
+  ).toThrow(/invalid_image_metadata/);
+  expect(() =>
+    db.exec(`INSERT INTO derivative_results
+      (id,blob_id,kind,variant,generator_version,state,epoch,attempts,r2_key,size)
+      VALUES('bad','f-b','thumbnail','sm256','image-sm256-v1','ready',1,1,
+        'u/f-u/d/f-b/image-sm256-v1/sm256/00000000-0000-0000-0000-000000000000.webp',1)`),
+  ).toThrow(/invalid_image_derivative/);
+  expect(() =>
+    db.exec(`INSERT INTO derivative_results
+      (id,blob_id,kind,variant,generator_version,state,epoch,attempts,r2_key,r2_etag)
+      VALUES('bad-size','f-b','thumbnail','sm256','image-sm256-v1','ready',1,1,
+        'u/f-u/d/f-b/image-sm256-v1/sm256/00000000-0000-0000-0000-000000000000.webp','etag')`),
+  ).toThrow(/invalid_image_derivative/);
+  db.exec(`INSERT INTO derivative_results
+    (id,blob_id,kind,variant,generator_version,state,epoch,attempts,r2_key,size,r2_etag)
+    VALUES('ready','f-b','thumbnail','sm256','image-sm256-v1','ready',1,1,
+      'u/f-u/d/f-b/image-sm256-v1/sm256/00000000-0000-0000-0000-000000000000.webp',1,'etag')`);
+  expect(() => db.exec("UPDATE derivative_results SET state='failed' WHERE id='ready'")).toThrow(
+    /invalid_image_derivative/,
+  );
+});
+
 it("requires a real credential FK for derived content sessions", () => {
   expect(() =>
     db.exec("INSERT INTO credentials(id,kind,session_id) VALUES('as:missing','access','missing')"),

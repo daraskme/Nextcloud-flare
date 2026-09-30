@@ -7,7 +7,10 @@ import {
   playbackSupport,
 } from "@next-cloud-flare/shared/media";
 import { expect, it, vi } from "vitest";
+import { inspectImage } from "../../src/media/images/metadata";
+import { generateThumbnail } from "../../src/media/images/thumbnail";
 import { MEDIA_SNIFF_BYTES, sniffMediaContainer } from "../../src/media/sniff";
+import { animatedPngPrefix, tinyPng } from "../fixtures/images";
 
 function ftyp(major: string, compatible: string[] = [], extended = false) {
   const header = extended ? 16 : 8;
@@ -175,4 +178,60 @@ it("keeps AVIF detail previews available without generating or downloading all f
     expect(avifPreviewSource(status, "grid")).toBe("placeholder");
   }
   expect(avifPreviewSource("ready", "grid")).toBe("derivative");
+});
+
+it("persists only bounded dimensions for a statically proven still image", async () => {
+  const bytes = tinyPng();
+  const info = vi.fn(async () => ({
+    format: "image/png" as const,
+    fileSize: bytes.byteLength,
+    width: 1,
+    height: 1,
+  }));
+  expect(await inspectImage({ info } as unknown as ImagesBinding, bytes)).toEqual({
+    width: 1,
+    height: 1,
+  });
+  expect(info).toHaveBeenCalledOnce();
+});
+
+it("rejects animation before invoking the Images binding", async () => {
+  const info = vi.fn();
+  expect(await inspectImage({ info } as unknown as ImagesBinding, animatedPngPrefix())).toBeNull();
+  expect(info).not.toHaveBeenCalled();
+});
+
+it("requests one non-animated sm256 WebP and returns its bounded bytes", async () => {
+  const output = Uint8Array.from([1, 2, 3]);
+  const outputCall = vi.fn(async () => ({
+    contentType: () => "image/webp",
+    image: () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(output);
+          controller.close();
+        },
+      }),
+  }));
+  const transform = vi.fn(() => ({ output: outputCall }));
+  const input = vi.fn(() => ({ transform }));
+  expect(await generateThumbnail({ input } as unknown as ImagesBinding, tinyPng())).toEqual(output);
+  expect(transform).toHaveBeenCalledWith({ width: 256, height: 256, fit: "scale-down" });
+  expect(outputCall).toHaveBeenCalledWith({ format: "image/webp", quality: 80, anim: false });
+});
+
+it("rejects thumbnail output above the fixed byte limit", async () => {
+  const output = async () => ({
+    contentType: () => "image/webp",
+    image: () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(2_000_001));
+        },
+      }),
+  });
+  const images = {
+    input: () => ({ transform: () => ({ output }) }),
+  } as unknown as ImagesBinding;
+  await expect(generateThumbnail(images, tinyPng())).rejects.toThrow("thumbnail_output_too_large");
 });

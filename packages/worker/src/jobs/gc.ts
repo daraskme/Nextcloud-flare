@@ -40,6 +40,14 @@ interface Candidate {
   state: "candidate" | "deleting";
 }
 
+interface Derivative {
+  id: string;
+  state: string;
+  key: string | null;
+  size: number | null;
+  etag: string | null;
+}
+
 export interface GcResult {
   claimed: number;
   deleted: number;
@@ -202,6 +210,9 @@ async function finalizeCandidate(
     const admission = await acquireSystemMutation(env, candidate.ownerId, "gc.finalize");
     await commitSystemMutation(db, admission, candidate.ownerId, [
       dispatchFence(candidate, token, epoch, stopped),
+      assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM derivative_results WHERE blob_id=?)", [
+        blobId,
+      ]),
       {
         sql: `UPDATE blobs SET state='deleted' WHERE id=? AND state='deleting' AND ref_count=0
           AND NOT EXISTS(SELECT 1 FROM blob_pins WHERE blob_id=?)`,
@@ -244,7 +255,45 @@ async function finalizeCandidate(
   return row?.blobState === "deleted" && row.candidateState === "deleted";
 }
 
-/** Runs only under an admitted epoch. Each claimed object uses at most delete + head. */
+async function removeDerivativeRow(
+  env: SystemMutationSource,
+  candidate: Candidate,
+  derivative: Derivative,
+  token: string,
+  epoch: number,
+  stopped: GcMode,
+  deadline: number,
+): Promise<boolean> {
+  try {
+    const admission = await acquireSystemMutation(env, candidate.ownerId, "gc.finalize", deadline);
+    await commitSystemMutation(env.DB, admission, candidate.ownerId, [
+      dispatchFence(candidate, token, epoch, stopped),
+      {
+        sql: `DELETE FROM derivative_results WHERE id=? AND blob_id=? AND state=?
+          AND r2_key IS ? AND size IS ? AND r2_etag IS ?`,
+        values: [
+          derivative.id,
+          candidate.blobId,
+          derivative.state,
+          derivative.key,
+          derivative.size,
+          derivative.etag,
+        ],
+      },
+      assertOneChange,
+    ]);
+  } catch {
+    // An unknown commit is settled by the exact absence read below.
+  }
+  return (
+    (await primary(env.DB)
+      .prepare("SELECT 1 FROM derivative_results WHERE id=? AND blob_id=?")
+      .bind(derivative.id, candidate.blobId)
+      .first<number>()) === null
+  );
+}
+
+/** Runs only under an admitted epoch. Each physical object uses at most delete + head. */
 export async function runGarbageCollection(
   env: SystemMutationSource,
   bucket: R2Bucket,
@@ -309,6 +358,7 @@ async function collect(
     if (!(await claimCandidate(env, candidate, epoch, token, stopped, started + wall))) continue;
     result.claimed++;
     const charge = async () => {
+      if (result.r2Calls >= MAX_R2_CALLS) throw new Error("gc_budget");
       const admission = await acquireSystemMutation(
         env,
         candidate.ownerId,
@@ -332,6 +382,44 @@ async function collect(
       result.r2Calls++;
     };
     try {
+      const derivatives = await primary(db)
+        .prepare(`SELECT id,state,r2_key AS key,size,r2_etag AS etag
+          FROM derivative_results WHERE blob_id=? ORDER BY id`)
+        .bind(candidate.blobId)
+        .all<Derivative>();
+      for (const derivative of derivatives.results) {
+        if (derivative.state === "ready") {
+          if (
+            !derivative.key ||
+            derivative.key.length > 1024 ||
+            !derivative.key.startsWith(`u/${candidate.ownerId}/d/${candidate.blobId}/`) ||
+            derivative.size === null ||
+            derivative.size < 1 ||
+            !derivative.etag
+          )
+            throw new Error("invalid_derivative_gc");
+          await charge();
+          try {
+            await bucket.delete(derivative.key);
+          } catch {
+            // The absence check settles a lost delete response.
+          }
+          await charge();
+          if (await bucket.head(derivative.key)) throw new Error("derivative_delete_unconfirmed");
+        }
+        if (
+          !(await removeDerivativeRow(
+            env,
+            candidate,
+            derivative,
+            token,
+            epoch,
+            stopped,
+            started + wall,
+          ))
+        )
+          throw new Error("derivative_row_unconfirmed");
+      }
       await charge();
       try {
         await bucket.delete(candidate.key);

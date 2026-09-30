@@ -609,6 +609,23 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
   )
     .bind(f.owner.ids.blob, stored.etag, Date.now())
     .run();
+  const derivativeId = crypto.randomUUID();
+  const derivativeKey = `u/${f.owner.ids.user}/d/${f.owner.ids.blob}/image-sm256-v1/sm256/${crypto.randomUUID()}.webp`;
+  const derivative = await env.BLOBS.put(derivativeKey, "thumb");
+  if (!derivative) throw new Error("fixture_derivative_missing");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO node_media(node_id,blob_id,generator_version,width,height)
+        VALUES(?,?,'image-metadata-v1',1,1)`,
+      values: [f.owner.ids.file, f.owner.ids.blob],
+    },
+    {
+      sql: `INSERT INTO derivative_results
+        (id,blob_id,kind,variant,generator_version,state,epoch,attempts,r2_key,size,r2_etag)
+        VALUES(?,?,'thumbnail','sm256','image-sm256-v1','ready',1,1,?,?,?)`,
+      values: [derivativeId, f.owner.ids.blob, derivativeKey, derivative.size, derivative.etag],
+    },
+  ]);
   try {
     const unlocked = await handlePublicShareHttp(
       unlockRequest(f.shareId, f.secret, password),
@@ -627,7 +644,7 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
       dependencies,
     );
     const { token } = (await csrfResponse.json()) as { token: string };
-    const issue = (path: string, nodeId = f.owner.ids.file) =>
+    const issue = (path: string, nodeId = f.owner.ids.file, purpose = "content") =>
       handlePublicShareHttp(
         sessionRequest(path, shareCookie, {
           method: "POST",
@@ -639,7 +656,7 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
           },
           body: JSON.stringify({
             targets: [{ spaceId: f.owner.ids.space, nodeId }],
-            purpose: "content",
+            purpose,
             ttlSeconds: 300,
           }),
         }),
@@ -683,6 +700,36 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
     );
     expect(downloaded.status).toBe(200);
     expect(new TextDecoder().decode(await downloaded.arrayBuffer())).toBe("abc");
+    const thumbIssuedResponse = await issue(
+      `/api/v1/public/shares/${f.shareId}/tickets`,
+      f.owner.ids.file,
+      "thumb",
+    );
+    expect(thumbIssuedResponse.status).toBe(201);
+    const thumbIssued = (await thumbIssuedResponse.json()) as { ticket: string };
+    const thumbAccepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: thumbIssued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(thumbAccepted.status).toBe(201);
+    const thumbCookie = (thumbAccepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const thumbnail = await handleContentHttp(
+      new Request(`${contentOrigin}${contentPath}/thumb`, {
+        headers: { Cookie: thumbCookie },
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(thumbnail.status).toBe(200);
+    expect(new TextDecoder().decode(await thumbnail.arrayBuffer())).toBe("thumb");
+    expect(
+      (await issue(`/api/v1/public/shares/${f.shareId}/tickets`, f.owner.ids.file, "page")).status,
+    ).toBe(400);
 
     const cancelled = await handlePublicShareHttp(
       sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets/${issued.ticketId}`, shareCookie, {
@@ -711,7 +758,7 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
       ).status,
     ).toBe(404);
   } finally {
-    await env.BLOBS.delete(key);
+    await env.BLOBS.delete([key, derivativeKey]);
   }
 });
 

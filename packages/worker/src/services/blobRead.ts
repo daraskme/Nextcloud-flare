@@ -9,6 +9,8 @@ import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
+import { IMAGE_METADATA_GENERATOR } from "../media/images/metadata";
+import { IMAGE_THUMBNAIL_GENERATOR, IMAGE_THUMBNAIL_VARIANT } from "../media/images/thumbnail";
 import { parseRange } from "../platform/range";
 import { streamLeasedContent } from "./contentStream";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
@@ -44,6 +46,13 @@ export async function prepareAuthorizedNodeBlobRead(
   authorized: AuthorizedNode,
 ): Promise<BlobReadPlan> {
   return resolveBlobRead(db, authorized, []);
+}
+
+export async function prepareAuthorizedNodeThumbnailRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+): Promise<BlobReadPlan> {
+  return resolveThumbnailRead(db, authorized, []);
 }
 
 export interface ContentBlobGrant {
@@ -176,7 +185,7 @@ export async function prepareContentBlobRead(
     })
   )
     throw new Error("content_not_available");
-  const blob = await resolveBlobRead(db, authorized, [
+  const assertions = [
     contentSessionAssertion(principal, grant.sessionId, grant.ticketId, grant.purpose, grant.share),
     ...(grant.share || principal.kind === "link_share"
       ? [
@@ -203,7 +212,15 @@ export async function prepareContentBlobRead(
         record.budgetId,
       ],
     ),
-  ]);
+  ] as const;
+  const blob =
+    grant.purpose === "content"
+      ? await resolveBlobRead(db, authorized, assertions)
+      : grant.purpose === "thumb"
+        ? await resolveThumbnailRead(db, authorized, assertions)
+        : (() => {
+            throw new Error("content_not_available");
+          })();
   if (
     !manifestContains(manifest, {
       spaceId,
@@ -313,9 +330,71 @@ async function resolveBlobRead(
   return Object.freeze(row);
 }
 
+async function resolveThumbnailRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+  extra: readonly SqlStatement[],
+): Promise<BlobReadPlan> {
+  if (
+    authorized.operation !== "node.read" ||
+    authorized.node.kind !== "file" ||
+    !authorized.node.current_blob_id
+  )
+    throw new Error("content_not_available");
+  const batches = await atomicBatch(db, [
+    authorizationAssertion(authorized),
+    ...extra,
+    {
+      sql: `SELECT d.r2_key AS key,d.size,s.r2_etag AS sourceR2Etag,d.r2_etag AS r2Etag,
+        '"thumb-'||d.id||'-'||d.size||'"' AS contentEtag,'image/webp' AS mime,
+        'thumbnail.webp' AS name
+        FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+        JOIN blob_storage s ON s.blob_id=b.id
+        JOIN node_media m ON m.node_id=n.id AND m.blob_id=b.id AND m.generator_version=?
+        JOIN derivative_results d ON d.blob_id=b.id
+        WHERE n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?
+          AND n.deleted_at IS NULL AND n.kind='file'
+          AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
+          AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
+          AND s.bytes=b.size AND s.r2_etag IS NOT NULL
+          AND d.kind='thumbnail' AND d.variant=? AND d.generator_version=?
+          AND d.state='ready' AND d.epoch=? AND d.size>0
+          AND d.r2_key IS NOT NULL AND d.r2_etag IS NOT NULL`,
+      values: [
+        IMAGE_METADATA_GENERATOR,
+        authorized.node.id,
+        authorized.node.space_id,
+        authorized.node.revision,
+        authorized.node.current_blob_id,
+        IMAGE_THUMBNAIL_VARIANT,
+        IMAGE_THUMBNAIL_GENERATOR,
+        authorized.principal.epoch,
+      ],
+    },
+  ]);
+  const row = batches[extra.length + 1]?.results[0] as
+    | (BlobReadPlan & { sourceR2Etag: string })
+    | undefined;
+  if (!row || row.sourceR2Etag.length > 256) throw new Error("content_not_available");
+  validatePlan(row);
+  return Object.freeze({
+    key: row.key,
+    size: row.size,
+    r2Etag: row.r2Etag,
+    contentEtag: row.contentEtag,
+    mime: row.mime,
+    name: row.name,
+  });
+}
+
 function validatePlan(plan: BlobReadPlan): void {
   if (
-    !/^u\/[A-Za-z0-9_-]{1,128}\/b\/[A-Za-z0-9_-]{1,128}$/.test(plan.key) ||
+    !(
+      /^u\/[A-Za-z0-9_-]{1,128}\/b\/[A-Za-z0-9_-]{1,128}$/.test(plan.key) ||
+      /^u\/[A-Za-z0-9_-]{1,128}\/d\/[A-Za-z0-9_-]{1,128}\/image-sm256-v1\/sm256\/[0-9a-f-]{36}\.webp$/.test(
+        plan.key,
+      )
+    ) ||
     plan.key.length > 1024 ||
     !Number.isSafeInteger(plan.size) ||
     plan.size < 0 ||
