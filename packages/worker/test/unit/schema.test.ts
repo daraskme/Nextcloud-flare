@@ -265,6 +265,9 @@ it("enforces the fixed image metadata and immutable ready derivative shape", () 
       "UPDATE node_media SET taken_at=1 WHERE node_id='f-f' AND generator_version='image-metadata-v1'",
     ),
   ).toThrow(/invalid_image_metadata/);
+  expect(() => db.exec("UPDATE node_media SET container='mp4' WHERE node_id='f-f'")).toThrow(
+    /invalid_video_metadata/,
+  );
   expect(() =>
     db.exec(`INSERT INTO derivative_results
       (id,blob_id,kind,variant,generator_version,state,epoch,attempts,r2_key,size)
@@ -284,6 +287,34 @@ it("enforces the fixed image metadata and immutable ready derivative shape", () 
   expect(() => db.exec("UPDATE derivative_results SET state='failed' WHERE id='ready'")).toThrow(
     /invalid_image_derivative/,
   );
+});
+
+it("enforces the bounded AV1 video metadata shape", () => {
+  expect(() =>
+    db.exec(`INSERT INTO node_media(node_id,blob_id,generator_version,width,height)
+      VALUES('f-f','f-b','video-av1-metadata-v1',1920,1080)`),
+  ).toThrow(/invalid_video_metadata/);
+  db.exec(`INSERT INTO node_media(
+    node_id,blob_id,generator_version,width,height,duration_ms,container,video_codec,
+    audio_codec,codec_profile,codec_level,codec_tier,bit_depth
+  ) VALUES('f-f','f-b','video-av1-metadata-v1',1920,1080,9000,'mp4','av1',
+    'opus',0,8,'M',10)`);
+  expect(() => db.exec("UPDATE node_media SET width=12001 WHERE node_id='f-f'")).toThrow(
+    /invalid_video_metadata/,
+  );
+  expect(() =>
+    db.exec("UPDATE node_media SET codec_tier='H',codec_level=7 WHERE node_id='f-f'"),
+  ).toThrow(/invalid_video_metadata/);
+  expect(() =>
+    db.exec("UPDATE node_media SET bit_depth=12,codec_profile=0 WHERE node_id='f-f'"),
+  ).toThrow(/invalid_video_metadata/);
+  db.exec(`UPDATE node_media SET projection_state='failed',error_code='malformed',
+    width=NULL,height=NULL,duration_ms=NULL,container=NULL,video_codec=NULL,audio_codec=NULL,
+    codec_profile=NULL,codec_level=NULL,codec_tier=NULL,bit_depth=NULL WHERE node_id='f-f'`);
+  expect(() => db.exec("UPDATE node_media SET width=1 WHERE node_id='f-f'")).toThrow(
+    /invalid_video_metadata/,
+  );
+  expect(() => db.exec("UPDATE node_media SET error_code='other' WHERE node_id='f-f'")).toThrow();
 });
 
 it("requires a real credential FK for derived content sessions", () => {

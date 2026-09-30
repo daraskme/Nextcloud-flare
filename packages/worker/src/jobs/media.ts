@@ -51,14 +51,30 @@ export interface MediaOutboxClaim {
   readonly epoch: number;
   readonly ownerId: string;
   readonly nodeId: string;
+  readonly operationKind: string;
+  readonly operandsJson: string;
+  readonly resultJson: string | null;
 }
 
 function outboxFence(claim: MediaOutboxClaim): SqlStatement {
   return assertExists(
-    `SELECT 1 FROM outbox WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${CLOCK}
-      AND epoch=? AND state IN ('dispatching','sent')
+    `SELECT 1 FROM outbox b JOIN operations o ON o.op_id=b.op_id
+      JOIN operation_steps s ON s.op_id=o.op_id
+      WHERE b.outbox_id=? AND b.claim_token=? AND b.claim_expires_at>${CLOCK}
+      AND b.epoch=? AND b.state IN ('dispatching','sent')
+      AND o.state='committed' AND o.epoch=b.epoch AND o.kind=?
+      AND o.operands_json=? AND o.result_json=?
+      AND s.kind='node' AND s.affected_id=b.payload_ref
       AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0)`,
-    [claim.outboxId, claim.outboxToken, claim.epoch, claim.epoch],
+    [
+      claim.outboxId,
+      claim.outboxToken,
+      claim.epoch,
+      claim.operationKind,
+      claim.operandsJson,
+      claim.resultJson,
+      claim.epoch,
+    ],
   );
 }
 
@@ -146,7 +162,10 @@ async function persistMetadata(
           VALUES(?,?,?,?,?)
           ON CONFLICT(node_id) DO UPDATE SET blob_id=excluded.blob_id,
             generator_version=excluded.generator_version,width=excluded.width,height=excluded.height,
-            taken_at=NULL,duration_ms=NULL,orientation=NULL,dominant_color=NULL,camera_make=NULL,camera_model=NULL`,
+            projection_state='ready',error_code=NULL,
+            taken_at=NULL,duration_ms=NULL,orientation=NULL,dominant_color=NULL,camera_make=NULL,camera_model=NULL,
+            container=NULL,video_codec=NULL,audio_codec=NULL,codec_profile=NULL,codec_level=NULL,
+            codec_tier=NULL,bit_depth=NULL`,
         values: [
           row.node_id,
           row.blob_id,

@@ -188,7 +188,7 @@ export async function handleContentHttp(
       return reply(problem(404, "not_found"));
     }
   }
-  const match = /^\/c\/([^/]+)\/([^/]+)(\/thumb)?$/.exec(url.pathname);
+  const match = /^\/c\/([^/]+)\/([^/]+)(\/thumb|\/track)?$/.exec(url.pathname);
   if (!match || (request.method !== "GET" && request.method !== "HEAD"))
     return problem(404, "not_found");
   const [, nodeId, blobId, suffix] = match;
@@ -211,7 +211,7 @@ export async function handleContentHttp(
       request.headers.get("Cookie"),
       node.spaceId,
       nodeId,
-      suffix === "/thumb" ? "thumb" : ["content", "track"],
+      suffix === "/thumb" ? "thumb" : suffix === "/track" ? "track" : "content",
       request,
     );
     return reply(response);
