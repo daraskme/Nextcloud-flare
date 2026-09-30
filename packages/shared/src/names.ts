@@ -25,6 +25,8 @@ export function portableName(input: string): PortableName {
 }
 
 export const SEARCH_NAME_VERSION = `ncf-name-bigram-1-${NAME_FOLD_VERSION}`;
+const SEARCH_METADATA_FIELD_BYTES = 1024;
+const encoder = new TextEncoder();
 
 /** Shared by persisted names and queries; queries are text, not portable filenames. */
 export function normalizeSearchText(input: string): string {
@@ -39,10 +41,25 @@ export function normalizeSearchText(input: string): string {
     .normalize("NFC");
 }
 
-/** Initial folder-name index. Media metadata composition is added by its own bounded parser. */
-export function searchName(input: string): { textNorm: string; tokens: string; version: string } {
+export function searchText(
+  input: string,
+  metadata: readonly (string | null)[] = [],
+): { textNorm: string; tokens: string; version: string } {
   const { name } = portableName(input);
-  const textNorm = normalizeSearchText(name);
+  if (
+    metadata.length > 3 ||
+    metadata.some(
+      (value) =>
+        value !== null &&
+        (typeof value !== "string" ||
+          encoder.encode(value).byteLength > SEARCH_METADATA_FIELD_BYTES ||
+          /[\p{Cc}\p{Cs}]/u.test(value)),
+    )
+  )
+    throw new Error("invalid_search_metadata");
+  const textNorm = normalizeSearchText(
+    [name, ...metadata.filter((value): value is string => Boolean(value?.trim()))].join(" "),
+  );
   const scalars = [...textNorm];
   const tokens =
     scalars.length === 1
@@ -52,4 +69,8 @@ export function searchName(input: string): { textNorm: string; tokens: string; v
           .map((char, i) => char + scalars[i + 1])
           .join(" ");
   return { textNorm, tokens, version: SEARCH_NAME_VERSION };
+}
+
+export function searchName(input: string): { textNorm: string; tokens: string; version: string } {
+  return searchText(input);
 }

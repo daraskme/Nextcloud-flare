@@ -1,5 +1,8 @@
+import { searchText } from "@next-cloud-flare/shared/names";
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
-import { assertOneChange, primary } from "../db/primary";
+import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
+import type { Env } from "../env";
+import { AUDIO_GENERATOR_VERSION, type AudioInspection, inspectAudioObject } from "../media/audio";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -8,6 +11,7 @@ import {
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
+type OutboxSource = SystemMutationSource & Partial<Pick<Env, "BLOBS">>;
 
 interface EventRow {
   state: string;
@@ -25,6 +29,17 @@ interface EventRow {
   owner_id: string;
   operands_json: string;
   result_json: string | null;
+}
+
+interface AudioSource {
+  kind: string;
+  name: string;
+  revision: number;
+  blob_id: string | null;
+  r2_key: string | null;
+  size: number | null;
+  r2_etag: string | null;
+  blob_state: string | null;
 }
 
 async function eventRow(db: D1Database, id: string): Promise<EventRow | null> {
@@ -60,9 +75,121 @@ function savedPrincipal(row: EventRow): Principal | null {
   return null;
 }
 
+async function audioSource(db: D1Database, row: EventRow): Promise<AudioSource | null> {
+  if (row.kind !== "node.created" && row.kind !== "node.updated") return null;
+  return primary(db)
+    .prepare(
+      `SELECT n.kind,n.name,n.revision,n.current_blob_id AS blob_id,b.r2_key,b.size,
+        bs.r2_etag,b.state AS blob_state
+      FROM nodes n
+      LEFT JOIN blobs b ON b.id=n.current_blob_id
+      LEFT JOIN blob_storage bs ON bs.blob_id=b.id AND bs.removed_at IS NULL
+      WHERE n.id=? AND n.space_id=? AND n.deleted_at IS NULL`,
+    )
+    .bind(row.payload_ref, row.space_id)
+    .first<AudioSource>();
+}
+
+function audioCompletionStatements(
+  source: AudioSource,
+  row: EventRow,
+  inspection: Exclude<AudioInspection, { kind: "transient" }>,
+): SqlStatement[] {
+  if (
+    source.kind !== "file" ||
+    !source.blob_id ||
+    !source.r2_key ||
+    source.size === null ||
+    !source.r2_etag
+  )
+    return [];
+  const metadata = inspection.kind === "metadata" ? inspection.metadata : null;
+  const search = searchText(source.name, [
+    metadata?.title ?? null,
+    metadata?.artist ?? null,
+    metadata?.album ?? null,
+  ]);
+  return [
+    assertExists(
+      `SELECT 1 FROM nodes n
+      JOIN blobs b ON b.id=n.current_blob_id
+      JOIN blob_storage bs ON bs.blob_id=b.id AND bs.removed_at IS NULL
+      WHERE n.id=? AND n.space_id=? AND n.kind='file' AND n.name=? AND n.revision=?
+        AND n.current_blob_id=? AND n.deleted_at IS NULL
+        AND b.r2_key=? AND b.size=? AND b.state IN ('committed','gc_candidate')
+        AND bs.bytes=b.size AND bs.r2_etag=?`,
+      [
+        row.payload_ref,
+        row.space_id,
+        source.name,
+        source.revision,
+        source.blob_id,
+        source.r2_key,
+        source.size,
+        source.r2_etag,
+      ],
+    ),
+    {
+      sql: `INSERT INTO search_fts(search_fts,rowid,text_norm,tokens)
+        SELECT 'delete',rowid,text_norm,tokens FROM search_index
+        WHERE node_id=? AND space_id=? AND revision=?`,
+      values: [row.payload_ref, row.space_id, source.revision],
+    },
+    assertOneChange,
+    ...(metadata
+      ? [
+          {
+            sql: `INSERT INTO node_audio(
+              node_id,blob_id,generator_version,codec,title_extracted,artist_extracted,album_extracted
+            ) VALUES(?,?,?,'mp3',?,?,?)
+            ON CONFLICT(node_id) DO UPDATE SET
+              blob_id=excluded.blob_id,generator_version=excluded.generator_version,
+              duration_ms=NULL,codec=excluded.codec,
+              title_extracted=excluded.title_extracted,artist_extracted=excluded.artist_extracted,
+              album_extracted=excluded.album_extracted,track_number=NULL,disc_number=NULL`,
+            values: [
+              row.payload_ref,
+              source.blob_id,
+              AUDIO_GENERATOR_VERSION,
+              metadata.title,
+              metadata.artist,
+              metadata.album,
+            ],
+          },
+        ]
+      : [
+          {
+            sql: "DELETE FROM node_audio WHERE node_id=?",
+            values: [row.payload_ref],
+          },
+        ]),
+    {
+      sql: `UPDATE search_index
+        SET text_norm=?,tokens=?,normalization_version=?
+        WHERE node_id=? AND space_id=? AND revision=?`,
+      values: [
+        search.textNorm,
+        search.tokens,
+        search.version,
+        row.payload_ref,
+        row.space_id,
+        source.revision,
+      ],
+    },
+    assertOneChange,
+    {
+      sql: `INSERT INTO search_fts(rowid,text_norm,tokens)
+        SELECT rowid,text_norm,tokens FROM search_index
+        WHERE node_id=? AND space_id=? AND revision=?`,
+      values: [row.payload_ref, row.space_id, source.revision],
+    },
+    assertOneChange,
+  ];
+}
+
 /** Complete a node event only after a fenced D1 claim and current authorization. */
 export async function consumeOutbox(
-  env: SystemMutationSource,
+  env: OutboxSource,
   outboxId: string,
   deadline = Date.now() + 25_000,
 ): Promise<ConsumeResult> {
@@ -207,10 +334,36 @@ export async function consumeOutbox(
       },
       assertOneChange,
     ]);
+    const source = await audioSource(db, row);
+    let inspection: Exclude<AudioInspection, { kind: "transient" }> | null = null;
+    if ((row.kind === "node.created" || row.kind === "node.updated") && !source) return "retry";
+    if (source?.kind === "file" && source.blob_id !== null) {
+      if (
+        !env.BLOBS ||
+        source.r2_key === null ||
+        source.size === null ||
+        source.r2_etag === null ||
+        !["committed", "gc_candidate"].includes(source.blob_state ?? "") ||
+        source.size < 0
+      )
+        return "retry";
+      const inspected = await inspectAudioObject(
+        env.BLOBS,
+        {
+          key: source.r2_key,
+          size: source.size,
+          r2Etag: source.r2_etag,
+        },
+        deadline - 6000,
+      );
+      if (inspected.kind === "transient") return "retry";
+      inspection = inspected;
+    }
     const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
       authorizationAssertion(authorized),
+      ...(source && inspection ? audioCompletionStatements(source, row, inspection) : []),
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}
