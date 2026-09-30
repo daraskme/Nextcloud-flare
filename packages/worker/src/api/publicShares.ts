@@ -30,7 +30,7 @@ const CSRF = new RegExp(`^/api/v1/public/shares/(${ID})/csrf$`);
 const TICKETS = new RegExp(`^/api/v1/public/shares/(${ID})/tickets$`);
 const TICKET = new RegExp(`^/api/v1/public/shares/(${ID})/tickets/(${ID})$`);
 const CONTENT_SESSION = new RegExp(`^/api/v1/public/shares/(${ID})/content-session$`);
-const MAX_BODY = 4096;
+const MAX_BODY = 8192;
 const HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",

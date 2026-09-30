@@ -1335,6 +1335,7 @@ queue作成後に `wrangler queues update <queue> --message-retention-period-sec
 | `CSRF_KEY` | one-time CSRF HMAC | 新旧2鍵を短い CSRF TTL だけ併用 | 即時交換、全 CSRF 無効化 |
 | `CONTENT_SESSION_KEY` | content-session Cookie ID digest/署名 | 新 kid 発行、既存 session TTL≤600秒だけ旧検証 | 即時交換、`content_sessions` revoke、epoch bump |
 | `APP_PASSWORD_PEPPER` | app password digest pepper | 新 record は新 kid、旧 record は成功時re-hash | 旧 kid失効、対象 app password全 revoke・再発行 |
+| `SHARE_PASSWORD_PEPPERS` | public share password digest pepper | dual-read/single-write。unlock成功時にactive kidへre-hashし、参照中の旧kidは保持 | 対象shareをdisable、旧kid失効、epoch bump、share再発行 |
 
 share/app password record の `kdf`,`kdf_params`,`kid` と signing record の kid を監査する。secret 値は environment 別 `wrangler secret` で登録し、通常 rotation は dual-read/single-write、緊急 rotation は maintenance + epoch bump +失効表に従う。
 

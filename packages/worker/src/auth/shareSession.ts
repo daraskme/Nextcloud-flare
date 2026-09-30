@@ -1,5 +1,5 @@
 import { base64url } from "jose";
-import { assertExists, atomicBatch, primary } from "../db/primary";
+import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import {
   acquireAccountMutation,
@@ -9,6 +9,7 @@ import {
 import type { Principal } from "./authorize";
 import { KdfUnavailableError } from "./kdf";
 import {
+  hashSharePassword,
   type SharePasswordPepperRing,
   type SharePasswordRecord,
   verifySharePassword,
@@ -146,6 +147,7 @@ export async function unlockShare(
     .first<LiveShareRow>();
   if (!share) throw new Error("share_unauthorized");
   let passwordAssertion;
+  const passwordMutations: SqlStatement[] = [];
   if (share.passwordDigest === null) {
     passwordAssertion = assertExists(
       "SELECT 1 FROM shares WHERE id=? AND password_digest IS NULL",
@@ -178,6 +180,30 @@ export async function unlockShare(
         WHERE id=? AND password_digest=? AND salt=? AND kdf=? AND kdf_params=? AND kid=?`,
       [share.id, record.passwordDigest, record.salt, record.kdf, record.kdfParams, record.kid],
     );
+    if (record.kid !== options.passwordRing.activeKid) {
+      const replacement = await hashSharePassword(
+        options.password,
+        options.passwordRing,
+        options.signal,
+      );
+      passwordMutations.push({
+        sql: `UPDATE shares SET password_digest=?,salt=?,kdf=?,kdf_params=?,kid=?
+          WHERE id=? AND password_digest=? AND salt=? AND kdf=? AND kdf_params=? AND kid=?`,
+        values: [
+          replacement.passwordDigest,
+          replacement.salt,
+          replacement.kdf,
+          replacement.kdfParams,
+          replacement.kid,
+          share.id,
+          record.passwordDigest,
+          record.salt,
+          record.kdf,
+          record.kdfParams,
+          record.kid,
+        ],
+      });
+    }
   }
   const active = await primary(env.DB)
     .prepare(`SELECT COUNT(*) AS count FROM share_sessions
@@ -198,6 +224,7 @@ export async function unlockShare(
     assertExists(LIVE_SHARE, [share.id, digest, epoch]),
     assertExists("SELECT 1 FROM shares WHERE id=? AND version=?", [share.id, share.version]),
     passwordAssertion,
+    ...passwordMutations,
     assertExists(
       `SELECT 1 WHERE (SELECT COUNT(*) FROM share_sessions
         WHERE share_id=? AND share_version=? AND epoch=? AND revoked_at IS NULL

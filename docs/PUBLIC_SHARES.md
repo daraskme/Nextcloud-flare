@@ -6,9 +6,9 @@
 
 Files UI の所有者は、自分が所有する live node を root にした期限付き link share を作成・一覧・参照・無効化できる。作成時だけ `/s/<shareId>#<secret>` を返す。D1 には capability の SHA-256 digest だけを保存し、再表示しない。任意の共有passwordを設定でき、一覧と作成結果には保護の有無だけを返す。現在の上限は所有者あたり active 100件、期限は1〜365日（既定30日）。
 
-public landing は fragment を JSON body で unlock API へ送る。保護されたshareで capability が正しい場合だけpassword入力を表示し、passwordをURL・DOMの結果表示・保存領域へ入れない。unlock成功後にfragmentをhistoryから除去し、share ごとの `Secure; HttpOnly; SameSite=Lax; Path=/` Cookie を発行する。raw Cookie は保存せず、`share_sessions.secret_digest` に digest を保存する。有効期限は share 期限と7日の短い方である。
+public landing は fragment を JSON body で unlock API へ送る。保護されたshareで capability が正しい場合だけpassword入力を表示し、その時点でcapabilityをmemoryに保持したままfragmentをhistoryから除去する。passwordはURL・DOMの結果表示・保存領域へ入れない。unlock成功後にshare ごとの `Secure; HttpOnly; SameSite=Lax; Path=/` Cookie を発行する。raw Cookie は保存せず、`share_sessions.secret_digest` に digest を保存する。有効期限は share 期限と7日の短い方である。
 
-共有passwordは1〜1,024 UTF-8 bytesとし、専用pepper key ringでHMACした後、canonical ControlDOのPBKDF2-SHA256（100,000回、16-byte salt、32-byte digest）へ送る。D1に保存するのはdigest、salt、固定KDF params、pepper `kid`だけである。新規作成にはactive `kid`を使い、unlockでは保存済み`kid`をverify-onlyで参照する。password KDFはshareごと10回/分、client IPごと30回/分の両方へ先に通し、全体KDF admissionも共有する。rate limitは429、KDF/受付停止はpassword不一致と区別して503を返す。
+共有passwordは1〜1,024 UTF-8 bytesとし、専用pepper key ringでHMACした後、canonical ControlDOのPBKDF2-SHA256（100,000回、16-byte salt、32-byte digest）へ送る。D1に保存するのはdigest、salt、固定KDF params、pepper `kid`だけである。新規作成にはactive `kid`を使い、旧`kid`でのunlock成功時はsession発行と同じadmitted transactionでactive keyへre-hashする。旧pepperは参照中のactive shareが0になるまで保持し、不足時はpassword不一致ではなく503を返す。password KDFはshareごと10回/分、client IPごと30回/分の両方へ先に通し、全体KDF admissionも共有する。rate limitは429、KDF/受付停止はpassword不一致と区別して503を返す。
 
 public session は各 request で次を再検査する。
 

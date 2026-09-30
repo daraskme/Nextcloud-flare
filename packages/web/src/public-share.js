@@ -316,6 +316,7 @@ async function start() {
     await openShare();
   } catch (error) {
     if (secret && error instanceof RequestError && error.status === 401) {
+      history.replaceState(null, "", location.pathname);
       renderPassword(secret);
       return;
     }

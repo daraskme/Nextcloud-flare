@@ -120,7 +120,7 @@ export async function verifySharePassword(
   )
     return false;
   const pepper = ring.keys.get(record.kid);
-  if (!pepper) return false;
+  if (!pepper) throw new KdfUnavailableError();
   try {
     const salt = base64url.decode(record.salt);
     const expected = base64url.decode(record.passwordDigest);

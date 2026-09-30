@@ -8,7 +8,7 @@ Workerの`auth/kdf.ts`は1件実行・FIFO256件・待機5秒を維持する。�
 
 ControlDOの`ControlKdf`は独立したexecutorで同時1件・FIFO256件を処理し、PBKDF2-SHA256を100,000回、出力32 bytesに固定する。callerからアルゴリズム・反復回数・出力長は受け付けない。現構成は単一ControlDOなので通常の計算は1件ずつであり、20並列の処理能力を意味しない。D1の20枠は旧instanceとの重複と未精算の試行も含む全体上限として使用する。600回/分を必要とする実環境の処理量・待ち時間はstagingで測定する。
 
-`AppPasswordPepperRing`と`SharePasswordPepperRing`はpurposeを分けたkey ringとderivation backendを必須とする。productionのprivate API・DAV・共有作成/unlock用設定は必ずControlDO backendを選び、ローカルPBKDF2への自動fallbackはしない。既存の暗号・認可fixtureだけがtest専用backendを明示する。発行・認証・共有password検証・pepper更新後の再検証も、それぞれ別の試行として数える。
+`AppPasswordPepperRing`と`SharePasswordPepperRing`はpurposeを分けたkey ringとderivation backendを必須とする。productionのprivate API・DAV・共有作成/unlock用設定は必ずControlDO backendを選び、ローカルPBKDF2への自動fallbackはしない。既存の暗号・認可fixtureだけがtest専用backendを明示する。発行・認証・共有password検証・pepper更新後の再検証も、それぞれ別の試行として数える。共有passwordは旧kidでの検証成功後、session作成と同じadmitted transactionでactive kidへre-hashし、参照中の旧key不足は503にする。
 
 ## 永続予算と送信期限
 

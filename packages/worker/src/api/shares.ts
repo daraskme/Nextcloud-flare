@@ -16,7 +16,7 @@ import { hasEmptyBody } from "./emptyBody";
 
 const BASE = "/api/v1/shares";
 const DETAIL = /^\/api\/v1\/shares\/([A-Za-z0-9_-]{1,128})$/;
-const MAX_BODY = 4096;
+const MAX_BODY = 8192;
 const PRIVATE_HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",

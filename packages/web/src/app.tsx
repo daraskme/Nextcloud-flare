@@ -469,6 +469,7 @@ function ShareDialog({
         url: share.shareUrl,
         passwordProtected: share.passwordProtected,
       });
+      setPassword("");
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
     } catch (error) {
       setFailure(errorMessage(error));
@@ -483,6 +484,7 @@ function ShareDialog({
     try {
       await api.disableShare(created.id);
       setCreated(null);
+      setPassword("");
       setCopied(false);
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
     } catch (error) {

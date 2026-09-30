@@ -63,14 +63,14 @@ beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
 
-async function fixture(password?: string) {
+async function fixture(password?: string, ring = passwordRing) {
   const now = Date.now() - 1000;
   const owner = foundationFixture(crypto.randomUUID(), now);
   const outside = foundationFixture(crypto.randomUUID(), now);
   const shareId = crypto.randomUUID();
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const passwordRecord =
-    password === undefined ? undefined : await hashSharePassword(password, passwordRing);
+    password === undefined ? undefined : await hashSharePassword(password, ring);
   await atomicBatch(env.DB, [
     ...owner.statements,
     ...outside.statements,
@@ -246,6 +246,16 @@ it("requires the current password and applies share and IP limits only before pa
       )
     ).status,
   ).toBe(401);
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(f.shareId, f.secret, "\0".repeat(1024)),
+        app,
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(401);
   const malformed = new Request(`${origin}/api/v1/public/shares/${f.shareId}/unlock`, {
     method: "POST",
     headers: {
@@ -282,6 +292,55 @@ it("requires the current password and applies share and IP limits only before pa
   ).toBe(200);
   expect(shareLimit).not.toHaveBeenCalled();
   expect(ipLimit).not.toHaveBeenCalled();
+});
+
+it("rehashes a verified password under the active pepper before retiring the old key", async () => {
+  const password = "rotate this protected share";
+  const oldKey = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const newKey = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const creationRing = await sharePasswordPepperRing(
+    "old",
+    { old: oldKey, current: newKey },
+    localKdf,
+  );
+  const verificationRing = await sharePasswordPepperRing(
+    "current",
+    { old: oldKey, current: newKey },
+    localKdf,
+  );
+  const f = await fixture(password, creationRing);
+  const original = await env.DB.prepare(
+    "SELECT password_digest AS digest,kid FROM shares WHERE id=?",
+  )
+    .bind(f.shareId)
+    .first<{ digest: string; kid: string }>();
+  expect(original?.kid).toBe("old");
+
+  expect(
+    (
+      await handlePublicShareHttp(unlockRequest(f.shareId, f.secret, password), shareEnv(), 1, {
+        ...dependencies,
+        passwordPepper: verificationRing,
+      })
+    ).status,
+  ).toBe(200);
+  const migrated = await env.DB.prepare(
+    "SELECT password_digest AS digest,kid FROM shares WHERE id=?",
+  )
+    .bind(f.shareId)
+    .first<{ digest: string; kid: string }>();
+  expect(migrated?.kid).toBe("current");
+  expect(migrated?.digest).not.toBe(original?.digest);
+
+  const currentOnly = await sharePasswordPepperRing("current", { current: newKey }, localKdf);
+  expect(
+    (
+      await handlePublicShareHttp(unlockRequest(f.shareId, f.secret, password), shareEnv(), 1, {
+        ...dependencies,
+        passwordPepper: currentOnly,
+      })
+    ).status,
+  ).toBe(200);
 });
 
 it("returns retryable password rate and KDF failures without creating a session", async () => {
@@ -329,6 +388,19 @@ it("returns retryable password rate and KDF failures without creating a session"
   );
   expect(unavailable.status).toBe(503);
   expect(unavailable.headers.get("Retry-After")).toBe("1");
+  const missingKeyRing = await sharePasswordPepperRing(
+    "other",
+    { other: base64url.encode(crypto.getRandomValues(new Uint8Array(32))) },
+    localKdf,
+  );
+  const missingKey = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret, password),
+    shareEnv(),
+    1,
+    { ...dependencies, passwordPepper: missingKeyRing },
+  );
+  expect(missingKey.status).toBe(503);
+  expect(missingKey.headers.get("Retry-After")).toBe("1");
   expect(
     await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
       .bind(f.shareId)
