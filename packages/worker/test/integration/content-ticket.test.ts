@@ -575,7 +575,10 @@ it("issues a two-target ticket and serves both files under one budget", async ()
       .first<{ id: string; ref: string; hash: string; totalBytes: number }>();
     expect(record?.totalBytes).toBe(5);
     if (!record) throw new Error("missing_target_set");
-    expect((await loadTargetManifest(env.BLOBS, record)).targets).toHaveLength(2);
+    const loaded = await loadTargetManifest(env.BLOBS, record);
+    expect(loaded.v).toBe(1);
+    if (loaded.v !== 1) throw new Error("unexpected_manifest");
+    expect(loaded.targets).toHaveLength(2);
     const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
     const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
     expect(

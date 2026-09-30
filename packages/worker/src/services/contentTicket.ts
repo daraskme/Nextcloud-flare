@@ -4,8 +4,8 @@ import {
   authorizeNode,
   type Principal,
 } from "../auth/authorize";
-import { type ContentPurpose } from "../auth/contentSession";
-import { type ContentTokens } from "../auth/contentTokens";
+import type { ContentPurpose } from "../auth/contentSession";
+import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion, shareCoverageBatchAssertions } from "../auth/shareCoverage";
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, atomicBatch } from "../db/primary";
@@ -16,7 +16,14 @@ import {
 } from "./accountMutation";
 import { prepareAuthorizedNodeBlobRead, prepareAuthorizedNodeThumbnailRead } from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
-import { stageTargetManifest, type TargetEntry, type TargetManifestRecord } from "./targetManifest";
+import { addZipPinStatements } from "./refs";
+import {
+  stageTargetManifest,
+  stageZipTargetManifest,
+  type TargetEntry,
+  type TargetManifestRecord,
+} from "./targetManifest";
+import { planZipDownload, zipPathBatchAssertions } from "./zipDownload";
 
 export interface ContentTicketTarget {
   readonly spaceId: string;
@@ -142,45 +149,66 @@ export async function issueContentTicket(
     principal.kind === "link_share"
       ? { id: principal.share_id, version: principal.share_version }
       : share;
+  const zip = purpose === "zip" ? await planZipDownload(db, bucket, principal, targets) : undefined;
   const proofs: (AuthorizedNode & { readonly operation: "node.read" })[] = [];
   const entries: TargetEntry[] = [];
   let ownerId: string | null = null;
-  for (const target of targets) {
-    const proof = await authorizeNode(db, principal, {
-      operation: "node.read",
-      spaceId: target.spaceId,
-      nodeId: target.nodeId,
-    });
-    if (
-      proof.operation !== "node.read" ||
-      proof.node.kind !== "file" ||
-      !proof.node.current_blob_id
-    )
-      throw new Error("content_ticket_target_unavailable");
-    if (ownerId !== null && ownerId !== proof.node.owner_id)
-      throw new Error("content_ticket_mixed_owners");
-    ownerId = proof.node.owner_id;
-    if (selectedShare) await atomicBatch(db, [shareCoverageAssertion(proof.node, selectedShare)]);
-    const blob =
-      purpose === "thumb"
-        ? await prepareAuthorizedNodeThumbnailRead(db, proof)
-        : await prepareAuthorizedNodeBlobRead(db, proof);
-    const object = await bucket.head(blob.key);
-    if (!object || object.size !== blob.size || object.etag !== blob.r2Etag)
-      throw new Error("content_ticket_blob_unavailable");
-    proofs.push(proof as AuthorizedNode & { readonly operation: "node.read" });
-    entries.push({
-      spaceId: proof.node.space_id,
-      nodeId: proof.node.id,
-      blobId: proof.node.current_blob_id,
-      purpose,
-      size: blob.size,
-    });
+  if (zip) {
+    proofs.push(
+      ...zip.proofs.map((proof) => {
+        if (proof.operation !== "node.read") throw new Error("content_ticket_target_unavailable");
+        return proof as AuthorizedNode & { readonly operation: "node.read" };
+      }),
+    );
+    ownerId = zip.ownerId;
+  } else {
+    for (const target of targets) {
+      const proof = await authorizeNode(db, principal, {
+        operation: "node.read",
+        spaceId: target.spaceId,
+        nodeId: target.nodeId,
+      });
+      if (
+        proof.operation !== "node.read" ||
+        proof.node.kind !== "file" ||
+        !proof.node.current_blob_id
+      )
+        throw new Error("content_ticket_target_unavailable");
+      if (ownerId !== null && ownerId !== proof.node.owner_id)
+        throw new Error("content_ticket_mixed_owners");
+      ownerId = proof.node.owner_id;
+      if (selectedShare) await atomicBatch(db, [shareCoverageAssertion(proof.node, selectedShare)]);
+      const blob =
+        purpose === "thumb"
+          ? await prepareAuthorizedNodeThumbnailRead(db, proof)
+          : await prepareAuthorizedNodeBlobRead(db, proof);
+      const object = await bucket.head(blob.key);
+      if (!object || object.size !== blob.size || object.etag !== blob.r2Etag)
+        throw new Error("content_ticket_blob_unavailable");
+      proofs.push(proof as AuthorizedNode & { readonly operation: "node.read" });
+      entries.push({
+        spaceId: proof.node.space_id,
+        nodeId: proof.node.id,
+        blobId: proof.node.current_blob_id,
+        purpose,
+        size: blob.size,
+      });
+    }
   }
   const first = proofs[0];
   if (!first || !ownerId) throw new Error("invalid_content_ticket_request");
+  if (selectedShare && zip)
+    await atomicBatch(
+      db,
+      shareCoverageBatchAssertions(
+        proofs.map((proof) => proof.node),
+        selectedShare,
+      ),
+    );
   const budget = await ensureContentBudget(env, first, expiresAt, share);
-  const record = await stageTargetManifest(bucket, entries);
+  const record = zip
+    ? await stageZipTargetManifest(bucket, zip.entries, zip.outputSize)
+    : await stageTargetManifest(bucket, entries);
   const ticketId = crypto.randomUUID();
   const claims = {
     ticket_id: ticketId,
@@ -215,6 +243,7 @@ export async function issueContentTicket(
             selectedShare,
           )
         : []),
+      ...(zip ? zipPathBatchAssertions(zip.entries, ownerId) : []),
       budgetAndShareAssertion(principal, ownerId, budget.id, result.expiresAt, share),
     ];
     await atomicBatch(db, guards);
@@ -251,6 +280,14 @@ export async function issueContentTicket(
           result.expiresAt,
         ],
       },
+      ...(zip
+        ? addZipPinStatements(
+            record.id,
+            zip.entries.map((entry) => entry.blobId),
+            result.expiresAt,
+            iat * 1000,
+          )
+        : []),
     ]);
   } catch (error) {
     await discardUnpublishedManifest(db, bucket, record, ticketId, admission, error);

@@ -55,6 +55,56 @@ export interface GcResult {
   r2Calls: number;
 }
 
+export async function cleanupExpiredZipPins(
+  env: SystemMutationSource,
+  epoch: number,
+  limit = 10,
+): Promise<number> {
+  if (
+    !Number.isSafeInteger(epoch) ||
+    epoch < 1 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 100
+  )
+    throw new Error("invalid_zip_pin_cleanup");
+  let cleaned = 0;
+  while (cleaned < limit) {
+    const target = await primary(env.DB)
+      .prepare(`SELECT ts.id AS targetSetId,ts.owner_id AS ownerId
+        FROM target_sets ts JOIN tickets t ON t.target_set_id=ts.id
+        WHERE t.purpose='zip' AND t.expires_at<=${CLOCK} AND ts.expires_at<=${CLOCK}
+          AND ts.epoch=? AND EXISTS(
+            SELECT 1 FROM blob_pins p WHERE p.purpose='zip' AND p.expires_at<=${CLOCK}
+              AND substr(p.pin_id,1,length('z:'||ts.id||':'))='z:'||ts.id||':')
+        ORDER BY ts.expires_at,ts.id LIMIT 1`)
+      .bind(epoch)
+      .first<{ targetSetId: string; ownerId: string }>();
+    if (!target) break;
+    const prefix = `z:${target.targetSetId}:`;
+    const admission = await acquireSystemMutation(env, target.ownerId, "gc.zip-pins");
+    await commitSystemMutation(env.DB, admission, target.ownerId, [
+      assertExists(
+        `SELECT 1 FROM target_sets ts JOIN tickets t ON t.target_set_id=ts.id
+          WHERE ts.id=? AND ts.owner_id=? AND ts.epoch=? AND t.purpose='zip'
+            AND t.expires_at<=${CLOCK} AND ts.expires_at<=${CLOCK}`,
+        [target.targetSetId, target.ownerId, epoch],
+      ),
+      {
+        sql: `DELETE FROM blob_pins WHERE purpose='zip' AND expires_at<=${CLOCK}
+          AND substr(pin_id,1,?)=?`,
+        values: [prefix.length, prefix],
+      },
+      assertExists(
+        "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM blob_pins WHERE purpose='zip' AND substr(pin_id,1,?)=?)",
+        [prefix.length, prefix],
+      ),
+    ]);
+    cleaned++;
+  }
+  return cleaned;
+}
+
 async function nextCandidate(
   db: D1Database,
   epoch: number,

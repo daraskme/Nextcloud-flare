@@ -505,6 +505,8 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | content | HEAD | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/thumb` | content_cookie | `content.read` | `session,node,blob,derivative,budgetId` | false | cross-origin-content |
 | content | HEAD | `/c/:nodeId/:blobId/thumb` | content_cookie | `content.read` | `session,node,blob,derivative` | false | same-origin-json |
+| content | GET | `/z/:targetSetId` | content_cookie | `content.read` | `session,targetSet,manifest,budgetId` | false | cross-origin-content |
+| content | HEAD | `/z/:targetSetId` | content_cookie | `content.read` | `session,targetSet,manifest` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/pages/:page` | content_cookie | `content.read` | `session,node,blob,index,page` | false | same-origin-json |
 | content | HEAD | `/c/:nodeId/:blobId/pages/:page` | content_cookie | `content.read` | `session,node,blob,index,page` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |

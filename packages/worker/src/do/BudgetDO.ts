@@ -1,10 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
+import { LIMITS } from "@next-cloud-flare/shared/limits";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
 import {
   loadTargetManifest,
-  type TargetEntry,
+  type TargetManifest,
   type TargetManifestRecord,
 } from "../services/targetManifest";
 
@@ -60,7 +61,7 @@ export interface BudgetSettleRequest {
 
 /** Durable, per-budget admission. Public fetch remains closed until every content route uses it. */
 export class BudgetDO extends DurableObject<Env> {
-  #manifest: { key: string; targets: readonly TargetEntry[] } | undefined;
+  #manifest: { key: string; value: TargetManifest } | undefined;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS budget_state(
@@ -216,9 +217,9 @@ export class BudgetDO extends DurableObject<Env> {
       authority.hash,
       authority.totalBytes,
     ]);
-    let targets = this.#manifest?.key === manifestKey ? this.#manifest.targets : undefined;
-    if (!targets) {
-      targets = (await loadTargetManifest(this.env.BLOBS, authority)).targets;
+    let manifest = this.#manifest?.key === manifestKey ? this.#manifest.value : undefined;
+    if (!manifest) {
+      manifest = await loadTargetManifest(this.env.BLOBS, authority);
       // R2 I/O may outlive a ticket/session. Recheck the exact D1 record before granting bytes.
       authority = await this.#authority(request, Date.now());
       if (
@@ -226,7 +227,7 @@ export class BudgetDO extends DurableObject<Env> {
         manifestKey
       )
         throw new Error("budget_authorization_denied");
-      this.#manifest = { key: manifestKey, targets };
+      this.#manifest = { key: manifestKey, value: manifest };
     }
     const now = Date.now();
     const byteLimit = authority.totalBytes * 3;
@@ -285,7 +286,7 @@ export class BudgetDO extends DurableObject<Env> {
         state = this.#state();
       }
       if (!state) throw new Error("budget_state_missing");
-      state = this.#grantTargets(state, targets, byteLimit);
+      state = this.#grantTargets(state, manifest, byteLimit);
       this.#sweep(now);
       const existing = this.#lease(request.requestId);
       if (existing) {
@@ -341,11 +342,7 @@ export class BudgetDO extends DurableObject<Env> {
     return lease;
   }
 
-  #grantTargets(
-    state: BudgetState,
-    targets: readonly TargetEntry[],
-    legacyLimit: number,
-  ): BudgetState {
+  #grantTargets(state: BudgetState, manifest: TargetManifest, legacyLimit: number): BudgetState {
     const window = this.ctx.storage.sql
       .exec<{ epoch: number; expires_at: number }>(
         "SELECT epoch,expires_at FROM budget_allowance_window WHERE singleton=1",
@@ -365,15 +362,24 @@ export class BudgetDO extends DurableObject<Env> {
     );
     const additions = new Map<string, number>();
     let allowance = state.byte_limit;
+    const targets =
+      manifest.v === 1
+        ? manifest.targets.map((target) => ({
+            key: `${target.purpose}:${target.blobId}`,
+            size: target.size,
+          }))
+        : manifest.entries.map((target) => ({
+            key: `zip:${target.blobId}`,
+            size: target.size + LIMITS.zipEntryOverheadBytes,
+          }));
     for (const target of targets) {
       // Immutable blob identity also deduplicates aliases/COW copies and new manifests.
-      const key = `${target.purpose}:${target.blobId}`;
-      const known = recorded.get(key) ?? additions.get(key);
+      const known = recorded.get(target.key) ?? additions.get(target.key);
       if (known !== undefined) {
         if (known !== target.size) throw new Error("budget_target_conflict");
         continue;
       }
-      additions.set(key, target.size);
+      additions.set(target.key, target.size);
       allowance += target.size * 3;
     }
     if (recorded.size + additions.size > MAX_ROWS || !Number.isSafeInteger(allowance))

@@ -5,6 +5,7 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
 } from "./accountMutation";
+import { removeZipPinStatements } from "./refs";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -21,7 +22,8 @@ export async function cancelContentTicket(
   const userId = principal.kind === "link_share" ? null : principal.user_id;
   const shareId = principal.kind === "link_share" ? principal.share_id : null;
   const shareVersion = principal.kind === "link_share" ? principal.share_version : null;
-  const authorityQuery = `SELECT ts.owner_id FROM tickets t JOIN target_sets ts ON ts.id=t.target_set_id
+  const authorityQuery = `SELECT ts.owner_id,t.target_set_id AS targetSetId,t.purpose
+      FROM tickets t JOIN target_sets ts ON ts.id=t.target_set_id
       JOIN credentials c ON c.id=t.credential_id
       JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=t.epoch AND ctl.maintenance=0
       WHERE t.id=? AND t.credential_id=? AND t.epoch=? AND ts.credential_id=t.credential_id
@@ -56,15 +58,25 @@ export async function cancelContentTicket(
     shareVersion,
     now,
   ];
-  const ownerId = await primary(db)
+  const ticket = await primary(db)
     .prepare(authorityQuery)
     .bind(...authorityValues)
-    .first<string>("owner_id");
-  if (!ownerId) throw new Error("invalid_ticket_cancel_request");
-  const admission = await acquireAccountMutation(env, ownerId, principal.epoch, "content.cancel");
+    .first<{ owner_id: string; targetSetId: string; purpose: string }>();
+  if (!ticket) throw new Error("invalid_ticket_cancel_request");
+  const admission = await acquireAccountMutation(
+    env,
+    ticket.owner_id,
+    principal.epoch,
+    "content.cancel",
+  );
   try {
-    await commitAccountMutation(db, admission, ownerId, [
-      assertExists(authorityQuery + " AND ts.owner_id=?", [...authorityValues, ownerId]),
+    await commitAccountMutation(db, admission, ticket.owner_id, [
+      assertExists(authorityQuery + " AND ts.owner_id=? AND t.target_set_id=? AND t.purpose=?", [
+        ...authorityValues,
+        ticket.owner_id,
+        ticket.targetSetId,
+        ticket.purpose,
+      ]),
       {
         sql: "UPDATE tickets SET cancelled_at=COALESCE(cancelled_at,MAX(?,strftime('%s','now')*1000)) WHERE id=?",
         values: [now, ticketId],
@@ -73,6 +85,7 @@ export async function cancelContentTicket(
         sql: "UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,MAX(?,strftime('%s','now')*1000)) WHERE ticket_id=?",
         values: [now, ticketId],
       },
+      ...(ticket.purpose === "zip" ? removeZipPinStatements(ticket.targetSetId) : []),
     ]);
   } catch (cause) {
     throw new Error("ticket_cancel_commit_unknown", { cause });

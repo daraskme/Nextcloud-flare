@@ -1,4 +1,5 @@
 import { LIMITS } from "@next-cloud-flare/shared/limits";
+import { portableName } from "@next-cloud-flare/shared/names";
 import { Zip, ZipPassThrough } from "fflate";
 
 export interface StoreEntry {
@@ -22,27 +23,29 @@ function inspectEntries(entries: readonly StoreEntry[]): {
 } {
   if (entries.length > LIMITS.zipEntries) throw new RangeError("zip_entry_limit");
   const names = new Set<string>();
+  const foldedNames = new Set<string>();
   let payloadBytes = 0;
   // Snapshot the inputs so metadata cannot change after dry-run.
   const snapshot = entries.map((entry) => {
     const name = entry.name.normalize("NFC");
     const nameBytes = new TextEncoder().encode(name).byteLength;
-    if (
-      !name ||
-      nameBytes > 1_024 ||
-      /[\\:]/.test(name) ||
-      Array.from(name).some(
-        (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
-      ) ||
-      name.split("/").some((part) => !part || part === "." || part === "..") ||
-      names.has(name)
-    ) {
+    let folded: string;
+    try {
+      folded = name
+        .split("/")
+        .map((part) => portableName(part).nameCi)
+        .join("/");
+    } catch {
       throw new RangeError("invalid_zip_name");
     }
-    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > LIMITS.zipBytes) {
+    if (!name || nameBytes > LIMITS.zipPathBytes || names.has(name) || foldedNames.has(folded)) {
+      throw new RangeError("invalid_zip_name");
+    }
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > LIMITS.zipEntryBytes) {
       throw new RangeError("zip_size_limit");
     }
     names.add(name);
+    foldedNames.add(folded);
     payloadBytes += entry.size;
     return Object.freeze({ name, size: entry.size, open: entry.open });
   });
@@ -59,7 +62,11 @@ function inspectEntries(entries: readonly StoreEntry[]): {
   measure.end();
   // STORE sizes/offsets/CRC are fixed-width fields. Empty payloads measure all framing.
   const size = overhead + payloadBytes;
-  if (size > LIMITS.zipBytes || overhead > LIMITS.streamQueueBytes / 2) {
+  if (
+    size > LIMITS.zipBytes ||
+    overhead > LIMITS.streamQueueBytes ||
+    (snapshot.length > 0 && overhead > snapshot.length * LIMITS.zipEntryOverheadBytes)
+  ) {
     throw new RangeError("zip_size_limit");
   }
   return { entries: snapshot, size };
