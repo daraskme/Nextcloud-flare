@@ -17,6 +17,7 @@ import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
+import { handleLibraryHttp, libraryRoute } from "./library";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -47,6 +48,7 @@ export function privateAppRoute(request: Request): boolean {
     audioRoute(request) ||
     searchRoute(request) ||
     statsRoute(request) ||
+    libraryRoute(request) ||
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
@@ -89,6 +91,7 @@ export async function handlePrivateAppHttp(
   const audio = audioRoute(request);
   const search = searchRoute(request);
   const stats = statsRoute(request);
+  const library = libraryRoute(request);
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
@@ -106,6 +109,7 @@ export async function handlePrivateAppHttp(
     !audio &&
     !search &&
     !stats &&
+    !library &&
     !trashRead &&
     !nodeMutation &&
     !appPassword &&
@@ -152,6 +156,13 @@ export async function handlePrivateAppHttp(
   if (accountRead || logout) return handleAccountHttp(request, env, session, dependencies.csrf);
   if (stats)
     return handleStatsHttp(request, env, {
+      kind: "user",
+      user_id: session.user_id,
+      credential_id: session.credential_id,
+      epoch: session.epoch,
+    });
+  if (library)
+    return handleLibraryHttp(request, env, {
       kind: "user",
       user_id: session.user_id,
       credential_id: session.credential_id,

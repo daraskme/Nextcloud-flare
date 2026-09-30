@@ -152,6 +152,7 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/uploads/:uploadId/complete",
     "app DELETE /api/v1/uploads/:uploadId",
     "app GET /api/v1/trash",
+    "app GET /api/v1/library/:nodeId",
     "app POST /api/v1/trash/:opId/restore",
     "app POST /api/v1/trash/:opId/purge",
     "app POST /api/v1/content-session",
@@ -200,7 +201,6 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/library/items",
     "app GET /api/v1/library/items/:itemId",
     "app PATCH /api/v1/library/items/:itemId",
-    "app GET /api/v1/library/:nodeId",
     "app GET /api/v1/library/:nodeId/pages/:page",
     "app HEAD /api/v1/library/:nodeId/pages/:page",
     "app GET /api/v1/library/:nodeId/pages/:page/thumb",
@@ -295,14 +295,16 @@ export const ROUTE_BINDINGS = [
   ...bindings(contentCookieCrossOrigin, "bound", "content", [
     "content GET /c/:nodeId/:blobId/thumb",
   ]),
-  ...bindings(contentCookie, "bound", "content", ["content HEAD /c/:nodeId/:blobId/thumb"]),
+  ...bindings(contentCookie, "bound", "content", [
+    "content HEAD /c/:nodeId/:blobId/thumb",
+    "content GET /c/:nodeId/:blobId/entries/:entryToken",
+    "content HEAD /c/:nodeId/:blobId/entries/:entryToken",
+  ]),
   ...bindings(contentCookieCrossOrigin, "bound", "content", ["content GET /z/:targetSetId"]),
   ...bindings(contentCookie, "bound", "content", ["content HEAD /z/:targetSetId"]),
   ...bindings(contentCookie, "unavailable", "unavailable", [
     "content GET /c/:nodeId/:blobId/pages/:page",
     "content HEAD /c/:nodeId/:blobId/pages/:page",
-    "content GET /c/:nodeId/:blobId/entries/:entryToken",
-    "content HEAD /c/:nodeId/:blobId/entries/:entryToken",
   ]),
   ...bindings(contentPublic, "unavailable", "unavailable", ["content GET /reader/index.html"]),
   ...bindings(contentPublic, "unavailable", "unavailable", ["content GET /reader-assets/:asset"], {
