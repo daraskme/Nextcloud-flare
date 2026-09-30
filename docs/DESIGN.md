@@ -877,6 +877,7 @@ Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、cli
 ### 9A.4 共通認可 / job
 
 全media routeはEffectiveLive、capability root、current blob、generation、credential scopeを検査する。index/tag/sanitize/thumb jobはoutbox、saved principal、epoch、fenced result claimを使いstale結果を公開しない。
+同じcontent mutationがaudioとimageの両候補になる場合は単一outbox claim内で両projectionを独立に収束させ、どちらかがtransientならterminal completionせず同じblob/version fenceで再実行する。`content`/`track`は原本、`thumb`はready derivativeだけを解決し、purposeを相互流用しない。
 
 ---
 
