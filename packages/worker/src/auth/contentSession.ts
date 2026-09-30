@@ -57,9 +57,19 @@ export function contentSessionAssertion(
             AND ((cs.user_id IS NULL AND sh.kind='link') OR
               (cs.user_id IS NOT NULL AND sh.kind='internal'))
             AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
-            AND (cs.user_id IS NULL OR EXISTS(
-              SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=cs.user_id
-                AND g.version=sh.version AND g.disabled_at IS NULL))))`,
+            AND (cs.user_id IS NULL OR
+              EXISTS(SELECT 1 FROM share_grants g
+                WHERE g.share_id=sh.id AND g.user_id=cs.user_id
+                  AND g.version=sh.version AND g.disabled_at IS NULL)
+              OR EXISTS(
+                SELECT 1 FROM share_group_grants gg
+                JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                  AND sg.disabled_at IS NULL
+                JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=cs.user_id
+                  AND gm.disabled_at IS NULL
+                JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
+                WHERE gg.share_id=sh.id
+              ))))`,
     [
       sessionId,
       ticketId,

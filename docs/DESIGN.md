@@ -434,6 +434,11 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/api/v1/trash` | access | `trash.read` | `space,cursor` | false | same-origin-json |
 | app | POST | `/api/v1/trash/:opId/restore` | access | `node.restore` | `trashOp,root,destinationParent` | false | same-origin-json |
 | app | POST | `/api/v1/trash/:opId/purge` | access | `node.purge` | `trashOp,root,members` | false | same-origin-json |
+| app | GET | `/api/v1/groups` | access | `share.read` | `currentUser` | false | same-origin-json |
+| app | POST | `/api/v1/groups` | access | `share.manage` | `currentUser,group,members` | false | same-origin-json |
+| app | GET | `/api/v1/groups/:groupId` | access | `share.read` | `currentUser,group,members` | false | same-origin-json |
+| app | PATCH | `/api/v1/groups/:groupId` | access | `share.manage` | `currentUser,group,members` | false | same-origin-json |
+| app | DELETE | `/api/v1/groups/:groupId` | access | `share.disable` | `currentUser,group,members` | false | same-origin-json |
 | app | GET | `/api/v1/shares` | access | `share.read` | `currentUser` | false | same-origin-json |
 | app | POST | `/api/v1/shares` | access | `share.manage` | `currentUser,root` | false | same-origin-json |
 | app | GET | `/api/v1/shares/:shareId` | access | `share.read` | `share,root` | false | same-origin-json |

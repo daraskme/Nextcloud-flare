@@ -67,9 +67,18 @@ export async function acceptContentTicket(
                 AND sh.owner_id=ts.owner_id AND sh.disabled_at IS NULL
                 AND (sh.expires_at IS NULL OR sh.expires_at>=?)
                 AND ((? IS NULL AND sh.kind='link') OR
-                  (? IS NOT NULL AND sh.kind='internal' AND EXISTS(
-                    SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=?
-                      AND g.version=sh.version AND g.disabled_at IS NULL)))
+                  (? IS NOT NULL AND sh.kind='internal' AND (
+                    EXISTS(SELECT 1 FROM share_grants g
+                      WHERE g.share_id=sh.id AND g.user_id=?
+                        AND g.version=sh.version AND g.disabled_at IS NULL)
+                    OR EXISTS(
+                      SELECT 1 FROM share_group_grants gg
+                      JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                        AND sg.disabled_at IS NULL
+                      JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=b.user_id
+                        AND gm.disabled_at IS NULL
+                      WHERE gg.share_id=sh.id
+                    ))))
                 AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')))
           ) AND ?>strftime('%s','now')*1000`;
   const authorityValues = [

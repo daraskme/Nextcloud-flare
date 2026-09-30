@@ -75,11 +75,21 @@ async function createBody(
     if (
       Object.keys(body).some(
         (key) =>
-          !["kind", "rootNodeId", "spaceId", "recipientEmail", "actions", "ttlDays"].includes(key),
+          ![
+            "kind",
+            "rootNodeId",
+            "spaceId",
+            "recipientEmail",
+            "recipientGroupId",
+            "actions",
+            "ttlDays",
+          ].includes(key),
       ) ||
       typeof body.rootNodeId !== "string" ||
       typeof body.spaceId !== "string" ||
-      typeof body.recipientEmail !== "string" ||
+      (body.recipientEmail === undefined) === (body.recipientGroupId === undefined) ||
+      (body.recipientEmail !== undefined && typeof body.recipientEmail !== "string") ||
+      (body.recipientGroupId !== undefined && typeof body.recipientGroupId !== "string") ||
       !Array.isArray(body.actions) ||
       body.actions.some((action) => typeof action !== "string") ||
       (body.ttlDays !== undefined && typeof body.ttlDays !== "number")
@@ -89,7 +99,12 @@ async function createBody(
       kind: "internal",
       rootNodeId: body.rootNodeId,
       spaceId: body.spaceId,
-      recipientEmail: body.recipientEmail,
+      ...(body.recipientEmail === undefined
+        ? {}
+        : { recipientEmail: body.recipientEmail as string }),
+      ...(body.recipientGroupId === undefined
+        ? {}
+        : { recipientGroupId: body.recipientGroupId as string }),
       actions: body.actions as string[],
       ...(body.ttlDays === undefined ? {} : { ttlDays: body.ttlDays as number }),
     };

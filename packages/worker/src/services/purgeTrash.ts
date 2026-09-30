@@ -16,7 +16,7 @@ import {
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const BASE_STEPS = 35;
+const BASE_STEPS = 36;
 type UserPrincipal = {
   readonly kind: "user";
   readonly user_id: string;
@@ -228,6 +228,18 @@ function statements(
     },
     absent(
       `SELECT 1 FROM share_grants WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (${members}))`,
+      [op],
+    ),
+  );
+  add(
+    "share_group_dependents",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_group_grants WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (${members}))`,
+      values: [op],
+    },
+    absent(
+      `SELECT 1 FROM share_group_grants WHERE share_id IN (SELECT id FROM shares WHERE root_node_id IN (${members}))`,
       [op],
     ),
   );

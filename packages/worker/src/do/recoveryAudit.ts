@@ -889,6 +889,9 @@ export async function inspectRecoveryPage(
             WHERE r.share_id=sh.id AND r.state='reserved'),0)
           AND NOT EXISTS(SELECT 1 FROM share_grants g
             WHERE g.share_id=sh.id AND g.version>sh.version)
+          AND NOT EXISTS(SELECT 1 FROM share_group_grants gg
+            LEFT JOIN share_groups sg ON sg.id=gg.group_id
+            WHERE gg.share_id=sh.id AND (sg.id IS NULL OR sg.owner_id<>sh.owner_id))
           AND NOT EXISTS(SELECT 1 FROM share_sessions ss
             WHERE ss.share_id=sh.id AND ss.share_version>sh.version)
           AND (sh.disabled_at IS NOT NULL OR

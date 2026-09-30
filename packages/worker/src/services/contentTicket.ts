@@ -83,9 +83,18 @@ function budgetAndShareAssertion(
               AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
               AND (sh.expires_at IS NULL OR sh.expires_at>=?)
               AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
-              AND ((? IS NOT NULL AND sh.kind='internal' AND EXISTS(
-                SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=?
-                  AND g.version=sh.version AND g.disabled_at IS NULL))
+              AND ((? IS NOT NULL AND sh.kind='internal' AND (
+                EXISTS(SELECT 1 FROM share_grants g
+                  WHERE g.share_id=sh.id AND g.user_id=?
+                    AND g.version=sh.version AND g.disabled_at IS NULL)
+                OR EXISTS(
+                  SELECT 1 FROM share_group_grants gg
+                  JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                    AND sg.disabled_at IS NULL
+                  JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=b.user_id
+                    AND gm.disabled_at IS NULL
+                  WHERE gg.share_id=sh.id
+                )))
                 OR (? IS NULL AND sh.kind='link' AND EXISTS(
                   SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
                   WHERE c.id=? AND c.kind='share' AND ss.id=? AND ss.share_id=sh.id
