@@ -29,8 +29,10 @@ versions.
    actionable listing `.node-button`; scope download locators to `.node-row
    .node-button` and assert the ticket request, content-origin `POST /session`,
    `GET /c/<nodeId>/<blobId>`, and exact downloaded bytes or hash.
-7. Run a focused Playwright test while iterating, then run `pnpm test:browser` in
-   full before reporting browser verification.
+7. Run `pnpm build:web` before invoking a focused Playwright command directly;
+   `packages/web/dist` is ignored and may otherwise contain stale assets. After
+   focused iteration, run `pnpm test:browser` in full before reporting browser
+   verification.
 8. Preserve `test-results/` on failure and report the failing test title, trace, and
    screenshot. Do not weaken host isolation, HTTPS, or authentication fixtures to
    make a test pass.
