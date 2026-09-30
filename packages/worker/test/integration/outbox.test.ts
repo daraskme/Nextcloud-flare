@@ -252,6 +252,7 @@ it("routes Queue deliveries only when ControlDO and D1 agree on admission", asyn
   let wholeBatchRetries = 0;
   const batch = (message: OutboxDelivery) =>
     ({
+      queue: env.JOBS_QUEUE_NAME,
       messages: [message],
       retryAll() {
         wholeBatchRetries++;

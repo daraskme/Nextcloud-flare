@@ -33,9 +33,16 @@ assert.deepEqual(config.migrations[0].new_sqlite_classes.sort(), [
   "UploadDO",
 ]);
 assert.equal(config.queues.producers[0].binding, "JOBS");
+assert.equal(config.queues.producers[0].queue, config.vars.JOBS_QUEUE_NAME);
+assert.equal(config.queues.consumers.length, 2);
+assert.equal(config.queues.consumers[0].queue, config.vars.JOBS_QUEUE_NAME);
 assert.equal(config.queues.consumers[0].max_retries, 10);
 assert.equal(config.queues.consumers[0].max_concurrency, 8);
-assert.equal(config.queues.consumers[0].dead_letter_queue, "ncf-local-jobs-dlq");
+assert.equal(config.queues.consumers[0].dead_letter_queue, config.vars.JOBS_DLQ_NAME);
+assert.equal(config.queues.consumers[1].queue, config.vars.JOBS_DLQ_NAME);
+assert.equal(config.queues.consumers[1].max_retries, 100);
+assert.equal(config.queues.consumers[1].max_concurrency, 8);
+assert.equal(config.queues.consumers[1].dead_letter_queue, undefined);
 assert.deepEqual(config.triggers.crons, ["* * * * *"]);
 assert.deepEqual(
   config.ratelimits.map((item) => [item.name, item.simple.limit, item.simple.period]),

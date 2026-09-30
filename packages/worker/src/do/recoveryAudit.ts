@@ -153,7 +153,8 @@ function quiescenceQuery(ownAdmission = false): string {
     AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
     AND NOT EXISTS(SELECT 1 FROM job_leases WHERE expires_at>strftime('%s','now')*1000)
     AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
-      AND claim_expires_at>strftime('%s','now')*1000)
+      AND (dispatch_expires_at>strftime('%s','now')*1000
+        OR claim_expires_at>strftime('%s','now')*1000))
     AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')
     AND NOT EXISTS(SELECT 1 FROM uploads WHERE state IN ('receiving','completing'))`;
 }
@@ -259,6 +260,14 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
           WHERE g.blob_id=u.blob_id AND g.state='candidate' AND s.removed_at IS NULL)))
       AND NOT EXISTS(SELECT 1 FROM outbox
         WHERE state IN ('pending','dispatching','sent') AND epoch<>c.epoch)
+      AND NOT EXISTS(SELECT 1 FROM outbox_dead_letters d LEFT JOIN outbox b
+        ON b.outbox_id=d.outbox_id WHERE b.outbox_id IS NULL OR d.epoch<>b.epoch
+        OR (d.status='failed' AND (d.requeue_count<>0 OR b.state<>'failed'))
+        OR (d.status='requeued' AND d.requeue_count<>1))
+      AND NOT EXISTS(SELECT 1 FROM outbox b WHERE b.state='failed' AND b.epoch=c.epoch
+        AND EXISTS(SELECT 1 FROM outbox_dead_letters d WHERE d.outbox_id=b.outbox_id)
+        AND (SELECT COUNT(*) FROM outbox_dead_letters d
+          WHERE d.outbox_id=b.outbox_id AND d.status='failed')<>1)
       AND NOT EXISTS(SELECT 1 FROM job_leases)
       AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')
       AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE state='deleting' OR claim_token IS NOT NULL
@@ -277,7 +286,8 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM operations WHERE state='claimed')
       AND NOT EXISTS(SELECT 1 FROM outbox WHERE state IN ('dispatching','sent')
-        AND claim_expires_at>strftime('%s','now')*1000)
+        AND (dispatch_expires_at>strftime('%s','now')*1000
+          OR claim_expires_at>strftime('%s','now')*1000))
       AND ((c.bootstrap_done_at IS NULL AND c.bootstrap_iss IS NULL AND c.bootstrap_sub IS NULL
         AND NOT EXISTS(SELECT 1 FROM users) AND NOT EXISTS(SELECT 1 FROM spaces))
         OR (c.bootstrap_done_at IS NOT NULL AND length(c.bootstrap_iss)>0 AND length(c.bootstrap_sub)>0
@@ -381,6 +391,138 @@ export async function failStaleRecoveryOutbox(
   }
   await assertQuiesced(db, epoch);
   return failed;
+}
+
+/** Maintenance-only operator repair for current-epoch Queue delivery exhaustion. */
+export async function requeueDeliveryExhaustedOutbox(
+  env: SystemMutationSource,
+  epoch: number,
+  limit = 20,
+): Promise<number> {
+  const { DB: db } = env,
+    deadline = Date.now() + 25_000;
+  epochNumber(epoch);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+    throw new Error("invalid_recovery_limit");
+  await assertQuiesced(db, epoch);
+  const clock = "strftime('%s','now')*1000";
+  const rows = await primary(db)
+    .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.epoch,
+      b.dispatch_token,b.dispatch_expires_at,b.claim_token,b.claim_expires_at,
+      d.queue_message_id,o.space_id,s.owner_id,o.kind AS operation_kind,
+      o.operands_json,o.result_json
+      FROM outbox b JOIN outbox_dead_letters d ON d.outbox_id=b.outbox_id
+      JOIN operations o ON o.op_id=b.op_id JOIN spaces s ON s.id=o.space_id
+      WHERE b.epoch=? AND b.state='failed' AND d.epoch=b.epoch AND d.status='failed'
+        AND d.requeue_count=0 AND o.state='committed' AND o.epoch=b.epoch
+        AND ((b.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
+          (b.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
+          (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
+          (b.kind='node.restored' AND o.kind='node.restore') OR
+          (b.kind='node.purged' AND o.kind='node.purge') OR
+          (b.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+        AND EXISTS(SELECT 1 FROM operation_steps st WHERE st.op_id=o.op_id
+          AND st.kind='node' AND st.affected_id=b.payload_ref)
+      ORDER BY d.first_observed_at,d.queue_message_id LIMIT ?`)
+    .bind(epoch, limit)
+    .all<{
+      outbox_id: string;
+      op_id: string;
+      kind: string;
+      payload_ref: string;
+      epoch: number;
+      dispatch_token: string | null;
+      dispatch_expires_at: number | null;
+      claim_token: string | null;
+      claim_expires_at: number | null;
+      queue_message_id: string;
+      space_id: string;
+      owner_id: string;
+      operation_kind: string;
+      operands_json: string;
+      result_json: string;
+    }>();
+  let requeued = 0;
+  for (const row of rows.results) {
+    withinRepairBudget(deadline);
+    const admission = await acquireSystemMutation(
+      env,
+      row.owner_id,
+      "recovery.outbox-requeue",
+      deadline,
+    );
+    withinRepairBudget(deadline);
+    if (admission.maintenance !== 1 || admission.space_id !== row.space_id)
+      throw new Error("recovery_outbox_space_changed");
+    try {
+      await commitSystemMutation(db, admission, row.owner_id, [
+        repairFence(epoch, admission),
+        {
+          sql: `UPDATE outbox SET state='pending',dispatch_token=NULL,dispatch_expires_at=NULL,
+            claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
+            WHERE outbox_id=? AND op_id=? AND kind=? AND payload_ref=? AND epoch=? AND state='failed'
+              AND dispatch_token IS ? AND dispatch_expires_at IS ?
+              AND claim_token IS ? AND claim_expires_at IS ?
+              AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?
+                AND maintenance=1 AND gc_paused=1)
+              AND EXISTS(SELECT 1 FROM outbox_dead_letters d WHERE d.outbox_id=outbox.outbox_id
+                AND d.queue_message_id=? AND d.epoch=outbox.epoch
+                AND d.status='failed' AND d.requeue_count=0)
+              AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
+                AND o.space_id=? AND o.state='committed' AND o.epoch=outbox.epoch
+                AND o.kind=? AND o.operands_json=? AND o.result_json=?
+                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
+                  (outbox.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
+                  (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
+                  (outbox.kind='node.restored' AND o.kind='node.restore') OR
+                  (outbox.kind='node.purged' AND o.kind='node.purge') OR
+                  (outbox.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+                AND EXISTS(SELECT 1 FROM operation_steps st WHERE st.op_id=o.op_id
+                  AND st.kind='node' AND st.affected_id=outbox.payload_ref))`,
+          values: [
+            row.outbox_id,
+            row.op_id,
+            row.kind,
+            row.payload_ref,
+            row.epoch,
+            row.dispatch_token,
+            row.dispatch_expires_at,
+            row.claim_token,
+            row.claim_expires_at,
+            epoch,
+            row.queue_message_id,
+            row.space_id,
+            row.operation_kind,
+            row.operands_json,
+            row.result_json,
+          ],
+        },
+        assertOneChange,
+        {
+          sql: `UPDATE outbox_dead_letters SET status='requeued',requeue_count=requeue_count+1,
+            last_observed_at=MAX(last_observed_at,${clock})
+            WHERE outbox_id=? AND queue_message_id=? AND epoch=?
+              AND status='failed' AND requeue_count=0
+              AND EXISTS(SELECT 1 FROM outbox b WHERE b.outbox_id=outbox_dead_letters.outbox_id
+                AND b.epoch=outbox_dead_letters.epoch AND b.state='pending')`,
+          values: [row.outbox_id, row.queue_message_id, row.epoch],
+        },
+        assertOneChange,
+      ]);
+    } catch (error) {
+      const terminal = await primary(db)
+        .prepare(`SELECT 1 FROM outbox b JOIN outbox_dead_letters d
+          ON d.outbox_id=b.outbox_id WHERE b.outbox_id=? AND b.op_id=? AND b.epoch=?
+          AND b.state='pending' AND d.queue_message_id=? AND d.epoch=b.epoch
+          AND d.status='requeued' AND d.requeue_count=1`)
+        .bind(row.outbox_id, row.op_id, row.epoch, row.queue_message_id)
+        .first<number>();
+      if (terminal === null) throw error;
+    }
+    requeued++;
+  }
+  await assertQuiesced(db, epoch);
+  return requeued;
 }
 
 /** Storage holds need R2-aware cleanup, including legacy DAV writes without an upload ledger. */
@@ -712,6 +854,19 @@ export async function inspectRecoveryPage(
         throw new Error("recovery_outbox_dispatch_mismatch");
       if ((row.claim_token === null) !== (row.claim_expires_at === null))
         throw new Error("recovery_outbox_claim_mismatch");
+      const deadLetters = await primary(db)
+        .prepare(`SELECT 1 FROM outbox b WHERE b.outbox_id=?
+          AND NOT EXISTS(SELECT 1 FROM outbox_dead_letters d
+            WHERE d.outbox_id=b.outbox_id AND (d.epoch<>b.epoch
+              OR (d.status='failed' AND (d.requeue_count<>0 OR b.state<>'failed'))
+              OR (d.status='requeued' AND d.requeue_count<>1)))
+          AND (b.state<>'failed' OR b.epoch<>?
+            OR NOT EXISTS(SELECT 1 FROM outbox_dead_letters d WHERE d.outbox_id=b.outbox_id)
+            OR (SELECT COUNT(*) FROM outbox_dead_letters d
+              WHERE d.outbox_id=b.outbox_id AND d.status='failed')=1)`)
+        .bind(row.outbox_id, epoch)
+        .first<number>();
+      if (deadLetters === null) throw new Error("recovery_outbox_dead_letter_mismatch");
     }
     return {
       examined: page.length,

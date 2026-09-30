@@ -8,18 +8,22 @@ import { foundationFixture } from "../fixtures/foundation";
 let db: DatabaseSync;
 const dir = new URL("../../migrations/", import.meta.url),
   token = "a".repeat(36);
+const migrationFiles = readdirSync(dir)
+  .filter((file) => file.endsWith(".sql"))
+  .sort();
 beforeEach(() => {
   db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys=ON");
-  for (const file of readdirSync(dir)
-    .filter((f) => f.endsWith(".sql") && f < "0037_")
-    .sort())
+  for (const file of migrationFiles.filter((file) => file < "0037_"))
     db.exec(readFileSync(new URL(file, dir), "utf8"));
   for (const s of foundationFixture().statements)
     db.prepare(s.sql).run(...((s.values ?? []) as (string | number | null)[]));
 });
 afterEach(() => db.close());
-const migrate = () => db.exec(readFileSync(new URL("0037_backup_barrier.sql", dir), "utf8"));
+const migrate = () => {
+  for (const file of migrationFiles.filter((file) => file >= "0037_"))
+    db.exec(readFileSync(new URL(file, dir), "utf8"));
+};
 function freeze() {
   db.prepare(
     "INSERT INTO backup_runs(id,epoch,state,created_at,barrier_token) VALUES('backup',1,'exporting',1,?)",

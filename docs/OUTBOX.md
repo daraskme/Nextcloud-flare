@@ -18,6 +18,14 @@ Queue sendの応答喪失ではleaseを保持する。期限後に新しいclaim
 
 同じIDのcompleted/failedは読取りだけで再利用する。`handleOutboxBatch`はdurable terminalだけをackし、malformed・不存在・混雑・結果不明はretryする。ack自体が失われても再配信は同じterminalで収束する。batch全体で25秒期限を共有し、残りメッセージは処理開始せずretryする。実行中のQueue送信やDB I/Oを強制終了する保証ではない。
 
+## dead-letter
+
+primary QueueとDLQの名前はbinding変数で明示し、`MessageBatch.queue`で既存consumerとDLQ consumerを分岐する。未知のQueue名はbatch全体をretryする。DLQは同じ`{outboxId}`だけを受け取り、Queue message IDとattemptsを`outbox_dead_letters`へ保存する。
+
+current epochのpending、期限切れdispatching/sentだけを対象にし、live consumer claim、置換済みdispatch token、maintenance/epoch変更、元operation/stepの不一致では更新しない。failedへの変更とledger作成は所有spaceの共通system受付で同じD1 batchへ保存する。同じQueue message IDの再配信はledgerからackし、別の状態遷移や受付を追加しない。requeue済みの古いQueue message IDも再失敗させずackする。
+
+ローカルworkerd試験はrouting・永続化・冪等性・fenceを検査するが、Cloudflare上のretry exhaustion、message ID保持、DLQ転送、retentionの証明ではない。release前にstagingで実QueueからDLQへの移送、capture、operator requeue、最終ackを確認する。
+
 ## 検証と残作業
 
 共有32枠満杯時の5経路の待機・返却・namespace操作への再利用、ControlDO eviction後の失われた送信ACK、全batch rollback、common receipt喪失、遅いACK、権限/epoch/lease変化、先行consumer、自己の未確定枠保持を検証する。最新の全体結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
