@@ -9,7 +9,7 @@ Phase 1 用の forward migrations。`0001` は identity / namespace / ledger、
 `0011` は DAV lock の取得時 display href を追加する。適用前に最大1時間の既存 lock を全て収束させる。
 `0021` は未知の完成済みR2 objectの隔離台帳と走査cursor/lease。58通常tableのexport/purge契約に追加し、owner physical監査に隔離bytesを含める。同keyのcatalogue登録と隔離登録は相互guardで排他にし、削除後もkey tombstoneを保持する。
 `0039` は既存GC候補を移行から35日以上保護し、最後のnode/version参照が外れた候補の期限も同じtransactionで延長する。既にdeleting/deletedの対象は変更しない。physical容量は猶予中も保持する。[バックアップ用GC保護](../../../docs/BACKUP_GC_PROTECTION.md)を参照。
-`0040` はoutboxのdead-letter台帳と再投入履歴、`0041` は画像metadata・immutable derivative・生成claimを追加する。
+`0040` はoutboxのdead-letter台帳と再投入履歴、`0041` は画像metadata・immutable derivative・生成claim、`0042` はinternal shareの安定mount名とrecipient lookup indexを追加する。
 schema contract generator は適用済み migration を再生成せず、今後の catalogue/index 変更も forward migration で追加する。
 
 テストは `readD1Migrations` + `applyD1Migrations` で隔離 D1 に適用する。
