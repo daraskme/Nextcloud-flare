@@ -47,9 +47,9 @@ singleとmultipartはprivate uploadと同じimmutable R2、UploadDO、LockDO、o
 
 public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS は private SPA と別 Vite entry から content hash 付き `/public-assets/*` へ出力し、生成 manifest の完全一致だけを immutable cache で配信する。private `/private-assets/*` と相互参照しない。
 
-## 未接続
+## 公開surfaceで未接続
 
-app origin の直接 content proxy、内部共有、shared DAV、ZIP、Gallery、Bookshelf、Audio と public media/library route は未接続であり、route registry は 404 fail closed を維持する。remote secret、migration、staging/production deployは実施していない。
+app origin の直接 content proxy、public ZIP、Gallery、Bookshelf、Audio と public media/library route は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
 ## ローカル検証
 
