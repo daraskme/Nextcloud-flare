@@ -1,252 +1,158 @@
-import { createShareBodySchema, unlockShareBodySchema, updateShareBodySchema } from "@ncf/shared";
-
-import { authenticateAccessUser } from "../auth/httpAuth.js";
-import { authenticateShare, issueShareCsrf, logoutShare, unlockShare } from "../auth/share.js";
-import { acquireBudget, attachBudgetLease } from "../services/budgets.js";
-import { getContentDescriptor, serveNodeContentById } from "../services/content.js";
+import { problem } from "@next-cloud-flare/shared/errors";
+import type { CsrfTokens } from "../auth/csrf";
+import type { AccessSession } from "../auth/sessions";
+import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
 import {
-  assertShareNode,
+  type CreateShareInput,
   createShare,
   disableShare,
-  getShare,
-  getShareNode,
-  listShareChildren,
-  listSharedWithMe,
   listShares,
-  updateShare,
-} from "../services/shares.js";
-import { type AppContext, jsonError, mapError } from "./http.js";
+  readShare,
+} from "../services/shares";
+import { hasEmptyBody } from "./emptyBody";
 
-function publicFormOrigin(context: AppContext): boolean {
+const BASE = "/api/v1/shares";
+const DETAIL = /^\/api\/v1\/shares\/([A-Za-z0-9_-]{1,128})$/;
+const MAX_BODY = 4096;
+const PRIVATE_HEADERS = {
+  "Cache-Control": "private, no-store",
+  "X-Content-Type-Options": "nosniff",
+};
+
+export function shareRoute(request: Request): boolean {
+  const path = new URL(request.url).pathname;
   return (
-    context.req.header("Origin") === context.env.APP_ORIGIN &&
-    context.req.header("Sec-Fetch-Site") === "same-origin"
+    (path === BASE && ["GET", "POST"].includes(request.method)) ||
+    (DETAIL.test(path) && ["GET", "DELETE"].includes(request.method))
   );
 }
 
-export async function handleListShares(context: AppContext): Promise<Response> {
+async function createBody(request: Request): Promise<CreateShareInput> {
+  if (request.headers.get("Content-Type") !== "application/json" || !request.body)
+    throw new Error("invalid_share_request");
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
   try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json({ items: await listShares(context.env, user.principal.userId) });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleCreateShare(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    const body = createShareBodySchema.parse(await context.req.json());
-    return context.json(
-      await createShare(context.env, user, {
-        rootNodeId: body.rootNodeId,
-        kind: body.kind,
-        mode: body.mode,
-        ...(body.expiresAt === undefined ? {} : { expiresAt: body.expiresAt }),
-        ...(body.password === undefined ? {} : { password: body.password }),
-        ...(body.granteeEmail === undefined ? {} : { granteeEmail: body.granteeEmail }),
-      }),
-      201,
-    );
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleGetShare(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json(
-      await getShare(context.env, user.principal.userId, context.req.param("shareId")),
-    );
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleUpdateShare(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    const body = updateShareBodySchema.parse(await context.req.json());
-    return context.json(
-      await updateShare(context.env, user, context.req.param("shareId"), {
-        ...(body.mode === undefined ? {} : { mode: body.mode }),
-        ...(body.expiresAt === undefined ? {} : { expiresAt: body.expiresAt }),
-        ...(body.password === undefined ? {} : { password: body.password }),
-      }),
-    );
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleDisableShare(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    await disableShare(context.env, user, context.req.param("shareId"));
-    return new Response(null, { status: 204 });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleSharedWithMe(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json({ items: await listSharedWithMe(context.env, user.principal.userId) });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleShareLanding(context: AppContext): Promise<Response> {
-  const response = await context.env.ASSETS.fetch(
-    new Request(`${context.env.APP_ORIGIN}/public-share.html`, context.req.raw),
-  );
-  if (!response.ok) return response;
-  const headers = new Headers(response.headers);
-  headers.set("Cache-Control", "private, no-store");
-  headers.set(
-    "Content-Security-Policy",
-    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
-  );
-  headers.set("Referrer-Policy", "no-referrer");
-  headers.set("X-Content-Type-Options", "nosniff");
-  return new Response(response.body, { status: response.status, headers });
-}
-
-export async function handlePublicAsset(context: AppContext): Promise<Response> {
-  const asset = context.req.param("asset");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/u.test(asset)) {
-    return jsonError(context, 404, "not_found", "Asset not found");
-  }
-  const response = await context.env.ASSETS.fetch(
-    new Request(`${context.env.APP_ORIGIN}/public-assets/${asset}`, context.req.raw),
-  );
-  if (!response.ok) return jsonError(context, 404, "not_found", "Asset not found");
-  const headers = new Headers(response.headers);
-  headers.set("Cache-Control", "public, max-age=31536000, immutable");
-  headers.set("X-Content-Type-Options", "nosniff");
-  return new Response(response.body, { status: response.status, headers });
-}
-
-export async function handleUnlockShare(context: AppContext): Promise<Response> {
-  try {
-    if (!publicFormOrigin(context)) throw new Error("csrf_failed");
-    const body = unlockShareBodySchema.parse(await context.req.json());
-    const result = await unlockShare(
-      context.env,
-      context.req.raw,
-      context.req.param("shareId"),
-      body.secret,
-      body.password,
-    );
-    return context.json(
-      {
-        shareId: result.authentication.share.id,
-        mode: result.authentication.share.mode,
-        expiresAt: result.authentication.share.expiresAt,
-      },
-      200,
-      { "Set-Cookie": result.cookie, "Cache-Control": "private, no-store" },
-    );
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handlePublicCsrf(context: AppContext): Promise<Response> {
-  try {
-    if (!publicFormOrigin(context)) throw new Error("csrf_failed");
-    const authentication = await authenticateShare(
-      context.env,
-      context.req.raw,
-      context.req.param("shareId"),
-    );
-    return context.json({
-      token: await issueShareCsrf(context.env, authentication.sessionId),
-      expiresIn: 3600,
-    });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleLogoutShare(context: AppContext): Promise<Response> {
-  try {
-    const cookie = await logoutShare(context.env, context.req.raw, context.req.param("shareId"));
-    return new Response(null, { status: 204, headers: { "Set-Cookie": cookie } });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handlePublicShare(context: AppContext): Promise<Response> {
-  try {
-    const authentication = await authenticateShare(
-      context.env,
-      context.req.raw,
-      context.req.param("shareId"),
-    );
-    return context.json({
-      id: authentication.share.id,
-      mode: authentication.share.mode,
-      expiresAt: authentication.share.expiresAt,
-      root:
-        authentication.share.mode === "upload"
-          ? null
-          : await getShareNode(context.env, authentication.share, authentication.share.rootNodeId),
-    });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handlePublicChildren(context: AppContext): Promise<Response> {
-  try {
-    const authentication = await authenticateShare(
-      context.env,
-      context.req.raw,
-      context.req.param("shareId"),
-    );
-    return context.json({
-      items: await listShareChildren(
-        context.env,
-        authentication.share,
-        context.req.param("nodeId"),
-      ),
-    });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handlePublicContent(context: AppContext): Promise<Response> {
-  try {
-    const authentication = await authenticateShare(
-      context.env,
-      context.req.raw,
-      context.req.param("shareId"),
-    );
-    const nodeId = context.req.param("nodeId");
-    await assertShareNode(context.env, authentication.share, nodeId, "download");
-    const descriptor = await getContentDescriptor(context.env, nodeId);
-    const lease = await acquireBudget(
-      context.env,
-      authentication.budgetId,
-      authentication.budgetMaxBytes,
-      context.req.method === "HEAD" ? 0 : descriptor.size,
-    );
-    try {
-      return await attachBudgetLease(
-        await serveNodeContentById(context.env, nodeId, context.req.raw),
-        lease,
-      );
-    } catch (error) {
-      await lease.settle().catch(() => undefined);
-      throw error;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > MAX_BODY) throw new Error("invalid_share_request");
+      chunks.push(chunk.value);
     }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const parsed: unknown = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+  );
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("invalid_share_request");
+  const body = parsed as Record<string, unknown>;
+  if (
+    Object.keys(body).some((key) => !["rootNodeId", "spaceId", "ttlDays"].includes(key)) ||
+    typeof body.rootNodeId !== "string" ||
+    typeof body.spaceId !== "string" ||
+    (body.ttlDays !== undefined && typeof body.ttlDays !== "number")
+  )
+    throw new Error("invalid_share_request");
+  return {
+    rootNodeId: body.rootNodeId,
+    spaceId: body.spaceId,
+    ...(body.ttlDays === undefined ? {} : { ttlDays: body.ttlDays as number }),
+  };
+}
+
+export async function handleShareHttp(
+  request: Request,
+  env: Env,
+  session: AccessSession,
+  csrf: Pick<CsrfTokens, "verify">,
+): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.origin !== env.APP_ORIGIN || url.search || url.hash) return problem(404, "not_found");
+  const detail = DETAIL.exec(url.pathname);
+  if (url.pathname === BASE && request.method === "GET") {
+    try {
+      return Response.json(
+        { shares: await listShares(env.DB, session) },
+        { headers: PRIVATE_HEADERS },
+      );
+    } catch {
+      return problem(503, "not_ready");
+    }
+  }
+  if (detail && request.method === "GET") {
+    try {
+      return Response.json(await readShare(env.DB, session, detail[1] ?? ""), {
+        headers: PRIVATE_HEADERS,
+      });
+    } catch {
+      return problem(404, "not_found");
+    }
+  }
+  const create = url.pathname === BASE && request.method === "POST";
+  const disable = detail && request.method === "DELETE";
+  if (!create && !disable) return problem(404, "not_found");
+  try {
+    await csrf.verify(env.DB, request, {
+      kind: "access",
+      credentialId: session.credential_id,
+      epoch: session.epoch,
+    });
+  } catch {
+    return problem(403, "forbidden");
+  }
+  if (disable) {
+    if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
+    try {
+      await disableShare(env, session, detail?.[1] ?? "");
+      return new Response(null, { status: 204, headers: PRIVATE_HEADERS });
+    } catch (error) {
+      if (error instanceof MutationUnavailableError) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      return error instanceof Error && error.message === "share_not_found"
+        ? problem(404, "not_found")
+        : problem(503, "not_ready");
+    }
+  }
+  let body: CreateShareInput;
+  try {
+    body = await createBody(request);
+  } catch {
+    return problem(400, "bad_request");
+  }
+  try {
+    const created = await createShare(env, session, body);
+    return Response.json(
+      {
+        ...created,
+        shareUrl: `${env.APP_ORIGIN}/s/${created.id}#${created.secret}`,
+      },
+      { status: 201, headers: PRIVATE_HEADERS },
+    );
   } catch (error) {
-    return mapError(context, error);
+    if (error instanceof MutationUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
+    if (error instanceof Error && error.message === "invalid_share_request")
+      return problem(400, "bad_request");
+    if (error instanceof Error && error.message === "share_root_not_found")
+      return problem(404, "not_found");
+    if (error instanceof Error && error.message === "share_limit") return problem(409, "conflict");
+    return problem(503, "not_ready");
   }
 }

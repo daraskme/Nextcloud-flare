@@ -1,0 +1,57 @@
+import { problem } from "@next-cloud-flare/shared/errors";
+import { privateAppDependencies } from "../api/privateAppConfig";
+import { AccessAuthenticationError } from "../auth/access";
+import { loginAccessUser } from "../auth/login";
+import type { Env } from "../env";
+import { privateSpaPath } from "../routes/bindings";
+import { MutationUnavailableError } from "../services/accountMutation";
+import { privateAssets } from "./privateManifest";
+
+const assets = new Set<string>(privateAssets);
+
+export function privateAssetRoute(request: Request): boolean {
+  const path = new URL(request.url).pathname;
+  return ["GET", "HEAD"].includes(request.method) && (privateSpaPath(path) || assets.has(path));
+}
+
+/** Exact private build graph only. Public/service/unknown paths never receive an SPA fallback. */
+export async function servePrivateApp(
+  request: Request,
+  env: Env,
+  epoch: number,
+): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.origin !== env.APP_ORIGIN || !privateAssetRoute(request))
+    return problem(404, "not_found");
+  try {
+    const { verifier, bootstrap } = await privateAppDependencies(env, epoch);
+    await loginAccessUser(env, verifier, request, epoch, bootstrap);
+  } catch (error) {
+    if (error instanceof MutationUnavailableError) {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
+    return problem(error instanceof AccessAuthenticationError ? 401 : 403, "unauthorized");
+  }
+  const page = privateSpaPath(url.pathname);
+  url.pathname = page ? "/index.html" : url.pathname;
+  url.search = "";
+  const resource = await env.ASSETS.fetch(new Request(url, { method: request.method }));
+  const headers = new Headers(resource.headers);
+  const contentOrigin = new URL(env.CONTENT_ORIGIN);
+  if (contentOrigin.protocol !== "https:" || contentOrigin.origin !== env.CONTENT_ORIGIN)
+    return problem(503, "not_ready");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set(
+    "Content-Security-Policy",
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+  );
+  return new Response(request.method === "HEAD" ? null : resource.body, {
+    status: resource.status,
+    headers,
+  });
+}

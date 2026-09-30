@@ -1,76 +1,72 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "next-cloud-flare",
+  // Local Phase 0 configuration. Remote environments require their own resource inventory.
+  "name": "next-cloud-flare-local",
   "main": "packages/worker/src/index.ts",
-  "compatibility_date": "2026-03-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
   "workers_dev": false,
   "preview_urls": false,
-  "limits": { "cpu_ms": 300000 },
+  "send_metrics": false,
   "assets": {
     "directory": "packages/web/dist",
     "binding": "ASSETS",
-    "html_handling": "none",
-    "not_found_handling": "none",
     "run_worker_first": true,
+    "not_found_handling": "none"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "ncf-dev",
-      "database_id": "<D1_ID>",
-      "migrations_dir": "packages/worker/migrations",
-    },
+      "database_name": "ncf-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "packages/worker/migrations"
+    }
   ],
   "r2_buckets": [
-    { "binding": "BLOBS", "bucket_name": "ncf-dev-blobs" },
-    { "binding": "BACKUPS", "bucket_name": "ncf-dev-backups" },
+    { "binding": "BLOBS", "bucket_name": "ncf-local-blobs" },
+    { "binding": "BACKUPS", "bucket_name": "ncf-local-backups" }
   ],
-  "kv_namespaces": [{ "binding": "CACHE", "id": "<KV_ID>" }],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "00000000000000000000000000000000" }],
   "durable_objects": {
     "bindings": [
+      { "name": "CONTROL", "class_name": "ControlDO" },
       { "name": "LOCKS", "class_name": "LockDO" },
       { "name": "UPLOADS", "class_name": "UploadDO" },
-      { "name": "BUDGETS", "class_name": "BudgetDO" },
-      { "name": "CONTROL", "class_name": "ControlDO" },
-    ],
+      { "name": "BUDGETS", "class_name": "BudgetDO" }
+    ]
   },
   "migrations": [
     {
       "tag": "v1-sqlite-do",
-      "new_sqlite_classes": ["LockDO", "UploadDO", "BudgetDO", "ControlDO"],
-    },
+      "new_sqlite_classes": ["ControlDO", "LockDO", "UploadDO", "BudgetDO"]
+    }
   ],
   "queues": {
-    "producers": [{ "binding": "JOBS", "queue": "ncf-dev-jobs" }],
+    "producers": [{ "binding": "JOBS", "queue": "ncf-local-jobs" }],
     "consumers": [
       {
-        "queue": "ncf-dev-jobs",
+        "queue": "ncf-local-jobs",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 10,
-        "dead_letter_queue": "ncf-dev-jobs-dlq",
-        "max_concurrency": 8,
-      },
-    ],
+        "dead_letter_queue": "ncf-local-jobs-dlq",
+        "max_concurrency": 8
+      }
+    ]
   },
+  "triggers": { "crons": ["* * * * *"] },
   "images": { "binding": "IMAGES" },
   "ratelimits": [
     {
       "name": "EDGE_LIMITER",
       "namespace_id": "1001",
-      "simple": { "limit": 300, "period": 60 },
-    },
+      "simple": { "limit": 300, "period": 60 }
+    }
   ],
-  "triggers": { "crons": ["17 * * * *", "23 2 * * *", "0 3 * * SUN"] },
   "vars": {
     "ENVIRONMENT": "development",
-    "APP_ORIGIN": "http://localhost:5173",
+    "APP_ORIGIN": "http://localhost:8787",
     "CONTENT_ORIGIN": "http://localhost:8788",
-    "ACCESS_ISSUER": "<ACCESS_ISSUER>",
-    "ACCESS_USER_AUD": "<ACCESS_USER_AUD>",
-    "ACCESS_SERVICE_AUD": "<ACCESS_SERVICE_AUD>",
-    "PBKDF2_ITERATIONS": "100000",
-    "OWNER_EMAILS": "<OWNER_EMAILS>",
-  },
+    "PBKDF2_ITERATIONS": "100000"
+  }
 }

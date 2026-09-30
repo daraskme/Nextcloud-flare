@@ -1,8 +1,10 @@
 node_modules/
-dist/
-packages/*/dist/
+.pnpm-store/
 .wrangler/
-.wrangler-dist/
-.dev.vars
-*.tsbuildinfo
+dist/
 coverage/
+test-results/
+.dev.vars*
+.env*
+!.env.example
+*.log

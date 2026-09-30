@@ -1,113 +1,79 @@
-import type { NodeSummary } from "@ncf/shared";
+import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import { assertExists, atomicBatch, primary } from "../db/primary";
+import { BOUNDED_SUBTREE_CTE, SUBTREE_NODE_LIMIT } from "./subtree";
 
-import type { Env } from "../env.js";
-import { getOwnerWorkspace } from "./nodes.js";
-
-export interface AccountStats {
-  quotaBytes: number;
-  usedBytes: number;
-  physicalBytes: number;
-  reservedBytes: number;
-  files: number;
-  folders: number;
-  logicalBytes: number;
-  truncated: boolean;
+interface StatsRow {
+  scannedNodes: number;
+  fileCount: number;
+  folderCount: number;
+  totalBytes: number;
+  unavailableFiles: number;
+  depthLimited: number;
 }
 
-export async function getAccountStats(env: Env, userId: string): Promise<AccountStats> {
-  const workspace = await getOwnerWorkspace(env, userId);
-  const quota = await env.DB.prepare(
-    "SELECT quota_bytes quotaBytes,used_bytes usedBytes,physical_bytes physicalBytes,reserved_bytes reservedBytes FROM users WHERE id=?1 AND disabled_at IS NULL",
+/** Account statistics count current logical files, including each copy, only on request. */
+export async function readFolderStats(db: D1Database, principal: Principal, scopeId?: string) {
+  if (
+    principal.kind !== "user" ||
+    (scopeId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(scopeId))
   )
-    .bind(userId)
-    .first<{
-      quotaBytes: number;
-      usedBytes: number;
-      physicalBytes: number;
-      reservedBytes: number;
-    }>();
-  if (quota === null) throw new Error("user_not_found");
-  const aggregate = await env.DB.prepare(
-    "WITH RECURSIVE sub(id,depth) AS (SELECT ?1,0 UNION ALL SELECT n.id,sub.depth+1 FROM nodes n JOIN sub ON n.parent_id=sub.id WHERE n.deleted_at IS NULL AND n.owner_id=?2 AND sub.depth<64 LIMIT 10001) SELECT COUNT(*) total,SUM(n.kind='file') files,SUM(n.kind='folder') folders,COALESCE(SUM(CASE WHEN n.kind='file' THEN b.size ELSE 0 END),0) logicalBytes FROM sub JOIN nodes n ON n.id=sub.id LEFT JOIN blobs b ON b.id=n.current_blob_id",
+    throw new Error("stats_unavailable");
+  const space = await primary(db)
+    .prepare("SELECT id,root_node_id AS rootId FROM spaces WHERE owner_id=?")
+    .bind(principal.user_id)
+    .first<{ id: string; rootId: string }>();
+  if (!space) throw new Error("stats_unavailable");
+  const id = scopeId ?? space.rootId;
+  const proof = await authorizeNode(db, principal, {
+    operation: "node.read",
+    spaceId: space.id,
+    nodeId: id,
+  });
+  if (
+    proof.operation !== "node.read" ||
+    proof.node.kind === "file" ||
+    proof.node.owner_id !== principal.user_id
   )
-    .bind(workspace.rootId, userId)
-    .first<{ total: number; files: number; folders: number; logicalBytes: number }>();
-  return {
-    ...quota,
-    files: aggregate?.files ?? 0,
-    folders: aggregate?.folders ?? 0,
-    logicalBytes: aggregate?.logicalBytes ?? 0,
-    truncated: (aggregate?.total ?? 0) >= 10_000,
-  };
-}
-
-function mapNode(row: {
-  id: string;
-  parent_id: string | null;
-  name: string;
-  kind: "root" | "folder" | "file";
-  revision: number;
-  current_blob_id: string | null;
-  size: number | null;
-  mime_sniffed: string | null;
-  updated_at: number;
-}): NodeSummary {
-  return {
-    id: row.id,
-    parentId: row.parent_id,
-    name: row.name,
-    kind: row.kind,
-    revision: row.revision,
-    blobId: row.current_blob_id,
-    size: row.size,
-    mime: row.mime_sniffed,
-    updatedAt: row.updated_at,
-  };
-}
-
-export async function listRecent(env: Env, userId: string): Promise<NodeSummary[]> {
-  const workspace = await getOwnerWorkspace(env, userId);
-  const rows = await env.DB.prepare(
-    "WITH RECURSIVE sub(id,depth) AS (SELECT ?1,0 UNION ALL SELECT n.id,sub.depth+1 FROM nodes n JOIN sub ON n.parent_id=sub.id WHERE n.deleted_at IS NULL AND n.owner_id=?2 AND sub.depth<64 LIMIT 10000) SELECT n.id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,b.size,b.mime_sniffed,n.updated_at FROM sub JOIN nodes n ON n.id=sub.id LEFT JOIN blobs b ON b.id=n.current_blob_id WHERE n.kind<>'root' ORDER BY n.updated_at DESC,n.id LIMIT 200",
-  )
-    .bind(workspace.rootId, userId)
-    .all<Parameters<typeof mapNode>[0]>();
-  return rows.results.map(mapNode);
-}
-
-export async function listStarred(env: Env, userId: string): Promise<NodeSummary[]> {
-  const workspace = await getOwnerWorkspace(env, userId);
-  const rows = await env.DB.prepare(
-    "WITH RECURSIVE sub(id,depth) AS (SELECT ?1,0 UNION ALL SELECT n.id,sub.depth+1 FROM nodes n JOIN sub ON n.parent_id=sub.id WHERE n.deleted_at IS NULL AND n.owner_id=?2 AND sub.depth<64 LIMIT 10000) SELECT n.id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,b.size,b.mime_sniffed,n.updated_at FROM node_stars star JOIN sub ON sub.id=star.node_id JOIN nodes n ON n.id=star.node_id LEFT JOIN blobs b ON b.id=n.current_blob_id WHERE star.user_id=?2 AND n.deleted_at IS NULL ORDER BY star.created_at DESC,n.id LIMIT 200",
-  )
-    .bind(workspace.rootId, userId)
-    .all<Parameters<typeof mapNode>[0]>();
-  return rows.results.map(mapNode);
-}
-
-export async function setStar(
-  env: Env,
-  userId: string,
-  sessionId: string,
-  nodeId: string,
-  starred: boolean,
-): Promise<void> {
-  const now = Date.now();
-  const statements = [
-    env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=?1 AND s.user_id=?2 AND s.revoked_at IS NULL AND s.expires_at>?3 AND u.disabled_at IS NULL)",
-    ).bind(sessionId, userId, now),
-  ];
-  if (starred) {
-    statements.push(
-      env.DB.prepare(
-        "INSERT OR IGNORE INTO node_stars(user_id,node_id,created_at) SELECT ?1,id,?2 FROM nodes WHERE id=?3 AND owner_id=?1 AND deleted_at IS NULL",
-      ).bind(userId, now, nodeId),
-    );
-  } else {
-    statements.push(
-      env.DB.prepare("DELETE FROM node_stars WHERE user_id=?1 AND node_id=?2").bind(userId, nodeId),
-    );
-  }
-  await env.DB.batch(statements);
+    throw new Error("stats_unavailable");
+  const result = await atomicBatch(db, [
+    authorizationAssertion(proof),
+    assertExists(
+      `SELECT 1 FROM control ctl JOIN spaces sp ON sp.id=?
+       JOIN nodes n ON n.space_id=sp.id AND n.owner_id=sp.owner_id
+       WHERE ctl.singleton=1 AND ctl.epoch=? AND ctl.maintenance=0
+         AND sp.owner_id=? AND n.id=? AND n.kind IN ('root','folder')`,
+      [space.id, principal.epoch, principal.user_id, id],
+    ),
+    {
+      sql: `${BOUNDED_SUBTREE_CTE}, entries AS MATERIALIZED (
+        SELECT n.kind,b.size FROM scope s CROSS JOIN nodes n ON n.id=s.id
+        LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=?3
+          AND b.state IN ('committed','gc_candidate')
+        WHERE s.id<>?1
+      ) SELECT (SELECT COUNT(*) FROM scope) AS scannedNodes,
+        (SELECT COUNT(*) FROM entries WHERE kind='file') AS fileCount,
+        (SELECT COUNT(*) FROM entries WHERE kind='folder') AS folderCount,
+        (SELECT COALESCE(SUM(size),0) FROM entries WHERE kind='file') AS totalBytes,
+        (SELECT COUNT(*) FROM entries WHERE kind='file' AND size IS NULL) AS unavailableFiles,
+        EXISTS(SELECT 1 FROM scope s WHERE s.depth=64 AND s.kind IN ('root','folder')
+          AND EXISTS(SELECT 1 FROM nodes c INDEXED BY nodes_children_keyset
+            WHERE c.parent_id=s.id AND c.deleted_at IS NULL AND c.space_id=?2 AND c.owner_id=?3
+            LIMIT 1)) AS depthLimited`,
+      values: [id, space.id, principal.user_id],
+    },
+  ]);
+  const row = result[2]?.results[0] as StatsRow | undefined;
+  if (!row || Object.values(row).some((value) => !Number.isSafeInteger(value) || value < 0))
+    throw new Error("stats_unavailable");
+  return Object.freeze({
+    scopeId: id,
+    treeGeneration: proof.node.tree_generation,
+    fileCount: row.fileCount,
+    folderCount: row.folderCount,
+    totalBytes: row.totalBytes,
+    scannedNodes: row.scannedNodes,
+    nodeLimit: SUBTREE_NODE_LIMIT,
+    unavailableFiles: row.unavailableFiles,
+    truncated: row.scannedNodes >= SUBTREE_NODE_LIMIT || row.depthLimited > 0,
+  });
 }

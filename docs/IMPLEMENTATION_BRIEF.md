@@ -4,6 +4,8 @@
 
 状態: **v0.6 で R5 ゲート項目を是正済み。Astra R6 再ゲート = 条件付き Go（`docs/reviews/round6-astra.md`）。Phase 0 → 1 の順に着手可。R6 の 10 条件は §8 の確定事項で閉じ、Phase 1 完了前に fixture で証明する。**
 
+実装進捗: Phase 0 と Phase 1 の一部を実装。内部の atomic フォルダー作成・outbox producer・`node.created` consumer と Queue handler の admission gate まで実装。全 operation の認可、実 Queue/DLQ の検証、ControlDO 再開、repair/HTTP 接続と実環境 gate は未完了。再開は [`HANDOFF.md`](HANDOFF.md)、検証結果の正本は [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)、実装契約は [`FOUNDATION.md`](FOUNDATION.md) を参照。
+
 - Phase 0 gate 1 で D1 `_assert`、`changes()`、EXISTS fallback と G01 三反例を最初に実証する。
 - 設計の安全性に関わる空欄を実装者の推測で埋めず、`docs/DESIGN.md` v0.6 と `docs/reviews/round5-resolution.md` を正本とする。
 - Phase 1 完了前に Files core、upload、trash/GC の本実装へ進まない。
@@ -44,7 +46,7 @@
 
 ## 2. 実装順序・完了条件・テスト
 
-以下のパスは作成予定の成果物名であり、現リポジトリに存在することを意味しない。
+以下のパスは最終的な成果物名であり、すべてが現在存在することを意味しない。作成済み範囲は進捗記録を参照。
 
 ```text
 W = packages/worker
@@ -76,6 +78,8 @@ S = packages/shared
 - phaseごとの rollback は前版へ戻せる範囲と maintenance/restore が必要な範囲を区別する。
 
 ## 3. 依存パッケージの方針
+
+2026-09-22 の追加要件: 事前エンコード済み AVIF / AV1 / Opus を必須対応とする。コンテナ、MIME、再生判定、AVIF derivative 制限と原本 fallback、完了 fixture は [`MEDIA_FORMATS.md`](MEDIA_FORMATS.md) を各 media phase の gate に含める。
 
 設計で採用済みの候補：
 
@@ -113,7 +117,7 @@ pnpm verify:contracts
 pnpm verify:config
 ```
 
-これらは実装時に定義するコマンドであり、現在存在するコマンドではない。
+`test:e2e` はブラウザ機能実装時に追加する。それ以外は定義済み。`verify:contracts` は toolchain/limit/禁止API と route/operation の設計照合を行う。schema/FK/state の検査は unit/integration tests に含めるが、Phase 1 後半の認可・台帳・permit gate は未完了。
 
 ## 5. CI 構成
 

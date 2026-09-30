@@ -1,167 +1,256 @@
+import { base64url } from "jose";
+import { type AppPasswordPepperRing, hashAppPassword } from "../auth/appPassword";
+import { authorizationAssertion, authorizeNode } from "../auth/authorize";
+import { type AccessSession, assertLiveAccessCredential } from "../auth/sessions";
+import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import {
-  createAppPasswordBodySchema,
-  type AppPasswordSummary,
-  type CreatedAppPassword,
-  type Scope,
-} from "@ncf/shared";
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "./accountMutation";
 
-import type { AuthenticatedUser } from "../auth/httpAuth.js";
-import { randomToken } from "../auth/tokens.js";
-import type { Env } from "../env.js";
-import { derivePbkdf2, toHex } from "./kdf.js";
-import { getOwnedNode } from "./nodes.js";
+const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const MANAGED_SCOPES = ["node:read", "node:create", "node:write", "node:delete"] as const;
+type ManagedScope = (typeof MANAGED_SCOPES)[number];
+const DAY_MS = 86_400_000;
 
-const DEFAULT_SCOPES = ["node:read", "node:create", "node:write", "node:delete"] as const;
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-interface AppPasswordRow {
-  id: string;
-  label: string;
-  scopesJson: string;
-  rootNodeId: string | null;
-  expiresAt: number;
-  createdAt: number;
-  lastUsedAt: number | null;
-  revokedAt: number | null;
+export interface CreateAppPasswordInput {
+  readonly name: string;
+  readonly scopes: readonly string[];
+  readonly ttlDays?: number;
+  readonly spaceId?: string;
+  readonly rootNodeId?: string;
 }
 
-function ulid(now = Date.now()): string {
-  let time = BigInt(now);
-  let prefix = "";
-  for (let index = 0; index < 10; index += 1) {
-    prefix = CROCKFORD.charAt(Number(time & 31n)) + prefix;
-    time >>= 5n;
+function ulid(): string {
+  let time = Date.now();
+  const result = Array<string>(26);
+  for (let index = 9; index >= 0; index--) {
+    result[index] = ALPHABET[time % 32]!;
+    time = Math.floor(time / 32);
   }
   const random = crypto.getRandomValues(new Uint8Array(16));
-  let suffix = "";
-  for (const value of random) suffix += CROCKFORD.charAt(value & 31);
-  return `${prefix}${suffix}`;
+  for (let index = 0; index < 16; index++) result[index + 10] = ALPHABET[random[index]! & 31]!;
+  return `ap_${result.join("")}`;
 }
 
-function pepper(env: Env): string {
-  if (env.APP_PASSWORD_PEPPER !== undefined && env.APP_PASSWORD_PEPPER.length >= 32) {
-    return env.APP_PASSWORD_PEPPER;
-  }
-  if (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "test") {
-    return "local-only-app-password-pepper-not-for-production";
-  }
-  throw new Error("app_password_configuration_invalid");
-}
-
-export async function appPasswordDigest(
-  env: Env,
-  secret: string,
-  salt: Uint8Array,
-): Promise<string> {
-  return toHex(await derivePbkdf2(`${secret}.${pepper(env)}`, salt));
-}
-
-function parseScopes(value: string): Scope[] {
-  const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed)) throw new Error("app_password_scopes_invalid");
-  return parsed.map((scope) => {
-    const result = createAppPasswordBodySchema.shape.scopes.unwrap().element.safeParse(scope);
-    if (!result.success) throw new Error("app_password_scopes_invalid");
-    return result.data;
-  });
-}
-
-function summary(row: AppPasswordRow): AppPasswordSummary {
+function validatedInput(input: CreateAppPasswordInput) {
+  if (typeof input.name !== "string") throw new Error("invalid_app_password_request");
+  const name = input.name.normalize("NFC").trim();
+  const nameBytes = new TextEncoder().encode(name);
+  if (
+    name.length < 1 ||
+    Array.from(name).length > 100 ||
+    nameBytes.length > 256 ||
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(nameBytes) !== name ||
+    /[\x00-\x1f\x7f]/.test(name) ||
+    !Array.isArray(input.scopes) ||
+    input.scopes.length < 1 ||
+    input.scopes.length > MANAGED_SCOPES.length ||
+    input.scopes.some((scope) => !MANAGED_SCOPES.includes(scope as ManagedScope)) ||
+    new Set(input.scopes).size !== input.scopes.length ||
+    (input.rootNodeId === undefined) !== (input.spaceId === undefined) ||
+    (input.rootNodeId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(input.rootNodeId)) ||
+    (input.spaceId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(input.spaceId)) ||
+    (input.ttlDays !== undefined &&
+      (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365))
+  )
+    throw new Error("invalid_app_password_request");
   return {
-    id: row.id,
-    label: row.label,
-    scopes: parseScopes(row.scopesJson),
-    rootNodeId: row.rootNodeId,
-    expiresAt: row.expiresAt,
-    createdAt: row.createdAt,
-    lastUsedAt: row.lastUsedAt,
-    revokedAt: row.revokedAt,
+    name,
+    scopes: [...input.scopes].sort() as ManagedScope[],
+    ttlDays: input.ttlDays ?? 90,
+    rootNodeId: input.rootNodeId ?? null,
+    spaceId: input.spaceId,
   };
 }
 
-const selectAppPassword =
-  "SELECT id,label,scopes_json scopesJson,root_node_id rootNodeId,expires_at expiresAt,created_at createdAt,last_used_at lastUsedAt,revoked_at revokedAt FROM app_passwords";
+interface AppPasswordRow {
+  id: string;
+  credentialId: string;
+  name: string;
+  rootNodeId: string | null;
+  createdAt: number;
+  expiresAt: number;
+  scopes: string;
+}
 
-export async function listAppPasswords(env: Env, userId: string): Promise<AppPasswordSummary[]> {
-  const rows = await env.DB.prepare(
-    `${selectAppPassword} WHERE user_id=?1 ORDER BY created_at DESC,id DESC LIMIT 21`,
-  )
-    .bind(userId)
+function currentAccess(session: AccessSession): SqlStatement[] {
+  return [
+    assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
+      session.epoch,
+    ]),
+    assertLiveAccessCredential(session.credential_id, session.epoch),
+    assertExists(
+      `SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
+        WHERE c.id=? AND c.kind='access' AND s.user_id=? AND s.epoch=?`,
+      [session.credential_id, session.user_id, session.epoch],
+    ),
+  ];
+}
+
+export async function listAppPasswords(db: D1Database, session: AccessSession) {
+  await atomicBatch(db, currentAccess(session));
+  const rows = await primary(db)
+    .prepare(`SELECT ap.id,c.id AS credentialId,ap.name,ap.root_node_id AS rootNodeId,
+      ap.created_at AS createdAt,ap.expires_at AS expiresAt,
+      json_group_array(cs.scope) AS scopes
+      FROM app_passwords ap JOIN credentials c ON c.app_password_id=ap.id AND c.kind='app_password'
+      JOIN credential_scopes cs ON cs.credential_id=c.id
+      WHERE ap.user_id=? AND ap.revoked_at IS NULL AND ap.expires_at>strftime('%s','now')*1000
+      GROUP BY ap.id ORDER BY ap.created_at DESC,ap.id DESC LIMIT 20`)
+    .bind(session.user_id)
     .all<AppPasswordRow>();
-  return rows.results.map(summary);
+  await atomicBatch(db, currentAccess(session));
+  return rows.results.map((row) => ({
+    id: row.id,
+    credentialId: row.credentialId,
+    name: row.name,
+    rootNodeId: row.rootNodeId,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    scopes: (JSON.parse(row.scopes) as string[]).sort(),
+  }));
 }
 
 export async function createAppPassword(
-  env: Env,
-  user: AuthenticatedUser,
-  input: unknown,
-): Promise<CreatedAppPassword> {
-  const parsed = createAppPasswordBodySchema.parse(input);
-  const active = await env.DB.prepare(
-    "SELECT COUNT(*) value FROM app_passwords WHERE user_id=?1 AND revoked_at IS NULL AND expires_at>(strftime('%s','now')*1000)",
-  )
-    .bind(user.principal.userId)
-    .first<{ value: number }>();
-  if ((active?.value ?? 0) >= 20) throw new Error("app_password_limit");
-  if (parsed.rootNodeId !== undefined && parsed.rootNodeId !== null) {
-    await getOwnedNode(env, user.principal.userId, parsed.rootNodeId);
+  env: AccountMutationEnv,
+  session: AccessSession,
+  input: CreateAppPasswordInput,
+  ring: AppPasswordPepperRing,
+  signal?: AbortSignal,
+) {
+  const db = env.DB;
+  const validated = validatedInput(input);
+  await atomicBatch(db, currentAccess(session));
+  const active = await primary(db)
+    .prepare(
+      "SELECT COUNT(*) AS count FROM app_passwords WHERE user_id=? AND revoked_at IS NULL AND expires_at>strftime('%s','now')*1000",
+    )
+    .bind(session.user_id)
+    .first<number>("count");
+  if (active !== null && active >= 20) throw new Error("app_password_limit");
+  let root: Awaited<ReturnType<typeof authorizeNode>> | null = null;
+  if (validated.rootNodeId) {
+    try {
+      root = await authorizeNode(
+        db,
+        {
+          kind: "user",
+          user_id: session.user_id,
+          credential_id: session.credential_id,
+          epoch: session.epoch,
+        },
+        { operation: "node.read", nodeId: validated.rootNodeId, spaceId: validated.spaceId ?? "" },
+      );
+    } catch {
+      throw new Error("invalid_app_password_root");
+    }
   }
-  const now = Date.now();
-  const id = `ap_${ulid(now)}`;
-  const sessionId = `aps_${ulid(now)}`;
-  const secret = randomToken(32);
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const digest = await appPasswordDigest(env, secret, salt);
-  const expiresAt = now + parsed.expiresInDays * 86_400_000;
-  const scopes = parsed.scopes ?? [...DEFAULT_SCOPES];
-  await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id WHERE u.id=?1 AND u.disabled_at IS NULL AND s.id=?2 AND s.kind='access' AND s.revoked_at IS NULL AND s.expires_at>(strftime('%s','now')*1000))",
-    ).bind(user.principal.userId, user.principal.sessionId),
-    env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE (SELECT COUNT(*) FROM app_passwords WHERE user_id=?1 AND revoked_at IS NULL AND expires_at>(strftime('%s','now')*1000))>=20",
-    ).bind(user.principal.userId),
-    env.DB.prepare(
-      "INSERT INTO sessions(id,user_id,kind,fingerprint,issued_at,expires_at,revoked_at,last_seen_at) VALUES(?1,?2,'app_password',?3,?4,?5,NULL,?4)",
-    ).bind(sessionId, user.principal.userId, `app-password:${id}`, now, expiresAt),
-    env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
-    env.DB.prepare(
-      "INSERT INTO app_passwords(id,user_id,session_id,secret_digest,kdf,kdf_params,kid,scopes_json,root_node_id,expires_at,revoked_at,created_at,label,last_used_at) VALUES(?1,?2,?3,?4,'PBKDF2-HMAC-SHA256',?5,'app-password-v1',?6,?7,?8,NULL,?9,?10,NULL)",
-    ).bind(
-      id,
-      user.principal.userId,
-      sessionId,
-      digest,
-      JSON.stringify({ iterations: 100_000, salt: Array.from(salt) }),
-      JSON.stringify(scopes),
-      parsed.rootNodeId ?? null,
-      expiresAt,
-      now,
-      parsed.label,
+  if (root && (root.operation !== "node.read" || root.node.owner_id !== session.user_id))
+    throw new Error("invalid_app_password_root");
+  const id = ulid();
+  const credentialId = `ap:${id}`;
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const hashed = await hashAppPassword(secret, ring, signal);
+  const admission = await acquireAccountMutation(
+    env,
+    session.user_id,
+    session.epoch,
+    "app-password.create",
+  );
+  const clock = "strftime('%s','now')*1000";
+  await commitAccountMutation(db, admission, session.user_id, [
+    ...currentAccess(session),
+    ...(root ? [authorizationAssertion(root)] : []),
+    assertExists(
+      `SELECT 1 WHERE (SELECT COUNT(*) FROM app_passwords
+        WHERE user_id=? AND revoked_at IS NULL AND expires_at>${clock})<20`,
+      [session.user_id],
     ),
-    env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
+    {
+      sql: `INSERT INTO app_passwords(id,user_id,root_node_id,name,secret_digest,salt,kdf,kdf_params,kid,created_at,expires_at)
+        VALUES(?,?,?,?,?,?,?,?,?,${clock},${clock}+?)`,
+      values: [
+        id,
+        session.user_id,
+        validated.rootNodeId,
+        validated.name,
+        hashed.secretDigest,
+        hashed.salt,
+        hashed.kdf,
+        hashed.kdfParams,
+        hashed.kid,
+        validated.ttlDays * DAY_MS,
+      ],
+    },
+    {
+      sql: "INSERT INTO credentials(id,kind,app_password_id) VALUES(?,'app_password',?)",
+      values: [credentialId, id],
+    },
+    ...validated.scopes.map((scope) => ({
+      sql: "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,?)",
+      values: [credentialId, scope],
+    })),
   ]);
-  const row = await env.DB.prepare(`${selectAppPassword} WHERE id=?1`)
-    .bind(id)
-    .first<AppPasswordRow>();
-  if (row === null) throw new Error("app_password_create_failed");
-  return { ...summary(row), secret };
+  const created = await primary(db)
+    .prepare(
+      "SELECT created_at AS createdAt,expires_at AS expiresAt FROM app_passwords WHERE id=? AND user_id=?",
+    )
+    .bind(id, session.user_id)
+    .first<{ createdAt: number; expiresAt: number }>();
+  if (!created) throw new Error("app_password_commit_unknown");
+  await atomicBatch(db, currentAccess(session));
+  return {
+    id,
+    credentialId,
+    name: validated.name,
+    rootNodeId: validated.rootNodeId,
+    scopes: validated.scopes,
+    ...created,
+    secret,
+  };
 }
 
 export async function revokeAppPassword(
-  env: Env,
-  user: AuthenticatedUser,
+  env: AccountMutationEnv,
+  session: AccessSession,
   credentialId: string,
 ): Promise<void> {
-  const now = Date.now();
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE app_passwords SET revoked_at=?1 WHERE id=?2 AND user_id=?3 AND revoked_at IS NULL",
-    ).bind(now, credentialId, user.principal.userId),
-    env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
-    env.DB.prepare(
-      "UPDATE sessions SET revoked_at=?1 WHERE id=(SELECT session_id FROM app_passwords WHERE id=?2 AND user_id=?3) AND kind='app_password' AND revoked_at IS NULL",
-    ).bind(now, credentialId, user.principal.userId),
-    env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
+  const db = env.DB;
+  if (!/^ap:ap_[0-9A-HJKMNP-TV-Z]{26}$/.test(credentialId))
+    throw new Error("app_password_not_found");
+  await atomicBatch(db, currentAccess(session));
+  const target = assertExists(
+    `SELECT 1 FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+        WHERE c.id=? AND c.kind='app_password' AND ap.user_id=?`,
+    [credentialId, session.user_id],
+  );
+  const exists = await primary(db)
+    .prepare(`SELECT 1 FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+    WHERE c.id=? AND c.kind='app_password' AND ap.user_id=?`)
+    .bind(credentialId, session.user_id)
+    .first();
+  if (!exists) throw new Error("app_password_not_found");
+  const admission = await acquireAccountMutation(
+    env,
+    session.user_id,
+    session.epoch,
+    "app-password.revoke",
+  );
+  const clock = "strftime('%s','now')*1000";
+  await commitAccountMutation(db, admission, session.user_id, [
+    ...currentAccess(session),
+    target,
+    {
+      sql: `UPDATE app_passwords SET revoked_at=COALESCE(revoked_at,${clock})
+        WHERE id=(SELECT app_password_id FROM credentials WHERE id=?) AND user_id=?`,
+      values: [credentialId, session.user_id],
+    },
+    {
+      sql: `UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,${clock})
+        WHERE issued_by_credential_id=?`,
+      values: [credentialId],
+    },
   ]);
 }

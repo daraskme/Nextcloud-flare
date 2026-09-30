@@ -1,8 +1,17 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./packages/shared" },
-    { "path": "./packages/worker" },
-    { "path": "./packages/web" }
-  ]
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types", "node"],
+    "resolveJsonModule": true
+  },
+  "include": ["packages/**/*.ts", "vitest*.ts"],
+  "exclude": ["packages/web"]
 }

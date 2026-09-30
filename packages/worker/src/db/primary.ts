@@ -1,36 +1,44 @@
-import { classifyBatchFailure, type BatchFailure } from "../services/mutationOutcome.js";
+import { LIMITS } from "@next-cloud-flare/shared/limits";
 
-export class PrimaryDatabase {
-  readonly binding: D1Database;
-
-  constructor(binding: D1Database) {
-    this.binding = binding;
-  }
-
-  prepare(sql: string): D1PreparedStatement {
-    return this.binding.prepare(sql);
-  }
-
-  async batch(statements: readonly D1PreparedStatement[]): Promise<D1Result[]> {
-    return this.binding.batch([...statements]);
-  }
+export type BindValue = string | number | null | ArrayBuffer;
+export interface SqlStatement {
+  readonly sql: string;
+  readonly values?: readonly BindValue[];
 }
 
-export interface MutationBatchResult {
-  state: "committed" | "rollback-confirmed" | "commit-unknown";
-  results?: D1Result[];
-  error?: unknown;
+/** SQL is trusted application code; caller input is only ever passed as values. */
+export function prepare(
+  db: Pick<D1Database, "prepare">,
+  statement: SqlStatement,
+): D1PreparedStatement {
+  if ((statement.values?.length ?? 0) > LIMITS.d1Bindings) {
+    throw new RangeError("D1 statement exceeds 100 bindings");
+  }
+  if (new TextEncoder().encode(statement.sql).byteLength > LIMITS.d1SqlBytes) {
+    throw new RangeError("D1 statement exceeds SQL byte budget");
+  }
+  return db.prepare(statement.sql).bind(...(statement.values ?? []));
 }
 
-export async function executeMutationBatch(
-  database: PrimaryDatabase,
-  statements: readonly D1PreparedStatement[],
-  classify: (error: unknown) => BatchFailure,
-): Promise<MutationBatchResult> {
-  try {
-    return { state: "committed", results: await database.batch(statements) };
-  } catch (error) {
-    const failure = classify(error);
-    return { state: classifyBatchFailure(failure), error };
-  }
+export function primary(db: D1Database): D1Database {
+  // Without the Sessions API every query uses primary. first-primary only pins
+  // the first query, so a shared session is not an authority-read adapter.
+  return db;
 }
+
+export async function atomicBatch(db: D1Database, statements: readonly SqlStatement[]) {
+  if (statements.length === 0 || statements.length > LIMITS.d1Statements) {
+    throw new RangeError("D1 batch exceeds statement budget");
+  }
+  const session = primary(db);
+  // Compile and validate every statement before dispatching any SQL.
+  return session.batch(statements.map((statement) => prepare(session, statement)));
+}
+
+export function assertExists(query: string, values: readonly BindValue[] = []): SqlStatement {
+  return { sql: `INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS (${query})`, values };
+}
+
+export const assertOneChange: SqlStatement = {
+  sql: "INSERT INTO _assert(v) SELECT 1 WHERE changes() <> 1",
+};

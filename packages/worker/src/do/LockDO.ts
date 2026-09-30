@@ -1,237 +1,1056 @@
-import type { Env } from "../env.js";
+import { DurableObject } from "cloudflare:workers";
+import { problem } from "@next-cloud-flare/shared/errors";
+import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import {
+  assertCreateLocks,
+  assertTrashLocks,
+  hasBlockingLocks,
+  hasBlockingTrashLocks,
+  lockTokenHashes,
+} from "../auth/locks";
+import {
+  assertMutationAdmission,
+  commitMutationAdmission,
+  hasCommittedMutation,
+  type MutationAdmission,
+} from "../db/mutationAdmission";
+import { grantPermit, type Permit, releasePermit, revokeSpacePermits } from "../db/permits";
+import {
+  assertExists,
+  assertOneChange,
+  atomicBatch,
+  primary,
+  type SqlStatement,
+} from "../db/primary";
+import { assertRestorePause, type RestorePause } from "../db/restorePause";
+import type { Env } from "../env";
+import { CONTROL_NAME } from "./ControlDO";
 
-interface DavLockRequest {
-  nodeId: string;
-  creatorUserId: string;
-  creatorCredentialId: string;
-  appPasswordId: string;
-  sessionId: string;
-  tokenDigest: string;
-  displayUri: string;
-  depth: "0" | "infinity";
-  timeoutSeconds: number;
-  epoch: number;
-}
-
-interface PermitRequest {
-  permitId: string;
+export interface CreatePermitRequest {
+  requestId: string;
   spaceId: string;
+  parentId: string;
+  principal: Principal;
+  lockTokens: readonly string[];
+}
+export interface RenamePermitRequest {
+  requestId: string;
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  lockTokens: readonly string[];
+}
+export interface MovePermitRequest extends RenamePermitRequest {
+  destinationParentId: string;
+  overwriteTargetId?: string;
+  operation?: "node.move" | "dav.move";
+}
+export interface CopyPermitRequest extends CreatePermitRequest {
+  sourceNodeId: string;
+  overwriteTargetId?: string;
+  operation?: "node.copy" | "dav.copy";
+}
+export interface NodeWritePermitRequest {
+  requestId: string;
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  lockTokens: readonly string[];
+  operation?: "node.props.write" | "node.content.write";
+}
+export interface TrashPermitRequest {
+  requestId: string;
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  lockTokens: readonly string[];
+}
+export interface RestorePermitRequest extends CreatePermitRequest {
+  gcPause: RestorePause;
+  trashOpId: string;
+  rootNodeId: string;
+}
+export interface PurgePermitRequest {
+  requestId: string;
+  spaceId: string;
+  trashOpId: string;
+  rootNodeId: string;
+  principal: Principal;
+}
+export interface DavLockRequest {
+  requestId: string;
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  displayHref: string;
+  depth: "0" | "infinity";
+  ownerText: string;
+  timeoutSeconds: number;
+}
+export interface DavLockTokenRequest {
+  spaceId: string;
+  nodeId: string;
+  principal: Principal;
+  token: string;
+  timeoutSeconds?: number;
+}
+export interface DavLockResult {
+  readonly token: string;
+  readonly depth: "0" | "infinity";
+  readonly ownerText: string;
+  readonly timeoutSeconds: number;
+}
+interface LockState extends Record<string, SqlStorageValue> {
+  space_id: string;
   epoch: number;
-  ttlMs: number;
-  nodeIds?: string[];
-  creatorUserId?: string;
-  lockTokenDigests?: string[];
 }
 
-function isPermitRequest(value: unknown): value is PermitRequest {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const request = value as Partial<PermitRequest>;
-  return (
-    typeof request.permitId === "string" &&
-    request.permitId.length > 0 &&
-    typeof request.spaceId === "string" &&
-    request.spaceId.length > 0 &&
-    Number.isSafeInteger(request.epoch) &&
-    request.epoch !== undefined &&
-    request.epoch > 0 &&
-    Number.isSafeInteger(request.ttlMs) &&
-    request.ttlMs !== undefined &&
-    request.ttlMs >= 1000 &&
-    request.ttlMs <= 30_000 &&
-    (request.nodeIds === undefined ||
-      (Array.isArray(request.nodeIds) &&
-        request.nodeIds.length <= 64 &&
-        request.nodeIds.every((nodeId) => typeof nodeId === "string" && nodeId.length > 0))) &&
-    (request.creatorUserId === undefined || typeof request.creatorUserId === "string") &&
-    (request.lockTokenDigests === undefined ||
-      (Array.isArray(request.lockTokenDigests) &&
-        request.lockTokenDigests.length <= 64 &&
-        request.lockTokenDigests.every(
-          (digest) => typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest),
-        )))
-  );
-}
-
-function isDavLockRequest(value: unknown): value is DavLockRequest {
-  if (typeof value !== "object" || value === null) return false;
-  const input = value as Partial<DavLockRequest>;
-  return (
-    typeof input.nodeId === "string" &&
-    typeof input.creatorUserId === "string" &&
-    typeof input.creatorCredentialId === "string" &&
-    typeof input.appPasswordId === "string" &&
-    typeof input.sessionId === "string" &&
-    typeof input.tokenDigest === "string" &&
-    /^[0-9a-f]{64}$/u.test(input.tokenDigest) &&
-    typeof input.displayUri === "string" &&
-    input.displayUri.length <= 2048 &&
-    (input.depth === "0" || input.depth === "infinity") &&
-    Number.isSafeInteger(input.timeoutSeconds) &&
-    input.timeoutSeconds !== undefined &&
-    input.timeoutSeconds >= 1 &&
-    input.timeoutSeconds <= 3600 &&
-    Number.isSafeInteger(input.epoch) &&
-    input.epoch !== undefined &&
-    input.epoch > 0
-  );
-}
-
-export class LockDO {
-  private readonly env: Env;
-
-  constructor(_state: DurableObjectState, env: Env) {
-    this.env = env;
+/** Per-space namespace admission. DAV lock creation/refresh and other mutation tuples follow separately. */
+export class LockDO extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lock_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),space_id TEXT NOT NULL,epoch INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS permit_intents(request_id TEXT PRIMARY KEY NOT NULL,digest TEXT NOT NULL,epoch INTEGER NOT NULL,created_at INTEGER NOT NULL);`);
   }
 
-  private async issuePermit(input: PermitRequest): Promise<Response> {
-    const control = await this.env.CONTROL.get(this.env.CONTROL.idFromName("singleton")).fetch(
-      "https://control.internal/state",
-    );
-    if (!control.ok) {
-      return Response.json({ error: "control_unavailable" }, { status: 503 });
-    }
-    const controlState: { maintenance: boolean } = await control.json();
-    if (controlState.maintenance) {
-      return Response.json({ error: "maintenance" }, { status: 503 });
-    }
-    const expiresAt = Date.now() + input.ttlMs;
-    const locks = await this.env.DB.prepare(
-      "WITH RECURSIVE requested(id) AS (SELECT value FROM json_each(?1)),ancestors(target_id,id,parent_id,depth) AS (SELECT r.id,n.id,n.parent_id,0 FROM requested r JOIN nodes n ON n.id=r.id UNION ALL SELECT a.target_id,p.id,p.parent_id,a.depth+1 FROM ancestors a JOIN nodes p ON p.id=a.parent_id WHERE a.depth<64) SELECT DISTINCT l.token_digest tokenDigest,l.creator_user_id creatorUserId FROM locks l JOIN ancestors a ON a.id=l.node_id WHERE l.expires_at>(strftime('%s','now')*1000) AND (a.depth=0 OR l.depth='infinity')",
-    )
-      .bind(JSON.stringify(input.nodeIds ?? []))
-      .all<{ tokenDigest: string; creatorUserId: string }>();
-    const submitted = new Set(input.lockTokenDigests ?? []);
+  fetch(): Response {
+    return problem(503, "not_ready");
+  }
+
+  #canonical(spaceId: string) {
     if (
-      locks.results.some(
-        (lock) => lock.creatorUserId !== input.creatorUserId || !submitted.has(lock.tokenDigest),
-      )
-    ) {
-      return Response.json({ error: "locked" }, { status: 423 });
+      !spaceId ||
+      spaceId.length > 128 ||
+      this.ctx.id.toString() !== this.env.LOCKS.idFromName(spaceId).toString()
+    )
+      throw new Error("lock_namespace_mismatch");
+  }
+
+  async #initialize(spaceId: string, epoch: number) {
+    const state = this.ctx.storage.sql
+      .exec<LockState>("SELECT space_id,epoch FROM lock_state WHERE singleton=1")
+      .toArray()[0];
+    if (state?.space_id === spaceId && state.epoch === epoch) return;
+    if (state && (state.space_id !== spaceId || state.epoch > epoch))
+      throw new Error("lock_epoch_conflict");
+    const prior = await primary(this.env.DB)
+      .prepare(`SELECT MAX(epoch) AS epoch FROM (
+      SELECT epoch FROM permits WHERE space_id=? UNION ALL SELECT epoch FROM locks WHERE space_id=?)`)
+      .bind(spaceId, spaceId)
+      .first<number | null>("epoch");
+    const concurrent = this.ctx.storage.sql
+      .exec<LockState>("SELECT space_id,epoch FROM lock_state WHERE singleton=1")
+      .toArray()[0];
+    if (concurrent?.space_id === spaceId && concurrent.epoch === epoch) return;
+    if (concurrent && (concurrent.space_id !== spaceId || concurrent.epoch > epoch))
+      throw new Error("lock_epoch_conflict");
+    if (prior !== null && prior >= epoch) throw new Error("lock_recovery_required");
+    this.ctx.storage.sql.exec(
+      "INSERT INTO lock_state VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch WHERE lock_state.space_id=excluded.space_id AND lock_state.epoch<excluded.epoch",
+      spaceId,
+      epoch,
+    );
+  }
+
+  async #grantPermit(
+    requestId: string,
+    spaceId: string,
+    epoch: number,
+    leaseMs: number | undefined,
+    guards: readonly SqlStatement[],
+  ): Promise<Permit> {
+    const admission = await this.#acquireMutation(requestId, spaceId, epoch);
+    // Authorization and DAV locks are rechecked after the global wait, in the permit transaction.
+    return grantPermit(this.env.DB, requestId, spaceId, epoch, admission, leaseMs, guards);
+  }
+
+  async #acquireMutation(
+    permitId: string,
+    spaceId: string,
+    epoch: number,
+  ): Promise<MutationAdmission> {
+    try {
+      return await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).acquireMutation({
+        permitId,
+        spaceId,
+        epoch,
+        deadline: Date.now() + 5000,
+      });
+    } catch {
+      throw new Error("mutation_unavailable");
     }
-    await this.env.DB.batch([
-      this.env.DB.prepare(
-        "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?1)",
-      ).bind(input.epoch),
-      this.env.DB.prepare(
-        "INSERT INTO permits(permit_id,space_id,epoch,expires_at,state) VALUES(?1,?2,?3,?4,'open')",
-      ).bind(input.permitId, input.spaceId, input.epoch, expiresAt),
-      this.env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
+  }
+
+  async #davLockConflict(
+    nodeId: string,
+    spaceId: string,
+    epoch: number,
+    depth: "0" | "infinity",
+  ): Promise<boolean> {
+    const blocked = await primary(this.env.DB)
+      .prepare(
+        `WITH RECURSIVE
+          ancestors(id,parent_id,depth) AS (
+            SELECT id,parent_id,0 FROM nodes WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL
+            UNION ALL SELECT n.id,n.parent_id,a.depth+1 FROM nodes n JOIN ancestors a ON n.id=a.parent_id
+              WHERE a.depth<64 AND n.space_id=?2 AND n.deleted_at IS NULL
+          ), descendants(id,depth) AS (
+            SELECT id,0 FROM nodes WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL
+            UNION ALL SELECT n.id,d.depth+1 FROM nodes n JOIN descendants d ON n.parent_id=d.id
+              WHERE d.depth<64 AND n.space_id=?2 AND n.deleted_at IS NULL
+          ) SELECT (EXISTS(
+            SELECT 1 FROM permits p WHERE p.space_id=?2 AND p.epoch=?3 AND p.state='open'
+              AND p.expires_at>strftime('%s','now')*1000)
+            OR EXISTS(SELECT 1 FROM locks l WHERE l.space_id=?2 AND l.epoch=?3
+              AND l.expires_at>strftime('%s','now')*1000 AND (
+                EXISTS(SELECT 1 FROM ancestors a WHERE a.id=l.node_id AND (a.depth=0 OR l.depth='infinity'))
+                OR (?4='infinity' AND EXISTS(SELECT 1 FROM descendants d WHERE d.id=l.node_id))))) AS blocked`,
+      )
+      .bind(nodeId, spaceId, epoch, depth)
+      .first<number>("blocked");
+    if (blocked === null) throw new Error("lock_state_unavailable");
+    return blocked === 1;
+  }
+
+  async acquireCreate(request: CreatePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.create",
+      parentId: request.parentId,
+      spaceId: request.spaceId,
+    });
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingLocks(
+        this.env.DB,
+        request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      request.parentId,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
     ]);
-    return Response.json({
-      permit_id: input.permitId,
-      space_id: input.spaceId,
-      epoch: input.epoch,
-      expires_at: expiresAt,
+    // Durable intent precedes external I/O; no raw lock token is persisted.
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    const permit = await this.#grantPermit(
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(authorized),
+        assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+      ],
+    );
+    // Cache cleanup never removes D1 terminal permits; deterministic IDs prevent a replay grant.
+    this.ctx.storage.sql.exec(
+      "DELETE FROM permit_intents WHERE request_id IN (SELECT request_id FROM permit_intents WHERE created_at<? LIMIT 1000)",
+      Date.now() - 120_000,
+    );
+    return permit;
+  }
+
+  async acquireRename(request: RenamePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.rename",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== "node.rename") throw new Error("invalid_rename_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      (await hasBlockingLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )) ||
+      (await hasBlockingLocks(
+        this.env.DB,
+        authorized.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      ))
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      "node.rename",
+      request.nodeId,
+      authorized.parentId,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    const permit = await this.#grantPermit(
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(authorized),
+        assertCreateLocks(request.nodeId, request.spaceId, request.principal, hashes),
+        assertCreateLocks(authorized.parentId, request.spaceId, request.principal, hashes),
+      ],
+    );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM permit_intents WHERE request_id IN (SELECT request_id FROM permit_intents WHERE created_at<? LIMIT 1000)",
+      Date.now() - 120_000,
+    );
+    return permit;
+  }
+
+  async acquireMove(request: MovePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const source = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.rename",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    const destination = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.create",
+      parentId: request.destinationParentId,
+      spaceId: request.spaceId,
+    });
+    if (source.operation !== "node.rename" || destination.operation !== "node.create")
+      throw new Error("invalid_move_authorization");
+    const overwrite = request.overwriteTargetId
+      ? await authorizeNode(this.env.DB, request.principal, {
+          operation: "node.trash",
+          nodeId: request.overwriteTargetId,
+          spaceId: request.spaceId,
+        })
+      : null;
+    if (
+      overwrite &&
+      (overwrite.operation !== "node.trash" || overwrite.parentId !== request.destinationParentId)
+    )
+      throw new Error("invalid_move_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      (await hasBlockingTrashLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )) ||
+      (await hasBlockingLocks(
+        this.env.DB,
+        request.destinationParentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )) ||
+      (request.overwriteTargetId !== undefined &&
+        (await hasBlockingTrashLocks(
+          this.env.DB,
+          request.overwriteTargetId,
+          request.spaceId,
+          request.principal,
+          hashes,
+        )))
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      request.operation ?? "dav.move",
+      request.nodeId,
+      source.parentId,
+      request.destinationParentId,
+      request.overwriteTargetId ?? null,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(source),
+      authorizationAssertion(destination),
+      ...(overwrite ? [authorizationAssertion(overwrite)] : []),
+      assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
+      assertCreateLocks(request.destinationParentId, request.spaceId, request.principal, hashes),
+      ...(request.overwriteTargetId
+        ? [assertTrashLocks(request.overwriteTargetId, request.spaceId, request.principal, hashes)]
+        : []),
+    ]);
+  }
+
+  async acquireCopy(request: CopyPermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const source = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.read",
+      nodeId: request.sourceNodeId,
+      spaceId: request.spaceId,
+    });
+    const destination = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.create",
+      parentId: request.parentId,
+      spaceId: request.spaceId,
+    });
+    const overwrite = request.overwriteTargetId
+      ? await authorizeNode(this.env.DB, request.principal, {
+          operation: "node.trash",
+          nodeId: request.overwriteTargetId,
+          spaceId: request.spaceId,
+        })
+      : null;
+    if (
+      source.operation !== "node.read" ||
+      destination.operation !== "node.create" ||
+      (overwrite &&
+        (overwrite.operation !== "node.trash" || overwrite.parentId !== request.parentId))
+    )
+      throw new Error("invalid_copy_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      (await hasBlockingLocks(
+        this.env.DB,
+        request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )) ||
+      (request.overwriteTargetId !== undefined &&
+        (await hasBlockingTrashLocks(
+          this.env.DB,
+          request.overwriteTargetId,
+          request.spaceId,
+          request.principal,
+          hashes,
+        )))
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      request.operation ?? "dav.copy",
+      request.sourceNodeId,
+      request.parentId,
+      request.overwriteTargetId ?? null,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(source),
+      authorizationAssertion(destination),
+      ...(overwrite ? [authorizationAssertion(overwrite)] : []),
+      assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+      ...(request.overwriteTargetId
+        ? [assertTrashLocks(request.overwriteTargetId, request.spaceId, request.principal, hashes)]
+        : []),
+    ]);
+  }
+
+  async acquireNodeWrite(request: NodeWritePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const operation = request.operation ?? "node.props.write";
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation,
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== operation) throw new Error("invalid_node_write_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      operation,
+      request.nodeId,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    const permit = await this.#grantPermit(
+      `p:${request.requestId}`,
+      request.spaceId,
+      status.epoch,
+      undefined,
+      [
+        authorizationAssertion(authorized),
+        assertCreateLocks(request.nodeId, request.spaceId, request.principal, hashes),
+      ],
+    );
+    return permit;
+  }
+
+  async acquireTrash(request: TrashPermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)) throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.trash",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== "node.trash") throw new Error("invalid_trash_authorization");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingTrashLocks(
+        this.env.DB,
+        request.nodeId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
+    const digest = JSON.stringify([
+      "node.trash",
+      request.nodeId,
+      authorized.parentId,
+      request.principal.kind,
+      request.principal.credential_id,
+      request.principal.kind === "link_share"
+        ? request.principal.share_id
+        : request.principal.user_id,
+      status.epoch,
+      request.principal.kind === "link_share" ? request.principal.share_version : null,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(authorized),
+      assertTrashLocks(request.nodeId, request.spaceId, request.principal, hashes),
+    ]);
+  }
+
+  async acquireRestore(request: RestorePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (
+      !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.trashOpId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.rootNodeId) ||
+      request.principal.kind !== "user"
+    )
+      throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || !status.gcPaused || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const destination = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.create",
+      parentId: request.parentId,
+      spaceId: request.spaceId,
+    });
+    if (destination.operation !== "node.create") throw new Error("authorization_denied");
+    const hashes = await lockTokenHashes(request.lockTokens);
+    if (
+      await hasBlockingLocks(
+        this.env.DB,
+        request.parentId,
+        request.spaceId,
+        request.principal,
+        hashes,
+      )
+    )
+      throw new Error("dav_locked");
+    const restoreGuard = assertExists(
+      `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
+        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+          AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) BETWEEN 1 AND 1000
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
+            WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN nodes m ON m.id=tm.node_id
+            JOIN blobs b ON b.id=m.current_blob_id WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN node_versions v ON v.node_id=tm.node_id
+            JOIN blobs b ON b.id=v.blob_id WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))
+          AND EXISTS(SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=? AND c.maintenance=0 AND c.gc_paused=1)
+          AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')`,
+      [
+        request.trashOpId,
+        request.spaceId,
+        request.rootNodeId,
+        request.principal.user_id,
+        status.epoch,
+      ],
+    );
+    const digest = JSON.stringify([
+      "node.restore",
+      request.trashOpId,
+      request.rootNodeId,
+      request.parentId,
+      request.principal.user_id,
+      request.principal.credential_id,
+      status.epoch,
+      hashes,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(destination),
+      assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
+      restoreGuard,
+      assertRestorePause(request.gcPause, request.requestId),
+    ]);
+  }
+
+  async acquirePurge(request: PurgePermitRequest): Promise<Permit> {
+    this.#canonical(request.spaceId);
+    if (
+      !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.trashOpId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(request.rootNodeId) ||
+      request.principal.kind !== "user"
+    )
+      throw new Error("invalid_lock_request");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const spaceRoot = await primary(this.env.DB)
+      .prepare("SELECT root_node_id FROM spaces WHERE id=? AND owner_id=?")
+      .bind(request.spaceId, request.principal.user_id)
+      .first<string>("root_node_id");
+    if (!spaceRoot) throw new Error("authorization_denied");
+    const authority = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.read",
+      nodeId: spaceRoot,
+      spaceId: request.spaceId,
+    });
+    if (authority.operation !== "node.read") throw new Error("authorization_denied");
+    const purgeGuard = assertExists(
+      `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
+        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+          AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) BETWEEN 1 AND 1000
+          AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
+            WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))`,
+      [request.trashOpId, request.spaceId, request.rootNodeId, request.principal.user_id],
+    );
+    const digest = JSON.stringify([
+      "node.purge",
+      request.trashOpId,
+      request.rootNodeId,
+      spaceRoot,
+      request.principal.user_id,
+      request.principal.credential_id,
+      status.epoch,
+    ]);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+      request.requestId,
+      digest,
+      status.epoch,
+      Date.now(),
+    );
+    const intent = this.ctx.storage.sql
+      .exec<{ digest: string; epoch: number }>(
+        "SELECT digest,epoch FROM permit_intents WHERE request_id=?",
+        request.requestId,
+      )
+      .one();
+    if (intent.digest !== digest || intent.epoch !== status.epoch)
+      throw new Error("lock_intent_conflict");
+    return this.#grantPermit(`p:${request.requestId}`, request.spaceId, status.epoch, undefined, [
+      authorizationAssertion(authority),
+      purgeGuard,
+    ]);
+  }
+
+  async createDavLock(request: DavLockRequest): Promise<DavLockResult> {
+    this.#canonical(request.spaceId);
+    if (
+      !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+      !request.displayHref.startsWith("/dav/") ||
+      new TextEncoder().encode(request.displayHref).byteLength > 16_384 ||
+      !["0", "infinity"].includes(request.depth) ||
+      new TextEncoder().encode(request.ownerText).byteLength > 8192 ||
+      !Number.isSafeInteger(request.timeoutSeconds) ||
+      request.timeoutSeconds < 1 ||
+      request.timeoutSeconds > 3600
+    )
+      throw new Error("invalid_dav_lock");
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.props.write",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== "node.props.write") throw new Error("authorization_denied");
+    if (
+      await this.#davLockConflict(
+        request.nodeId,
+        request.spaceId,
+        request.principal.epoch,
+        request.depth,
+      )
+    )
+      throw new Error("dav_locked");
+    const token = `opaquelocktoken:${crypto.randomUUID()}`;
+    const [hash] = await lockTokenHashes([token]);
+    const id = `lock_${crypto.randomUUID()}`;
+    const admission = await this.#acquireMutation(
+      `dav:create:${crypto.randomUUID()}`,
+      request.spaceId,
+      status.epoch,
+    );
+    const conflict = assertExists(
+      `WITH RECURSIVE
+        ancestors(id,parent_id,depth) AS (
+          SELECT id,parent_id,0 FROM nodes WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL
+          UNION ALL SELECT n.id,n.parent_id,a.depth+1 FROM nodes n JOIN ancestors a ON n.id=a.parent_id
+            WHERE a.depth<64 AND n.space_id=?2 AND n.deleted_at IS NULL
+        ), descendants(id,depth) AS (
+          SELECT id,0 FROM nodes WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL
+          UNION ALL SELECT n.id,d.depth+1 FROM nodes n JOIN descendants d ON n.parent_id=d.id
+            WHERE d.depth<64 AND n.space_id=?2 AND n.deleted_at IS NULL
+        ) SELECT 1 WHERE NOT EXISTS(
+          SELECT 1 FROM locks l WHERE l.space_id=?2 AND l.epoch=?3
+            AND l.expires_at>strftime('%s','now')*1000 AND (
+              EXISTS(SELECT 1 FROM ancestors a WHERE a.id=l.node_id AND (a.depth=0 OR l.depth='infinity'))
+              OR (?4='infinity' AND EXISTS(SELECT 1 FROM descendants d WHERE d.id=l.node_id))))`,
+      [request.nodeId, request.spaceId, request.principal.epoch, request.depth],
+    );
+    try {
+      await atomicBatch(this.env.DB, [
+        assertMutationAdmission(admission),
+        {
+          sql: "UPDATE permits SET state='revoked' WHERE space_id=? AND state='open' AND expires_at<=strftime('%s','now')*1000",
+          values: [request.spaceId],
+        },
+        {
+          sql: `UPDATE operations SET state='failed',error_code='permit_expired',updated_at=MAX(updated_at,strftime('%s','now')*1000)
+            WHERE space_id=? AND state='claimed' AND EXISTS(
+              SELECT 1 FROM permits p WHERE p.permit_id=operations.permit_id AND p.state<>'open')`,
+          values: [request.spaceId],
+        },
+        authorizationAssertion(authorized),
+        assertExists(
+          `SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM permits
+            WHERE space_id=? AND epoch=? AND state='open' AND expires_at>strftime('%s','now')*1000)`,
+          [request.spaceId, request.principal.epoch],
+        ),
+        conflict,
+        {
+          sql: `INSERT INTO locks(id,node_id,space_id,creator_credential_id,token_hash,display_href,depth,owner_text,epoch,expires_at)
+            VALUES(?,?,?,?,?,?,?,?,?,strftime('%s','now')*1000+?*1000)`,
+          values: [
+            id,
+            request.nodeId,
+            request.spaceId,
+            request.principal.credential_id,
+            hash!,
+            request.displayHref,
+            request.depth,
+            request.ownerText,
+            request.principal.epoch,
+            request.timeoutSeconds,
+          ],
+        },
+        assertOneChange,
+        ...commitMutationAdmission(admission),
+      ]);
+    } catch (error) {
+      const committed = await hasCommittedMutation(this.env.DB, admission);
+      if (!committed) {
+        if (
+          await this.#davLockConflict(
+            request.nodeId,
+            request.spaceId,
+            request.principal.epoch,
+            request.depth,
+          )
+        )
+          throw new Error("dav_locked");
+        throw error;
+      }
+    }
+    return Object.freeze({
+      token,
+      depth: request.depth,
+      ownerText: request.ownerText,
+      timeoutSeconds: request.timeoutSeconds,
     });
   }
 
-  private credentialGuard(input: DavLockRequest): D1PreparedStatement {
-    return this.env.DB.prepare(
-      "INSERT INTO _assert(v) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM app_passwords ap JOIN sessions s ON s.id=ap.session_id AND s.user_id=ap.user_id JOIN users u ON u.id=ap.user_id JOIN control c ON c.singleton=1 WHERE ap.id=?1 AND ap.user_id=?2 AND ap.session_id=?3 AND ap.revoked_at IS NULL AND ap.expires_at>(strftime('%s','now')*1000) AND s.kind='app_password' AND s.revoked_at IS NULL AND s.expires_at>(strftime('%s','now')*1000) AND u.disabled_at IS NULL AND c.epoch=?4)",
-    ).bind(input.appPasswordId, input.creatorUserId, input.sessionId, input.epoch);
-  }
-
-  private async createDavLock(input: DavLockRequest): Promise<Response> {
-    const conflict = await this.env.DB.prepare(
-      "WITH RECURSIVE ancestors(id,parent_id,depth) AS (SELECT id,parent_id,0 FROM nodes WHERE id=?1 UNION ALL SELECT n.id,n.parent_id,a.depth+1 FROM nodes n JOIN ancestors a ON n.id=a.parent_id WHERE a.depth<64),descendants(id,depth) AS (SELECT id,0 FROM nodes WHERE id=?1 UNION ALL SELECT n.id,d.depth+1 FROM nodes n JOIN descendants d ON n.parent_id=d.id WHERE n.deleted_at IS NULL AND d.depth<64 LIMIT 1001) SELECT 1 value FROM locks l WHERE l.expires_at>(strftime('%s','now')*1000) AND (l.node_id IN (SELECT id FROM ancestors WHERE depth=0 OR l.depth='infinity') OR (?2='infinity' AND l.node_id IN (SELECT id FROM descendants))) LIMIT 1",
+  async refreshDavLock(request: DavLockTokenRequest): Promise<DavLockResult> {
+    if (
+      !Number.isSafeInteger(request.timeoutSeconds) ||
+      (request.timeoutSeconds ?? 0) < 1 ||
+      (request.timeoutSeconds ?? 0) > 3600
     )
-      .bind(input.nodeId, input.depth)
-      .first<{ value: number }>();
-    if (conflict !== null) return Response.json({ error: "locked" }, { status: 423 });
-    const now = Date.now();
-    const expiresAt = now + input.timeoutSeconds * 1000;
-    const id = `lck_${crypto.randomUUID().replaceAll("-", "")}`;
-    await this.env.DB.batch([
-      this.credentialGuard(input),
-      this.env.DB.prepare(
-        "INSERT INTO locks(id,node_id,creator_user_id,creator_credential_id,token_digest,depth,expires_at,epoch,display_uri,generation,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10)",
-      ).bind(
-        id,
-        input.nodeId,
-        input.creatorUserId,
-        input.creatorCredentialId,
-        input.tokenDigest,
-        input.depth,
-        expiresAt,
-        input.epoch,
-        input.displayUri,
-        now,
-      ),
-      this.env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
-    ]);
-    return Response.json({ id, expiresAt, generation: 1 });
+      throw new Error("invalid_dav_lock");
+    return this.#changeDavLock(request, "refresh");
   }
 
-  private async refreshDavLock(input: DavLockRequest): Promise<Response> {
-    const expiresAt = Date.now() + input.timeoutSeconds * 1000;
-    await this.env.DB.batch([
-      this.credentialGuard(input),
-      this.env.DB.prepare(
-        "UPDATE locks SET expires_at=?1,generation=generation+1,creator_credential_id=?2 WHERE node_id=?3 AND creator_user_id=?4 AND token_digest=?5 AND epoch=?6 AND expires_at>(strftime('%s','now')*1000)",
-      ).bind(
-        expiresAt,
-        input.creatorCredentialId,
-        input.nodeId,
-        input.creatorUserId,
-        input.tokenDigest,
-        input.epoch,
-      ),
-      this.env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
-    ]);
-    return Response.json({ expiresAt });
+  async unlockDavLock(request: DavLockTokenRequest): Promise<void> {
+    await this.#changeDavLock(request, "unlock");
   }
 
-  private async deleteDavLock(input: DavLockRequest): Promise<Response> {
-    await this.env.DB.batch([
-      this.credentialGuard(input),
-      this.env.DB.prepare(
-        "DELETE FROM locks WHERE node_id=?1 AND creator_user_id=?2 AND token_digest=?3 AND epoch=?4 AND expires_at>(strftime('%s','now')*1000)",
-      ).bind(input.nodeId, input.creatorUserId, input.tokenDigest, input.epoch),
-      this.env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
-    ]);
-    return new Response(null, { status: 204 });
+  async #changeDavLock(
+    request: DavLockTokenRequest,
+    action: "refresh" | "unlock",
+  ): Promise<DavLockResult> {
+    this.#canonical(request.spaceId);
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (status.maintenance || status.epoch !== request.principal.epoch)
+      throw new Error("admission_closed");
+    await this.#initialize(request.spaceId, status.epoch);
+    const authorized = await authorizeNode(this.env.DB, request.principal, {
+      operation: "node.props.write",
+      nodeId: request.nodeId,
+      spaceId: request.spaceId,
+    });
+    if (authorized.operation !== "node.props.write") throw new Error("authorization_denied");
+    const [hash] = await lockTokenHashes([request.token]);
+    const creator = request.principal.kind === "app_password" ? request.principal.user_id : null;
+    const current = await primary(this.env.DB)
+      .prepare(
+        `SELECT l.depth,l.owner_text FROM locks l JOIN credentials c ON c.id=l.creator_credential_id
+          JOIN app_passwords ap ON ap.id=c.app_password_id AND c.kind='app_password'
+          WHERE l.node_id=? AND l.space_id=? AND l.token_hash=? AND l.epoch=?
+            AND l.expires_at>strftime('%s','now')*1000 AND ap.user_id=?`,
+      )
+      .bind(request.nodeId, request.spaceId, hash!, request.principal.epoch, creator)
+      .first<{ depth: "0" | "infinity"; owner_text: string }>();
+    if (!current) throw new Error("dav_lock_token_mismatch");
+    const admission = await this.#acquireMutation(
+      `dav:${action}:${crypto.randomUUID()}`,
+      request.spaceId,
+      status.epoch,
+    );
+    const expiresAt = action === "refresh" ? Date.now() + request.timeoutSeconds! * 1000 : null;
+    try {
+      await atomicBatch(this.env.DB, [
+        assertMutationAdmission(admission),
+        authorizationAssertion(authorized),
+        action === "refresh"
+          ? {
+              sql: `UPDATE locks SET expires_at=? WHERE node_id=? AND space_id=? AND token_hash=? AND epoch=?
+              AND expires_at>strftime('%s','now')*1000 AND creator_credential_id IN (
+                SELECT c.id FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+                WHERE c.kind='app_password' AND ap.user_id=?)`,
+              values: [
+                expiresAt!,
+                request.nodeId,
+                request.spaceId,
+                hash!,
+                request.principal.epoch,
+                creator,
+              ],
+            }
+          : {
+              sql: `DELETE FROM locks WHERE node_id=? AND space_id=? AND token_hash=? AND epoch=?
+              AND expires_at>strftime('%s','now')*1000 AND creator_credential_id IN (
+                SELECT c.id FROM credentials c JOIN app_passwords ap ON ap.id=c.app_password_id
+                WHERE c.kind='app_password' AND ap.user_id=?)`,
+              values: [request.nodeId, request.spaceId, hash!, request.principal.epoch, creator],
+            },
+        assertOneChange,
+        ...commitMutationAdmission(admission),
+      ]);
+    } catch (error) {
+      if (!(await hasCommittedMutation(this.env.DB, admission))) throw error;
+    }
+    return Object.freeze({
+      token: request.token,
+      depth: current.depth,
+      ownerText: current.owner_text,
+      timeoutSeconds: request.timeoutSeconds ?? 0,
+    });
   }
 
-  private async closePermit(permitId: string, state: "released" | "revoked"): Promise<Response> {
-    const statements = [
-      this.env.DB.prepare("UPDATE permits SET state=?1 WHERE permit_id=?2 AND state='open'").bind(
-        state,
-        permitId,
-      ),
-      this.env.DB.prepare("INSERT INTO _assert(v) SELECT 1 WHERE changes()<>1"),
-    ];
-    if (state === "revoked") {
-      statements.push(
-        this.env.DB.prepare(
-          "UPDATE operations SET state='failed',error_code='permit_revoked',updated_at=strftime('%s','now')*1000 WHERE permit_id=?1 AND state='claimed'",
-        ).bind(permitId),
-      );
-    }
-    await this.env.DB.batch(statements);
-    return new Response(null, { status: 204 });
+  async release(requestId: string, permit: Permit): Promise<void> {
+    this.#canonical(permit.space_id);
+    if (permit.permit_id !== `p:${requestId}`) throw new Error("lock_intent_conflict");
+    await releasePermit(this.env.DB, permit);
+    this.ctx.storage.sql.exec("DELETE FROM permit_intents WHERE request_id=?", requestId);
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/permits") {
-      const body: unknown = await request.json();
-      return isPermitRequest(body)
-        ? this.issuePermit(body)
-        : Response.json({ error: "invalid_permit" }, { status: 400 });
-    }
-    if (["POST", "PATCH", "DELETE"].includes(request.method) && url.pathname === "/locks") {
-      const body: unknown = await request.json();
-      if (!isDavLockRequest(body)) return Response.json({ error: "invalid_lock" }, { status: 400 });
-      if (request.method === "POST") return this.createDavLock(body);
-      if (request.method === "PATCH") return this.refreshDavLock(body);
-      return this.deleteDavLock(body);
-    }
-    const match = /^\/permits\/([^/]+)\/(release|revoke)$/u.exec(url.pathname);
-    if (request.method === "POST" && match?.[1] !== undefined && match[2] !== undefined) {
-      return this.closePermit(match[1], match[2] === "release" ? "released" : "revoked");
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
+  async recover(spaceId: string, epoch: number): Promise<void> {
+    this.#canonical(spaceId);
+    const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
+    if (!status.maintenance || status.epoch !== epoch)
+      throw new Error("recovery_requires_maintenance");
+    const prior = await primary(this.env.DB)
+      .prepare(
+        "SELECT MAX(epoch) AS epoch FROM (SELECT epoch FROM permits WHERE space_id=? UNION ALL SELECT epoch FROM locks WHERE space_id=?)",
+      )
+      .bind(spaceId, spaceId)
+      .first<number | null>("epoch");
+    const local = this.ctx.storage.sql
+      .exec<LockState>("SELECT space_id,epoch FROM lock_state WHERE singleton=1")
+      .toArray()[0];
+    if ((prior !== null && prior >= epoch) || (local && local.epoch >= epoch))
+      throw new Error("recovery_requires_new_epoch");
+    await revokeSpacePermits(this.env.DB, spaceId, epoch);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO lock_state VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch WHERE lock_state.space_id=excluded.space_id AND lock_state.epoch<excluded.epoch",
+      spaceId,
+      epoch,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM permit_intents WHERE epoch<?", epoch);
   }
 }

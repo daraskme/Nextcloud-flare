@@ -1,0 +1,746 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { URL } from "node:url";
+import { afterEach, beforeEach, expect, it } from "vitest";
+import {
+  advanceMutations,
+  assertGlobalMutationAdmission,
+  assertSystemMutationAdmission,
+  commitGlobalMutationAdmission,
+  commitMutationAdmission,
+  commitSystemMutationAdmission,
+  type GlobalMutationAdmission,
+  hasCommittedGlobalMutation,
+  hasCommittedSystemMutation,
+  type MutationAdmission,
+  type SystemMutationAdmission,
+} from "../../src/db/mutationAdmission";
+import { foundationFixture } from "../fixtures/foundation";
+
+const directory = new URL("../../migrations/", import.meta.url);
+const migrationNames = readdirSync(directory)
+  .sort()
+  .filter((name) => name.endsWith(".sql"));
+const migrations = migrationNames.map((name) => readFileSync(new URL(name, directory), "utf8"));
+const creationIndex = migrationNames.indexOf("0030_mutation_admission.sql");
+let db: DatabaseSync, now: number;
+beforeEach(() => {
+  db = new DatabaseSync(":memory:");
+  now = 1_000_000;
+  db.function("strftime", { varargs: true }, () => String(Math.floor(now / 1000)));
+  for (const sql of migrations) db.exec(sql);
+  for (const statement of foundationFixture().statements)
+    db.prepare(statement.sql).run(...((statement.values as (string | number | null)[]) ?? []));
+  db.exec("UPDATE control SET maintenance=0");
+});
+afterEach(() => db.close());
+function ticket(permit = crypto.randomUUID()) {
+  const id = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,'f-s',1,?,?)",
+  ).run(id, permit, now, now + 5000);
+  db.prepare(
+    "UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=? WHERE id=?",
+  ).run(now, now + 30000, id);
+  return { id, permit };
+}
+function close(id: string) {
+  db.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?").run(id);
+}
+function insertPermit(permit: string) {
+  db.prepare("INSERT INTO permits VALUES(?,'f-s',1,?,'open')").run(permit, now + 30000);
+}
+
+// Execute the production cleanup transaction against SQLite's controllable clock.
+function clockDatabase(): D1Database {
+  return {
+    prepare(sql: string) {
+      return { bind: (...values: (string | number | null)[]) => ({ sql, values }) };
+    },
+    async batch(statements: { sql: string; values: (string | number | null)[] }[]) {
+      db.exec("BEGIN");
+      try {
+        const result = statements.map(({ sql, values }) => ({
+          results: db.prepare(sql).all(...values),
+        }));
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+  } as unknown as D1Database;
+}
+
+it("does not reuse expired slots until their old grants are irreversibly closed", () => {
+  const tickets = Array.from({ length: 32 }, () => ticket());
+  now += 31000;
+  expect(() => ticket()).toThrow("mutation_unavailable");
+  close(tickets[0]!.id);
+  const replacement = ticket();
+  now -= 31000;
+  expect(() => ticket()).toThrow("mutation_unavailable");
+  expect(() =>
+    db.prepare("UPDATE mutation_admissions SET state='active' WHERE id=?").run(tickets[0]!.id),
+  ).toThrow(/immutable_mutation_admission|mutation_unavailable/);
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'").get()!.n,
+  ).toBe(32);
+  expect(
+    db.prepare("SELECT state FROM mutation_admissions WHERE id=?").get(replacement.id)!.state,
+  ).toBe("active");
+});
+
+it("closing capacity revokes the permit and fails only claimed operations, preserving terminal results and physical accounting", async () => {
+  const a = ticket();
+  insertPermit(a.permit);
+  for (const state of ["claimed", "committed", "failed"])
+    db.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,
+    permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at)
+    VALUES(?,'user','f-u','as:f-session','f-s','node.create',?,'digest',1,?,?,?,0,?,?)`).run(
+      state,
+      state,
+      a.permit,
+      now + 30000,
+      now + 30000,
+      now,
+      now,
+    );
+  const counters = db.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get();
+  now += 31000;
+  expect(await advanceMutations(clockDatabase())).toEqual([]);
+  expect(db.prepare("SELECT state FROM permits").get()!.state).toBe("revoked");
+  expect(db.prepare("SELECT op_id,state FROM operations ORDER BY op_id").all()).toEqual([
+    { op_id: "claimed", state: "failed" },
+    { op_id: "committed", state: "committed" },
+    { op_id: "failed", state: "failed" },
+  ]);
+  expect(db.prepare("SELECT used_bytes,reserved_bytes,physical_bytes FROM users").get()).toEqual(
+    counters,
+  );
+  now -= 31000;
+  expect(() => insertPermit(a.permit)).toThrow();
+  expect(() => db.exec("UPDATE permits SET state='open'")).toThrow();
+});
+
+it("retains closed receipts until the original wait deadline and rejects extended or overdue grants", () => {
+  const a = ticket();
+  insertPermit(a.permit);
+  close(a.id);
+  expect(() => db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(a.id)).toThrow(
+    "mutation_receipt_required",
+  );
+  expect(() =>
+    db.prepare("INSERT INTO permits VALUES(?,'f-s',1,?,'open')").run("b", now + 60000),
+  ).toThrow("mutation_admission_required");
+  const id = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,'new','f-s',1,?,?)",
+  ).run(id, now, now + 5000);
+  now += 5000;
+  db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(a.id);
+  expect(db.prepare("SELECT state FROM permits WHERE permit_id=?").get(a.permit)!.state).toBe(
+    "revoked",
+  );
+  expect(() => insertPermit(a.permit)).toThrow();
+  expect(() =>
+    db
+      .prepare("UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=? WHERE id=?")
+      .run(now, now + 30000, id),
+  ).toThrow("mutation_unavailable");
+});
+
+it("requires closed and drained admission when upgrading an existing database", () => {
+  const legacy = new DatabaseSync(":memory:");
+  try {
+    for (const sql of migrations.slice(0, creationIndex)) legacy.exec(sql);
+    legacy.exec("UPDATE control SET maintenance=0");
+    expect(() => legacy.exec(migrations[creationIndex]!)).toThrow();
+    expect(
+      legacy.prepare("SELECT name FROM sqlite_master WHERE name='mutation_admissions'").get(),
+    ).toBeUndefined();
+    legacy.exec("UPDATE control SET maintenance=1");
+    legacy.exec(migrations[creationIndex]!);
+    expect(
+      legacy.prepare("SELECT name FROM sqlite_master WHERE name='mutation_admissions'").get(),
+    ).toBeDefined();
+  } finally {
+    legacy.close();
+  }
+});
+
+function commitTicket(a: ReturnType<typeof ticket>) {
+  const admission: MutationAdmission = {
+    id: a.id,
+    permit_id: a.permit,
+    space_id: "f-s",
+    epoch: 1,
+    expires_at: now + 30000,
+  };
+  for (const s of commitMutationAdmission(admission))
+    db.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+}
+
+it("upgrades drained existing tickets without turning a stop into a commit receipt", () => {
+  const legacy = new DatabaseSync(":memory:");
+  const receiptIndex = migrationNames.indexOf("0031_mutation_commit_receipts.sql");
+  try {
+    legacy.function("strftime", { varargs: true }, () => String(Math.floor(now / 1000)));
+    for (const sql of migrations.slice(0, receiptIndex)) legacy.exec(sql);
+    for (const s of foundationFixture().statements)
+      legacy.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+    legacy.exec("UPDATE control SET maintenance=0");
+    legacy
+      .prepare(
+        "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,'old','f-s',1,?,?)",
+      )
+      .run(crypto.randomUUID(), now, now + 5000);
+    legacy
+      .prepare("UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=?")
+      .run(now, now + 30000);
+    expect(() => legacy.exec(migrations[receiptIndex]!)).toThrow();
+    expect(
+      legacy
+        .prepare("PRAGMA table_info(mutation_admissions)")
+        .all()
+        .some((row) => row.name === "committed_at"),
+    ).toBe(false);
+    legacy.exec("UPDATE control SET maintenance=1");
+    legacy.exec(migrations[receiptIndex]!);
+    expect(legacy.prepare("SELECT state,committed_at FROM mutation_admissions").get()).toEqual({
+      state: "closed",
+      committed_at: null,
+    });
+  } finally {
+    legacy.close();
+  }
+});
+
+it("retains committed receipts for 60 seconds through cleanup and clock rollback", async () => {
+  const a = ticket();
+  commitTicket(a);
+  now += 59000;
+  await advanceMutations(clockDatabase());
+  expect(
+    db.prepare("SELECT committed_at FROM mutation_admissions WHERE id=?").get(a.id)!.committed_at,
+  ).toBe(1000000);
+  expect(() => db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(a.id)).toThrow(
+    "mutation_receipt_required",
+  );
+  now -= 60000;
+  await advanceMutations(clockDatabase());
+  expect(db.prepare("SELECT id FROM mutation_admissions WHERE id=?").get(a.id)).toBeDefined();
+  now = 1060000;
+  await advanceMutations(clockDatabase());
+  expect(db.prepare("SELECT id FROM mutation_admissions WHERE id=?").get(a.id)).toBeUndefined();
+});
+
+it("cannot forge commit proof from a stopped or expired ticket, mutate proof, or close a namespace permit as a commit", () => {
+  const stopped = ticket();
+  close(stopped.id);
+  expect(() =>
+    db.prepare("UPDATE mutation_admissions SET committed_at=? WHERE id=?").run(now, stopped.id),
+  ).toThrow();
+  const expired = ticket();
+  now += 30000;
+  expect(() =>
+    db
+      .prepare("UPDATE mutation_admissions SET state='closed',committed_at=? WHERE id=?")
+      .run(now, expired.id),
+  ).toThrow();
+  const bound = ticket();
+  insertPermit(bound.permit);
+  expect(() => commitTicket(bound)).toThrow();
+  const committed = ticket();
+  commitTicket(committed);
+  expect(() =>
+    db.prepare("UPDATE mutation_admissions SET committed_at=NULL WHERE id=?").run(committed.id),
+  ).toThrow();
+  expect(() =>
+    db
+      .prepare("UPDATE mutation_admissions SET committed_at=committed_at+1 WHERE id=?")
+      .run(committed.id),
+  ).toThrow();
+});
+
+it("uses the retention expression index to bound cleanup without scanning recent commit history", () => {
+  const plan = db
+    .prepare(
+      "EXPLAIN QUERY PLAN SELECT seq FROM mutation_admissions WHERE state='closed' AND MAX(wait_until,COALESCE(committed_at+60000,0))<=? ORDER BY MAX(wait_until,COALESCE(committed_at+60000,0)),seq LIMIT 256",
+    )
+    .all(now);
+  expect(JSON.stringify(plan)).toContain("mutation_admissions_cleanup");
+  expect(JSON.stringify(plan)).not.toContain("TEMP B-TREE");
+});
+
+it.each([false, true])(
+  "preserves receipts and the deleted FIFO high-water mark on bootstrap upgrade (empty=%s)",
+  (empty) => {
+    const legacy = new DatabaseSync(":memory:");
+    const index = migrationNames.indexOf("0032_bootstrap_mutation_admission.sql");
+    try {
+      legacy.exec("PRAGMA foreign_keys=ON");
+      legacy.function("strftime", { varargs: true }, () => String(Math.floor(now / 1000)));
+      for (const sql of migrations.slice(0, index)) legacy.exec(sql);
+      for (const s of foundationFixture().statements)
+        legacy.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+      legacy.exec("UPDATE control SET maintenance=0");
+      legacy
+        .prepare(
+          "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,'old','f-s',1,?,?)",
+        )
+        .run(crypto.randomUUID(), now, now + 5000);
+      legacy
+        .prepare("UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=?")
+        .run(now, now + 30000);
+      legacy.prepare("UPDATE mutation_admissions SET state='closed',committed_at=?").run(now);
+      expect(() => legacy.exec(migrations[index]!)).toThrow();
+      legacy.exec("UPDATE sqlite_sequence SET seq=100 WHERE name='mutation_admissions'");
+      if (empty) {
+        now += 60000;
+        legacy.exec("DELETE FROM mutation_admissions");
+      }
+      const before = legacy.prepare("SELECT * FROM mutation_admissions").all();
+      legacy.exec("UPDATE control SET maintenance=1");
+      legacy.exec("BEGIN");
+      legacy.exec(migrations[index]!);
+      legacy.exec("COMMIT");
+      expect(legacy.prepare("SELECT * FROM mutation_admissions").all()).toEqual(before);
+      expect(legacy.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(
+        legacy.prepare("SELECT seq FROM sqlite_sequence WHERE name='mutation_admissions'").get()!
+          .seq,
+      ).toBe(100);
+      legacy.exec("UPDATE control SET maintenance=0");
+      legacy
+        .prepare(
+          "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,NULL,1,?,?)",
+        )
+        .run(crypto.randomUUID(), "bootstrap:" + crypto.randomUUID(), now, now + 5000);
+      expect(legacy.prepare("SELECT MAX(seq) AS n FROM mutation_admissions").get()!.n).toBe(101);
+      if (!empty)
+        expect(() => legacy.exec("DELETE FROM mutation_admissions WHERE seq=1")).toThrow(
+          "mutation_receipt_required",
+        );
+      legacy.exec("UPDATE control SET maintenance=1");
+      expect(
+        legacy.prepare("SELECT COUNT(*) AS n FROM mutation_admissions WHERE state<>'closed'").get()!
+          .n,
+      ).toBe(0);
+    } finally {
+      legacy.close();
+    }
+  },
+);
+
+function bootstrapTicket() {
+  const id = crypto.randomUUID(),
+    permit = "bootstrap:" + crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,?,NULL,1,?,?)",
+  ).run(id, permit, now, now + 5000);
+  return { id, permit };
+}
+it("bootstrap capacity has immutable null scope and cannot grant a namespace permit", async () => {
+  const a = bootstrapTicket();
+  const rows = await advanceMutations(clockDatabase());
+  expect(rows.find((r) => r.id === a.id)).toMatchObject({ space_id: null, state: "active" });
+  expect(() =>
+    db.prepare("UPDATE mutation_admissions SET space_id='f-s',state='closed' WHERE id=?").run(a.id),
+  ).toThrow("immutable_mutation_admission");
+  expect(() => insertPermit(a.permit)).toThrow("mutation_admission_required");
+  const space = ticket();
+  expect(() =>
+    db
+      .prepare("UPDATE mutation_admissions SET space_id=NULL,state='closed' WHERE id=?")
+      .run(space.id),
+  ).toThrow();
+  expect(() =>
+    db
+      .prepare(
+        "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,'namespace',NULL,1,?,?)",
+      )
+      .run(crypto.randomUUID(), now, now + 5000),
+  ).toThrow();
+  for (const s of commitMutationAdmission({
+    id: a.id,
+    permit_id: a.permit,
+    space_id: null,
+    epoch: 1,
+    expires_at: now + 30000,
+  }))
+    db.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+  expect(
+    db.prepare("SELECT committed_at FROM mutation_admissions WHERE id=?").get(a.id)!.committed_at,
+  ).toBe(now);
+  expect(() => db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(a.id)).toThrow(
+    "mutation_receipt_required",
+  );
+});
+it("bootstrap and personal spaces share the 32 active slots and one FIFO", async () => {
+  const active = Array.from({ length: 32 }, () => ticket());
+  const first = bootstrapTicket(),
+    second = bootstrapTicket();
+  expect(
+    (await advanceMutations(clockDatabase())).filter((r) => r.state === "active"),
+  ).toHaveLength(32);
+  close(active[0]!.id);
+  const rows = await advanceMutations(clockDatabase());
+  expect(rows.find((r) => r.id === first.id)!.state).toBe("active");
+  expect(rows.find((r) => r.id === second.id)!.state).toBe("waiting");
+  db.exec("UPDATE control SET epoch=2");
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM mutation_admissions WHERE state<>'closed'").get()!.n,
+  ).toBe(0);
+});
+
+function systemTicket(maintenance: 0 | 1 = 0) {
+  const id = crypto.randomUUID(),
+    permit = "system:upload.observe:" + crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,'f-s',1,1,?,?,?)",
+  ).run(id, permit, maintenance, now, now + 5000);
+  return { id, permit };
+}
+it("system, bootstrap and namespace tickets share all 32 active and 256 waiting slots in FIFO order", async () => {
+  const active = Array.from({ length: 32 }, () => ticket());
+  const system = systemTicket(),
+    bootstrap = bootstrapTicket();
+  for (let i = 0; i < 254; i++) systemTicket();
+  expect(() => systemTicket()).toThrow("mutation_unavailable");
+  expect(() => bootstrapTicket()).toThrow("mutation_unavailable");
+  close(active[0]!.id);
+  const rows = await advanceMutations(clockDatabase());
+  expect(rows.find((r) => r.id === system.id)).toMatchObject({
+    state: "active",
+    system: 1,
+    maintenance: 0,
+  });
+  expect(rows.find((r) => r.id === bootstrap.id)!.state).toBe("waiting");
+  expect(rows.filter((r) => r.state === "active")).toHaveLength(32);
+});
+it.each([0, 1] as const)(
+  "system mode %s is immutable, cannot grant namespace authority and is fenced by stop/epoch",
+  async (maintenance) => {
+    db.exec(`UPDATE control SET maintenance=${maintenance}`);
+    const a = systemTicket(maintenance);
+    await advanceMutations(clockDatabase());
+    for (const change of ["system=0", "maintenance=" + (1 - maintenance), "space_id=NULL"])
+      expect(() =>
+        db.prepare(`UPDATE mutation_admissions SET state='closed',${change} WHERE id=?`).run(a.id),
+      ).toThrow();
+    expect(() => insertPermit(a.permit)).toThrow("mutation_admission_required");
+    expect(() => commitTicket(a)).toThrow();
+    db.exec("UPDATE control SET maintenance=1");
+    expect(
+      db.prepare("SELECT state,committed_at FROM mutation_admissions WHERE id=?").get(a.id),
+    ).toEqual({ state: "closed", committed_at: null });
+    const b = systemTicket(1);
+    await advanceMutations(clockDatabase());
+    db.exec("UPDATE control SET maintenance=0");
+    expect(db.prepare("SELECT state FROM mutation_admissions WHERE id=?").get(b.id)!.state).toBe(
+      "closed",
+    );
+    const c = systemTicket();
+    await advanceMutations(clockDatabase());
+    db.exec("UPDATE control SET epoch=2");
+    expect(db.prepare("SELECT state FROM mutation_admissions WHERE id=?").get(c.id)!.state).toBe(
+      "closed",
+    );
+  },
+);
+it("requires system scope and a matching current maintenance mode even through direct SQL", () => {
+  expect(() => ticket("system:upload.observe:" + crypto.randomUUID())).toThrow();
+  expect(() => systemTicket(1)).toThrow();
+  db.exec("UPDATE control SET maintenance=1");
+  expect(() => ticket()).toThrow();
+  expect(() => bootstrapTicket()).toThrow();
+  expect(() => systemTicket(0)).toThrow();
+  expect(() =>
+    db
+      .prepare(
+        "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,NULL,1,1,1,?,?)",
+      )
+      .run(crypto.randomUUID(), "bootstrap:" + crypto.randomUUID(), now, now + 5000),
+  ).toThrow();
+});
+it.each([false, true])(
+  "system upgrade preserves historical receipts and sequence (empty=%s)",
+  (empty) => {
+    const legacy = new DatabaseSync(":memory:");
+    const index = migrationNames.indexOf("0033_system_mutation_admission.sql");
+    try {
+      legacy.function("strftime", { varargs: true }, () => String(Math.floor(now / 1000)));
+      for (const sql of migrations.slice(0, index)) legacy.exec(sql);
+      for (const s of foundationFixture().statements)
+        legacy.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+      legacy.exec("UPDATE control SET maintenance=0");
+      legacy
+        .prepare(
+          "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until) VALUES(?,'old','f-s',1,?,?)",
+        )
+        .run(crypto.randomUUID(), now, now + 5000);
+      legacy
+        .prepare("UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=?")
+        .run(now, now + 30000);
+      legacy.prepare("UPDATE mutation_admissions SET state='closed',committed_at=?").run(now);
+      expect(() => legacy.exec(migrations[index]!)).toThrow();
+      expect(
+        legacy
+          .prepare("PRAGMA table_info(mutation_admissions)")
+          .all()
+          .some((r) => r.name === "system"),
+      ).toBe(false);
+      legacy.exec("UPDATE sqlite_sequence SET seq=100 WHERE name='mutation_admissions'");
+      if (empty) {
+        now += 60000;
+        legacy.exec("DELETE FROM mutation_admissions");
+      }
+      const before = legacy.prepare("SELECT * FROM mutation_admissions").all();
+      legacy.exec("UPDATE control SET maintenance=1");
+      legacy.exec(migrations[index]!);
+      expect(legacy.prepare("SELECT * FROM mutation_admissions").all()).toEqual(
+        before.map((r) => ({ ...r, system: 0, maintenance: 0 })),
+      );
+      expect(legacy.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(
+        legacy.prepare("SELECT seq FROM sqlite_sequence WHERE name='mutation_admissions'").get()!
+          .seq,
+      ).toBe(100);
+      if (!empty)
+        expect(() => legacy.exec("DELETE FROM mutation_admissions")).toThrow(
+          "mutation_receipt_required",
+        );
+    } finally {
+      legacy.close();
+    }
+  },
+);
+
+it.each([0, 1] as const)(
+  "system commit receipts retain exact proof for 60 seconds in mode %s",
+  async (maintenance) => {
+    db.exec(`UPDATE control SET maintenance=${maintenance}`);
+    const a = systemTicket(maintenance);
+    await advanceMutations(clockDatabase());
+    const admission = {
+      id: a.id,
+      permit_id: a.permit,
+      space_id: "f-s",
+      epoch: 1,
+      expires_at: now + 30000,
+      system: 1 as const,
+      maintenance,
+    };
+    for (const s of commitSystemMutationAdmission(admission))
+      db.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+    now += 59000;
+    await advanceMutations(clockDatabase());
+    expect(
+      db.prepare("SELECT committed_at FROM mutation_admissions WHERE id=?").get(a.id)!.committed_at,
+    ).toBe(1000000);
+    expect(() => db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(a.id)).toThrow(
+      "mutation_receipt_required",
+    );
+    now += 1000;
+    await advanceMutations(clockDatabase());
+    expect(db.prepare("SELECT id FROM mutation_admissions WHERE id=?").get(a.id)).toBeUndefined();
+    const expired = systemTicket(maintenance);
+    await advanceMutations(clockDatabase());
+    now += 30000;
+    expect(() =>
+      db
+        .prepare("UPDATE mutation_admissions SET state='closed',committed_at=? WHERE id=?")
+        .run(now, expired.id),
+    ).toThrow("invalid_mutation_commit");
+  },
+);
+
+function globalTicket(maintenance: 0 | 1 = 0) {
+  const id = crypto.randomUUID(),
+    permit = "global:r2.probe-phase:" + crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,NULL,1,1,?,?,?)",
+  ).run(id, permit, maintenance, now, now + 5000);
+  return { id, permit };
+}
+it("global, owner system, bootstrap and ordinary grants share one 32/256 FIFO", async () => {
+  const active = Array.from({ length: 32 }, () => ticket());
+  const first = globalTicket(),
+    second = systemTicket(),
+    third = bootstrapTicket();
+  for (let i = 0; i < 253; i++) globalTicket();
+  expect(() => globalTicket()).toThrow("mutation_unavailable");
+  expect(() => systemTicket()).toThrow("mutation_unavailable");
+  expect(() => bootstrapTicket()).toThrow("mutation_unavailable");
+  close(active[0]!.id);
+  const rows = await advanceMutations(clockDatabase());
+  expect(rows.find((r) => r.id === first.id)).toMatchObject({
+    space_id: null,
+    system: 1,
+    state: "active",
+  });
+  expect(rows.find((r) => r.id === second.id)!.state).toBe("waiting");
+  expect(rows.find((r) => r.id === third.id)!.state).toBe("waiting");
+  expect(rows.filter((r) => r.state === "active")).toHaveLength(32);
+});
+it.each([0, 1] as const)(
+  "global scope preserves receipts and rejects owner/bootstrap/namespace reuse in mode %s",
+  async (maintenance) => {
+    db.exec(`UPDATE control SET maintenance=${maintenance}`);
+    const t = globalTicket(maintenance);
+    await advanceMutations(clockDatabase());
+    const a: GlobalMutationAdmission = {
+      id: t.id,
+      permit_id: t.permit,
+      space_id: null,
+      epoch: 1,
+      expires_at: now + 30000,
+      system: 1,
+      maintenance,
+    };
+    for (const field of ["space_id='f-s'", "system=0", "maintenance=" + (1 - maintenance)])
+      expect(() =>
+        db.prepare(`UPDATE mutation_admissions SET state='closed',${field} WHERE id=?`).run(t.id),
+      ).toThrow();
+    expect(() => assertSystemMutationAdmission(a as unknown as SystemMutationAdmission)).toThrow(
+      "mutation_unavailable",
+    );
+    expect(() => commitSystemMutationAdmission(a as unknown as SystemMutationAdmission)).toThrow(
+      "mutation_unavailable",
+    );
+    await expect(
+      hasCommittedSystemMutation(clockDatabase(), a as unknown as SystemMutationAdmission),
+    ).rejects.toThrow("mutation_unavailable");
+    const borrowed = {
+      ...a,
+      space_id: "f-s",
+      permit_id: "system:upload.observe:" + crypto.randomUUID(),
+    } as unknown as GlobalMutationAdmission;
+    expect(() => assertGlobalMutationAdmission(borrowed)).toThrow("mutation_unavailable");
+    expect(() => commitGlobalMutationAdmission(borrowed)).toThrow("mutation_unavailable");
+    await expect(hasCommittedGlobalMutation(clockDatabase(), borrowed)).rejects.toThrow(
+      "mutation_unavailable",
+    );
+    for (const epoch of [1, 2])
+      for (const expiry of [now - 1, now + 30000])
+        expect(() =>
+          db.prepare("INSERT INTO permits VALUES(?,'f-s',?,?,'open')").run(t.permit, epoch, expiry),
+        ).toThrow("mutation_admission_required");
+    expect(() => commitTicket(t)).toThrow();
+    for (const s of [assertGlobalMutationAdmission(a), ...commitGlobalMutationAdmission(a)])
+      db.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+    expect(() =>
+      db.prepare("UPDATE mutation_admissions SET committed_at=NULL WHERE id=?").run(t.id),
+    ).toThrow();
+    now += 59000;
+    await advanceMutations(clockDatabase());
+    expect(
+      db.prepare("SELECT committed_at FROM mutation_admissions WHERE id=?").get(t.id)!.committed_at,
+    ).toBe(1000000);
+    expect(() => db.prepare("DELETE FROM mutation_admissions WHERE id=?").run(t.id)).toThrow(
+      "mutation_receipt_required",
+    );
+    now += 1000;
+    await advanceMutations(clockDatabase());
+    expect(db.prepare("SELECT id FROM mutation_admissions WHERE id=?").get(t.id)).toBeUndefined();
+    const next = globalTicket(maintenance);
+    await advanceMutations(clockDatabase());
+    db.exec(`UPDATE control SET maintenance=${1 - maintenance}`);
+    expect(
+      db.prepare("SELECT state,committed_at FROM mutation_admissions WHERE id=?").get(next.id),
+    ).toEqual({ state: "closed", committed_at: null });
+  },
+);
+it("rejects global IDs in ordinary SQL and borrowed owners in global SQL", () => {
+  expect(() => ticket("global:r2.probe-phase:" + crypto.randomUUID())).toThrow();
+  for (const [space, system, permit] of [
+    ["f-s", 1, "global:r2.probe-phase:" + crypto.randomUUID()],
+    [null, 1, "system:upload.observe:" + crypto.randomUUID()],
+    [null, 0, "global:r2.probe-phase:" + crypto.randomUUID()],
+  ])
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,?,1,?,0,?,?)",
+        )
+        .run(crypto.randomUUID(), permit!, space!, system!, now, now + 5000),
+    ).toThrow();
+});
+it.each([false, true])(
+  "global upgrade preserves every old receipt class and FIFO high-water (empty=%s)",
+  (empty) => {
+    const legacy = new DatabaseSync(":memory:"),
+      index = migrationNames.indexOf("0034_global_mutation_admission.sql");
+    try {
+      legacy.exec("PRAGMA foreign_keys=ON");
+      legacy.function("strftime", { varargs: true }, () => String(Math.floor(now / 1000)));
+      for (const sql of migrations.slice(0, index)) legacy.exec(sql);
+      for (const s of foundationFixture().statements)
+        legacy.prepare(s.sql).run(...((s.values as (string | number | null)[]) ?? []));
+      for (const [space, system, maintenance, permit] of [
+        ["f-s", 0, 0, crypto.randomUUID()],
+        [null, 0, 0, "bootstrap:" + crypto.randomUUID()],
+        ["f-s", 1, 0, "system:upload.observe:" + crypto.randomUUID()],
+        ["f-s", 1, 1, "system:upload.observe:" + crypto.randomUUID()],
+      ] as const) {
+        legacy.exec(`UPDATE control SET maintenance=${maintenance}`);
+        const id = crypto.randomUUID();
+        legacy
+          .prepare(
+            "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,?,1,?,?,?,?)",
+          )
+          .run(id, permit, space, system, maintenance, now, now + 5000);
+        if (maintenance === 1) {
+          const before = legacy
+            .prepare("SELECT sql FROM sqlite_master WHERE name='mutation_admissions'")
+            .get();
+          expect(() => legacy.exec(migrations[index]!)).toThrow();
+          expect(
+            legacy.prepare("SELECT sql FROM sqlite_master WHERE name='mutation_admissions'").get(),
+          ).toEqual(before);
+        }
+        legacy
+          .prepare(
+            "UPDATE mutation_admissions SET state='active',granted_at=?,expires_at=? WHERE id=?",
+          )
+          .run(now, now + 30000, id);
+        legacy
+          .prepare("UPDATE mutation_admissions SET state='closed',committed_at=? WHERE id=?")
+          .run(now, id);
+      }
+      legacy.exec("UPDATE sqlite_sequence SET seq=100 WHERE name='mutation_admissions'");
+      if (empty) {
+        now += 60000;
+        legacy.exec("DELETE FROM mutation_admissions");
+      }
+      const before = legacy.prepare("SELECT * FROM mutation_admissions ORDER BY seq").all();
+      const tables = legacy.prepare("PRAGMA table_list").all().length;
+      legacy.exec("BEGIN");
+      legacy.exec(migrations[index]!);
+      legacy.exec("COMMIT");
+      expect(legacy.prepare("SELECT * FROM mutation_admissions ORDER BY seq").all()).toEqual(
+        before,
+      );
+      expect(legacy.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(legacy.prepare("PRAGMA table_list").all()).toHaveLength(tables);
+      expect(
+        legacy.prepare("SELECT seq FROM sqlite_sequence WHERE name='mutation_admissions'").get()!
+          .seq,
+      ).toBe(100);
+      legacy
+        .prepare(
+          "INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until) VALUES(?,?,NULL,1,1,1,?,?)",
+        )
+        .run(crypto.randomUUID(), "global:r2.probe-phase:" + crypto.randomUUID(), now, now + 5000);
+      expect(legacy.prepare("SELECT MAX(seq) n FROM mutation_admissions").get()!.n).toBe(101);
+      if (!empty)
+        expect(() => legacy.exec("DELETE FROM mutation_admissions WHERE seq<=100")).toThrow(
+          "mutation_receipt_required",
+        );
+    } finally {
+      legacy.close();
+    }
+  },
+);

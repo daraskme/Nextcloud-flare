@@ -1,58 +1,39 @@
+import { resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
-type Entry = "app" | "public-share" | "reader";
-
-const entries: Record<Entry, { html: string; dir: string }> = {
-  app: { html: "./index.html", dir: "assets" },
-  "public-share": { html: "./public-share.html", dir: "public-assets" },
-  reader: { html: "./reader.html", dir: "reader-assets" },
-};
-
-function entryFor(mode: string): Entry {
-  return mode === "public-share" || mode === "reader" ? mode : "app";
-}
-
-// Each shell is built as its own single-entry bundle (`vite build --mode <entry>`) so the
-// public share landing and the sandboxed reader never import chunks from the private SPA.
-export default defineConfig(({ mode }) => {
-  const entry = entryFor(mode);
-  const { html, dir } = entries[entry];
-  return {
-    plugins: [react()],
-    resolve: {
-      alias: {
-        "@ncf/shared": fileURLToPath(new URL("../shared/src/index.ts", import.meta.url)),
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  build: {
+    modulePreload: { polyfill: false },
+    assetsDir: "private-assets",
+    manifest: true,
+    sourcemap: false,
+    rollupOptions: {
+      input: {
+        index: resolve(import.meta.dirname, "index.html"),
+        publicShare: resolve(import.meta.dirname, "public-share.html"),
       },
-    },
-    server: {
-      port: 5173,
-      proxy: {
-        "^/api(?:/|$)": "http://127.0.0.1:8787",
-        "^/dav(?:/|$)": "http://127.0.0.1:8787",
-        "^/s(?:/|$)": "http://127.0.0.1:8787",
-        "^/c(?:/|$)": "http://127.0.0.1:8787",
-        "^/public-assets(?:/|$)": "http://127.0.0.1:8787",
-        "^/reader(?:/|$)": "http://127.0.0.1:8787",
-        "^/reader-assets(?:/|$)": "http://127.0.0.1:8787",
-      },
-    },
-    build: {
-      manifest: entry === "app" ? true : `.vite/manifest.${entry}.json`,
-      sourcemap: true,
-      emptyOutDir: entry === "app",
-      copyPublicDir: entry === "app",
-      modulePreload: { polyfill: false },
-      rollupOptions: {
-        input: { [entry]: fileURLToPath(new URL(html, import.meta.url)) },
-        output: {
-          inlineDynamicImports: true,
-          entryFileNames: `${dir}/[name].[hash].js`,
-          chunkFileNames: `${dir}/[name].[hash].js`,
-          assetFileNames: `${dir}/[name].[hash][extname]`,
+      output: {
+        entryFileNames(chunk) {
+          return chunk.name === "publicShare"
+            ? "public-assets/public-share-[hash].js"
+            : "private-assets/[name]-[hash].js";
+        },
+        chunkFileNames: "private-assets/[name]-[hash].js",
+        assetFileNames(asset) {
+          return asset.names.some((name) => name.toLowerCase().includes("publicshare"))
+            ? "public-assets/[name]-[hash][extname]"
+            : "private-assets/[name]-[hash][extname]";
+        },
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (/\/(react|react-dom|scheduler)\//.test(id)) return "react";
+          if (id.includes("@tanstack")) return "navigation";
+          if (id.includes("@radix-ui")) return "ui";
         },
       },
     },
-  };
+  },
 });

@@ -1,301 +1,342 @@
-import type {
-  AppPasswordSummary,
-  AudioAlbum,
-  BreadcrumbItem,
-  CreatedAppPassword,
-  ChildrenPage,
-  GalleryPage,
-  LibraryItemSummary,
-  LibraryRootSummary,
-  NodeSummary,
-  ReadingPosition,
-  EpubEntrySummary,
-  NodeVersionSummary,
-  ShareKind,
-  ShareMode,
-  ShareSummary,
-  SharedMount,
-  TrashPage,
-  UploadInfo,
-  UploadMode,
-} from "@ncf/shared";
-
-interface MeResponse {
-  user: { id: string; email: string; role: "member" | "app_admin" };
-  workspace: { rootId: string; spaceId: string; treeGeneration: number };
+export interface Account {
+  id: string;
+  email: string;
+  role: string;
+  spaceId: string;
+  rootNodeId: string;
+  epoch: number;
+  quotaBytes: number;
+  usedBytes: number;
+  reservedBytes: number;
+  contentOrigin: string;
 }
-
-let csrfToken: string | null = null;
+export interface FileNode {
+  id: string;
+  parentId?: string;
+  name: string;
+  kind: "folder" | "file";
+  revision: number;
+  currentBlobId: string | null;
+  updatedAt: number;
+  size: number | null;
+  mime: string | null;
+}
+export interface Children {
+  parentId: string;
+  treeGeneration: number;
+  children: FileNode[];
+  nextCursor: string | null;
+}
+export interface SearchPage {
+  scopeId: string;
+  query: string;
+  treeGeneration: number;
+  items: FileNode[];
+  nextCursor: string | null;
+  truncated: boolean;
+}
+export interface FolderStats {
+  scopeId: string;
+  treeGeneration: number;
+  fileCount: number;
+  folderCount: number;
+  totalBytes: number;
+  scannedNodes: number;
+  nodeLimit: number;
+  unavailableFiles: number;
+  truncated: boolean;
+}
+export interface Breadcrumb {
+  id: string;
+  name: string;
+  kind: "root" | "folder" | "file";
+  revision: number;
+}
+export interface TrashItem {
+  opId: string;
+  rootNodeId: string;
+  name: string;
+  kind: "folder" | "file";
+  deletedAt: number;
+  memberCount: number;
+}
+export interface TrashPage {
+  items: TrashItem[];
+  treeGeneration: number;
+  nextCursor: string | null;
+}
+export interface Operation {
+  id: string;
+  state: "claimed" | "committed" | "failed";
+  result: { nodeId?: string; status?: number } | null;
+  errorCode?: string;
+}
+export interface Part {
+  partNumber: number;
+  attempts: number;
+  attemptId: string | null;
+  state: "pending" | "in_flight" | "completed" | "unknown";
+  expectedBytes: number;
+}
+export interface UploadReceipt {
+  id: string;
+  mode: "single" | "multipart";
+  state: string;
+  declaredSize: number;
+  expiresAt: number;
+  cleanupPending: boolean;
+  operationId: string | null;
+  errorCode: string | null;
+  partBytes?: number;
+  partCount?: number;
+  parts?: Part[];
+  nextAfter?: number | null;
+  revision?: number;
+}
+export interface LinkShare {
+  id: string;
+  rootNodeId: string | null;
+  version: number;
+  disabledAt: number | null;
+  expiresAt: number | null;
+  createdAt: number;
+  actions: readonly string[];
+}
+export interface CreatedLinkShare extends LinkShare {
+  secret: string;
+  shareUrl: string;
+}
 
 export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly existingNodeId: string | undefined;
-  readonly revision: number | undefined;
-
   constructor(
-    status: number,
-    error: { code?: string; message?: string; existingNodeId?: string; revision?: number },
+    readonly status: number,
+    readonly code: string,
+    readonly operationId: string | null = null,
   ) {
-    super(error.message ?? `Request failed (${status})`);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = error.code ?? "request_failed";
-    this.existingNodeId = error.existingNodeId;
-    this.revision = error.revision;
+    super(code);
   }
 }
 
-async function responseError(response: Response): Promise<ApiError> {
-  const body = (await response.json().catch(() => null)) as {
-    error?: {
-      code?: string;
-      message?: string;
-      existingNodeId?: string;
-      revision?: number;
-    };
-  } | null;
-  return new ApiError(response.status, body?.error ?? {});
+export function errorMessage(error: unknown): string {
+  if (!(error instanceof ApiError))
+    return "接続を確認できませんでした。しばらくしてから再試行してください。";
+  if (error.code === "gc_quiescing")
+    return "削除処理の完了を待っています。少し待ってから同じ操作を再確認してください。";
+  if (error.code === "blob_unrecoverable")
+    return "削除が進行済みのデータを含むため、この項目は復元できません。";
+  if (error.code === "commit_unknown")
+    return "処理結果を確認中です。同じ操作のまま再確認してください。";
+  if (error.status === 401) return "ログインの有効期限が切れました。もう一度ログインしてください。";
+  if (error.status === 403) return "この操作の権限、またはセッションの有効期限を確認してください。";
+  if (error.status === 404)
+    return "項目が見つからないか、アクセスできません。一覧を更新してください。";
+  if (error.status === 409 || error.status === 412)
+    return "同じ名前の項目、または別の操作による変更があります。一覧を更新して確認してください。";
+  if (error.status === 413 || error.status === 507)
+    return "ファイルサイズまたはストレージの上限を超えています。";
+  if (error.status === 429) return "処理が混み合っています。少し待ってから再試行してください。";
+  if (error.status === 503)
+    return "現在サービスを利用できません。データを保持して再接続を待っています。";
+  return "操作を完了できませんでした。入力内容を確認してください。";
 }
 
-async function csrf(): Promise<string> {
-  if (csrfToken !== null) {
-    return csrfToken;
-  }
-  const response = await fetch("/api/v1/csrf", {
-    method: "POST",
-    headers: { "Sec-Fetch-Site": "same-origin" },
-  });
-  if (!response.ok) {
-    throw await responseError(response);
-  }
-  const body = (await response.json()) as { token: string };
-  csrfToken = body.token;
-  return body.token;
-}
+export class ApiClient {
+  #csrf: { token: string; until: number } | undefined;
+  #csrfFlight: Promise<string> | undefined;
+  #lifetime = new AbortController();
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  const method = init?.method ?? "GET";
-  if (!["GET", "HEAD"].includes(method)) {
-    headers.set("X-CSRF-Token", await csrf());
-    headers.set("Sec-Fetch-Site", "same-origin");
-    if (typeof init?.body === "string" && !headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json");
+  clear() {
+    this.#lifetime.abort();
+    this.#lifetime = new AbortController();
+    this.#csrf = undefined;
+    this.#csrfFlight = undefined;
+  }
+
+  async request<T>(path: string, init: RequestInit = {}, timeout = 30_000): Promise<T> {
+    if (!path.startsWith("/api/v1/")) throw new Error("invalid_api_path");
+    const lifetime = this.#lifetime;
+    const signals = [lifetime.signal, AbortSignal.timeout(timeout)];
+    if (init.signal) signals.push(init.signal);
+    const response = await fetch(path, {
+      ...init,
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.any(signals),
+    });
+    const value = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    lifetime.signal.throwIfAborted();
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) this.#csrf = undefined;
+      throw new ApiError(
+        response.status,
+        typeof value?.title === "string" ? value.title : "request_failed",
+        response.headers.get("Operation-Id"),
+      );
     }
+    if (response.status === 204) return undefined as T;
+    if (value === null) throw new Error("invalid_api_response");
+    return value as T;
   }
-  const response = await fetch(path, { ...init, headers });
-  if (!response.ok) {
-    if (response.status === 403) {
-      csrfToken = null;
-    }
-    throw await responseError(response);
-  }
-  return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
-}
 
-export const api = {
-  me: () => request<MeResponse>("/api/v1/me"),
-  children: (nodeId: string, cursor?: string) =>
-    request<ChildrenPage>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/children${cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`}`,
-    ),
-  path: (nodeId: string) =>
-    request<{ items: BreadcrumbItem[] }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/path`),
-  createFolder: (parentId: string, name: string) =>
-    request<NodeSummary>("/api/v1/nodes", {
-      method: "POST",
-      body: JSON.stringify({ parentId, name }),
-    }),
-  rename: (nodeId: string, name: string) =>
-    request<NodeSummary>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name }),
-    }),
-  move: (nodeId: string, destinationParentId: string) =>
-    request<NodeSummary>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/move`, {
-      method: "POST",
-      body: JSON.stringify({ destinationParentId }),
-    }),
-  copy: (nodeId: string, destinationParentId: string, name?: string) =>
-    request<NodeSummary>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/copy`, {
-      method: "POST",
-      body: JSON.stringify({ destinationParentId, name }),
-    }),
-  versions: (nodeId: string) =>
-    request<{ items: NodeVersionSummary[] }>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/versions`,
-    ),
-  restoreVersion: (nodeId: string, versionId: string, expectedRevision: number) =>
-    request<NodeSummary>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/versions/${encodeURIComponent(versionId)}/restore`,
-      { method: "POST", body: JSON.stringify({ expectedRevision }) },
-    ),
-  createUpload: (parentId: string, name: string, declaredSize: number, mode: UploadMode) =>
-    request<UploadInfo>("/api/v1/uploads", {
-      method: "POST",
-      body: JSON.stringify({ parentId, name, declaredSize, mode }),
-    }),
-  uploadStatus: (uploadId: string, capability: string) =>
-    request<UploadInfo>(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
-      headers: { "Upload-Capability": capability },
-    }),
-  putSingle: (uploadId: string, capability: string, body: Blob) =>
-    request<UploadInfo>(`/api/v1/uploads/${encodeURIComponent(uploadId)}/content`, {
-      method: "PUT",
-      headers: { "Upload-Capability": capability },
-      body,
-    }),
-  putPart: (uploadId: string, capability: string, partNumber: number, body: Blob) =>
-    request<{ partNumber: number; size: number; etag: string }>(
-      `/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/${partNumber}`,
-      {
-        method: "PUT",
-        headers: { "Upload-Capability": capability },
-        body,
+  async csrf(): Promise<string> {
+    if (this.#csrf && this.#csrf.until > Date.now()) return this.#csrf.token;
+    if (!this.#csrfFlight) {
+      const lifetime = this.#lifetime;
+      const flight = this.request<{ token: string }>("/api/v1/csrf", { method: "POST" })
+        .then(({ token }) => {
+          lifetime.signal.throwIfAborted();
+          this.#csrf = { token, until: Date.now() + 4 * 60_000 };
+          return token;
+        })
+        .finally(() => {
+          if (this.#csrfFlight === flight) this.#csrfFlight = undefined;
+        });
+      this.#csrfFlight = flight;
+    }
+    return this.#csrfFlight;
+  }
+
+  async json<T>(
+    path: string,
+    method: string,
+    body: unknown,
+    key?: string,
+    extra: Record<string, string> = {},
+  ): Promise<T> {
+    const lifetime = this.#lifetime;
+    const token = await this.csrf();
+    lifetime.signal.throwIfAborted();
+    return this.request<T>(path, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+        ...(key ? { "Idempotency-Key": key } : {}),
+        ...extra,
       },
-    ),
-  completeUpload: (
-    uploadId: string,
-    capability: string,
-    options?: { mode: "overwrite"; expectedRevision: number } | { mode: "rename" },
-  ) => {
-    const query =
-      options === undefined
-        ? ""
-        : options.mode === "overwrite"
-          ? `?mode=overwrite&expectedRevision=${options.expectedRevision}`
-          : "?mode=rename";
-    return request<NodeSummary>(
-      `/api/v1/uploads/${encodeURIComponent(uploadId)}/complete${query}`,
-      {
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** Retains the same idempotency key across network uncertainty. Never turns uncertainty into a second mutation. */
+  async mutation(path: string, method: string, body: unknown, key: string): Promise<Operation> {
+    let operation: Operation;
+    try {
+      operation = await this.json<Operation>(path, method, body, key);
+    } catch (error) {
+      if (!(error instanceof ApiError) || !error.operationId) throw error;
+      operation = await this.request<Operation>(
+        `/api/v1/operations/${encodeURIComponent(error.operationId)}`,
+      );
+    }
+    if (operation.state === "claimed") throw new ApiError(503, "commit_unknown", operation.id);
+    if (operation.state !== "committed") throw new ApiError(409, "conflict", operation.id);
+    return operation;
+  }
+
+  me(signal?: AbortSignal) {
+    return this.request<Account>("/api/v1/me", signal ? { signal } : {});
+  }
+  children(id: string, cursor?: string | null, signal?: AbortSignal) {
+    return this.request<Children>(
+      `/api/v1/nodes/${encodeURIComponent(id)}/children${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+  search(scopeId: string, q: string, cursor?: string | null, signal?: AbortSignal) {
+    const params = new URLSearchParams({ scopeId, q });
+    if (cursor) params.set("cursor", cursor);
+    return this.request<SearchPage>(`/api/v1/search?${params}`, signal ? { signal } : {});
+  }
+  stats(scopeId: string, signal?: AbortSignal) {
+    return this.request<FolderStats>(
+      `/api/v1/stats?scopeId=${encodeURIComponent(scopeId)}`,
+      signal ? { signal } : {},
+    );
+  }
+  shares(signal?: AbortSignal) {
+    return this.request<{ shares: LinkShare[] }>("/api/v1/shares", signal ? { signal } : {});
+  }
+  createShare(rootNodeId: string, spaceId: string, ttlDays: number) {
+    return this.json<CreatedLinkShare>("/api/v1/shares", "POST", {
+      rootNodeId,
+      spaceId,
+      ttlDays,
+    });
+  }
+  async disableShare(shareId: string): Promise<void> {
+    const token = await this.csrf();
+    await this.request(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+    });
+  }
+  path(id: string, signal?: AbortSignal) {
+    return this.request<{ path: Breadcrumb[] }>(
+      `/api/v1/nodes/${encodeURIComponent(id)}/path`,
+      signal ? { signal } : {},
+    );
+  }
+  trash(space: string, cursor?: string | null, signal?: AbortSignal) {
+    return this.request<TrashPage>(
+      `/api/v1/trash?spaceId=${encodeURIComponent(space)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+
+  async openFile(account: Account, node: FileNode, target: Window): Promise<void> {
+    const lifetime = this.#lifetime;
+    try {
+      const origin = new URL(account.contentOrigin);
+      if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
+        throw new Error("invalid_content_origin");
+      const issued = await this.json<{ ticket: string }>("/api/v1/content-session", "POST", {
+        targets: [{ nodeId: node.id, spaceId: account.spaceId }],
+        purpose: "content",
+        ttlSeconds: 300,
+      });
+      lifetime.signal.throwIfAborted();
+      const accepted = await fetch(`${origin.origin}/session`, {
         method: "POST",
-        headers: { "Upload-Capability": capability },
-      },
-    );
-  },
-  abortUpload: (uploadId: string, capability: string) =>
-    request<undefined>(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
-      method: "DELETE",
-      headers: { "Upload-Capability": capability },
-    }),
-  search: (rootId: string, query: string, signal?: AbortSignal) =>
-    request<{ items: NodeSummary[]; truncated: boolean }>(
-      `/api/v1/search?root=${encodeURIComponent(rootId)}&q=${encodeURIComponent(query)}`,
-      signal === undefined ? undefined : { signal },
-    ),
-  stats: () =>
-    request<{
-      quotaBytes: number;
-      usedBytes: number;
-      physicalBytes: number;
-      reservedBytes: number;
-      files: number;
-      folders: number;
-      logicalBytes: number;
-      truncated: boolean;
-    }>("/api/v1/stats"),
-  gallery: (rootId: string, recursive: boolean, cursor?: string) =>
-    request<GalleryPage>(
-      `/api/v1/nodes/${encodeURIComponent(rootId)}/gallery?recursive=${recursive}${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
-    ),
-  tracks: (folderId: string) =>
-    request<AudioAlbum>(`/api/v1/nodes/${encodeURIComponent(folderId)}/tracks`),
-  savePlaybackState: (nodeId: string, positionMs: number) =>
-    request<undefined>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/playback-state`, {
-      method: "PUT",
-      body: JSON.stringify({ positionMs }),
-    }),
-  libraryItems: () => request<{ items: LibraryItemSummary[] }>("/api/v1/library/items"),
-  libraryItem: (itemId: string) =>
-    request<{ item: LibraryItemSummary; entries: EpubEntrySummary[] }>(
-      `/api/v1/library/items/${encodeURIComponent(itemId)}`,
-    ),
-  libraryRoots: () => request<{ items: LibraryRootSummary[] }>("/api/v1/library/roots"),
-  addLibraryRoot: (nodeId: string) =>
-    request<{ items: LibraryRootSummary[] }>("/api/v1/library/roots", {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+        credentials: "include",
+        redirect: "error",
+        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)]),
+      });
+      lifetime.signal.throwIfAborted();
+      if (!accepted.ok) throw new ApiError(accepted.status, "content_session_failed");
+      target.location.replace(
+        `${origin.origin}/c/${encodeURIComponent(node.id)}/${encodeURIComponent(node.currentBlobId ?? "")}`,
+      );
+    } catch (error) {
+      target.close();
+      throw error;
+    }
+  }
+
+  async logout(): Promise<void> {
+    const response = await fetch("/api/v1/auth/logout", {
       method: "POST",
-      body: JSON.stringify({ nodeId }),
-    }),
-  removeLibraryRoot: (nodeId: string) =>
-    request<undefined>(`/api/v1/library/roots/${encodeURIComponent(nodeId)}`, {
-      method: "DELETE",
-    }),
-  libraryPageUrl: (itemId: string, page: number) =>
-    `/api/v1/library/items/${encodeURIComponent(itemId)}/pages/${page}`,
-  epubEntry: async (itemId: string, entryId: string) => {
-    const response = await fetch(
-      `/api/v1/library/items/${encodeURIComponent(itemId)}/entries/${encodeURIComponent(entryId)}`,
-    );
-    if (!response.ok) throw await responseError(response);
-    return response.text();
-  },
-  saveReadingState: (itemId: string, position: ReadingPosition) =>
-    request<undefined>(`/api/v1/library/items/${encodeURIComponent(itemId)}/reading-state`, {
-      method: "PUT",
-      body: JSON.stringify(position),
-    }),
-  recent: () => request<{ items: NodeSummary[] }>("/api/v1/recent"),
-  starred: () => request<{ items: NodeSummary[] }>("/api/v1/starred"),
-  setStar: (nodeId: string, starred: boolean) =>
-    request<undefined>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/star`, {
-      method: "PUT",
-      body: JSON.stringify({ starred }),
-    }),
-  trashNode: (nodeId: string) =>
-    request<{ trashOpId: string }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, {
-      method: "DELETE",
-    }),
-  trash: () => request<TrashPage>("/api/v1/trash"),
-  restoreTrash: (opId: string) =>
-    request<NodeSummary>(`/api/v1/trash/${encodeURIComponent(opId)}/restore`, {
-      method: "POST",
-      body: "{}",
-    }),
-  purgeTrash: (opId: string) =>
-    request<{ purged: boolean; members: number }>(
-      `/api/v1/trash/${encodeURIComponent(opId)}/purge`,
-      { method: "POST", body: "{}" },
-    ),
-  shares: () => request<{ items: ShareSummary[] }>("/api/v1/shares"),
-  createShare: (input: {
-    rootNodeId: string;
-    kind: ShareKind;
-    mode: ShareMode;
-    expiresAt?: number | null;
-    password?: string;
-    granteeEmail?: string;
-  }) =>
-    request<ShareSummary>("/api/v1/shares", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  updateShare: (
-    shareId: string,
-    input: { mode?: ShareMode; expiresAt?: number | null; password?: string | null },
-  ) =>
-    request<ShareSummary>(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-    }),
-  disableShare: (shareId: string) =>
-    request<undefined>(`/api/v1/shares/${encodeURIComponent(shareId)}`, {
-      method: "DELETE",
-    }),
-  sharedWithMe: () => request<{ items: SharedMount[] }>("/api/v1/shared-with-me"),
-  appPasswords: () => request<{ items: AppPasswordSummary[] }>("/api/v1/app-passwords"),
-  createAppPassword: (label: string, expiresInDays: number) =>
-    request<CreatedAppPassword>("/api/v1/app-passwords", {
-      method: "POST",
-      body: JSON.stringify({ label, expiresInDays }),
-    }),
-  revokeAppPassword: (credentialId: string) =>
-    request<undefined>(`/api/v1/app-passwords/${encodeURIComponent(credentialId)}`, {
-      method: "DELETE",
-    }),
-  createZip: (nodeId: string) =>
-    request<{ id: string; size: number; expiresAt: number }>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/zip`,
-      { method: "POST", body: "{}" },
-    ),
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
+      credentials: "same-origin",
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (response.type !== "opaqueredirect" && response.status !== 303)
+      throw new ApiError(response.status, "logout_failed");
+  }
+}
+
+export const api = new ApiClient();
+export const formatBytes = (bytes: number | null): string => {
+  if (bytes === null) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${new Intl.NumberFormat("ja-JP", { maximumFractionDigits: exponent ? 1 : 0 }).format(bytes / 1024 ** exponent)} ${units[exponent]}`;
 };

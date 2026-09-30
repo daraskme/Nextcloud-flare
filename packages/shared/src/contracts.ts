@@ -1,14 +1,4 @@
-import { z } from "zod";
-
-export const idSchema = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9_-]+$/u);
-export const epochSchema = z.number().int().positive();
-export const timestampSchema = z.number().int().nonnegative();
-
-export const scopes = [
+export const SCOPES = [
   "account:read",
   "node:read",
   "node:create",
@@ -30,173 +20,185 @@ export const scopes = [
   "admin:dlq",
   "admin:repair",
 ] as const;
+export type Scope = (typeof SCOPES)[number];
 
-export const scopeSchema = z.enum(scopes);
-export type Scope = z.infer<typeof scopeSchema>;
+export const STATES = {
+  operation: ["claimed", "committed", "failed"],
+  permit: ["open", "released", "revoked"],
+  blob: ["staging", "committed", "orphan", "gc_candidate", "deleting", "deleted"],
+  trash: ["pending", "trashed", "restoring", "restored", "purging", "purged"],
+  outbox: ["pending", "dispatching", "sent", "completed", "failed"],
+  singleUpload: ["created", "receiving", "completing", "completed", "aborted", "expired", "failed"],
+  multipartUpload: [
+    "created",
+    "uploading",
+    "completing",
+    "completed",
+    "aborting",
+    "aborted",
+    "expired",
+    "failed",
+  ],
+  job: ["pending", "running", "completed", "failed", "cancelled"],
+  gc: ["candidate", "deleting", "deleted"],
+} as const;
 
-export const operations = [
-  "spa.read",
-  "public.asset.read",
-  "share.landing",
-  "reader.shell",
-  "account.read",
-  "account.logout",
-  "csrf.issue",
-  "node.read",
-  "node.create",
-  "node.content.write",
-  "node.rename",
-  "node.move",
-  "node.copy",
-  "node.trash",
-  "node.restore",
-  "node.purge",
-  "node.star",
-  "search.read",
-  "recent.read",
-  "starred.read",
-  "shared.read",
-  "trash.read",
-  "zip.create",
-  "zip.read",
-  "gallery.read",
-  "audio.read",
-  "audio.metadata.write",
-  "library.read",
-  "library.write",
-  "reading_state.write",
-  "playback_state.write",
-  "tag.read",
-  "tag.create",
-  "tag.update",
-  "tag.delete",
-  "upload.create",
-  "upload.read",
-  "upload.write",
-  "upload.abort",
-  "upload.complete",
-  "share.read",
-  "share.manage",
-  "share.disable",
-  "share.unlock",
-  "share.logout",
-  "content.session.create",
-  "content.session.accept",
-  "ticket.cancel",
-  "content.read",
-  "credential.read",
-  "credential.create",
-  "credential.revoke",
-  "job.read",
-  "job.cancel",
-  "job.retry",
-  "operation.read",
-  "admin.user.disable",
-  "admin.transfer",
-  "admin.lock.force_unlock",
-  "admin.dlq",
-  "admin.repair",
-  "automation.list",
-  "automation.metadata.read",
-  "dav.options",
-  "dav.read",
-  "dav.propfind",
-  "dav.put",
-  "dav.mkcol",
-  "dav.proppatch",
-  "dav.copy",
-  "dav.move",
-  "dav.delete",
-  "dav.lock",
-  "dav.unlock",
-] as const;
+export const SINGLE_UPLOAD_TRANSITIONS = {
+  created: ["receiving", "aborted", "expired"],
+  receiving: ["completing", "aborted", "expired"],
+  completing: ["completed", "failed"],
+  completed: [],
+  aborted: [],
+  expired: [],
+  failed: [],
+} as const satisfies Record<(typeof STATES.singleUpload)[number], readonly string[]>;
 
-export const operationSchema = z.enum(operations);
-export type Operation = z.infer<typeof operationSchema>;
+export const SYSTEM_OPERATIONS = ["system.gc", "system.repair", "system.backup"] as const;
 
-const basePrincipalSchema = z.object({
-  principalId: idSchema,
-  credentialId: z.string().min(1).max(160),
-  scopes: z.array(scopeSchema).max(scopes.length),
-});
+export const OPERATIONS = {
+  "spa.read": [],
+  "public.asset.read": [],
+  "share.landing": [],
+  "reader.shell": [],
+  "account.read": ["account:read"],
+  "account.logout": [],
+  "csrf.issue": [],
+  "node.read": ["node:read"],
+  "search.read": ["node:read"],
+  "recent.read": ["node:read"],
+  "starred.read": ["node:read"],
+  "shared.read": ["node:read"],
+  "trash.read": ["node:read"],
+  "node.create": ["node:create"],
+  "node.content.write": ["node:write"],
+  "node.rename": ["node:write"],
+  "node.move": ["node:write", "node:create", "node:delete"],
+  "node.copy": ["node:read", "node:create", "node:delete"],
+  "node.trash": ["node:delete"],
+  "node.restore": ["node:create"],
+  "node.purge": ["node:delete"],
+  "node.star": ["node:star"],
+  "zip.create": ["node:read"],
+  "zip.read": ["node:read"],
+  "gallery.read": ["library:read"],
+  "audio.read": ["library:read"],
+  "library.read": ["library:read"],
+  "library.write": ["library:write"],
+  "audio.metadata.write": ["library:write"],
+  "reading_state.write": ["state:write"],
+  "playback_state.write": ["state:write"],
+  "tag.read": ["node:read"],
+  "tag.create": ["tag:write"],
+  "tag.update": ["tag:write"],
+  "tag.delete": ["tag:write"],
+  "upload.create": ["upload:create"],
+  "upload.read": ["upload:write"],
+  "upload.write": ["upload:write"],
+  "upload.abort": ["upload:write"],
+  "upload.complete": ["upload:write"],
+  "share.read": ["node:read"],
+  "share.manage": ["share:manage"],
+  "share.disable": ["share:manage"],
+  "share.unlock": [],
+  "share.logout": [],
+  "content.session.create": [],
+  "content.session.accept": [],
+  "ticket.cancel": [],
+  "content.read": [],
+  "credential.read": ["credential:manage"],
+  "credential.create": ["credential:manage"],
+  "credential.revoke": ["credential:manage"],
+  "job.read": ["job:read"],
+  "job.cancel": ["job:cancel"],
+  "job.retry": ["job:cancel"],
+  "operation.read": [],
+  "admin.user.disable": ["admin:user"],
+  "admin.transfer": ["admin:user"],
+  "admin.lock.force_unlock": ["admin:lock"],
+  "admin.dlq": ["admin:dlq"],
+  "admin.repair": ["admin:repair"],
+  "automation.list": ["node:read"],
+  "automation.metadata.read": ["node:read"],
+  "dav.options": [],
+  "dav.read": ["node:read"],
+  "dav.propfind": ["node:read"],
+  "dav.put": ["node:create", "node:write"],
+  "dav.mkcol": ["node:create"],
+  "dav.proppatch": ["node:write"],
+  "dav.copy": ["node:read", "node:create", "node:delete"],
+  "dav.move": ["node:write", "node:create", "node:delete"],
+  "dav.delete": ["node:delete"],
+  "dav.lock": ["node:create", "node:write"],
+  "dav.unlock": ["node:write"],
+} as const satisfies Record<string, readonly Scope[]>;
+export type Operation = keyof typeof OPERATIONS;
 
-export const principalSchema = z.discriminatedUnion("kind", [
-  basePrincipalSchema.extend({
-    kind: z.literal("user"),
-    userId: idSchema,
-    sessionId: idSchema,
-  }),
-  basePrincipalSchema.extend({
-    kind: z.literal("app_password"),
-    userId: idSchema,
-    appPasswordId: idSchema,
-    rootNodeId: idSchema.nullable(),
-  }),
-  basePrincipalSchema.extend({
-    kind: z.literal("share"),
-    shareId: idSchema,
-    shareVersion: z.number().int().positive(),
-    rootNodeId: idSchema,
-  }),
-  basePrincipalSchema.extend({
-    kind: z.literal("service"),
-    serviceId: idSchema,
-    mappedUserId: idSchema,
-    spaceId: idSchema,
-  }),
-  basePrincipalSchema.extend({
-    kind: z.literal("job"),
-    actorId: idSchema,
-    operationId: idSchema,
-    claimFence: idSchema,
-  }),
-  basePrincipalSchema.extend({
-    kind: z.literal("system"),
-    systemKind: z.enum(["gc", "repair", "backup", "restore"]),
-    claimFence: idSchema,
-  }),
-]);
+export type OperationScopeCondition = "always" | "create" | "overwrite" | "existing" | "lock-null";
+export interface OperationScopeTuple {
+  readonly operand: "source" | "sourceParent" | "destinationParent" | "overwriteTarget";
+  readonly when: OperationScopeCondition;
+  readonly scopes: readonly Scope[];
+}
 
-export type Principal = z.infer<typeof principalSchema>;
+export const OPERATION_SCOPE_TUPLES = {
+  "node.move": [
+    { operand: "source", when: "always", scopes: ["node:write"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "node.copy": [
+    { operand: "source", when: "always", scopes: ["node:read"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "node.trash": [{ operand: "source", when: "always", scopes: ["node:delete"] }],
+  "dav.put": [
+    { operand: "destinationParent", when: "create", scopes: ["node:create"] },
+    { operand: "source", when: "overwrite", scopes: ["node:write"] },
+  ],
+  "dav.copy": [
+    { operand: "source", when: "always", scopes: ["node:read"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "dav.move": [
+    { operand: "source", when: "always", scopes: ["node:write"] },
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+    { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
+  ],
+  "dav.delete": [{ operand: "source", when: "always", scopes: ["node:delete"] }],
+  "dav.lock": [
+    { operand: "source", when: "existing", scopes: ["node:write"] },
+    { operand: "sourceParent", when: "lock-null", scopes: ["node:create"] },
+  ],
+} as const satisfies Partial<Record<Operation, readonly OperationScopeTuple[]>>;
 
-export const createNodeRequestSchema = z.object({
-  parentId: idSchema,
-  spaceId: idSchema,
-  kind: z.literal("folder"),
-  name: z.string().min(1).max(255),
-  expectedParentRevision: z.number().int().positive(),
-  expectedTreeGeneration: z.number().int().positive(),
-});
+// Scope lists are necessary constraints, never complete authorization decisions.
+// Multi-operand and create/overwrite variants are refined by OPERATION_SCOPE_TUPLES.
+// Empty lists still require the operation-specific surface/credential/target policy.
+export type PrincipalKind = "user" | "app_password" | "link_share" | "service" | "job" | "system";
+export type AuthMode =
+  | "access"
+  | "app_password"
+  | "share"
+  | "service"
+  | "public"
+  | "content_cookie";
+export type CsrfProfile =
+  | "same-origin-json"
+  | "cross-origin-content"
+  | "dav"
+  | "public-form"
+  | "csrf-issue"
+  | "public-csrf-issue";
 
-export const uploadStates = [
-  "created",
-  "receiving",
-  "completing",
-  "completed",
-  "failed",
-  "aborted",
-  "expired",
-] as const;
-
-export const uploadStateSchema = z.enum(uploadStates);
-export type UploadState = z.infer<typeof uploadStateSchema>;
-
-export const routeMethods = [
-  "GET",
-  "HEAD",
-  "POST",
-  "PUT",
-  "PATCH",
-  "DELETE",
-  "OPTIONS",
-  "PROPFIND",
-  "PROPPATCH",
-  "MKCOL",
-  "COPY",
-  "MOVE",
-  "LOCK",
-  "UNLOCK",
-] as const;
-
-export const routeMethodSchema = z.enum(routeMethods);
-export type RouteMethod = z.infer<typeof routeMethodSchema>;
+export interface RouteContract {
+  readonly host: "app" | "content";
+  readonly method: string;
+  readonly template: string;
+  readonly auth: readonly AuthMode[];
+  readonly operation: Operation;
+  readonly operands: readonly string[];
+  readonly adminOnly: boolean;
+  readonly csrf: CsrfProfile;
+}

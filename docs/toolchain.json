@@ -1,0 +1,353 @@
+{
+  "selectedAt": "2026-09-21",
+  "cutoff": "2026-09-14T00:00:00.000Z",
+  "registry": "https://registry.npmjs.org",
+  "versions": {
+    "aws4fetch": {
+      "version": "1.0.20",
+      "publishedAt": "2024-08-28T07:29:54.308Z",
+      "selectedAt": "2026-09-23",
+      "engines": {},
+      "peers": {},
+      "review": "Dependency-free MIT WebCrypto signer documented by Cloudflare for R2. Inventory uses sign() with s3/auto and one explicit fetch, manual redirects, bounded response and timeout; AwsClient.fetch retries are not used."
+    },
+    "unicode-case-folding": {
+      "version": "1.1.1",
+      "publishedAt": "2025-10-01T18:38:32.834Z",
+      "selectedAt": "2026-09-22",
+      "engines": {},
+      "peers": {},
+      "review": "Dependency-free MIT ESM. All 1585 mappings and unmapped codepoints matched official Unicode 17.0.0 C/F case folding. Official CaseFolding.txt SHA256 ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183."
+    },
+    "jose": {
+      "version": "6.2.12",
+      "publishedAt": "2026-09-05T09:17:12.608Z",
+      "selectedAt": "2026-09-22",
+      "engines": {},
+      "peers": {},
+      "review": "Dependency-free ESM/WebCrypto implementation; upstream supports Cloudflare Workers. JWT verification tested in Node and workerd."
+    },
+    "node": {
+      "version": "24.21.0",
+      "publishedAt": "2026-09-10T00:48:28.813Z",
+      "engines": {
+        "npm": ">=5.0.0"
+      },
+      "peers": {}
+    },
+    "pnpm": {
+      "version": "12.4.1",
+      "publishedAt": "2026-09-10T17:06:43.260Z",
+      "engines": {
+        "node": ">=18.*"
+      },
+      "peers": {}
+    },
+    "wrangler": {
+      "version": "4.131.1",
+      "publishedAt": "2026-09-11T14:01:47.833Z",
+      "engines": {
+        "node": ">=22.0.0"
+      },
+      "peers": {
+        "@cloudflare/workers-types": "^5.20260911.1"
+      }
+    },
+    "typescript": {
+      "version": "5.9.3",
+      "publishedAt": "2025-09-30T21:19:38.784Z",
+      "engines": {
+        "node": ">=14.17"
+      },
+      "peers": {}
+    },
+    "vitest": {
+      "version": "4.1.11",
+      "publishedAt": "2026-08-18T14:27:07.240Z",
+      "engines": {
+        "node": "^20.0.0 || ^22.0.0 || >=24.0.0"
+      },
+      "peers": {
+        "vite": "^6.0.0 || ^7.0.0 || ^8.0.0",
+        "jsdom": "*",
+        "happy-dom": "*",
+        "@vitest/ui": "4.1.11",
+        "@types/node": "^20.0.0 || ^22.0.0 || >=24.0.0",
+        "@edge-runtime/vm": "*",
+        "@opentelemetry/api": "^1.9.0",
+        "@vitest/coverage-v8": "4.1.11",
+        "@vitest/browser-preview": "4.1.11",
+        "@vitest/coverage-istanbul": "4.1.11",
+        "@vitest/browser-playwright": "4.1.11",
+        "@vitest/browser-webdriverio": "4.1.11"
+      }
+    },
+    "@cloudflare/vitest-pool-workers": {
+      "version": "0.22.0",
+      "publishedAt": "2026-08-18T13:00:31.841Z",
+      "engines": {},
+      "peers": {
+        "vitest": "^4.1.0",
+        "@vitest/runner": "^4.1.0",
+        "@vitest/snapshot": "^4.1.0"
+      }
+    },
+    "@cloudflare/workers-types": {
+      "version": "5.20260911.1",
+      "publishedAt": "2026-09-11T01:16:03.373Z",
+      "engines": {},
+      "peers": {}
+    },
+    "@types/node": {
+      "version": "24.13.4",
+      "publishedAt": "2026-09-09T18:10:47.240Z",
+      "engines": {},
+      "peers": {}
+    },
+    "@biomejs/biome": {
+      "version": "2.5.13",
+      "publishedAt": "2026-09-10T11:09:56.675Z",
+      "engines": {
+        "node": ">=14.21.3"
+      },
+      "peers": {}
+    },
+    "fflate": {
+      "version": "0.8.3",
+      "publishedAt": "2026-05-16T00:14:03.449Z",
+      "engines": {},
+      "peers": {}
+    },
+    "fast-xml-parser": {
+      "version": "5.11.1",
+      "publishedAt": "2026-08-27T05:17:26.677Z",
+      "selectedAt": "2026-09-23",
+      "engines": {},
+      "peers": {},
+      "review": "MIT ESM parser selected after the seven-day release cutoff. DAV uses preserveOrder with entity processing disabled, rejects DTD/entity declarations and XInclude, and enforces independent byte, depth, element, attribute, namespace and property budgets."
+    },
+    "vite": {
+      "version": "7.3.6",
+      "publishedAt": "2026-06-25T01:51:49.605Z",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peers": {
+        "tsx": "^4.8.1",
+        "jiti": ">=1.21.0",
+        "less": "^4.0.0",
+        "sass": "^1.70.0",
+        "yaml": "^2.4.2",
+        "stylus": ">=0.54.8",
+        "terser": "^5.16.0",
+        "sugarss": "^5.0.0",
+        "@types/node": "^20.19.0 || >=22.12.0",
+        "lightningcss": "^1.21.0",
+        "sass-embedded": "^1.70.0"
+      }
+    },
+    "react": {
+      "version": "19.3.0",
+      "publishedAt": "2026-09-09T17:21:30.071Z",
+      "selectedAt": "2026-09-24",
+      "engines": {
+        "node": ">=0.10.0"
+      },
+      "peers": {},
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "react-dom": {
+      "version": "19.3.0",
+      "publishedAt": "2026-09-09T17:17:39.744Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^19.3.0"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@tanstack/react-router": {
+      "version": "1.170.36",
+      "publishedAt": "2026-09-13T13:18:42.037Z",
+      "selectedAt": "2026-09-24",
+      "engines": {
+        "node": ">=20.19"
+      },
+      "peers": {
+        "react": ">=18.0.0 || >=19.0.0",
+        "react-dom": ">=18.0.0 || >=19.0.0"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@tanstack/react-query": {
+      "version": "5.102.8",
+      "publishedAt": "2026-08-27T16:06:57.089Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^18 || ^19"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@tanstack/react-virtual": {
+      "version": "3.14.12",
+      "publishedAt": "2026-09-11T15:42:21.369Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0",
+        "react-dom": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@radix-ui/react-dialog": {
+      "version": "1.1.23",
+      "publishedAt": "2026-07-24T23:51:17.929Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",
+        "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",
+        "@types/react": "*",
+        "@types/react-dom": "*"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@radix-ui/react-dropdown-menu": {
+      "version": "2.1.24",
+      "publishedAt": "2026-07-24T23:51:25.535Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",
+        "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",
+        "@types/react": "*",
+        "@types/react-dom": "*"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@radix-ui/react-slot": {
+      "version": "1.3.3",
+      "publishedAt": "2026-07-24T23:51:36.867Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc",
+        "@types/react": "*"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "class-variance-authority": {
+      "version": "0.7.1",
+      "publishedAt": "2024-11-26T08:20:34.604Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {},
+      "license": "Apache-2.0",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "clsx": {
+      "version": "2.1.1",
+      "publishedAt": "2024-04-23T05:26:04.645Z",
+      "selectedAt": "2026-09-24",
+      "engines": {
+        "node": ">=6"
+      },
+      "peers": {},
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "tailwind-merge": {
+      "version": "3.7.0",
+      "publishedAt": "2026-09-12T20:10:15.257Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {},
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "lucide-react": {
+      "version": "0.577.0",
+      "publishedAt": "2026-03-04T09:27:02.253Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+      },
+      "license": "ISC",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "tailwindcss": {
+      "version": "4.3.3",
+      "publishedAt": "2026-07-16T12:03:35.267Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {},
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@tailwindcss/vite": {
+      "version": "4.3.3",
+      "publishedAt": "2026-07-16T12:04:06.316Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "vite": "^5.2.0 || ^6 || ^7 || ^8"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@vitejs/plugin-react": {
+      "version": "5.2.0",
+      "publishedAt": "2026-03-12T14:27:45.817Z",
+      "selectedAt": "2026-09-24",
+      "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+      },
+      "peers": {
+        "vite": "^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@types/react": {
+      "version": "19.3.0",
+      "publishedAt": "2026-09-09T18:08:49.750Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {},
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@types/react-dom": {
+      "version": "19.3.0",
+      "publishedAt": "2026-09-09T18:07:51.886Z",
+      "selectedAt": "2026-09-24",
+      "engines": {},
+      "peers": {
+        "@types/react": "^19.3.0"
+      },
+      "license": "MIT",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    },
+    "@playwright/test": {
+      "version": "1.63.0",
+      "publishedAt": "2026-09-04T22:44:00.304Z",
+      "selectedAt": "2026-09-24",
+      "engines": {
+        "node": ">=20"
+      },
+      "peers": {},
+      "license": "Apache-2.0",
+      "review": "Browser UI/test dependency, selected from official npm metadata at or before existing 2026-09-14 cutoff; compatible React19/Vite7 peers. Browser-only packages are excluded from the Worker bundle."
+    }
+  }
+}

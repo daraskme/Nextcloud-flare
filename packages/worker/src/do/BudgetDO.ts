@@ -1,160 +1,450 @@
-import type { Env } from "../env.js";
+import { DurableObject } from "cloudflare:workers";
+import { problem } from "@next-cloud-flare/shared/errors";
+import { primary } from "../db/primary";
+import type { Env } from "../env";
+import {
+  loadTargetManifest,
+  type TargetEntry,
+  type TargetManifestRecord,
+} from "../services/targetManifest";
 
-interface BudgetState {
-  maxBytes: number;
-  consumedBytes: number;
+const LEASE_MS = 600_000;
+const REQUEST_LIMIT = 1_024;
+const PARALLEL_LIMIT = 8;
+const MAX_ROWS = 1_024;
+const ID = /^[A-Za-z0-9_:-]{1,512}$/;
+const LEASE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+interface Authority extends TargetManifestRecord {
+  epoch: number;
+  budgetExpiresAt: number;
+  sessionExpiresAt: number;
+  totalBytes: number;
+}
+interface BudgetState extends Record<string, SqlStorageValue> {
+  budget_id: string;
+  epoch: number;
+  expires_at: number;
+  byte_limit: number;
+  bytes_charged: number;
+  window_start: number;
   requests: number;
-  active: number;
-  windowStartedAt?: number;
+}
+interface LeaseRow extends Record<string, SqlStorageValue> {
+  request_id: string;
+  session_id: string;
+  reserved_bytes: number;
+  charged_bytes: number;
+  expires_at: number;
+  state: "active" | "settled" | "unknown" | "expired";
 }
 
-interface LeaseRequest {
-  maxBytes: number;
-  bytes: number;
+export interface BudgetReserveRequest {
+  readonly budgetId: string;
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly epoch: number;
+  readonly bytes: number;
+}
+export interface BudgetLease {
+  readonly requestId: string;
+  readonly expiresAt: number;
+  readonly reservedBytes: number;
+}
+export interface BudgetSettleRequest {
+  readonly budgetId: string;
+  readonly requestId: string;
+  /** null means the transfer outcome is unknown and the full reservation is charged. */
+  readonly deliveredBytes: number | null;
 }
 
-interface LeaseState {
-  bytes: number;
-  expiresAt: number;
-}
-
-const LEASE_TTL_MS = 10 * 60 * 1000;
-
-function validLeaseRequest(value: unknown): value is LeaseRequest {
-  if (typeof value !== "object" || value === null) {
-    return false;
+/** Durable, per-budget admission. Public fetch remains closed until every content route uses it. */
+export class BudgetDO extends DurableObject<Env> {
+  #manifest: { key: string; targets: readonly TargetEntry[] } | undefined;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS budget_state(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),budget_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL,expires_at INTEGER NOT NULL,byte_limit INTEGER NOT NULL,
+      bytes_charged INTEGER NOT NULL,window_start INTEGER NOT NULL,requests INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS budget_leases(
+      request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,reserved_bytes INTEGER NOT NULL,
+      charged_bytes INTEGER NOT NULL,expires_at INTEGER NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('active','settled','unknown','expired')));
+      CREATE TABLE IF NOT EXISTS budget_allowance_window(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS budget_targets(
+      target_key TEXT PRIMARY KEY,size INTEGER NOT NULL CHECK(size>=0)) WITHOUT ROWID;`);
   }
-  const request = value as Partial<LeaseRequest>;
-  return (
-    Number.isSafeInteger(request.maxBytes) &&
-    request.maxBytes !== undefined &&
-    request.maxBytes >= 0 &&
-    Number.isSafeInteger(request.bytes) &&
-    request.bytes !== undefined &&
-    request.bytes >= 0
-  );
-}
 
-function leaseId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export class BudgetDO {
-  private readonly state: DurableObjectState;
-  private readonly env: Env;
-
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
+  fetch(): Response {
+    return problem(503, "not_ready");
   }
 
-  private async acquire(input: LeaseRequest): Promise<Response> {
-    const id = leaseId();
-    const accepted = await this.state.storage.transaction(async (transaction) => {
-      const now = Date.now();
-      const stored = await transaction.get<BudgetState>("budget");
-      const current =
-        stored === undefined ||
-        (stored.active === 0 && now - (stored.windowStartedAt ?? 0) >= LEASE_TTL_MS)
-          ? {
-              maxBytes: input.maxBytes,
-              consumedBytes: 0,
-              requests: 0,
-              active: 0,
-              windowStartedAt: now,
-            }
-          : stored;
+  #canonical(budgetId: string) {
+    if (
+      !ID.test(budgetId) ||
+      this.ctx.id.toString() !== this.env.BUDGETS.idFromName(budgetId).toString()
+    )
+      throw new Error("budget_namespace_mismatch");
+  }
+
+  async #authority(request: BudgetReserveRequest, now: number): Promise<Authority> {
+    const row = await primary(this.env.DB)
+      .prepare(`SELECT b.epoch,b.expires_at AS budgetExpiresAt,
+        cs.expires_at AS sessionExpiresAt,ts.total_bytes AS totalBytes,
+        ts.id,ts.manifest_ref AS ref,ts.manifest_hash AS hash
+        FROM budgets b JOIN content_sessions cs ON cs.budget_id=b.id
+        JOIN target_sets ts ON ts.id=cs.target_set_id AND ts.credential_id=cs.issued_by_credential_id
+          AND ts.owner_id=b.owner_id
+        JOIN tickets t ON t.id=cs.ticket_id AND t.budget_id=b.id AND t.target_set_id=ts.id
+          AND t.credential_id=cs.issued_by_credential_id
+        JOIN users owner ON owner.id=b.owner_id AND owner.disabled_at IS NULL
+        JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=b.epoch AND ctl.maintenance=0
+        WHERE b.id=? AND cs.id=? AND b.epoch=? AND cs.epoch=b.epoch
+          AND ts.epoch=b.epoch AND t.epoch=b.epoch
+          AND b.state='active' AND b.expires_at>? AND cs.revoked_at IS NULL
+          AND cs.expires_at>? AND ts.expires_at>? AND t.cancelled_at IS NULL
+          AND t.expires_at>? AND b.user_id IS cs.user_id AND b.share_id IS cs.share_id
+          AND EXISTS(SELECT 1 FROM credentials c WHERE c.id=cs.issued_by_credential_id
+            AND ((c.kind='access' AND EXISTS(
+              SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id
+              WHERE s.id=c.session_id AND s.kind='access' AND s.user_id=cs.user_id
+                AND s.epoch=cs.epoch AND s.revoked_at IS NULL AND s.expires_at>?
+                AND u.disabled_at IS NULL))
+            OR (c.kind='app_password' AND EXISTS(
+              SELECT 1 FROM app_passwords ap JOIN users u ON u.id=ap.user_id
+              WHERE ap.id=c.app_password_id AND ap.user_id=cs.user_id
+                AND ap.revoked_at IS NULL AND ap.expires_at>? AND u.disabled_at IS NULL))
+            OR (c.kind='share' AND cs.user_id IS NULL AND EXISTS(
+              SELECT 1 FROM share_sessions ss WHERE ss.id=c.share_session_id
+                AND ss.share_id=cs.share_id AND ss.share_version=cs.share_version
+                AND ss.epoch=cs.epoch AND ss.revoked_at IS NULL AND ss.expires_at>?))))
+          AND (cs.share_id IS NULL OR EXISTS(
+            SELECT 1 FROM shares sh WHERE sh.id=cs.share_id AND sh.version=cs.share_version
+              AND sh.owner_id=b.owner_id AND sh.disabled_at IS NULL
+              AND (sh.expires_at IS NULL OR sh.expires_at>?)
+              AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
+              AND ((cs.user_id IS NULL AND sh.kind='link') OR
+                (cs.user_id IS NOT NULL AND sh.kind='internal' AND EXISTS(
+                  SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=cs.user_id
+                    AND g.version=sh.version AND g.disabled_at IS NULL)))))`)
+      .bind(
+        request.budgetId,
+        request.sessionId,
+        request.epoch,
+        now,
+        now,
+        now,
+        now,
+        now,
+        now,
+        now,
+        now,
+      )
+      .first<Authority>();
+    if (!row || !Number.isSafeInteger(row.totalBytes) || row.totalBytes < 0)
+      throw new Error("budget_authorization_denied");
+    return row;
+  }
+
+  #state(): BudgetState | undefined {
+    return this.ctx.storage.sql
+      .exec<BudgetState>("SELECT * FROM budget_state WHERE singleton=1")
+      .toArray()[0];
+  }
+
+  #lease(requestId: string): LeaseRow | undefined {
+    return this.ctx.storage.sql
+      .exec<LeaseRow>("SELECT * FROM budget_leases WHERE request_id=?", requestId)
+      .toArray()[0];
+  }
+
+  #sweep(now: number) {
+    this.ctx.storage.sql.exec(
+      "UPDATE budget_leases SET state='expired' WHERE state='active' AND expires_at<=?",
+      now,
+    );
+    // A terminal request only needs its idempotency record for its lease lifetime.
+    // Retaining it forever would make the bounded row limit permanent after 1,024 reads.
+    this.ctx.storage.sql.exec(
+      "DELETE FROM budget_leases WHERE state<>'active' AND expires_at<=?",
+      now,
+    );
+  }
+
+  #replay(request: BudgetReserveRequest, existing: LeaseRow): BudgetLease {
+    if (
+      existing.session_id !== request.sessionId ||
+      existing.reserved_bytes !== request.bytes ||
+      existing.state !== "active"
+    )
+      throw new Error("budget_request_conflict");
+    return Object.freeze({
+      requestId: existing.request_id,
+      expiresAt: existing.expires_at,
+      reservedBytes: existing.reserved_bytes,
+    });
+  }
+
+  async #alarmForActive() {
+    const earliest = this.ctx.storage.sql
+      .exec<{ at: number | null }>(
+        "SELECT MIN(expires_at) AS at FROM budget_leases WHERE state='active'",
+      )
+      .one().at;
+    if (earliest === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(earliest);
+  }
+
+  async reserve(request: BudgetReserveRequest): Promise<BudgetLease> {
+    this.#canonical(request.budgetId);
+    if (
+      !LEASE_ID.test(request.sessionId) ||
+      !LEASE_ID.test(request.requestId) ||
+      !Number.isSafeInteger(request.epoch) ||
+      request.epoch < 1 ||
+      !Number.isSafeInteger(request.bytes) ||
+      request.bytes < 0 ||
+      request.bytes > 536_870_912_000
+    )
+      throw new Error("invalid_budget_request");
+    let authority = await this.#authority(request, Date.now());
+    const manifestKey = JSON.stringify([
+      authority.id,
+      authority.ref,
+      authority.hash,
+      authority.totalBytes,
+    ]);
+    let targets = this.#manifest?.key === manifestKey ? this.#manifest.targets : undefined;
+    if (!targets) {
+      targets = (await loadTargetManifest(this.env.BLOBS, authority)).targets;
+      // R2 I/O may outlive a ticket/session. Recheck the exact D1 record before granting bytes.
+      authority = await this.#authority(request, Date.now());
       if (
-        current.maxBytes !== input.maxBytes ||
-        current.active >= 8 ||
-        current.requests >= 1024 ||
-        current.consumedBytes + input.bytes > current.maxBytes
-      ) {
-        return false;
-      }
-      const next: BudgetState = {
-        ...current,
-        consumedBytes: current.consumedBytes + input.bytes,
-        requests: current.requests + 1,
-        active: current.active + 1,
-      };
-      await transaction.put("budget", next);
-      await transaction.put<LeaseState>(`lease:${id}`, {
-        bytes: input.bytes,
-        expiresAt: Date.now() + LEASE_TTL_MS,
-      });
-      return true;
-    });
-    if (accepted) {
-      const alarm = await this.state.storage.getAlarm();
-      const expiresAt = Date.now() + LEASE_TTL_MS;
-      if (alarm === null || alarm > expiresAt) await this.state.storage.setAlarm(expiresAt);
+        JSON.stringify([authority.id, authority.ref, authority.hash, authority.totalBytes]) !==
+        manifestKey
+      )
+        throw new Error("budget_authorization_denied");
+      this.#manifest = { key: manifestKey, targets };
     }
-    return accepted
-      ? Response.json({ lease_id: id })
-      : Response.json({ error: "budget_exceeded" }, { status: 429 });
+    const now = Date.now();
+    const byteLimit = authority.totalBytes * 3;
+    if (!Number.isSafeInteger(byteLimit)) throw new Error("budget_limit_invalid");
+    if (authority.budgetExpiresAt <= now || authority.sessionExpiresAt <= now)
+      throw new Error("budget_authorization_denied");
+    const lease = this.ctx.storage.transactionSync(() => {
+      let state = this.#state();
+      if (state && (state.budget_id !== request.budgetId || state.epoch > request.epoch))
+        throw new Error("budget_epoch_conflict");
+      if (!state || state.epoch < request.epoch || state.expires_at <= now) {
+        if (state?.epoch === request.epoch) {
+          const previous = this.#lease(request.requestId);
+          if (previous?.state === "active" && previous.expires_at > now)
+            return this.#replay(request, previous);
+        }
+        // Older instances could grant a lease beyond this byte window. Keep that
+        // live ledger available for settlement before renewing the same epoch.
+        if (
+          state?.epoch === request.epoch &&
+          this.ctx.storage.sql
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) AS n FROM budget_leases WHERE state='active' AND expires_at>?",
+              now,
+            )
+            .one().n > 0
+        )
+          throw new Error("budget_exceeded");
+        // A short ticket lifetime may end before the ten-minute rate window.
+        // Renewing the byte allowance must not reset that window's request count.
+        const previousRate =
+          state && state.epoch === request.epoch && now - state.window_start < LEASE_MS
+            ? state
+            : undefined;
+        const rateWindowStart = previousRate?.window_start ?? now;
+        const rateRequests = previousRate?.requests ?? 0;
+        this.ctx.storage.sql.exec("DELETE FROM budget_leases");
+        this.ctx.storage.sql.exec("DELETE FROM budget_targets");
+        this.ctx.storage.sql.exec(
+          `INSERT INTO budget_state VALUES(1,?,?,?,?,0,?,?)
+          ON CONFLICT(singleton) DO UPDATE SET budget_id=excluded.budget_id,epoch=excluded.epoch,
+            expires_at=excluded.expires_at,byte_limit=excluded.byte_limit,
+            bytes_charged=0,window_start=excluded.window_start,requests=excluded.requests`,
+          request.budgetId,
+          request.epoch,
+          authority.budgetExpiresAt,
+          0,
+          rateWindowStart,
+          rateRequests,
+        );
+        this.ctx.storage.sql.exec(
+          "INSERT OR REPLACE INTO budget_allowance_window VALUES(1,?,?)",
+          request.epoch,
+          authority.budgetExpiresAt,
+        );
+        state = this.#state();
+      }
+      if (!state) throw new Error("budget_state_missing");
+      state = this.#grantTargets(state, targets, byteLimit);
+      this.#sweep(now);
+      const existing = this.#lease(request.requestId);
+      if (existing) {
+        return this.#replay(request, existing);
+      }
+      const active = this.ctx.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM budget_leases WHERE state='active'")
+        .one().n;
+      const rows = this.ctx.storage.sql
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM budget_leases")
+        .one().n;
+      const resetWindow = now - state.window_start >= LEASE_MS;
+      const windowStart = resetWindow ? now : state.window_start;
+      const requests = resetWindow ? 0 : state.requests;
+      if (
+        state.expires_at <= now ||
+        active >= PARALLEL_LIMIT ||
+        rows >= MAX_ROWS ||
+        requests >= REQUEST_LIMIT ||
+        state.bytes_charged + request.bytes > state.byte_limit
+      )
+        throw new Error("budget_exceeded");
+      const expiresAt = Math.min(
+        now + LEASE_MS,
+        state.expires_at,
+        authority.sessionExpiresAt,
+        authority.budgetExpiresAt,
+      );
+      if (expiresAt <= now) throw new Error("budget_authorization_denied");
+      this.ctx.storage.sql.exec(
+        "INSERT INTO budget_leases VALUES(?,?,?,?,?,'active')",
+        request.requestId,
+        request.sessionId,
+        request.bytes,
+        request.bytes,
+        expiresAt,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE budget_state SET bytes_charged=bytes_charged+?,window_start=?,requests=?
+        WHERE singleton=1`,
+        request.bytes,
+        windowStart,
+        requests + 1,
+      );
+      if (this.ctx.storage.sql.databaseSize > 1_048_576) throw new Error("budget_exceeded");
+      return Object.freeze({
+        requestId: request.requestId,
+        expiresAt,
+        reservedBytes: request.bytes,
+      });
+    });
+    await this.#alarmForActive();
+    return lease;
   }
 
-  private async settle(id: string): Promise<Response> {
-    await this.state.storage.transaction(async (transaction) => {
-      const lease = await transaction.get<LeaseState>(`lease:${id}`);
-      if (lease === undefined) {
-        return;
+  #grantTargets(
+    state: BudgetState,
+    targets: readonly TargetEntry[],
+    legacyLimit: number,
+  ): BudgetState {
+    const window = this.ctx.storage.sql
+      .exec<{ epoch: number; expires_at: number }>(
+        "SELECT epoch,expires_at FROM budget_allowance_window WHERE singleton=1",
+      )
+      .toArray()[0];
+    // Old deployments did not record which targets funded a live budget. Do not mint
+    // duplicate allowance during migration; preserve its counters/limit until expiry.
+    if (!window || window.epoch !== state.epoch || window.expires_at !== state.expires_at) {
+      if (state.byte_limit < legacyLimit) throw new Error("budget_exceeded");
+      return state;
+    }
+    const recorded = new Map(
+      this.ctx.storage.sql
+        .exec<{ target_key: string; size: number }>("SELECT target_key,size FROM budget_targets")
+        .toArray()
+        .map((row) => [row.target_key, row.size]),
+    );
+    const additions = new Map<string, number>();
+    let allowance = state.byte_limit;
+    for (const target of targets) {
+      // Immutable blob identity also deduplicates aliases/COW copies and new manifests.
+      const key = `${target.purpose}:${target.blobId}`;
+      const known = recorded.get(key) ?? additions.get(key);
+      if (known !== undefined) {
+        if (known !== target.size) throw new Error("budget_target_conflict");
+        continue;
       }
-      const current = await transaction.get<BudgetState>("budget");
-      if (current !== undefined) {
-        await transaction.put("budget", { ...current, active: Math.max(0, current.active - 1) });
-      }
-      await transaction.delete(`lease:${id}`);
-    });
-    return new Response(null, { status: 204 });
+      additions.set(key, target.size);
+      allowance += target.size * 3;
+    }
+    if (recorded.size + additions.size > MAX_ROWS || !Number.isSafeInteger(allowance))
+      throw new Error("budget_exceeded");
+    for (const [key, size] of additions)
+      this.ctx.storage.sql.exec("INSERT INTO budget_targets VALUES(?,?)", key, size);
+    if (additions.size)
+      this.ctx.storage.sql.exec(
+        "UPDATE budget_state SET byte_limit=? WHERE singleton=1",
+        allowance,
+      );
+    if (this.ctx.storage.sql.databaseSize > 1_048_576) throw new Error("budget_exceeded");
+    return { ...state, byte_limit: allowance };
+  }
+
+  async settle(request: BudgetSettleRequest): Promise<number> {
+    this.#canonical(request.budgetId);
+    if (
+      !LEASE_ID.test(request.requestId) ||
+      (request.deliveredBytes !== null &&
+        (!Number.isSafeInteger(request.deliveredBytes) || request.deliveredBytes < 0))
+    )
+      throw new Error("invalid_budget_settlement");
+    const state = this.#state();
+    const lease = this.#lease(request.requestId);
+    if (!state || !lease || state.budget_id !== request.budgetId)
+      throw new Error("budget_lease_missing");
+    this.#sweep(Date.now());
+    const current = this.#lease(request.requestId);
+    if (!current) throw new Error("budget_lease_missing");
+    if (current.state !== "active") {
+      if (current.state === "settled" && request.deliveredBytes === current.charged_bytes)
+        return current.charged_bytes;
+      if (current.state === "unknown" && request.deliveredBytes === null)
+        return current.charged_bytes;
+      throw new Error("budget_lease_terminal");
+    }
+    if (request.deliveredBytes !== null && request.deliveredBytes > current.reserved_bytes)
+      throw new Error("budget_lease_overrun");
+    const charged = request.deliveredBytes ?? current.reserved_bytes;
+    this.ctx.storage.sql.exec(
+      "UPDATE budget_leases SET state=?,charged_bytes=? WHERE request_id=? AND state='active'",
+      request.deliveredBytes === null ? "unknown" : "settled",
+      charged,
+      request.requestId,
+    );
+    if (charged < current.reserved_bytes)
+      this.ctx.storage.sql.exec(
+        "UPDATE budget_state SET bytes_charged=bytes_charged-? WHERE singleton=1",
+        current.reserved_bytes - charged,
+      );
+    await this.#alarmForActive();
+    return charged;
   }
 
   async alarm(): Promise<void> {
-    const now = Date.now();
-    let nextAlarm: number | undefined;
-    await this.state.storage.transaction(async (transaction) => {
-      const leases = await transaction.list<LeaseState>({ prefix: "lease:" });
-      let expired = 0;
-      for (const [key, lease] of leases) {
-        if (lease.expiresAt <= now) {
-          await transaction.delete(key);
-          expired += 1;
-        } else if (nextAlarm === undefined || lease.expiresAt < nextAlarm) {
-          nextAlarm = lease.expiresAt;
-        }
-      }
-      if (expired > 0) {
-        const current = await transaction.get<BudgetState>("budget");
-        if (current !== undefined) {
-          await transaction.put("budget", {
-            ...current,
-            active: Math.max(0, current.active - expired),
-          });
-        }
-      }
-    });
-    if (nextAlarm !== undefined) await this.state.storage.setAlarm(nextAlarm);
+    this.#sweep(Date.now());
+    await this.#alarmForActive();
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/leases") {
-      const body: unknown = await request.json();
-      return validLeaseRequest(body)
-        ? this.acquire(body)
-        : Response.json({ error: "invalid_budget" }, { status: 400 });
-    }
-    const match = /^\/leases\/([a-f0-9]{32})\/settle$/u.exec(url.pathname);
-    if (request.method === "POST" && match?.[1] !== undefined) {
-      return this.settle(match[1]);
-    }
-    if (request.method === "GET" && url.pathname === "/status") {
-      const budget = await this.state.storage.get<BudgetState>("budget");
-      return Response.json(budget ?? { maxBytes: 0, consumedBytes: 0, requests: 0, active: 0 });
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
+  status(): { bytesCharged: number; requests: number; active: number; byteLimit: number } | null {
+    const state = this.#state();
+    if (!state) return null;
+    const active = this.ctx.storage.sql
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM budget_leases WHERE state='active'")
+      .one().n;
+    return {
+      bytesCharged: state.bytes_charged,
+      requests: state.requests,
+      active,
+      byteLimit: state.byte_limit,
+    };
   }
 }

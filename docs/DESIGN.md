@@ -290,8 +290,8 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `node.create` | `node:create` / create | `[parent,space]` |
 | `node.content.write` | `node:write` / edit | `[node,parent,oldBlob?,newBlob]` |
 | `node.rename` | `node:write` / edit | `[node,parent]` |
-| `node.move` | `node:write` / edit | `[source,sourceParent,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors]`。cross-space は拒否 |
-| `node.copy` | `node:read` + `node:create` | `[source,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors,copyManifest]` |
+| `node.move` | source `node:write` + destination parent `node:create` + overwrite target `node:delete` (conditional) / edit | `[source,sourceParent,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors]`。cross-space は拒否 |
+| `node.copy` | source `node:read` + destination parent `node:create` + overwrite target `node:delete` (conditional) | `[source,destinationParent,overwriteTarget?,sourceAncestors,destinationAncestors,copyManifest]` |
 | `node.trash` | `node:delete` / edit | `[source,parent,trashOp,descendantSet]` |
 | `node.restore` | `node:create` | `[trashOp,root,destinationParent]` |
 | `node.purge` | `node:delete` | `[trashOp,root,memberSet]` |
@@ -319,7 +319,12 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `automation.list`,`automation.metadata.read` | service `node:read` | `[service,mappedUser,space,scopeRoot,node?]` |
 | `dav.options` | valid app password | `[credential,source]` |
 | `dav.read`,`dav.propfind` | `node:read` | `[credential,source,ancestors,properties?,locks?]` |
-| `dav.put`,`dav.mkcol`,`dav.proppatch`,`dav.copy`,`dav.move`,`dav.delete`,`dav.lock`,`dav.unlock` | 対応する node scope | §7 profile の source/destination/parent/lock tuple |
+| `dav.put` | create は destination parent `node:create`、overwrite は source `node:write` | §7 profile の source/parent/blob/lock tuple |
+| `dav.copy` | source `node:read` + destination parent `node:create` + overwrite target `node:delete` (conditional) | §7 profile の source/destination/lock tuple |
+| `dav.move` | source `node:write` + destination parent `node:create` + overwrite target `node:delete` (conditional) | §7 profile の source/source parent/destination/lock tuple |
+| `dav.delete` | source `node:delete` | §7 profile の source/source parent/descendant/lock tuple |
+| `dav.lock` | existing source は `node:write`、lock-null create は source parent `node:create` | §7 profile の source/source parent/lock tuple |
+| `dav.mkcol`,`dav.proppatch`,`dav.unlock` | 対応する node scope | §7 profile の source/destination/parent/lock tuple |
 
 `Authorized<Operation>` は operation ごとの discriminated tuple を返し、一般 `Operand[]` を handler に渡さない。folder COPY は開始時に固定 manifest を作り、衝突方針、dead props 引継ぎ、全成功または部分結果なしを束縛する。route の型検査は補助であり、意味的な認可 matrix fixture を必須とする。
 
@@ -371,7 +376,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | host | method | template | auth | operation | operands | adminOnly | CSRF profile |
 |---|---|---|---|---|---|---|---|
 | app | GET | `/` | access | `spa.read` | `currentUser` | false | same-origin-json |
-| app | GET | `/assets/:asset` | access | `spa.read` | `currentUser,assetManifest` | false | same-origin-json |
+| app | GET | `/private-assets/:asset` | access | `spa.read` | `currentUser,assetManifest` | false | same-origin-json |
 | app | GET | `/public-assets/:asset` | public | `public.asset.read` | `publicAssetManifest` | false | same-origin-json |
 | app | GET | `/s` | public | `share.landing` | `publicAssetManifest` | false | same-origin-json |
 | app | GET | `/s/:shareId` | public | `share.landing` | `shareId,publicAssetManifest` | false | same-origin-json |
@@ -383,7 +388,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/api/v1/recent` | access | `recent.read` | `scopeRoot,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/starred` | access | `starred.read` | `scopeRoot,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/shared-with-me` | access | `shared.read` | `currentUser,mounts,cursor` | false | same-origin-json |
-| app | GET | `/api/v1/stats` | access | `account.read` | `currentUser,space` | false | same-origin-json |
+| app | GET | `/api/v1/stats` | access | `account.read` | `currentUser,space,scopeRoot` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId` | access | `node.read` | `node,ancestors` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/path` | access | `node.read` | `node,ancestors` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/children` | access | `node.read` | `node,children,cursor` | false | same-origin-json |
@@ -503,7 +508,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | content | GET | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |
 | content | HEAD | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |
 | content | GET | `/reader/index.html` | public | `reader.shell` | `readerAssetManifest` | false | same-origin-json |
-| content | GET | `/reader/:asset` | public | `reader.shell` | `readerAssetManifest` | false | same-origin-json |
+| content | GET | `/reader-assets/:asset` | public | `reader.shell` | `readerAssetManifest` | false | same-origin-json |
 
 DAV の各行は router 生成時に `/dav` と `/dav/*path` の二 template へ展開し、root で意味を持たない mutation は 405 にする。`*path` は一度だけ decode する bounded remainder で、他 surface へ流さない。public edit の MOVE route は v1 非提供であり 404 とする。service automation upload/mutation も v1 非提供である。
 
@@ -809,12 +814,13 @@ upload-only は create/upload receipt/status だけを許可し、list/read/over
 
 採用方式は D1 `content_sessions` が権威の短命 content-session Cookie と `BudgetDO(budget_id)` である。
 
-1. Access 認証 SPA または share UI は、許可する node/blob/purpose の bounded target 集合を D1 に保存する。ticket には集合本体でなく `target_set_id + hash`、purpose=`content|thumb|page|zip|track`、epoch、credential/share version、`budget_id` を入れる。
+1. Access 認証 SPA または share UI は、許可する node/blob/purpose の bounded target 集合を R2 manifest として保存し、その ID/ref/hash/total bytes/credential/epoch を D1 に保存する。ticket には集合本体でなく `target_set_id + hash`、purpose=`content|thumb|page|zip|track`、epoch、credential/share version、`budget_id` を入れる。
+   `target_sets.manifest_ref` は `target-sets/<target_set_id>` の R2 object を指し、SHA-256 hex を `manifest_hash` に保存する。manifest v1 は `{ "v":1, "targets":[{ "spaceId", "nodeId", "blobId", "purpose", "size" }] }`。UTF-8 JSON≤1MiB、1–1,000件、重複禁止、`total_bytes` は全 `size` の和と一致させる。配信時は object の hash と node/blob/purpose/size を確認し、D1 batch で hash/ref と現行認可を再確認する。復旧監査も object の内容を照合する。
 2. app は audience=`CONTENT_ORIGIN`、expiry≤600秒かつ share expiry 以下の署名 ticket を返す。ticket は個別 cancel 可能で、`content_sessions.revoked_at` と ticket cancel row を毎 request 検査する。
 3. browser は `POST <CONTENT_ORIGIN>/session` を `credentials:'include'` で呼ぶ。§5.1 の OPTIONS/POST 固定 allowlist CORS を使う。
-4. content origin は opaque session ID の `__Host-ncf_cs` を `Secure; HttpOnly; SameSite=None; Path=/; Max-Age≤600` で設定する。`content_sessions` は user/share/credential/target set/budget ID/expiry/revoked_at を持つ。
-5. 同じ user+share（private は user+credential）の session 更新・別 tab 発行は、期限内の既存 `budget_id` を再利用する。新 session で budget を増やさない。budget 上限は対象合計 bytes×3、1,024 requests/10分、parallel≤8。
-6. `/c` content、thumb、page、entry、track、ZIP、対応 public route の全 byte/request/HEAD/Range を同じ BudgetDO へ接続する。BudgetDO storage は≤1MiB、lease TTL 10分、disconnect/cancel は明示精算し、漏れは alarm が回収する。
+4. content origin は署名した opaque session ID の `__Host-ncf_cs` を `Secure; HttpOnly; SameSite=None; Path=/; Max-Age≤600` で設定する。`content_sessions` は user/share/credential/target set/budget/ticket ID/expiry/revoked_at を持ち、各配信 request で発行元 ticket の現行状態を再確認する。
+5. 同じ user+share（private は user+credential）の session 更新・別 tab 発行は、期限内の既存 `budget_id` を再利用する。新 session で budget を増やさない。budget 上限は対象合計 bytes×3、1,024 requests/10分、parallel≤8。異なる対象へ移る場合は、有効期間内の認可manifestに含まれるpurpose/blob IDを重複排除したsize合計を用いる。同じ内容の新manifest・別tab・COW別名では加算せず、対象追加でも使用量・request/lease・期限をリセットしない。台帳は1,024対象までとし、leaseと合わせたSQLite容量を1MiBに制限する。詳細と移行境界は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)。
+6. `/c` content、thumb、page、entry、track、ZIP、対応 public route の全 byte/request/HEAD/Range を同じ BudgetDO へ接続する。BudgetDO storage は≤1MiB、lease TTL 10分、disconnect/cancel は明示精算し、漏れは alarm が回収する。各leaseは保存済みbyte期間・現行D1/sessionの期限内に収め、R2読み込みと応答bodyにもその期限を適用する。旧leaseが有効な間は会計期間の切替で台帳を破棄しない。`/c`の実装・検証範囲は[CONTENT_LEASES](CONTENT_LEASES.md)を参照。
 
 単一 host 構成も同じ host-only Cookie を使うが §10 の CSP/attachment 制限は維持する。fetch→blob URL は≤32MiB の plain text、sanitized Markdown input、pdf.js inputだけ。大容量 audio/video/image/EPUB を blob 化しない。
 
@@ -837,6 +843,8 @@ React、TypeScript、Vite、Tailwind、shadcn/ui、TanStack Router/Query/Virtual
 ### 9A.1 Gallery
 
 folder 内画像/動画、任意 recursive を対象にし keyset 最大200件。`node_media` は `width,height,taken_at,duration_ms,orientation,dominant_color` と bounded camera 情報だけ。GPS破棄。thumbnail は sm256/md768/lg1600、lg は lazy unique claim。recursive 候補は SQL で50,000を強制し、§15 gate 未合格時は10,000へ縮小する。v1 UI は grid/list、folder/recursive 切替、lightbox、次/前、共有閲覧を必須とし、高度 layout は v1.1。
+
+2026-09-22 確定要件: 事前エンコード済みの AVIF 画像と AV1 動画（MP4/WebM、Opus 音声付き/音声無し）を必須対応とする。原本を保持し、画像表示/動画再生は認可済み content URL へ直接接続する。実 codec/bit depth を取得して再生可否を判定し、未対応端末では download 導線を提供する。詳細は [`MEDIA_FORMATS.md`](MEDIA_FORMATS.md)。
 
 ### 9A.2 Bookshelf / EPUB reader
 
@@ -862,6 +870,8 @@ app origin
 
 MP3/FLAC/OGG/Opus/M4A/MP4/WAV の bounded tag parser。通常 head≤2MiB+tail128B、MP4 moov探索≤4MiB。cover の追加 Range は offset/length を検証し、≤20,000,000B かつ全体 budget 内だけ実行する。field≤1KiB、folder≤2,000 tracks。content-session Cookie + single Range で再生する。v1 UI は track list、play/pause、前/次、volume、position保存、共有再生を必須とし、timeline scrubber、queue高度操作、複数layoutは v1.1。
 
+Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、client MIME/拡張子だけで codec を確定しない。再エンコードを原本再生の前提にしない。MP4 の codec parameter は `Opus`、Ogg/WebM は `opus` とする。
+
 ### 9A.4 共通認可 / job
 
 全media routeはEffectiveLive、capability root、current blob、generation、credential scopeを検査する。index/tag/sanitize/thumb jobはoutbox、saved principal、epoch、fenced result claimを使いstale結果を公開しない。
@@ -882,7 +892,7 @@ ZIP展開は自前central directory parser + `DecompressionStream('deflate-raw')
 
 ### 10.3 derivative / Images
 
-server derivative key は immutable generation。claim tuple+fence で一 Worker だけを公開者にする。Images input は20,000,000B以下、dimension/frame/app pixel budget を header で先に検査し、WebPへ re-encode して metadata を除く。AVIF input は staging 確認し未対応なら unsupported。**v1 は client thumbnail 受付を無効化し route/result row/key を作らない。** 将来有効化する条件は §18。
+server derivative key は immutable generation。claim tuple+fence で一 Worker だけを公開者にする。Images input は20,000,000B以下、dimension/frame/app pixel budget を header で先に検査し、WebPへ re-encode して metadata を除く。AVIF input は staging 確認し未対応なら derivative だけを unsupported とする。AVIF 原本の保存/表示は対応対象であり、detail は原本、grid は placeholder に fallback する。**v1 は client thumbnail 受付を無効化し route/result row/key を作らない。** 将来有効化する条件は §18。
 
 ### 10.4 delivery matrix / CSP
 
@@ -1014,27 +1024,13 @@ INSERT INTO search_fts(rowid,text_norm,tokens)
 SELECT rowid,text_norm,tokens FROM search_index WHERE rowid=?1;
 ```
 
-query bigram はそれぞれ `"..."` で quote し、内部 `"` を `""` に escape して AND 連結する。FTS は候補生成だけで、最終 substring は escaped `text_norm LIKE` で順序照合する。scope CTE 自体に `LIMIT 10000` を置き、候補/FTSも10,000で打ち切る。
+query は保存名と共通の正規化を使うが、ファイル名の禁止文字・予約名規則は適用しない。入力と正規化結果は各256 UTF-8 bytes以内。unicode61 の既知の token 文字からなる bigram をそれぞれ quote し、内部 quote を escape して AND 連結する。FTS は候補生成だけで、最終 substring は escaped `text_norm LIKE` で順序照合する。利用可能な bigram がない一文字・記号・絵文字等は、pattern≤50B の scope 内 LIKE fallback とし、一文字 global scanは禁止する。
 
-```sql
-WITH RECURSIVE scope(id,depth) AS (
-  SELECT ?1,0 UNION ALL
-  SELECT n.id,s.depth+1 FROM nodes n JOIN scope s ON n.parent_id=s.id
-  WHERE n.deleted_at IS NULL AND s.depth<64
-  LIMIT 10000
-), hits AS (
-  SELECT si.node_id,bm25(search_fts) rank
-  FROM search_fts JOIN search_index si ON si.rowid=search_fts.rowid
-  WHERE search_fts MATCH ?2 AND si.space_id=?3 LIMIT 10000
-)
-SELECT n.id,n.name,n.kind,h.rank
-FROM hits h JOIN scope s ON s.id=h.node_id JOIN nodes n ON n.id=h.node_id
-JOIN search_index si ON si.node_id=n.id
-WHERE n.deleted_at IS NULL AND si.text_norm LIKE ?4 ESCAPE '\'
-ORDER BY h.rank,n.id LIMIT ?5;
-```
+scope root を `search.read` で認可し、祖先・credential・epoch・tree generation の最終 assertion と結果 SELECT を同じ D1 batch に置く。子1件・次の sibling1件・親へ戻る1件を索引でたどる successor walk により、全 sibling の先行展開を防ぐ。絶対 depth≤64、訪問node≤10,000、上下移動≤20,000 step。scope CTE 自体に `LIMIT 10000` を置き、その各 rowid に限定した FTS 候補も10,000で打ち切る。無権限の全文書を先に MATCH してから権限 filter する方式は使わない。実 SQL と HTTP/UI の接続は [SEARCH](SEARCH.md) と `services/search.ts` を参照。
 
-scope または hits が上限到達なら `truncated:true` を返し count/facet を確定値にしない。LIKE fallback は pattern≤50B、scope内10,000候補まで。一文字 global scanは禁止。
+結果は `name_ci,id` の安定した名前順で200件の keyset page とする。全索引の文書統計に依存する BM25 順位を返さず、無権限の文書追加が順位・cursorへ影響しないようにする。検索専用 cursor に正規化query/索引version/scope/space/owner/user/credential/epoch/tree generation/最後の名前とIDを結び付け、有効期限を10分にする。
+
+scope または hits が上限到達なら `truncated:true` を返し count/facet を確定値にしない。索引が欠落・旧normalization version・未来のnode revisionの場合も、該当行を返さず不完全さを通知する。`search_index.revision` は最後の検索テキスト更新時のnode revisionであり、子一覧の更新だけで進んだ親のrevisionとは一致しなくてもよい。rename/moveは現行node proofと旧FTS値のdeleteを同じbatchで確認して新しい索引へ進め、索引が現行nodeより未来なら拒否する。media metadata のparser/同期と索引version再構築運用、実D1の予算gateは残る。
 
 ### 12.3 Gallery / media list
 

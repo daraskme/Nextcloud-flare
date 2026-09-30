@@ -1,0 +1,12 @@
+# This file is not installed or enabled by development or CI.
+[Unit]
+Description=Run Nextcloud-flare backup maintenance daily in UTC
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=nextcloud-flare-backup.service
+
+[Install]
+WantedBy=timers.target

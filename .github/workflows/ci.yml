@@ -1,0 +1,106 @@
+name: Foundation checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: local (ubuntu-latest)
+            shard: ""
+          - os: windows-latest
+            name: local (windows-latest, 1/2)
+            shard: "1/2"
+          - os: windows-latest
+            name: local (windows-latest, 2/2)
+            shard: "2/2"
+    runs-on: ${{ matrix.os }}
+    # Run 36060684164 passed every test/build but hit 30m during Windows cleanup.
+    # Split only integration files; every shard retains the other check gates.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 15 }}
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@12.4.1
+      - run: pnpm install --frozen-lockfile
+      - if: matrix.shard == ''
+        run: pnpm check
+      - if: matrix.shard != ''
+        run: pnpm lint
+      - if: matrix.shard != ''
+        run: pnpm typecheck
+      - if: matrix.shard != ''
+        run: pnpm verify:contracts
+      - if: matrix.shard != ''
+        run: pnpm verify:config
+      - if: matrix.shard != ''
+        run: pnpm test:unit
+      - if: matrix.shard != ''
+        run: pnpm test:integration --shard=${{ matrix.shard }}
+      - if: matrix.shard != ''
+        run: pnpm build
+
+  backup:
+    runs-on: ubuntu-latest
+    # Run 36109311905 took 9m49s before the actual CLI gained four replenishment captures.
+    # Keep application deadlines unchanged; allow the real Wrangler export drill to finish.
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@12.4.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm backup:drill
+      - run: pnpm backup:operator-drill
+      - run: pnpm backup:run-drill
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: backup-failure
+          path: |
+            .wrangler/backup-drill-*/*.log
+            .wrangler/backup-run-drill-*/*.log
+            .wrangler/operator-drill-*/report.json
+          include-hidden-files: true
+          retention-days: 3
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@12.4.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure
+          path: test-results/
+          retention-days: 3

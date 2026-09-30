@@ -1,87 +1,78 @@
-import { authenticateAccessUser } from "../auth/httpAuth.js";
-import { issueCsrfToken, verifyCsrfToken } from "../auth/csrf.js";
-import { logoutAccessSession } from "../auth/sessions.js";
-import { lookupOperation } from "../services/operations.js";
-import { type AppContext, jsonError, mapError } from "./http.js";
+import { problem } from "@next-cloud-flare/shared/errors";
+import type { CsrfTokens } from "../auth/csrf";
+import { type AccessSession, revokeAccessSession } from "../auth/sessions";
+import { primary } from "../db/primary";
+import type { Env } from "../env";
+import { MutationUnavailableError } from "../services/accountMutation";
+import { hasEmptyBody } from "./emptyBody";
 
-function csrfSecret(env: AppContext["env"]): string {
-  const secret = env.CSRF_KEY ?? env.DEV_CSRF_KEY;
-  if (secret === undefined || secret.length < 16) {
-    throw new Error("csrf_configuration_invalid");
-  }
-  if (
-    env.CSRF_KEY === undefined &&
-    env.ENVIRONMENT !== "development" &&
-    env.ENVIRONMENT !== "test"
-  ) {
-    throw new Error("csrf_configuration_invalid");
-  }
-  return secret;
+interface MeRow {
+  id: string;
+  email: string;
+  role: "member" | "app_admin";
+  quotaBytes: number;
+  usedBytes: number;
+  reservedBytes: number;
+  spaceId: string;
+  rootNodeId: string;
 }
 
-function sameOrigin(context: AppContext): boolean {
-  return (
-    context.req.header("Origin") === context.env.APP_ORIGIN &&
-    context.req.header("Sec-Fetch-Site") === "same-origin"
-  );
-}
-
-export async function enforceCsrf(context: AppContext): Promise<Response | null> {
-  try {
-    if (!sameOrigin(context)) {
-      return jsonError(context, 403, "csrf_failed", "The request origin is not allowed");
-    }
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    const token = context.req.header("X-CSRF-Token");
-    if (
-      token === undefined ||
-      !(await verifyCsrfToken(csrfSecret(context.env), token, user.principal.sessionId))
-    ) {
-      return jsonError(context, 403, "csrf_failed", "The CSRF token is invalid");
-    }
-    return null;
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleCsrf(context: AppContext): Promise<Response> {
-  try {
-    if (!sameOrigin(context)) {
-      return jsonError(context, 403, "csrf_failed", "The request origin is not allowed");
-    }
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    return context.json({
-      token: await issueCsrfToken(csrfSecret(context.env), user.principal.sessionId),
-      expiresIn: 3600,
-    });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleLogout(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    await logoutAccessSession(context.env, user.principal.sessionId, user.principal.userId);
-    return new Response(null, { status: 204 });
-  } catch (error) {
-    return mapError(context, error);
-  }
-}
-
-export async function handleOperation(context: AppContext): Promise<Response> {
-  try {
-    const user = await authenticateAccessUser(context.env, context.req.raw);
-    const operation = await lookupOperation(
-      context.env,
-      context.req.param("id"),
-      user.principal.credentialId,
+export async function handleAccountHttp(
+  request: Request,
+  env: Env,
+  session: AccessSession,
+  csrf: Pick<CsrfTokens, "verify">,
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  if (path === "/api/v1/me" && request.method === "GET") {
+    const row = await primary(env.DB)
+      .prepare(`SELECT u.id,u.email,u.role,u.quota_bytes AS quotaBytes,
+        u.used_bytes AS usedBytes,u.reserved_bytes AS reservedBytes,
+        sp.id AS spaceId,sp.root_node_id AS rootNodeId
+        FROM credentials c JOIN sessions s ON s.id=c.session_id
+        JOIN users u ON u.id=s.user_id JOIN spaces sp ON sp.owner_id=u.id
+        JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=s.epoch AND ctl.maintenance=0
+        WHERE c.id=? AND c.kind='access' AND s.kind='access' AND s.epoch=?
+          AND s.revoked_at IS NULL AND s.expires_at>strftime('%s','now')*1000
+          AND u.disabled_at IS NULL`)
+      .bind(session.credential_id, session.epoch)
+      .first<MeRow>();
+    if (!row || row.id !== session.user_id) return problem(403, "forbidden");
+    return Response.json(
+      { ...row, epoch: session.epoch, contentOrigin: env.CONTENT_ORIGIN },
+      {
+        headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      },
     );
-    return operation === null
-      ? jsonError(context, 404, "not_found", "The operation was not found")
-      : context.json(operation);
-  } catch (error) {
-    return mapError(context, error);
   }
+  if (path === "/api/v1/auth/logout" && request.method === "POST") {
+    try {
+      await csrf.verify(env.DB, request, {
+        kind: "access",
+        credentialId: session.credential_id,
+        epoch: session.epoch,
+      });
+    } catch {
+      return problem(403, "forbidden");
+    }
+    if (!(await hasEmptyBody(request))) return problem(400, "bad_request");
+    try {
+      await revokeAccessSession(env, session.credential_id, session.epoch);
+    } catch (error) {
+      if (error instanceof MutationUnavailableError) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      throw error;
+    }
+    return new Response(null, {
+      status: 303,
+      headers: {
+        Location: `${env.APP_ORIGIN}/cdn-cgi/access/logout`,
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
+  return problem(404, "not_found");
 }

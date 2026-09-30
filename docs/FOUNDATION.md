@@ -1,0 +1,377 @@
+# Foundation 実装契約（Phase 1 進行中）
+
+2026-09-22。設計 v0.6 と IMPLEMENTATION_BRIEF §8 の確定条件を具体化する。
+Phase 1 全体の完了判定ではなく、以下の DB・epoch・認証・node 認可基盤の実装記録。
+
+## バックアップ書込み停止（0037）
+
+バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常67テーブルを凍結して、同じバックアップ要求だけで解除します。
+
+migration0037と永続request/tokenで、開始・凍結・解除をD1 mirrorへ束縛します。open permit・claimed operation・共通受付を閉じ、active job leaseがなくなってから確定順のwatermarkを保存します。応答とprimary照合の両方を失っても停止intentを保持し、eviction後に再照合できます。解除は元の受付・管理者GC設定を原子的に復元し、保留uploadの容量を維持します。exportの完了やmanifestの公開を推測で成功扱いにはしません。
+
+Node5件・workerd21件を追加。全体checkが成功し、Node432件（27file、7.90s）・workerd1,991件（94file、1,075.05s）、計2,423件を検証しました。旧schemaの移行、全通常tableのguard、同時刻の確定順序、ACK/primary喪失、遅延開始/解除、元のpolicy、総storage喪失、解除途中のrollbackを含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。実Wranglerのローカル67table data-only抽出と、隔離SQLiteへの同一schema復元・FK/容量一致・FTS再構築も成功しました。R2実体・運用経路・epoch更新を含む復旧試験とremote exportは未検証です。schema0037/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+
+凍結は通常67tableに適用し、controlは同じtokenの解除batch内でflagだけを先に戻す。新しいtable/列を追加するときはfreeze guardの対象も更新する。watermarkは操作のcommitted遷移と同じtransactionで記録し、legacy初期値だけupdated_at/op_id順で決める。legacyの同時刻内の順序を復元したとは主張しない。[BACKUP_BARRIER](BACKUP_BARRIER.md)を正本とする。
+
+## 契約・schema
+
+- `packages/shared/src/contracts.ts`: scope、operation、state と single upload 遷移。
+- `packages/worker/src/routes/manifest.ts`: 設計表を元にした147経路。R6 の CSRF issue / operation lookup credential を適用。すべて未有効化。
+- `0001`〜`0007`: 53通常テーブル、FTS5 external-content index、構造・失効・terminal state、容量/参照会計、permit/operation identity の guards。
+- timestamps はミリ秒。permit/session expiry は DB 側時計で評価する。
+- `control.maintenance/gc_paused` は ControlDO 正本の D1 mirror。初期値は両方1。`control.epoch=1` は初期 schema の値であり、新規 permit 発行許可ではない。
+- `spaces.root_node_id` / `trash_ops.root_node_id` / audit affected ID は設計どおり論理参照。root は insert guard で owner/space 一致を検査し、通常更新・削除不可。
+- 全 FK に索引、全 TEXT PK に NOT NULL、台帳 counter/state/revision に CHECK。tree guard は cycle / owner / space / depth64 を検査する。
+- `_assert` / application assertions は引き続き必須。DB guard は認可や quota/ref 会計の代わりではない。
+
+authority read は D1 binding を直接使い、Sessions API を使用しない。`first-primary` は最初の query だけを primary に固定するため、後続の認可 read の保証には使わない。[D1 公式 API](https://developers.cloudflare.com/d1/worker-api/d1-database/)
+
+`credentials` は Access/app-password/share-session/service の ID registry。
+`as:<session_id>`、`ap:<app_password_id>`、`ss:<share_session_id>`、`sv:<service_principal_id>` を型別 CHECK で束縛する。
+これにより `content_sessions.issued_by_credential_id`、operations、jobs の credential は実 FK になり、文字列だけの参照にしない。
+system operation だけは credential NULL を許可し、GC/repair/backup の列挙に制限する。
+
+## FK graph と purge/export
+
+`scripts/generate-schema-contracts.mjs` は全 migration を適用した SQLite PRAGMA の FK graph から `purgeOrder` を生成し、FK index と operation catalogue を検査する。適用済み migration を書き換えず、追加 index/catalogue は新しい migration で更新する。
+`schema.test.ts` は migration から独立に再計算して一致を検査する。
+`purgeOrder` は全テーブルの依存順であり、全行削除を許可するスクリプトではない。
+nodes の self-edge は別扱いとし、Phase 4 の row purge は deepest-first / trash membership で制限する。
+
+別 trash operation の既削除子だけは `parent_id=NULL` を許容。live node は NULL にできず、restore は新しい parent を同時指定する。
+root 不在や同名時の `(restored N)` 選定は Phase 4 サービスの仕事。
+
+credential を参照する operation terminal を90日保持できるよう、root を purge する前に失効済み credential/share/service mapping の scope root を外せる形とした。
+app password は revoke と同時にのみ root を解除でき、再有効化を禁止する。
+share/service root が NULL の行は disabled 必須。active credential の scope を全体へ拡大する NULL 化は禁止。
+この detach は同期 purge の同一 transaction に含める。
+
+`exportTables` はアプリの通常テーブルだけ。FTS virtual/shadow table を含めず、restore 後に `search_index` から rebuild する。
+Phase 4 の exporter では runtime table inventory と照合し、migration metadata (`d1_migrations`) も保存する。
+実 export は maintenance window の全期間で書込みを止める。削除中 blob は不可逆であり、schema は参照再追加・state 復帰を拒否する。
+
+## ControlDO の epoch
+
+ControlDO は `CONTROL.idFromName('singleton')` だけを受け付ける。外向け HTTP は503のまま。
+内部 helper は ECMAScript private method とし RPC に公開しない。
+
+1. SQLite に pending epoch / reason / time / token を保存する。
+2. BACKUPS の `sys/epoch/<epoch>.json` を conditional put で作る。既存 record は完全一致時だけ同一 intent とみなす。
+3. D1 mirror を更新し、open permit を revoke、旧 claimed operation だけを failed にする。terminal は維持する。
+4. 成功後だけ SQLite pending を ready にし、epoch を返す。
+
+R2/D1 応答喪失では pending を残し、`recover()` で同じ intent を照合する。
+DO storage 全喪失では R2 list の全ページの数値最大値+1、D1 epoch+1、operator の EPOCH_FLOOR の最大値を使う。
+履歴が空・取得失敗なら EPOCH_FLOOR の明示なしで起動しない。時刻から epoch を生成しない。
+履歴走査は100ページまでで、上限を越えた場合も明示的 floor なしでは拒否する。
+`bumpEpoch(expectedEpoch,reason)` の期待値は再送・並行 bump の重複発行を防ぐ。
+
+`status()`はDO SQLiteの永続admission状態を読み、open時にはD1のepoch/revision/token/flagsを照合する。`quiesce`は外部I/Oの前にDOを閉じ、D1の両flag・permit revoke・claimed operation失敗を原子的に確定する。全監査後の`resumeAdmission`は最終D1 fenceを同じbatch内で再確認して受付を開き、`resumeGarbageCollection`が最後にGC pauseを解除する。停止中repair RPCの永続holdが残れば再開しない。応答喪失、eviction、停止との競合、全storage喪失は[CONTROL_ADMISSION](CONTROL_ADMISSION.md)を参照。実環境の受付再開・配備は未実施。
+`do/recoveryAudit.ts` は停止中の D1 と R2 を段階的に走査する診断 helper。1回最大20 user/blob/R2 object/outbox/share/credential/credential source を確認し、bootstrap identity、有効 admin、root/owner、used/reserved/physical/ref 会計、記録された R2 object の HEAD サイズと etag、R2 list の全件を blob/ready derivative/archive の D1 行と照合し、未知オブジェクトを検出する。outbox の元操作と送信・claim lease、share の予約量・root から space root までの有効な祖先・version、credential の参照先種別・有効 scope root と、4種の参照元に対する registry 行の存在も検査する。FTS5 `integrity-check` は `rank=1` で `search_index` の全件と照合するため、ページ上限の対象外。open permit、claimed operation、active job/outbox claim、削除中 GC、不完全 upload があれば開始しない。ControlDO の `beginRecoveryAudit` / `nextRecoveryAuditPage` は SQLite の `recovery_audit_v7` に epoch・token・stage・R2 の opaque cursor を永続化し、eviction と失敗ページの再試行に対応する。完了済み監査の再照会でも最終 D1 fence を再確認し、失敗時は監査を先頭へ戻す。`rebuildRecoveryFts` は停止中に external-content index を `search_index` から再構築・検証し、監査カーソルを初期化する。旧 epoch の監査を再利用しない。最終 D1 fence は予約・未完了 upload・旧 outbox・job lease を拒否する。`releaseStaleReservations` は旧 epoch でuploadに一切紐づかない予約を最大20件ずつ解放し、監査を初期化する。監査完了に加え、再開batch内の最終fenceと進行中repairの不存在を要求する。未知multipart全体閉鎖・予約精算、残るQueue event修復、実restore drillは未完了。
+
+`failStaleOutbox` は停止中に旧 epoch の `node.created` と `node.renamed` を最大20件ずつ `failed` に収束させ、監査を先頭へ戻す。active claim が残る間は処理しない。旧 epoch の他の event kind は専用 cleanup が必要なため残す。
+outbox の復旧監査は両 kind の元 operation 種別、保存済み operand/result、step 1 の node ID が通知 payload に一致することも確認する。不整合な通知は監査を失敗させる。
+credential の復旧監査では、有効な app password と service の scope root も同じ space root までの生存・所有者・深さを確認する。祖先が trash の場合は資格情報が残っていても監査を失敗させる。
+
+## Private単一upload
+
+物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。 migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。
+
+UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳喪失時の停止を共通受付へ接続しました。初期化と通常反映は現在の利用者認可、停止反映と喪失処理は復旧用system受付を使い、すべて同じ32 active/256 waiting枠を共有します。 初期化markerや部品送信につながる台帳反映は、D1 batchの直接ACKがなければローカル台帳を確定せず、送信許可も返しません。混雑・rollback・応答喪失でもdirty行、アラーム、予約容量を保持します。台帳全喪失では停止記録を回収できても再初期化しません。
+単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 停止claimは正確なcleanup tokenで回収できますが、外部HEAD/abortは予算batchの直接ACKが必要です。確定済みDB記録はexact receiptで照合し、他の回収処理の終端記録で自分の未確定枠を返しません。待機・遅いACKで実行時間を超えた場合は外部送信を止め、予約・leaseを保持します。ControlDO内の復旧は同じinstanceの受付を直接使い、自己RPCや別枠を作りません。
+
+利用者による中止とmultipart完成物の検証済み情報も共有受付へ接続済み。DB-onlyの応答喪失はexact receiptで回収し、別要求のterminal結果では自分の未確定枠を解放しない。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。
+
+`services/uploads/` と `api/uploads.ts` は Access user の `POST /api/v1/uploads`、`PUT /:id/content`、`POST /:id/complete`、`GET/DELETE /:id` を接続する。作成はcredentialとIdempotency-Keyから安定IDを作り、署名/hash後に所有spaceの共通mutation枠を取得する。current node authority、quota予約、staging blob、immutable upload identityと確定記録/枠解放を同じD1 batchで保存する。既存receiptの再取得は追加受付なし。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。migration `0016` は名前・上書きrevision・request digest・capability kid・単一write attempt/lease・completion operationを追加する。private multipartのHTTPも接続済み。公開共有は未接続。
+
+専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` のHMAC ringを使い、upload ID、credential、epoch、期限を署名する。DBにはcapabilityのhashだけを保存し、作成応答喪失時は保存済みkidで同じtokenを再発行する。旧kidは有効uploadがなくなるまで保持する（現在のsingleは24時間）。JSON mutationはCSRF、binaryはcurrent Access・capability・exact Origin、上書きはstrong If-Matchを要求する。
+
+単一PUTは95,000,000 byte以下の既知長。単一の送信開始/読戻し/検証済み情報とmultipartの初期化/complete claimは共有mutation枠を取得し、最終認可・変更・exact receipt・返却を原子的に保存する。外部送信は直接ACKだけで許可する。D1が`created→receiving`と1回限りのattempt/15分leaseを確定し、その応答を受けた呼出しだけがimmutable keyへR2 PUTを開始する。claimの応答喪失では送信せず、R2 PUTの応答喪失では同じobjectのGET・metadata・size・SHA-256照合で回収する。再送のPUTは行わない。sourceを最大64 KiBずつdigestとFixedLengthStreamへ直列供給し、lease signalでreaderと両sinkを中止する。観測した物理bytesは確定失敗でも計上し、R2の不存在を確認するまで戻さない。
+
+completeはLockDO permit、current authorization、epoch、予約、R2 HEAD/physical/hashを検証し、新規10 step/上書き8 stepでnode/version・検索・quota・upload terminal・activity/outboxを一括確定する。DB応答喪失はoperation lookupへ収束し、unknown時は補償しない。既知failedの予約解放は再実行可能。abortは共通mutation受付を取り、現在の認可・中止・orphan/cleanup intent・確定記録/返却を同一batchで保存する。未送信の予約だけを解放し、write attemptがある場合は24時間の期限後にR2を照合するまで予約を保持する。abortとclaimの競合は同じD1 batch内のattempt有無で判断する。ControlDOの監査後の受付再開はローカル実装済み。単一/分割自動回収と所有blob GCは共通受付へ接続済み。
+
+`jobs/uploadCleanup.ts` は期限切れsingleを既定20件/最大100件、既定20秒の処理時間予算で回収する。migration `0017`の60秒lease・token・次回時刻・errorと専用indexで重複Cron、再試行、失敗候補による後続処理の停滞を防ぐ。D1 batchでcurrent epoch/maintenance、未公開blob/ref/pin、completion operandを検査し、`created/receiving→expired`、`completing→failed`と未確定completion claimを同時に終端化してからHEADする。completion_op_id保存前のclaimもuploadId/credential/space/parent/target tupleで照合する。committed operationや部分stepが残る矛盾した行は回収しない。
+
+HEAD presentなら実サイズをphysicalへ一度だけ計上し、予約解放とGC candidate挿入を同じbatchで行う。正しいupload/attempt/epoch/blob metadataが必須で、サイズ不一致の自分のobjectも実byteを計上してからGCへ渡す。metadata不一致は容量を計上して隔離し、予約を保持する。HEAD absentなら同じbatchでblobをdeleted、既存physical観測をremoved、予約をreleasedへ確定する。期限前のabsent、HEAD失敗、期限切れ/交代したcleanup leaseからの書込みでは精算しない。GCがdelete/HEAD不在を確認するまでcleanup_pendingは保持する。GC pause中もHEADと会計・candidate化は可能だがR2削除はしない。
+
+CronはControlDO/D1 admission後に回収し、その後pause解除時のみ既存GCを呼ぶ。復旧時は `ControlDO.repairExpiredUploads` がquiesceし、停止中の同じ回収処理を実行して前後のauditを無効化する。旧epoch・失効credentialでも未公開データは回収できるが、24時間の期限は短縮しない。汎用 `releaseStaleReservations` はterminalを含む全upload予約を除外する。最終復旧fenceは未解決cleanup claimと、physical計上済みGC candidateへ引き渡していないcleanupを拒否する。未知の完成済み`u/` objectは別のinventory/35日回収へ接続済み。unknown multipart IDと実Cron運用の検証は残る。
+
+HTTP契約は[UPLOAD_HTTP](UPLOAD_HTTP.md)。multipart PUTはUpload-Attempt-Idと既知長を必須にし、current Access/capability/Origin/If-Matchを検査する。同attemptのin_flight再送は202でbodyを破棄し、新しいR2 callを許さない。readUploadはupload/partをcurrent authorization付きD1 batchで最大200件返し、期限切れ後も同credential/epochのreceiptを照会できる。D1反映が未確認のpartは以前の状態を返すため、clientは同attemptで再照合する。GETでDO初期化やbudget resetは行わない。multipart DELETEはD1のcreated/uploadingだけをabortingへCASし、completeとの競合ではR2 dispatch/publication側のfenceが停止を検知する。初期化応答喪失は202 receipt+capabilityで追跡でき、R2 upload IDを再作成しない。
+
+## UploadDO multipart台帳
+
+未完了multipartの外部観測は[r2 S3診断](MULTIPART_INVENTORY.md)を参照。ListMultipartUploads/ListParts/lifecycleを停止中ControlDOへ接続済みだが、既存uploadの永続scan・未知IDのabortはmigration `0022`とmultipartInventoryRepairへ接続済み。BLOBS/S3対応検証はmigration `0023`のsystem probeとr2BindingVerificationへ接続済み。全体不在証明・予約精算への接続は未実装。診断結果を閉鎖証明として既存cleanupへ渡さない。
+
+`do/uploadPlan.ts`は1 byte〜500 GiB、既定64 MiB・非最終8〜90 MiB・最大10,000 partの固定計画を作る。0 byteはsingle upload用でありmultipartでは拒否する。
+
+`do/uploadLedger.ts`はUploadDO専用SQLiteの内部部品。immutable upload/R2 ID/epoch/分割/期限を初期化し、attemptを一行ずつ保存する。claimとcounter更新は`transactionSync`で原子的に行い、同part排他、全体4並列、part毎3試行、calls≤parts×3、bytes≤declared×3を守る。成功metadataはサイズ・SHA-256形式・etag境界を検査する。再送では保存済み結果を返し、`dispatch`以外ではR2 I/Oを開始してはいけない。`not_started`はR2を一度も呼んでいないと確定した失敗に限り、消費済みbudgetは戻さない。
+
+15分lease切れとunknown応答はupload全体を`aborting`にし、全in-flightをunknownへ固定する。遅れた成功を採用せず、同upload/R2 IDでは再送しない。無進捗24時間/作成から最大6日の期限と旧epoch失敗も永続化する。全part成功後のみ`completing`へ進み、abortと追加partを拒否する。complete応答喪失はR2 head/D1照合が必要なので期限切れからabortへ変えない。cleanup counterはdata/controlと独立で、data budget枯渇後も記録できる。完了partは数値keysetで最大200行ずつ取得する。
+
+`do/UploadDO.ts`は内部RPCのたびにcanonical DO ID、ControlDO epoch/admission、capabilityのD1 digest、current credential/node authorityを検査する。D1の予約・epoch・maintenanceを同じmirror batchで再検査し、確認済み応答だけが新規dispatchを返す。外部D1 I/Oを挟むmetadata操作を`blockConcurrencyWhile`で直列化するが、streamとR2 I/OはWorkerに置く。通常の拒否はcallback内で捕捉し、30秒timeoutによるDO resetでは永続leaseから閉鎖側へ復旧する。
+
+migration `0018`はimmutable part geometry、R2 initialization identity、`multipart_ledger_id`、単調増加revisionを追加する。D1 markerをSQLite初期化より先に確定し、markerの応答喪失と全storage喪失を`upload_ledger_recovery_required`として停止する。evictionは正常に再開できる。SQLiteのtriggerがrevisionとdirty partを記録し、最大200行の差分をD1 `uploads`/`upload_parts`へ同時反映する。D1応答喪失時はdirtyを残し、再照合してもdispatchを再発行しない。初回・part lease・idle alarmを設定し、停止mirrorが失敗した場合は60秒後の再試行を残す。alarmは失効credential/停止中/旧epochでも停止状態を反映するが、予約を解放しない。
+
+`services/uploads/multipart.ts`は内部private userサービス。予約とstaging blobを作り、一度限りのD1 initialization claimを確認してからR2 multipart IDを取得する。create応答喪失では同uploadを再作成しない。既知R2 IDのD1保存は失効後も可能だが送信権限を与えない。partは現在のD1認可/予約を再確認し、固定長streamとSHA-256を同時に処理して結果をDOへ精算する。R2呼出し後の結果不明はupload全体を停止し、呼出し前の確実な失敗だけをnot_startedとする。個別part hashをwhole-objectの`sha256_verified`へ転用しない。
+
+`services/uploads/multipartComplete.ts`とmigration `0019`は一度限りのcomplete attempt/leaseをD1に保存し、確認済みclaimだけがR2 completeを呼ぶ。台帳は200行ずつ読み、R2 APIに必要なetag配列だけを一時的に構築する。claim/completeの応答喪失時は不変keyのHEADで照合し、不在でも再completeしない。HEADはcontrol_calls上限64を使い、cleanup budgetは消費しない。size/upload/blob/epoch/初期化attemptのmetadataを照合し、実在bytesをblob_storageへ一度だけ記録してmultipart_object_etagを固定する。権限失効がR2 completeと競合した時もphysical観測は行い、公開は拒否する。
+
+`complete.ts`のsingle専用wrapperとmultipart publication wrapperは同じLockDO/fsMutationを使用する。multipartでは全partの件数・固定geometry・etag/hashとobject proof/physicalを、operation claim前と最終publishing batchで検査する。singleのwhole hash必須条件は維持し、multipartのsha256_verifiedはNULLを要求する。新規10 step、上書き8 stepは予約消費・blob・node/旧版・検索・activity/outbox・terminalを同時確定する。既知namespace失敗の予約解放にもobject proofを必要とし、complete結果不明を補償しない。
+
+UploadDOはD1のcompleted flagだけではterminalと認めない。committed operationのcredential/principal/digest/operand/result/stepを照合し、SQLiteをcompletedへ進める。最終ackの喪失、eviction、旧epoch alarmでも公開済みblobをcleanupへ戻さない。D1で完了を証明できる場合、全SQLite喪失後のstatusは台帳を再初期化せず返し、新規partは拒否する。
+
+**private HTTPとFiles UIは接続済み。** UIの範囲と制約は[FILES_UI](FILES_UI.md)。 `jobs/multipartCleanup.ts`とmigration `0020`は既知R2 IDの中止・期限/idle/part lease切れ・旧epoch回収を行う。既定20件/最大100件、60秒cleanup leaseと独立counterを使う。稼働中のinit/part/complete leaseを待ち、未公開/ref/pin/operation tupleを再検査して、未確定operationの失敗と永久停止marker `multipart_cleanup_started_at`を同じD1 batchで記録する。以後はDO mirror・part再送・台帳再初期化・completeを拒否する。停止markerを見たDO alarmは削除される。
+
+R2 abortの成功を `multipart_cleanup_closed='aborted'`として保存してからHEADを確認する。abortが不明でも既知complete attemptに対応するmetadata付き完成物をHEADで確認できればclosed='completed'とする。NoSuchUploadやHEAD不在単独、7日経過では閉鎖証明としない。actual bytesのphysical観測を先に保存し、予約解放・GC handoff/absent tombstoneを原子的に精算する。完成物のphysical減算とcleanup_pending解除はGCのdelete/HEAD不在後のみ。保存済み閉鎖証明を使って再試行し、遅延応答はcleanup token/current epochで拒否する。
+
+Cronと `ControlDO.repairStoppedMultipartUploads`に接続する。停止中repairは既知multipart handleをabortするが、完成objectをdeleteせず監査を前後で初期化する。最終復旧fenceは、終端flagやGC candidateがあってもmultipart閉鎖証明がなければ拒否する。unknown creation ID、不正metadataはphysical計上と予約を保持して隔離する。外部inventoryの既存upload未知ID修復は接続済み。全体閉鎖・予約精算と7日incomplete lifecycleの実bucket確認は未完了であり、ローカル試験で代替しない。
+
+metadata直列化の30秒timeoutと例外時resetは[Durable Object State](https://developers.cloudflare.com/durable-objects/api/state/)に従う。SQLiteの同期transactionは[Cloudflare Storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従う。R2 multipartの再開handleを実在の証明として使わない（[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)）。
+
+## 未知の完成済みR2 object
+
+migration `0021`の`orphan_objects`と`r2_inventory_scan`は、全catalogueから独立した`u/` objectをHEADで観測し、発見から35日保留する。`jobs/orphanInventory.ts`がページcursor/60秒leaseを保存し、再検出でfirst_seenを変えず、version/etag/size/uploadedが変われば猶予を更新する。既存ownerへのphysical計上と削除後の減算はD1 triggerで原子的に行い、owner不在から復元された場合も一度だけ計上する。namespaceには公開せず、全catalogueへの同key登録を相互guardで拒否し、削除後もtombstoneを残す。
+
+回収は35日後、current epoch/GC pause/claim/identityをR2 call直前に検査し、HEAD一致→delete→HEAD不在→D1精算で収束する。停止中のinventory RPCは走査して監査を初期化する。別のdrainOrphanGarbageCollection RPCは既存deletingのみを回収する。復旧R2 listは隔離台帳の全metadata tupleを照合し、最終fenceは未完了claim/deleting/不正keyを拒否する。incomplete multipartの閉鎖証明、他prefix、既知key不正置換は別の残作業。詳細は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)。
+
+## Access session
+
+`services/blobRead.ts` は `node.read` の現在認可 assertion と node/blob/物理観測行を同じ D1 batch で照合し、R2 配信用 plan を作る。R2 HEAD と GET のサイズ/ETag を plan と照合し、D1 content ETag による 304/If-Range、HEAD、単一 Range の 206/416、MIME/Disposition、no-store/nosniff を返す。purpose・content session・予算の検証は呼出し側の必須条件であり、公開 route にはまだ接続していない。
+
+`auth/contentSession.ts` は content session・ticket・target set・budget の同一 credential/epoch/対象と、有効期限・失効・share version/grant を D1 assertion で検査する内部部品。使用時は node 認可 assertion と同じ batch に入れる。
+`services/targetManifest.ts` と `prepareContentBlobRead` は R2 manifest を 1MiB 以下で読み、SHA-256・target の node/blob/purpose/size と D1 total bytes を検証する。current node 認可、content session assertion、manifest hash/ref/owner、blob 物理行を同じ D1 batch で再確認する。復旧監査は target manifest も hash/構造を照合する。
+`auth/contentTokens.ts` は専用 kid ring で audience/purpose/credential/epoch/target hash/budget を束縛した HS256 ticket と、署名済み host-only Cookie を発行・検証する。`auth/contentAccept.ts` は D1 ticket/credential/share/target/budget の現行状態を batch で照合し、発行元 `ticket_id` を持つ content session を作る。`prepareCookieBlobRead` は Cookie から現行 principal と ticket を復元し、上記の読み取り証明に接続する。
+`do/BudgetDO.ts` は `budget_id` ごとの SQLite counter と最大10分の lease を保持する。初回 target bytes×3 を固定上限として、1,024 requests/10分、並列8、unknown transfer 全額消費を守る。credential/share/session/ticket の D1 現行状態を lease 前に再確認し、旧有効期間が終わった場合だけ新しい D1 budget で counter を再初期化する。alarm は期限切れ lease の並列枠だけを解放する。`streamBudgetedContentBlob` は GET/HEAD/Range/304 の各 request を reserve し、body 完了時に実 byte、キャンセルや結果不明時に全額を精算する。内部共有の read は選択した share root が node の祖先であることを同じ D1 batch で確認する。migration `0010` は D1 trigger で owner あたり active budget を64件に制限する。予算発行 API は未接続。
+`api/content.ts` は content host の `/session` POST/OPTIONS と `/c/:nodeId/:blobId` GET/HEAD を接続する。ticket body は4KiB、Origin は APP_ORIGIN と完全一致、GET は node/blob ID の一致から space を引き、内部の現行認可と BudgetDO に進む。Worker entry は署名鍵4値と ControlDO/D1 admission を要求する。ControlDOは監査後の再開を実装済みだが、実環境の公開は未実施。鍵はリモート secret として別途設定が必要で、local config には置かない。page/entry/track/ZIP 等の経路と全 route 会計は未接続。
+`services/contentBudget.ts` は `node.read` の証明を使い、private user、内部共有 user、匿名 unlock session ごとの安定した budget ID を D1 batch で確保する。credential と選択 share root/owner/expiry、ControlDO mirror の maintenance を再照合し、既存の active budget は再利用する。revoked budget の再開は拒否し、owner 64件上限は migration `0010` が確定時に守る。`services/contentTicket.ts` は最大1,000件の現行 node/blob と選択 share を検証し、R2 target manifest を staging・読戻し後、全認可証明と budget/ticket/target set を D1 batch で確定する。配信更新はmandatoryな共通mutation受付を通る。自分のcommit応答喪失はexact receiptで照合し、R2 manifestの削除は公開を原子的に取り消した証明がある場合に限る。照合/取消し応答を失った場合は保持する。private HTTP発行routeは接続済み。詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。
+`services/contentTicketCancel.ts` は同じ current credential だけに ticket 取り消しを許し、派生 content session の失効と同一 D1 batch で確定する。他の ticket が共有する budget は維持する。private HTTP取消しrouteと共通mutation受付は接続済み。
+`api/contentTickets.ts` は認証済み private request の CSRF、同一 origin、bounded JSON を確認し、発行と取消を内部サービスへ渡す。`api/privateApp.ts` は app host で Access JWT を検証し、D1 session を登録して CSRF 発行と ticket handler に接続する。ticket 期限は Access session 期限以内に丸める。Worker entry は ControlDO/D1 admission と issuer/AUD、bootstrap policy、private/public CSRF kid ring、content 署名鍵の設定を要求する。ControlDOは監査後の再開を実装済みだが、remote設定と公開は未完了。
+`api/account.ts` は `/api/v1/me` で current credential/user/space と control epoch を照合し、quota と識別情報だけを返す。`POST /api/v1/auth/logout` は CSRF 検証後に D1 session と派生 content session を失効し、[Access の logout URL](https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/) である app origin の `/cdn-cgi/access/logout` へ 303 を返す。ブラウザー側のstate削除・BroadcastChannel・top-level navigationをFiles UIへ接続済み。ゼロbyte HTTP streamのlogoutも受け入れ、非空本文は拒否する。[FILES_UI](FILES_UI.md)に範囲を記録した。
+`services/nodeRead.ts` は node 詳細、root-first breadcrumb、children 一覧で current `node.read` の祖先証明・control maintenance を同一 D1 batch で再照合する。breadcrumb は同一space/ownerのlive親だけを最大64 edge辿り、rootに到達しない循環・切断・深さ超過を拒否する。一覧は `nodes_children_keyset` で最大200件を返し、201件目で次 cursor を発行する。`auth/nodeCursor.ts` は専用 HMAC ring で parent/space/owner/user/credential/epoch/tree generation/最終 name_ci+id/10分期限を束縛し、改変・期限切れ・tree 変更を拒否する。Worker entry は app の GET node詳細、path、children routeを接続した。remote cursor ring が未設定なら children は 503。
+`api/nodeMutations.ts` は app の `POST /api/v1/nodes` と `PATCH /api/v1/nodes/:nodeId` を bounded JSON、CSRF、Idempotency-Key で folder 作成・rename の既存サービスに接続する。terminal commit は作成201・rename200、failed/conflict は409、未確定は Operation-Id/Retry-After 付き503。同 credential の `GET /api/v1/operations/:id` は既存の current operand/result 照合を使う。個別HTTPテストのtest-only admissionに加え、実ControlDO/LockDO/D1で全監査から再開後のfolder mutationまで検証済み。
+
+`auth/sessions.ts` は JWT 検証済み claims を受ける内部サービス。`auth/login.ts` が JWT 検証→bootstrap（未初期化時だけ）→session 登録を接続する。HTTP route は未有効化。
+既存 user の iss+sub を照合し、email だけでは identity を結合しない。
+fingerprint は R6 の SHA-256(iss|sub|iat|exp)。区切り文字衝突を避けるため iss/sub 内の `|` を拒否する。
+同じ fingerprint の同時登録は同じ session / credential へ収束し、logout tombstone を再作成しない。
+
+logout は対象 Access session と同 user の全派生 content session を同一 batch で失効させる。
+session identity の更新と revoked→active の復帰は DB trigger でも禁止する。
+job chunk は `assertLiveAccessCredential` を commit batch に入れ、ユーザー停止・session失効・期限・epoch を再検査できる。
+node read/create の current grant/scope は以下の authorize サービスで検査する。その他の operation は未対応。
+
+## Access JWT / JWKS
+
+- `auth/access.ts` は user と service の固定・別 AUD を要求する。単一 `Cf-Access-Jwt-Assertion` 以外の Cookie/Authorization/raw Service Token/query/body へ fallback しない。
+- `jose@6.2.12` を exact 固定（2026-09-05 公開、2026-09-22 選定）。依存なしの ESM/WebCrypto 実装を Node と workerd で実署名検証した。公開日と採用判断は `toolchain.json`。
+- JOSE header は `RS256` / `JWT` / bounded `kid` のみ。payload は固定 issuer・単一 AUD・type=app・整数時刻・有効期間24h以下・skew60秒を検査する。user/service claims を相互昇格しない。
+- JWKS URL は設定済み issuer の `/cdn-cgi/access/certs` のみ。redirect 禁止、fetch/body timeout5秒、256KiB、RSA16鍵、duplicate kid/private key 拒否。
+- `AccessJwks` は issuer ごとに長寿命の1 instance を使う。KV と memory は1時間 fresh、取得障害時の既知 key のみ取得から24時間まで使用する。正常な refresh で消えた key は失効し、未知 kid へ stale fallback しない。
+- refresh single-flight・10回/分・negative cache 最大64件/TTL60秒は **isolate/instance 内**の上限。KV は isolate 間の共有 hint であり、グローバル厳密 rate limit ではない。HTTP 接続時の Edge rate limit と実 Access の鍵ローテーション検証は残る。
+- JWT verifier の60秒 grace があっても、session 登録と各認可の有効期限は D1 時計で厳密に検査する。
+
+仕様/API 参照: [Access JWT 検証](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)、[Access claims](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/)、[jose upstream](https://github.com/panva/jose)。
+
+## 初回管理者登録
+
+`auth/bootstrap.ts` は検証済み user identity と明示 allowlist（email は exact match、または iss+sub）だけを受ける。
+quota は policy の明示値を使い、未設定の実環境値は推定しない。
+bootstrap latch の条件付き UPDATE→user(app_admin)→personal space→root を同じ batch で作成する。
+current epoch・maintenance解除・DB側の有効期限・user未登録・signup既定falseを要求する。
+競合/応答喪失時は primary で bootstrap identity と完成した root を照合し、同じ identity だけ同一結果へ収束する。
+bootstrap 後の新規 identity は自動作成せず、同 email でも既存 user へ結合しない。
+Google IdP/MFA は Access policy の staging gate であり、このローカルサービスはその設定済み証拠ではない。
+
+## Node 認可と commit assertion
+
+`auth/authorize.ts` は `node.read` / `node.create` / `node.rename` / `node.content.write` / `automation.list` / `automation.metadata.read` を扱う。
+単一 primary query の同じ snapshot で、root 到達・深さ64・cycle・全祖先の live/space/owner、user/credential の現在有効性を検査する。
+
+- user: 自分の space、または現在有効な internal share grant/action/version。app_admin に他 owner の file 読取り例外を与えない。
+- app password: user の権限に加え、現在 scope・optional root・失効/期限を必須にする。owner/admin で scope を拡張しない。
+- link share: 現在 share/action/version、session/epoch/期限と root を必須にする。upload-only share に node read/create を開かない。
+- service: 現在 identity mapping・mapped user・space・root・scope・JWT期限を検査し、automation 2 operation だけ許可する。
+- job/system はこの入口では拒否する。専用の claim/fence/explicit operand 認可は後続実装。
+
+戻り値は read=node / create=parent+space / rename・content write=node+parentId の discriminated tuple。rename は root・share/credential scope root を拒否し、edit action と node:write scope を要求する。content write は file に限定し、同じ edit action と node:write scope を要求する。request-local の変更不可 proof に認可 SQL を保持し、`authorizationAssertion()` で同一 mutation batch へ入れる。
+再検査では credential/grant/epoch に加えて対象 revision、tree generation、parentId を束縛する。
+これは permit、operation、quota/ref/pin の assertion の代わりではなく、create は後述の fsMutation で各 assertion と結合する。
+
+`auth/appPassword.ts` は DAV Basic の `ap_<ULID>` ID と32B secret を HTTPS app origin のみで受け、Origin/JWT 混在を拒否する。kid 別の HMAC pepper と16B salt、PBKDF2-SHA256 100,000回/32B digest を照合し、D1 の current credential/user/epoch/maintenance を秘密計算の前後で確認する。`services/appPasswords.ts` と `api/appPasswords.ts` は Access/CSRF 付き `GET/POST/DELETE /api/v1/app-passwords` を接続し、秘密は作成時だけ no-store で返す。scope は DAV に必要な node:read/create/write/delete に限定し、所有者 root、最大20件、90日既定/365日上限を D1 batch で確定する。失効は派生 content session も同じ batch で無効化する。旧 kid の認証成功時は D1 batch の条件付き更新で新 kid と新 salt に再ハッシュし、応答喪失時も現行レコードを再照合する。`api/dav.ts` は DAV 入口で Edge rate limit を Basic 認証より先に適用する。`dav/path.ts` は一度だけ decode した bounded path を app password root から casefold 解決し、認可と同じ D1 batch で再照合する。Class 1 OPTIONS、file GET/HEAD/single Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE は接続済み。MKCOL は親 path を `node:create` で再照合し、`dav.mkcol` operation と LockDO permit を既存の `fsMutation` に渡す。`services/putFile.ts` は最大95 MBのrequest streamをR2とSHA-256へ同時配送し、R2書込み前にquota reservationを確保し、新規fileを10-step、条件付き上書きを旧blobのimmutable version化を含む8-step `dav.put` mutationで確定する。R2 size/ETag、D1 physical観測、logical/physical quota trigger、LockDOとcommit時lock assertionを通し、失敗が確定した固有objectは削除する。`services/trashNode.ts` は最大1,000 nodeのlive subtree membershipを確定し、node不可視化、親/tree revision、subtree locks、share/share session、ownerの短期ticket/content session、activity/outboxを13-step `dav.delete` batchで同時確定する。1,000 node超は同期DAV DELETEを403で拒否する。`dav/transferProtocol.ts` は8 KiBの同一origin `Destination`、`Overwrite`、method別`Depth`をURL正規化前に検査する。`services/moveNode.ts` は同一ownerの最大1,000 node・10 GiBのsource/overwrite manifestを固定し、循環防止、両親/tree revision、source/target lock終了、上書きtargetのtrash/share/session失効、検索、activity/outboxを19-step `dav.move` batchで確定する。 `services/copyNode.ts` はmigration `0012`の固定source→copied manifestを使い、同じ上限内のfile/folderをsame-owner COWで複製する。dead property、検索、blob ref会計、親/tree revision、上書きtargetのtrash/share/session失効、activity/outboxを18-step `dav.copy` batchで全成功または全rollbackする。PROPPATCH は `node:write` の path 証明と対象 lock を検査し、最大100件の dead property、node revision、activity、terminal result を同じ D1 batch で確定する。保護 live property を403、同じ request の他 property を424として全て rollbackする。`dav/xml.ts` は固定した `fast-xml-parser` 設定と XML budget で property request と mixed content を解析し、`dav/propfind.ts` は current authority と最大1,000 child を集合取得して live/dead property を207で返す。`dav/conditions.ts` は8 KiB以内の tagged/untagged `If`、`Not`、state token、ETag、単一 `Lock-Token` を上限付きで解析し、resource/list/condition の論理評価と全branchからのtoken submission収集を分離する。`dav/conditionState.ts` はsame-origin credential path、対象とancestor infinity lock、DAV ETagをcurrent D1から取得し、不一致を412にする。提出tokenはMKCOL/PROPPATCH/COPY/MOVEのLockDOとcommit時lock assertionへ渡す。`dav/etag.ts` のfile `"b-<blob_id>"`、collection `"c-<node_id>-<revision>"` をGET/HEAD、PROPFIND、条件評価で共有する。主要なDAV namespace handlerは接続済み。remote `APP_PASSWORD_PEPPERS`/`APP_PASSWORD_ACTIVE_KID` 設定は未接続。作成応答喪失時は秘密を再表示できないため、一覧で credential を確認して失効・再作成する。
+
+`services/trashRead.ts` と `api/trash.ts` は所有者space rootのcurrent `node.read`証明、epoch、maintenanceを同じD1 batchで再検査し、`trashed` operationを`created_at DESC, op_id DESC`のkeysetで最大200件返す。migration `0013`のpartial indexを固定使用する。10分のpurpose-bound HMAC cursorはspace、user、credential、epoch、tree generation、最終sort keyを束縛し、改変やnamespace変更後の継続を拒否する。`services/restoreTrash.ts` は所有者の固定membershipをrootから深さ順に最大64層・1,000 nodeまで同じD1 transactionで復元する。復元先のcurrent `node:create`、LockDO permit、GC pause、`gc_candidates.deleting=0`、参照blob非deleting、credential/epoch/tree/nameをcommit直前に再検査し、root名衝突はbounded `(restored N)` 名へ解決する。別trash operationの削除済み子と旧shareは復活させない。`services/purgeTrash.ts` はmigration `0014`のoperation束縛logical node/blob manifestを作り、`trashed→purging`を不可逆点としてnode参照FKを正本順に削除する。別trashの削除済み子は`parent_id=NULL`へ退避し、nodeをdepth降順で削除する。node/version triggerでlogical refとquotaを減算し、対象blobを7日猶予の`gc_candidate`と`gc_candidates`へ接続する。restore/purgeともoperation/activity/outbox/terminalまで同じtransactionで確定する。`jobs/gc.ts` はmigration `0015`の一方向claim leaseを使い、epoch・pause・ref・複数pinを同じD1 batchで再検査してblob/candidateを`deleting`へ移す。R2 deleteの応答喪失は`head()`で収束し、不在確認後だけ両台帳を`deleted`へ進めて`blob_storage.removed_at`によるphysical bytes減算を確定する。
+
+残る境界: 全147 route の認可、source/destination/overwrite/job/upload 等の tuple、HTTP host/surface dispatch、残る DAV operation handler・share secret 検証、残るlisting/content handler、account/KDF admissionと実環境再開。
+認可 query が返す node metadata は content ticket/purpose/blob/pin の検査を代替しない。
+
+## CSRF
+
+`auth/csrf.ts` は R6 の session 束縛 HMAC token（TTL1h、再利用・再発行可）を実装する。
+256-bit key、用途別 key ring、kid rotation、canonical JSON、aud/epoch/credential/purpose を検査し、毎回 D1 の現在 session/share version/owner を照合する。
+private issue は POST + Sec-Fetch-Site:same-origin を要求し、既存 CSRF token は不要。Origin があれば exact match。
+public issue は exact Origin と同じ unlock credential を必須とする。
+mutation verifier は HTTPS の exact request origin / Origin / same-origin / application/json / X-CSRF-Token を検査する。
+GET/HEAD、DAV、content-origin や upload binary の扱いは各 HTTP profile への接続時に分離する。HTTP route はまだ無効。
+
+## 容量・参照会計
+
+`0005_accounting.sql` と `services/{quota,refs,physical}.ts` を追加した。
+
+- reservation の作成時に owner の used+reserved≤quota、physical+reserved≤floor(quota×6/5) と share 上限を同一 transaction で取得する。終端化で一度だけ解放し、reserved row の直接削除・identity変更・終端復帰を禁止する。
+- node current / node_versions / blob_pins の追加・除去が trigger で ref_count を同時更新する。合計1,000を超える追加は元の変更も rollback。expired pin も行がある限り参照として残す。
+- logical used は current/version/trash から参照される owner 内の unique blob。COW/複数 version で二重課金せず、pin-only blob は logical に含めない。current blob の置換は一つの trigger 内で旧参照減算→新参照加算し、trigger 実行順に依存しない。
+- `blob_storage` は R2 HEAD で実測した size/etag の会計行。staging/orphan を含めて一度だけ physical を計上する。宣言 size と違う物も実測 bytes を記録してから公開を拒否し、cleanup 完了まで課金を残す。既に存在する bytes は quota が下げられていても記録し、次の reservation を拒否する。
+- removed_at は blob deleted 後の一方向 tombstone。GC claim lease、quiesce、実R2 delete/head、不在確認後の最終batchへ接続し、応答喪失と再claimを含めて物理減算を実証する。
+- caller は reservation/pin SQL を認可・permit/operation guard と同じ batch に入れる。consume は新 logical reference 公開より先。trigger が counter を更新するため、handler から counter を重ねて加減算しない。
+- `auditOwnerLedger` は D1 集合から used/reserved/physical observation/ref count の差を診断する。R2 の完成済み object は監査ページで全件照合する。単一uploadに紐づく旧epoch予約は期限後のHEAD照合で回収する。未知完成物のinventoryはorphanInventoryへ接続し、ownerのphysical監査にも合算する。unknown multipart IDの外部inventory repairは既存uploadの複数ID中止まで接続済み。全体閉鎖と予約精算は後続実装。既知IDの回収はmultipartCleanupへ接続済み。
+
+migration 0005 は既存 node/version/pin と予約行から logical/ref/reserved を再計算する。以前の実装は physical 会計を公開していないため、既存 physical_bytes が非0なら migration を拒否し、先に個別 inventory 移行を要求する。物理実在を推定して埋めない。
+
+## 検証の境界
+
+### D1 permit 基盤
+
+`db/permits.ts` は LockDO から利用する内部 primitive。
+`0006` は space あたり open permit 一つを unique index で強制し、permit の ID/space/epoch/expiry 変更を禁止する。
+追加前に open permit が無いことを migration で要求する。
+
+- grant は current epoch/maintenance解除を検査し、期限切れ open→revoked と関連 claimed→failed を同じ batch で終えてから次の open 行を作る。
+- lease は D1 時刻から最大30秒。LockDO が事前に永続化する request ID を使い、再送や commit 応答喪失は同じ行へ収束する。lease 延長や terminal permit 再利用はしない。
+- commit assertion は ID/space/epoch/expiry の一致に加えて open・D1時計の期限・current epoch・maintenance解除を要求する。
+- 正常 release は未完了 claim があれば拒否。maintenance revoke は open と claimed を一緒に収束させ、committed/failed を変えない。
+- permit は現在の credential/全 operand の認可を代替しない。grant 前の ControlDO admission と lock graph 確認、commit batch 内の operation/current authorization は呼出し側で必須。
+
+### LockDO と operation claim
+
+`do/LockDO.ts` は space 名の正規 instance だけを使い、create 用 permit の取得・release・maintenance recovery を提供する。
+ControlDO の現在 epoch/admission を確認し、SQLite に request intent を保存してから D1 へ進む。
+grant の同じ batch で現在の create 認可、parent の depth 0 lock、祖先の infinity lock を再検査する。
+token は SHA-256 のみ保存し、同じ利用者の別 credential でも現在 scope と提示 token を要求する。他利用者の token 利用は拒否する。
+再送で parent/actor/credential/share version/token 集合を変えず、D1 permit の終端行を再利用しない。
+SQLite 全喪失後に同 epoch の D1 履歴がある場合は発行を拒否し、新 epoch + maintenance recovery を要求する。
+個別サービスの成功側テストはtest-only admission fixtureと実DO SQLite/D1/evictionを使う。別のControlDO全監査・再開試験とFiles browser試験は実ControlDOを使う。実環境のadmission gate合格を意味しない。
+
+`jobs/operations.ts` は create の claim と内部 lookup を実装する。body と operand は上限付き canonical JSON とし、idempotency key は initiating principal/credential の枠へ固定する。
+異なる payload/space/kind/operand/step 数は同じ operation に再利用できない。同じ claimed の再開は同一 permit/epoch/expiry のみ。
+claim 前と応答喪失後の照合で request-local authorization proof と現在の D1 認可を要求する。
+`0007` は operation identity と app password creator identity の変更を禁止する。
+lookup は同じ initiating credential と現在の元 parent の create 権限を要求し、成功結果は status と現在参照可能な node ID/revision に絞る。purge 済み node の name/path や内部診断は返さない。
+namespace の fsMutation/最初の folder create は以下へ接続済み。HTTP 経路は未接続。
+
+### 名前・fsMutation・最初の folder create
+
+`shared/names.ts` は NFC、portable 禁止文字/予約名、UTF-8≤255B、scalar<255、full casefold≤1,024B を検査する。
+URL decode は呼出し adapter の責務であり、JSON の `%2F` 等を再 decode しない。`.DS_Store`/`._*` は hidden として保存可能。
+`unicode-case-folding@1.1.1` を exact 固定し、公式 Unicode 17.0.0 の C/F mapping と照合した。name_ci の変更は同名制約に影響するため依存更新だけで切り替えない。
+folder name の検索索引は NFKC + full casefold + かな統一と scalar bigram を分離保存し、normalization_version を付ける。media metadata 合成と検索 API は後続。
+
+`services/createFolder.ts` は canonical intent → terminal replay または LockDO permit → current create 認可 → claim → fsMutation → terminal 照合 → release を接続する。
+`services/renameNode.ts` は rename 認可、対象と親の lock、permit、operation claim を確認する。node/parent revision、tree generation、旧 FTS term の削除、search_index 更新、新 FTS term の追加、activity、`node.renamed` outbox、terminal を一つの D1 batch に入れる。同名衝突や必須 step 失敗は全体 rollback する。private HTTPとローカル実ControlDO/browserへの接続は検証済み。実環境の公開は未実施。
+`services/fsMutation.ts` は先頭で permit/operation/current auth/current lock を SQL assertion にし、以下7 step と terminal を一つの D1 batch に入れる。
+
+1. folder node（operation 由来の固定 ID）、2. parent revision、3. space tree_generation、4. search_index、5. search_fts、6. activity、7. outbox。
+
+各 write の直後に `changes()=1`、各 operation_steps insert の直後にも同じ assertion を置く。terminal は step 数も照合する。
+folder は blob を持たず容量 counter を変えない。FTS と outbox が失敗しても node/parent/tree まで rollback する。
+確実な constraint rollback のみ、同じ current permit/claim を条件に別 batch で failed を記録する。network/timeout は failed と決めず、現在認可を再確認して最大3回/5秒で primary 照合する。
+未確定は operation ID 付きの commit_unknown として返す。terminal replay は現在見える ID/revision/status と安定 error code だけ。
+テストは各 step/terminal の0行、同じ claim の並行実行、応答喪失、失効・revision/tree/epoch/maintenance/lock/permit 変更を注入する。
+
+### outbox producer / consumer
+
+Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
+
+待機後にepoch/maintenance、正確なtokenとlease、受信側の現行credential・認可・元operationの証明を再検査します。DB-onlyの記録はexact receiptで回収しますが、今回のQueue送信には別受付と直接ACKが必要です。送信応答を失った通知はlease後に同じIDで再送でき、確定済みcompleted/failedの再配信は追加受付なしで確認します。Cron・Queue batchは共通の25秒期限を使い、未処理メッセージをretryします。 詳細は[OUTBOX](OUTBOX.md)。
+
+`jobs/outbox.ts` は D1 の current epoch/maintenance解除/committed operation を条件に30秒 dispatch lease を取得し、Queue へ `{outboxId}` だけ送る。
+送信後の sent 更新は同じ token/lease で CAS し、先に completed となった行や新しい sender の token を上書きしない。
+送信応答が不明なら lease を残し、期限後に同じ ID を再送する。`dispatchPendingOutbox` は最大100件、既定50件の pending/期限切れ dispatching/sent を走査し、有効な consumer claim がある行を再送しない。1 passは固定25秒の受付/送信開始期限を共有する。
+`jobs/consumeOutbox.ts` は `node.created/updated/renamed/trashed/restored/purged` を処理する内部 helper。D1 に保存された principal/credential と元の親フォルダー operand を現在の認可で再検査し、30秒の claim token/lease を取得する。rename では対象 node と元の parent の一致も確認する。元 operation の node step、保存済み operand/result、operation terminal、epoch/maintenance と同じ認可を完了 batch でも再確認する。後続の node mutation で `last_op_id` が変わっても元 event の検証は維持される。D1 応答喪失時は completed 行だけを完了と判定する。migration `0008` は outbox の identity を不変にし、consumer claim 列を追加する。
+`jobs/queue.ts` は ID-only メッセージを逐次処理し、completed/failed の終端行だけを ack、それ以外を retry する。ack 喪失後の再配信は同じ terminal を確認して収束する。`index.ts` の Queue handler は ControlDO status と D1 epoch/maintenance mirror が揃う場合だけ consumer を呼び、閉鎖中や状態不明では batch 全件を retry する。scheduled handler も同じ admission 条件で `dispatchPendingOutbox` を最大50件呼び、ローカル設定は毎分 Cron を指定する。ControlDOは監査後の段階再開を実装済みだが、実Queue/Cron環境は未配備。ローカル Queue 設定は最大10回の再試行後 DLQ へ送るが、実 Queue/Cron/DLQ の end-to-end 試験、他のevent kindと実復旧drillは未完了。
+
+### 実サービス gate
+
+native SQLite とローカル D1 で migration/FK/tree/state を検証。workerd の SQLite DO/R2/D1 で eviction・storage loss・write failure を検証。
+固定 pool 0.22 の RPC 拒否例外は後続 invocation の cleanup を停止させるため、意図的な拒否試験は `runInDurableObject` 内で捕捉し、成功時は実 stub RPC を使用する。
+実 Cloudflare の RPC/ネットワーク断/復旧運用の staging gate は未完了。
+
+次は Queue ack/DLQ と repair、ControlDO 再開、残る operation tuple の認可と HTTP profile 接続。
+後半が終わるまで Files core を公開しない。
+
+## 停止中GCの収束
+
+台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
+
+[GC_RECOVERY](GC_RECOVERY.md)を参照。migration `0024`のclaim epoch/counterと各dispatch・final batchのcurrent fenceを通常GC/停止中drainで共有する。ControlDOのblob/orphan別RPCは既存deletingだけを回収し、candidate/quarantineの猶予を短縮しない。回収前後の監査初期化、応答喪失と旧Workerの拒否、physical会計、回収後の全監査をローカル検証する。admission再開は別gate。
+
+## 所有uploadの未知multipart調査受付
+
+既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
+
+global probe・orphan・全bucket multipartの更新受付は後述。旧epoch repairの受付も後述。backup barrier、未知KDF/multipartの収束、追加event処理、共有・公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実環境検証・公開は後続です。
+
+
+## 所有者なし更新の共通受付
+
+所有者を持たないR2接続確認を共通受付へ接続しました。専用global RPCは通常操作・初回登録・所有者付きsystem更新と同じ32 active/256 waiting枠を使い、架空のownerや別枠を作りません。 migration0034で既存の全確定記録、受付sequence、外部キー、索引と60秒保持を維持します。globalのscopeは明示nullで、owner/system・bootstrap・namespace許可への流用を拒否します。R2確認のclaim・各GET/条件付きPUT/S3読取り予算は直接ACKと固定25秒の開始期限が必要です。段階記録・終了はDB-onlyのexact receiptで回収し、待機後のnonce/source/token・元の60秒lease・epoch/pauseを再確認します。エラー記録も同じ確定記録方式を使い、現epoch/pauseと自己nonce/source/tokenで制限します。期限切れ後のエラー記録でも容量を返しません。ControlDO内は同一instanceの受付を使います。 詳細は[MUTATION_ADMISSION](MUTATION_ADMISSION.md)。`withVerifiedR2Inventory`はmandatoryなGlobalMutationSourceを受け、ControlDO内部では同じinstanceを供給する。既存probeの64-byte永久割当・新nonceのCAS・scope終了後の無効化・予約容量保持を維持する。schema0034、通常67table。
+
+
+## 未追跡object調査・回収の共通受付
+
+未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。
+
+owner不在でもscopeは明示nullで、架空のspaceを作りません。待機後にepoch/mode/pause、元のtoken・60秒lease、object世代・全catalogueからの独立を再検査します。LIST・HEAD・deleteは各回の直接ACKが必要で、既定20秒/最大25秒の開始期限を受付後とACK後に確認します。DB-onlyの確定記録と既存の厳密なtoken/終端照合を維持し、他の処理の完了で自分の未確定枠を返しません。35日猶予・後日owner復元・不在確認後だけのphysical精算を維持し、ControlDO内部は同じinstanceの受付を使います。 詳細は[ORPHAN_INVENTORY](ORPHAN_INVENTORY.md)。scanの観測件数は元のbatchのchangesから返し、応答喪失時にreceiptだけで件数を捏造しない。scan finallyとGCエラーも別受付でbest effortに記録する。schema0034/67tableを維持する。
+
+## 全bucket multipart台帳の共通受付
+
+全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。
+
+所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
+
+一覧結果のD1 batchには共通assertが1件前置される。scanのhandle結果だけを正確な範囲で切り出し、partのheld_bytes SELECTも同じoffsetを使う。共通receiptの行を結果へ混ぜない。中止の結果保存は元のattempt/proofへ束縛し、現在のscan roundへの置換を要求しない。詳細は[MULTIPART_BUCKET_INVENTORY](MULTIPART_BUCKET_INVENTORY.md)。
+
+## 旧epoch修復の共通受付
+
+旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。
+
+修復の前後は従来どおり全更新の停止を要求します。更新batch内だけは自分の有効な受付IDを除外し、他のactive/waiting、permit・claim・job・GC・uploadとbootstrap管理者の条件を待機後に原子的に再検査します。自分の枠が空いても他の更新が残れば修復しません。DB-onlyの確定記録と厳密な終端・索引照合で応答喪失を扱い、他の処理の完了では自分の未確定枠を返しません。uploadへ結び付いた予約は保持し、元の行・所有者・通知のoperation由来を再検査します。予約・通知は1回最大20件、次の更新開始には固定25秒の期限を使い、ControlDO内部は同じinstanceで受け付けます。
+
+停止確認のSQLは診断と修復で共有する。修復batchに前置された共通assertが自分のID・scope・epoch・mode・有効期限を証明し、そのIDだけを停止条件から除外する。bootstrap条件も同じbatch内で照合する。診断RPCとcoordinatorの停止・audit更新は再帰的に自分の受付へ入れない。契約は[RECOVERY_REPAIR](RECOVERY_REPAIR.md)。
+
+## upload公開失敗後の精算受付
+
+単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。
+
+待機後に元のupload/owner/space/credential/epoch/予約と失敗operationのoperand・step不在を再検査します。最初の予約解放には一致するblob_storageの物理計上を必須とし、singleは検証済みhash、multipartは独立した完成object proofを要求します。公開結果不明・転送中・参照済みblob・証拠不足では解放しません。精算済み結果は追加受付なしで読み、GC後も再照会できます。応答喪失は自分の確定記録または厳密な終端を照合し、他の精算で自分の未確定枠を返しません。混雑はHTTP503/Retry-Afterで予約とphysicalを保留し、再試行でR2送信・削除を繰り返しません。
+
+kindはsystem:upload.complete-failed。CONTROLまたは同一coordinator providerは必須で、DB-only fallbackはない。精算自体はR2を呼ばず、physicalを減算しない。詳細は[UPLOAD_FAILED_COMPLETION](UPLOAD_FAILED_COMPLETION.md)。
+
+## DAV PUTの保存台帳と精算受付
+
+WebDAV PUTの保存前に予約・staging blob・転送台帳を原子的に保存し、保存結果が不明でも容量を保持する処理を実装しました。保存事実と公開失敗後の精算は、実ownerの共通32 active/256 waiting枠を通ります。
+
+migration0035でprivate/DAVの台帳種別を固定しました。開始batchの直接ACK後だけ、attempt metadata付きの条件付きPUTを1回送信します。同じoperationへの再送は追加PUTを発行せず、ストリーム障害時もnative処理の終了を待ちます。成功時は物理計上・hashを保存してからファイルと転送完了を同時確定します。既知の公開失敗はphysicalを保持してGCへ渡し、未知の保存結果は予約を24時間保持してHEAD確認・既存回収へ引き継ぎます。旧DAVの追跡不能な予約も汎用復旧では解放しません。
+
+kindはsystem:dav.put-storedとsystem:dav.put-failed。migration0035時点の転送開始はnamespace permit内だったが、0036以後は以下のdav.put-start受付へ分離した。外部送信は開始batchの直接ACKを必須とする。DB-onlyの確定記録を再送許可にしない。private capability認可をapp_passwordへ拡張しない。現行の転送・公開契約は[DAV_UPLOAD](DAV_UPLOAD.md)。
+
+## DAVの転送と公開の分離
+
+WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
+
+migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
+
+開始は通常owner受付dav.put-start、保存事実と既知公開失敗の精算は既存system受付を使う。原子的な自己receipt確定後は本文に共通枠を持ち越さない。未結合の台帳も旧epoch汎用予約回収の対象外で、24h後のR2-aware cleanupが担当する。Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+
+## バックアップ世代の検証
+
+バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全67テーブルの内容が一致した世代だけをローカル保存します。
+
+pnpm backupのcapture/verify/restore-offlineを接続しました。実Wranglerのdata-only抽出、全migrationのhash、schemaと各tableの行数/hash、SQL checksumを束縛し、隔離先の同一schema・FK・FTSと容量を検証します。入力SQLは既知のINSERTとliteralだけを解析してbound parameterで取り込み、既存世代・既存DBを上書きしません。成功・失敗とも元のbarrierを保持し、R2公開や稼働再開の成功とは扱いません。
+
+Node32件を追加し、全464件（28file、8.08s）が成功。lint324file・型・契約/設定検査も成功しました。実Wranglerのcapture→verify→restore-offlineが全67table、SQL9,599bytesで成功し、元DBの凍結、容量、FTS検索を確認しました。欠落/内容変化、不正SQL、世代/schema/checksum不一致、既存出力保護、UTF-8/文上限/途中切れを試験しています。Worker本体・migrationは変更せず0037/通常67tableを維持。新しいbackup CI jobで同じドリルを実行します。今回のCIはプッシュ後に確認します。
+
+運用の接続境界・形式・失敗時の扱いは[BACKUP_GENERATIONS](BACKUP_GENERATIONS.md)。
