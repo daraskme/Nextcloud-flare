@@ -33,7 +33,15 @@ async function request(path, init = {}) {
     redirect: "error",
   });
   if (!response.ok) throw new RequestError(response.status);
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  const body = await response.text();
+  return body ? JSON.parse(body) : null;
+}
+
+async function csrf() {
+  return request(`/api/v1/public/shares/${encodeURIComponent(shareId)}/csrf`, {
+    method: "POST",
+  });
 }
 
 async function unlock(secret, password) {
@@ -258,16 +266,214 @@ async function renderFolder(pathNode, folderId) {
   }
 }
 
+async function abortUpload(uploadId, capability, token) {
+  await request(
+    `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "Upload-Capability": capability,
+        "X-CSRF-Token": token,
+      },
+      body: "{}",
+    },
+  );
+}
+
+function pause(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function uploadFile(file, token, report) {
+  const mode = file.size === 0 || file.size <= 95_000_000 ? "single" : "multipart";
+  const createKey = crypto.randomUUID();
+  let created;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    created = await fetch(`/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads`, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": createKey,
+        "X-CSRF-Token": token,
+      },
+      body: JSON.stringify({ mode, name: file.name, declared_size: file.size }),
+    });
+    if (created.status !== 202) break;
+    await pause(1_000);
+  }
+  if (!created?.ok || created.status === 202) throw new RequestError(created?.status ?? 503);
+  const createdBody = await created.json();
+  const uploadId = createdBody.receiptId;
+  const capability = created.headers.get("Upload-Capability");
+  if (!uploadId || !capability) throw new Error("invalid_upload_receipt");
+  let publicationStarted = false;
+  try {
+    if (mode === "single") {
+      const written = await fetch(
+        `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}/content`,
+        {
+          method: "PUT",
+          credentials: "same-origin",
+          cache: "no-store",
+          redirect: "error",
+          headers: { "Upload-Capability": capability },
+          body: file,
+        },
+      );
+      if (!written.ok) throw new RequestError(written.status);
+      report(file.size, file.size);
+    } else {
+      const partBytes = Number(created.headers.get("Upload-Part-Bytes"));
+      const partCount = Number(created.headers.get("Upload-Part-Count"));
+      if (
+        !Number.isSafeInteger(partBytes) ||
+        partBytes < 1 ||
+        !Number.isSafeInteger(partCount) ||
+        partCount < 1
+      )
+        throw new Error("invalid_upload_plan");
+      for (let part = 1; part <= partCount; part += 1) {
+        const start = (part - 1) * partBytes;
+        const chunk = file.slice(start, Math.min(file.size, start + partBytes));
+        const written = await fetch(
+          `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}/parts/${part}`,
+          {
+            method: "PUT",
+            credentials: "same-origin",
+            cache: "no-store",
+            redirect: "error",
+            headers: {
+              "Upload-Attempt-Id": crypto.randomUUID(),
+              "Upload-Capability": capability,
+            },
+            body: chunk,
+          },
+        );
+        if (!written.ok) throw new RequestError(written.status);
+        report(Math.min(file.size, start + chunk.size), file.size);
+      }
+    }
+    publicationStarted = true;
+    const completeKey = crypto.randomUUID();
+    let completed;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      completed = await fetch(
+        `/api/v1/public/shares/${encodeURIComponent(shareId)}/uploads/${encodeURIComponent(uploadId)}/complete`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          redirect: "error",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": completeKey,
+            "Upload-Capability": capability,
+            "X-CSRF-Token": token,
+          },
+          body: "{}",
+        },
+      );
+      if (completed.status !== 503) break;
+      await pause(1_000);
+    }
+    if (!completed?.ok) throw new RequestError(completed?.status ?? 503);
+  } catch (error) {
+    if (!publicationStarted) await abortUpload(uploadId, capability, token).catch(() => {});
+    throw error;
+  }
+}
+
+function uploadError(error) {
+  if (!(error instanceof RequestError))
+    return "送信を完了できませんでした。通信状態を確認して再試行してください。";
+  if (error.status === 413 || error.status === 507)
+    return "ファイルサイズまたは受け取り容量の上限を超えています。";
+  if (error.status === 429) return "送信が混み合っています。少し待ってから再試行してください。";
+  if (error.status === 401 || error.status === 403)
+    return "共有セッションの有効期限が切れました。リンクを開き直してください。";
+  if (error.status === 409)
+    return "送信状態を確認できませんでした。同じファイルを再送する前に共有者へ確認してください。";
+  return "現在送信できません。しばらく待ってから再試行してください。";
+}
+
+function renderUploadShare(shell) {
+  const panel = element("div", { className: "upload-panel" });
+  const intro = element("div", { className: "upload-intro" });
+  intro.append(
+    element("h2", { text: "ファイルを送信" }),
+    element("p", {
+      text: "受け取り側では保存先の内容を閲覧できません。送信後のファイル名も表示されません。",
+    }),
+  );
+  const input = element("input");
+  input.type = "file";
+  input.multiple = true;
+  input.id = "upload-files";
+  input.className = "upload-input";
+  const choose = element("label", { className: "upload-drop", text: "ファイルを選択" });
+  choose.htmlFor = input.id;
+  const status = element("p", { className: "upload-status" });
+  status.setAttribute("role", "status");
+  const progress = element("progress", { className: "upload-progress" });
+  progress.max = 1;
+  progress.value = 0;
+  const send = element("button", { className: "primary-button", text: "送信する" });
+  send.type = "button";
+  send.disabled = true;
+  input.addEventListener("change", () => {
+    const count = input.files?.length ?? 0;
+    send.disabled = count === 0;
+    status.textContent = count ? `${count}件のファイルを選択しました。` : "";
+    progress.value = 0;
+  });
+  send.addEventListener("click", async () => {
+    const files = [...(input.files ?? [])];
+    if (!files.length) return;
+    input.disabled = true;
+    send.disabled = true;
+    progress.max = files.length;
+    progress.value = 0;
+    try {
+      const token = (await csrf()).token;
+      for (const [index, file] of files.entries()) {
+        status.textContent = `${index + 1}/${files.length}件目を送信しています…`;
+        await uploadFile(file, token, (done, total) => {
+          progress.value = index + (total ? done / total : 1);
+        });
+        progress.value = index + 1;
+      }
+      status.textContent = `${files.length}件を受け付けました。`;
+      input.value = "";
+    } catch (error) {
+      status.textContent = uploadError(error);
+    } finally {
+      input.disabled = false;
+      send.disabled = !(input.files?.length ?? 0);
+    }
+  });
+  panel.append(intro, input, choose, progress, status, send);
+  shell.append(panel);
+}
+
 function renderShare() {
   const shell = element("section", { className: "share-shell" });
   const header = element("header", { className: "share-header" });
   const brand = element("div", { className: "brand" });
   const mark = element("span", { className: "mark", text: "N" });
   const copy = element("div");
+  const uploadOnly = state.share.kind === "upload_only";
   copy.append(
-    element("h1", { text: state.share.root.name }),
+    element("h1", { text: uploadOnly ? "ファイル受け取り" : state.share.root.name }),
     element("p", {
-      text: state.share.expiresAt ? `${date(state.share.expiresAt)} まで有効` : "共有ファイル",
+      text: state.share.expiresAt
+        ? `${date(state.share.expiresAt)} まで有効`
+        : uploadOnly
+          ? "アップロード専用共有"
+          : "共有ファイル",
     }),
   );
   brand.append(mark, copy);
@@ -290,8 +496,13 @@ function renderShare() {
   header.append(brand, close);
   const path = element("nav", { className: "path" });
   const listing = element("div", { className: "listing" });
-  shell.append(header, path, listing);
+  shell.append(header);
   app.replaceChildren(shell);
+  if (uploadOnly) {
+    renderUploadShare(shell);
+    return;
+  }
+  shell.append(path, listing);
   state.stack = [{ id: state.share.root.id, name: state.share.root.name }];
   if (state.share.root.kind === "file") {
     state.pages.set(state.share.root.id, {

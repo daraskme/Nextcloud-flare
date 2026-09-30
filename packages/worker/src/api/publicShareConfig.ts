@@ -3,6 +3,7 @@ import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
 import { globalKdf } from "../auth/globalKdf";
 import { NodeCursorTokens } from "../auth/nodeCursor";
 import { type SharePasswordPepperRing, sharePasswordPepperRing } from "../auth/sharePassword";
+import { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 
 export interface PublicShareDependencies {
@@ -10,6 +11,7 @@ export interface PublicShareDependencies {
   readonly cursors?: NodeCursorTokens;
   readonly tokens?: ContentTokens;
   readonly passwordPepper?: SharePasswordPepperRing;
+  readonly uploadCapabilities?: UploadCapabilities;
 }
 
 export async function publicShareDependencies(
@@ -53,6 +55,15 @@ export async function publicShareDependencies(
           globalKdf(env.CONTROL, epoch),
         )
       : undefined;
+  const uploadCapabilities =
+    env.UPLOAD_CAPABILITY_KEYS && env.UPLOAD_CAPABILITY_ACTIVE_KID
+      ? new UploadCapabilities(
+          await contentKeyRing(
+            env.UPLOAD_CAPABILITY_ACTIVE_KID,
+            JSON.parse(env.UPLOAD_CAPABILITY_KEYS),
+          ),
+        )
+      : undefined;
   return {
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
@@ -60,5 +71,6 @@ export async function publicShareDependencies(
       ? { tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN) }
       : {}),
     ...(passwordPepper ? { passwordPepper } : {}),
+    ...(uploadCapabilities ? { uploadCapabilities } : {}),
   };
 }

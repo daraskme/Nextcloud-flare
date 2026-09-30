@@ -264,12 +264,22 @@ export class UploadDO extends DurableObject<Env> {
     await atomicBatch(this.env.DB, [
       assertExists(
         `SELECT 1 FROM uploads u JOIN operations o ON o.op_id=u.completion_op_id
+        JOIN reservations r ON r.id=u.reservation_id
         WHERE u.id=? AND u.mode='multipart' AND u.state='completed'
           AND u.multipart_object_etag IS NOT NULL AND u.multipart_complete_attempt IS NOT NULL
           AND o.kind='upload.complete' AND o.state='committed'
-          AND o.request_digest=? AND o.principal_kind='user' AND o.credential_version IS NULL
-          AND EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
-            WHERE c.id=u.credential_id AND s.user_id=o.principal_id)
+          AND o.request_digest=?
+          AND ((o.principal_kind='user' AND o.credential_version IS NULL
+            AND r.share_id IS NULL
+            AND EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
+              WHERE c.id=u.credential_id AND s.user_id=o.principal_id))
+            OR (o.principal_kind='link_share' AND o.credential_version IS NOT NULL
+              AND r.share_id=o.principal_id
+              AND EXISTS(SELECT 1 FROM credentials c
+                JOIN share_sessions ss ON ss.id=c.share_session_id
+                WHERE c.id=u.credential_id AND c.kind='share'
+                  AND ss.share_id=o.principal_id
+                  AND ss.share_version=o.credential_version AND ss.epoch=o.epoch)))
           AND o.credential_id=u.credential_id AND o.epoch=u.epoch AND o.space_id=u.space_id
           AND json_extract(o.operands_json,'$.uploadId')=u.id
           AND json_extract(o.operands_json,'$.parentId')=u.parent_id

@@ -13,6 +13,10 @@ import {
 import { reservationStatements } from "../quota";
 import { type UploadRow, uploadAuthority, uploadFence, uploadRow, uploadStatus } from "./access";
 
+const MAX_PUBLIC_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
+const MAX_ACTIVE_PUBLIC_UPLOADS = 8;
+const MAX_PUBLIC_UPLOADS = 1_000;
+
 export interface CreateSingleUpload {
   readonly principal: Principal;
   readonly requestId: string;
@@ -22,6 +26,43 @@ export interface CreateSingleUpload {
   readonly declaredSize: number;
   readonly targetId?: string;
   readonly targetRevision?: number;
+}
+
+function publicUploadName(input: string, id: string) {
+  const original = portableName(input).name;
+  const dot = original.lastIndexOf(".");
+  const extension =
+    dot > 0 && /^[.A-Za-z0-9_-]{1,21}$/.test(original.slice(dot)) ? original.slice(dot) : "";
+  const stem = Array.from(extension ? original.slice(0, -extension.length) : original);
+  const suffix = ` (${id.slice(3, 11).toUpperCase()})`;
+  while (stem.length) {
+    try {
+      return portableName(`${stem.join("")}${suffix}${extension}`);
+    } catch {
+      stem.pop();
+    }
+  }
+  return portableName(`upload${suffix}${extension}`);
+}
+
+async function publicUploadExpiry(
+  db: D1Database,
+  principal: Extract<Principal, { kind: "link_share" }>,
+): Promise<number> {
+  const row = await db
+    .prepare(`SELECT MIN(ss.expires_at,COALESCE(sh.expires_at,ss.expires_at)) AS expiresAt
+      FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
+      JOIN shares sh ON sh.id=ss.share_id
+      WHERE c.id=? AND c.kind='share' AND sh.id=? AND sh.kind='upload_only'
+        AND sh.version=? AND ss.share_version=sh.version AND ss.epoch=?
+        AND ss.revoked_at IS NULL AND sh.disabled_at IS NULL
+        AND ss.expires_at>strftime('%s','now')*1000
+        AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+        AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload')`)
+    .bind(principal.credential_id, principal.share_id, principal.share_version, principal.epoch)
+    .first<number>("expiresAt");
+  if (row === null) throw new Error("upload_authorization_denied");
+  return row;
 }
 
 /** Reservation and immutable staging metadata are committed together before any R2 call. */
@@ -50,7 +91,7 @@ async function reserveUpload(
 ) {
   const db = env.DB;
   if (
-    input.principal.kind !== "user" ||
+    !["user", "link_share"].includes(input.principal.kind) ||
     !/^[\x21-\x7e]{1,200}$/.test(input.requestId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(input.spaceId) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(input.parentId) ||
@@ -61,10 +102,21 @@ async function reserveUpload(
     (input.targetId === undefined && input.targetRevision !== undefined)
   )
     throw new Error("invalid_upload_create");
+  if (
+    input.principal.kind === "link_share" &&
+    (input.targetId !== undefined ||
+      !Number.isSafeInteger(input.declaredSize) ||
+      input.declaredSize < 0 ||
+      input.declaredSize > MAX_PUBLIC_UPLOAD_BYTES)
+  )
+    throw new Error("invalid_upload_create");
   const plan = mode === "multipart" ? multipartPlan(input.declaredSize) : null;
   if (!plan) validateLength(input.declaredSize);
-  const name = portableName(input.name);
   const id = `up_${await digestJson(["upload.create", input.principal.credential_id, input.requestId])}`;
+  const name =
+    input.principal.kind === "link_share"
+      ? publicUploadName(input.name, id)
+      : portableName(input.name);
   const digest = await digestJson({
     spaceId: input.spaceId,
     parentId: input.parentId,
@@ -116,11 +168,19 @@ async function reserveUpload(
   const owner =
     authorized.operation === "node.create" ? authorized.parent.owner_id : authorized.node.owner_id;
   const now = Date.now();
+  const expiresAt =
+    input.principal.kind === "link_share"
+      ? Math.min(
+          await publicUploadExpiry(db, input.principal),
+          now + (plan ? UPLOAD_LIMITS.lifetimeMs : 86_400_000),
+        )
+      : now + (plan ? UPLOAD_LIMITS.lifetimeMs : 86_400_000);
+  if (expiresAt <= now) throw new Error("upload_expired");
   const identity = {
     id,
     credential_id: input.principal.credential_id,
     epoch: input.principal.epoch,
-    expires_at: now + (plan ? UPLOAD_LIMITS.lifetimeMs : 86400000),
+    expires_at: expiresAt,
     capability_kid: capabilities.ring.activeKid,
   };
   const capability = await capabilities.issue(identity);
@@ -137,12 +197,38 @@ async function reserveUpload(
   try {
     await commitAccountMutation(db, admission, owner, [
       authorizationAssertion(authorized),
+      ...(input.principal.kind === "link_share"
+        ? [
+            assertExists(
+              `SELECT 1 WHERE
+                (SELECT COUNT(*) FROM uploads u JOIN reservations r ON r.id=u.reservation_id
+                  WHERE r.share_id=? AND u.state NOT IN ('completed','failed','expired','aborted'))<?
+                AND
+                (SELECT COUNT(*) FROM uploads u JOIN reservations r ON r.id=u.reservation_id
+                  WHERE r.share_id=?)<?`,
+              [
+                input.principal.share_id,
+                MAX_ACTIVE_PUBLIC_UPLOADS,
+                input.principal.share_id,
+                MAX_PUBLIC_UPLOADS,
+              ],
+            ),
+          ]
+        : []),
       ...reservationStatements({
         id: reservation,
         ownerId: owner,
         bytes: input.declaredSize,
         expiresAt: identity.expires_at,
         epoch: input.principal.epoch,
+        ...(input.principal.kind === "link_share"
+          ? {
+              share: {
+                id: input.principal.share_id,
+                version: input.principal.share_version,
+              },
+            }
+          : {}),
       }),
       {
         sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,mime_sniffed,state,created_at)

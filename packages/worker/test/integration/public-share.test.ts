@@ -1,5 +1,6 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { portableName } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { handleContentHttp } from "../../src/api/content";
@@ -17,10 +18,12 @@ import {
   sharePasswordPepperRing,
 } from "../../src/auth/sharePassword";
 import { shareSecretDigest } from "../../src/auth/shareSession";
+import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
+import { admitted } from "../fixtures/uploadEnv";
 
 const origin = "https://app.invalid";
 const contentOrigin = "https://content.invalid";
@@ -28,6 +31,7 @@ let dependencies: PublicShareDependencies;
 let contentTokens: ContentTokens;
 let passwordRing: SharePasswordPepperRing;
 let passwordPepperKey: string;
+let uploadCapabilities: UploadCapabilities;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -47,6 +51,11 @@ beforeAll(async () => {
     { password: passwordPepperKey },
     localKdf,
   );
+  uploadCapabilities = new UploadCapabilities(
+    await contentKeyRing("upload", {
+      upload: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    }),
+  );
   dependencies = {
     csrf: new CsrfTokens(
       await csrfKeyRing("private", { private: privateSecret }),
@@ -56,6 +65,7 @@ beforeAll(async () => {
     cursors: new NodeCursorTokens(await contentKeyRing("cursor", { cursor: cursorSecret })),
     tokens: contentTokens,
     passwordPepper: passwordRing,
+    uploadCapabilities,
   };
 });
 
@@ -112,6 +122,37 @@ function shareEnv() {
   };
 }
 
+function uploadShareEnv() {
+  return {
+    ...admitted(),
+    APP_ORIGIN: origin,
+    CONTENT_ORIGIN: contentOrigin,
+    EDGE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+    SHARE_PASSWORD_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+    SHARE_PASSWORD_IP_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+  };
+}
+
+async function uploadFixture(password?: string, reservationLimit = 10_000_000_000) {
+  const result = await fixture(password);
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE shares SET kind='upload_only',reservation_limit=? WHERE id=?",
+      values: [reservationLimit, result.shareId],
+    },
+    { sql: "DELETE FROM share_actions WHERE share_id=?", values: [result.shareId] },
+    {
+      sql: "INSERT INTO share_actions VALUES(?,'create'),(?,'upload')",
+      values: [result.shareId, result.shareId],
+    },
+    {
+      sql: "UPDATE users SET quota_bytes=1000000000000 WHERE id=?",
+      values: [result.owner.ids.user],
+    },
+  ]);
+  return result;
+}
+
 function unlockRequest(shareId: string, secret: string, password?: string) {
   return new Request(`${origin}/api/v1/public/shares/${shareId}/unlock`, {
     method: "POST",
@@ -130,6 +171,52 @@ function sessionRequest(path: string, cookie: string, init: RequestInit = {}) {
     ...init,
     headers: { Cookie: cookie, ...init.headers },
   });
+}
+
+async function uploadSession(f: Awaited<ReturnType<typeof uploadFixture>>) {
+  const app = uploadShareEnv();
+  const unlocked = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret),
+    app,
+    1,
+    dependencies,
+  );
+  expect(unlocked.status).toBe(200);
+  const cookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  const csrfResponse = await handlePublicShareHttp(
+    sessionRequest(`/api/v1/public/shares/${f.shareId}/csrf`, cookie, {
+      method: "POST",
+      headers: { Origin: origin, "Sec-Fetch-Site": "same-origin" },
+    }),
+    app,
+    1,
+    dependencies,
+  );
+  const token = ((await csrfResponse.json()) as { token: string }).token;
+  const send = (
+    path: string,
+    method: string,
+    body?: BodyInit,
+    extra: Record<string, string> = {},
+  ) =>
+    handlePublicShareHttp(
+      sessionRequest(path, cookie, {
+        method,
+        headers: {
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": token,
+          "Idempotency-Key": crypto.randomUUID(),
+          ...extra,
+        },
+        ...(body === undefined ? {} : { body }),
+      }),
+      app,
+      1,
+      dependencies,
+    );
+  return { app, cookie, token, send };
 }
 
 it("unlocks a capability into a share-bound cookie and reads only the selected tree", async () => {
@@ -725,4 +812,330 @@ it("serves an isolated no-store shell and immutable hashed public assets", async
     expect(asset.status).toBe(200);
     expect(asset.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
   }
+});
+
+it("accepts and aborts an upload-only single file without exposing its name", async () => {
+  const f = await uploadFixture();
+  const session = await uploadSession(f);
+  const created = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "report.txt", declared_size: 3 }),
+  );
+  expect(created.status).toBe(201);
+  const receipt = (await created.json()) as { receiptId: string; statusUrl: string };
+  expect(receipt).toEqual({
+    receiptId: expect.any(String),
+    statusUrl: `/api/v1/public/shares/${f.shareId}/uploads/${receipt.receiptId}`,
+  });
+  const capability = created.headers.get("Upload-Capability") ?? "";
+  expect(
+    (
+      await session.send(`${receipt.statusUrl}/content`, "PUT", "abc", {
+        "Content-Length": "3",
+        "Content-Type": "application/octet-stream",
+        "Upload-Capability": capability,
+        "X-CSRF-Token": "",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    await (
+      await session.send(receipt.statusUrl, "GET", undefined, {
+        "Upload-Capability": capability,
+      })
+    ).json(),
+  ).toEqual({
+    receiptId: receipt.receiptId,
+    statusUrl: receipt.statusUrl,
+    mode: "single",
+    state: "completing",
+    declaredSize: 3,
+    expiresAt: expect.any(Number),
+    cleanupPending: false,
+    errorCode: null,
+  });
+  const abortable = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "cancel.txt", declared_size: 1 }),
+  );
+  const abortReceipt = (await abortable.json()) as { receiptId: string; statusUrl: string };
+  expect(
+    (
+      await session.send(abortReceipt.statusUrl, "DELETE", "{}", {
+        "Upload-Capability": abortable.headers.get("Upload-Capability") ?? "",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    await env.DB.prepare("SELECT reserved_bytes FROM users WHERE id=?")
+      .bind(f.owner.ids.user)
+      .first("reserved_bytes"),
+  ).toBe(3);
+  expect(
+    await env.DB.prepare("SELECT reserved_bytes FROM shares WHERE id=?")
+      .bind(f.shareId)
+      .first("reserved_bytes"),
+  ).toBe(3);
+});
+
+it("completes an upload-only single file without disclosing its stored name", async () => {
+  const f = await uploadFixture();
+  const session = await uploadSession(f);
+  const created = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "complete.txt", declared_size: 3 }),
+    { "Idempotency-Key": "complete-create" },
+  );
+  const receipt = (await created.json()) as { receiptId: string; statusUrl: string };
+  const capability = created.headers.get("Upload-Capability") ?? "";
+  expect(
+    (
+      await session.send(`${receipt.statusUrl}/content`, "PUT", "abc", {
+        "Content-Length": "3",
+        "Content-Type": "application/octet-stream",
+        "Upload-Capability": capability,
+        "X-CSRF-Token": "",
+      })
+    ).status,
+  ).toBe(200);
+  const uploadName = await env.DB.prepare("SELECT upload_name FROM uploads WHERE id=?")
+    .bind(receipt.receiptId)
+    .first<string>("upload_name");
+  expect(uploadName).toEqual(expect.any(String));
+  const normalized = portableName(uploadName ?? "");
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,'folder',?,?)`,
+  )
+    .bind(
+      "collision",
+      f.owner.ids.space,
+      f.owner.ids.user,
+      f.owner.ids.folder,
+      normalized.name,
+      normalized.nameCi,
+      now,
+      now,
+    )
+    .run();
+  const completed = await session.send(`${receipt.statusUrl}/complete`, "POST", "{}", {
+    "Idempotency-Key": "complete-publish",
+    "Upload-Capability": capability,
+  });
+  expect(completed.status).toBe(201);
+  expect(await completed.json()).toEqual({
+    receiptId: receipt.receiptId,
+    statusUrl: receipt.statusUrl,
+    state: "completed",
+  });
+  const retried = await session.send(`${receipt.statusUrl}/complete`, "POST", "{}", {
+    "Idempotency-Key": "complete-publish",
+    "Upload-Capability": capability,
+  });
+  expect(retried.status).toBe(201);
+  expect(await retried.json()).toEqual({
+    receiptId: receipt.receiptId,
+    statusUrl: receipt.statusUrl,
+    state: "completed",
+  });
+  const storedName = await env.DB.prepare(
+    "SELECT name FROM nodes WHERE parent_id=? AND kind='file' AND current_blob_id IS NOT NULL",
+  )
+    .bind(f.owner.ids.folder)
+    .first<string>("name");
+  expect(storedName).toEqual(expect.any(String));
+  expect(storedName).not.toBe(uploadName);
+  expect(
+    await env.DB.prepare("SELECT reserved_bytes FROM shares WHERE id=?")
+      .bind(f.shareId)
+      .first("reserved_bytes"),
+  ).toBe(0);
+});
+
+it("connects upload-only multipart transfer, completion, and abort", async () => {
+  const f = await uploadFixture();
+  const session = await uploadSession(f);
+  const created = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "multipart", name: "parts.bin", declared_size: 3 }),
+  );
+  expect(created.status).toBe(201);
+  const receipt = (await created.json()) as { receiptId: string; statusUrl: string };
+  const capability = created.headers.get("Upload-Capability") ?? "";
+  expect(
+    (
+      await session.send(`${receipt.statusUrl}/parts/1`, "PUT", "abc", {
+        "Content-Length": "3",
+        "Content-Type": "application/octet-stream",
+        "Upload-Attempt-Id": "public-part",
+        "Upload-Capability": capability,
+        "X-CSRF-Token": "",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    await (
+      await session.send(receipt.statusUrl, "GET", undefined, {
+        "Upload-Capability": capability,
+      })
+    ).json(),
+  ).toMatchObject({
+    receiptId: receipt.receiptId,
+    mode: "multipart",
+    state: "uploading",
+    parts: [{ partNumber: 1, attemptId: "public-part", state: "completed" }],
+  });
+  const completed = await session.send(`${receipt.statusUrl}/complete`, "POST", "{}", {
+    "Idempotency-Key": "multipart-complete",
+    "Upload-Capability": capability,
+  });
+  expect(completed.status).toBe(201);
+  expect(await completed.json()).toEqual({
+    receiptId: receipt.receiptId,
+    statusUrl: receipt.statusUrl,
+    state: "completed",
+  });
+
+  const abortable = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "multipart", name: "cancel.bin", declared_size: 3 }),
+  );
+  const abortReceipt = (await abortable.json()) as { receiptId: string; statusUrl: string };
+  expect(
+    (
+      await session.send(abortReceipt.statusUrl, "DELETE", "{}", {
+        "Upload-Capability": abortable.headers.get("Upload-Capability") ?? "",
+      })
+    ).status,
+  ).toBe(202);
+  expect(
+    await env.DB.prepare("SELECT state FROM uploads WHERE id=?")
+      .bind(abortReceipt.receiptId)
+      .first("state"),
+  ).toBe("aborting");
+});
+
+it("fences upload-only receipts by CSRF, capacity, session, share state, and read denial", async () => {
+  const f = await uploadFixture(undefined, 2);
+  const session = await uploadSession(f);
+  expect(
+    (
+      await handlePublicShareHttp(
+        sessionRequest(`/api/v1/public/shares/${f.shareId}/uploads`, session.cookie, {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+            "Idempotency-Key": "missing-csrf",
+          },
+          body: JSON.stringify({ mode: "single", name: "csrf.bin", declared_size: 1 }),
+        }),
+        session.app,
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await session.send(
+        `/api/v1/public/shares/${f.shareId}/uploads`,
+        "POST",
+        JSON.stringify({ mode: "single", name: "too-large.bin", declared_size: 3 }),
+      )
+    ).status,
+  ).toBe(507);
+  await env.DB.prepare("UPDATE shares SET reservation_limit=10 WHERE id=?").bind(f.shareId).run();
+  const created = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "fenced.bin", declared_size: 3 }),
+  );
+  expect(created.status).toBe(201);
+  const receipt = (await created.json()) as { receiptId: string; statusUrl: string };
+  const capability = created.headers.get("Upload-Capability") ?? "";
+  expect(
+    (
+      await handlePublicShareHttp(
+        sessionRequest(`/api/v1/public/shares/${f.shareId}/children`, session.cookie),
+        session.app,
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(404);
+  await env.DB.prepare(
+    "UPDATE share_sessions SET revoked_at=? WHERE share_id=? AND revoked_at IS NULL",
+  )
+    .bind(Date.now(), f.shareId)
+    .run();
+  expect(
+    (
+      await session.send(receipt.statusUrl, "GET", undefined, {
+        "Upload-Capability": capability,
+      })
+    ).status,
+  ).toBe(401);
+
+  const versionSession = await uploadSession(f);
+  const versioned = await versionSession.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "versioned.bin", declared_size: 1 }),
+  );
+  const versionedReceipt = (await versioned.json()) as { statusUrl: string };
+  await env.DB.prepare("UPDATE shares SET version=version+1 WHERE id=?").bind(f.shareId).run();
+  expect(
+    (
+      await versionSession.send(versionedReceipt.statusUrl, "GET", undefined, {
+        "Upload-Capability": versioned.headers.get("Upload-Capability") ?? "",
+      })
+    ).status,
+  ).toBe(401);
+
+  const expiredSession = await uploadSession(f);
+  const expiring = await expiredSession.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "expired.bin", declared_size: 1 }),
+  );
+  const expiringReceipt = (await expiring.json()) as { statusUrl: string };
+  await env.DB.prepare("UPDATE shares SET expires_at=? WHERE id=?")
+    .bind(Date.now() - 2_000, f.shareId)
+    .run();
+  expect(
+    (
+      await expiredSession.send(expiringReceipt.statusUrl, "GET", undefined, {
+        "Upload-Capability": expiring.headers.get("Upload-Capability") ?? "",
+      })
+    ).status,
+  ).toBe(401);
+
+  await env.DB.prepare("UPDATE shares SET expires_at=?,disabled_at=NULL WHERE id=?")
+    .bind(Date.now() + 600_000, f.shareId)
+    .run();
+  const disabledSession = await uploadSession(f);
+  const disabling = await disabledSession.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "disabled.bin", declared_size: 1 }),
+  );
+  const disablingReceipt = (await disabling.json()) as { statusUrl: string };
+  await env.DB.prepare("UPDATE shares SET disabled_at=? WHERE id=?")
+    .bind(Date.now(), f.shareId)
+    .run();
+  expect(
+    (
+      await disabledSession.send(disablingReceipt.statusUrl, "GET", undefined, {
+        "Upload-Capability": disabling.headers.get("Upload-Capability") ?? "",
+      })
+    ).status,
+  ).toBe(401);
 });

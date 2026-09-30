@@ -10,7 +10,7 @@ maintainは日次取得・不足/鮮度補充と最終healthが正常な場合�
 
 Node22件・workerd13件を追加しました。全Node696件（40file、44.23s）、新しい走査13件と既存prune26件の計39件（19.40s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全9操作の権限拒否、5世代の実取得と期限切れ回収、破損警告とhealthの分離を確認しました。型検査とsystemd構文検査も成功。実CLIドリルもSQL9,079bytesで成功し、4世代補充と最終5世代の検証、自動回収・再送・receipt保持を確認しました。全checkが成功し、Node696件・workerd2,100件（100file、1,245.15s）、計2,796件を確認しました。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。実CLIの4世代補充を追加したためbackup CI上限を30分へ延長しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
 
-次は運用通知への接続と復旧手順の整備です。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、共有/公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
+次は運用通知への接続と復旧手順、内部共有など残る製品機能の整備です。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧・新epochと全監査、D1/全storage喪失後の信頼できる世代選択、旧DAV保留の証明付き回収、未知KDF/multipart、追加event、internal share/shared DAV、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OS client・実環境検証・公開は未完了です。remote migration・deployは未実施です。
 
 ## 状態の意味
 
@@ -28,7 +28,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 読み取り専用公開リンク | owner作成/一覧/参照/無効化、fragment unlock、share Cookie、metadata/children、public CSRF/logout、target manifest/ticket/content Cookie/BudgetDO経由のfile download、独立shell/assets、Files共有dialog | capability/session/version/epoch/root coverage、owner分離、失効、budget再利用、content-origin交換、R2配信、ticket cancel、hashed assetsとexact route | password/upload-only/internal share、shared DAV、media/ZIP、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
+| 公開リンク | owner作成/一覧/参照/無効化、password/fragment unlock、share Cookie、読み取り専用metadata/children/download、upload-onlyのsingle/multipart受信・owner/share予約・名前非開示、独立shell/assets、Files共有dialog | capability/session/version/epoch/root coverage、owner分離、失効、budget再利用、content-origin交換、R2配信、upload receipt/transfer/status/complete/abort、完了再試行、衝突回避、read/list拒否、hashed assetsとexact route | internal share、shared DAV、media/ZIP、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer実設置・外部通知・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer設置・外部通知・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
@@ -110,7 +110,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 公開linkのupload-only、内部共有、shared DAVを含む完全なHTTP surface。読み取り専用linkの作成/無効化・password保護・unlock・metadata/children・download ticket/content-sessionは[PUBLIC_SHARES](PUBLIC_SHARES.md)へ接続済み。
+- 公開linkの内部共有、shared DAVを含む完全なHTTP surface。読み取り専用linkの作成/無効化・password保護・unlock・metadata/children・downloadと、upload-onlyのsingle/multipart受信は[PUBLIC_SHARES](PUBLIC_SHARES.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
@@ -118,7 +118,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 ### UI
 
 - File System Access handle、詳細preview。
-- 既存share管理、upload-only/internal share、media metadata検索、大量gridの仮想化。新規読み取り専用linkの発行/無効化/password保護は接続済み。
+- 既存share管理、internal share、media metadata検索、大量gridの仮想化。新規読み取り専用・upload-only linkの発行/無効化/password保護は接続済み。
 - Gallery/lightbox、Bookshelf/EPUB reader、Audio player。
 - AVIF/AV1/Opusの実browser再生試験とfallback。
 

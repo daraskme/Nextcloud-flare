@@ -10,23 +10,30 @@ import { acquireAccountMutation, commitAccountMutation } from "./accountMutation
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DAY_MS = 86_400_000;
 const ACTIVE_SHARE_LIMIT = 100;
+const DEFAULT_UPLOAD_LIMIT = 10 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_LIMIT = 500 * 1024 * 1024 * 1024;
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export interface CreateShareInput {
   readonly rootNodeId: string;
   readonly spaceId: string;
+  readonly kind?: "link" | "upload_only";
   readonly ttlDays?: number;
   readonly password?: string;
+  readonly reservationLimitBytes?: number;
 }
 
 interface ShareRow {
   id: string;
   rootNodeId: string | null;
+  kind: "link" | "upload_only";
   version: number;
   disabledAt: number | null;
   expiresAt: number | null;
   createdAt: number;
   passwordProtected: number;
+  reservedBytes: number;
+  reservationLimit: number;
 }
 
 function ulid(): string {
@@ -59,12 +66,16 @@ function output(row: ShareRow) {
   return {
     id: row.id,
     rootNodeId: row.rootNodeId,
+    kind: row.kind,
     version: row.version,
     disabledAt: row.disabledAt,
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
     passwordProtected: row.passwordProtected === 1,
-    actions: ["read", "download"] as const,
+    reservedBytes: row.reservedBytes,
+    reservationLimit: row.reservationLimit,
+    actions:
+      row.kind === "link" ? (["read", "download"] as const) : (["create", "upload"] as const),
   };
 }
 
@@ -72,10 +83,11 @@ export async function listShares(db: D1Database, session: AccessSession) {
   const statements = currentAccess(session);
   await atomicBatch(db, statements);
   const rows = await primary(db)
-    .prepare(`SELECT id,root_node_id AS rootNodeId,version,disabled_at AS disabledAt,
+    .prepare(`SELECT id,root_node_id AS rootNodeId,kind,version,disabled_at AS disabledAt,
       expires_at AS expiresAt,created_at AS createdAt,
-      password_digest IS NOT NULL AS passwordProtected
-      FROM shares WHERE owner_id=? AND kind='link'
+      password_digest IS NOT NULL AS passwordProtected,reserved_bytes AS reservedBytes,
+      reservation_limit AS reservationLimit
+      FROM shares WHERE owner_id=? AND kind IN ('link','upload_only')
       ORDER BY created_at DESC,id DESC LIMIT 100`)
     .bind(session.user_id)
     .all<ShareRow>();
@@ -88,10 +100,11 @@ export async function readShare(db: D1Database, session: AccessSession, shareId:
   const statements = currentAccess(session);
   await atomicBatch(db, statements);
   const row = await primary(db)
-    .prepare(`SELECT id,root_node_id AS rootNodeId,version,disabled_at AS disabledAt,
+    .prepare(`SELECT id,root_node_id AS rootNodeId,kind,version,disabled_at AS disabledAt,
       expires_at AS expiresAt,created_at AS createdAt,
-      password_digest IS NOT NULL AS passwordProtected
-      FROM shares WHERE id=? AND owner_id=? AND kind='link'`)
+      password_digest IS NOT NULL AS passwordProtected,reserved_bytes AS reservedBytes,
+      reservation_limit AS reservationLimit
+      FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')`)
     .bind(shareId, session.user_id)
     .first<ShareRow>();
   if (!row) throw new Error("share_not_found");
@@ -106,12 +119,21 @@ export async function createShare(
   passwordRing?: SharePasswordPepperRing,
   signal?: AbortSignal,
 ) {
+  const kind = input.kind ?? "link";
+  const reservationLimit =
+    kind === "upload_only" ? (input.reservationLimitBytes ?? DEFAULT_UPLOAD_LIMIT) : 0;
   if (
     !ID.test(input.rootNodeId) ||
     !ID.test(input.spaceId) ||
+    !["link", "upload_only"].includes(kind) ||
     (input.ttlDays !== undefined &&
       (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365)) ||
-    (input.password !== undefined && typeof input.password !== "string")
+    (input.password !== undefined && typeof input.password !== "string") ||
+    (input.reservationLimitBytes !== undefined &&
+      (kind !== "upload_only" ||
+        !Number.isSafeInteger(input.reservationLimitBytes) ||
+        input.reservationLimitBytes < 1 ||
+        input.reservationLimitBytes > MAX_UPLOAD_LIMIT))
   )
     throw new Error("invalid_share_request");
   const principal = {
@@ -132,8 +154,10 @@ export async function createShare(
   }
   if (root.operation !== "node.read" || root.node.owner_id !== session.user_id)
     throw new Error("share_root_not_found");
+  if (kind === "upload_only" && !["root", "folder"].includes(root.node.kind))
+    throw new Error("share_root_not_found");
   const active = await primary(env.DB)
-    .prepare(`SELECT COUNT(*) AS count FROM shares WHERE owner_id=? AND kind='link'
+    .prepare(`SELECT COUNT(*) AS count FROM shares WHERE owner_id=? AND kind IN ('link','upload_only')
       AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000)`)
     .bind(session.user_id)
     .first<number>("count");
@@ -158,19 +182,20 @@ export async function createShare(
     ...currentAccess(session),
     authorizationAssertion(root),
     assertExists(
-      `SELECT 1 WHERE (SELECT COUNT(*) FROM shares WHERE owner_id=? AND kind='link'
+      `SELECT 1 WHERE (SELECT COUNT(*) FROM shares WHERE owner_id=? AND kind IN ('link','upload_only')
         AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000))<?`,
       [session.user_id, ACTIVE_SHARE_LIMIT],
     ),
     {
       sql: `INSERT INTO shares(
         id,owner_id,root_node_id,kind,secret_digest,password_digest,salt,kdf,kdf_params,kid,
-        expires_at,created_at
-      ) VALUES(?,?,?,'link',?,?,?,?,?,?,?,?)`,
+        expires_at,created_at,reservation_limit
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       values: [
         id,
         session.user_id,
         root.node.id,
+        kind,
         secretDigest,
         passwordRecord?.passwordDigest ?? null,
         passwordRecord?.salt ?? null,
@@ -179,12 +204,18 @@ export async function createShare(
         passwordRecord?.kid ?? null,
         expiresAt,
         now,
+        reservationLimit,
       ],
     },
-    {
-      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
-      values: [id, id],
-    },
+    kind === "link"
+      ? {
+          sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+          values: [id, id],
+        }
+      : {
+          sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'create'),(?,'upload')",
+          values: [id, id],
+        },
   ]);
   const created = await readShare(env.DB, session, id);
   return { ...created, secret };
@@ -197,7 +228,7 @@ export async function disableShare(
 ): Promise<void> {
   if (!ID.test(shareId)) throw new Error("share_not_found");
   const exists = await primary(env.DB)
-    .prepare("SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind='link'")
+    .prepare("SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')")
     .bind(shareId, session.user_id)
     .first();
   if (!exists) throw new Error("share_not_found");
@@ -210,14 +241,14 @@ export async function disableShare(
   const clock = "strftime('%s','now')*1000";
   await commitAccountMutation(env.DB, admission, session.user_id, [
     ...currentAccess(session),
-    assertExists("SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind='link'", [
-      shareId,
-      session.user_id,
-    ]),
+    assertExists(
+      "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')",
+      [shareId, session.user_id],
+    ),
     {
       sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),
         version=CASE WHEN disabled_at IS NULL THEN version+1 ELSE version END
-        WHERE id=? AND owner_id=? AND kind='link'`,
+        WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')`,
       values: [shareId, session.user_id],
     },
     {

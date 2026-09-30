@@ -251,6 +251,8 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/public/shares/:shareId/nodes",
     "app PATCH /api/v1/public/shares/:shareId/nodes/:nodeId",
     "app DELETE /api/v1/public/shares/:shareId/nodes/:nodeId",
+  ]),
+  ...bindings(appShareForm, "bound", "public-share", [
     "app POST /api/v1/public/shares/:shareId/uploads",
     "app GET /api/v1/public/shares/:shareId/uploads/:uploadId",
     "app PUT /api/v1/public/shares/:shareId/uploads/:uploadId/content",

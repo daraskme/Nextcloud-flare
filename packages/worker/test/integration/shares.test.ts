@@ -129,6 +129,51 @@ it("stores password KDF metadata without returning the password or digest", asyn
   ).rejects.toThrow("invalid_share_password");
 });
 
+it("creates folder-only upload shares with bounded owner-visible reservations", async () => {
+  const f = await fixture();
+  const created = await createShare(mutationEnv(), f.session, {
+    rootNodeId: f.owner.ids.folder,
+    spaceId: f.owner.ids.space,
+    kind: "upload_only",
+    reservationLimitBytes: 1024 ** 3,
+  });
+  expect(created).toMatchObject({
+    kind: "upload_only",
+    rootNodeId: f.owner.ids.folder,
+    actions: ["create", "upload"],
+    reservedBytes: 0,
+    reservationLimit: 1024 ** 3,
+  });
+  expect(await readShare(env.DB, f.session, created.id)).toMatchObject({
+    kind: "upload_only",
+    actions: ["create", "upload"],
+    reservedBytes: 0,
+    reservationLimit: 1024 ** 3,
+  });
+  expect(await listShares(env.DB, f.session)).toEqual([
+    expect.objectContaining({
+      id: created.id,
+      kind: "upload_only",
+      reservationLimit: 1024 ** 3,
+    }),
+  ]);
+  await expect(
+    createShare(mutationEnv(), f.session, {
+      rootNodeId: f.owner.ids.file,
+      spaceId: f.owner.ids.space,
+      kind: "upload_only",
+    }),
+  ).rejects.toThrow("share_root_not_found");
+  await expect(
+    createShare(mutationEnv(), f.session, {
+      rootNodeId: f.owner.ids.folder,
+      spaceId: f.owner.ids.space,
+      kind: "link",
+      reservationLimitBytes: 1,
+    }),
+  ).rejects.toThrow("invalid_share_request");
+});
+
 it("disables idempotently, bumps the version once, and revokes derived state", async () => {
   const f = await fixture();
   const created = await createShare(mutationEnv(), f.session, {
