@@ -5,12 +5,12 @@ import {
   authorizeNode,
   type Principal,
 } from "../auth/authorize";
-import { AUDIO_GENERATOR_VERSION } from "../media/audio";
 import { type ContentPurpose, contentSessionAssertion } from "../auth/contentSession";
 import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
+import { AUDIO_GENERATOR_VERSION } from "../media/audio";
 import { IMAGE_METADATA_GENERATOR } from "../media/images/metadata";
 import { IMAGE_THUMBNAIL_GENERATOR, IMAGE_THUMBNAIL_VARIANT } from "../media/images/thumbnail";
 import { VIDEO_METADATA_GENERATOR } from "../media/video";
@@ -416,6 +416,12 @@ async function resolveAudioTrackRead(
   authorized: AuthorizedNode,
   extra: readonly SqlStatement[],
 ): Promise<BlobReadPlan> {
+  if (
+    authorized.operation !== "node.read" ||
+    authorized.node.kind !== "file" ||
+    !authorized.node.current_blob_id
+  )
+    throw new Error("content_not_available");
   const batches = await atomicBatch(db, [
     authorizationAssertion(authorized),
     ...extra,
@@ -424,13 +430,13 @@ async function resolveAudioTrackRead(
         b.content_etag AS contentEtag,COALESCE(b.mime_sniffed,'application/octet-stream') AS mime,
         n.name FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
         JOIN blob_storage s ON s.blob_id=b.id
-        JOIN node_media m ON m.node_id=n.id AND m.blob_id=b.id AND m.generator_version=?
+        JOIN node_audio a ON a.node_id=n.id AND a.blob_id=b.id AND a.generator_version=?
         WHERE n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?
           AND n.deleted_at IS NULL AND n.kind='file'
           AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
           AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
           AND s.bytes=b.size AND s.r2_etag IS NOT NULL
-          AND m.projection_state='ready' AND m.error_code IS NULL`,
+          AND a.codec='mp3'`,
       values: [
         AUDIO_GENERATOR_VERSION,
         authorized.node.id,

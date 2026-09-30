@@ -13,6 +13,7 @@ import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
+import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
@@ -906,5 +907,47 @@ it("purpose-separates private original-track GET, HEAD and Range delivery", asyn
     await env.BLOBS.delete(firstKey);
     if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
     if (contentIssued) await env.BLOBS.delete(`target-sets/${contentIssued.targetSetId}`);
+  }
+});
+
+it("preserves projected audio delivery through the track purpose", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    await env.DB.prepare("UPDATE blobs SET mime_sniffed='audio/mpeg' WHERE id=? AND owner_id=?")
+      .bind(f.ids.blob, f.ids.user)
+      .run();
+    await env.DB.prepare(`INSERT INTO node_audio(
+      node_id,blob_id,generator_version,codec,title_extracted
+    ) VALUES(?,?,?,'mp3','Track')`)
+      .bind(f.ids.file, f.ids.blob, AUDIO_GENERATOR_VERSION)
+      .run();
+    issued = await issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "track",
+      now + 300_000,
+    );
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    const response = await handleContentHttp(
+      new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}/track`, {
+        headers: { Cookie: accepted.setCookie.split(";", 1)[0] ?? "" },
+      }),
+      {
+        ...mutationEnv(),
+        APP_ORIGIN: "https://app.invalid",
+        CONTENT_ORIGIN: "https://content.invalid",
+      } as Env,
+      tokens,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("abc");
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
   }
 });
