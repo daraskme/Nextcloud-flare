@@ -1,13 +1,27 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { readAccessSession } from "../../src/auth/sessions";
+import {
+  type SharePasswordPepperRing,
+  sharePasswordPepperRing,
+} from "../../src/auth/sharePassword";
 import { atomicBatch } from "../../src/db/primary";
 import { createShare, disableShare, listShares, readShare } from "../../src/services/shares";
 import { foundationFixture } from "../fixtures/foundation";
+import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 
-beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
+let passwordRing: SharePasswordPepperRing;
+beforeAll(async () => {
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  passwordRing = await sharePasswordPepperRing(
+    "v1",
+    { v1: base64url.encode(crypto.getRandomValues(new Uint8Array(32))) },
+    localKdf,
+  );
+});
 beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
@@ -34,6 +48,7 @@ it("creates a one-time capability for an owner-authorized root and lists metadat
     version: 1,
     disabledAt: null,
     actions: ["read", "download"],
+    passwordProtected: false,
   });
   expect(created.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
   const stored = await env.DB.prepare("SELECT secret_digest FROM shares WHERE id=?")
@@ -52,6 +67,66 @@ it("creates a one-time capability for an owner-authorized root and lists metadat
       spaceId: f.other.ids.space,
     }),
   ).rejects.toThrow("share_root_not_found");
+});
+
+it("stores password KDF metadata without returning the password or digest", async () => {
+  const f = await fixture();
+  const password = "shared only out of band";
+  const created = await createShare(
+    mutationEnv(),
+    f.session,
+    {
+      rootNodeId: f.owner.ids.folder,
+      spaceId: f.owner.ids.space,
+      password,
+    },
+    passwordRing,
+  );
+  expect(created).toMatchObject({ passwordProtected: true });
+  expect(created).not.toHaveProperty("password");
+  expect(created).not.toHaveProperty("passwordDigest");
+  const stored = await env.DB.prepare(
+    `SELECT password_digest AS passwordDigest,salt,kdf,kdf_params AS kdfParams,kid
+      FROM shares WHERE id=?`,
+  )
+    .bind(created.id)
+    .first<{
+      passwordDigest: string;
+      salt: string;
+      kdf: string;
+      kdfParams: string;
+      kid: string;
+    }>();
+  expect(stored).toMatchObject({
+    kdf: "PBKDF2-SHA256",
+    kdfParams: '{"iterations":100000}',
+    kid: "v1",
+  });
+  expect(stored?.passwordDigest).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(stored?.salt).toMatch(/^[A-Za-z0-9_-]{22}$/);
+  expect(JSON.stringify(stored)).not.toContain(password);
+  expect(await readShare(env.DB, f.session, created.id)).toMatchObject({
+    passwordProtected: true,
+  });
+  await expect(
+    createShare(mutationEnv(), f.session, {
+      rootNodeId: f.owner.ids.folder,
+      spaceId: f.owner.ids.space,
+      password,
+    }),
+  ).rejects.toThrow("share_password_unavailable");
+  await expect(
+    createShare(
+      mutationEnv(),
+      f.session,
+      {
+        rootNodeId: f.owner.ids.folder,
+        spaceId: f.owner.ids.space,
+        password: "",
+      },
+      passwordRing,
+    ),
+  ).rejects.toThrow("invalid_share_password");
 });
 
 it("disables idempotently, bumps the version once, and revokes derived state", async () => {

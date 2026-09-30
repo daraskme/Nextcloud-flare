@@ -1,6 +1,8 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { CsrfTokens } from "../auth/csrf";
+import { KdfUnavailableError } from "../auth/kdf";
 import type { AccessSession } from "../auth/sessions";
+import type { SharePasswordPepperRing } from "../auth/sharePassword";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import {
@@ -14,7 +16,7 @@ import { hasEmptyBody } from "./emptyBody";
 
 const BASE = "/api/v1/shares";
 const DETAIL = /^\/api\/v1\/shares\/([A-Za-z0-9_-]{1,128})$/;
-const MAX_BODY = 4096;
+const MAX_BODY = 8192;
 const PRIVATE_HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -58,16 +60,20 @@ async function createBody(request: Request): Promise<CreateShareInput> {
     throw new Error("invalid_share_request");
   const body = parsed as Record<string, unknown>;
   if (
-    Object.keys(body).some((key) => !["rootNodeId", "spaceId", "ttlDays"].includes(key)) ||
+    Object.keys(body).some(
+      (key) => !["rootNodeId", "spaceId", "ttlDays", "password"].includes(key),
+    ) ||
     typeof body.rootNodeId !== "string" ||
     typeof body.spaceId !== "string" ||
-    (body.ttlDays !== undefined && typeof body.ttlDays !== "number")
+    (body.ttlDays !== undefined && typeof body.ttlDays !== "number") ||
+    (body.password !== undefined && typeof body.password !== "string")
   )
     throw new Error("invalid_share_request");
   return {
     rootNodeId: body.rootNodeId,
     spaceId: body.spaceId,
     ...(body.ttlDays === undefined ? {} : { ttlDays: body.ttlDays as number }),
+    ...(body.password === undefined ? {} : { password: body.password as string }),
   };
 }
 
@@ -76,6 +82,7 @@ export async function handleShareHttp(
   env: Env,
   session: AccessSession,
   csrf: Pick<CsrfTokens, "verify">,
+  passwordRing?: SharePasswordPepperRing,
 ): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin !== env.APP_ORIGIN || url.search || url.hash) return problem(404, "not_found");
@@ -134,7 +141,7 @@ export async function handleShareHttp(
     return problem(400, "bad_request");
   }
   try {
-    const created = await createShare(env, session, body);
+    const created = await createShare(env, session, body, passwordRing, request.signal);
     return Response.json(
       {
         ...created,
@@ -143,16 +150,24 @@ export async function handleShareHttp(
       { status: 201, headers: PRIVATE_HEADERS },
     );
   } catch (error) {
-    if (error instanceof MutationUnavailableError) {
+    if (error instanceof MutationUnavailableError || error instanceof KdfUnavailableError) {
       const response = problem(503, "not_ready");
       response.headers.set("Retry-After", "1");
       return response;
     }
-    if (error instanceof Error && error.message === "invalid_share_request")
+    if (
+      error instanceof Error &&
+      ["invalid_share_request", "invalid_share_password"].includes(error.message)
+    )
       return problem(400, "bad_request");
     if (error instanceof Error && error.message === "share_root_not_found")
       return problem(404, "not_found");
     if (error instanceof Error && error.message === "share_limit") return problem(409, "conflict");
+    if (error instanceof Error && error.message === "share_password_unavailable") {
+      const response = problem(503, "not_ready");
+      response.headers.set("Retry-After", "1");
+      return response;
+    }
     return problem(503, "not_ready");
   }
 }

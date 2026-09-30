@@ -8,6 +8,7 @@ import { AccessJwks } from "../auth/jwks";
 import { ListCursorTokens } from "../auth/listCursor";
 import { NodeCursorTokens } from "../auth/nodeCursor";
 import { SearchCursorTokens } from "../auth/searchCursor";
+import { sharePasswordPepperRing } from "../auth/sharePassword";
 import { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 import type { PrivateAppDependencies } from "./privateApp";
@@ -82,6 +83,14 @@ export async function privateAppDependencies(
           globalKdf(env.CONTROL, epoch),
         )
       : undefined;
+  const sharePasswordPepper =
+    env.SHARE_PASSWORD_PEPPERS && env.SHARE_PASSWORD_ACTIVE_KID
+      ? await sharePasswordPepperRing(
+          env.SHARE_PASSWORD_ACTIVE_KID,
+          JSON.parse(env.SHARE_PASSWORD_PEPPERS),
+          globalKdf(env.CONTROL, epoch),
+        )
+      : undefined;
   const uploadCapabilities =
     env.UPLOAD_CAPABILITY_KEYS && env.UPLOAD_CAPABILITY_ACTIVE_KID
       ? new UploadCapabilities(
@@ -99,6 +108,7 @@ export async function privateAppDependencies(
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { listCursors: new ListCursorTokens(cursorRing) } : {}),
     ...(appPasswordPepper ? { appPasswordPepper } : {}),
+    ...(sharePasswordPepper ? { sharePasswordPepper } : {}),
     ...(uploadCapabilities ? { uploadCapabilities } : {}),
     bootstrap: bootstrapPolicy(env),
   };

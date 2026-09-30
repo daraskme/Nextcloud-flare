@@ -99,7 +99,7 @@ URL、DAV `Destination`、tagged URI は一度だけ percent decodeし、不正 
 
 ### 2.3 binding contract
 
-`Env` は `DB, BLOBS, BACKUPS, CACHE, LOCKS, UPLOADS, BUDGETS, CONTROL, JOBS, IMAGES, EDGE_LIMITER, ASSETS` を必須とする。起動 smoke test は binding の存在と environment marker を検査し、不足・cross-environment ID・Images 無しを 503 で fail closed にする。D1/R2/KV/Queues/DO/Access AUD/custom domain/key ring は staging と production で共有しない。配備可能な `wrangler.jsonc` は §14.1 を正本とする。
+`Env` は `DB, BLOBS, BACKUPS, CACHE, LOCKS, UPLOADS, BUDGETS, CONTROL, JOBS, IMAGES, EDGE_LIMITER, SHARE_PASSWORD_LIMITER, SHARE_PASSWORD_IP_LIMITER, ASSETS` を必須とする。起動 smoke test は binding の存在と environment marker を検査し、不足・cross-environment ID・Images 無しを 503 で fail closed にする。D1/R2/KV/Queues/DO/Access AUD/custom domain/key ring は staging と production で共有しない。配備可能な `wrangler.jsonc` は §14.1 を正本とする。
 
 ---
 
@@ -1201,10 +1201,20 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
     }]
   },
   "images": { "binding": "IMAGES" },
-  "ratelimits": [{
-    "name": "EDGE_LIMITER", "namespace_id": "1001",
-    "simple": { "limit": 300, "period": 60 }
-  }],
+  "ratelimits": [
+    {
+      "name": "EDGE_LIMITER", "namespace_id": "1001",
+      "simple": { "limit": 300, "period": 60 }
+    },
+    {
+      "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "1002",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    {
+      "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
   "triggers": { "crons": ["17 * * * *", "23 2 * * *", "0 3 * * SUN"] },
   "vars": {
     "ENVIRONMENT": "development", "APP_ORIGIN": "https://dev.invalid",
@@ -1242,10 +1252,20 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
         }]
       },
       "images": { "binding": "IMAGES" },
-      "ratelimits": [{
-        "name": "EDGE_LIMITER", "namespace_id": "2001",
-        "simple": { "limit": 300, "period": 60 }
-      }],
+      "ratelimits": [
+        {
+          "name": "EDGE_LIMITER", "namespace_id": "2001",
+          "simple": { "limit": 300, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "2002",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "2003",
+          "simple": { "limit": 30, "period": 60 }
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "staging", "APP_ORIGIN": "https://staging-app.example.com",
         "CONTENT_ORIGIN": "https://staging-content.example.com", "ACCESS_ISSUER": "<STAGING_ACCESS_ISSUER>",
@@ -1282,10 +1302,20 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
         }]
       },
       "images": { "binding": "IMAGES" },
-      "ratelimits": [{
-        "name": "EDGE_LIMITER", "namespace_id": "3001",
-        "simple": { "limit": 300, "period": 60 }
-      }],
+      "ratelimits": [
+        {
+          "name": "EDGE_LIMITER", "namespace_id": "3001",
+          "simple": { "limit": 300, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "3002",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "3003",
+          "simple": { "limit": 30, "period": 60 }
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "production", "APP_ORIGIN": "https://app.example.com",
         "CONTENT_ORIGIN": "https://content.example.com", "ACCESS_ISSUER": "<PRODUCTION_ACCESS_ISSUER>",
@@ -1305,6 +1335,7 @@ queue作成後に `wrangler queues update <queue> --message-retention-period-sec
 | `CSRF_KEY` | one-time CSRF HMAC | 新旧2鍵を短い CSRF TTL だけ併用 | 即時交換、全 CSRF 無効化 |
 | `CONTENT_SESSION_KEY` | content-session Cookie ID digest/署名 | 新 kid 発行、既存 session TTL≤600秒だけ旧検証 | 即時交換、`content_sessions` revoke、epoch bump |
 | `APP_PASSWORD_PEPPER` | app password digest pepper | 新 record は新 kid、旧 record は成功時re-hash | 旧 kid失効、対象 app password全 revoke・再発行 |
+| `SHARE_PASSWORD_PEPPERS` | public share password digest pepper | dual-read/single-write。unlock成功時にactive kidへre-hashし、参照中の旧kidは保持 | 対象shareをdisable、旧kid失効、epoch bump、share再発行 |
 
 share/app password record の `kdf`,`kdf_params`,`kid` と signing record の kid を監査する。secret 値は environment 別 `wrangler secret` で登録し、通常 rotation は dual-read/single-write、緊急 rotation は maintenance + epoch bump +失効表に従う。
 

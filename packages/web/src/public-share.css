@@ -19,6 +19,10 @@ button {
   font: inherit;
 }
 
+input {
+  font: inherit;
+}
+
 #app {
   width: min(1040px, calc(100% - 32px));
   margin: 0 auto;
@@ -38,6 +42,63 @@ button {
   margin: 12vh auto 0;
   padding: 48px;
   text-align: center;
+}
+
+.password-card {
+  text-align: left;
+}
+
+.password-card > .mark {
+  display: grid;
+  margin: 0 auto;
+}
+
+.password-card > h1,
+.password-card > p {
+  text-align: center;
+}
+
+.password-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.password-form label {
+  color: #4d5965;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.password-form input {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid #cfd7df;
+  border-radius: 9px;
+  color: inherit;
+  background: #fff;
+}
+
+.password-error {
+  min-height: 1.4em;
+  margin: 0;
+  color: #8b2e2e;
+  font-size: 0.88rem;
+}
+
+.primary-button {
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 9px;
+  color: #fff;
+  background: #226b63;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .mark {

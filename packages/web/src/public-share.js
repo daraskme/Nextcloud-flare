@@ -2,6 +2,13 @@ const app = document.querySelector("#app");
 const shareId = /^\/s\/([A-Za-z0-9_-]{1,128})$/.exec(location.pathname)?.[1];
 const state = { share: null, stack: [], pages: new Map() };
 
+class RequestError extends Error {
+  constructor(status) {
+    super(String(status));
+    this.status = status;
+  }
+}
+
 function element(tag, options = {}) {
   const node = document.createElement(tag);
   if (options.className) node.className = options.className;
@@ -25,19 +32,66 @@ async function request(path, init = {}) {
     cache: "no-store",
     redirect: "error",
   });
-  if (!response.ok) throw new Error(String(response.status));
+  if (!response.ok) throw new RequestError(response.status);
   return response.status === 204 ? null : response.json();
 }
 
-async function unlock() {
-  const secret = location.hash.slice(1);
+async function unlock(secret, password) {
   if (!secret) return;
   await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}/unlock`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret }),
+    body: JSON.stringify({ secret, ...(password === undefined ? {} : { password }) }),
   });
   history.replaceState(null, "", location.pathname);
+}
+
+async function openShare() {
+  state.share = await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}`);
+  renderShare();
+}
+
+function renderPassword(secret) {
+  const card = element("section", { className: "status-card password-card" });
+  const mark = element("span", { className: "mark", text: "N" });
+  const heading = element("h1", { text: "パスワードが必要です" });
+  const detail = element("p", {
+    text: "共有者から受け取ったパスワードを入力してください。",
+  });
+  const form = element("form", { className: "password-form" });
+  const label = element("label", { text: "パスワード" });
+  const input = element("input");
+  input.type = "password";
+  input.name = "password";
+  input.autocomplete = "current-password";
+  input.required = true;
+  const error = element("p", { className: "password-error" });
+  error.setAttribute("role", "alert");
+  const submit = element("button", { className: "primary-button", text: "共有を開く" });
+  submit.type = "submit";
+  label.append(input);
+  form.append(label, error, submit);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    error.textContent = "";
+    try {
+      await unlock(secret, input.value);
+      input.value = "";
+      await openShare();
+    } catch (failure) {
+      if (failure instanceof RequestError && failure.status === 401)
+        error.textContent = "パスワードが正しくありません。";
+      else if (failure instanceof RequestError && failure.status === 429)
+        error.textContent = "試行回数が上限に達しました。しばらく待ってから再試行してください。";
+      else error.textContent = "現在確認できません。しばらく待ってから再試行してください。";
+      submit.disabled = false;
+      input.select();
+    }
+  });
+  card.append(mark, heading, detail, form);
+  app.replaceChildren(card);
+  input.focus();
 }
 
 function date(value) {
@@ -256,11 +310,16 @@ async function start() {
     showError("共有リンクが必要です", "受け取った共有リンクをそのまま開いてください。");
     return;
   }
+  const secret = location.hash.slice(1);
   try {
-    await unlock();
-    state.share = await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}`);
-    renderShare();
-  } catch {
+    await unlock(secret);
+    await openShare();
+  } catch (error) {
+    if (secret && error instanceof RequestError && error.status === 401) {
+      history.replaceState(null, "", location.pathname);
+      renderPassword(secret);
+      return;
+    }
     history.replaceState(null, "", location.pathname);
     showError("共有リンクを開けません", "リンクが無効、期限切れ、または共有が停止されています。");
   }

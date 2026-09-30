@@ -441,23 +441,35 @@ function ShareDialog({
     retry: false,
   });
   const [ttlDays, setTtlDays] = useState(30);
-  const [created, setCreated] = useState<{ id: string; url: string } | null>(null);
+  const [password, setPassword] = useState("");
+  const [created, setCreated] = useState<{
+    id: string;
+    url: string;
+    passwordProtected: boolean;
+  } | null>(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
   const [copied, setCopied] = useState(false);
-  const activeCount =
+  const activeShares =
     existing.data?.shares.filter(
       (share) =>
         share.rootNodeId === node.id &&
         share.disabledAt === null &&
         (share.expiresAt === null || share.expiresAt > Date.now()),
-    ).length ?? 0;
+    ) ?? [];
+  const activeCount = activeShares.length;
+  const protectedCount = activeShares.filter((share) => share.passwordProtected).length;
   const create = async () => {
     setPending(true);
     setFailure("");
     try {
-      const share = await api.createShare(node.id, account.spaceId, ttlDays);
-      setCreated({ id: share.id, url: share.shareUrl });
+      const share = await api.createShare(node.id, account.spaceId, ttlDays, password || undefined);
+      setCreated({
+        id: share.id,
+        url: share.shareUrl,
+        passwordProtected: share.passwordProtected,
+      });
+      setPassword("");
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
     } catch (error) {
       setFailure(errorMessage(error));
@@ -472,6 +484,7 @@ function ShareDialog({
     try {
       await api.disableShare(created.id);
       setCreated(null);
+      setPassword("");
       setCopied(false);
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
     } catch (error) {
@@ -495,7 +508,10 @@ function ShareDialog({
             共有URL
             <input readOnly value={created.url} onFocus={(event) => event.currentTarget.select()} />
           </label>
-          <p>URLは安全のため、この画面を閉じると再表示できません。</p>
+          <p>
+            URLは安全のため、この画面を閉じると再表示できません。
+            {created.passwordProtected ? "閲覧時には設定したパスワードも必要です。" : ""}
+          </p>
           <div className="dialog-actions">
             <Button
               type="button"
@@ -527,6 +543,7 @@ function ShareDialog({
           {activeCount > 0 && (
             <p className="notice">
               この項目には有効な共有リンクが {activeCount} 件あります。秘密部分は再表示できません。
+              {protectedCount > 0 ? ` パスワード保護: ${protectedCount}件。` : ""}
             </p>
           )}
           <label className="field-label">
@@ -542,6 +559,17 @@ function ShareDialog({
               <option value={365}>365日</option>
             </select>
           </label>
+          <label className="field-label">
+            パスワード（任意）
+            <input
+              type="password"
+              value={password}
+              disabled={pending}
+              autoComplete="new-password"
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <p>設定したパスワードは再表示できません。リンクとは別の方法で共有してください。</p>
           <p>閲覧者はフォルダーとファイル名を確認できます。アップロードや変更はできません。</p>
           <div className="dialog-actions">
             <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>

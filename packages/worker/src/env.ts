@@ -15,6 +15,8 @@ export interface Env {
   JOBS: Queue;
   IMAGES: ImagesBinding;
   EDGE_LIMITER: RateLimit;
+  SHARE_PASSWORD_LIMITER: RateLimit;
+  SHARE_PASSWORD_IP_LIMITER: RateLimit;
   ASSETS: Fetcher;
   ENVIRONMENT: "development" | "staging" | "production";
   APP_ORIGIN: string;
@@ -37,6 +39,8 @@ export interface Env {
   NODE_CURSOR_ACTIVE_KID?: string;
   APP_PASSWORD_PEPPERS?: string;
   APP_PASSWORD_ACTIVE_KID?: string;
+  SHARE_PASSWORD_PEPPERS?: string;
+  SHARE_PASSWORD_ACTIVE_KID?: string;
   UPLOAD_CAPABILITY_KEYS?: string;
   UPLOAD_CAPABILITY_ACTIVE_KID?: string;
   R2_INVENTORY_ACCOUNT_ID?: string;
@@ -61,6 +65,8 @@ export const REQUIRED_BINDINGS = [
   "JOBS",
   "IMAGES",
   "EDGE_LIMITER",
+  "SHARE_PASSWORD_LIMITER",
+  "SHARE_PASSWORD_IP_LIMITER",
   "ASSETS",
 ] as const satisfies readonly (keyof Env)[];
 

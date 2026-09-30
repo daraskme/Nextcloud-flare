@@ -81,7 +81,12 @@ export default {
       try {
         const epoch = await admittedEpoch(env);
         if (epoch === null) return problem(503, "not_ready");
-        return handlePublicShareHttp(request, env, epoch, await publicShareDependencies(env));
+        return handlePublicShareHttp(
+          request,
+          env,
+          epoch,
+          await publicShareDependencies(env, epoch),
+        );
       } catch {
         return problem(503, "not_ready");
       }
