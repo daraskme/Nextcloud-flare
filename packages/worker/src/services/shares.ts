@@ -27,7 +27,8 @@ export interface CreateShareInput {
 export interface CreateInternalShareInput {
   readonly rootNodeId: string;
   readonly spaceId: string;
-  readonly recipientEmail: string;
+  readonly recipientEmail?: string;
+  readonly recipientGroupId?: string;
   readonly actions: readonly string[];
   readonly ttlDays?: number;
 }
@@ -46,6 +47,8 @@ interface ShareRow {
   actions: string;
   recipientUserId: string | null;
   recipientEmail: string | null;
+  recipientGroupId: string | null;
+  recipientGroupName: string | null;
   mountName: string | null;
 }
 
@@ -63,6 +66,8 @@ interface ShareOutput {
   reservationLimit?: number;
   recipientUserId?: string | null;
   recipientEmail?: string | null;
+  recipientGroupId?: string | null;
+  recipientGroupName?: string | null;
   mountId?: string;
   mountName?: string | null;
 }
@@ -108,6 +113,8 @@ function output(row: ShareRow): ShareOutput {
       ? {
           recipientUserId: row.recipientUserId,
           recipientEmail: row.recipientEmail,
+          recipientGroupId: row.recipientGroupId,
+          recipientGroupName: row.recipientGroupName,
           mountId: row.id,
           mountName: row.mountName,
         }
@@ -135,10 +142,13 @@ const SHARE_SELECT = `SELECT sh.id,sh.kind,sh.root_node_id AS rootNodeId,sh.vers
   COALESCE((SELECT json_group_array(action) FROM (
     SELECT action FROM share_actions WHERE share_id=sh.id ORDER BY action
   )),'[]') AS actions,
-  g.user_id AS recipientUserId,u.email AS recipientEmail,sh.mount_name AS mountName
+  g.user_id AS recipientUserId,u.email AS recipientEmail,
+  gg.group_id AS recipientGroupId,sg.name AS recipientGroupName,sh.mount_name AS mountName
   FROM shares sh
   LEFT JOIN share_grants g ON g.share_id=sh.id
-  LEFT JOIN users u ON u.id=g.user_id`;
+  LEFT JOIN users u ON u.id=g.user_id
+  LEFT JOIN share_group_grants gg ON gg.share_id=sh.id
+  LEFT JOIN share_groups sg ON sg.id=gg.group_id`;
 
 export async function listShares(db: D1Database, session: AccessSession) {
   const statements = currentAccess(session);
@@ -197,22 +207,41 @@ export async function createInternalShare(
   if (
     !ID.test(input.rootNodeId) ||
     !ID.test(input.spaceId) ||
-    typeof input.recipientEmail !== "string" ||
-    input.recipientEmail.length < 3 ||
-    input.recipientEmail.length > 320 ||
+    (input.recipientEmail === undefined) === (input.recipientGroupId === undefined) ||
+    (input.recipientEmail !== undefined &&
+      (typeof input.recipientEmail !== "string" ||
+        input.recipientEmail.length < 3 ||
+        input.recipientEmail.length > 320)) ||
+    (input.recipientGroupId !== undefined && !ID.test(input.recipientGroupId)) ||
     (input.ttlDays !== undefined &&
       (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365))
   )
     throw new Error("invalid_share_request");
   const actions = validatedActions(input.actions);
-  const recipientEmail = input.recipientEmail.normalize("NFC").trim();
-  const recipients = await primary(env.DB)
-    .prepare(`SELECT id,email FROM users WHERE lower(email)=lower(?) AND disabled_at IS NULL
-      ORDER BY id LIMIT 2`)
-    .bind(recipientEmail)
-    .all<{ id: string; email: string }>();
-  const recipient = recipients.results.length === 1 ? recipients.results[0] : undefined;
-  if (!recipient || recipient.id === session.user_id) throw new Error("share_recipient_not_found");
+  const recipientEmail = input.recipientEmail?.normalize("NFC").trim();
+  let recipient: { id: string; email: string } | undefined;
+  let recipientGroup: { id: string; name: string } | undefined;
+  if (recipientEmail !== undefined) {
+    const recipients = await primary(env.DB)
+      .prepare(`SELECT id,email FROM users WHERE lower(email)=lower(?) AND disabled_at IS NULL
+        ORDER BY id LIMIT 2`)
+      .bind(recipientEmail)
+      .all<{ id: string; email: string }>();
+    recipient = recipients.results.length === 1 ? recipients.results[0] : undefined;
+    if (!recipient || recipient.id === session.user_id)
+      throw new Error("share_recipient_not_found");
+  } else {
+    recipientGroup =
+      (await primary(env.DB)
+        .prepare(`SELECT g.id,g.name FROM share_groups g
+        WHERE g.id=? AND g.owner_id=? AND g.disabled_at IS NULL
+          AND (SELECT COUNT(*) FROM share_group_members gm
+            JOIN users u ON u.id=gm.user_id AND u.disabled_at IS NULL
+            WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100`)
+        .bind(input.recipientGroupId, session.user_id)
+        .first<{ id: string; name: string }>()) ?? undefined;
+    if (!recipientGroup) throw new Error("share_recipient_not_found");
+  }
   const principal = {
     kind: "user" as const,
     user_id: session.user_id,
@@ -235,13 +264,24 @@ export async function createInternalShare(
     root.node.kind !== "folder"
   )
     throw new Error("share_root_not_found");
-  const existing = await primary(env.DB)
-    .prepare(`SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
-      WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
-        AND sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
-        AND g.user_id=? AND g.disabled_at IS NULL AND g.version=sh.version`)
-    .bind(session.user_id, root.node.id, recipient.id)
-    .first<number>();
+  const existing = recipient
+    ? await primary(env.DB)
+        .prepare(`SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
+          WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
+            AND sh.disabled_at IS NULL
+            AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+            AND g.user_id=? AND g.disabled_at IS NULL AND g.version=sh.version`)
+        .bind(session.user_id, root.node.id, recipient.id)
+        .first<number>()
+    : await primary(env.DB)
+        .prepare(`SELECT 1 FROM shares sh JOIN share_group_grants gg ON gg.share_id=sh.id
+          JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+          WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
+            AND sh.disabled_at IS NULL
+            AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+            AND sg.id=? AND sg.disabled_at IS NULL`)
+        .bind(session.user_id, root.node.id, recipientGroup!.id)
+        .first<number>();
   if (existing !== null) throw new Error("share_exists");
   const active = await primary(env.DB)
     .prepare(`SELECT COUNT(*) AS count FROM shares WHERE owner_id=? AND kind='internal'
@@ -262,24 +302,49 @@ export async function createInternalShare(
   await commitAccountMutation(env.DB, admission, session.user_id, [
     ...currentAccess(session),
     authorizationAssertion(root),
-    assertExists(
-      `SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL AND lower(email)=lower(?)
-        AND (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL AND lower(email)=lower(?))=1`,
-      [recipient.id, recipient.email, recipient.email],
-    ),
+    recipient
+      ? assertExists(
+          `SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL AND lower(email)=lower(?)
+            AND (SELECT COUNT(*) FROM users WHERE disabled_at IS NULL AND lower(email)=lower(?))=1`,
+          [recipient.id, recipient.email, recipient.email],
+        )
+      : assertExists(
+          `SELECT 1 FROM share_groups g WHERE g.id=? AND g.owner_id=?
+            AND g.disabled_at IS NULL AND
+            (SELECT COUNT(*) FROM share_group_members gm
+              JOIN users u ON u.id=gm.user_id AND u.disabled_at IS NULL
+              WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100`,
+          [recipientGroup!.id, session.user_id],
+        ),
     assertExists(
       `SELECT 1 WHERE
         (SELECT COUNT(*) FROM shares WHERE owner_id=? AND kind='internal'
           AND disabled_at IS NULL
           AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000))<?
         AND NOT EXISTS(
-          SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
+          SELECT 1 FROM shares sh
           WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
             AND sh.disabled_at IS NULL
             AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
-            AND g.user_id=? AND g.disabled_at IS NULL AND g.version=sh.version
+            AND ((? IS NOT NULL AND EXISTS(
+              SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=?
+                AND g.disabled_at IS NULL AND g.version=sh.version
+            )) OR (? IS NOT NULL AND EXISTS(
+              SELECT 1 FROM share_group_grants gg JOIN share_groups sg ON sg.id=gg.group_id
+              WHERE gg.share_id=sh.id AND sg.id=? AND sg.owner_id=sh.owner_id
+                AND sg.disabled_at IS NULL
+            )))
         )`,
-      [session.user_id, ACTIVE_SHARE_LIMIT, session.user_id, root.node.id, recipient.id],
+      [
+        session.user_id,
+        ACTIVE_SHARE_LIMIT,
+        session.user_id,
+        root.node.id,
+        recipient?.id ?? null,
+        recipient?.id ?? null,
+        recipientGroup?.id ?? null,
+        recipientGroup?.id ?? null,
+      ],
     ),
     {
       sql: `INSERT INTO shares(
@@ -287,10 +352,15 @@ export async function createInternalShare(
       ) VALUES(?,?,?,'internal',?,?,?,?)`,
       values: [id, session.user_id, root.node.id, expiresAt, now, mount.name, mount.nameCi],
     },
-    {
-      sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
-      values: [id, recipient.id],
-    },
+    recipient
+      ? {
+          sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
+          values: [id, recipient.id],
+        }
+      : {
+          sql: "INSERT INTO share_group_grants(share_id,group_id,created_at) VALUES(?,?,?)",
+          values: [id, recipientGroup!.id, now],
+        },
     ...actions.map((action) => ({
       sql: "INSERT INTO share_actions(share_id,action) VALUES(?,?)",
       values: [id, action],
@@ -376,16 +446,24 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
   const result = await atomicBatch(db, [
     ...currentAccess(session),
     {
-      sql: `WITH RECURSIVE live_share(
+      sql: `WITH RECURSIVE recipient_share(shareId) AS (
+        SELECT g.share_id FROM share_grants g JOIN shares direct ON direct.id=g.share_id
+        WHERE g.user_id=? AND g.disabled_at IS NULL AND g.version=direct.version
+        UNION
+        SELECT gg.share_id FROM share_group_grants gg
+        JOIN share_groups sg ON sg.id=gg.group_id AND sg.disabled_at IS NULL
+        JOIN shares grouped ON grouped.id=gg.share_id AND grouped.owner_id=sg.owner_id
+        JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=?
+          AND gm.disabled_at IS NULL
+        JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
+      ), live_share(
         shareId,shareVersion,mountName,rootId,spaceId,ownerId,rootName,rootKind,rootRevision,
-        recipientEmail,ownerEmail,depth,path,currentId,currentKind,parentId,deletedAt
+        ownerEmail,depth,path,currentId,currentKind,parentId,deletedAt
       ) AS (
         SELECT sh.id,sh.version,sh.mount_name,n.id,n.space_id,n.owner_id,n.name,n.kind,n.revision,
-          recipient.email,owner.email,0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
-        FROM shares sh
-        JOIN share_grants g ON g.share_id=sh.id AND g.user_id=? AND g.disabled_at IS NULL
-          AND g.version=sh.version
-        JOIN users recipient ON recipient.id=g.user_id AND recipient.disabled_at IS NULL
+          owner.email,0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
+        FROM recipient_share recipient
+        JOIN shares sh ON sh.id=recipient.shareId
         JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
         JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
         JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=? AND ctl.maintenance=0
@@ -394,14 +472,14 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
           AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read')
         UNION ALL
         SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
-          a.rootKind,a.rootRevision,a.recipientEmail,a.ownerEmail,a.depth+1,a.path||p.id||'/',
+          a.rootKind,a.rootRevision,a.ownerEmail,a.depth+1,a.path||p.id||'/',
           p.id,p.kind,p.parent_id,p.deleted_at
         FROM live_share a JOIN nodes p ON p.id=a.parentId
         WHERE a.depth<64 AND p.space_id=a.spaceId AND p.owner_id=a.ownerId
           AND instr(a.path,'/'||p.id||'/')=0
       )
       SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
-        a.rootKind,a.rootRevision,a.recipientEmail,a.ownerEmail,
+        a.rootKind,a.rootRevision,a.ownerEmail,
         (SELECT json_group_array(action) FROM (
           SELECT action FROM share_actions WHERE share_id=a.shareId ORDER BY action
         )) AS actions
@@ -410,7 +488,7 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(a.deletedAt IS NULL)=1
         AND SUM(a.currentKind='root' AND a.parentId IS NULL AND a.currentId=sp.root_node_id)=1
       ORDER BY a.mountName,a.shareId LIMIT 100`,
-      values: [session.user_id, session.epoch],
+      values: [session.user_id, session.user_id, session.epoch],
     },
   ]);
   return (result.at(-1)?.results ?? []).map((raw) => {
@@ -424,7 +502,6 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       rootName: string;
       rootKind: "folder";
       rootRevision: number;
-      recipientEmail: string;
       ownerEmail: string;
       actions: string;
     };

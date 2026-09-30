@@ -1,6 +1,12 @@
 import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
 import { shareCoverageAssertion } from "../auth/shareCoverage";
-import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
+import {
+  assertExists,
+  assertOneChange,
+  atomicBatch,
+  primary,
+  type SqlStatement,
+} from "../db/primary";
 import {
   type AccountMutationEnv,
   acquireAccountMutation,
@@ -44,10 +50,34 @@ export async function ensureContentBudget(
     principal.kind === "link_share" && principal.credential_id.startsWith("ss:")
       ? principal.credential_id.slice(3)
       : null;
+  const recipientVersion =
+    principal.kind !== "link_share" && shareId !== null
+      ? await primary(db)
+          .prepare(`SELECT CASE
+            WHEN EXISTS(SELECT 1 FROM share_grants g
+              WHERE g.share_id=sh.id AND g.user_id=? AND g.version=sh.version
+                AND g.disabled_at IS NULL) THEN 0
+            ELSE (SELECT gm.version FROM share_group_grants gg
+              JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                AND sg.disabled_at IS NULL
+              JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=?
+                AND gm.disabled_at IS NULL
+              WHERE gg.share_id=sh.id)
+            END AS version
+            FROM shares sh WHERE sh.id=? AND sh.version=? AND sh.kind='internal'
+              AND sh.disabled_at IS NULL`)
+          .bind(userId, userId, shareId, share?.version ?? null)
+          .first<number>("version")
+      : null;
   if (
     !ID.test(authorized.node.owner_id) ||
     (userId !== null && !ID.test(userId)) ||
     (shareId !== null && !ID.test(shareId)) ||
+    (principal.kind !== "link_share" &&
+      shareId !== null &&
+      (recipientVersion === null ||
+        !Number.isSafeInteger(recipientVersion) ||
+        recipientVersion < 0)) ||
     (principal.kind === "link_share" && (!unlockId || !ID.test(unlockId))) ||
     (userId !== null && shareId === null && authorized.node.owner_id !== userId)
   )
@@ -57,7 +87,9 @@ export async function ensureContentBudget(
       ? `s:${shareId}:c:${unlockId}`
       : shareId === null
         ? `u:${userId}`
-        : `u:${userId}:s:${shareId}`;
+        : recipientVersion === 0
+          ? `u:${userId}:s:${shareId}:v:${share?.version}`
+          : `u:${userId}:s:${shareId}:v:${share?.version}:m:${recipientVersion}`;
   if (id.length > 512) throw new Error("invalid_content_budget");
 
   let authority: SqlStatement;
@@ -97,10 +129,22 @@ export async function ensureContentBudget(
               SELECT 1 FROM app_passwords ap WHERE ap.id=c.app_password_id
                 AND ap.user_id=u.id AND ap.revoked_at IS NULL AND ap.expires_at>=?)))
           AND (? IS NULL OR EXISTS(
-            SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
+            SELECT 1 FROM shares sh
             WHERE sh.id=? AND sh.version=? AND sh.owner_id=? AND sh.kind='internal'
               AND sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>=?)
-              AND g.user_id=u.id AND g.version=sh.version AND g.disabled_at IS NULL
+              AND (
+                (?=0 AND EXISTS(SELECT 1 FROM share_grants g
+                  WHERE g.share_id=sh.id AND g.user_id=u.id
+                    AND g.version=sh.version AND g.disabled_at IS NULL))
+                OR (? > 0 AND EXISTS(
+                  SELECT 1 FROM share_group_grants gg
+                  JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                    AND sg.disabled_at IS NULL
+                  JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=u.id
+                    AND gm.disabled_at IS NULL AND gm.version=?
+                  WHERE gg.share_id=sh.id
+                ))
+              )
               AND EXISTS(SELECT 1 FROM share_actions sa
                 WHERE sa.share_id=sh.id AND sa.action='read')))`,
       [
@@ -117,6 +161,9 @@ export async function ensureContentBudget(
         share?.version ?? null,
         authorized.node.owner_id,
         expiresAt,
+        recipientVersion,
+        recipientVersion,
+        recipientVersion,
       ],
     );
   }

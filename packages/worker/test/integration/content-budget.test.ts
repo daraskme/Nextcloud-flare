@@ -114,7 +114,7 @@ it("binds an internal-share budget to the selected share root", async () => {
     id: shareId,
     version: 1,
   });
-  expect(budget.id).toBe(`u:${f.ids.user}:s:${shareId}`);
+  expect(budget.id).toBe(`u:${f.ids.user}:s:${shareId}:v:1`);
   await env.DB.prepare("UPDATE nodes SET parent_id=?,revision=revision+1 WHERE id=?")
     .bind(f.ids.root, f.ids.file)
     .run();

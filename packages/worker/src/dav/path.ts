@@ -81,8 +81,7 @@ const SHARED_PATH_CTE = `WITH RECURSIVE path(depth,id,space_id,owner_id,share_id
     FROM app_passwords ap
     JOIN credentials c ON c.app_password_id=ap.id AND c.kind='app_password'
     JOIN users recipient ON recipient.id=ap.user_id AND recipient.disabled_at IS NULL
-    JOIN share_grants g ON g.user_id=recipient.id AND g.disabled_at IS NULL
-    JOIN shares sh ON sh.id=g.share_id AND sh.kind='internal' AND sh.version=g.version
+    JOIN shares sh ON sh.kind='internal'
       AND sh.disabled_at IS NULL
       AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
       AND sh.mount_name_ci=json_extract(?4,'$[1]')
@@ -95,6 +94,19 @@ const SHARED_PATH_CTE = `WITH RECURSIVE path(depth,id,space_id,owner_id,share_id
         WHERE cs.credential_id=c.id AND cs.scope='node:read')
       AND EXISTS(SELECT 1 FROM share_actions sa
         WHERE sa.share_id=sh.id AND sa.action=?5)
+      AND (
+        EXISTS(SELECT 1 FROM share_grants g
+          WHERE g.share_id=sh.id AND g.user_id=recipient.id
+            AND g.disabled_at IS NULL AND g.version=sh.version)
+        OR EXISTS(
+          SELECT 1 FROM share_group_grants gg
+          JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+            AND sg.disabled_at IS NULL
+          JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=recipient.id
+            AND gm.disabled_at IS NULL
+          WHERE gg.share_id=sh.id
+        )
+      )
       AND EXISTS(WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
         SELECT r.id,r.parent_id,r.space_id,r.owner_id,r.kind,r.deleted_at,0,'/'||r.id||'/'
         FROM nodes r WHERE r.id=sh.root_node_id AND r.owner_id=sh.owner_id

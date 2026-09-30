@@ -241,9 +241,20 @@ const NODE_AUTHORITY = `WITH RECURSIVE
                   WHERE ap.id=(SELECT app_password_id FROM credentials WHERE id=p.credential_id)
                     AND ap.root_node_id=?1)))
             OR (ctl.maintenance=0 AND EXISTS(
-            SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
-              WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id
-                AND g.disabled_at IS NULL AND g.version=sh.version))))
+            SELECT 1 FROM live_shares sh
+              WHERE ?6<>'node.trash' AND sh.kind='internal' AND (
+                EXISTS(SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=u.id
+                  AND g.disabled_at IS NULL AND g.version=sh.version)
+                OR EXISTS(
+                  SELECT 1 FROM share_group_grants gg
+                  JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                    AND sg.disabled_at IS NULL
+                  JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=u.id
+                    AND gm.disabled_at IS NULL
+                  JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
+                  WHERE gg.share_id=sh.id
+                )
+              )))))
         OR (p.kind='link_share' AND ?6 IN ('node.read','library.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id

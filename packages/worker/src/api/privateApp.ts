@@ -17,6 +17,7 @@ import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
+import { groupRoute, handleGroupHttp } from "./groups";
 import { handleLibraryHttp, libraryRoute } from "./library";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
@@ -52,6 +53,7 @@ export function privateAppRoute(request: Request): boolean {
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
+    groupRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
     (request.method === "POST" &&
@@ -95,6 +97,7 @@ export async function handlePrivateAppHttp(
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
+  const group = groupRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
@@ -113,6 +116,7 @@ export async function handlePrivateAppHttp(
     !trashRead &&
     !nodeMutation &&
     !appPassword &&
+    !group &&
     !share &&
     !upload &&
     !ticketIssue &&
@@ -189,6 +193,7 @@ export async function handlePrivateAppHttp(
       dependencies.csrf,
       dependencies.appPasswordPepper,
     );
+  if (group) return handleGroupHttp(request, env, session, dependencies.csrf);
   if (share)
     return handleShareHttp(
       request,
