@@ -68,6 +68,7 @@ export type NodeRequest =
         | "node.read"
         | "gallery.read"
         | "audio.read"
+        | "library.read"
         | "search.read"
         | "node.rename"
         | "node.trash"
@@ -97,7 +98,7 @@ export type AuthorizedNode =
       readonly node: LiveNode;
     }
   | {
-      readonly operation: "gallery.read" | "audio.read";
+      readonly operation: "gallery.read" | "audio.read" | "library.read";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -222,7 +223,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
       AND (?6 NOT IN (
         'node.create','node.rename','node.trash','node.props.write','node.content.write',
-        'gallery.read','audio.read'
+        'gallery.read','audio.read','library.read'
       ) OR ctl.maintenance=0)
       AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
       AND (?6 NOT IN ('node.rename','node.trash') OR n.parent_id IS NOT NULL)
@@ -230,7 +231,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
         (p.kind IN ('user','app_password') AND ?6 IN (
-          'node.read','gallery.read','audio.read','search.read','node.create','node.rename',
+          'node.read','gallery.read','audio.read','library.read','search.read','node.create','node.rename',
           'node.trash','node.props.write','node.content.write'
         ) AND EXISTS(
           SELECT 1 FROM user_authority u WHERE
@@ -243,7 +244,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
             SELECT 1 FROM live_shares sh JOIN share_grants g ON g.share_id=sh.id
               WHERE ?6<>'node.trash' AND sh.kind='internal' AND g.user_id=u.id
                 AND g.disabled_at IS NULL AND g.version=sh.version))))
-        OR (p.kind='link_share' AND ?6 IN ('node.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
+        OR (p.kind='link_share' AND ?6 IN ('node.read','library.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
             WHERE c.id=p.credential_id AND c.kind='share' AND sh.kind='link'
@@ -288,6 +289,7 @@ export async function authorizeNode(
       "node.read",
       "gallery.read",
       "audio.read",
+      "library.read",
       "search.read",
       "node.create",
       "node.rename",
@@ -324,7 +326,9 @@ export async function authorizeNode(
     JSON.stringify(identity),
     request.operation === "node.create"
       ? "node:create"
-      : request.operation === "gallery.read" || request.operation === "audio.read"
+      : request.operation === "gallery.read" ||
+          request.operation === "audio.read" ||
+          request.operation === "library.read"
         ? "library:read"
         : request.operation === "node.trash"
           ? "node:delete"

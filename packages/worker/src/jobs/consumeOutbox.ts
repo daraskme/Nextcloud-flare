@@ -8,6 +8,7 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { epubCompletionStatements, prepareEpubProjection } from "./epub";
 import { type MediaJobEnv, processImageOutbox } from "./media";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
@@ -367,6 +368,8 @@ export async function consumeOutbox(
       if (inspected.kind === "transient") return "retry";
       inspection = inspected;
     }
+    const epub = await prepareEpubProjection(env, row, deadline - 4000);
+    if (epub === "retry") return "retry";
     if ((row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS && env.IMAGES) {
       try {
         const mediaAuthorized = await authorizeNode(db, principal, {
@@ -396,6 +399,7 @@ export async function consumeOutbox(
     await commitSystemMutation(db, completion, row.owner_id, [
       authorizationAssertion(authorized),
       ...(source && inspection ? audioCompletionStatements(source, row, inspection) : []),
+      ...epubCompletionStatements(epub),
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND claim_token=? AND claim_expires_at>${clock}
