@@ -2,6 +2,7 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
+import { handleContentHttp } from "../../src/api/content";
 import { handlePrivateContentTicketHttp } from "../../src/api/contentTickets";
 import { handlePrivateAppHttp } from "../../src/api/privateApp";
 import { privateAppDependencies } from "../../src/api/privateAppConfig";
@@ -11,6 +12,7 @@ import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { atomicBatch } from "../../src/db/primary";
+import type { Env } from "../../src/env";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
@@ -775,6 +777,59 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
         )
       ).budgetId,
     ).toBe(issued.budgetId);
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
+  }
+});
+
+it("streams a track ticket through the existing GET, HEAD and Range content path", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    issued = await issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "track",
+      now + 300_000,
+    );
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+    await expect(
+      prepareCookieBlobRead(env.DB, env.BLOBS, tokens, cookie, f.ids.space, f.ids.file, "content"),
+    ).rejects.toThrow();
+    const contentEnv = {
+      ...mutationEnv(),
+      APP_ORIGIN: "https://app.invalid",
+      CONTENT_ORIGIN: "https://content.invalid",
+    } as Env;
+    const url = `https://content.invalid/c/${f.ids.file}/${f.ids.blob}`;
+    const get = await handleContentHttp(
+      new Request(url, { headers: { Cookie: cookie } }),
+      contentEnv,
+      tokens,
+    );
+    expect(get.status).toBe(200);
+    expect(new TextDecoder().decode(await get.arrayBuffer())).toBe("abc");
+    const head = await handleContentHttp(
+      new Request(url, { method: "HEAD", headers: { Cookie: cookie } }),
+      contentEnv,
+      tokens,
+    );
+    expect(head.status).toBe(200);
+    expect(head.headers.get("Content-Length")).toBe("3");
+    expect(head.body).toBeNull();
+    const range = await handleContentHttp(
+      new Request(url, { headers: { Cookie: cookie, Range: "bytes=1-2" } }),
+      contentEnv,
+      tokens,
+    );
+    expect(range.status).toBe(206);
+    expect(range.headers.get("Content-Range")).toBe("bytes 1-2/3");
+    expect(new TextDecoder().decode(await range.arrayBuffer())).toBe("bc");
   } finally {
     await env.BLOBS.delete(firstKey);
     if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);

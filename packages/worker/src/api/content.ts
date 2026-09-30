@@ -137,7 +137,7 @@ export async function handleContentHttp(
       request.headers.get("Cookie"),
       node.spaceId,
       nodeId,
-      "content",
+      ["content", "track"],
       request,
     );
     return reply(response);

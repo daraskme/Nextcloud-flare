@@ -1,4 +1,9 @@
-import { NAME_FOLD_VERSION, portableName, searchName } from "@next-cloud-flare/shared/names";
+import {
+  NAME_FOLD_VERSION,
+  portableName,
+  searchName,
+  searchText,
+} from "@next-cloud-flare/shared/names";
 import { expect, it } from "vitest";
 
 it.each([
@@ -72,4 +77,14 @@ it("builds name search text and scalar bigrams with a versioned normalization", 
   expect(searchName("😀a").tokens).toBe("😀a");
   expect(searchName("本").tokens).toBe("本");
   expect(searchName("Straße").textNorm).toBe("strasse");
+});
+
+it("composes bounded audio metadata after the filename without changing normalization", () => {
+  expect(searchText("01 - Track.mp3", ["夜の歌", "Straße", "ＡＬＢＵＭ"])).toMatchObject({
+    textNorm: "01 - track.mp3 夜の歌 strasse album",
+  });
+  expect(searchText("song.mp3", [null, "", "Album"]).tokens).toContain(" a");
+  expect(() => searchText("song.mp3", ["a".repeat(1025)])).toThrow("invalid_search_metadata");
+  expect(() => searchText("song.mp3", ["bad\nvalue"])).toThrow("invalid_search_metadata");
+  expect(() => searchText("song.mp3", ["a", "b", "c", "d"])).toThrow("invalid_search_metadata");
 });

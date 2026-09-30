@@ -60,6 +60,8 @@ export interface ContentBlobPlan {
   readonly epoch: number;
 }
 
+type ContentPurposeSelector = ContentPurpose | readonly ["content", "track"];
+
 /** Resolve the signed host-only cookie to a D1 principal, then apply all content read guards. */
 export async function prepareCookieBlobRead(
   db: D1Database,
@@ -68,17 +70,25 @@ export async function prepareCookieBlobRead(
   cookieHeader: string | null,
   spaceId: string,
   nodeId: string,
-  purpose: ContentPurpose,
+  purpose: ContentPurposeSelector,
 ): Promise<ContentBlobPlan> {
+  const purposes = typeof purpose === "string" ? ([purpose, purpose] as const) : purpose;
+  if (
+    (typeof purpose === "string" &&
+      !["content", "thumb", "page", "zip", "track"].includes(purpose)) ||
+    (typeof purpose !== "string" &&
+      (purposes.length !== 2 || purposes[0] !== "content" || purposes[1] !== "track"))
+  )
+    throw new Error("content_not_available");
   const sessionId = await tokens.verifyCookie(cookieHeader);
   const session = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
       cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,
-      cs.ticket_id AS ticketId,cs.epoch,c.kind AS credentialKind
+      cs.ticket_id AS ticketId,cs.epoch,c.kind AS credentialKind,t.purpose
       FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
       JOIN tickets t ON t.id=cs.ticket_id
-      WHERE cs.id=? AND t.purpose=?`)
-    .bind(sessionId, purpose)
+      WHERE cs.id=? AND t.purpose IN (?,?)`)
+    .bind(sessionId, purposes[0], purposes[1])
     .first<{
       userId: string | null;
       shareId: string | null;
@@ -87,6 +97,7 @@ export async function prepareCookieBlobRead(
       ticketId: string;
       epoch: number;
       credentialKind: string;
+      purpose: ContentPurpose;
     }>();
   if (!session) throw new Error("content_not_available");
   let principal: Principal;
@@ -119,7 +130,7 @@ export async function prepareCookieBlobRead(
   return prepareContentBlobRead(db, bucket, principal, spaceId, nodeId, {
     sessionId,
     ticketId: session.ticketId,
-    purpose,
+    purpose: session.purpose,
     ...(session.shareId && session.userId && session.shareVersion
       ? { share: { id: session.shareId, version: session.shareVersion } }
       : {}),
@@ -235,7 +246,7 @@ export async function streamBudgetedContentBlob(
   cookieHeader: string | null,
   spaceId: string,
   nodeId: string,
-  purpose: ContentPurpose,
+  purpose: ContentPurposeSelector,
   request: Request,
 ): Promise<Response> {
   request.signal.throwIfAborted();
