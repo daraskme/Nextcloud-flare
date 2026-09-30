@@ -25,9 +25,9 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-読み取り専用公開linkを接続した。所有者はFiles UIから期限付きlinkを作成・無効化でき、public shellはfragment capabilityをshare Cookieへ交換してmetadataとfolder childrenを表示する。file選択はpublic CSRF付きticket、R2 target manifest、分離content originのHttpOnly Cookie、unlock session単位で再利用するBudgetDOを経由し、raw R2 keyを公開せずcurrent immutable blobを配信する。share/session/version/epoch/root coverageを各requestで再検査し、ticket cancel、public CSRF logout、独立したcontent hash付きassets、未実装routeの404を維持する。password/upload-only/internal share、shared DAV、ZIP/mediaは後続。[PUBLIC_SHARES](PUBLIC_SHARES.md)
+読み取り専用とupload-onlyの公開linkを接続した。所有者はFiles UIから期限付き・任意passwordのlinkを作成・無効化できる。読み取り専用shareはfragment capabilityをshare Cookieへ交換し、metadata/childrenと分離content origin経由のdownloadを提供する。upload-only shareはfolder rootだけを対象に、owner/share二重予約、single/multipart転送、status、complete、abortをprivate upload基盤へ接続し、閲覧・上書きと最終保存名の公開を拒否する。share/session/version/epoch/root coverageを各requestで再検査し、public CSRF logout、独立したcontent hash付きassets、未実装routeの404を維持する。internal share、shared DAV、ZIP/mediaは後続。[PUBLIC_SHARES](PUBLIC_SHARES.md)
 
-public content関連workerd16件と全`pnpm test`が成功し、Node710件・workerd2,107件の計2,817件を確認した。lint381file、型、契約/設定、Web buildも成功している。
+upload-onlyの公開share統合12件とowner share統合4件を含む関連5 file・118件が成功した。single/multipart完了、衝突時の自動改名、完了再試行、予約精算、CSRF、session/version/disabled/expiry fenceを含む。lint、型、契約/設定、Web/Worker buildも成功している。全suiteとbrowser E2EはこのfeatureのPR/CIで最終確認する。
 
 前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 

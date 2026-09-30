@@ -61,19 +61,30 @@ async function createBody(request: Request): Promise<CreateShareInput> {
   const body = parsed as Record<string, unknown>;
   if (
     Object.keys(body).some(
-      (key) => !["rootNodeId", "spaceId", "ttlDays", "password"].includes(key),
+      (key) =>
+        !["rootNodeId", "spaceId", "kind", "ttlDays", "password", "reservationLimitBytes"].includes(
+          key,
+        ),
     ) ||
     typeof body.rootNodeId !== "string" ||
     typeof body.spaceId !== "string" ||
+    (body.kind !== undefined && !["link", "upload_only"].includes(String(body.kind))) ||
     (body.ttlDays !== undefined && typeof body.ttlDays !== "number") ||
-    (body.password !== undefined && typeof body.password !== "string")
+    (body.password !== undefined && typeof body.password !== "string") ||
+    (body.reservationLimitBytes !== undefined && typeof body.reservationLimitBytes !== "number")
   )
     throw new Error("invalid_share_request");
   return {
     rootNodeId: body.rootNodeId,
     spaceId: body.spaceId,
+    ...(body.kind === undefined
+      ? {}
+      : { kind: body.kind as NonNullable<CreateShareInput["kind"]> }),
     ...(body.ttlDays === undefined ? {} : { ttlDays: body.ttlDays as number }),
     ...(body.password === undefined ? {} : { password: body.password as string }),
+    ...(body.reservationLimitBytes === undefined
+      ? {}
+      : { reservationLimitBytes: body.reservationLimitBytes as number }),
   };
 }
 

@@ -230,6 +230,14 @@ const NODE_AUTHORITY = `WITH RECURSIVE
               AND sh.id=p.share_id AND sh.version=p.share_version AND ss.share_version=sh.version
               AND ss.epoch=p.epoch AND ss.revoked_at IS NULL AND ss.expires_at>strftime('%s','now')*1000
               AND (ss.user_id IS NULL OR EXISTS(SELECT 1 FROM users WHERE id=ss.user_id AND disabled_at IS NULL))))
+        OR (p.kind='link_share' AND ?6='node.create' AND EXISTS(
+          SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
+            JOIN live_shares sh ON sh.id=ss.share_id
+            WHERE c.id=p.credential_id AND c.kind='share' AND sh.kind='upload_only'
+              AND sh.id=p.share_id AND sh.version=p.share_version AND ss.share_version=sh.version
+              AND ss.epoch=p.epoch AND ss.revoked_at IS NULL AND ss.expires_at>strftime('%s','now')*1000
+              AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload')
+              AND (ss.user_id IS NULL OR EXISTS(SELECT 1 FROM users WHERE id=ss.user_id AND disabled_at IS NULL))))
         OR (p.kind='service' AND ?6 IN ('automation.list','automation.metadata.read') AND EXISTS(
           SELECT 1 FROM credentials c JOIN service_principals svc ON svc.id=c.service_principal_id
             JOIN users u ON u.id=svc.mapped_user_id

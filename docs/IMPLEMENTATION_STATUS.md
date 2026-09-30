@@ -3,6 +3,12 @@
 更新: 2026-09-29。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-09-29 upload-only公開link
+
+folder root向けupload-only shareをowner/public UIとWorker APIへ接続した。ownerは任意passwordとshare専用予約上限を設定でき、recipientはfolder内容を閲覧せずsingle/multipart receiptを作成・転送・完了・中止できる。各段階でshare session/version/epoch/expiryとupload capabilityを再検査し、owner quotaとshare reservationを原子的に予約する。既存node指定・上書き・read/downloadを拒否し、衝突解決後の保存名はpublic responseへ返さない。
+
+公開share統合12件とowner share統合4件を含むupload/share関連118件、型検査、Biome、route契約、設定検査、Web/Worker buildを検証した。single/multipart完了、衝突時の自動改名、完了再試行、予約精算、CSRF、session/version/disabled/expiry fenceを含む。browser E2E・CIはPR作成後に記録する。
+
 前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
 
 ## 今回の検証記録
@@ -25,7 +31,7 @@
 
 | 項目 | 成果物 / 実証内容 | 状態 |
 |---|---|---|
-| 5/6 読み取り専用公開リンク | owner管理、fragment capability、任意password保護、share Cookie、metadata/children、CSRF/logout、target manifest、content ticket/Cookie、BudgetDO配信、独立hashed assets、Files共有dialog | capabilityとpasswordの分離、digest-only保存、ControlDO KDF、share/IP制限、KDF中のversion/password変更拒否、password付きunlock後のR2配信を検証。upload-only/internal share、remote secret、stagingは未接続。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
+| 5/6 公開リンク | owner管理、fragment capability、任意password保護、share Cookie、読み取り専用metadata/children/download、upload-only single/multipart受信、owner/share予約、独立hashed assets、Files共有dialog | capabilityとpasswordの分離、digest-only保存、ControlDO KDF、share/IP制限、R2配信、upload完了/中止/再試行、衝突時の自動改名と名前非開示を検証。internal share、remote secret、stagingは未接続。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 4 期限切れ世代の自動走査 | ControlDO永続round/cursor・固定年齢/最大ID、100 step、既知破損保留、maintainとservice例の明示option | Node22件・workerd13件を追加。eviction、100件超の不在receipt、途中削除、応答喪失、破損保留、epoch/backup競合、期限を検証。全checkの計2,796件と専用binding/実CLIドリルが成功。詳細は冒頭参照。schema0039・通常67table・依存を維持。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 4 期限切れSQL世代の明示回収 | 専用prune、D1/R2世代照合、35日超・20部品/100RPC、manifest最終削除・再実行 | Node12件・workerd26件を追加。全Node674件（39file、30.53s）、回収26件と既存完了17件の計43件（12.79s）が成功。専用bindingドリルは67table・SQL11,322bytesで成功。実CLIドリルもSQL9,079bytesで成功し、期限内拒否・回収・再実行・receipt保持を確認。全check成功、Node674件＋workerd2,087件（99file、1,143.07s）の計2,761件。型・契約/設定検査・Web build・Worker dry-run、最終lint361fileも成功。期限試験の時計設定を調整後、回収26件（6.29s）と型検査を再確認しました。schema0039・67table・依存を維持。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 4 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18件・workerd8件を追加しました。Windowsと同じ並列数・上限を指定した全Node661件（38file、40.70s）が成功。その後追加した鮮度回復を含む補充18件（151ms）も成功し、重複を除く662件を確認しています。バックアップ関連workerd87件（4file、43.78s）、lint356file・型・契約/設定検査・Web build・Worker dry-runも成功しました。Windows実機側の結果は今回のCIで再確認します。 実ControlDO/D1/R2の専用bindingドリルで、日次1世代と追加4世代を作り、5世代すべての検証、eviction後の再実行で世代が増えないこと、取得・隔離復元を確認しました。7操作の権限拒否、67table・SQL11,322bytesも確認済みです。実CLIのdaily/run/receipt/health/download/restore-offlineもSQL9,079bytesで成功し、maintainが旧epochを変更前に拒否することを確認しました。成功する5世代補充は専用bindingドリルで検証しています。 timer設置・外部通知・期限切れ削除・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |

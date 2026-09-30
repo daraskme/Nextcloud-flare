@@ -79,7 +79,6 @@ export function uploadFence(
   );
 }
 
-/** Private Access uploads first. Public upload-only policy is connected separately. */
 export async function uploadAuthority(
   db: D1Database,
   principal: Principal,
@@ -87,9 +86,10 @@ export async function uploadAuthority(
   checkTargetRevision = true,
 ) {
   if (
-    principal.kind !== "user" ||
+    !["user", "link_share"].includes(principal.kind) ||
     principal.credential_id !== row.credential_id ||
-    principal.epoch !== row.epoch
+    principal.epoch !== row.epoch ||
+    (principal.kind === "link_share" && row.target_id !== null)
   )
     throw new Error("upload_authorization_denied");
   const authorized = await authorizeNode(
@@ -112,6 +112,23 @@ export async function uploadAuthority(
       throw new Error("upload_target_changed");
   } else if (authorized.operation !== "node.create" || authorized.parent.owner_id !== row.owner_id)
     throw new Error("upload_authorization_denied");
+  if (principal.kind === "link_share") {
+    const shareReservation = await primary(db)
+      .prepare(`SELECT 1 FROM reservations r JOIN shares sh ON sh.id=r.share_id
+        WHERE r.id=? AND sh.id=? AND sh.kind='upload_only' AND sh.version=?
+          AND sh.owner_id=? AND sh.root_node_id=? AND sh.disabled_at IS NULL
+          AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+          AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='upload')`)
+      .bind(
+        row.reservation_id,
+        principal.share_id,
+        principal.share_version,
+        row.owner_id,
+        row.parent_id,
+      )
+      .first();
+    if (!shareReservation) throw new Error("upload_authorization_denied");
+  }
   return authorized;
 }
 

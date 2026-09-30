@@ -49,7 +49,7 @@ import {
 type Action =
   | { kind: "create" }
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
-  | { kind: "share"; node: Pick<FileNode, "id" | "name"> }
+  | { kind: "share"; node: Pick<FileNode, "id" | "name" | "kind"> }
   | { kind: "overwrite"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
@@ -430,7 +430,7 @@ function ShareDialog({
   account,
   onClose,
 }: {
-  node: Pick<FileNode, "id" | "name">;
+  node: Pick<FileNode, "id" | "name" | "kind">;
   account: Account;
   onClose: () => void;
 }) {
@@ -441,11 +441,14 @@ function ShareDialog({
     retry: false,
   });
   const [ttlDays, setTtlDays] = useState(30);
+  const [shareKind, setShareKind] = useState<"link" | "upload_only">("link");
+  const [reservationLimitGiB, setReservationLimitGiB] = useState(10);
   const [password, setPassword] = useState("");
   const [created, setCreated] = useState<{
     id: string;
     url: string;
     passwordProtected: boolean;
+    kind: "link" | "upload_only";
   } | null>(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
@@ -463,11 +466,19 @@ function ShareDialog({
     setPending(true);
     setFailure("");
     try {
-      const share = await api.createShare(node.id, account.spaceId, ttlDays, password || undefined);
+      const share = await api.createShare(
+        node.id,
+        account.spaceId,
+        ttlDays,
+        shareKind,
+        password || undefined,
+        shareKind === "upload_only" ? reservationLimitGiB * 1024 ** 3 : undefined,
+      );
       setCreated({
         id: share.id,
         url: share.shareUrl,
         passwordProtected: share.passwordProtected,
+        kind: share.kind,
       });
       setPassword("");
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
@@ -497,7 +508,11 @@ function ShareDialog({
     <Dialog
       open
       title="共有リンク"
-      description={`「${node.name}」をリンクを知っている人に閲覧専用で共有します。`}
+      description={
+        shareKind === "upload_only"
+          ? `「${node.name}」でファイルを受け取るリンクを作成します。`
+          : `「${node.name}」をリンクを知っている人に閲覧専用で共有します。`
+      }
       onOpenChange={(open) => {
         if (!open && !pending) onClose();
       }}
@@ -510,7 +525,12 @@ function ShareDialog({
           </label>
           <p>
             URLは安全のため、この画面を閉じると再表示できません。
-            {created.passwordProtected ? "閲覧時には設定したパスワードも必要です。" : ""}
+            {created.passwordProtected ? "利用時には設定したパスワードも必要です。" : ""}
+          </p>
+          <p>
+            {created.kind === "upload_only"
+              ? "受け取り側にはフォルダー内容や保存後のファイル名を表示しません。"
+              : "閲覧者は共有された項目を読み取り専用で確認できます。"}
           </p>
           <div className="dialog-actions">
             <Button
@@ -547,6 +567,17 @@ function ShareDialog({
             </p>
           )}
           <label className="field-label">
+            共有方法
+            <select
+              value={shareKind}
+              disabled={pending}
+              onChange={(event) => setShareKind(event.target.value as "link" | "upload_only")}
+            >
+              <option value="link">閲覧専用リンク</option>
+              {node.kind !== "file" && <option value="upload_only">ファイル受け取りリンク</option>}
+            </select>
+          </label>
+          <label className="field-label">
             有効期間
             <select
               value={ttlDays}
@@ -559,6 +590,21 @@ function ShareDialog({
               <option value={365}>365日</option>
             </select>
           </label>
+          {shareKind === "upload_only" && (
+            <label className="field-label">
+              受け取り予約上限
+              <select
+                value={reservationLimitGiB}
+                disabled={pending}
+                onChange={(event) => setReservationLimitGiB(Number(event.target.value))}
+              >
+                <option value={1}>1 GB</option>
+                <option value={10}>10 GB</option>
+                <option value={50}>50 GB</option>
+                <option value={100}>100 GB</option>
+              </select>
+            </label>
+          )}
           <label className="field-label">
             パスワード（任意）
             <input
@@ -570,7 +616,11 @@ function ShareDialog({
             />
           </label>
           <p>設定したパスワードは再表示できません。リンクとは別の方法で共有してください。</p>
-          <p>閲覧者はフォルダーとファイル名を確認できます。アップロードや変更はできません。</p>
+          <p>
+            {shareKind === "upload_only"
+              ? "受け取り側は新しいファイルの送信だけができ、一覧表示・閲覧・上書き・削除はできません。"
+              : "閲覧者はフォルダーとファイル名を確認できます。アップロードや変更はできません。"}
+          </p>
           <div className="dialog-actions">
             <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
               閉じる
@@ -1094,7 +1144,9 @@ export function App() {
               <div className="heading-actions">
                 <Button
                   disabled={!!recovery}
-                  onClick={() => act({ kind: "share", node: { id: parentId, name: title } })}
+                  onClick={() =>
+                    act({ kind: "share", node: { id: parentId, name: title, kind: "folder" } })
+                  }
                 >
                   <Share2 size={17} />
                   共有

@@ -30,13 +30,14 @@ function steps(
   row: UploadRow,
   claim: OperationClaim,
   authority: AuthorizedNode,
-  actor: string,
+  actor: string | null,
+  uploadName = row.upload_name,
 ): MutationStep[] {
   const op = claim.intent.id;
   const create = authority.operation === "node.create";
   if (!create && authority.operation !== "node.content.write")
     throw new Error("invalid_upload_authority");
-  const name = portableName(row.upload_name);
+  const name = portableName(uploadName);
   const search = searchName(name.name);
   const nodeId = create ? `${op}_node` : authority.node.id;
   return [
@@ -178,6 +179,33 @@ function steps(
   ];
 }
 
+async function publicCompletionName(db: D1Database, row: UploadRow): Promise<string> {
+  const original = portableName(row.upload_name).name;
+  const dot = original.lastIndexOf(".");
+  const extension =
+    dot > 0 && /^[.A-Za-z0-9_-]{1,21}$/.test(original.slice(dot)) ? original.slice(dot) : "";
+  const stem = Array.from(extension ? original.slice(0, -extension.length) : original);
+  for (let sequence = 0; sequence <= 1_000; sequence++) {
+    const suffix = sequence === 0 ? "" : `-${sequence}`;
+    const candidate = [...stem];
+    let name: ReturnType<typeof portableName> | undefined;
+    while (!name) {
+      try {
+        name = portableName(`${candidate.join("")}${suffix}${extension}`);
+      } catch {
+        if (!candidate.length) throw new Error("upload_name_exhausted");
+        candidate.pop();
+      }
+    }
+    const exists = await db
+      .prepare("SELECT 1 FROM nodes WHERE parent_id=? AND name_ci=? AND deleted_at IS NULL LIMIT 1")
+      .bind(row.parent_id, name.nameCi)
+      .first();
+    if (!exists) return name.name;
+  }
+  throw new Error("upload_name_exhausted");
+}
+
 export async function completeSingleUpload(
   env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
   principal: Principal,
@@ -240,7 +268,8 @@ async function completeUpload(
     false,
     "receipt",
   );
-  if (principal.kind !== "user" || row.mode !== mode) throw new Error("invalid_upload_complete");
+  if (!["user", "link_share"].includes(principal.kind) || row.mode !== mode)
+    throw new Error("invalid_upload_complete");
   if (row.completion_op_id) {
     const saved = await lookupOperation(env.DB, principal, row.completion_op_id);
     if (saved && saved.state !== "claimed") {
@@ -296,6 +325,8 @@ async function completeUpload(
       });
   let terminal = false;
   try {
+    const uploadName =
+      principal.kind === "link_share" ? await publicCompletionName(env.DB, row) : row.upload_name;
     const claimed = await claimOperation(env.DB, intent, permit, authorized, expectedSteps);
     if (claimed.kind !== "claimed") {
       const operation = await lookupOperation(env.DB, principal, intent.id);
@@ -326,7 +357,13 @@ async function completeUpload(
     )
       throw new Error("upload_object_mismatch");
     const hashes = await lockTokenHashes(lockTokens);
-    const planSteps = steps(row, claimed.claim, authorized, principal.user_id);
+    const planSteps = steps(
+      row,
+      claimed.claim,
+      authorized,
+      principal.kind === "user" ? principal.user_id : null,
+      uploadName,
+    );
     const guards: SqlStatement[] = [
       uploadFence(row, ["completing"]),
       ...(mode === "multipart" ? [multipartPartsProof(row), multipartObjectProof(row)] : []),

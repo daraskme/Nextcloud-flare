@@ -20,6 +20,7 @@ import { cancelContentTicket } from "../services/contentTicketCancel";
 import { listNodeChildren, readNode } from "../services/nodeRead";
 import { readContentTicketRequest } from "./contentTickets";
 import { hasEmptyBody } from "./emptyBody";
+import { handlePublicUploadHttp, publicUploadRoute } from "./publicUploads";
 
 const ID = "[A-Za-z0-9_-]{1,128}";
 const SHARE = new RegExp(`^/api/v1/public/shares/(${ID})$`);
@@ -42,6 +43,7 @@ export interface PublicShareDependencies {
   readonly cursors?: NodeCursorTokens;
   readonly tokens?: ContentTokens;
   readonly passwordPepper?: SharePasswordPepperRing;
+  readonly uploadCapabilities?: import("../auth/uploadCapability").UploadCapabilities;
 }
 
 class SharePasswordRateLimitError extends Error {
@@ -60,7 +62,8 @@ export function publicShareApiRoute(request: Request): boolean {
         CSRF.test(path) ||
         TICKETS.test(path) ||
         CONTENT_SESSION.test(path))) ||
-    (request.method === "DELETE" && TICKET.test(path))
+    (request.method === "DELETE" && TICKET.test(path)) ||
+    publicUploadRoute(request)
   );
 }
 
@@ -172,7 +175,7 @@ export async function handlePublicShareHttp(
         },
       });
       return Response.json(
-        { shareId: session.shareId, expiresAt: session.expiresAt },
+        { shareId: session.shareId, kind: session.kind, expiresAt: session.expiresAt },
         {
           headers: {
             ...HEADERS,
@@ -202,6 +205,9 @@ export async function handlePublicShareHttp(
   const ticketsMatch = request.method === "POST" ? TICKETS.exec(url.pathname) : null;
   const contentSessionMatch = request.method === "POST" ? CONTENT_SESSION.exec(url.pathname) : null;
   const ticketMatch = request.method === "DELETE" ? TICKET.exec(url.pathname) : null;
+  const uploadShareId = publicUploadRoute(request)
+    ? url.pathname.match(/^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})\/uploads(?:\/|$)/)?.[1]
+    : undefined;
   const shareId =
     shareMatch?.[1] ??
     childrenMatch?.[1] ??
@@ -210,6 +216,7 @@ export async function handlePublicShareHttp(
     ticketsMatch?.[1] ??
     contentSessionMatch?.[1] ??
     ticketMatch?.[1] ??
+    uploadShareId ??
     "";
   if (!shareId) return problem(404, "not_found");
   let session;
@@ -227,6 +234,12 @@ export async function handlePublicShareHttp(
     } catch {
       return problem(403, "forbidden");
     }
+  }
+  if (uploadShareId) {
+    return handlePublicUploadHttp(request, env, session, {
+      csrf: dependencies.csrf,
+      ...(dependencies.uploadCapabilities ? { capabilities: dependencies.uploadCapabilities } : {}),
+    });
   }
   if (logoutMatch) {
     if (url.search) return problem(404, "not_found");
@@ -249,6 +262,11 @@ export async function handlePublicShareHttp(
     }
   }
   const principal = sharePrincipal(session);
+  if (
+    session.kind === "upload_only" &&
+    (childrenMatch || ticketMatch || ticketsMatch || contentSessionMatch)
+  )
+    return problem(404, "not_found");
   if (ticketMatch) {
     if (url.search) return problem(404, "not_found");
     try {
@@ -315,11 +333,25 @@ export async function handlePublicShareHttp(
   }
   if (shareMatch) {
     if (url.search) return problem(404, "not_found");
+    if (session.kind === "upload_only") {
+      return Response.json(
+        {
+          id: session.shareId,
+          kind: session.kind,
+          version: session.shareVersion,
+          expiresAt: session.shareExpiresAt,
+          createdAt: session.createdAt,
+          actions: ["create", "upload"],
+        },
+        { headers: HEADERS },
+      );
+    }
     try {
       const root = await readNode(env.DB, principal, session.rootNodeId);
       return Response.json(
         {
           id: session.shareId,
+          kind: session.kind,
           version: session.shareVersion,
           expiresAt: session.shareExpiresAt,
           createdAt: session.createdAt,

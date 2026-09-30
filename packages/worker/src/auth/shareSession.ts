@@ -24,6 +24,7 @@ interface LiveShareRow {
   id: string;
   ownerId: string;
   rootNodeId: string;
+  kind: "link" | "upload_only";
   version: number;
   expiresAt: number | null;
   passwordDigest: string | null;
@@ -53,6 +54,8 @@ export interface ShareSession {
   readonly shareVersion: number;
   readonly ownerId: string;
   readonly rootNodeId: string;
+  readonly spaceId: string;
+  readonly kind: "link" | "upload_only";
   readonly epoch: number;
   readonly expiresAt: number;
   readonly shareExpiresAt: number | null;
@@ -116,15 +119,18 @@ const LIVE_SHARE = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted
     WHERE a.depth<64 AND n.space_id=a.space_id AND n.owner_id=a.owner_id
       AND instr(a.path,'/'||n.id||'/')=0
 ) SELECT sh.id,sh.owner_id AS ownerId,sh.root_node_id AS rootNodeId,
-  sh.version,sh.expires_at AS expiresAt,sh.password_digest AS passwordDigest,
+  sh.kind,sh.version,sh.expires_at AS expiresAt,sh.password_digest AS passwordDigest,
   sh.salt,sh.kdf,sh.kdf_params AS kdfParams,sh.kid
   FROM shares sh JOIN users owner ON owner.id=sh.owner_id
   JOIN control ctl ON ctl.singleton=1
-  WHERE sh.id=?1 AND sh.kind='link' AND sh.secret_digest=?2
+  WHERE sh.id=?1 AND sh.kind IN ('link','upload_only') AND sh.secret_digest=?2
     AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
     AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
     AND ctl.epoch=?3 AND ctl.maintenance=0
-    AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read')
+    AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id
+      AND action=CASE sh.kind WHEN 'link' THEN 'read' ELSE 'upload' END)
+    AND (sh.kind<>'upload_only' OR EXISTS(
+      SELECT 1 FROM nodes root WHERE root.id=sh.root_node_id AND root.kind IN ('root','folder')))
     AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65
       AND MIN(deleted_at IS NULL)=1
       AND MIN(space_id=(SELECT space_id FROM a WHERE id=sh.root_node_id))=1
@@ -263,17 +269,21 @@ export async function readShareSession(
   return primary(db)
     .prepare(`SELECT ss.id,c.id AS credentialId,sh.id AS shareId,
       sh.version AS shareVersion,sh.owner_id AS ownerId,sh.root_node_id AS rootNodeId,
-      ss.epoch,ss.expires_at AS expiresAt,sh.expires_at AS shareExpiresAt,
+      root.space_id AS spaceId,sh.kind,ss.epoch,ss.expires_at AS expiresAt,sh.expires_at AS shareExpiresAt,
       sh.created_at AS createdAt
       FROM share_sessions ss JOIN credentials c ON c.share_session_id=ss.id AND c.kind='share'
       JOIN shares sh ON sh.id=ss.share_id JOIN users owner ON owner.id=sh.owner_id
+      JOIN nodes root ON root.id=sh.root_node_id AND root.owner_id=sh.owner_id
       JOIN control ctl ON ctl.singleton=1
       WHERE sh.id=? AND ss.secret_digest=? AND ss.share_version=sh.version
-        AND sh.kind='link' AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
+        AND sh.kind IN ('link','upload_only') AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
         AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
         AND ss.revoked_at IS NULL AND ss.expires_at>strftime('%s','now')*1000
         AND ss.epoch=? AND ctl.epoch=ss.epoch AND ctl.maintenance=0
-        AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read')`)
+        AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id
+          AND action=CASE sh.kind WHEN 'link' THEN 'read' ELSE 'upload' END)
+        AND (sh.kind<>'upload_only' OR EXISTS(
+          SELECT 1 FROM nodes root WHERE root.id=sh.root_node_id AND root.kind IN ('root','folder')) )`)
     .bind(shareId, digest, epoch)
     .first<ShareSession>();
 }

@@ -96,11 +96,14 @@ export interface UploadReceipt {
 export interface LinkShare {
   id: string;
   rootNodeId: string | null;
+  kind: "link" | "upload_only";
   version: number;
   disabledAt: number | null;
   expiresAt: number | null;
   createdAt: number;
   passwordProtected: boolean;
+  reservedBytes: number;
+  reservationLimit: number;
   actions: readonly string[];
 }
 export interface CreatedLinkShare extends LinkShare {
@@ -259,12 +262,21 @@ export class ApiClient {
   shares(signal?: AbortSignal) {
     return this.request<{ shares: LinkShare[] }>("/api/v1/shares", signal ? { signal } : {});
   }
-  createShare(rootNodeId: string, spaceId: string, ttlDays: number, password?: string) {
+  createShare(
+    rootNodeId: string,
+    spaceId: string,
+    ttlDays: number,
+    kind: "link" | "upload_only",
+    password?: string,
+    reservationLimitBytes?: number,
+  ) {
     return this.json<CreatedLinkShare>("/api/v1/shares", "POST", {
       rootNodeId,
       spaceId,
+      kind,
       ttlDays,
       ...(password ? { password } : {}),
+      ...(reservationLimitBytes === undefined ? {} : { reservationLimitBytes }),
     });
   }
   async disableShare(shareId: string): Promise<void> {
