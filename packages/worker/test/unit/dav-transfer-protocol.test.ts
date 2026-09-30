@@ -16,6 +16,7 @@ it("parses a same-origin DAV destination without normalizing its path twice", ()
         { name: "a b.txt", nameCi: "a b.txt", hidden: false },
       ],
       trailingSlash: false,
+      shared: false,
     },
   });
 });
