@@ -1,5 +1,7 @@
 import { assertExists, primary, type SqlStatement } from "../db/primary";
 
+const ID = /^[A-Za-z0-9_-]{1,128}$/;
+
 export interface BlobPin {
   readonly id: string;
   readonly blobId: string;
@@ -44,6 +46,52 @@ export function removePinStatements(id: string, blobId: string, epoch: number): 
     ),
     { sql: "DELETE FROM blob_pins WHERE pin_id=? AND blob_id=?", values: [id, blobId] },
     assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM blob_pins WHERE pin_id=?)", [id]),
+  ];
+}
+
+export function addZipPinStatements(
+  targetSetId: string,
+  blobIds: readonly string[],
+  expiresAt: number,
+  createdAt: number,
+): readonly SqlStatement[] {
+  if (
+    !ID.test(targetSetId) ||
+    blobIds.length === 0 ||
+    blobIds.length > 1_000 ||
+    new Set(blobIds).size !== blobIds.length ||
+    blobIds.some((blobId) => !ID.test(blobId)) ||
+    !Number.isSafeInteger(expiresAt) ||
+    expiresAt <= createdAt ||
+    !Number.isSafeInteger(createdAt) ||
+    createdAt < 0
+  )
+    throw new Error("invalid_pin");
+  const statements: SqlStatement[] = [];
+  for (let start = 0; start < blobIds.length; start += 50) {
+    const group = blobIds.slice(start, start + 50);
+    statements.push({
+      sql: `INSERT INTO blob_pins(pin_id,blob_id,purpose,expires_at,created_at) VALUES ${group
+        .map(() => `(?,?,'zip',${expiresAt},${createdAt})`)
+        .join(",")}`,
+      values: group.flatMap((blobId, index) => [`z:${targetSetId}:${start + index}`, blobId]),
+    });
+  }
+  return statements;
+}
+
+export function removeZipPinStatements(targetSetId: string): readonly SqlStatement[] {
+  if (!ID.test(targetSetId)) throw new Error("invalid_pin");
+  const prefix = `z:${targetSetId}:`;
+  return [
+    {
+      sql: "DELETE FROM blob_pins WHERE purpose='zip' AND substr(pin_id,1,?)=?",
+      values: [prefix.length, prefix],
+    },
+    assertExists(
+      "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM blob_pins WHERE purpose='zip' AND substr(pin_id,1,?)=?)",
+      [prefix.length, prefix],
+    ),
   ];
 }
 

@@ -90,11 +90,24 @@ it.each([0, 2])(
   },
 );
 
-it("accepts the exact non-ZIP64 limit, and rejects one extra byte", () => {
-  const empty = entry("x", "");
-  const overhead = storeZipSize([empty]);
-  expect(storeZipSize([{ ...empty, size: 4_294_967_295 - overhead }])).toBe(4_294_967_295);
-  expect(() => storeZipSize([{ ...empty, size: 4_294_967_296 - overhead }])).toThrow();
+it("enforces the per-entry and exact non-ZIP64 output limits", () => {
+  const entries = Array.from({ length: 64 }, (_, index) => entry(`f-${index}`, ""));
+  const overhead = storeZipSize(entries);
+  const payload = 4_294_967_295 - overhead;
+  const full = Math.floor(payload / 67_108_864);
+  const sized = entries.map((item, index) => ({
+    ...item,
+    size: index < full ? 67_108_864 : index === full ? payload - full * 67_108_864 : 0,
+  }));
+  expect(storeZipSize(sized)).toBe(4_294_967_295);
+  expect(() =>
+    storeZipSize(
+      sized.map((item, index) => (index === full ? { ...item, size: item.size + 1 } : item)),
+    ),
+  ).toThrow(/zip_size_limit/);
+  expect(() => storeZipSize([{ ...entry("large", ""), size: 67_108_865 }])).toThrow(
+    /zip_size_limit/,
+  );
 });
 
 it.each(["../x", "x/../y", "/x", "x\\y", "C:/file", "x//y", "x\u0000y"])(
@@ -103,3 +116,8 @@ it.each(["../x", "x/../y", "/x", "x\\y", "C:/file", "x//y", "x\u0000y"])(
     expect(() => storeZipSize([entry(name, "")])).toThrow(/invalid_zip_name/);
   },
 );
+
+it.each(["CON", "name.", "name ", "A.txt"])("rejects non-portable or colliding name %s", (name) => {
+  const entries = name === "A.txt" ? [entry(name, ""), entry("a.TXT", "")] : [entry(name, "")];
+  expect(() => storeZipSize(entries)).toThrow(/invalid_zip_name/);
+});

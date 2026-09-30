@@ -14,7 +14,7 @@ import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
 import { handleDeadLetterBatch } from "./jobs/deadLetter";
-import { runGarbageCollection } from "./jobs/gc";
+import { cleanupExpiredZipPins, runGarbageCollection } from "./jobs/gc";
 import { repairMultipartUploads } from "./jobs/multipartCleanup";
 import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
 import { dispatchPendingOutbox } from "./jobs/outbox";
@@ -171,6 +171,7 @@ export default {
       .bind(epoch)
       .first<number>("ok");
     if (enabled === 1) {
+      await cleanupExpiredZipPins(env, epoch);
       await runGarbageCollection(env, env.BLOBS, epoch);
       await collectOrphanObjects(env, env.BLOBS, epoch);
     }

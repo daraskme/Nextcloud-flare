@@ -5,6 +5,7 @@ import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { streamBudgetedContentBlob } from "../services/blobRead";
+import { streamBudgetedZip } from "../services/zipDownload";
 
 const NODE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -112,6 +113,38 @@ export async function handleContentHttp(
         return cors(response, env.APP_ORIGIN);
       }
       return cors(problem(400, "bad_request"), env.APP_ORIGIN);
+    }
+  }
+  const zipMatch = /^\/z\/([^/]+)$/.exec(url.pathname);
+  if (zipMatch && (request.method === "GET" || request.method === "HEAD")) {
+    const targetSetId = zipMatch[1];
+    if (!targetSetId || !NODE_ID.test(targetSetId)) return problem(404, "not_found");
+    if (origin !== null && origin !== env.APP_ORIGIN) return problem(403, "forbidden");
+    const reply = (response: Response) =>
+      origin === env.APP_ORIGIN ? cors(response, env.APP_ORIGIN) : response;
+    try {
+      return reply(
+        await streamBudgetedZip(
+          env.DB,
+          env.BLOBS,
+          env.BUDGETS,
+          tokens,
+          request.headers.get("Cookie"),
+          targetSetId,
+          request,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === "budget_exceeded")
+        return reply(problem(429, "budget_exceeded"));
+      if (
+        error instanceof Error &&
+        ["blob_storage_mismatch", "content_lease_expired", "zip_dry_run_mismatch"].includes(
+          error.message,
+        )
+      )
+        return reply(problem(503, "not_ready"));
+      return reply(problem(404, "not_found"));
     }
   }
   const match = /^\/c\/([^/]+)\/([^/]+)(\/thumb)?$/.exec(url.pathname);

@@ -110,6 +110,7 @@ export const SYSTEM_MUTATION_KINDS = [
   "gc.call",
   "gc.finalize",
   "gc.error",
+  "gc.zip-pins",
   "upload.inventory-reset",
   "upload.inventory-call",
   "upload.inventory-observe",

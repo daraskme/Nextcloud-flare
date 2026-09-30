@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import {
   encodeTargetManifest,
+  encodeZipTargetManifest,
   parseTargetManifest,
   type TargetEntry,
+  type ZipTargetEntry,
 } from "../../src/services/targetManifest";
 
 const entry = (nodeId: string): TargetEntry => ({
@@ -58,4 +60,36 @@ it("rejects empty, malformed and oversized targets before publication", async ()
   await expect(encodeTargetManifest([{ ...entry("a"), size: 536_870_912_001 }])).rejects.toThrow(
     /invalid_target_manifest/,
   );
+});
+
+const zipEntry = (path: string, nodeId: string): ZipTargetEntry => ({
+  path,
+  rootId: "root",
+  spaceId: "space",
+  nodeId,
+  blobId: `blob-${nodeId}`,
+  size: 3,
+  r2Etag: `etag-${nodeId}`,
+});
+
+it("preserves ZIP order and strictly validates portable manifest paths", async () => {
+  const entries = [zipEntry("Folder/z.txt", "z"), zipEntry("Folder/a.txt", "a")];
+  const encoded = await encodeZipTargetManifest(entries, 300);
+  expect(
+    parseTargetManifest(new TextEncoder().encode(encoded.json).buffer as ArrayBuffer, 300),
+  ).toEqual({
+    v: 2,
+    kind: "zip",
+    outputSize: 300,
+    entries,
+  });
+  await expect(
+    encodeZipTargetManifest([zipEntry("A.txt", "a"), zipEntry("a.TXT", "b")], 300),
+  ).rejects.toThrow(/invalid_target_manifest/);
+  await expect(encodeZipTargetManifest([zipEntry("CON", "a")], 100)).rejects.toThrow(
+    /invalid_target_manifest/,
+  );
+  await expect(
+    encodeZipTargetManifest([zipEntry("a", "a"), zipEntry("b", "b")], 5_000),
+  ).rejects.toThrow(/invalid_target_manifest/);
 });
