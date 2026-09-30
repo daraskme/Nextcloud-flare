@@ -3,23 +3,30 @@ import { atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "./foundation";
 
 export async function multipartInventoryFixture(
-  options: { idle?: boolean; initLease?: number; known?: boolean } = {},
+  options: { idle?: boolean; initLease?: number; known?: boolean; share?: boolean } = {},
 ) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   await atomicBatch(env.DB, f.statements);
   const id = `up_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
   const blob = `${id}_blob`;
   const reservation = `${id}_reservation`;
+  const share = options.share ? `${id}_share` : null;
   const key = `u/${f.ids.user}/b/${blob}`;
   const attempt = crypto.randomUUID();
   const metadata = { upload_id: id, blob_id: blob, epoch: "1", attempt_id: attempt };
   const handle = await env.BLOBS.createMultipartUpload(key, { customMetadata: metadata });
   await handle.uploadPart(1, new TextEncoder().encode("abc"));
   const created = Date.now() - (options.idle === false ? 1000 : 25 * 3600000);
+  if (share)
+    await env.DB.prepare(
+      "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at,reservation_limit) VALUES(?,?,?,'upload_only',?,100)",
+    )
+      .bind(share, f.ids.user, f.ids.folder, created)
+      .run();
   await atomicBatch(env.DB, [
     {
-      sql: "INSERT INTO reservations(id,owner_id,bytes,state,expires_at,epoch) VALUES(?,?,3,'reserved',?,1)",
-      values: [reservation, f.ids.user, created + 6 * 86400000],
+      sql: "INSERT INTO reservations(id,owner_id,share_id,bytes,state,expires_at,epoch) VALUES(?,?,?,3,'reserved',?,1)",
+      values: [reservation, f.ids.user, share, created + 6 * 86400000],
     },
     {
       sql: "INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at) VALUES(?,?,?,3,?,'staging',?)",
@@ -47,5 +54,5 @@ export async function multipartInventoryFixture(
       ],
     },
   ]);
-  return { ...f, id, blob, reservation, key, handle, metadata };
+  return { ...f, id, blob, reservation, share, key, handle, metadata };
 }

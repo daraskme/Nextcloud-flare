@@ -59,6 +59,8 @@ export const GLOBAL_MUTATION_KINDS = [
   "bucket.parts-page",
   "bucket.abort-start",
   "bucket.abort-finish",
+  "bucket.closure-phase",
+  "bucket.closure-settle",
   "recovery.fts-rebuild",
 ] as const;
 export type GlobalMutationKind = (typeof GLOBAL_MUTATION_KINDS)[number];
@@ -119,6 +121,10 @@ export const SYSTEM_MUTATION_KINDS = [
   "upload.inventory-abort",
   "upload.inventory-release",
   "upload.inventory-error",
+  "upload.closure-claim",
+  "upload.closure-call",
+  "upload.closure-settle",
+  "upload.closure-error",
   "outbox.dispatch-claim",
   "outbox.send",
   "outbox.sent",
