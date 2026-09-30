@@ -169,6 +169,13 @@ p {
   border-radius: 9px;
 }
 
+.share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .path {
   display: flex;
   align-items: center;

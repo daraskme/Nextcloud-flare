@@ -1,6 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { portableName } from "@next-cloud-flare/shared/names";
+import { unzipSync } from "fflate";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { handleContentHttp } from "../../src/api/content";
@@ -598,7 +599,7 @@ it("rejects disabled, expired, stale-epoch, version-changed, and password-change
   ).toBe(0);
 });
 
-it("issues, redeems, reuses, and cancels budgeted public content tickets", async () => {
+it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets", async () => {
   const password = "download password";
   const f = await fixture(password);
   const key = `u/${f.owner.ids.user}/b/${f.owner.ids.blob}`;
@@ -727,6 +728,41 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
     );
     expect(thumbnail.status).toBe(200);
     expect(new TextDecoder().decode(await thumbnail.arrayBuffer())).toBe("thumb");
+    const zipIssuedResponse = await issue(
+      `/api/v1/public/shares/${f.shareId}/tickets`,
+      f.owner.ids.folder,
+      "zip",
+    );
+    expect(zipIssuedResponse.status).toBe(201);
+    const zipIssued = (await zipIssuedResponse.json()) as {
+      ticket: string;
+      targetSetId: string;
+    };
+    expect(
+      (await issue(`/api/v1/public/shares/${f.shareId}/tickets`, f.outside.ids.folder, "zip"))
+        .status,
+    ).toBe(404);
+    const zipAccepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: zipIssued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(zipAccepted.status).toBe(201);
+    const zipCookie = (zipAccepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const zipped = await handleContentHttp(
+      new Request(`${contentOrigin}/z/${zipIssued.targetSetId}`, {
+        headers: { Cookie: zipCookie },
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(zipped.status).toBe(200);
+    const archive = unzipSync(new Uint8Array(await zipped.arrayBuffer()));
+    expect(new TextDecoder().decode(archive["Folder/File"])).toBe("abc");
     expect(
       (await issue(`/api/v1/public/shares/${f.shareId}/tickets`, f.owner.ids.file, "page")).status,
     ).toBe(400);
@@ -757,9 +793,73 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
         )
       ).status,
     ).toBe(404);
+    const staleZipResponse = await issue(
+      `/api/v1/public/shares/${f.shareId}/tickets`,
+      f.owner.ids.folder,
+      "zip",
+    );
+    expect(staleZipResponse.status).toBe(201);
+    const staleZip = (await staleZipResponse.json()) as {
+      ticket: string;
+      targetSetId: string;
+    };
+    const staleAccepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: staleZip.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(staleAccepted.status).toBe(201);
+    const staleCookie = (staleAccepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    await env.DB.prepare("UPDATE shares SET version=version+1 WHERE id=?").bind(f.shareId).run();
+    expect(
+      (
+        await handleContentHttp(
+          new Request(`${contentOrigin}/z/${staleZip.targetSetId}`, {
+            headers: { Cookie: staleCookie },
+          }),
+          shareEnv(),
+          contentTokens,
+        )
+      ).status,
+    ).toBe(404);
+    await env.DB.prepare("UPDATE shares SET version=version-1 WHERE id=?").bind(f.shareId).run();
+    await env.DB.prepare("UPDATE control SET epoch=2").run();
+    expect(
+      (
+        await handleContentHttp(
+          new Request(`${contentOrigin}/z/${staleZip.targetSetId}`, {
+            headers: { Cookie: staleCookie },
+          }),
+          shareEnv(),
+          contentTokens,
+        )
+      ).status,
+    ).toBe(404);
   } finally {
     await env.BLOBS.delete([key, derivativeKey]);
   }
+});
+
+it("does not expose ZIP tickets to upload-only share sessions", async () => {
+  const f = await uploadFixture();
+  const session = await uploadSession(f);
+  expect(
+    (
+      await session.send(
+        `/api/v1/public/shares/${f.shareId}/tickets`,
+        "POST",
+        JSON.stringify({
+          targets: [{ spaceId: f.owner.ids.space, nodeId: f.owner.ids.folder }],
+          purpose: "zip",
+          ttlSeconds: 300,
+        }),
+      )
+    ).status,
+  ).toBe(404);
 });
 
 it("requires current share/session state and revokes through public CSRF logout", async () => {

@@ -169,6 +169,49 @@ async function downloadFile(node, button) {
   }
 }
 
+async function downloadZip(button) {
+  const current = state.stack.at(-1);
+  if (!current) return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  let csrfBody;
+  let issued;
+  try {
+    csrfBody = await csrf();
+    issued = await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}/tickets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfBody.token },
+      body: JSON.stringify({
+        targets: [{ spaceId: state.share.root.spaceId, nodeId: current.id }],
+        purpose: "zip",
+        ttlSeconds: 300,
+      }),
+    });
+    const accepted = await fetch(`${state.share.contentOrigin}/session`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      redirect: "error",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket: issued.ticket }),
+    });
+    if (!accepted.ok) throw new Error(String(accepted.status));
+    location.assign(`${state.share.contentOrigin}/z/${encodeURIComponent(issued.targetSetId)}`);
+  } catch {
+    if (csrfBody && issued) {
+      void request(
+        `/api/v1/public/shares/${encodeURIComponent(shareId)}/tickets/${encodeURIComponent(issued.ticketId)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfBody.token },
+        },
+      ).catch(() => {});
+    }
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
 async function page(folderId, cursor) {
   const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
   return request(
@@ -571,6 +614,16 @@ function renderShare() {
     }),
   );
   brand.append(mark, copy);
+  const actions = element("div", { className: "share-actions" });
+  if (!uploadOnly) {
+    const download = element("button", {
+      className: "outline-button",
+      text: "ZIPをダウンロード",
+    });
+    download.type = "button";
+    download.addEventListener("click", () => void downloadZip(download));
+    actions.append(download);
+  }
   const close = element("button", { className: "outline-button", text: "セッションを終了" });
   close.type = "button";
   close.addEventListener("click", async () => {
@@ -587,7 +640,8 @@ function renderShare() {
       showError("セッションを終了しました", "この共有リンクを閉じてください。");
     }
   });
-  header.append(brand, close);
+  actions.append(close);
+  header.append(brand, actions);
   const path = element("nav", { className: "path" });
   const listing = element("div", { className: "listing" });
   shell.append(header);

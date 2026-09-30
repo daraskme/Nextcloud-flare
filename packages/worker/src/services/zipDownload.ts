@@ -111,18 +111,14 @@ function checkedPath(input: string): { path: string; folded: string } {
   return checkedComponents(input.normalize("NFC").split("/"));
 }
 
-/** Expand and authorize a bounded private ZIP plan before any ticket is published. */
+/** Expand and authorize a bounded ZIP plan before any ticket is published. */
 export async function planZipDownload(
   db: D1Database,
   bucket: R2Bucket,
   principal: Principal,
   selections: readonly ZipSelection[],
 ): Promise<ZipPlan> {
-  if (
-    principal.kind === "link_share" ||
-    selections.length === 0 ||
-    selections.length > LIMITS.zipEntries
-  )
+  if (selections.length === 0 || selections.length > LIMITS.zipEntries)
     throw new Error("zip_selection_invalid");
   const selected = new Set<string>();
   const roots: AuthorizedNode[] = [];
@@ -364,6 +360,20 @@ async function prepareZipContent(
       credential_id: record.credentialId,
       epoch: record.epoch,
     };
+  } else if (
+    record.credentialKind === "share" &&
+    record.shareId &&
+    record.shareVersion !== null &&
+    Number.isSafeInteger(record.shareVersion) &&
+    record.shareVersion > 0
+  ) {
+    principal = {
+      kind: "link_share",
+      share_id: record.shareId,
+      share_version: record.shareVersion,
+      credential_id: record.credentialId,
+      epoch: record.epoch,
+    };
   } else {
     throw new Error("content_not_available");
   }
@@ -403,20 +413,21 @@ async function prepareZipContent(
     })),
   );
   if (outputSize !== manifest.outputSize) throw new Error("content_not_available");
-  const share =
+  const coverageShare =
     record.shareId && record.shareVersion
       ? { id: record.shareId, version: record.shareVersion }
       : undefined;
+  const sessionShare = principal.kind === "link_share" ? undefined : coverageShare;
   await atomicBatch(db, [
-    contentSessionAssertion(principal, sessionId, record.ticketId, "zip", share),
+    contentSessionAssertion(principal, sessionId, record.ticketId, "zip", sessionShare),
     ...authorizationBatchAssertions(proofs),
-    ...(share
+    ...(coverageShare
       ? shareCoverageBatchAssertions(
           proofs.map((proof) => {
             if (proof.operation !== "node.read") throw new Error("content_not_available");
             return proof.node;
           }),
-          share,
+          coverageShare,
         )
       : []),
     ...zipPathBatchAssertions(manifest.entries, record.ownerId),
@@ -446,7 +457,7 @@ async function prepareZipContent(
     targetSetId,
     ticketId: record.ticketId,
     principal,
-    share,
+    share: sessionShare,
     sources: Object.freeze(sources),
   });
 }
