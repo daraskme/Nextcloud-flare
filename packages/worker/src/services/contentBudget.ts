@@ -88,8 +88,8 @@ export async function ensureContentBudget(
       : shareId === null
         ? `u:${userId}`
         : recipientVersion === 0
-          ? `u:${userId}:s:${shareId}`
-          : `u:${userId}:s:${shareId}:m:${recipientVersion}`;
+          ? `u:${userId}:s:${shareId}:v:${share?.version}`
+          : `u:${userId}:s:${shareId}:v:${share?.version}:m:${recipientVersion}`;
   if (id.length > 512) throw new Error("invalid_content_budget");
 
   let authority: SqlStatement;

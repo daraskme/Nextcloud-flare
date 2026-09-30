@@ -302,7 +302,7 @@ it("revokes removed members immediately and never revives stale content sessions
     id: share.id,
     version: share.version,
   });
-  expect(oldBudget.id).toBe(`u:${f.member.ids.user}:s:${share.id}:m:1`);
+  expect(oldBudget.id).toBe(`u:${f.member.ids.user}:s:${share.id}:v:1:m:1`);
 
   const targetId = crypto.randomUUID();
   const ticketId = crypto.randomUUID();
@@ -399,7 +399,7 @@ it("revokes removed members immediately and never revives stale content sessions
     id: share.id,
     version: share.version,
   });
-  expect(newBudget.id).toBe(`u:${f.member.ids.user}:s:${share.id}:m:2`);
+  expect(newBudget.id).toBe(`u:${f.member.ids.user}:s:${share.id}:v:1:m:2`);
   expect(newBudget.id).not.toBe(oldBudget.id);
 
   await disableShareGroup(mutationEnv(), f.ownerSession, group.id);
@@ -410,6 +410,49 @@ it("revokes removed members immediately and never revives stale content sessions
       .bind(share.id)
       .first<number>("disabled_at"),
   ).not.toBeNull();
+});
+
+it("rotates group-share budgets when share actions change", async () => {
+  const f = await sharingFixture();
+  const { share } = await createGroupShare(f);
+  const principal = {
+    kind: "user" as const,
+    user_id: f.member.ids.user,
+    credential_id: f.member.ids.credential,
+    epoch: 1,
+  };
+  const authorize = () =>
+    authorizeNode(env.DB, principal, {
+      operation: "node.read",
+      nodeId: f.owner.ids.file,
+      spaceId: f.owner.ids.space,
+    });
+  const expiresAt = Date.now() + 300_000;
+  const oldBudget = await ensureContentBudget(mutationEnv(), await authorize(), expiresAt, {
+    id: share.id,
+    version: share.version,
+  });
+
+  const updated = await updateInternalShareActions(mutationEnv(), f.ownerSession, share.id, [
+    "read",
+  ]);
+  expect(
+    await env.DB.prepare("SELECT state FROM budgets WHERE id=?")
+      .bind(oldBudget.id)
+      .first<string>("state"),
+  ).toBe("revoked");
+
+  const newBudget = await ensureContentBudget(mutationEnv(), await authorize(), expiresAt, {
+    id: updated.id,
+    version: updated.version,
+  });
+  expect(newBudget.id).toBe(`u:${f.member.ids.user}:s:${share.id}:v:2:m:1`);
+  expect(newBudget.id).not.toBe(oldBudget.id);
+  expect(
+    await env.DB.prepare("SELECT state FROM budgets WHERE id=?")
+      .bind(newBudget.id)
+      .first<string>("state"),
+  ).toBe("active");
 });
 
 it("serves the owner group lifecycle through private JSON and CSRF routes", async () => {
