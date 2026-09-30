@@ -48,7 +48,7 @@ export async function servePrivateApp(
   headers.set("X-Frame-Options", "DENY");
   headers.set(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: ${contentOrigin.origin}; media-src ${contentOrigin.origin}; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
   );
   return new Response(request.method === "HEAD" ? null : resource.body, {
     status: resource.status,

@@ -14,7 +14,9 @@ import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
+import { audioRoute, handleAudioHttp } from "./audio";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
+import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handleSearchHttp, searchRoute } from "./search";
@@ -41,6 +43,8 @@ export function privateAppRoute(request: Request): boolean {
   return (
     (request.method === "GET" && url.pathname === "/api/v1/me") ||
     nodeReadRoute(request) ||
+    galleryRoute(request) ||
+    audioRoute(request) ||
     searchRoute(request) ||
     statsRoute(request) ||
     trashRoute(request) ||
@@ -68,6 +72,8 @@ export async function handlePrivateAppHttp(
     url.origin !== env.APP_ORIGIN ||
     (url.search &&
       !nodeReadRoute(request) &&
+      !galleryRoute(request) &&
+      !audioRoute(request) &&
       !trashRoute(request) &&
       !uploadReadRoute(request) &&
       !searchRoute(request) &&
@@ -79,6 +85,8 @@ export async function handlePrivateAppHttp(
   const accountRead = url.pathname === "/api/v1/me" && request.method === "GET";
   const logout = url.pathname === "/api/v1/auth/logout" && request.method === "POST";
   const nodeRead = nodeReadRoute(request);
+  const gallery = galleryRoute(request);
+  const audio = audioRoute(request);
   const search = searchRoute(request);
   const stats = statsRoute(request);
   const trashRead = trashRoute(request);
@@ -94,6 +102,8 @@ export async function handlePrivateAppHttp(
     !accountRead &&
     !logout &&
     !nodeRead &&
+    !gallery &&
+    !audio &&
     !search &&
     !stats &&
     !trashRead &&
@@ -190,6 +200,30 @@ export async function handlePrivateAppHttp(
     );
   if (nodeRead)
     return handleNodeReadHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.cursors,
+    );
+  if (gallery)
+    return handleGalleryHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.cursors,
+    );
+  if (audio)
+    return handleAudioHttp(
       request,
       env,
       {

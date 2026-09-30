@@ -78,3 +78,66 @@ it("a still-claimed operation remains uncertain", async () => {
     new ApiClient().mutation("/api/v1/nodes", "POST", {}, "original-key"),
   ).rejects.toEqual(new ApiError(503, "commit_unknown", "op_fixture"));
 });
+
+it("exchanges media tickets at the exact content origin and returns direct media URLs", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(Response.json({ ticket: "signed-ticket" }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  const target = { id: "image", currentBlobId: "blob" };
+  const contentUrl = await new ApiClient().prepareContent(
+    {
+      id: "user",
+      email: "user@example.invalid",
+      role: "user",
+      spaceId: "space",
+      rootNodeId: "root",
+      epoch: 1,
+      quotaBytes: 100,
+      usedBytes: 1,
+      reservedBytes: 0,
+      contentOrigin: "https://content.example.invalid",
+    },
+    [target],
+    "thumb",
+  );
+  expect(fetcher.mock.calls[1]![0]).toBe("/api/v1/content-session");
+  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({
+    targets: [{ nodeId: "image", spaceId: "space" }],
+    purpose: "thumb",
+    ttlSeconds: 300,
+  });
+  expect(fetcher.mock.calls[2]![0]).toBe("https://content.example.invalid/session");
+  expect(fetcher.mock.calls[2]![1]).toMatchObject({
+    method: "POST",
+    credentials: "include",
+    redirect: "error",
+  });
+  expect(contentUrl(target)).toBe("https://content.example.invalid/c/image/blob/thumb");
+});
+
+it("rejects a non-HTTPS media origin before issuing a content ticket", async () => {
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  await expect(
+    new ApiClient().prepareContent(
+      {
+        id: "user",
+        email: "user@example.invalid",
+        role: "user",
+        spaceId: "space",
+        rootNodeId: "root",
+        epoch: 1,
+        quotaBytes: 100,
+        usedBytes: 1,
+        reservedBytes: 0,
+        contentOrigin: "http://content.example.invalid",
+      },
+      [{ id: "track", currentBlobId: "blob" }],
+      "track",
+    ),
+  ).rejects.toThrow("invalid_content_origin");
+  expect(fetcher).not.toHaveBeenCalled();
+});

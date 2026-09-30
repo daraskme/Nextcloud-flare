@@ -66,6 +66,8 @@ export type NodeRequest =
   | {
       readonly operation:
         | "node.read"
+        | "gallery.read"
+        | "audio.read"
         | "search.read"
         | "node.rename"
         | "node.trash"
@@ -91,6 +93,11 @@ export interface LiveNode {
 export type AuthorizedNode =
   | {
       readonly operation: "node.read" | "automation.list" | "automation.metadata.read";
+      readonly principal: Principal;
+      readonly node: LiveNode;
+    }
+  | {
+      readonly operation: "gallery.read" | "audio.read";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -213,13 +220,19 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?10 IS NULL OR n.current_blob_id=?10)
       AND EXISTS(SELECT COUNT(*) FROM a HAVING COUNT(*) BETWEEN 1 AND 65 AND MIN(deleted_at IS NULL)=1
         AND SUM(kind='root' AND parent_id IS NULL AND id=sp.root_node_id)=1)
-      AND (?6 NOT IN ('node.create','node.rename','node.trash','node.props.write','node.content.write') OR ctl.maintenance=0)
+      AND (?6 NOT IN (
+        'node.create','node.rename','node.trash','node.props.write','node.content.write',
+        'gallery.read','audio.read'
+      ) OR ctl.maintenance=0)
       AND (?6<>'node.create' OR (n.kind IN ('root','folder') AND (SELECT MAX(depth) FROM a)<64))
       AND (?6 NOT IN ('node.rename','node.trash') OR n.parent_id IS NOT NULL)
       AND (?6<>'node.content.write' OR n.kind='file')
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
-        (p.kind IN ('user','app_password') AND ?6 IN ('node.read','search.read','node.create','node.rename','node.trash','node.props.write','node.content.write') AND EXISTS(
+        (p.kind IN ('user','app_password') AND ?6 IN (
+          'node.read','gallery.read','audio.read','search.read','node.create','node.rename',
+          'node.trash','node.props.write','node.content.write'
+        ) AND EXISTS(
           SELECT 1 FROM user_authority u WHERE
             (u.id=n.owner_id AND u.root_allowed=1
               AND (?6 NOT IN ('node.rename','node.trash') OR p.kind<>'app_password'
@@ -273,6 +286,8 @@ export async function authorizeNode(
   if (
     ![
       "node.read",
+      "gallery.read",
+      "audio.read",
       "search.read",
       "node.create",
       "node.rename",
@@ -309,13 +324,15 @@ export async function authorizeNode(
     JSON.stringify(identity),
     request.operation === "node.create"
       ? "node:create"
-      : request.operation === "node.trash"
-        ? "node:delete"
-        : request.operation === "node.rename" ||
-            request.operation === "node.props.write" ||
-            request.operation === "node.content.write"
-          ? "node:write"
-          : "node:read",
+      : request.operation === "gallery.read" || request.operation === "audio.read"
+        ? "library:read"
+        : request.operation === "node.trash"
+          ? "node:delete"
+          : request.operation === "node.rename" ||
+              request.operation === "node.props.write" ||
+              request.operation === "node.content.write"
+            ? "node:write"
+            : "node:read",
     request.operation === "node.create"
       ? "create"
       : request.operation === "node.trash"

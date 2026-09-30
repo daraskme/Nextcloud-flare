@@ -138,6 +138,8 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/nodes/:nodeId",
     "app GET /api/v1/nodes/:nodeId/path",
     "app GET /api/v1/nodes/:nodeId/children",
+    "app GET /api/v1/nodes/:nodeId/gallery",
+    "app GET /api/v1/nodes/:nodeId/tracks",
     "app POST /api/v1/nodes",
     "app PATCH /api/v1/nodes/:nodeId",
     "app DELETE /api/v1/nodes/:nodeId",
@@ -193,8 +195,6 @@ export const ROUTE_BINDINGS = [
     "app PUT /api/v1/nodes/:nodeId/star",
     "app POST /api/v1/nodes/:nodeId/zip",
     "app GET /api/v1/zips/:id",
-    "app GET /api/v1/nodes/:nodeId/gallery",
-    "app GET /api/v1/nodes/:nodeId/tracks",
     "app PATCH /api/v1/nodes/:nodeId/audio",
     "app PUT /api/v1/nodes/:nodeId/playback-state",
     "app GET /api/v1/library/items",
@@ -311,7 +311,7 @@ export const ROUTE_BINDINGS = [
   }),
 ] as const satisfies readonly RouteBinding[];
 
-export const PRIVATE_SPA_PATHS = ["/", "/files", "/trash"] as const;
+export const PRIVATE_SPA_PATHS = ["/", "/files", "/gallery", "/audio", "/trash"] as const;
 const PRIVATE_FILE_PATH = /^\/files\/[A-Za-z0-9_-]{1,128}$/;
 
 export function privateSpaPath(path: string): boolean {
