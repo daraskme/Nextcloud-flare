@@ -124,6 +124,7 @@ export const SYSTEM_MUTATION_KINDS = [
   "outbox.consume-claim",
   "outbox.complete",
   "outbox.dead-letter",
+  "media.project",
   "recovery.reservation-release",
   "recovery.outbox-fail",
   "recovery.outbox-requeue",

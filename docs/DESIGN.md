@@ -503,6 +503,8 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | content | POST | `/session` | public | `content.session.accept` | `signedTicket,targetSetId,targetSetHash,budgetId` | false | cross-origin-content |
 | content | GET | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob,budgetId` | false | cross-origin-content |
 | content | HEAD | `/c/:nodeId/:blobId` | content_cookie | `content.read` | `session,node,blob` | false | same-origin-json |
+| content | GET | `/c/:nodeId/:blobId/thumb` | content_cookie | `content.read` | `session,node,blob,derivative,budgetId` | false | cross-origin-content |
+| content | HEAD | `/c/:nodeId/:blobId/thumb` | content_cookie | `content.read` | `session,node,blob,derivative` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/pages/:page` | content_cookie | `content.read` | `session,node,blob,index,page` | false | same-origin-json |
 | content | HEAD | `/c/:nodeId/:blobId/pages/:page` | content_cookie | `content.read` | `session,node,blob,index,page` | false | same-origin-json |
 | content | GET | `/c/:nodeId/:blobId/entries/:entryToken` | content_cookie | `content.read` | `session,node,blob,index,entry` | false | same-origin-json |
@@ -875,6 +877,7 @@ Opus は Ogg（`.opus`/`.ogg`/`.oga`）、WebM、MP4 を対応対象とし、cli
 ### 9A.4 共通認可 / job
 
 全media routeはEffectiveLive、capability root、current blob、generation、credential scopeを検査する。index/tag/sanitize/thumb jobはoutbox、saved principal、epoch、fenced result claimを使いstale結果を公開しない。
+同じcontent mutationがaudioとimageの両候補になる場合は単一outbox claim内で両projectionを独立に収束させ、どちらかがtransientならterminal completionせず同じblob/version fenceで再実行する。`content`/`track`は原本、`thumb`はready derivativeだけを解決し、purposeを相互流用しない。
 
 ---
 

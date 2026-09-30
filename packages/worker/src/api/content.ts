@@ -114,10 +114,10 @@ export async function handleContentHttp(
       return cors(problem(400, "bad_request"), env.APP_ORIGIN);
     }
   }
-  const match = /^\/c\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+  const match = /^\/c\/([^/]+)\/([^/]+)(\/thumb)?$/.exec(url.pathname);
   if (!match || (request.method !== "GET" && request.method !== "HEAD"))
     return problem(404, "not_found");
-  const [, nodeId, blobId] = match;
+  const [, nodeId, blobId, suffix] = match;
   if (!nodeId || !blobId || !NODE_ID.test(nodeId) || !NODE_ID.test(blobId))
     return problem(404, "not_found");
   if (origin !== null && origin !== env.APP_ORIGIN) return problem(403, "forbidden");
@@ -137,7 +137,7 @@ export async function handleContentHttp(
       request.headers.get("Cookie"),
       node.spaceId,
       nodeId,
-      ["content", "track"],
+      suffix === "/thumb" ? "thumb" : ["content", "track"],
       request,
     );
     return reply(response);

@@ -8,10 +8,11 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { type MediaJobEnv, processImageOutbox } from "./media";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
-type OutboxSource = SystemMutationSource & Partial<Pick<Env, "BLOBS">>;
+type OutboxSource = SystemMutationSource & Partial<Pick<Env, "BLOBS" | "IMAGES">>;
 
 interface EventRow {
   state: string;
@@ -365,6 +366,30 @@ export async function consumeOutbox(
       );
       if (inspected.kind === "transient") return "retry";
       inspection = inspected;
+    }
+    if ((row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS && env.IMAGES) {
+      try {
+        const mediaAuthorized = await authorizeNode(db, principal, {
+          operation: "node.read",
+          nodeId: row.payload_ref,
+          spaceId: row.space_id,
+        });
+        const media = await processImageOutbox(
+          env as MediaJobEnv,
+          {
+            outboxId,
+            outboxToken: token,
+            epoch: row.epoch,
+            ownerId: row.owner_id,
+            nodeId: row.payload_ref,
+          },
+          mediaAuthorized,
+          deadline,
+        );
+        if (media === "retry") return "retry";
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "authorization_denied") return "retry";
+      }
     }
     const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");

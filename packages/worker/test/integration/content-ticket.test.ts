@@ -512,6 +512,25 @@ async function fixture() {
   return { f, now, tokens, principal, firstKey };
 }
 
+it("refuses thumb tickets until the current derivative is ready", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  try {
+    await expect(
+      issueContentTicket(
+        mutationEnv(),
+        env.BLOBS,
+        tokens,
+        principal,
+        [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+        "thumb",
+        now + 300_000,
+      ),
+    ).rejects.toThrow(/content_not_available/);
+  } finally {
+    await env.BLOBS.delete(firstKey);
+  }
+});
+
 it("issues a two-target ticket and serves both files under one budget", async () => {
   const { f, now, tokens, principal, firstKey } = await fixture();
   const secondBlob = crypto.randomUUID();

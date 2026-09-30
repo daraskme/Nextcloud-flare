@@ -57,6 +57,56 @@ it("deletes an unreferenced object and finalizes physical accounting", async () 
   ).toBe(0);
 });
 
+it("confirms derivative removal before terminal original deletion", async () => {
+  const f = await candidate();
+  const derivativeKey = `u/${f.ids.user}/d/${f.ids.blob}/image-sm256-v1/sm256/${crypto.randomUUID()}.webp`;
+  const derivative = await env.BLOBS.put(derivativeKey, "sm");
+  if (!derivative) throw new Error("fixture_derivative_missing");
+  await env.DB.prepare(
+    `INSERT INTO derivative_results
+      (id,blob_id,kind,variant,generator_version,state,epoch,attempts,r2_key,size,r2_etag)
+      VALUES(?,?,'thumbnail','sm256','image-sm256-v1','ready',1,1,?,?,?)`,
+  )
+    .bind(crypto.randomUUID(), f.ids.blob, derivativeKey, derivative.size, derivative.etag)
+    .run();
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toEqual({
+    claimed: 1,
+    deleted: 1,
+    retried: 0,
+    r2Calls: 4,
+  });
+  expect(await env.BLOBS.head(derivativeKey)).toBeNull();
+  expect(await env.BLOBS.head(f.key)).toBeNull();
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM derivative_results WHERE blob_id=?")
+      .bind(f.ids.blob)
+      .first("count"),
+  ).toBe(0);
+});
+
+it("removes unpublished derivative rows before terminal original deletion", async () => {
+  const f = await candidate();
+  await env.DB.prepare(
+    `INSERT INTO derivative_results
+      (id,blob_id,kind,variant,generator_version,state,epoch,attempts,error_code)
+      VALUES(?,?,'thumbnail','sm256','image-sm256-v1','failed',1,3,'attempts_exhausted')`,
+  )
+    .bind(crypto.randomUUID(), f.ids.blob)
+    .run();
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toEqual({
+    claimed: 1,
+    deleted: 1,
+    retried: 0,
+    r2Calls: 2,
+  });
+  expect(await env.BLOBS.head(f.key)).toBeNull();
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM derivative_results WHERE blob_id=?")
+      .bind(f.ids.blob)
+      .first("count"),
+  ).toBe(0);
+});
+
 it("honors every pin, the materialized fence, and the GC pause", async () => {
   const f = await candidate();
   await atomicBatch(env.DB, [

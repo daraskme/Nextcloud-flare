@@ -301,7 +301,8 @@ export async function handlePublicShareHttp(
     let body;
     try {
       body = await readContentTicketRequest(request);
-      if (body.share || body.purpose !== "content") throw new Error("invalid_ticket_body");
+      if (body.share || !["content", "thumb"].includes(body.purpose))
+        throw new Error("invalid_ticket_body");
     } catch {
       return problem(400, "bad_request");
     }
