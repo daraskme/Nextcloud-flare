@@ -49,6 +49,24 @@ interface ShareRow {
   mountName: string | null;
 }
 
+interface ShareOutput {
+  id: string;
+  kind: ShareRow["kind"];
+  rootNodeId: string | null;
+  version: number;
+  disabledAt: number | null;
+  expiresAt: number | null;
+  createdAt: number;
+  passwordProtected: boolean;
+  actions: string[];
+  reservedBytes?: number;
+  reservationLimit?: number;
+  recipientUserId?: string | null;
+  recipientEmail?: string | null;
+  mountId?: string;
+  mountName?: string | null;
+}
+
 function ulid(): string {
   let time = Date.now();
   const result = Array<string>(26);
@@ -75,7 +93,7 @@ function currentAccess(session: AccessSession): SqlStatement[] {
   ];
 }
 
-function output(row: ShareRow) {
+function output(row: ShareRow): ShareOutput {
   return {
     id: row.id,
     kind: row.kind,
