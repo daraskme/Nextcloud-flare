@@ -1,11 +1,14 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
+import { KdfUnavailableError } from "../auth/kdf";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
+import type { SharePasswordPepperRing } from "../auth/sharePassword";
 import {
   authenticateShareSession,
   clearShareCookie,
   revokeShareSession,
+  SharePasswordRequiredError,
   shareCookie,
   sharePrincipal,
   unlockShare,
@@ -38,6 +41,13 @@ export interface PublicShareDependencies {
   readonly csrf: Pick<CsrfTokens, "issue" | "verify">;
   readonly cursors?: NodeCursorTokens;
   readonly tokens?: ContentTokens;
+  readonly passwordPepper?: SharePasswordPepperRing;
+}
+
+class SharePasswordRateLimitError extends Error {
+  constructor() {
+    super("share_password_rate_limited");
+  }
 }
 
 export function publicShareApiRoute(request: Request): boolean {
@@ -136,10 +146,31 @@ export async function handlePublicShareHttp(
     } catch {
       return problem(400, "bad_request");
     }
-    if (Object.keys(body).join(",") !== "secret" || typeof body.secret !== "string")
+    if (
+      Object.keys(body).some((key) => !["secret", "password"].includes(key)) ||
+      typeof body.secret !== "string" ||
+      (body.password !== undefined && typeof body.password !== "string")
+    )
       return problem(400, "bad_request");
     try {
-      const { session, cookieSecret } = await unlockShare(env, shareId, body.secret, epoch);
+      const { session, cookieSecret } = await unlockShare(env, shareId, body.secret, epoch, {
+        ...(body.password === undefined ? {} : { password: body.password as string }),
+        ...(dependencies.passwordPepper ? { passwordRing: dependencies.passwordPepper } : {}),
+        signal: request.signal,
+        admitPasswordAttempt: async () => {
+          let shareLimit;
+          let ipLimit;
+          try {
+            [shareLimit, ipLimit] = await Promise.all([
+              env.SHARE_PASSWORD_LIMITER.limit({ key: shareId }),
+              env.SHARE_PASSWORD_IP_LIMITER.limit({ key: ip }),
+            ]);
+          } catch {
+            throw new KdfUnavailableError();
+          }
+          if (!shareLimit.success || !ipLimit.success) throw new SharePasswordRateLimitError();
+        },
+      });
       return Response.json(
         { shareId: session.shareId, expiresAt: session.expiresAt },
         {
@@ -150,7 +181,13 @@ export async function handlePublicShareHttp(
         },
       );
     } catch (error) {
-      if (error instanceof MutationUnavailableError) {
+      if (error instanceof SharePasswordRequiredError) return problem(401, "password_required");
+      if (error instanceof SharePasswordRateLimitError) {
+        const response = problem(429, "rate_limited");
+        response.headers.set("Retry-After", "60");
+        return response;
+      }
+      if (error instanceof MutationUnavailableError || error instanceof KdfUnavailableError) {
         const response = problem(503, "not_ready");
         response.headers.set("Retry-After", "1");
         return response;

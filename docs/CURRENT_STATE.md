@@ -110,7 +110,7 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 - 大規模tree向けの非同期trash/restore/purge job。
 - 残るoperationの認可tuple、terminal lookup、Outbox consumer/repair。
 - media metadataのparser/検索索引同期、索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)へ接続済み。名前検索APIと現行権限付きpaginationは接続済み（[SEARCH](SEARCH.md)）。
-- 公開linkのdownload ticket/content-session、password、upload-only、内部共有、shared DAVを含む完全なHTTP surface。読み取り専用linkの作成/無効化・unlock・metadata/childrenは[PUBLIC_SHARES](PUBLIC_SHARES.md)へ接続済み。
+- 公開linkのupload-only、内部共有、shared DAVを含む完全なHTTP surface。読み取り専用linkの作成/無効化・password保護・unlock・metadata/children・download ticket/content-sessionは[PUBLIC_SHARES](PUBLIC_SHARES.md)へ接続済み。
 - ZIP download、archive entry、EPUB page、audio/video track、thumbnail/derivativeの完全なHTTP配信。
 - バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
@@ -118,13 +118,13 @@ Node22件・workerd13件を追加しました。全Node696件（40file、44.23s�
 ### UI
 
 - File System Access handle、詳細preview。
-- 既存share管理、password/upload-only/internal share、media metadata検索、大量gridの仮想化。新規読み取り専用linkの発行/無効化は接続済み。
+- 既存share管理、upload-only/internal share、media metadata検索、大量gridの仮想化。新規読み取り専用linkの発行/無効化/password保護は接続済み。
 - Gallery/lightbox、Bookshelf/EPUB reader、Audio player。
 - AVIF/AV1/Opusの実browser再生試験とfallback。
 
 ### 制御・運用
 
-- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束と共有password/IP制限。KDFの全体rate/枠・isolate内制限とbackup専用barrierは接続済み。
+- account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束。共有password/IP制限、KDFの全体rate/枠・isolate内制限とbackup専用barrierは接続済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
 - monitoring、alert、Logpush、capacity/費用確認。

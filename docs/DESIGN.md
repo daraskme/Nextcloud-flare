@@ -99,7 +99,7 @@ URL、DAV `Destination`、tagged URI は一度だけ percent decodeし、不正 
 
 ### 2.3 binding contract
 
-`Env` は `DB, BLOBS, BACKUPS, CACHE, LOCKS, UPLOADS, BUDGETS, CONTROL, JOBS, IMAGES, EDGE_LIMITER, ASSETS` を必須とする。起動 smoke test は binding の存在と environment marker を検査し、不足・cross-environment ID・Images 無しを 503 で fail closed にする。D1/R2/KV/Queues/DO/Access AUD/custom domain/key ring は staging と production で共有しない。配備可能な `wrangler.jsonc` は §14.1 を正本とする。
+`Env` は `DB, BLOBS, BACKUPS, CACHE, LOCKS, UPLOADS, BUDGETS, CONTROL, JOBS, IMAGES, EDGE_LIMITER, SHARE_PASSWORD_LIMITER, SHARE_PASSWORD_IP_LIMITER, ASSETS` を必須とする。起動 smoke test は binding の存在と environment marker を検査し、不足・cross-environment ID・Images 無しを 503 で fail closed にする。D1/R2/KV/Queues/DO/Access AUD/custom domain/key ring は staging と production で共有しない。配備可能な `wrangler.jsonc` は §14.1 を正本とする。
 
 ---
 
@@ -1201,10 +1201,20 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
     }]
   },
   "images": { "binding": "IMAGES" },
-  "ratelimits": [{
-    "name": "EDGE_LIMITER", "namespace_id": "1001",
-    "simple": { "limit": 300, "period": 60 }
-  }],
+  "ratelimits": [
+    {
+      "name": "EDGE_LIMITER", "namespace_id": "1001",
+      "simple": { "limit": 300, "period": 60 }
+    },
+    {
+      "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "1002",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    {
+      "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
   "triggers": { "crons": ["17 * * * *", "23 2 * * *", "0 3 * * SUN"] },
   "vars": {
     "ENVIRONMENT": "development", "APP_ORIGIN": "https://dev.invalid",
@@ -1242,10 +1252,20 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
         }]
       },
       "images": { "binding": "IMAGES" },
-      "ratelimits": [{
-        "name": "EDGE_LIMITER", "namespace_id": "2001",
-        "simple": { "limit": 300, "period": 60 }
-      }],
+      "ratelimits": [
+        {
+          "name": "EDGE_LIMITER", "namespace_id": "2001",
+          "simple": { "limit": 300, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "2002",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "2003",
+          "simple": { "limit": 30, "period": 60 }
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "staging", "APP_ORIGIN": "https://staging-app.example.com",
         "CONTENT_ORIGIN": "https://staging-content.example.com", "ACCESS_ISSUER": "<STAGING_ACCESS_ISSUER>",
@@ -1282,10 +1302,20 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
         }]
       },
       "images": { "binding": "IMAGES" },
-      "ratelimits": [{
-        "name": "EDGE_LIMITER", "namespace_id": "3001",
-        "simple": { "limit": 300, "period": 60 }
-      }],
+      "ratelimits": [
+        {
+          "name": "EDGE_LIMITER", "namespace_id": "3001",
+          "simple": { "limit": 300, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "3002",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "3003",
+          "simple": { "limit": 30, "period": 60 }
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "production", "APP_ORIGIN": "https://app.example.com",
         "CONTENT_ORIGIN": "https://content.example.com", "ACCESS_ISSUER": "<PRODUCTION_ACCESS_ISSUER>",

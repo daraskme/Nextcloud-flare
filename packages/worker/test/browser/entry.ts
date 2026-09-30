@@ -21,6 +21,8 @@ async function initialize(bindings: Env) {
     CSRF_PUBLIC_KEYS: keys(),
     APP_PASSWORD_ACTIVE_KID: "browser",
     APP_PASSWORD_PEPPERS: keys(),
+    SHARE_PASSWORD_ACTIVE_KID: "browser",
+    SHARE_PASSWORD_PEPPERS: keys(),
     CONTENT_TICKET_ACTIVE_KID: "browser",
     CONTENT_COOKIE_ACTIVE_KID: "browser",
     CONTENT_TICKET_KEYS: keys(),

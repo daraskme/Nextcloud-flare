@@ -1,6 +1,7 @@
 import { base64url } from "jose";
 import { authorizationAssertion, authorizeNode } from "../auth/authorize";
 import { type AccessSession, assertLiveAccessCredential } from "../auth/sessions";
+import { hashSharePassword, type SharePasswordPepperRing } from "../auth/sharePassword";
 import { shareSecretDigest } from "../auth/shareSession";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -15,6 +16,7 @@ export interface CreateShareInput {
   readonly rootNodeId: string;
   readonly spaceId: string;
   readonly ttlDays?: number;
+  readonly password?: string;
 }
 
 interface ShareRow {
@@ -24,6 +26,7 @@ interface ShareRow {
   disabledAt: number | null;
   expiresAt: number | null;
   createdAt: number;
+  passwordProtected: number;
 }
 
 function ulid(): string {
@@ -60,6 +63,7 @@ function output(row: ShareRow) {
     disabledAt: row.disabledAt,
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
+    passwordProtected: row.passwordProtected === 1,
     actions: ["read", "download"] as const,
   };
 }
@@ -69,7 +73,8 @@ export async function listShares(db: D1Database, session: AccessSession) {
   await atomicBatch(db, statements);
   const rows = await primary(db)
     .prepare(`SELECT id,root_node_id AS rootNodeId,version,disabled_at AS disabledAt,
-      expires_at AS expiresAt,created_at AS createdAt
+      expires_at AS expiresAt,created_at AS createdAt,
+      password_digest IS NOT NULL AS passwordProtected
       FROM shares WHERE owner_id=? AND kind='link'
       ORDER BY created_at DESC,id DESC LIMIT 100`)
     .bind(session.user_id)
@@ -84,7 +89,8 @@ export async function readShare(db: D1Database, session: AccessSession, shareId:
   await atomicBatch(db, statements);
   const row = await primary(db)
     .prepare(`SELECT id,root_node_id AS rootNodeId,version,disabled_at AS disabledAt,
-      expires_at AS expiresAt,created_at AS createdAt
+      expires_at AS expiresAt,created_at AS createdAt,
+      password_digest IS NOT NULL AS passwordProtected
       FROM shares WHERE id=? AND owner_id=? AND kind='link'`)
     .bind(shareId, session.user_id)
     .first<ShareRow>();
@@ -93,12 +99,19 @@ export async function readShare(db: D1Database, session: AccessSession, shareId:
   return output(row);
 }
 
-export async function createShare(env: Env, session: AccessSession, input: CreateShareInput) {
+export async function createShare(
+  env: Env,
+  session: AccessSession,
+  input: CreateShareInput,
+  passwordRing?: SharePasswordPepperRing,
+  signal?: AbortSignal,
+) {
   if (
     !ID.test(input.rootNodeId) ||
     !ID.test(input.spaceId) ||
     (input.ttlDays !== undefined &&
-      (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365))
+      (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365)) ||
+    (input.password !== undefined && typeof input.password !== "string")
   )
     throw new Error("invalid_share_request");
   const principal = {
@@ -128,6 +141,11 @@ export async function createShare(env: Env, session: AccessSession, input: Creat
   const id = ulid();
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const secretDigest = await shareSecretDigest(secret);
+  let passwordRecord;
+  if (input.password !== undefined) {
+    if (!passwordRing) throw new Error("share_password_unavailable");
+    passwordRecord = await hashSharePassword(input.password, passwordRing, signal);
+  }
   const now = Date.now();
   const expiresAt = now + (input.ttlDays ?? 30) * DAY_MS;
   const admission = await acquireAccountMutation(
@@ -146,9 +164,22 @@ export async function createShare(env: Env, session: AccessSession, input: Creat
     ),
     {
       sql: `INSERT INTO shares(
-        id,owner_id,root_node_id,kind,secret_digest,expires_at,created_at
-      ) VALUES(?,?,?,'link',?,?,?)`,
-      values: [id, session.user_id, root.node.id, secretDigest, expiresAt, now],
+        id,owner_id,root_node_id,kind,secret_digest,password_digest,salt,kdf,kdf_params,kid,
+        expires_at,created_at
+      ) VALUES(?,?,?,'link',?,?,?,?,?,?,?,?)`,
+      values: [
+        id,
+        session.user_id,
+        root.node.id,
+        secretDigest,
+        passwordRecord?.passwordDigest ?? null,
+        passwordRecord?.salt ?? null,
+        passwordRecord?.kdf ?? null,
+        passwordRecord?.kdfParams ?? null,
+        passwordRecord?.kid ?? null,
+        expiresAt,
+        now,
+      ],
     },
     {
       sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",

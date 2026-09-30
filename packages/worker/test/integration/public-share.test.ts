@@ -1,7 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
-import { beforeAll, beforeEach, expect, it } from "vitest";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { handleContentHttp } from "../../src/api/content";
 import type { PublicShareDependencies } from "../../src/api/publicShareConfig";
 import { handlePublicShareHttp } from "../../src/api/publicShares";
@@ -9,16 +9,25 @@ import { publicAssets } from "../../src/assets/publicManifest";
 import { servePublicShare } from "../../src/assets/publicShare";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
+import { KdfUnavailableError } from "../../src/auth/kdf";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
+import {
+  hashSharePassword,
+  type SharePasswordPepperRing,
+  sharePasswordPepperRing,
+} from "../../src/auth/sharePassword";
 import { shareSecretDigest } from "../../src/auth/shareSession";
 import { atomicBatch } from "../../src/db/primary";
 import { foundationFixture } from "../fixtures/foundation";
+import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
 
 const origin = "https://app.invalid";
 const contentOrigin = "https://content.invalid";
 let dependencies: PublicShareDependencies;
 let contentTokens: ContentTokens;
+let passwordRing: SharePasswordPepperRing;
+let passwordPepperKey: string;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -32,6 +41,12 @@ beforeAll(async () => {
     await contentKeyRing("cookie", { cookie: cookieSecret }),
     contentOrigin,
   );
+  passwordPepperKey = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  passwordRing = await sharePasswordPepperRing(
+    "password",
+    { password: passwordPepperKey },
+    localKdf,
+  );
   dependencies = {
     csrf: new CsrfTokens(
       await csrfKeyRing("private", { private: privateSecret }),
@@ -40,6 +55,7 @@ beforeAll(async () => {
     ),
     cursors: new NodeCursorTokens(await contentKeyRing("cursor", { cursor: cursorSecret })),
     tokens: contentTokens,
+    passwordPepper: passwordRing,
   };
 });
 
@@ -47,24 +63,32 @@ beforeEach(async () => {
   await env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run();
 });
 
-async function fixture() {
+async function fixture(password?: string) {
   const now = Date.now() - 1000;
   const owner = foundationFixture(crypto.randomUUID(), now);
   const outside = foundationFixture(crypto.randomUUID(), now);
   const shareId = crypto.randomUUID();
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const passwordRecord =
+    password === undefined ? undefined : await hashSharePassword(password, passwordRing);
   await atomicBatch(env.DB, [
     ...owner.statements,
     ...outside.statements,
     {
       sql: `INSERT INTO shares(
-        id,owner_id,root_node_id,kind,secret_digest,expires_at,created_at
-      ) VALUES(?,?,?,'link',?,?,?)`,
+        id,owner_id,root_node_id,kind,secret_digest,password_digest,salt,kdf,kdf_params,kid,
+        expires_at,created_at
+      ) VALUES(?,?,?,'link',?,?,?,?,?,?,?,?)`,
       values: [
         shareId,
         owner.ids.user,
         owner.ids.folder,
         await shareSecretDigest(secret),
+        passwordRecord?.passwordDigest ?? null,
+        passwordRecord?.salt ?? null,
+        passwordRecord?.kdf ?? null,
+        passwordRecord?.kdfParams ?? null,
+        passwordRecord?.kid ?? null,
         now + 600_000,
         now,
       ],
@@ -83,10 +107,12 @@ function shareEnv() {
     APP_ORIGIN: origin,
     CONTENT_ORIGIN: contentOrigin,
     EDGE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+    SHARE_PASSWORD_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+    SHARE_PASSWORD_IP_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
   };
 }
 
-function unlockRequest(shareId: string, secret: string) {
+function unlockRequest(shareId: string, secret: string, password?: string) {
   return new Request(`${origin}/api/v1/public/shares/${shareId}/unlock`, {
     method: "POST",
     headers: {
@@ -95,7 +121,7 @@ function unlockRequest(shareId: string, secret: string) {
       "Content-Type": "application/json",
       "CF-Connecting-IP": "192.0.2.1",
     },
-    body: JSON.stringify({ secret }),
+    body: JSON.stringify({ secret, ...(password === undefined ? {} : { password }) }),
   });
 }
 
@@ -172,8 +198,250 @@ it("unlocks a capability into a share-bound cookie and reads only the selected t
   expect(wrongShare.status).toBe(401);
 });
 
+it("requires the current password and applies share and IP limits only before password KDF", async () => {
+  const password = "correct horse battery staple";
+  const f = await fixture(password);
+  const shareLimit = vi.fn(async () => ({ success: true }));
+  const ipLimit = vi.fn(async () => ({ success: true }));
+  const app = {
+    ...shareEnv(),
+    SHARE_PASSWORD_LIMITER: { limit: shareLimit } as RateLimit,
+    SHARE_PASSWORD_IP_LIMITER: { limit: ipLimit } as RateLimit,
+  };
+  const missing = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret),
+    app,
+    1,
+    dependencies,
+  );
+  expect(missing.status).toBe(401);
+  expect((await missing.json()) as { title: string }).toMatchObject({
+    title: "password_required",
+  });
+  expect(shareLimit).not.toHaveBeenCalled();
+  expect(ipLimit).not.toHaveBeenCalled();
+
+  const wrong = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret, "wrong"),
+    app,
+    1,
+    dependencies,
+  );
+  expect(wrong.status).toBe(401);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
+      .bind(f.shareId)
+      .first<number>("count"),
+  ).toBe(0);
+  expect(shareLimit).toHaveBeenLastCalledWith({ key: f.shareId });
+  expect(ipLimit).toHaveBeenLastCalledWith({ key: "192.0.2.1" });
+
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(f.shareId, f.secret, "x".repeat(1025)),
+        app,
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(401);
+  const malformed = new Request(`${origin}/api/v1/public/shares/${f.shareId}/unlock`, {
+    method: "POST",
+    headers: {
+      Origin: origin,
+      "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/json",
+      "CF-Connecting-IP": "192.0.2.1",
+    },
+    body: JSON.stringify({ secret: f.secret, password: 1 }),
+  });
+  expect((await handlePublicShareHttp(malformed, app, 1, dependencies)).status).toBe(400);
+
+  const unlocked = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret, password),
+    app,
+    1,
+    dependencies,
+  );
+  expect(unlocked.status).toBe(200);
+  expect(unlocked.headers.get("Set-Cookie")).toContain("HttpOnly");
+
+  const unprotected = await fixture();
+  shareLimit.mockClear();
+  ipLimit.mockClear();
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(unprotected.shareId, unprotected.secret),
+        app,
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(200);
+  expect(shareLimit).not.toHaveBeenCalled();
+  expect(ipLimit).not.toHaveBeenCalled();
+});
+
+it("returns retryable password rate and KDF failures without creating a session", async () => {
+  const password = "rate limited";
+  const f = await fixture(password);
+  const limited = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret, password),
+    {
+      ...shareEnv(),
+      SHARE_PASSWORD_LIMITER: {
+        limit: async () => ({ success: false }),
+      } as RateLimit,
+    },
+    1,
+    dependencies,
+  );
+  expect(limited.status).toBe(429);
+  expect(limited.headers.get("Retry-After")).toBe("60");
+  const ipLimited = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret, password),
+    {
+      ...shareEnv(),
+      SHARE_PASSWORD_IP_LIMITER: {
+        limit: async () => ({ success: false }),
+      } as RateLimit,
+    },
+    1,
+    dependencies,
+  );
+  expect(ipLimited.status).toBe(429);
+  expect(ipLimited.headers.get("Retry-After")).toBe("60");
+
+  const unavailableRing = await sharePasswordPepperRing(
+    "password",
+    { password: base64url.encode(crypto.getRandomValues(new Uint8Array(32))) },
+    async () => {
+      throw new KdfUnavailableError();
+    },
+  );
+  const unavailable = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret, password),
+    shareEnv(),
+    1,
+    { ...dependencies, passwordPepper: unavailableRing },
+  );
+  expect(unavailable.status).toBe(503);
+  expect(unavailable.headers.get("Retry-After")).toBe("1");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
+      .bind(f.shareId)
+      .first<number>("count"),
+  ).toBe(0);
+});
+
+it("rejects disabled, expired, stale-epoch, version-changed, and password-changed unlocks", async () => {
+  const password = "current password";
+  const disabled = await fixture(password);
+  await env.DB.prepare("UPDATE shares SET disabled_at=? WHERE id=?")
+    .bind(Date.now(), disabled.shareId)
+    .run();
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(disabled.shareId, disabled.secret, password),
+        shareEnv(),
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(404);
+
+  const expired = await fixture(password);
+  await env.DB.prepare("UPDATE shares SET expires_at=? WHERE id=?")
+    .bind(Date.now() - 1, expired.shareId)
+    .run();
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(expired.shareId, expired.secret, password),
+        shareEnv(),
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(404);
+
+  const staleEpoch = await fixture(password);
+  await env.DB.prepare("UPDATE control SET epoch=2").run();
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(staleEpoch.shareId, staleEpoch.secret, password),
+        shareEnv(),
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(404);
+  await env.DB.prepare("UPDATE control SET epoch=1").run();
+
+  const changed = await fixture(password);
+  const racingRing = await sharePasswordPepperRing(
+    "password",
+    { password: passwordPepperKey },
+    async (input, salt) => {
+      const result = await localKdf(input, salt);
+      await env.DB.prepare("UPDATE shares SET password_digest=? WHERE id=?")
+        .bind(base64url.encode(crypto.getRandomValues(new Uint8Array(32))), changed.shareId)
+        .run();
+      return result;
+    },
+  );
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(changed.shareId, changed.secret, password),
+        shareEnv(),
+        1,
+        { ...dependencies, passwordPepper: racingRing },
+      )
+    ).status,
+  ).toBe(404);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
+      .bind(changed.shareId)
+      .first<number>("count"),
+  ).toBe(0);
+
+  const changedVersion = await fixture(password);
+  const versionRacingRing = await sharePasswordPepperRing(
+    "password",
+    { password: passwordPepperKey },
+    async (input, salt) => {
+      const result = await localKdf(input, salt);
+      await env.DB.prepare("UPDATE shares SET version=version+1 WHERE id=?")
+        .bind(changedVersion.shareId)
+        .run();
+      return result;
+    },
+  );
+  expect(
+    (
+      await handlePublicShareHttp(
+        unlockRequest(changedVersion.shareId, changedVersion.secret, password),
+        shareEnv(),
+        1,
+        { ...dependencies, passwordPepper: versionRacingRing },
+      )
+    ).status,
+  ).toBe(404);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
+      .bind(changedVersion.shareId)
+      .first<number>("count"),
+  ).toBe(0);
+});
+
 it("issues, redeems, reuses, and cancels budgeted public content tickets", async () => {
-  const f = await fixture();
+  const password = "download password";
+  const f = await fixture(password);
   const key = `u/${f.owner.ids.user}/b/${f.owner.ids.blob}`;
   const stored = await env.BLOBS.put(key, "abc");
   if (!stored) throw new Error("fixture_blob_missing");
@@ -184,7 +452,7 @@ it("issues, redeems, reuses, and cancels budgeted public content tickets", async
     .run();
   try {
     const unlocked = await handlePublicShareHttp(
-      unlockRequest(f.shareId, f.secret),
+      unlockRequest(f.shareId, f.secret, password),
       shareEnv(),
       1,
       dependencies,

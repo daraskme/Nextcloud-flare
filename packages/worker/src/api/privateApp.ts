@@ -8,6 +8,7 @@ import type { ListCursorTokens } from "../auth/listCursor";
 import { loginAccessUser } from "../auth/login";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { SearchCursorTokens } from "../auth/searchCursor";
+import type { SharePasswordPepperRing } from "../auth/sharePassword";
 import type { UploadCapabilities } from "../auth/uploadCapability";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
@@ -31,6 +32,7 @@ export interface PrivateAppDependencies {
   readonly searchCursors?: SearchCursorTokens;
   readonly listCursors?: ListCursorTokens;
   readonly appPasswordPepper?: AppPasswordPepperRing;
+  readonly sharePasswordPepper?: SharePasswordPepperRing;
   readonly uploadCapabilities?: UploadCapabilities;
 }
 
@@ -166,7 +168,14 @@ export async function handlePrivateAppHttp(
       dependencies.csrf,
       dependencies.appPasswordPepper,
     );
-  if (share) return handleShareHttp(request, env, session, dependencies.csrf);
+  if (share)
+    return handleShareHttp(
+      request,
+      env,
+      session,
+      dependencies.csrf,
+      dependencies.sharePasswordPepper,
+    );
   if (search)
     return handleSearchHttp(
       request,

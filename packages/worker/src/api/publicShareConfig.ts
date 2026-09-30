@@ -1,15 +1,21 @@
 import { ContentTokens, contentKeyRing } from "../auth/contentTokens";
 import { CsrfTokens, csrfKeyRing } from "../auth/csrf";
+import { globalKdf } from "../auth/globalKdf";
 import { NodeCursorTokens } from "../auth/nodeCursor";
+import { type SharePasswordPepperRing, sharePasswordPepperRing } from "../auth/sharePassword";
 import type { Env } from "../env";
 
 export interface PublicShareDependencies {
   readonly csrf: CsrfTokens;
   readonly cursors?: NodeCursorTokens;
   readonly tokens?: ContentTokens;
+  readonly passwordPepper?: SharePasswordPepperRing;
 }
 
-export async function publicShareDependencies(env: Env): Promise<PublicShareDependencies> {
+export async function publicShareDependencies(
+  env: Env,
+  epoch: number,
+): Promise<PublicShareDependencies> {
   if (
     !env.CSRF_PRIVATE_KEYS ||
     !env.CSRF_PUBLIC_KEYS ||
@@ -39,11 +45,20 @@ export async function publicShareDependencies(env: Env): Promise<PublicShareDepe
         contentKeyRing(env.CONTENT_COOKIE_ACTIVE_KID!, JSON.parse(env.CONTENT_COOKIE_KEYS!)),
       ])
     : [undefined, undefined];
+  const passwordPepper =
+    env.SHARE_PASSWORD_PEPPERS && env.SHARE_PASSWORD_ACTIVE_KID
+      ? await sharePasswordPepperRing(
+          env.SHARE_PASSWORD_ACTIVE_KID,
+          JSON.parse(env.SHARE_PASSWORD_PEPPERS),
+          globalKdf(env.CONTROL, epoch),
+        )
+      : undefined;
   return {
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(ticketRing && cookieRing
       ? { tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN) }
       : {}),
+    ...(passwordPepper ? { passwordPepper } : {}),
   };
 }

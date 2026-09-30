@@ -100,6 +100,7 @@ export interface LinkShare {
   disabledAt: number | null;
   expiresAt: number | null;
   createdAt: number;
+  passwordProtected: boolean;
   actions: readonly string[];
 }
 export interface CreatedLinkShare extends LinkShare {
@@ -258,11 +259,12 @@ export class ApiClient {
   shares(signal?: AbortSignal) {
     return this.request<{ shares: LinkShare[] }>("/api/v1/shares", signal ? { signal } : {});
   }
-  createShare(rootNodeId: string, spaceId: string, ttlDays: number) {
+  createShare(rootNodeId: string, spaceId: string, ttlDays: number, password?: string) {
     return this.json<CreatedLinkShare>("/api/v1/shares", "POST", {
       rootNodeId,
       spaceId,
       ttlDays,
+      ...(password ? { password } : {}),
     });
   }
   async disableShare(shareId: string): Promise<void> {

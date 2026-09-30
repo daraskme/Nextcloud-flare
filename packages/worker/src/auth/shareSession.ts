@@ -7,6 +7,12 @@ import {
   MutationUnavailableError,
 } from "../services/accountMutation";
 import type { Principal } from "./authorize";
+import { KdfUnavailableError } from "./kdf";
+import {
+  type SharePasswordPepperRing,
+  type SharePasswordRecord,
+  verifySharePassword,
+} from "./sharePassword";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
@@ -19,6 +25,24 @@ interface LiveShareRow {
   rootNodeId: string;
   version: number;
   expiresAt: number | null;
+  passwordDigest: string | null;
+  salt: string | null;
+  kdf: string | null;
+  kdfParams: string | null;
+  kid: string | null;
+}
+
+export class SharePasswordRequiredError extends Error {
+  constructor() {
+    super("share_password_required");
+  }
+}
+
+export interface ShareUnlockOptions {
+  readonly password?: string;
+  readonly passwordRing?: SharePasswordPepperRing;
+  readonly signal?: AbortSignal;
+  readonly admitPasswordAttempt?: () => Promise<void>;
 }
 
 export interface ShareSession {
@@ -91,7 +115,8 @@ const LIVE_SHARE = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted
     WHERE a.depth<64 AND n.space_id=a.space_id AND n.owner_id=a.owner_id
       AND instr(a.path,'/'||n.id||'/')=0
 ) SELECT sh.id,sh.owner_id AS ownerId,sh.root_node_id AS rootNodeId,
-  sh.version,sh.expires_at AS expiresAt
+  sh.version,sh.expires_at AS expiresAt,sh.password_digest AS passwordDigest,
+  sh.salt,sh.kdf,sh.kdf_params AS kdfParams,sh.kid
   FROM shares sh JOIN users owner ON owner.id=sh.owner_id
   JOIN control ctl ON ctl.singleton=1
   WHERE sh.id=?1 AND sh.kind='link' AND sh.secret_digest=?2
@@ -110,6 +135,7 @@ export async function unlockShare(
   shareId: string,
   secret: string,
   epoch: number,
+  options: ShareUnlockOptions = {},
 ): Promise<{ session: ShareSession; cookieSecret: string }> {
   if (!ID.test(shareId) || !Number.isSafeInteger(epoch) || epoch < 1)
     throw new Error("share_unauthorized");
@@ -119,6 +145,40 @@ export async function unlockShare(
     .bind(shareId, digest, epoch)
     .first<LiveShareRow>();
   if (!share) throw new Error("share_unauthorized");
+  let passwordAssertion;
+  if (share.passwordDigest === null) {
+    passwordAssertion = assertExists(
+      "SELECT 1 FROM shares WHERE id=? AND password_digest IS NULL",
+      [share.id],
+    );
+  } else {
+    if (
+      share.salt === null ||
+      share.kdf !== "PBKDF2-SHA256" ||
+      share.kdfParams === null ||
+      share.kid === null
+    )
+      throw new Error("share_unauthorized");
+    if (options.password === undefined) throw new SharePasswordRequiredError();
+    if (!options.passwordRing) throw new KdfUnavailableError();
+    await options.admitPasswordAttempt?.();
+    const record: SharePasswordRecord = {
+      passwordDigest: share.passwordDigest,
+      salt: share.salt,
+      kdf: share.kdf,
+      kdfParams: share.kdfParams,
+      kid: share.kid,
+    };
+    if (
+      !(await verifySharePassword(options.password, record, options.passwordRing, options.signal))
+    )
+      throw new SharePasswordRequiredError();
+    passwordAssertion = assertExists(
+      `SELECT 1 FROM shares
+        WHERE id=? AND password_digest=? AND salt=? AND kdf=? AND kdf_params=? AND kid=?`,
+      [share.id, record.passwordDigest, record.salt, record.kdf, record.kdfParams, record.kid],
+    );
+  }
   const active = await primary(env.DB)
     .prepare(`SELECT COUNT(*) AS count FROM share_sessions
       WHERE share_id=? AND share_version=? AND epoch=? AND revoked_at IS NULL
@@ -136,6 +196,8 @@ export async function unlockShare(
   const admission = await acquireAccountMutation(env, share.ownerId, epoch, "share.unlock");
   await commitAccountMutation(env.DB, admission, share.ownerId, [
     assertExists(LIVE_SHARE, [share.id, digest, epoch]),
+    assertExists("SELECT 1 FROM shares WHERE id=? AND version=?", [share.id, share.version]),
+    passwordAssertion,
     assertExists(
       `SELECT 1 WHERE (SELECT COUNT(*) FROM share_sessions
         WHERE share_id=? AND share_version=? AND epoch=? AND revoked_at IS NULL
