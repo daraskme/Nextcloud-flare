@@ -75,8 +75,15 @@ function savedPrincipal(row: EventRow): Principal | null {
   return null;
 }
 
+function isAudioEvent(row: EventRow): boolean {
+  return (
+    row.kind === "node.updated" ||
+    (row.kind === "node.created" && ["dav.put", "upload.complete"].includes(row.op_kind))
+  );
+}
+
 async function audioSource(db: D1Database, row: EventRow): Promise<AudioSource | null> {
-  if (row.kind !== "node.created" && row.kind !== "node.updated") return null;
+  if (!isAudioEvent(row)) return null;
   return primary(db)
     .prepare(
       `SELECT n.kind,n.name,n.revision,n.current_blob_id AS blob_id,b.r2_key,b.size,
@@ -336,7 +343,7 @@ export async function consumeOutbox(
     ]);
     const source = await audioSource(db, row);
     let inspection: Exclude<AudioInspection, { kind: "transient" }> | null = null;
-    if ((row.kind === "node.created" || row.kind === "node.updated") && !source) return "retry";
+    if (isAudioEvent(row) && !source) return "retry";
     if (source?.kind === "file" && source.blob_id !== null) {
       if (
         !env.BLOBS ||
