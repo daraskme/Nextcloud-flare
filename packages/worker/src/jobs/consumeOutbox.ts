@@ -10,6 +10,7 @@ import {
 } from "../services/systemMutation";
 import { epubCompletionStatements, prepareEpubProjection } from "./epub";
 import { type MediaJobEnv, processImageOutbox } from "./media";
+import { processVideoOutbox, type VideoJobEnv } from "./video";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
 export type ConsumeResult = "completed" | "failed" | "retry";
@@ -370,26 +371,39 @@ export async function consumeOutbox(
     }
     const epub = await prepareEpubProjection(env, row, deadline - 4000);
     if (epub === "retry") return "retry";
-    if ((row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS && env.IMAGES) {
+    if ((row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS) {
       try {
         const mediaAuthorized = await authorizeNode(db, principal, {
           operation: "node.read",
           nodeId: row.payload_ref,
           spaceId: row.space_id,
         });
-        const media = await processImageOutbox(
-          env as MediaJobEnv,
-          {
-            outboxId,
-            outboxToken: token,
-            epoch: row.epoch,
-            ownerId: row.owner_id,
-            nodeId: row.payload_ref,
-          },
+        const mediaClaim = {
+          outboxId,
+          outboxToken: token,
+          epoch: row.epoch,
+          ownerId: row.owner_id,
+          nodeId: row.payload_ref,
+          operationKind: row.op_kind,
+          operandsJson: row.operands_json,
+          resultJson: row.result_json,
+        };
+        const video = await processVideoOutbox(
+          env as VideoJobEnv,
+          mediaClaim,
           mediaAuthorized,
           deadline,
         );
-        if (media === "retry") return "retry";
+        if (video === "retry") return "retry";
+        if (video === "not-video" && env.IMAGES) {
+          const media = await processImageOutbox(
+            env as MediaJobEnv,
+            mediaClaim,
+            mediaAuthorized,
+            deadline,
+          );
+          if (media === "retry") return "retry";
+        }
       } catch (error) {
         if (!(error instanceof Error) || error.message !== "authorization_denied") return "retry";
       }

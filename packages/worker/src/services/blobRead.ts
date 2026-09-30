@@ -1,3 +1,4 @@
+import { mediaContentType } from "@next-cloud-flare/shared/media";
 import {
   type AuthorizedNode,
   authorizationAssertion,
@@ -9,8 +10,10 @@ import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
+import { AUDIO_GENERATOR_VERSION } from "../media/audio";
 import { IMAGE_METADATA_GENERATOR } from "../media/images/metadata";
 import { IMAGE_THUMBNAIL_GENERATOR, IMAGE_THUMBNAIL_VARIANT } from "../media/images/thumbnail";
+import { VIDEO_METADATA_GENERATOR } from "../media/video";
 import { parseRange } from "../platform/range";
 import { streamLeasedContent } from "./contentStream";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
@@ -56,6 +59,13 @@ export async function prepareAuthorizedNodeThumbnailRead(
   return resolveThumbnailRead(db, authorized, []);
 }
 
+export async function prepareAuthorizedNodeTrackRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+): Promise<BlobReadPlan> {
+  return resolveTrackRead(db, authorized, []);
+}
+
 export interface ContentBlobGrant {
   readonly sessionId: string;
   readonly ticketId: string;
@@ -70,8 +80,6 @@ export interface ContentBlobPlan {
   readonly epoch: number;
 }
 
-type ContentPurposeSelector = ContentPurpose | readonly ["content", "track"];
-
 /** Resolve the signed host-only cookie to a D1 principal, then apply all content read guards. */
 export async function prepareCookieBlobRead(
   db: D1Database,
@@ -80,15 +88,9 @@ export async function prepareCookieBlobRead(
   cookieHeader: string | null,
   spaceId: string,
   nodeId: string,
-  purpose: ContentPurposeSelector,
+  purpose: ContentPurpose,
 ): Promise<ContentBlobPlan> {
-  const purposes = typeof purpose === "string" ? ([purpose, purpose] as const) : purpose;
-  if (
-    (typeof purpose === "string" &&
-      !["content", "thumb", "page", "zip", "track"].includes(purpose)) ||
-    (typeof purpose !== "string" &&
-      (purposes.length !== 2 || purposes[0] !== "content" || purposes[1] !== "track"))
-  )
+  if (!["content", "thumb", "page", "zip", "track"].includes(purpose))
     throw new Error("content_not_available");
   const sessionId = await tokens.verifyCookie(cookieHeader);
   const session = await primary(db)
@@ -97,8 +99,8 @@ export async function prepareCookieBlobRead(
       cs.ticket_id AS ticketId,cs.epoch,c.kind AS credentialKind,t.purpose
       FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
       JOIN tickets t ON t.id=cs.ticket_id
-      WHERE cs.id=? AND t.purpose IN (?,?)`)
-    .bind(sessionId, purposes[0], purposes[1])
+      WHERE cs.id=? AND t.purpose=?`)
+    .bind(sessionId, purpose)
     .first<{
       userId: string | null;
       shareId: string | null;
@@ -215,13 +217,15 @@ export async function prepareContentBlobRead(
     ),
   ] as const;
   const blob =
-    grant.purpose === "content" || grant.purpose === "track" || grant.purpose === "page"
+    grant.purpose === "content" || grant.purpose === "page"
       ? await resolveBlobRead(db, authorized, assertions)
-      : grant.purpose === "thumb"
-        ? await resolveThumbnailRead(db, authorized, assertions)
-        : (() => {
-            throw new Error("content_not_available");
-          })();
+      : grant.purpose === "track"
+        ? await resolveTrackRead(db, authorized, assertions)
+        : grant.purpose === "thumb"
+          ? await resolveThumbnailRead(db, authorized, assertions)
+          : (() => {
+              throw new Error("content_not_available");
+            })();
   if (
     !manifestContains(manifest, {
       spaceId,
@@ -264,7 +268,7 @@ export async function streamBudgetedContentBlob(
   cookieHeader: string | null,
   spaceId: string,
   nodeId: string,
-  purpose: ContentPurposeSelector,
+  purpose: ContentPurpose,
   request: Request,
 ): Promise<Response> {
   request.signal.throwIfAborted();
@@ -318,6 +322,123 @@ async function resolveBlobRead(
           AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
           AND s.bytes=b.size AND s.r2_etag IS NOT NULL`,
       values: [
+        authorized.node.id,
+        authorized.node.space_id,
+        authorized.node.revision,
+        authorized.node.current_blob_id,
+      ],
+    },
+  ]);
+  const row = batches[extra.length + 1]?.results[0] as BlobReadPlan | undefined;
+  if (!row) throw new Error("content_not_available");
+  validatePlan(row);
+  return Object.freeze(row);
+}
+
+interface TrackReadRow extends BlobReadPlan {
+  readonly container: "mp4" | "webm";
+  readonly audioCodec: "opus" | null;
+  readonly codecProfile: 0 | 1 | 2;
+  readonly codecLevel: number;
+  readonly codecTier: "M" | "H";
+  readonly bitDepth: 8 | 10 | 12;
+}
+
+async function resolveTrackRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+  extra: readonly SqlStatement[],
+): Promise<BlobReadPlan> {
+  if (
+    authorized.operation !== "node.read" ||
+    authorized.node.kind !== "file" ||
+    !authorized.node.current_blob_id
+  )
+    throw new Error("content_not_available");
+  const batches = await atomicBatch(db, [
+    authorizationAssertion(authorized),
+    ...extra,
+    {
+      sql: `SELECT b.r2_key AS key,b.size,s.r2_etag AS r2Etag,b.content_etag AS contentEtag,
+        n.name,m.container,m.audio_codec AS audioCodec,m.codec_profile AS codecProfile,
+        m.codec_level AS codecLevel,m.codec_tier AS codecTier,m.bit_depth AS bitDepth,
+        'application/octet-stream' AS mime
+        FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+        JOIN blob_storage s ON s.blob_id=b.id
+        JOIN node_media m ON m.node_id=n.id AND m.blob_id=b.id AND m.generator_version=?
+        WHERE n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?
+          AND n.deleted_at IS NULL AND n.kind='file'
+          AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
+          AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
+          AND s.bytes=b.size AND s.r2_etag IS NOT NULL
+          AND m.projection_state='ready' AND m.error_code IS NULL
+          AND m.video_codec='av1' AND m.container IN ('mp4','webm')
+          AND (m.audio_codec IS NULL OR m.audio_codec='opus')
+          AND m.codec_profile BETWEEN 0 AND 2
+          AND (m.codec_level BETWEEN 0 AND 23 OR m.codec_level=31)
+          AND m.codec_tier IN ('M','H') AND m.bit_depth IN (8,10,12)`,
+      values: [
+        VIDEO_METADATA_GENERATOR,
+        authorized.node.id,
+        authorized.node.space_id,
+        authorized.node.revision,
+        authorized.node.current_blob_id,
+      ],
+    },
+  ]);
+  const row = batches[extra.length + 1]?.results[0] as TrackReadRow | undefined;
+  if (!row) return resolveAudioTrackRead(db, authorized, extra);
+  const plan = {
+    key: row.key,
+    size: row.size,
+    r2Etag: row.r2Etag,
+    contentEtag: row.contentEtag,
+    name: row.name,
+    mime: mediaContentType({
+      kind: "video",
+      container: row.container,
+      codec: "av1",
+      configuration: {
+        profile: row.codecProfile,
+        level: row.codecLevel,
+        tier: row.codecTier,
+        bitDepth: row.bitDepth,
+      },
+      audio: row.audioCodec,
+    }),
+  };
+  validatePlan(plan);
+  return Object.freeze(plan);
+}
+
+async function resolveAudioTrackRead(
+  db: D1Database,
+  authorized: AuthorizedNode,
+  extra: readonly SqlStatement[],
+): Promise<BlobReadPlan> {
+  if (
+    authorized.operation !== "node.read" ||
+    authorized.node.kind !== "file" ||
+    !authorized.node.current_blob_id
+  )
+    throw new Error("content_not_available");
+  const batches = await atomicBatch(db, [
+    authorizationAssertion(authorized),
+    ...extra,
+    {
+      sql: `SELECT b.r2_key AS key,b.size,s.r2_etag AS r2Etag,
+        b.content_etag AS contentEtag,COALESCE(b.mime_sniffed,'application/octet-stream') AS mime,
+        n.name FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+        JOIN blob_storage s ON s.blob_id=b.id
+        JOIN node_audio a ON a.node_id=n.id AND a.blob_id=b.id AND a.generator_version=?
+        WHERE n.id=? AND n.space_id=? AND n.revision=? AND n.current_blob_id=?
+          AND n.deleted_at IS NULL AND n.kind='file'
+          AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
+          AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
+          AND s.bytes=b.size AND s.r2_etag IS NOT NULL
+          AND a.codec='mp3'`,
+      values: [
+        AUDIO_GENERATOR_VERSION,
         authorized.node.id,
         authorized.node.space_id,
         authorized.node.revision,
@@ -402,7 +523,12 @@ function validatePlan(plan: BlobReadPlan): void {
     !plan.r2Etag ||
     plan.r2Etag.length > 256 ||
     !/^"[A-Za-z0-9._:-]{1,200}"$/.test(plan.contentEtag) ||
-    !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(plan.mime) ||
+    !(
+      /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(plan.mime) ||
+      /^video\/(?:mp4|webm); codecs="av01\.[0-2]\.[0-9]{2}[MH]\.(?:08|10|12)(?:,(?:Opus|opus))?"$/.test(
+        plan.mime,
+      )
+    ) ||
     !plan.name ||
     new TextEncoder().encode(plan.name).byteLength > 255
   )

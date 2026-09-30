@@ -14,7 +14,11 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
 } from "./accountMutation";
-import { prepareAuthorizedNodeBlobRead, prepareAuthorizedNodeThumbnailRead } from "./blobRead";
+import {
+  prepareAuthorizedNodeBlobRead,
+  prepareAuthorizedNodeThumbnailRead,
+  prepareAuthorizedNodeTrackRead,
+} from "./blobRead";
 import { ensureContentBudget } from "./contentBudget";
 import { addZipPinStatements } from "./refs";
 import {
@@ -142,7 +146,8 @@ export async function issueContentTicket(
     !Number.isSafeInteger(expiresAt) ||
     exp <= iat ||
     expiresAt > now + 600_000 ||
-    (share !== undefined && principal.kind === "link_share")
+    (share !== undefined && principal.kind === "link_share") ||
+    (purpose === "track" && (share !== undefined || principal.kind === "link_share"))
   )
     throw new Error("invalid_content_ticket_request");
   const selectedShare =
@@ -181,7 +186,9 @@ export async function issueContentTicket(
       const blob =
         purpose === "thumb"
           ? await prepareAuthorizedNodeThumbnailRead(db, proof)
-          : await prepareAuthorizedNodeBlobRead(db, proof);
+          : purpose === "track"
+            ? await prepareAuthorizedNodeTrackRead(db, proof)
+            : await prepareAuthorizedNodeBlobRead(db, proof);
       const object = await bucket.head(blob.key);
       if (!object || object.size !== blob.size || object.etag !== blob.r2Etag)
         throw new Error("content_ticket_blob_unavailable");

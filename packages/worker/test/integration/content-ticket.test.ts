@@ -13,6 +13,7 @@ import { CsrfTokens, csrfKeyRing } from "../../src/auth/csrf";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
+import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
 import { prepareCookieBlobRead, streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { cancelContentTicket } from "../../src/services/contentTicketCancel";
@@ -775,6 +776,17 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
   };
   let issued;
   try {
+    await expect(
+      issueContentTicket(
+        mutationEnv(),
+        env.BLOBS,
+        tokens,
+        principal,
+        [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+        "track",
+        now + 300_000,
+      ),
+    ).rejects.toThrow("invalid_content_ticket_request");
     issued = await issueContentTicket(
       mutationEnv(),
       env.BLOBS,
@@ -805,10 +817,17 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
   }
 });
 
-it("streams a track ticket through the existing GET, HEAD and Range content path", async () => {
+it("purpose-separates private original-track GET, HEAD and Range delivery", async () => {
   const { f, now, tokens, principal, firstKey } = await fixture();
   let issued;
+  let contentIssued;
   try {
+    await env.DB.prepare(`INSERT INTO node_media(
+      node_id,blob_id,generator_version,width,height,duration_ms,container,video_codec,
+      audio_codec,codec_profile,codec_level,codec_tier,bit_depth
+    ) VALUES(?,?,?,1920,1080,9000,'mp4','av1','opus',0,8,'M',10)`)
+      .bind(f.ids.file, f.ids.blob, "video-av1-metadata-v1")
+      .run();
     issued = await issueContentTicket(
       mutationEnv(),
       env.BLOBS,
@@ -828,13 +847,24 @@ it("streams a track ticket through the existing GET, HEAD and Range content path
       APP_ORIGIN: "https://app.invalid",
       CONTENT_ORIGIN: "https://content.invalid",
     } as Env;
-    const url = `https://content.invalid/c/${f.ids.file}/${f.ids.blob}`;
+    const contentUrl = `https://content.invalid/c/${f.ids.file}/${f.ids.blob}`;
+    const url = `${contentUrl}/track`;
+    expect(
+      (
+        await handleContentHttp(
+          new Request(contentUrl, { headers: { Cookie: cookie } }),
+          contentEnv,
+          tokens,
+        )
+      ).status,
+    ).toBe(404);
     const get = await handleContentHttp(
       new Request(url, { headers: { Cookie: cookie } }),
       contentEnv,
       tokens,
     );
     expect(get.status).toBe(200);
+    expect(get.headers.get("Content-Type")).toBe('video/mp4; codecs="av01.0.08M.10,Opus"');
     expect(new TextDecoder().decode(await get.arrayBuffer())).toBe("abc");
     const head = await handleContentHttp(
       new Request(url, { method: "HEAD", headers: { Cookie: cookie } }),
@@ -852,6 +882,70 @@ it("streams a track ticket through the existing GET, HEAD and Range content path
     expect(range.status).toBe(206);
     expect(range.headers.get("Content-Range")).toBe("bytes 1-2/3");
     expect(new TextDecoder().decode(await range.arrayBuffer())).toBe("bc");
+    contentIssued = await issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "content",
+      now + 300_000,
+    );
+    const contentAccepted = await acceptContentTicket(mutationEnv(), tokens, contentIssued.ticket);
+    expect(
+      (
+        await handleContentHttp(
+          new Request(url, {
+            headers: { Cookie: contentAccepted.setCookie.split(";", 1)[0] ?? "" },
+          }),
+          contentEnv,
+          tokens,
+        )
+      ).status,
+    ).toBe(404);
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
+    if (contentIssued) await env.BLOBS.delete(`target-sets/${contentIssued.targetSetId}`);
+  }
+});
+
+it("preserves projected audio delivery through the track purpose", async () => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    await env.DB.prepare("UPDATE blobs SET mime_sniffed='audio/mpeg' WHERE id=? AND owner_id=?")
+      .bind(f.ids.blob, f.ids.user)
+      .run();
+    await env.DB.prepare(`INSERT INTO node_audio(
+      node_id,blob_id,generator_version,codec,title_extracted
+    ) VALUES(?,?,?,'mp3','Track')`)
+      .bind(f.ids.file, f.ids.blob, AUDIO_GENERATOR_VERSION)
+      .run();
+    issued = await issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "track",
+      now + 300_000,
+    );
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    const response = await handleContentHttp(
+      new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}/track`, {
+        headers: { Cookie: accepted.setCookie.split(";", 1)[0] ?? "" },
+      }),
+      {
+        ...mutationEnv(),
+        APP_ORIGIN: "https://app.invalid",
+        CONTENT_ORIGIN: "https://content.invalid",
+      } as Env,
+      tokens,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("abc");
   } finally {
     await env.BLOBS.delete(firstKey);
     if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
