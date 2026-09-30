@@ -6,6 +6,7 @@ import { grantPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { handleDeadLetterBatch } from "../../src/jobs/deadLetter";
 import { dispatchOutbox } from "../../src/jobs/outbox";
 import { handleOutboxBatch } from "../../src/jobs/queue";
 import type { SystemMutationSource } from "../../src/services/systemMutation";
@@ -165,6 +166,73 @@ it.each(["dispatch-claim", "send", "sent", "consume-claim", "complete"] as const
     }
   },
 );
+
+it("DLQ terminalization shares bounded admission capacity", async () => {
+  const f = await outboxFixture(undefined, epoch);
+  const seeds = Array.from({ length: 32 }, () => crypto.randomUUID());
+  const prefix = "system:outbox.dead-letter:";
+  let filled = false;
+  let acked = 0;
+  let retried = 0;
+  const source: SystemMutationSource = {
+    DB: env.DB,
+    systemControl: {
+      status: () => control().status(),
+      acquireSystemMutation: async (request) => {
+        if (!filled && request.permitId.startsWith(prefix)) {
+          filled = true;
+          await fill(f.ids.space, seeds);
+        }
+        return control().acquireSystemMutation(request);
+      },
+    },
+  };
+  const outcome = handleDeadLetterBatch(source, {
+    messages: [
+      {
+        id: crypto.randomUUID(),
+        attempts: 10,
+        body: { outboxId: f.id },
+        ack: () => {
+          acked++;
+        },
+        retry: () => {
+          retried++;
+        },
+      },
+    ],
+  });
+  try {
+    await expect
+      .poll(
+        () =>
+          env.DB.prepare(
+            "SELECT COUNT(*) n FROM mutation_admissions WHERE space_id=? AND permit_id LIKE ? AND state='waiting'",
+          )
+            .bind(f.ids.space, prefix + "%")
+            .first("n"),
+        { timeout: 4000, interval: 25 },
+      )
+      .toBe(1);
+    expect({ acked, retried }).toEqual({ acked: 0, retried: 0 });
+    expect(
+      await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
+    ).toBe("pending");
+    await env.DB.prepare("UPDATE mutation_admissions SET state='closed' WHERE id=?")
+      .bind(seeds[0]!)
+      .run();
+    await expect(outcome).resolves.toEqual({ acked: 1, retried: 0 });
+    expect(
+      await env.DB.prepare(`SELECT b.state,d.status FROM outbox b
+        JOIN outbox_dead_letters d ON d.outbox_id=b.outbox_id WHERE b.outbox_id=?`)
+        .bind(f.id)
+        .first(),
+    ).toEqual({ state: "failed", status: "failed" });
+  } finally {
+    await release(f.ids.space);
+    await outcome;
+  }
+});
 
 it("a lost send ACK survives coordinator eviction and only a new leased attempt sends", async () => {
   const f = await outboxFixture(undefined, epoch),

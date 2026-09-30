@@ -4,7 +4,7 @@
 
 ## 呼出しと範囲
 
-`rebuildRecoveryFts(epoch)`、`releaseStaleReservations(epoch, limit=20)`、`failStaleOutbox(epoch, limit=20)`を使用する。更新の前後に復旧監査を再初期化し、既存の監査結果を再開証明として流用しない。
+`rebuildRecoveryFts(epoch)`、`releaseStaleReservations(epoch, limit=20)`、`failStaleOutbox(epoch, limit=20)`、`requeueDeadLetters(epoch, limit=20)`を使用する。更新の前後に復旧監査を再初期化し、既存の監査結果を再開証明として流用しない。
 
 旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。
 
@@ -12,6 +12,7 @@
 |---|---|---|
 | reservation-release | reservations.owner_idの実space | 旧epoch・reserved・upload参照なしの予約をreleasedにする |
 | outbox-fail | 元operation.space_idのowner | 旧epochの対象node通知をfailedにし、dispatch/consumer claimを消す |
+| outbox-requeue | 元operation.space_idのowner | current epochのdelivery-exhausted failed通知をpendingへ戻す |
 | fts-rebuild | 明示null | 外部内容表search_indexからsearch_ftsを再構築する |
 
 actorのspaceを所有者の代わりに使わない。所有者がdisabledでも保守修復は可能だが、実spaceがなければ拒否する。FTSはuser/spaceがまだない空DBでも整合したbootstrap状態なら実行できる。
@@ -31,6 +32,10 @@ bootstrapが未完ならissuer/subとuser/spaceが全て空であること、完
 予約・通知の完了済み行は選択対象から外れるため、再起動後の再照会も枠を増やさない。FTS rebuildは明示した再構築操作であり、呼出しごとに受付を取って事後の整合を検査する。read-onlyの復旧診断/FTS整合検査はDB-onlyのままにし、coordinatorが自分の枠待ちへ再帰しない。
 
 1回の予約・通知修復は最大20件。開始前の時刻から25秒の固定期限を持ち、次の行を始める前と受付後に検査する。期限後に新しい更新を開始せず、完了件数だけを報告する。既に開始したD1命令を途中取消しした証明には使わない。
+
+DLQ requeueはcurrent epoch・failed・`outbox_dead_letters.status='failed'`の組合せだけを選ぶ。dispatch/consumer leaseを消してpendingへ戻し、同じledgerをrequeuedへ進めてrequeue countを増やす。旧epochをfailedにする`failStaleOutbox`やdelivery-exhausted ledgerのないfailed行は対象外である。再呼出しはrequeued行を選ばない。送信はmaintenance解除後の既存`dispatchPendingOutbox`に任せ、consumer以外の完了経路を追加しない。
+
+復旧監査とfinal fenceはledgerのorphan、outbox epoch不一致、failed/requeued状態とrequeue countの不整合を拒否する。live dispatch/consumer lease、未終了mutation受付が残る間も完了しない。
 
 ## 検証と残作業
 

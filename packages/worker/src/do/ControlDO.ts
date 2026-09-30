@@ -72,6 +72,7 @@ import {
   type RecoveryCursor,
   rebuildRecoverySearchFts,
   releaseStaleRecoveryReservations,
+  requeueDeliveryExhaustedOutbox,
 } from "./recoveryAudit";
 
 export { CONTROL_NAME } from "./controlName";
@@ -720,6 +721,21 @@ export class ControlDO extends DurableObject<Env> {
       failStaleRecoveryOutbox({ DB: this.env.DB, systemControl: this }, expectedEpoch, limit),
     );
     return { failed, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Bounded operator requeue for current-epoch delivery-exhausted notifications. */
+  async requeueDeadLetters(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ requeued: number; audit: RecoveryAuditStatus }> {
+    const requeued = await this.#maintenance(expectedEpoch, () =>
+      requeueDeliveryExhaustedOutbox(
+        { DB: this.env.DB, systemControl: this },
+        expectedEpoch,
+        limit,
+      ),
+    );
+    return { requeued, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Checks one page; a failed page leaves the durable cursor unchanged. */

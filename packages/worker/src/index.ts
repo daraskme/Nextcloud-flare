@@ -13,6 +13,7 @@ import { globalKdf } from "./auth/globalKdf";
 import { primary } from "./db/primary";
 import { CONTROL_NAME } from "./do/ControlDO";
 import { type Env, hasBindings } from "./env";
+import { handleDeadLetterBatch } from "./jobs/deadLetter";
 import { runGarbageCollection } from "./jobs/gc";
 import { repairMultipartUploads } from "./jobs/multipartCleanup";
 import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
@@ -129,6 +130,13 @@ export default {
     return problem(404, "not_found");
   },
   async queue(batch: MessageBatch, env: Env): Promise<void> {
+    if (
+      !hasBindings(env) ||
+      (batch.queue !== env.JOBS_QUEUE_NAME && batch.queue !== env.JOBS_DLQ_NAME)
+    ) {
+      batch.retryAll();
+      return;
+    }
     let epoch: number | null;
     try {
       epoch = await admittedEpoch(env);
@@ -141,7 +149,11 @@ export default {
       batch.retryAll();
       return;
     }
-    await handleOutboxBatch(env, batch);
+    if (batch.queue === env.JOBS_QUEUE_NAME) {
+      await handleOutboxBatch(env, batch);
+      return;
+    }
+    await handleDeadLetterBatch(env, batch);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const epoch = await admittedEpoch(env);

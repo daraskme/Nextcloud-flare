@@ -21,6 +21,8 @@ export interface Env {
   ENVIRONMENT: "development" | "staging" | "production";
   APP_ORIGIN: string;
   CONTENT_ORIGIN: string;
+  JOBS_QUEUE_NAME: string;
+  JOBS_DLQ_NAME: string;
   CONTENT_TICKET_KEYS?: string;
   CONTENT_COOKIE_KEYS?: string;
   CONTENT_TICKET_ACTIVE_KID?: string;
@@ -68,6 +70,8 @@ export const REQUIRED_BINDINGS = [
   "SHARE_PASSWORD_LIMITER",
   "SHARE_PASSWORD_IP_LIMITER",
   "ASSETS",
+  "JOBS_QUEUE_NAME",
+  "JOBS_DLQ_NAME",
 ] as const satisfies readonly (keyof Env)[];
 
 export function hasBindings(env: Partial<Env>): env is Env {
