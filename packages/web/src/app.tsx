@@ -16,6 +16,7 @@ import {
   Folder,
   FolderPlus,
   HardDrive,
+  Images,
   Info,
   LayoutGrid,
   List,
@@ -23,6 +24,7 @@ import {
   LogOut,
   Menu as MenuIcon,
   MoreHorizontal,
+  Music2,
   RefreshCw,
   Search,
   Share2,
@@ -33,7 +35,9 @@ import {
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
+import { PrivateAudio } from "./features/audio/PrivateAudio";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
+import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import {
@@ -811,11 +815,14 @@ export function App() {
     account.error instanceof ApiError && [401, 403].includes(account.error.status);
   const me = authExpired ? undefined : account.data;
   const trash = pathname === "/trash";
+  const gallery = pathname === "/gallery";
+  const audio = pathname === "/audio";
+  const files = !trash && !gallery && !audio;
   const parentId = /^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
-  const searching = !trash && searchTerm?.scopeId === parentId && !!searchTerm.query;
+  const searching = files && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
   useEffect(() => setStatsScope(null), [pathname]);
@@ -832,7 +839,7 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && !trash && !searching,
+    enabled: !!me && files && !searching,
     retry: false,
   });
   const results = useInfiniteQuery({
@@ -840,13 +847,13 @@ export function App() {
     queryFn: ({ pageParam, signal }) => api.search(parentId, searchTerm!.query, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && searching,
+    enabled: !!me && files && searching,
     retry: false,
   });
   const path = useQuery({
     queryKey: ["path", me?.id, me?.epoch, parentId],
     queryFn: ({ signal }) => api.path(parentId, signal),
-    enabled: !!me && !trash,
+    enabled: !!me && files,
     retry: false,
   });
   const trashed = useInfiniteQuery({
@@ -932,9 +939,9 @@ export function App() {
     }
     setAction(next);
   };
-  const addFiles = async (files: FileList | null) => {
-    if (!files || !me || trash) return;
-    for (const file of Array.from(files)) {
+  const addFiles = async (selectedFiles: FileList | null) => {
+    if (!selectedFiles || !me || !files) return;
+    for (const file of Array.from(selectedFiles)) {
       try {
         await uploads.enqueue(file, me, parentId);
       } catch (error) {
@@ -983,7 +990,13 @@ export function App() {
   );
   const data = trash ? trashed : searching ? results : listing;
   const truncated = searching && results.data?.pages.some((page) => page.truncated);
-  const title = trash ? "ごみ箱" : path.data?.path.at(-1)?.name || "マイドライブ";
+  const title = trash
+    ? "ごみ箱"
+    : gallery
+      ? "ギャラリー"
+      : audio
+        ? "オーディオ"
+        : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1010,9 +1023,19 @@ export function App() {
         </Link>
         <div className="workspace-label">PERSONAL WORKSPACE</div>
         <nav aria-label="メインナビゲーション">
-          <Link to="/files" className={!trash ? "nav-link active" : "nav-link"}>
+          <Link to="/files" className={files ? "nav-link active" : "nav-link"}>
             <HardDrive size={19} />
             マイドライブ
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/gallery" className={gallery ? "nav-link active" : "nav-link"}>
+            <Images size={19} />
+            ギャラリー
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/audio" className={audio ? "nav-link active" : "nav-link"}>
+            <Music2 size={19} />
+            オーディオ
             <span className="nav-dot" />
           </Link>
           <Link to="/trash" className={trash ? "nav-link active" : "nav-link"}>
@@ -1058,7 +1081,7 @@ export function App() {
             </span>
             <span>パーソナルスペース</span>
             <ChevronRight size={14} />
-            <span className="muted">ファイル</span>
+            <span className="muted">{title}</span>
           </div>
           <div className="account-menu">
             <span className="account-email">{me?.email}</span>
@@ -1090,7 +1113,7 @@ export function App() {
           id="main-content"
           className={dragging ? "main dragging" : "main"}
           onDragOver={(event) => {
-            if (!trash && event.dataTransfer.types.includes("Files")) {
+            if (files && event.dataTransfer.types.includes("Files")) {
               event.preventDefault();
               setDragging(true);
             }
@@ -1113,8 +1136,8 @@ export function App() {
             </div>
           )}
           <div className="breadcrumbs" aria-label="パンくず">
-            <Link to="/files">マイドライブ</Link>
-            {!trash &&
+            {files ? <Link to="/files">マイドライブ</Link> : <span>パーソナルスペース</span>}
+            {files &&
               path.data?.path.slice(1).map((crumb) => (
                 <span key={crumb.id}>
                   <ChevronRight size={13} />
@@ -1129,18 +1152,42 @@ export function App() {
                 ごみ箱
               </span>
             )}
+            {gallery && (
+              <span>
+                <ChevronRight size={13} />
+                ギャラリー
+              </span>
+            )}
+            {audio && (
+              <span>
+                <ChevronRight size={13} />
+                オーディオ
+              </span>
+            )}
           </div>
           <div className="page-heading">
             <div>
-              <p className="eyebrow">{trash ? "TRASH" : "YOUR FILES, YOUR SPACE"}</p>
+              <p className="eyebrow">
+                {trash
+                  ? "TRASH"
+                  : gallery
+                    ? "YOUR PHOTOS"
+                    : audio
+                      ? "YOUR MUSIC"
+                      : "YOUR FILES, YOUR SPACE"}
+              </p>
               <h1>{title}</h1>
               <p>
                 {trash
                   ? "不要になったファイルを確認・復元できます。"
-                  : "大切なファイルを、いつでも使いやすく。"}
+                  : gallery
+                    ? "アップロードした写真を、サムネイルからすばやく探せます。"
+                    : audio
+                      ? "プライベートなオーディオを、このスペースから再生できます。"
+                      : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
-            {me && !trash && (
+            {me && files && (
               <div className="heading-actions">
                 <Button
                   disabled={!!recovery}
@@ -1219,6 +1266,10 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : gallery ? (
+            <PrivateGallery account={me} />
+          ) : audio ? (
+            <PrivateAudio account={me} />
           ) : (
             <>
               {!trash && statsScope === parentId && (

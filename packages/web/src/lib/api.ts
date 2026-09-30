@@ -65,6 +65,49 @@ export interface TrashPage {
   treeGeneration: number;
   nextCursor: string | null;
 }
+export interface GalleryItem {
+  id: string;
+  name: string;
+  currentBlobId: string;
+  mime: string;
+  size: number;
+  width: number;
+  height: number;
+  takenAt: number | null;
+  updatedAt: number;
+  thumbnail: "ready" | "pending" | "failed";
+}
+export interface GalleryPage {
+  rootId: string;
+  treeGeneration: number;
+  recursive: boolean;
+  items: GalleryItem[];
+  nextCursor: string | null;
+  truncated: boolean;
+  candidateLimit: number;
+}
+export interface AudioTrack {
+  id: string;
+  name: string;
+  currentBlobId: string;
+  mime: string;
+  durationMs: number | null;
+  codec: string | null;
+  title: string;
+  artist: string | null;
+  album: string | null;
+  trackNumber: number | null;
+  discNumber: number | null;
+}
+export interface AudioPage {
+  rootId: string;
+  treeGeneration: number;
+  recursive: boolean;
+  items: AudioTrack[];
+  nextCursor: string | null;
+  limitReached: boolean;
+  trackLimit: number;
+}
 export interface Operation {
   id: string;
   state: "claimed" | "committed" | "failed";
@@ -301,32 +344,67 @@ export class ApiClient {
       signal ? { signal } : {},
     );
   }
+  gallery(rootId: string, cursor?: string | null, signal?: AbortSignal) {
+    const params = new URLSearchParams({ recursive: "1" });
+    if (cursor) params.set("cursor", cursor);
+    return this.request<GalleryPage>(
+      `/api/v1/nodes/${encodeURIComponent(rootId)}/gallery?${params}`,
+      signal ? { signal } : {},
+    );
+  }
+  tracks(rootId: string, cursor?: string | null, signal?: AbortSignal) {
+    const params = new URLSearchParams({ recursive: "1" });
+    if (cursor) params.set("cursor", cursor);
+    return this.request<AudioPage>(
+      `/api/v1/nodes/${encodeURIComponent(rootId)}/tracks?${params}`,
+      signal ? { signal } : {},
+    );
+  }
+
+  async prepareContent(
+    account: Account,
+    targets: readonly { id: string; currentBlobId: string }[],
+    purpose: "content" | "thumb" | "track",
+    signal?: AbortSignal,
+  ): Promise<(target: { id: string; currentBlobId: string }) => string> {
+    if (!targets.length || targets.length > 1_000) throw new Error("invalid_content_targets");
+    const lifetime = this.#lifetime;
+    const origin = new URL(account.contentOrigin);
+    if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
+      throw new Error("invalid_content_origin");
+    const issued = await this.json<{ ticket: string }>("/api/v1/content-session", "POST", {
+      targets: targets.map((target) => ({ nodeId: target.id, spaceId: account.spaceId })),
+      purpose,
+      ttlSeconds: 300,
+    });
+    lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
+    const signals = [lifetime.signal, AbortSignal.timeout(30_000)];
+    if (signal) signals.push(signal);
+    const accepted = await fetch(`${origin.origin}/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket: issued.ticket }),
+      credentials: "include",
+      redirect: "error",
+      signal: AbortSignal.any(signals),
+    });
+    lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
+    if (!accepted.ok) throw new ApiError(accepted.status, "content_session_failed");
+    return (target) =>
+      `${origin.origin}/c/${encodeURIComponent(target.id)}/${encodeURIComponent(target.currentBlobId)}${purpose === "thumb" ? "/thumb" : ""}`;
+  }
 
   async openFile(account: Account, node: FileNode, target: Window): Promise<void> {
-    const lifetime = this.#lifetime;
     try {
-      const origin = new URL(account.contentOrigin);
-      if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
-        throw new Error("invalid_content_origin");
-      const issued = await this.json<{ ticket: string }>("/api/v1/content-session", "POST", {
-        targets: [{ nodeId: node.id, spaceId: account.spaceId }],
-        purpose: "content",
-        ttlSeconds: 300,
-      });
-      lifetime.signal.throwIfAborted();
-      const accepted = await fetch(`${origin.origin}/session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket: issued.ticket }),
-        credentials: "include",
-        redirect: "error",
-        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)]),
-      });
-      lifetime.signal.throwIfAborted();
-      if (!accepted.ok) throw new ApiError(accepted.status, "content_session_failed");
-      target.location.replace(
-        `${origin.origin}/c/${encodeURIComponent(node.id)}/${encodeURIComponent(node.currentBlobId ?? "")}`,
+      if (!node.currentBlobId) throw new Error("content_not_available");
+      const contentUrl = await this.prepareContent(
+        account,
+        [{ id: node.id, currentBlobId: node.currentBlobId }],
+        "content",
       );
+      target.location.replace(contentUrl({ id: node.id, currentBlobId: node.currentBlobId }));
     } catch (error) {
       target.close();
       throw error;
