@@ -66,9 +66,10 @@ export interface TrashPermitRequest {
   lockTokens: readonly string[];
 }
 export interface RestorePermitRequest extends CreatePermitRequest {
-  gcPause: RestorePause;
+  gcPause?: RestorePause;
   trashOpId: string;
   rootNodeId: string;
+  async?: boolean;
 }
 export interface PurgePermitRequest {
   requestId: string;
@@ -76,6 +77,7 @@ export interface PurgePermitRequest {
   trashOpId: string;
   rootNodeId: string;
   principal: Principal;
+  async?: boolean;
 }
 export interface DavLockRequest {
   requestId: string;
@@ -679,8 +681,13 @@ export class LockDO extends DurableObject<Env> {
     )
       throw new Error("invalid_lock_request");
     const status = await this.env.CONTROL.get(this.env.CONTROL.idFromName(CONTROL_NAME)).status();
-    if (status.maintenance || !status.gcPaused || status.epoch !== request.principal.epoch)
+    if (
+      status.maintenance ||
+      (!request.async && !status.gcPaused) ||
+      status.epoch !== request.principal.epoch
+    )
       throw new Error("admission_closed");
+    if (!request.async && !request.gcPause) throw new Error("invalid_lock_request");
     await this.#initialize(request.spaceId, status.epoch);
     const destination = await authorizeNode(this.env.DB, request.principal, {
       operation: "node.create",
@@ -703,15 +710,20 @@ export class LockDO extends DurableObject<Env> {
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
         WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
           AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
-          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) BETWEEN 1 AND 1000
+          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)
+            BETWEEN 1 AND ${request.async ? 10_000 : 1_000}
           AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
             WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))
           AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN nodes m ON m.id=tm.node_id
             JOIN blobs b ON b.id=m.current_blob_id WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))
           AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN node_versions v ON v.node_id=tm.node_id
             JOIN blobs b ON b.id=v.blob_id WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))
-          AND EXISTS(SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=? AND c.maintenance=0 AND c.gc_paused=1)
-          AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')`,
+          AND EXISTS(SELECT 1 FROM control c WHERE c.singleton=1 AND c.epoch=? AND c.maintenance=0)
+          ${
+            request.async
+              ? ""
+              : "AND EXISTS(SELECT 1 FROM control c WHERE c.singleton=1 AND c.gc_paused=1) AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')"
+          }`,
       [
         request.trashOpId,
         request.spaceId,
@@ -729,6 +741,7 @@ export class LockDO extends DurableObject<Env> {
       request.principal.credential_id,
       status.epoch,
       hashes,
+      request.async === true,
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -749,7 +762,7 @@ export class LockDO extends DurableObject<Env> {
       authorizationAssertion(destination),
       assertCreateLocks(request.parentId, request.spaceId, request.principal, hashes),
       restoreGuard,
-      assertRestorePause(request.gcPause, request.requestId),
+      ...(request.gcPause ? [assertRestorePause(request.gcPause, request.requestId)] : []),
     ]);
   }
 
@@ -781,7 +794,8 @@ export class LockDO extends DurableObject<Env> {
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
         WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
           AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
-          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) BETWEEN 1 AND 1000
+          AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)
+            BETWEEN 1 AND ${request.async ? 10_000 : 1_000}
           AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
             WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))`,
       [request.trashOpId, request.spaceId, request.rootNodeId, request.principal.user_id],
@@ -794,6 +808,7 @@ export class LockDO extends DurableObject<Env> {
       request.principal.user_id,
       request.principal.credential_id,
       status.epoch,
+      request.async === true,
     ]);
     this.ctx.storage.sql.exec(
       "INSERT INTO permit_intents VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
@@ -882,7 +897,9 @@ export class LockDO extends DurableObject<Env> {
         },
         {
           sql: `UPDATE operations SET state='failed',error_code='permit_expired',updated_at=MAX(updated_at,strftime('%s','now')*1000)
-            WHERE space_id=? AND state='claimed' AND EXISTS(
+            WHERE space_id=? AND state='claimed'
+            AND NOT EXISTS(SELECT 1 FROM bulk_jobs j WHERE j.op_id=operations.op_id
+              AND j.state IN ('pending','running')) AND EXISTS(
               SELECT 1 FROM permits p WHERE p.permit_id=operations.permit_id AND p.state<>'open')`,
           values: [request.spaceId],
         },

@@ -13,6 +13,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -42,6 +43,7 @@ interface Snapshot {
   memberDigest: string;
   searchCount: number;
   levels: readonly { depth: number; count: number }[];
+  rootRevision: number;
 }
 
 async function snapshot(
@@ -51,7 +53,7 @@ async function snapshot(
   trashOpId: string,
 ): Promise<Snapshot> {
   const row = await primary(db)
-    .prepare(`SELECT t.root_node_id AS rootId,s.root_node_id AS spaceRootId,
+    .prepare(`SELECT t.root_node_id AS rootId,s.root_node_id AS spaceRootId,n.revision AS rootRevision,
       (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) AS memberCount,
       (SELECT COUNT(*) FROM search_index si JOIN trash_members tm ON tm.node_id=si.node_id
         WHERE tm.trash_op_id=t.op_id) AS searchCount
@@ -60,9 +62,21 @@ async function snapshot(
       WHERE t.op_id=? AND t.space_id=? AND t.actor_id=? AND t.state='trashed'
         AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL`)
     .bind(trashOpId, spaceId, principal.user_id)
-    .first<{ rootId: string; spaceRootId: string; memberCount: number; searchCount: number }>();
-  if (!row || row.memberCount < 1 || row.memberCount > 1_000)
+    .first<{
+      rootId: string;
+      spaceRootId: string;
+      memberCount: number;
+      searchCount: number;
+      rootRevision: number;
+    }>();
+  if (!row || row.memberCount < 1 || row.memberCount > ASYNC_TREE_MAX_NODES)
     throw new Error("authorization_denied");
+  if (row.memberCount > 1_000)
+    return {
+      ...row,
+      memberDigest: "",
+      levels: [],
+    };
   const members = await primary(db)
     .prepare(`WITH RECURSIVE d(id,depth,path) AS (
       SELECT n.id,0,'/'||n.id||'/' FROM nodes n WHERE n.id=? AND n.space_id=?
@@ -493,15 +507,17 @@ export async function purgeTrash(
       parentId: initial.spaceRootId,
     },
   );
-  const stepCount = BASE_STEPS + initial.levels.length;
+  const async = initial.memberCount > 1_000;
+  const stepCount = async ? 1 : BASE_STEPS + initial.levels.length;
   const existing = await findOperationIntent(env.DB, intent, stepCount);
-  if (existing && existing.state !== "claimed") {
+  if (existing) {
     const operation = await lookupOperation(env.DB, principal, intent.id);
     if (!operation) throw new Error("authorization_denied");
-    return { kind: "terminal", operation };
+    if (existing.state !== "claimed" || operation.job) return { kind: "terminal", operation };
   }
   const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
   const permit = await lock.acquirePurge({
+    async,
     requestId: intent.id,
     spaceId: request.spaceId,
     trashOpId: request.trashOpId,
@@ -517,11 +533,29 @@ export async function purgeTrash(
     });
     if (authority.operation !== "node.read") throw new Error("authorization_denied");
     const current = await snapshot(env.DB, principal, request.spaceId, request.trashOpId);
-    if (current.memberDigest !== initial.memberDigest) throw new Error("authorization_denied");
+    if (
+      current.memberCount !== initial.memberCount ||
+      current.rootRevision !== initial.rootRevision ||
+      (!async && current.memberDigest !== initial.memberDigest)
+    )
+      throw new Error("authorization_denied");
     const claimed = await claimOperation(env.DB, intent, permit, authority, stepCount);
     if (claimed.kind === "terminal") {
       const operation = await lookupOperation(env.DB, principal, intent.id);
       if (!operation) throw new Error("authorization_denied");
+      done = true;
+      return { kind: "terminal", operation };
+    }
+    if (async) {
+      const operation = await startTreeJob(env.DB, claimed.claim, principal.user_id, {
+        rootNodeId: current.rootId,
+        parentId: current.spaceRootId,
+        trashOpId: request.trashOpId,
+        sourceTreeGeneration: authority.node.tree_generation,
+        sourceRevision: current.rootRevision,
+        parentRevision: authority.node.revision,
+        lockTokenHashes: [],
+      });
       done = true;
       return { kind: "terminal", operation };
     }

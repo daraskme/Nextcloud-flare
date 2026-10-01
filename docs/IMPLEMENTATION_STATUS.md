@@ -13,6 +13,14 @@ upload-only、root外、action失効、stale session、encrypted、scripted、fi
 
 読み取り専用public shareへ既存のbounded ZIP STORE planner、immutable target manifest、blob pin、content ticket交換、BudgetDO、cancel/revoke fenceを接続した。専用create routeはpublic-form CSRFと`Idempotency-Key`を要求し、同一requestを同じmanifest/ticketへ収束させる。app routeは現行share sessionを検査してcontent originへredirectするだけでbodyをproxyしない。content originはHEAD、単一Range、416、range-aware budget精算を行う。upload-only routeは404を維持する。
 
+## 2026-10-01 大規模treeの非同期trash・restore・purge
+
+1,000 node以下の既存同期動作を維持し、1,001〜10,000 nodeをdurable async operationへ接続した。migration `0047`は`bulk_jobs`へdispatch state/leaseを追加し、operationに結合したjob、250 node単位のmanifest cursor、ID-only Queue message、worker claim、terminal receiptを保存する。RESTは202、`Operation-Id`、operation location、job state/processed/totalを返す。
+
+各chunkと最終確定は保存済みoperand/grant、current credential/authority、epoch/maintenance、owner/space、root/parent ancestry、revision/tree generation、lock/job leaseを再検査する。restoreはGC pauseとactive deletion/blob stateをfenceし、名前衝突suffixを維持してroot-firstで復元する。purgeはdependent records、blob ref/pin/quota、GC candidateをD1で確定し、R2 objectの物理削除を後続GCへ残す。
+
+focused unit、routeを含む1,001-node integration、restore GC pause、schema migration testsを追加した。`pnpm check`でlint、typecheck、contract/config検証、unit 741件、integration 2,182件、production dry-run buildが成功した。実Cloudflare Queue/DLQ/Cron、remote migration、deployは未実施。
+
 ## 2026-09-29 video・group share・multipart closure統合
 
 Queue/media/ZIP/internal share統合後のmainへ、private video metadata/track、bounded group internal share、multipart closure settlementを依存順に統合した。migrationは45件（最新`0046`）、通常tableは74、route契約は156。

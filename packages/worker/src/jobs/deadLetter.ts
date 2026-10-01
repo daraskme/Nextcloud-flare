@@ -4,6 +4,8 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { treeJobRow } from "./treeJobStore";
+import { failTreeJob } from "./treeJobWorker";
 
 export interface DeadLetterDelivery {
   readonly id: string;
@@ -43,6 +45,14 @@ function outboxId(body: unknown): string | null {
   if (fields.length !== 1 || fields[0] !== "outboxId") return null;
   const id = (body as { outboxId?: unknown }).outboxId;
   return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
+}
+
+function treeJobId(body: unknown): string | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const fields = Object.keys(body);
+  if (fields.length !== 1 || fields[0] !== "treeJobId") return null;
+  const id = (body as { treeJobId?: unknown }).treeJobId;
+  return typeof id === "string" && /^job_[a-f0-9]{64}$/.test(id) ? id : null;
 }
 
 function validDelivery(delivery: DeadLetterDelivery): boolean {
@@ -223,6 +233,20 @@ export async function handleDeadLetterBatch(
   const deadline = Date.now() + 25_000;
   for (const message of batch.messages) {
     try {
+      const jobId = treeJobId(message.body);
+      if (jobId && validDelivery(message)) {
+        const row = await treeJobRow(env.DB, jobId);
+        if (
+          !row ||
+          row.state === "completed" ||
+          row.state === "failed" ||
+          (await failTreeJob(env, row, "queue_exhausted", deadline)) === "failed"
+        ) {
+          message.ack();
+          acked++;
+          continue;
+        }
+      }
       if (await terminalizeDeadLetter(env, message, deadline)) {
         message.ack();
         acked++;

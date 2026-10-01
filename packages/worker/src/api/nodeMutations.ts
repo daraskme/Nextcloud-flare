@@ -3,6 +3,7 @@ import type { Principal } from "../auth/authorize";
 import type { CsrfTokens } from "../auth/csrf";
 import type { Env } from "../env";
 import { lookupOperation } from "../jobs/operations";
+import { dispatchTreeJob } from "../jobs/treeJobStore";
 import { copyNode } from "../services/copyNode";
 import { createFolder } from "../services/createFolder";
 import { moveNode } from "../services/moveNode";
@@ -306,7 +307,23 @@ export async function handleNodeMutationHttp(
                   });
     if (outcome.kind === "commit_unknown") return unknownOperation(outcome.operationId);
     const operation = outcome.operation;
-    if (operation.state === "claimed") return unknownOperation(operation.id);
+    if (operation.state === "claimed") {
+      if (!operation.job) return unknownOperation(operation.id);
+      try {
+        await dispatchTreeJob(env, env.JOBS, operation.job.id, principal.epoch);
+      } catch {
+        // Scheduled dispatch retries the durable pending job.
+      }
+      return Response.json(operation, {
+        status: 202,
+        headers: {
+          "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Operation-Id": operation.id,
+          Location: `/api/v1/operations/${operation.id}`,
+        },
+      });
+    }
     if (operation.state === "committed")
       return Response.json(operation, {
         status: folder || transfer?.[2] === "copy" ? 201 : 200,
