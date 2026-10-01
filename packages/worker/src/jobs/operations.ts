@@ -99,14 +99,14 @@ export async function operationIntent(
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new Error("invalid_idempotency_key");
   const actor = principalId(principal);
   const authorizationContext = principalAuthorizationContext(principal);
-  const id = `op_${await digestJson([
-    principal.kind,
-    actor,
-    principal.credential_id,
-    authorizationContext,
-    key,
-  ])}`;
-  const digest = await digestJson({ spaceId, kind, authorizationContext, body });
+  const id = `op_${await digestJson(
+    authorizationContext
+      ? [principal.kind, actor, principal.credential_id, authorizationContext, key]
+      : [principal.kind, actor, principal.credential_id, key],
+  )}`;
+  const digest = await digestJson(
+    authorizationContext ? { spaceId, kind, authorizationContext, body } : { spaceId, kind, body },
+  );
   const encoded = canonicalJson(operands, 8192);
   return Object.freeze({
     id,
