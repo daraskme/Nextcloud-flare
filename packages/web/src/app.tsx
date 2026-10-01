@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Check,
   ChevronRight,
   Cloud,
@@ -25,6 +26,7 @@ import {
   Menu as MenuIcon,
   MoreHorizontal,
   Music2,
+  PlaySquare,
   RefreshCw,
   Search,
   Share2,
@@ -38,8 +40,10 @@ import { Dialog } from "./components/ui/dialog";
 import { PrivateAudio } from "./features/audio/PrivateAudio";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
+import { PrivateBookshelf } from "./features/library/PrivateBookshelf";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
+import { PrivateVideo } from "./features/video/PrivateVideo";
 import {
   type Account,
   ApiError,
@@ -817,7 +821,9 @@ export function App() {
   const trash = pathname === "/trash";
   const gallery = pathname === "/gallery";
   const audio = pathname === "/audio";
-  const files = !trash && !gallery && !audio;
+  const bookshelf = pathname === "/bookshelf";
+  const video = pathname === "/video";
+  const files = !trash && !gallery && !audio && !bookshelf && !video;
   const parentId = /^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
@@ -996,7 +1002,11 @@ export function App() {
       ? "ギャラリー"
       : audio
         ? "オーディオ"
-        : path.data?.path.at(-1)?.name || "マイドライブ";
+        : bookshelf
+          ? "本棚"
+          : video
+            ? "動画"
+            : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1036,6 +1046,16 @@ export function App() {
           <Link to="/audio" className={audio ? "nav-link active" : "nav-link"}>
             <Music2 size={19} />
             オーディオ
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/bookshelf" className={bookshelf ? "nav-link active" : "nav-link"}>
+            <BookOpen size={19} />
+            本棚
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/video" className={video ? "nav-link active" : "nav-link"}>
+            <PlaySquare size={19} />
+            動画
             <span className="nav-dot" />
           </Link>
           <Link to="/trash" className={trash ? "nav-link active" : "nav-link"}>
@@ -1164,6 +1184,18 @@ export function App() {
                 オーディオ
               </span>
             )}
+            {bookshelf && (
+              <span>
+                <ChevronRight size={13} />
+                本棚
+              </span>
+            )}
+            {video && (
+              <span>
+                <ChevronRight size={13} />
+                動画
+              </span>
+            )}
           </div>
           <div className="page-heading">
             <div>
@@ -1174,7 +1206,11 @@ export function App() {
                     ? "YOUR PHOTOS"
                     : audio
                       ? "YOUR MUSIC"
-                      : "YOUR FILES, YOUR SPACE"}
+                      : bookshelf
+                        ? "YOUR BOOKS"
+                        : video
+                          ? "YOUR VIDEOS"
+                          : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
@@ -1184,7 +1220,11 @@ export function App() {
                     ? "アップロードした写真を、サムネイルからすばやく探せます。"
                     : audio
                       ? "プライベートなオーディオを、このスペースから再生できます。"
-                      : "大切なファイルを、いつでも使いやすく。"}
+                      : bookshelf
+                        ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
+                        : video
+                          ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
+                          : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
             {me && files && (
@@ -1270,6 +1310,10 @@ export function App() {
             <PrivateGallery account={me} />
           ) : audio ? (
             <PrivateAudio account={me} />
+          ) : bookshelf ? (
+            <PrivateBookshelf account={me} />
+          ) : video ? (
+            <PrivateVideo account={me} />
           ) : (
             <>
               {!trash && statsScope === parentId && (

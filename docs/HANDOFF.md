@@ -25,7 +25,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、direct-user/group internal shareとread-only shared DAV、multipart closure settlementをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share-version/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。share action変更とmember削除/再追加のどちらでもbudget identityをrotateし、revoke済みbudgetを再利用しない。
+読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private Gallery/Audio UI、direct-user/group internal shareとread-only shared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。本変更は既存search/library/content-ticket authorityへprivate Bookshelf/EPUB readerとVideo playerを接続する。internal shareはowner lifecycle、rename-stable mount、recipient/action/share-version/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。
 
 このbranchはmigration `0047`（全46件）でdurable async tree jobを追加した。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
 
@@ -35,7 +35,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 74 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
-読み取り専用public shareのGallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEADを接続した。大規模treeの非同期trash/restore/purgeもdurable Queue jobへ接続した。次はBookshelf/reader・video UI、reshare/shared DAV編集、残るQueue event/repairを依存順に進める。並行してtimer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purgeを接続し、private Bookshelf/EPUB readerとVideo playerも既存authorityへ接続した。次はpublic media UI、reshare/shared DAV編集、残るQueue event/repairを依存順に進める。並行してprivate mediaの実ファイル・複数browser検証、timer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
 次のschema変更は`0048`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
@@ -98,8 +98,8 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
-- private/public upload、multipart closure、Files UI、private Gallery/Audio、private/public ZIP、private/public EPUB、public Gallery/Audio metadata・thumbnail/audio/video ticket、audio/video track、direct-user/group shareとread-only shared DAVは接続済み。Bookshelf/reader・video UI、全operation/route会計、DAV実client gate、運用・releaseは未完了。実環境のControlDO admission/Access/署名鍵設定も未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
-- AVIF/AV1/Opus は形式判定と対応projection/原本配信まで。実codec変換、video UI、複数browserでの実ファイル再生試験は未接続。
+- private/public upload、multipart closure、Files UI、private Gallery/Audio/Bookshelf/Video、private/public ZIP/EPUB、public Gallery/Audio metadata・thumbnail/audio/video ticket・EPUB metadata/page/entry、audio/video track、direct-user/group shareとread-only shared DAVは接続済み。public media UI、全operation/route会計、DAV実client gate、運用・releaseは未完了。実環境のControlDO admission/Access/署名鍵設定も未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
+- AVIF/AV1/Opus は形式判定、対応projection/原本配信、private native playerまで。実codec変換と複数browserでの実ファイル再生試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。
 - app password 作成と DAV 認証には `APP_PASSWORD_PEPPERS` と `APP_PASSWORD_ACTIVE_KID` の pepper ring が必要。未設定なら 503。remote secret 登録は未完了。
@@ -109,7 +109,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、public media/EPUB/ZIP、大規模非同期tree処理まで実装済み。次はBookshelf/reader・video UI、reshare/shared DAV編集、残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、public media/EPUB/ZIP、大規模非同期tree処理、private Bookshelf/EPUB readerとVideo playerまで実装済み。次はpublic media UI、reshare/shared DAV編集、残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 
@@ -176,7 +176,7 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 1. **outbox Queue 実サービス / repair**: dead-letter台帳とbounded requeueは実装済み。実 Queue/DLQ/retry exhaustionを検証し、残る kind の saved operand/result CAS と chunk fencingを実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
 2. **ControlDOの残る制御**: namespace以外のaccount mutation受付、終了証明を失ったKDFの運用収束・共有password/IP制限、実restore drill。全監査後の受付再開、backup barrier、multipart closure settlementはローカル実装・検証済み。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
-4. Audio/video metadata/track、画像thumbnail、private/public ZIP/EPUB、public Gallery/Audio、private Gallery/Audio、direct-user/group共有は接続済み。Bookshelf/reader・video UIを進め、最後に実環境 gate とリリース確認を行う。
+4. Audio/video metadata/track、画像thumbnail、private/public ZIP/EPUB、private Gallery/Audio/Bookshelf/Video、public Gallery/Audio metadata・thumbnail/audio/video ticket・EPUB metadata/page/entry、direct-user/group共有は接続済み。public media UI、実ファイル・複数browser検証を進め、最後に実環境 gate とリリース確認を行う。
 
 フォルダー作成は current parent/revision/tree を読み、7 step を一括確定する内部サービス。SQL plan は server code のみで生成し、外部から任意 step/SQL を受け付けない。
 名前検索は private API と Files UI へ接続済み（[SEARCH](SEARCH.md)）。media metadata の全文索引・索引更新の運用・実 D1 の処理量/応答時間 gate は未完了。

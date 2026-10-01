@@ -11,6 +11,8 @@ const routeTree = root.addChildren([
   createRoute({ getParentRoute: () => root, path: "/files/$folderId" }),
   createRoute({ getParentRoute: () => root, path: "/gallery" }),
   createRoute({ getParentRoute: () => root, path: "/audio" }),
+  createRoute({ getParentRoute: () => root, path: "/bookshelf" }),
+  createRoute({ getParentRoute: () => root, path: "/video" }),
   createRoute({ getParentRoute: () => root, path: "/trash" }),
 ]);
 const router = createRouter({ routeTree });

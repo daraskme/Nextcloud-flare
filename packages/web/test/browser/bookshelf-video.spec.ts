@@ -1,0 +1,231 @@
+import { expect, type Page, test } from "@playwright/test";
+
+const candidate = (id: string, name: string, mime: string) => ({
+  id,
+  parentId: "root",
+  name,
+  kind: "file",
+  revision: 1,
+  currentBlobId: `blob-${id}`,
+  updatedAt: Date.now(),
+  size: 1024,
+  mime,
+});
+
+const searchPage = (items: ReturnType<typeof candidate>[]) => ({
+  scopeId: "root",
+  query: "",
+  treeGeneration: 1,
+  items,
+  nextCursor: null,
+  truncated: false,
+});
+
+const account = {
+  id: "user",
+  email: "private@example.invalid",
+  role: "owner",
+  spaceId: "space",
+  rootNodeId: "root",
+  epoch: 1,
+  quotaBytes: 2_000_000_000,
+  usedBytes: 0,
+  reservedBytes: 0,
+  contentOrigin: "https://content.ncf.test:8879",
+};
+
+async function mockPrivateShell(page: Page) {
+  await page.route("**/api/v1/me", (route) => route.fulfill({ status: 200, json: account }));
+  await page.route("**/api/v1/csrf", (route) =>
+    route.fulfill({ status: 200, json: { token: "media-test-csrf" } }),
+  );
+}
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
+test("private Bookshelf replaces stale page tickets and rejects unsupported books", async ({
+  page,
+}) => {
+  await mockPrivateShell(page);
+  const book = candidate("book-1", "Private Book.epub", "application/epub+zip");
+  const unsupported = candidate("book-2", "Scanned Book.pdf", "application/pdf");
+  const issued: string[] = [];
+  const cancelled: string[] = [];
+  await page.route("**/api/v1/search?*", (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    const items = query === ".epub" ? [book] : query === ".pdf" ? [unsupported] : [];
+    return route.fulfill({ status: 200, json: searchPage(items) });
+  });
+  await page.route("**/api/v1/library/book-1", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        nodeId: book.id,
+        blobId: book.currentBlobId,
+        title: "Private Book",
+        author: "Private Author",
+        series: null,
+        pageCount: 2,
+        coverToken: null,
+        spine: ["chapter-one", "chapter-two"],
+        entries: [
+          {
+            token: "chapter-one",
+            path: "OPS/one.xhtml",
+            mime: "application/xhtml+xml",
+            size: 100,
+          },
+          {
+            token: "chapter-two",
+            path: "OPS/two.xhtml",
+            mime: "application/xhtml+xml",
+            size: 100,
+          },
+        ],
+        ticketPurpose: "page",
+        contentBaseUrl: `${book.id}/${book.currentBlobId}/entries/`,
+      },
+    }),
+  );
+  await page.route("**/api/v1/content-session", (route) => {
+    const body = route.request().postDataJSON();
+    expect(body).toMatchObject({
+      purpose: "page",
+      targets: [{ nodeId: book.id }],
+    });
+    const ticketId = `page-${issued.length + 1}`;
+    issued.push(ticketId);
+    return route.fulfill({ status: 201, json: { ticket: `token-${ticketId}`, ticketId } });
+  });
+  await page.route("**/api/v1/tickets/*", (route) => {
+    cancelled.push(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    return route.fulfill({ status: 204, body: "" });
+  });
+  await page.route("https://content.ncf.test:8879/session", (route) =>
+    route.fulfill({
+      status: 201,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+        "Set-Cookie": "ncf_content=fixture; Path=/; Secure; SameSite=None",
+      },
+      body: "",
+    }),
+  );
+  await page.route("https://content.ncf.test:8879/c/**/entries/chapter-one", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await route
+      .fulfill({
+        status: 200,
+        headers: {
+          "Access-Control-Allow-Credentials": "true",
+          "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+          "Content-Type": "application/octet-stream",
+        },
+        body: "<html><body><h1>Chapter One</h1><p>First page.</p></body></html>",
+      })
+      .catch(() => undefined);
+  });
+  await page.route("https://content.ncf.test:8879/c/**/entries/chapter-two", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+        "Content-Type": "application/octet-stream",
+      },
+      body: "<html><body><h1>Chapter Two</h1><p>Second page.</p></body></html>",
+    }),
+  );
+
+  await page.goto("/files");
+  await page.getByRole("link", { name: "本棚", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "本棚", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "本棚", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Private Book.epubを開く", exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "目次" })).toBeVisible();
+  await expect(page.getByText("章を読み込んでいます", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "次の章", exact: true }).click();
+  await expect(page.frameLocator("iframe").locator("body")).toContainText("Chapter Two");
+  expect(issued).toEqual(["page-1", "page-2"]);
+  await expect.poll(() => cancelled).toContain("page-1");
+  await page.getByRole("button", { name: "リーダーを閉じる", exact: true }).click();
+  await expect.poll(() => cancelled).toContain("page-2");
+  await page.getByRole("button", { name: "Scanned Book.pdfを開く", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "この本はリーダーで開けません" })).toBeVisible();
+});
+
+test("private Video probes current track metadata and shows revocation and format fallbacks", async ({
+  page,
+}) => {
+  await mockPrivateShell(page);
+  const playable = candidate("video-1", "Private AV1.mp4", "video/mp4");
+  const unsupported = candidate("video-2", "Legacy Video.mov", "video/quicktime");
+  const cancelled: string[] = [];
+  let tickets = 0;
+  await page.addInitScript(() => {
+    HTMLMediaElement.prototype.canPlayType = (type) => (type.includes("av01") ? "probably" : "");
+  });
+  await page.route("**/api/v1/search?*", (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    const items = query === ".mp4" ? [playable] : query === ".mov" ? [unsupported] : [];
+    return route.fulfill({ status: 200, json: searchPage(items) });
+  });
+  await page.route("**/api/v1/content-session", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({
+      purpose: "track",
+      targets: [{ nodeId: playable.id }],
+    });
+    tickets++;
+    return route.fulfill({
+      status: 201,
+      json: { ticket: `video-token-${tickets}`, ticketId: `video-ticket-${tickets}` },
+    });
+  });
+  await page.route("**/api/v1/tickets/*", (route) => {
+    cancelled.push(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    return route.fulfill({ status: 204, body: "" });
+  });
+  await page.route("https://content.ncf.test:8879/session", (route) =>
+    route.fulfill({
+      status: 201,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+        "Set-Cookie": "ncf_content=fixture; Path=/; Secure; SameSite=None",
+      },
+      body: "",
+    }),
+  );
+  await page.route("https://content.ncf.test:8879/c/**/track", (route) =>
+    route.fulfill({
+      status: route.request().method() === "HEAD" ? 200 : 206,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+        "Content-Type": 'video/mp4; codecs="av01.0.08M.10,Opus"',
+      },
+      body: "",
+    }),
+  );
+
+  await page.goto("/files");
+  await page.getByRole("link", { name: "動画", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "動画", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "動画", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Private AV1\.mp4/ }).click();
+  const element = page.locator('video[aria-label="Private AV1.mp4"]');
+  await expect(element).toHaveAttribute("controls", "");
+  await expect(element).toHaveAttribute("src", /\/c\/video-1\/blob-video-1\/track$/);
+  await expect(page.getByText(/video\/mp4; codecs="av01/)).toBeVisible();
+  await element.dispatchEvent("error");
+  await expect(page.getByRole("alert")).toContainText("セッションの失効");
+  await expect.poll(() => cancelled).toContain("video-ticket-1");
+  await page.getByRole("button", { name: /Legacy Video\.mov/ }).click();
+  await expect(page.getByRole("alert")).toContainText("ブラウザー再生に対応していません");
+  await expect(page.getByRole("button", { name: "原本を保存", exact: true })).toBeVisible();
+});
