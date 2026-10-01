@@ -19,6 +19,7 @@ const routeTree = root.addChildren([
   createRoute({ getParentRoute: () => root, path: "/bookshelf" }),
   createRoute({ getParentRoute: () => root, path: "/video" }),
   createRoute({ getParentRoute: () => root, path: "/trash" }),
+  createRoute({ getParentRoute: () => root, path: "/settings/webdav" }),
 ]);
 const router = createRouter({ routeTree });
 declare module "@tanstack/react-router" {

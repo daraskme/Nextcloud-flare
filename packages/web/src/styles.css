@@ -2075,6 +2075,357 @@ h1 {
     display: none;
   }
 }
+.webdav-settings {
+  display: grid;
+  gap: 20px;
+  max-width: 940px;
+}
+.settings-card {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid #e3e7ec;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: 0 3px 12px #24364b08;
+}
+.settings-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  margin-bottom: 22px;
+}
+.settings-card-heading h2 {
+  margin: 0;
+  color: #39465a;
+  font-size: 18px;
+  font-weight: 650;
+}
+.settings-card-heading p {
+  margin: 6px 0 0;
+  color: #8993a1;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.settings-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  color: #1f77c8;
+  background: #eff7ff;
+}
+.webdav-contract {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.webdav-contract > div {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #e6eaf0;
+  border-radius: 9px;
+  background: #fafbfd;
+}
+.webdav-contract dt,
+.app-password-list dt {
+  color: #8993a1;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.webdav-contract dd {
+  margin: 6px 0 0;
+  color: #48566a;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.webdav-contract code,
+.app-password-list code {
+  color: #38516e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.webdav-guidance > .muted {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.app-password-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 20px;
+}
+.app-password-expiry > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 9px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.app-password-expiry input {
+  width: 76px;
+  margin: 0;
+}
+.app-password-scopes {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.app-password-scopes legend {
+  width: 100%;
+  margin-bottom: 9px;
+  color: #657184;
+  font-size: 13px;
+  font-weight: 550;
+}
+.app-password-scopes label,
+.app-password-root-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #e3e7ec;
+  border-radius: 9px;
+  color: #59677a;
+  cursor: pointer;
+}
+.app-password-scopes label:has(input:checked),
+.app-password-root-toggle:has(input:checked) {
+  border-color: #8ab9e6;
+  background: #f5faff;
+}
+.app-password-scopes input,
+.app-password-root-toggle input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: #277dc6;
+}
+.app-password-scopes span,
+.app-password-root-toggle span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+.app-password-scopes strong,
+.app-password-root-toggle strong {
+  color: #465468;
+  font-size: 13px;
+}
+.app-password-scopes small,
+.app-password-root-toggle small {
+  color: #8b95a3;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.app-password-root-toggle,
+.app-password-root-picker,
+.app-password-submit,
+.app-password-form > .form-error {
+  grid-column: 1 / -1;
+}
+.app-password-root-picker {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e3e7ec;
+  border-radius: 9px;
+  background: #fafbfd;
+}
+.app-password-root-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #52708d;
+}
+.app-password-root-current > span {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+}
+.app-password-root-current small {
+  color: #929ba7;
+  font-size: 10px;
+}
+.app-password-root-current strong {
+  overflow: hidden;
+  color: #465468;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-password-folder-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.app-password-folder-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e4e8ed;
+  border-radius: 7px;
+  color: #536276;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+.app-password-folder-list button:hover {
+  border-color: #9fc5e7;
+  background: #f4f9fe;
+}
+.app-password-folder-list button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-password-picker-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+.app-password-submit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding-top: 3px;
+}
+.app-password-submit p {
+  margin: 0;
+  font-size: 12px;
+}
+.app-password-list-heading {
+  align-items: center;
+  justify-content: space-between;
+}
+.app-password-list-heading > div {
+  min-width: 0;
+}
+.app-password-list-status,
+.app-password-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 90px;
+  margin: 0;
+  color: #85909e;
+  font-size: 13px;
+}
+.app-password-list-status {
+  flex-direction: column;
+}
+.app-password-list-status p {
+  margin: 0;
+}
+.app-password-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.app-password-list > li {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(300px, 1.5fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 15px;
+  border: 1px solid #e6e9ee;
+  border-radius: 9px;
+}
+.app-password-list-primary {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.app-password-list-primary strong {
+  overflow: hidden;
+  color: #435166;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-password-list dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+}
+.app-password-list dd {
+  margin: 4px 0 0;
+  color: #5f6d7f;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.one-time-credential {
+  display: grid;
+  gap: 17px;
+}
+.credential-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  color: #45627d;
+  background: #eef7ff;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.one-time-credential label {
+  display: grid;
+  gap: 8px;
+  color: #657184;
+  font-size: 12px;
+  font-weight: 550;
+}
+.one-time-credential input {
+  width: 100%;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #dce1e8;
+  border-radius: 7px;
+  color: #34465c;
+  background: #fafbfd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.credential-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.credential-field input {
+  flex: 1;
+}
+.one-time-credential > .muted {
+  margin: -3px 0 0;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
 @media (max-width: 800px) {
   .sidebar {
     visibility: hidden;
@@ -2149,6 +2500,16 @@ h1 {
   }
   .internal-section-heading > p {
     text-align: left;
+  }
+  .webdav-contract {
+    grid-template-columns: 1fr;
+  }
+  .app-password-list > li {
+    grid-template-columns: 1fr auto;
+  }
+  .app-password-list dl {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 }
 @media (max-width: 540px) {
@@ -2293,6 +2654,49 @@ h1 {
   }
   .internal-policy-grid {
     grid-template-columns: 1fr;
+  }
+  .settings-card {
+    padding: 17px;
+  }
+  .app-password-form,
+  .app-password-scopes {
+    grid-template-columns: 1fr;
+  }
+  .app-password-expiry,
+  .app-password-scopes,
+  .app-password-root-toggle,
+  .app-password-root-picker,
+  .app-password-submit,
+  .app-password-form > .form-error {
+    grid-column: auto;
+  }
+  .app-password-folder-list,
+  .app-password-list dl {
+    grid-template-columns: 1fr;
+  }
+  .app-password-list dl {
+    gap: 8px;
+  }
+  .app-password-list > li {
+    gap: 12px;
+  }
+  .app-password-submit {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .app-password-submit .button {
+    justify-content: center;
+  }
+  .credential-field {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .dialog-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+  .dialog-actions .button {
+    justify-content: center;
   }
   .reader-layout {
     grid-template-columns: 1fr;

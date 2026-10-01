@@ -269,6 +269,26 @@ export interface SharedMount {
         membershipVersion: number;
       };
 }
+export type AppPasswordScope = "node:read" | "node:create" | "node:write" | "node:delete";
+export interface AppPassword {
+  id: string;
+  credentialId: string;
+  name: string;
+  rootNodeId: string | null;
+  createdAt: number;
+  expiresAt: number;
+  scopes: AppPasswordScope[];
+}
+export interface CreatedAppPassword extends AppPassword {
+  secret: string;
+}
+export interface CreateAppPasswordInput {
+  name: string;
+  scopes: readonly AppPasswordScope[];
+  ttlDays: number;
+  spaceId?: string;
+  rootNodeId?: string;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -462,6 +482,36 @@ export class ApiClient {
   }
   groups(signal?: AbortSignal) {
     return this.request<{ groups: ShareGroup[] }>("/api/v1/groups", signal ? { signal } : {});
+  }
+  appPasswords(signal?: AbortSignal) {
+    return this.request<{ passwords: AppPassword[] }>(
+      "/api/v1/app-passwords",
+      signal ? { signal } : {},
+    );
+  }
+  createAppPassword(input: CreateAppPasswordInput, signal?: AbortSignal) {
+    return this.json<CreatedAppPassword>(
+      "/api/v1/app-passwords",
+      "POST",
+      input,
+      undefined,
+      {},
+      signal,
+    );
+  }
+  async revokeAppPassword(credentialId: string, signal?: AbortSignal): Promise<void> {
+    const lifetime = this.#lifetime;
+    const token = await this.csrf();
+    lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
+    await this.request(`/api/v1/app-passwords/${encodeURIComponent(credentialId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+      ...(signal ? { signal } : {}),
+    });
   }
   createShare(
     rootNodeId: string,
