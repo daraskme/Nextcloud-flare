@@ -302,6 +302,7 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `library.write`,`audio.metadata.write` | `library:write` | `[node,currentBlob,extractedMetadata,override]` |
 | `reading_state.write` | `state:write` | `[currentUser,node,currentBlob,position]` |
 | `playback_state.write` | `state:write` | `[currentUser,node,currentBlob,position]` |
+| `audio_chapters.write` | `state:write` | `[currentUser,node,currentBlob,chapters,expectedRevision]` |
 | `tag.read`,`tag.create`,`tag.update`,`tag.delete` | read / `tag:write` | `[currentUser,tag,nodes?]` |
 | `upload.create` | `upload:create` / upload | `[parent,target?,space,declaredSize,mode]` |
 | `upload.read`,`upload.write`,`upload.abort` | `upload:write` / upload | `[upload,parent,target?,part?]` |
@@ -414,6 +415,8 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | PATCH | `/api/v1/nodes/:nodeId/audio` | access | `audio.metadata.write` | `node,blob,audioMetadata` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/playback-state` | access | `library.read` | `currentUser,node,blob` | false | same-origin-json |
 | app | PUT | `/api/v1/nodes/:nodeId/playback-state` | access | `playback_state.write` | `currentUser,node,blob` | false | same-origin-json |
+| app | GET | `/api/v1/nodes/:nodeId/audio-chapters` | access | `library.read` | `currentUser,node,blob,chapters` | false | same-origin-json |
+| app | PUT | `/api/v1/nodes/:nodeId/audio-chapters` | access | `audio_chapters.write` | `currentUser,node,blob,chapters,expectedRevision` | false | same-origin-json |
 | app | GET | `/api/v1/library/items` | access | `library.read` | `scopeRoot,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/library/items/:itemId` | access | `library.read` | `item,node,blob` | false | same-origin-json |
 | app | PATCH | `/api/v1/library/items/:itemId` | access | `library.write` | `item,node,blob` | false | same-origin-json |

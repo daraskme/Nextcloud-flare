@@ -13,13 +13,53 @@ beforeAll(async () => {
 it("applies the production migrations on D1 with every foreign key enabled", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); // idempotent runner, not repeated SQL
   expect((await env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(49);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(50);
   const graph = [];
   for (const name of exportTables) {
     const result = await env.DB.prepare(`PRAGMA foreign_key_list('${name}')`).all<ForeignKey>();
     graph.push({ name, foreignKeys: result.results });
   }
   expect(deletionOrder(graph)).toEqual(purgeOrder);
+});
+
+it("installs authoritative user audio chapters with indexed foreign keys and backup barriers", async () => {
+  const setTable = await env.DB.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='user_audio_chapter_sets'",
+  ).first<string>("sql");
+  const chapterTable = await env.DB.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='user_audio_chapters'",
+  ).first<string>("sql");
+  expect(setTable).toContain("UNIQUE(user_id,node_id,blob_id)");
+  expect(chapterTable).toContain("UNIQUE(set_id,sort_order)");
+  expect(chapterTable).toContain("length(CAST(title AS BLOB))<=256");
+  const indexes = await env.DB.prepare(
+    `SELECT name FROM sqlite_master WHERE type='index'
+      AND name LIKE 'user_audio_chapter_sets_%_fk' ORDER BY name`,
+  ).all<{ name: string }>();
+  expect(indexes.results.map(({ name }) => name)).toEqual([
+    "user_audio_chapter_sets_blob_id_fk",
+    "user_audio_chapter_sets_node_id_fk",
+    "user_audio_chapter_sets_user_id_fk",
+  ]);
+  const triggers = await env.DB.prepare(
+    `SELECT name FROM sqlite_master WHERE type='trigger'
+      AND name LIKE '%user_audio_chapter%' ORDER BY name`,
+  ).all<{ name: string }>();
+  expect(triggers.results.map(({ name }) => name)).toEqual([
+    "backup_freeze_user_audio_chapter_sets_delete",
+    "backup_freeze_user_audio_chapter_sets_insert",
+    "backup_freeze_user_audio_chapter_sets_update",
+    "backup_freeze_user_audio_chapters_delete",
+    "backup_freeze_user_audio_chapters_insert",
+    "backup_freeze_user_audio_chapters_update",
+    "user_audio_chapter_sets_identity",
+  ]);
+  expect(exportTables).toEqual(
+    expect.arrayContaining(["user_audio_chapter_sets", "user_audio_chapters"]),
+  );
+  expect(purgeOrder.indexOf("user_audio_chapters")).toBeLessThan(
+    purgeOrder.indexOf("user_audio_chapter_sets"),
+  );
 });
 
 it("installs normalized private user node state with backup barriers", async () => {
