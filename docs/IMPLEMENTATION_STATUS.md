@@ -1,7 +1,13 @@
 # 実装進捗
 
-更新: 2026-09-29。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-10-01。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
+
+## 2026-10-01 public EPUB metadata・page/entry
+
+読み取り専用public shareへEPUB metadata、app-originのpage/entry redirect、content-originのbounded page deliveryを接続した。既存`epub-index-v1` projectionとentry streamerを共用し、単一EPUB targetの`purpose=page` ticket、current share session/password/version/epoch/root/action、current blob/source/index hash、ZIP local header/CRC、entry上限、BudgetDO leaseを各段階で再検査する。app originは本文をproxyしない。
+
+upload-only、root外、action失効、stale session、encrypted、scripted、fixed-layout、malformed、oversized、unsupported publicationはfail closedを維持する。public metadata/redirect、GET/HEAD/Range、exact budget、projection破損、route bindingの回帰を追加した。migration、table、route契約の追加はない。remote migration・deploy・Cloudflare resource/secret作成は実施していない。
 
 ## 2026-09-29 video・group share・multipart closure統合
 

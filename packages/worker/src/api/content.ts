@@ -5,7 +5,7 @@ import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { streamBudgetedContentBlob } from "../services/blobRead";
-import { streamBudgetedEpubEntry } from "../services/library";
+import { streamBudgetedEpubEntry, streamBudgetedEpubPage } from "../services/library";
 import { streamBudgetedZip } from "../services/zipDownload";
 
 const NODE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -143,6 +143,47 @@ export async function handleContentHttp(
         ["blob_storage_mismatch", "content_lease_expired", "zip_dry_run_mismatch"].includes(
           error.message,
         )
+      )
+        return reply(problem(503, "not_ready"));
+      return reply(problem(404, "not_found"));
+    }
+  }
+  const pageMatch = /^\/c\/([^/]+)\/([^/]+)\/pages\/([1-9][0-9]{0,3})$/.exec(url.pathname);
+  if (pageMatch && (request.method === "GET" || request.method === "HEAD")) {
+    const [, nodeId, blobId, pageValue] = pageMatch;
+    const page = Number(pageValue);
+    if (
+      !nodeId ||
+      !blobId ||
+      !NODE_ID.test(nodeId) ||
+      !NODE_ID.test(blobId) ||
+      !Number.isSafeInteger(page) ||
+      page > 1_000
+    )
+      return problem(404, "not_found");
+    if (origin !== null && origin !== env.APP_ORIGIN) return problem(403, "forbidden");
+    const reply = (response: Response) =>
+      origin === env.APP_ORIGIN ? cors(response, env.APP_ORIGIN) : response;
+    try {
+      return reply(
+        await streamBudgetedEpubPage(
+          env.DB,
+          env.BLOBS,
+          env.BUDGETS,
+          tokens,
+          request.headers.get("Cookie"),
+          nodeId,
+          blobId,
+          page,
+          request,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === "budget_exceeded")
+        return reply(problem(429, "budget_exceeded"));
+      if (
+        error instanceof Error &&
+        ["epub_storage_mismatch", "content_lease_expired"].includes(error.message)
       )
         return reply(problem(503, "not_ready"));
       return reply(problem(404, "not_found"));

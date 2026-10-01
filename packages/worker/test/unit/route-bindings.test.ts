@@ -99,4 +99,25 @@ describe("route binding coverage", () => {
     ])
       expect(publicShareAssetRoute(new Request(`https://app.invalid${path}`))).toBe(false);
   });
+
+  it("binds public EPUB metadata and content-origin page and entry delivery", () => {
+    const selected = new Map(
+      ROUTE_BINDINGS.filter(
+        (binding) =>
+          binding.key.includes("/api/v1/public/shares/:shareId/library/") ||
+          binding.key.includes("/c/:nodeId/:blobId/pages/") ||
+          binding.key.includes("/c/:nodeId/:blobId/entries/"),
+      ).map((binding) => [binding.key, binding]),
+    );
+    expect([...selected.values()]).toHaveLength(9);
+    for (const binding of selected.values()) {
+      expect(binding.availability).toBe("bound");
+      expect(binding.handler).toMatch(/^(?:public-share|content)$/);
+    }
+    expect(
+      ROUTE_BINDINGS.find(
+        (binding) => binding.key === "app GET /api/v1/public/shares/:shareId/gallery",
+      ),
+    ).toMatchObject({ availability: "unavailable", handler: "unavailable" });
+  });
 });
