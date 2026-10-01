@@ -46,6 +46,8 @@ describe("route binding coverage", () => {
     for (const key of [
       "app GET /api/v1/nodes/:nodeId/playback-state",
       "app PUT /api/v1/nodes/:nodeId/playback-state",
+      "app GET /api/v1/nodes/:nodeId/audio-chapters",
+      "app PUT /api/v1/nodes/:nodeId/audio-chapters",
       "app GET /api/v1/library/:nodeId/reading-state",
       "app PUT /api/v1/library/:nodeId/reading-state",
     ])
@@ -58,7 +60,9 @@ describe("route binding coverage", () => {
       ROUTE_BINDINGS.some(
         (binding) =>
           binding.key.includes("/public/shares/") &&
-          (binding.key.includes("playback-state") || binding.key.includes("reading-state")),
+          (binding.key.includes("playback-state") ||
+            binding.key.includes("reading-state") ||
+            binding.key.includes("audio-chapters")),
       ),
     ).toBe(false);
   });

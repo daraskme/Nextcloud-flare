@@ -94,6 +94,7 @@ export type NodeRequest =
         | "recent.read"
         | "starred.read"
         | "recent.record"
+        | "audio_chapters.write"
         | "node.star"
         | "node.rename"
         | "node.trash"
@@ -124,6 +125,11 @@ export type AuthorizedNode =
     }
   | {
       readonly operation: "recent.read" | "starred.read" | "recent.record" | "node.star";
+      readonly principal: Principal;
+      readonly node: LiveNode;
+    }
+  | {
+      readonly operation: "audio_chapters.write";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -354,9 +360,13 @@ export async function authorizeNode(
   principal: Principal,
   request: NodeRequest,
 ): Promise<AuthorizedNode> {
-  const userStateOperation = ["recent.read", "starred.read", "recent.record", "node.star"].includes(
-    request.operation,
-  );
+  const userStateOperation = [
+    "recent.read",
+    "starred.read",
+    "recent.record",
+    "audio_chapters.write",
+    "node.star",
+  ].includes(request.operation);
   const nodeId = request.operation === "node.create" ? request.parentId : request.nodeId;
   if (
     ![
@@ -368,6 +378,7 @@ export async function authorizeNode(
       "recent.read",
       "starred.read",
       "recent.record",
+      "audio_chapters.write",
       "node.star",
       "node.create",
       "node.rename",
@@ -412,7 +423,12 @@ export async function authorizeNode(
         principal.common_name.length > 1024))
   )
     throw new Error("authorization_denied");
-  const authorityOperation = userStateOperation ? "gallery.read" : request.operation;
+  const authorityOperation =
+    request.operation === "audio_chapters.write"
+      ? "audio.read"
+      : userStateOperation
+        ? "gallery.read"
+        : request.operation;
   const identity = Object.freeze({ ...principal });
   const values = [
     nodeId,
@@ -422,7 +438,7 @@ export async function authorizeNode(
       ? "node:create"
       : request.operation === "node.star"
         ? "node:star"
-        : request.operation === "recent.record"
+        : request.operation === "recent.record" || request.operation === "audio_chapters.write"
           ? "state:write"
           : request.operation === "gallery.read" ||
               request.operation === "audio.read" ||

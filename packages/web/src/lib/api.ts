@@ -141,6 +141,18 @@ export interface PlaybackState {
   positionMs: number | null;
   updatedAt: number | null;
 }
+export interface AudioChapter {
+  id: string;
+  positionMs: number;
+  title: string;
+}
+export interface AudioChapterSet {
+  nodeId: string;
+  blobId: string;
+  durationMs: number;
+  revision: number;
+  chapters: AudioChapter[];
+}
 export interface ReadingState {
   nodeId: string;
   blobId: string;
@@ -688,6 +700,30 @@ export class ApiClient {
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/playback-state`,
       "PUT",
       { blobId, positionMs },
+    );
+  }
+
+  audioChapters(nodeId: string, signal?: AbortSignal) {
+    return this.request<AudioChapterSet>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/audio-chapters`,
+      signal ? { signal } : {},
+    );
+  }
+
+  writeAudioChapters(
+    nodeId: string,
+    blobId: string,
+    expectedRevision: number,
+    chapters: readonly AudioChapter[],
+    signal?: AbortSignal,
+  ) {
+    return this.json<AudioChapterSet>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/audio-chapters`,
+      "PUT",
+      { blobId, expectedRevision, chapters },
+      undefined,
+      {},
+      signal,
     );
   }
 

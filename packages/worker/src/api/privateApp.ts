@@ -16,6 +16,7 @@ import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
+import { audioChaptersRoute, handleAudioChaptersHttp } from "./audioChapters";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { groupRoute, handleGroupHttp } from "./groups";
@@ -52,6 +53,7 @@ export function privateAppRoute(request: Request): boolean {
     nodeReadRoute(request) ||
     galleryRoute(request) ||
     audioRoute(request) ||
+    audioChaptersRoute(request) ||
     searchRoute(request) ||
     userNodeStateRoute(request) ||
     statsRoute(request) ||
@@ -100,6 +102,7 @@ export async function handlePrivateAppHttp(
   const nodeRead = nodeReadRoute(request);
   const gallery = galleryRoute(request);
   const audio = audioRoute(request);
+  const audioChapters = audioChaptersRoute(request);
   const search = searchRoute(request);
   const userNodeState = userNodeStateRoute(request);
   const stats = statsRoute(request);
@@ -122,6 +125,7 @@ export async function handlePrivateAppHttp(
     !nodeRead &&
     !gallery &&
     !audio &&
+    !audioChapters &&
     !search &&
     !userNodeState &&
     !stats &&
@@ -189,6 +193,18 @@ export async function handlePrivateAppHttp(
     });
   if (mediaState)
     return handleMediaStateHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+    );
+  if (audioChapters)
+    return handleAudioChaptersHttp(
       request,
       env,
       {

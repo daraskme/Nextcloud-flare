@@ -172,6 +172,168 @@ test("private Audio preserves terminal zero when selecting the next track", asyn
   await expect.poll(() => writes).toEqual([24_000, 31_000, 0]);
 });
 
+test("private Audio edits authoritative chapters and refreshes conflicts", async ({ page }) => {
+  await mockPrivateShell(page);
+  const track = {
+    ...candidate("audio-chapters", "ASMR Session.opus", "audio/ogg"),
+    durationMs: 120_000,
+    codec: "opus",
+    title: "ASMR Session",
+    artist: "Guide",
+    album: null,
+    trackNumber: 1,
+    discNumber: 1,
+  };
+  let revision = 1;
+  let chapters = [{ id: "existing", positionMs: 5_000, title: "Existing" }];
+  let writes = 0;
+  await page.addInitScript(() => {
+    Object.defineProperty(HTMLMediaElement.prototype, "duration", {
+      configurable: true,
+      get() {
+        return 120;
+      },
+    });
+    HTMLMediaElement.prototype.play = async function () {
+      this.dispatchEvent(new Event("play"));
+    };
+    HTMLMediaElement.prototype.pause = function () {
+      this.dispatchEvent(new Event("pause"));
+    };
+  });
+  await page.route("**/api/v1/nodes/root/tracks?*", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        rootId: "root",
+        treeGeneration: 1,
+        recursive: true,
+        items: [track],
+        nextCursor: null,
+        limitReached: false,
+        trackLimit: 1,
+      },
+    }),
+  );
+  await page.route("**/api/v1/nodes/audio-chapters/playback-state", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        nodeId: track.id,
+        blobId: track.currentBlobId,
+        durationMs: track.durationMs,
+        positionMs: null,
+        updatedAt: null,
+      },
+    }),
+  );
+  await page.route("**/api/v1/nodes/audio-chapters/audio-chapters", async (route) => {
+    if (route.request().method() === "GET")
+      return route.fulfill({
+        status: 200,
+        json: {
+          nodeId: track.id,
+          blobId: track.currentBlobId,
+          durationMs: track.durationMs,
+          revision,
+          chapters,
+        },
+      });
+    writes++;
+    const body = route.request().postDataJSON() as {
+      blobId: string;
+      expectedRevision: number;
+      chapters: typeof chapters;
+    };
+    if (writes === 2) {
+      revision = 3;
+      chapters = [{ id: "remote", positionMs: 22_000, title: "Remote update" }];
+      return route.fulfill({
+        status: 409,
+        contentType: "application/problem+json",
+        json: { code: "conflict" },
+      });
+    }
+    expect(body).toMatchObject({
+      blobId: track.currentBlobId,
+      expectedRevision: 1,
+    });
+    chapters = body.chapters;
+    revision = 2;
+    return route.fulfill({
+      status: 200,
+      json: {
+        nodeId: track.id,
+        blobId: track.currentBlobId,
+        durationMs: track.durationMs,
+        revision,
+        chapters,
+      },
+    });
+  });
+  await page.route("**/api/v1/content-session", (route) =>
+    route.fulfill({
+      status: 201,
+      json: { ticket: crypto.randomUUID(), ticketId: crypto.randomUUID() },
+    }),
+  );
+  await page.route("**/api/v1/tickets/*", (route) => route.fulfill({ status: 204, body: "" }));
+  await page.route("https://content.ncf.test:8879/session", (route) =>
+    route.fulfill({
+      status: 201,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+      },
+      body: "",
+    }),
+  );
+
+  await page.goto("/files");
+  await page.getByRole("link", { name: "オーディオ", exact: true }).click();
+  await page.getByRole("button", { name: /ASMR Session/ }).click();
+  const audio = page.locator("audio");
+  await audio.evaluate((element) => {
+    const media = element as HTMLMediaElement;
+    media.currentTime = 12.345;
+    media.dispatchEvent(new Event("timeupdate"));
+  });
+  await page.getByRole("button", { name: "チャプター設定を開く" }).click();
+  await expect(page.getByRole("region", { name: "オーディオチャプター設定" })).toBeVisible();
+  await page.getByRole("button", { name: "現在位置をキャプチャ" }).click();
+  await page.getByRole("textbox", { name: "チャプター 2 のタイトル" }).fill("Captured");
+  const time = page.getByRole("textbox", { name: "チャプター「Captured」の時刻" });
+  await time.fill("0:15.250");
+  await time.press("Enter");
+  const up = page.getByRole("button", { name: "チャプター 2 を上へ" });
+  await up.focus();
+  await up.press("Enter");
+  await expect(page.getByRole("listitem").first().getByRole("textbox").first()).toHaveValue(
+    "Captured",
+  );
+  await page.getByRole("button", { name: "チャプター 1 に移動" }).click();
+  await expect
+    .poll(() => audio.evaluate((element) => (element as HTMLMediaElement).currentTime))
+    .toBe(15.25);
+  await page.getByRole("button", { name: "チャプター 2 を削除" }).click();
+  await expect(page.getByRole("status")).toContainText("未保存の変更があります");
+  await page.getByRole("button", { name: "チャプターを保存" }).click();
+  await expect.poll(() => writes).toBe(1);
+  expect(chapters).toHaveLength(1);
+  expect(chapters[0]).toMatchObject({ positionMs: 15_250, title: "Captured" });
+
+  await page.getByRole("textbox", { name: "チャプター 1 のタイトル" }).fill("Local edit");
+  await page.getByRole("button", { name: "チャプターを保存" }).click();
+  await expect(
+    page.getByRole("region", { name: "オーディオチャプター設定" }).getByRole("alert"),
+  ).toContainText("別の場所でチャプターが更新されました");
+  await page.getByRole("button", { name: "競合を読み直す" }).click();
+  await expect(page.getByRole("textbox", { name: "チャプター 1 のタイトル" })).toHaveValue(
+    "Remote update",
+  );
+  await expect(page.getByRole("status")).toContainText("1 件のチャプター");
+});
+
 test("private Bookshelf replaces stale page tickets and rejects unsupported books", async ({
   page,
 }) => {
