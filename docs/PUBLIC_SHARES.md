@@ -60,7 +60,11 @@ public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS �
 
 ## 公開surface
 
-public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket、EPUB metadata/page/entry、bounded ZIPは read-only link session へ接続済みである。app origin の直接 content/thumb/ZIP proxyとBookshelf UIは未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
+分離されたpublic shellは、read-only linkにファイル、Gallery、Audioの切り替えを表示し、ファイル一覧の現行EPUBと動画にreader/player actionを表示する。Galleryは`purpose=thumb`と`purpose=content`、Audioと動画は`purpose=track`、EPUBは`purpose=page`を使い、content Cookie交換後の画像・音声・動画・本文bytesを`CONTENT_ORIGIN`から直接取得する。動画と音声は再生前にHEADで現行content typeを確認し、EPUB本文はDOM textへ縮退して`sandbox=""`と内部CSPを持つiframeへ表示する。画面移動、再試行、reader/lightbox/player close、native playback failure、logoutでは古いticketをcancelし、派生content sessionも失効させる。
+
+bounded ZIPは既存のpublic ZIP plannerとapp-origin redirectだけを使い、shellはbodyをproxyしない。同じ画面からの再実行または画面移動で古いZIP ticketをcancelする。upload-only linkはGallery、Audio、reader、video、ZIP、childrenを表示・要求しない。relock、失効、revocation、stale projection、malformed/unsupported EPUB、unsupported codec/container、native playback failureは明示的なfail-closedまたはdownload fallbackを表示する。
+
+direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
 group internal shareもprivate認証surfaceだけへ接続する。group recipientのbudget identityはshare action versionとmembership versionの両方へ束縛し、action変更またはmember削除/再追加後にrevoke済みbudgetを再利用しない。このfenceをpublic shareのunlock/session budgetへ流用しない。
 
@@ -77,6 +81,7 @@ group internal shareもprivate認証surfaceだけへ接続する。group recipie
 - 初期化/partの202再照合と、batch途中の失敗後に完了済みfileを重複送信しないqueue。
 - public CSRF、session失効、share version/disabled/expiry fence。
 - upload-only UIはfolderだけを選択可能にし、recipient UIはchildren/ticketを呼ばず、最終保存名を表示しない。
+- public media UIはGallery/Audio/EPUB/video/ZIPのticket交換、HEAD、sandbox、exact ZIP bytes、navigation/retry/close時cancel、upload-only非表示、relock/unsupported/native error fallbackをbrowserで検証する。
 - owner 以外の作成/参照/無効化拒否、無効化の一度だけの version 更新と派生 session 失効。
 - hashed public assets、private assets 非参照、shell no-store、asset immutable cache。
 - route registry の exact allowlist と未実装 route の fail closed。

@@ -32,7 +32,7 @@ export async function servePublicShare(request: Request, env: Env): Promise<Resp
     return problem(503, "not_ready");
   headers.set(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+    `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' ${contentOrigin.origin}; media-src ${contentOrigin.origin}; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
   );
   return new Response(request.method === "HEAD" ? null : resource.body, {
     status: resource.status,
