@@ -38,8 +38,8 @@ cleanupは未claimのDAV台帳と、claim後・結合前のderived operationも�
 
 ## 検証と残作業
 
-Node3件・workerd25件を追加。全体checkが成功し、Node427件（26file、6.34s）・workerd1,970件（93file、1,051.32s）、計2,397件を検証しました。31秒転送、元の認可・revision・lock維持、実ControlDOの共有枠・停止・eviction、未結合台帳の回収競合、前方移行を含みます。lint・型・契約/設定・Web build・Worker dry-runも成功。schema0036/通常67table、依存追加なし。今回のcommitに対するCI/browserはプッシュ後に確認します。
+元のDAV PUT境界に加え、共有mountのread/create/edit/delete、direct/group authority context、別共有・個人領域・別ownerへのCOPY/MOVE拒否、共有中のPUT回収、commit-unknown再照会をfocused testと全checkで検証しました。Ubuntu、Windows分割、browser、backupの全CIを通過しています。schemaは全48 migration・80通常table（最新`0049`）、依存追加なしです。
 
 試験は31秒を超える実本文、転送中のpermit/operation/active枠不在、本文後の正確な30秒grant、停止/eviction、共有32枠、grant待機中と本文中の認可/lock/revision変更、native/permit/namespace ACK喪失、再送、NULL結合とcleanupの競合、旧schemaの前方移行を対象にする。
 
-旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、公開link、Gallery/Bookshelf/Audio、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。
+旧DAV保留の証明付き回収、backup barrierとlogical export/restore drill、未知KDF/multipartの収束、追加event処理、AVIF/AV1/Opus、実OSクライアント・実環境検証・公開は後続です。
