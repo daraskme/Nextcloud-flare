@@ -27,7 +27,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private Gallery/Audio UI、direct-user/group internal shareとread-only shared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。本変更は既存search/library/content-ticket authorityへprivate Bookshelf/EPUB readerとVideo playerを接続する。internal shareはowner lifecycle、rename-stable mount、recipient/action/share-version/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。
 
-このbranchはmigration `0047`（全46件）でdurable async tree jobを追加した。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
+最新mainはmigration `0047`（全46件）でdurable async tree jobを持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
 
 workerは各chunkと最終確定でepoch、maintenance、current credential/authority、owner、root/parent ancestry、revision/tree generation、operation operand、job claimを再検査する。restoreは最終確定時にGC pauseを取得しrootからdepth順に復元、purgeはD1のnamespace/ref/quota/GC candidateを先に確定してR2 bytesを直接削除しない。Queue/DLQ/Cronの実Cloudflare検証とremote migration/deployは未実施である。
 
