@@ -1065,8 +1065,10 @@ export function App() {
     ? "ごみ箱"
     : sharing
       ? "内部共有"
-      : sharedPathInvalid
-        ? "共有フォルダー"
+      : shared
+        ? sharedMount && !sharedPathInvalid
+          ? path.data?.path.at(-1)?.name || sharedMount.root.name
+          : "共有フォルダー"
         : gallery
           ? "ギャラリー"
           : audio
@@ -1595,7 +1597,9 @@ export function App() {
                       ? "一致する項目がありません"
                       : trash
                         ? "ごみ箱は空です"
-                        : "ファイルを置く場所ができました"}
+                        : shared
+                          ? "このフォルダーは空です"
+                          : "ファイルを置く場所ができました"}
                   </h2>
                   <p>
                     {searching
@@ -1604,7 +1608,9 @@ export function App() {
                         ? "絞り込み条件を変更するか、次のページを読み込んでください。"
                         : trash
                           ? "ごみ箱に移動した項目は、ここに表示されます。"
-                          : "ファイルをドラッグするか、アップロードから追加できます。"}
+                          : shared
+                            ? "現在表示できるファイルやフォルダーはありません。"
+                            : "ファイルをドラッグするか、アップロードから追加できます。"}
                   </p>
                   {!trash && !searching && !shared && (
                     <Button variant="primary" onClick={() => input.current?.click()}>
