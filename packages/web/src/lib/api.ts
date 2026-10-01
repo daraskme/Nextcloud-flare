@@ -108,6 +108,34 @@ export interface AudioPage {
   limitReached: boolean;
   trackLimit: number;
 }
+export interface LibraryPublication {
+  nodeId: string;
+  blobId: string;
+  title: string | null;
+  author: string | null;
+  series: string | null;
+  pageCount: number;
+  coverToken: string | null;
+  spine: string[];
+  entries: {
+    token: string;
+    path: string;
+    mime: string;
+    size: number;
+  }[];
+  ticketPurpose: "page";
+  contentBaseUrl: string;
+}
+export interface FileCandidates {
+  items: FileNode[];
+  truncated: boolean;
+}
+export type ContentPurpose = "content" | "thumb" | "page" | "track";
+export interface PreparedContentSession {
+  ticketId: string;
+  url(target: { id: string; currentBlobId: string }, entryToken?: string): string;
+  cancel(): Promise<void>;
+}
 export interface Operation {
   id: string;
   state: "claimed" | "committed" | "failed";
@@ -361,39 +389,123 @@ export class ApiClient {
     );
   }
 
-  async prepareContent(
+  library(nodeId: string, signal?: AbortSignal) {
+    return this.request<LibraryPublication>(
+      `/api/v1/library/${encodeURIComponent(nodeId)}`,
+      signal ? { signal } : {},
+    );
+  }
+
+  async filesByExtensions(
+    rootId: string,
+    extensions: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<FileCandidates> {
+    const pages = await Promise.all(
+      extensions.map((extension) => this.search(rootId, `.${extension}`, null, signal)),
+    );
+    const selected = new Map<string, FileNode>();
+    const accepted = new Set(extensions.map((extension) => extension.toLowerCase()));
+    for (const page of pages)
+      for (const item of page.items) {
+        const extension = item.name.split(".").at(-1)?.toLowerCase();
+        if (item.kind === "file" && extension && accepted.has(extension))
+          selected.set(item.id, item);
+      }
+    return {
+      items: [...selected.values()].sort((a, b) => a.name.localeCompare(b.name, "ja")),
+      truncated: pages.some((page) => page.truncated || page.nextCursor !== null),
+    };
+  }
+
+  async cancelTicket(ticketId: string, signal?: AbortSignal): Promise<void> {
+    const token = await this.csrf();
+    signal?.throwIfAborted();
+    await this.request(`/api/v1/tickets/${encodeURIComponent(ticketId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+      ...(signal ? { signal } : {}),
+    });
+  }
+
+  async prepareContentSession(
     account: Account,
     targets: readonly { id: string; currentBlobId: string }[],
-    purpose: "content" | "thumb" | "track",
+    purpose: ContentPurpose,
     signal?: AbortSignal,
-  ): Promise<(target: { id: string; currentBlobId: string }) => string> {
+  ): Promise<PreparedContentSession> {
     if (!targets.length || targets.length > 1_000) throw new Error("invalid_content_targets");
     const lifetime = this.#lifetime;
     const origin = new URL(account.contentOrigin);
     if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
       throw new Error("invalid_content_origin");
-    const issued = await this.json<{ ticket: string }>("/api/v1/content-session", "POST", {
-      targets: targets.map((target) => ({ nodeId: target.id, spaceId: account.spaceId })),
-      purpose,
-      ttlSeconds: 300,
-    });
-    lifetime.signal.throwIfAborted();
-    signal?.throwIfAborted();
-    const signals = [lifetime.signal, AbortSignal.timeout(30_000)];
-    if (signal) signals.push(signal);
-    const accepted = await fetch(`${origin.origin}/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket: issued.ticket }),
-      credentials: "include",
-      redirect: "error",
-      signal: AbortSignal.any(signals),
-    });
-    lifetime.signal.throwIfAborted();
-    signal?.throwIfAborted();
-    if (!accepted.ok) throw new ApiError(accepted.status, "content_session_failed");
-    return (target) =>
-      `${origin.origin}/c/${encodeURIComponent(target.id)}/${encodeURIComponent(target.currentBlobId)}${purpose === "thumb" ? "/thumb" : ""}`;
+    let issued: { ticket: string; ticketId: string } | undefined;
+    try {
+      issued = await this.json<{ ticket: string; ticketId: string }>(
+        "/api/v1/content-session",
+        "POST",
+        {
+          targets: targets.map((target) => ({ nodeId: target.id, spaceId: account.spaceId })),
+          purpose,
+          ttlSeconds: 300,
+        },
+      );
+      lifetime.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      const signals = [lifetime.signal, AbortSignal.timeout(30_000)];
+      if (signal) signals.push(signal);
+      const accepted = await fetch(`${origin.origin}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+        credentials: "include",
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.any(signals),
+      });
+      lifetime.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      if (!accepted.ok) throw new ApiError(accepted.status, "content_session_failed");
+      let cancelled = false;
+      return {
+        ticketId: issued.ticketId,
+        url: (target, entryToken) => {
+          const base = `${origin.origin}/c/${encodeURIComponent(target.id)}/${encodeURIComponent(target.currentBlobId)}`;
+          if (purpose === "thumb") return `${base}/thumb`;
+          if (purpose === "track") return `${base}/track`;
+          if (purpose === "page") {
+            if (!entryToken) throw new Error("missing_epub_entry");
+            return `${base}/entries/${encodeURIComponent(entryToken)}`;
+          }
+          return base;
+        },
+        cancel: async () => {
+          if (cancelled) return;
+          cancelled = true;
+          try {
+            await this.cancelTicket(issued!.ticketId);
+          } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 404) throw error;
+          }
+        },
+      };
+    } catch (error) {
+      if (issued) void this.cancelTicket(issued.ticketId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async prepareContent(
+    account: Account,
+    targets: readonly { id: string; currentBlobId: string }[],
+    purpose: Exclude<ContentPurpose, "page">,
+    signal?: AbortSignal,
+  ): Promise<(target: { id: string; currentBlobId: string }) => string> {
+    const session = await this.prepareContentSession(account, targets, purpose, signal);
+    return (target) => session.url(target);
   }
 
   async openFile(account: Account, node: FileNode, target: Window): Promise<void> {

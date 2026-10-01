@@ -316,7 +316,15 @@ export const ROUTE_BINDINGS = [
   }),
 ] as const satisfies readonly RouteBinding[];
 
-export const PRIVATE_SPA_PATHS = ["/", "/files", "/gallery", "/audio", "/trash"] as const;
+export const PRIVATE_SPA_PATHS = [
+  "/",
+  "/files",
+  "/gallery",
+  "/audio",
+  "/bookshelf",
+  "/video",
+  "/trash",
+] as const;
 const PRIVATE_FILE_PATH = /^\/files\/[A-Za-z0-9_-]{1,128}$/;
 
 export function privateSpaPath(path: string): boolean {
