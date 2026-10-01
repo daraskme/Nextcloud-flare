@@ -267,6 +267,16 @@ export interface SharedMount {
   mountId: string;
   mountName: string;
   actions: readonly InternalShareAction[];
+  expiresAt: number | null;
+  delegationDepth: number;
+  reshareAuthority: {
+    policyVersion: number;
+    actions: readonly InternalShareAction[];
+    maxDepth: number;
+    maxFanout: number;
+    currentFanout: number;
+    expiresAt: number | null;
+  } | null;
   root: {
     id: string;
     spaceId: string;
@@ -530,6 +540,22 @@ export class ApiClient {
       ...(signal ? { signal } : {}),
     });
   }
+  createGroup(name: string, memberEmails: readonly string[]) {
+    return this.json<ShareGroup>("/api/v1/groups", "POST", { name, memberEmails });
+  }
+  updateGroup(groupId: string, input: { name?: string; memberEmails?: readonly string[] }) {
+    return this.json<ShareGroup>(`/api/v1/groups/${encodeURIComponent(groupId)}`, "PATCH", input);
+  }
+  async disableGroup(groupId: string): Promise<void> {
+    const token = await this.csrf();
+    await this.request(`/api/v1/groups/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+    });
+  }
   createShare(
     rootNodeId: string,
     spaceId: string,
@@ -576,6 +602,30 @@ export class ApiClient {
       ttlDays,
       ...(resharePolicy === undefined ? {} : { resharePolicy }),
     });
+  }
+  createInternalReshare(
+    source: Pick<SharedMount, "shareId" | "root">,
+    recipient: { email: string } | { groupId: string },
+    actions: readonly InternalShareAction[],
+    ttlDays: number,
+    idempotencyKey: string,
+  ) {
+    return this.json<InternalShare>(
+      "/api/v1/shares",
+      "POST",
+      {
+        kind: "internal",
+        sourceShareId: source.shareId,
+        rootNodeId: source.root.id,
+        spaceId: source.root.spaceId,
+        ...("email" in recipient
+          ? { recipientEmail: recipient.email }
+          : { recipientGroupId: recipient.groupId }),
+        actions,
+        ttlDays,
+      },
+      idempotencyKey,
+    );
   }
   updateInternalShare(
     shareId: string,

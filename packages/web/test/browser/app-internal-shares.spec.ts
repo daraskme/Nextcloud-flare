@@ -1,12 +1,23 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import type { SharedMount } from "../../src/lib/api";
 
 const now = Date.now();
-const directMount = {
+const directMount: SharedMount = {
   shareId: "sh_direct",
   shareVersion: 1,
   mountId: "sh_direct",
   mountName: "direct-project",
   actions: ["read", "download", "create", "edit"],
+  expiresAt: now + 10 * 86_400_000,
+  delegationDepth: 0,
+  reshareAuthority: {
+    policyVersion: 1,
+    actions: ["read", "download", "create", "edit"],
+    maxDepth: 2,
+    maxFanout: 2,
+    currentFanout: 0,
+    expiresAt: now + 7 * 86_400_000,
+  },
   root: {
     id: "shared-root",
     spaceId: "owner-space",
@@ -18,12 +29,22 @@ const directMount = {
   owner: { id: "owner", email: "owner@example.invalid" },
   provenance: { kind: "direct", recipientVersion: 1 },
 };
-const groupMount = {
+const groupMount: SharedMount = {
   shareId: "sh_group",
   shareVersion: 3,
   mountId: "sh_group",
   mountName: "group-plans",
   actions: ["read"],
+  expiresAt: null,
+  delegationDepth: 0,
+  reshareAuthority: {
+    policyVersion: 2,
+    actions: ["read"],
+    maxDepth: 2,
+    maxFanout: 3,
+    currentFanout: 0,
+    expiresAt: null,
+  },
   root: {
     id: "group-root",
     spaceId: "owner-space",
@@ -296,6 +317,161 @@ test("owner creates, inspects, changes and revokes a private internal share", as
   await expect(page.getByText("取り消し済み")).toBeVisible();
 });
 
+test("owner creates, edits, inspects and disables a bounded share group", async ({ page }) => {
+  let groupReads = 0;
+  const groups: Record<string, unknown>[] = [];
+  await page.route("**/api/v1/shares", (route) => route.fulfill({ json: { shares: [] } }));
+  await page.route("**/api/v1/shared-with-me", (route) => route.fulfill({ json: { shares: [] } }));
+  await page.route(/\/api\/v1\/groups(?:\/[^/?]+)?$/, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      groupReads++;
+      if (groupReads === 1) return route.fulfill({ status: 503, json: { title: "not_ready" } });
+      return route.fulfill({ json: { groups } });
+    }
+    if (request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({
+        name: "Project Editors",
+        memberEmails: ["alice@example.invalid"],
+      });
+      const created = {
+        id: "group-project",
+        name: "Project Editors",
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        memberEmails: ["alice@example.invalid"],
+      };
+      groups.push(created);
+      return route.fulfill({ status: 201, json: created });
+    }
+    if (request.method() === "PATCH") {
+      expect(request.postDataJSON()).toEqual({
+        name: "Project Reviewers",
+        memberEmails: ["alice@example.invalid", "bob@example.invalid"],
+      });
+      Object.assign(groups[0]!, {
+        ...request.postDataJSON(),
+        version: 2,
+        updatedAt: now + 1,
+      });
+      return route.fulfill({ json: groups[0] });
+    }
+    expect(request.method()).toBe("DELETE");
+    groups.splice(0);
+    return route.fulfill({ status: 204 });
+  });
+
+  await page.goto("/shares");
+  const groupSection = page.getByRole("region", { name: "共有グループ" });
+  await expect(groupSection.getByRole("alert")).toBeVisible();
+  await groupSection.getByRole("button", { name: "再試行" }).click();
+  await expect(groupSection.getByText("共有グループはまだありません")).toBeVisible();
+  await groupSection.getByRole("button", { name: "最初のグループを作成" }).click();
+  await page.getByLabel("グループ名").fill("Project Editors");
+  await page.getByPlaceholder("member@example.com").fill("alice@example.invalid");
+  await page.getByRole("button", { name: "追加" }).click();
+  await expect(page.getByText("1/100")).toBeVisible();
+  await page.getByRole("button", { name: "グループを作成", exact: true }).click();
+  const card = page.getByRole("article").filter({ hasText: "Project Editors" });
+  await expect(card.getByText("alice@example.invalid")).toBeVisible();
+  await card.getByRole("button", { name: "名前とメンバーを編集" }).click();
+  await page.getByLabel("グループ名").fill("Project Reviewers");
+  await page.getByPlaceholder("member@example.com").fill("bob@example.invalid");
+  await page.getByRole("button", { name: "追加" }).click();
+  await page.getByRole("button", { name: "変更を保存" }).click();
+  const renamed = page.getByRole("article").filter({ hasText: "Project Reviewers" });
+  await expect(renamed.getByText("alice@example.invalid")).toBeVisible();
+  await expect(renamed.getByText("bob@example.invalid")).toBeVisible();
+  await renamed.getByRole("button", { name: "グループを無効化" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "グループを無効化", exact: true })
+    .click();
+  await expect(groupSection.getByText("共有グループはまだありません")).toBeVisible();
+});
+
+test("recipient creates bounded direct and known-group downstream shares", async ({ page }) => {
+  let direct = structuredClone(directMount);
+  const requests: { body: Record<string, unknown>; key: string | null }[] = [];
+  await page.route("**/api/v1/groups", (route) => route.fulfill({ json: { groups: [] } }));
+  await page.route("**/api/v1/shared-with-me", (route) =>
+    route.fulfill({ json: { shares: [direct, groupMount] } }),
+  );
+  await page.route(/\/api\/v1\/shares(?:\/[^/?]+)?$/, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") return route.fulfill({ json: { shares: [] } });
+    expect(request.method()).toBe("POST");
+    requests.push({
+      body: request.postDataJSON(),
+      key: request.headers()["idempotency-key"] ?? null,
+    });
+    const authority = direct.reshareAuthority!;
+    direct = {
+      ...direct,
+      reshareAuthority: {
+        ...authority,
+        currentFanout: authority.currentFanout + 1,
+      },
+    };
+    return route.fulfill({
+      status: 201,
+      json: {
+        id: `sh_child_${requests.length}`,
+        kind: "internal",
+        actions: request.postDataJSON().actions,
+      },
+    });
+  });
+
+  await page.goto("/shares");
+  const card = page.getByRole("article").filter({ hasText: "共有プロジェクト" });
+  await card.getByRole("button", { name: "再共有" }).click();
+  const directDialog = page.getByRole("dialog");
+  await expect(directDialog.getByLabel("有効期間（日）")).toHaveAttribute("max", "6");
+  await directDialog.getByLabel("相手のメールアドレス").fill("next@example.invalid");
+  await directDialog.getByLabel("作成", { exact: true }).uncheck();
+  await directDialog.getByLabel("編集", { exact: true }).uncheck();
+  await directDialog.getByLabel("有効期間（日）").fill("5");
+  await directDialog.getByRole("button", { name: "再共有を作成" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]?.body).toEqual({
+    kind: "internal",
+    sourceShareId: "sh_direct",
+    rootNodeId: "shared-root",
+    spaceId: "owner-space",
+    recipientEmail: "next@example.invalid",
+    actions: ["read", "download"],
+    ttlDays: 5,
+  });
+  expect(requests[0]?.key).toBeTruthy();
+
+  await card.getByRole("button", { name: "再共有" }).click();
+  const groupDialog = page.getByRole("dialog");
+  await groupDialog.getByRole("button", { name: "既知のグループ" }).click();
+  await groupDialog
+    .getByLabel("共有元の所有者が管理する既知のグループ")
+    .selectOption("group-engineering");
+  await groupDialog.getByLabel("ダウンロード", { exact: true }).uncheck();
+  await groupDialog.getByLabel("作成", { exact: true }).uncheck();
+  await groupDialog.getByLabel("編集", { exact: true }).uncheck();
+  await groupDialog.getByLabel("有効期間（日）").fill("3");
+  await groupDialog.getByRole("button", { name: "再共有を作成" }).click();
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1]?.body).toEqual({
+    kind: "internal",
+    sourceShareId: "sh_direct",
+    rootNodeId: "shared-root",
+    spaceId: "owner-space",
+    recipientGroupId: "group-engineering",
+    actions: ["read"],
+    ttlDays: 3,
+  });
+  expect(requests[1]?.key).toBeTruthy();
+  expect(requests[1]?.key).not.toBe(requests[0]?.key);
+  await expect(card.getByRole("button", { name: "再共有" })).toHaveCount(0);
+});
+
 test("recipient sees direct/group provenance and browses a read-only mount", async ({ page }) => {
   await page.route("**/api/v1/shares", (route) => route.fulfill({ json: { shares: [] } }));
   await page.route("**/api/v1/groups", (route) => route.fulfill({ json: { groups: [] } }));
@@ -369,5 +545,30 @@ test("permission, revocation and stale mount responses cannot restore obsolete a
   current = [];
   await refresh.click();
   await expect(page.getByText("共有されたフォルダーはありません")).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("アクセスが変更されました");
+});
+
+test("recipient reshare controls fail closed when policy authority becomes stale", async ({
+  page,
+}) => {
+  let current = structuredClone(directMount);
+  await page.route("**/api/v1/shares", (route) => route.fulfill({ json: { shares: [] } }));
+  await page.route("**/api/v1/groups", (route) => route.fulfill({ json: { groups: [] } }));
+  await page.route("**/api/v1/shared-with-me", (route) =>
+    route.fulfill({ json: { shares: [current] } }),
+  );
+  await page.goto("/shares");
+  const card = page.getByRole("article").filter({ hasText: "共有プロジェクト" });
+  await card.getByRole("button", { name: "再共有" }).click();
+  current = {
+    ...current,
+    shareVersion: 2,
+    actions: ["read"],
+    reshareAuthority: null,
+  };
+  await page.getByLabel("相手のメールアドレス").fill("next@example.invalid");
+  await page.getByRole("button", { name: "再共有を作成" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "再共有" })).toHaveCount(0);
   await expect(page.getByRole("status")).toContainText("アクセスが変更されました");
 });

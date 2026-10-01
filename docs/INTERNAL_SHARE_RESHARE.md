@@ -76,18 +76,31 @@ target one internal user or one owner-managed internal group, using the same rec
 an original internal share. `read` is required whenever `download`, `create`, or `edit` is present;
 the backend canonical order is `read`, `download`, `create`, `edit`.
 
+`GET /api/v1/shared-with-me` projects only current delegation authority for each mount: share
+expiry and depth plus the effective policy version, actions, maximum depth, maximum fan-out,
+current fan-out, and policy expiry. A missing projection means that the mount grants no reshare
+authority. The projection is an offer bound for the client, not an authorization cache; the
+downstream mutation still rechecks all source state inside its transaction.
+
 ## Web management surface
 
 The private `/shares` surface lets an owner create direct-user or group shares, inspect delegation
 lineage, change the current `read`/`download`/`create`/`edit` action set, configure the owner policy,
-and revoke an active share. Policy controls never offer actions outside the source share, and
-narrowing source actions also narrows the effective policy shown to the owner.
+and revoke an active share. It also lets an owner create, rename, inspect, replace membership for,
+and disable owner-scoped groups through the bounded private group API. Exact member emails are
+entered explicitly; the browser does not add a user directory or retain a parallel membership
+model. Policy controls never offer actions outside the source share, and narrowing source actions
+also narrows the effective policy shown to the owner.
 
 Recipients see the authoritative effective action set and direct/group provenance returned by
 `shared-with-me`. Mount refreshes compare the share, grant or membership versions and actions, so a
 same-share permission change produces an access-change notice instead of silently retaining stale
-capabilities. Creating a downstream delegation remains an API operation; recipient reshare and
-group lifecycle controls are the next UI integration.
+capabilities. An eligible mount offers direct-user delegation and only those owner-managed groups
+already disclosed through active group provenance from the same owner. Offered actions, depth,
+fan-out, and TTL come only from the current authority projection. The dialog refetches immediately
+before submission and fails closed if share, policy, grant, membership, action, expiry, depth, or
+fan-out authority changed. An unchanged draft retains its `Idempotency-Key` across uncertain
+network retries; changing recipient, actions, or TTL rotates the key.
 
 ## Bounds
 
