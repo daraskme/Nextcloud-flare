@@ -533,7 +533,13 @@ export async function copyNode(
       (await digestJson(currentOverwriteManifest.ids)) !== (await digestJson(overwriteManifest.ids))
     )
       throw new Error("authorization_denied");
-    const claimed = await claimOperation(env.DB, intent, permit, currentSource, COPY_NODE_STEPS);
+    const claimed = await claimOperation(
+      env.DB,
+      intent,
+      permit,
+      [currentSource, currentDestination, ...(currentOverwrite ? [currentOverwrite] : [])],
+      COPY_NODE_STEPS,
+    );
     if (claimed.kind === "terminal") {
       const operation = await lookupOperation(env.DB, request.principal, intent.id);
       if (!operation) throw new Error("authorization_denied");

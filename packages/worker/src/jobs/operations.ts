@@ -7,6 +7,7 @@ import {
 } from "../auth/authorize";
 import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import { validateOutboxContract } from "./outboxContract";
 
 export interface OperationIntent {
   readonly id: string;
@@ -169,9 +170,10 @@ export function assertOperationClaim(claim: OperationClaim): SqlStatement {
 export function validateClaimAuthorization(
   intent: OperationIntent,
   permit: Permit,
-  authorized: AuthorizedNode,
+  authorization: AuthorizedNode | readonly AuthorizedNode[],
   steps: number,
-): SqlStatement {
+): readonly SqlStatement[] {
+  const authorized = Array.isArray(authorization) ? authorization : [authorization];
   const operands = JSON.parse(intent.operands) as {
     parentId?: unknown;
     overwriteTargetId?: unknown;
@@ -184,62 +186,82 @@ export function validateClaimAuthorization(
   );
   const contentWrite =
     ["dav.put", "upload.complete"].includes(intent.kind) &&
-    authorized.operation === "node.content.write";
+    authorized[0]?.operation === "node.content.write";
   const trash = ["node.trash", "dav.delete"].includes(intent.kind);
   const move = ["node.move", "dav.move"].includes(intent.kind);
   const copy = ["node.copy", "dav.copy"].includes(intent.kind);
   const restore = intent.kind === "node.restore";
   const purge = intent.kind === "node.purge";
+  const primaryAuthorization = authorized[0];
   const targetMatches =
     (create &&
-      authorized.operation === "node.create" &&
-      authorized.parent.id === operands.parentId &&
-      authorized.spaceId === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.create" &&
+      primaryAuthorization.parent.id === operands.parentId &&
+      primaryAuthorization.spaceId === intent.spaceId) ||
     (contentWrite &&
-      authorized.node.id === operands.nodeId &&
-      authorized.parentId === operands.parentId &&
-      authorized.node.space_id === intent.spaceId) ||
+      primaryAuthorization?.node.id === operands.nodeId &&
+      primaryAuthorization.parentId === operands.parentId &&
+      primaryAuthorization.node.space_id === intent.spaceId) ||
     (trash &&
-      authorized.operation === "node.trash" &&
-      authorized.node.id === operands.nodeId &&
-      authorized.parentId === operands.parentId &&
-      authorized.node.space_id === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.trash" &&
+      primaryAuthorization.node.id === operands.nodeId &&
+      primaryAuthorization.parentId === operands.parentId &&
+      primaryAuthorization.node.space_id === intent.spaceId) ||
     (move &&
-      authorized.operation === "node.rename" &&
-      authorized.node.id === operands.nodeId &&
-      authorized.parentId === operands.sourceParentId &&
-      authorized.node.space_id === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.rename" &&
+      primaryAuthorization.node.id === operands.nodeId &&
+      primaryAuthorization.parentId === operands.sourceParentId &&
+      primaryAuthorization.node.space_id === intent.spaceId &&
+      authorized[1]?.operation === "node.create" &&
+      authorized[1].parent.id === operands.parentId &&
+      authorized[1].spaceId === intent.spaceId &&
+      (typeof operands.overwriteTargetId !== "string" ||
+        (authorized[2]?.operation === "node.trash" &&
+          authorized[2].node.id === operands.overwriteTargetId &&
+          authorized[2].parentId === operands.parentId))) ||
     (copy &&
-      authorized.operation === "node.read" &&
-      authorized.node.id === operands.sourceNodeId &&
-      authorized.node.space_id === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.read" &&
+      primaryAuthorization.node.id === operands.sourceNodeId &&
+      primaryAuthorization.node.space_id === intent.spaceId &&
+      authorized[1]?.operation === "node.create" &&
+      authorized[1].parent.id === operands.parentId &&
+      authorized[1].spaceId === intent.spaceId &&
+      (typeof operands.overwriteTargetId !== "string" ||
+        (authorized[2]?.operation === "node.trash" &&
+          authorized[2].node.id === operands.overwriteTargetId &&
+          authorized[2].parentId === operands.parentId))) ||
     (restore &&
-      authorized.operation === "node.create" &&
-      authorized.parent.id === operands.parentId &&
-      authorized.spaceId === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.create" &&
+      primaryAuthorization.parent.id === operands.parentId &&
+      primaryAuthorization.spaceId === intent.spaceId) ||
     (purge &&
-      authorized.operation === "node.read" &&
-      authorized.node.id === operands.parentId &&
-      authorized.node.space_id === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.read" &&
+      primaryAuthorization.node.id === operands.parentId &&
+      primaryAuthorization.node.space_id === intent.spaceId) ||
     (intent.kind === "node.rename" &&
-      authorized.operation === "node.rename" &&
-      authorized.node.id === operands.nodeId &&
-      authorized.parentId === operands.parentId &&
-      authorized.node.space_id === intent.spaceId) ||
+      primaryAuthorization?.operation === "node.rename" &&
+      primaryAuthorization.node.id === operands.nodeId &&
+      primaryAuthorization.parentId === operands.parentId &&
+      primaryAuthorization.node.space_id === intent.spaceId) ||
     (intent.kind === "dav.proppatch" &&
-      authorized.operation === "node.props.write" &&
-      authorized.node.id === operands.nodeId &&
-      authorized.node.space_id === intent.spaceId);
+      primaryAuthorization?.operation === "node.props.write" &&
+      primaryAuthorization.node.id === operands.nodeId &&
+      primaryAuthorization.node.space_id === intent.spaceId);
   if (
     !targetMatches ||
-    authorized.principal.kind !== intent.principal.kind ||
-    principalId(authorized.principal) !== intent.principalId ||
+    authorized.length !==
+      (move || copy ? (typeof operands.overwriteTargetId === "string" ? 3 : 2) : 1) ||
+    authorized.some(
+      (proof) =>
+        proof.principal.kind !== intent.principal.kind ||
+        principalId(proof.principal) !== intent.principalId ||
+        proof.principal.credential_id !== intent.principal.credential_id ||
+        proof.principal.epoch !== intent.principal.epoch ||
+        (proof.principal.kind === "link_share" &&
+          intent.principal.kind === "link_share" &&
+          proof.principal.share_version !== intent.principal.share_version),
+    ) ||
     principalId(intent.principal) !== intent.principalId ||
-    authorized.principal.credential_id !== intent.principal.credential_id ||
-    authorized.principal.epoch !== intent.principal.epoch ||
-    (authorized.principal.kind === "link_share" &&
-      intent.principal.kind === "link_share" &&
-      authorized.principal.share_version !== intent.principal.share_version) ||
     permit.space_id !== intent.spaceId ||
     permit.epoch !== intent.principal.epoch ||
     !Number.isInteger(steps) ||
@@ -248,7 +270,7 @@ export function validateClaimAuthorization(
   )
     throw new Error("invalid_operation_claim");
   // Validate the request-local proof before any operation read or write.
-  return authorizationAssertion(authorized);
+  return authorized.map(authorizationAssertion);
 }
 
 /** A claim is not a namespace commit. Resume is restricted to the same permit. */
@@ -256,20 +278,20 @@ export async function claimOperation(
   db: D1Database,
   intent: OperationIntent,
   permit: Permit,
-  authorized: AuthorizedNode,
+  authorized: AuthorizedNode | readonly AuthorizedNode[],
   steps: number,
 ): Promise<{ kind: "claimed"; claim: OperationClaim } | { kind: "terminal"; row: OperationRow }> {
   const authority = validateClaimAuthorization(intent, permit, authorized, steps);
   const claim: OperationClaim = Object.freeze({ intent, permit, steps });
   const existing = await findOperationIntent(db, intent, steps);
   if (existing && existing.state !== "claimed") {
-    await atomicBatch(db, [authority]);
+    await atomicBatch(db, authority);
     return { kind: "terminal", row: existing };
   }
   try {
     await atomicBatch(db, [
       assertOpenPermit(permit),
-      authority,
+      ...authority,
       {
         sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,
           permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,created_at,updated_at)
@@ -297,11 +319,11 @@ export async function claimOperation(
     const current = await operationRow(db, intent.id);
     if (current && !sameIntent(current, intent, steps)) throw new Error("idempotency_conflict");
     if (current?.state === "claimed" && current.permit_id === permit.permit_id) {
-      await atomicBatch(db, [assertOpenPermit(permit), authority, assertOperationClaim(claim)]);
+      await atomicBatch(db, [assertOpenPermit(permit), ...authority, assertOperationClaim(claim)]);
       return { kind: "claimed", claim };
     }
     if (current && current.state !== "claimed") {
-      await atomicBatch(db, [authority]);
+      await atomicBatch(db, authority);
       return { kind: "terminal", row: current };
     }
     throw error;
@@ -320,6 +342,21 @@ export interface VisibleOperation {
     processed: number;
     total: number | null;
   };
+}
+
+async function hasCredentialScope(
+  db: D1Database,
+  principal: Principal,
+  scope: string,
+): Promise<boolean> {
+  if (principal.kind === "user") return true;
+  if (principal.kind !== "app_password") return false;
+  return (
+    (await primary(db)
+      .prepare("SELECT 1 FROM credential_scopes WHERE credential_id=? AND scope=?")
+      .bind(principal.credential_id, scope)
+      .first<number>()) !== null
+  );
 }
 
 /** R6 operation lookup uses the exact initiating credential, then current original-operand authorization. */
@@ -362,6 +399,39 @@ export async function lookupOperation(
       sourceParentId?: unknown;
       nodeId?: unknown;
     };
+    if (row.state !== "committed" && row.result_json !== null) return null;
+    let terminalResult: { status: number; nodeId: string; revision?: number } | null = null;
+    if (row.state === "committed") {
+      if (!row.result_json) return null;
+      if (row.kind === "dav.proppatch") {
+        const result = JSON.parse(row.result_json) as Record<string, unknown>;
+        if (
+          result.status !== 207 ||
+          typeof operands.nodeId !== "string" ||
+          result.nodeId !== operands.nodeId
+        )
+          return null;
+        terminalResult = { status: 207, nodeId: operands.nodeId };
+      } else {
+        const events = await primary(db)
+          .prepare(
+            `SELECT b.kind,b.payload_ref,o.kind AS op_kind,o.operands_json,o.result_json
+              FROM outbox b JOIN operations o ON o.op_id=b.op_id WHERE b.op_id=?`,
+          )
+          .bind(row.op_id)
+          .all<{
+            kind: string;
+            payload_ref: string;
+            op_kind: string;
+            operands_json: string;
+            result_json: string | null;
+          }>();
+        if (events.results.length !== 1) return null;
+        const contract = validateOutboxContract(events.results[0]!);
+        if (!contract) return null;
+        terminalResult = contract.result;
+      }
+    }
     const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
     if (row.kind === "upload.complete") {
       if (typeof operands.uploadId !== "string" || typeof operands.parentId !== "string")
@@ -443,6 +513,12 @@ export async function lookupOperation(
           : operands.parentId;
       if (authorized.operation !== "node.rename" || authorized.parentId !== expectedParent)
         return null;
+      if (row.kind === "node.move" || row.kind === "dav.move")
+        await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId: operands.parentId,
+          spaceId: row.space_id,
+        });
     } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
       if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
       await authorizeNode(db, principal, {
@@ -450,6 +526,7 @@ export async function lookupOperation(
         nodeId: operands.parentId,
         spaceId: row.space_id,
       });
+      if (!(await hasCredentialScope(db, principal, "node:delete"))) return null;
     } else if (row.kind === "dav.put" || row.kind === "upload.complete") {
       if (typeof operands.nodeId === "string") {
         const authorized = await authorizeNode(db, principal, {
@@ -478,51 +555,45 @@ export async function lookupOperation(
         spaceId: row.space_id,
       });
     }
-    const result =
-      row.state === "committed" && row.result_json
-        ? (JSON.parse(row.result_json) as { status: number; nodeId: string })
-        : null;
-    const expectedStatus =
-      row.kind === "dav.put" || row.kind === "upload.complete"
-        ? typeof operands.nodeId === "string"
-          ? 204
-          : 201
-        : row.kind === "dav.delete" || row.kind === "node.trash"
-          ? 204
-          : row.kind === "node.restore"
-            ? 200
-            : row.kind === "node.purge"
-              ? 200
-              : ["node.move", "dav.move"].includes(row.kind)
-                ? typeof operands.overwriteTargetId === "string"
-                  ? 204
-                  : 201
-                : ["node.copy", "dav.copy"].includes(row.kind)
-                  ? typeof operands.overwriteTargetId === "string"
-                    ? 204
-                    : 201
-                  : create
-                    ? 201
-                    : row.kind === "dav.proppatch"
-                      ? 207
-                      : 200;
-    if (result && result.status !== expectedStatus) return null;
-    if (
-      result &&
-      ["node.rename", "node.move", "dav.move"].includes(row.kind) &&
-      result.nodeId !== operands.nodeId
-    )
-      return null;
-    let visible: VisibleOperation["result"] = result ? { status: result.status } : null;
-    if (result && typeof result.nodeId === "string") {
+    if (typeof operands.overwriteTargetId === "string") {
+      if (principal.kind !== "user" && principal.kind !== "app_password") return null;
+      const overwrite = await primary(db)
+        .prepare(`SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id
+          JOIN spaces s ON s.id=t.space_id AND s.owner_id=n.owner_id
+          WHERE t.op_id=? AND t.actor_id=? AND t.space_id=? AND t.root_node_id=?
+            AND t.state IN ('trashed','purging','purged') AND t.epoch=?
+            AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL AND n.orig_parent_id=?
+            AND (?<>'app_password' OR EXISTS(SELECT 1 FROM credential_scopes
+              WHERE credential_id=? AND scope='node:delete'))`)
+        .bind(
+          row.op_id,
+          principal.user_id,
+          row.space_id,
+          operands.overwriteTargetId,
+          row.epoch,
+          operands.parentId,
+          principal.kind,
+          principal.credential_id,
+        )
+        .first();
+      if (!overwrite) return null;
+    }
+    let visible: VisibleOperation["result"] = terminalResult
+      ? { status: terminalResult.status }
+      : null;
+    if (terminalResult) {
       try {
         const proof = await authorizeNode(db, principal, {
           operation: "node.read",
-          nodeId: result.nodeId,
+          nodeId: terminalResult.nodeId,
           spaceId: row.space_id,
         });
         if (proof.operation !== "node.create")
-          visible = { status: result.status, nodeId: proof.node.id, revision: proof.node.revision };
+          visible = {
+            status: terminalResult.status,
+            nodeId: proof.node.id,
+            revision: proof.node.revision,
+          };
       } catch {
         /* Status is visible; a purged or newly restricted node is not disclosed. */
       }

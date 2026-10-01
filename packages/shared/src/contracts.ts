@@ -141,6 +141,9 @@ export interface OperationScopeTuple {
 }
 
 export const OPERATION_SCOPE_TUPLES = {
+  "node.create": [{ operand: "destinationParent", when: "always", scopes: ["node:create"] }],
+  "node.content.write": [{ operand: "source", when: "always", scopes: ["node:write"] }],
+  "node.rename": [{ operand: "source", when: "always", scopes: ["node:write"] }],
   "node.move": [
     { operand: "source", when: "always", scopes: ["node:write"] },
     { operand: "destinationParent", when: "always", scopes: ["node:create"] },
@@ -152,10 +155,14 @@ export const OPERATION_SCOPE_TUPLES = {
     { operand: "overwriteTarget", when: "overwrite", scopes: ["node:delete"] },
   ],
   "node.trash": [{ operand: "source", when: "always", scopes: ["node:delete"] }],
+  "node.restore": [{ operand: "destinationParent", when: "always", scopes: ["node:create"] }],
+  "node.purge": [{ operand: "source", when: "always", scopes: ["node:delete"] }],
   "dav.put": [
     { operand: "destinationParent", when: "create", scopes: ["node:create"] },
     { operand: "source", when: "overwrite", scopes: ["node:write"] },
   ],
+  "dav.mkcol": [{ operand: "destinationParent", when: "always", scopes: ["node:create"] }],
+  "dav.proppatch": [{ operand: "source", when: "always", scopes: ["node:write"] }],
   "dav.copy": [
     { operand: "source", when: "always", scopes: ["node:read"] },
     { operand: "destinationParent", when: "always", scopes: ["node:create"] },
@@ -170,6 +177,10 @@ export const OPERATION_SCOPE_TUPLES = {
   "dav.lock": [
     { operand: "source", when: "existing", scopes: ["node:write"] },
     { operand: "sourceParent", when: "lock-null", scopes: ["node:create"] },
+  ],
+  "upload.complete": [
+    { operand: "destinationParent", when: "create", scopes: ["upload:write"] },
+    { operand: "source", when: "overwrite", scopes: ["upload:write"] },
   ],
 } as const satisfies Partial<Record<Operation, readonly OperationScopeTuple[]>>;
 

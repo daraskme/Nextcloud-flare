@@ -4,6 +4,7 @@ import {
   commitSystemMutation,
   type SystemMutationSource,
 } from "../services/systemMutation";
+import { OUTBOX_PROVENANCE_SQL, validateOutboxContract } from "./outboxContract";
 import { treeJobRow } from "./treeJobStore";
 import { failTreeJob } from "./treeJobWorker";
 
@@ -35,8 +36,12 @@ interface DeadLetterRow {
   operation_kind: string;
   operation_state: string;
   operation_epoch: number;
+  principal_kind: string;
+  principal_id: string;
+  credential_id: string | null;
+  credential_version: number | null;
   operands_json: string;
-  result_json: string;
+  result_json: string | null;
 }
 
 function outboxId(body: unknown): string | null {
@@ -102,7 +107,8 @@ async function deadLetterRow(db: D1Database, id: string): Promise<DeadLetterRow 
     .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.state,b.epoch,
       b.dispatch_token,b.dispatch_expires_at,b.claim_token,b.claim_expires_at,
       o.space_id,s.owner_id,o.kind AS operation_kind,o.state AS operation_state,
-      o.epoch AS operation_epoch,o.operands_json,o.result_json
+      o.epoch AS operation_epoch,o.principal_kind,o.principal_id,o.credential_id,
+      o.credential_version,o.operands_json,o.result_json
       FROM outbox b JOIN operations o ON o.op_id=b.op_id JOIN spaces s ON s.id=o.space_id
       WHERE b.outbox_id=?`)
     .bind(id)
@@ -113,23 +119,7 @@ function knownProvenance(row: DeadLetterRow): boolean {
   return (
     row.operation_state === "committed" &&
     row.operation_epoch === row.epoch &&
-    ((row.kind === "node.created" &&
-      [
-        "node.create",
-        "node.copy",
-        "dav.mkcol",
-        "dav.lock",
-        "dav.put",
-        "dav.copy",
-        "upload.complete",
-      ].includes(row.operation_kind)) ||
-      (row.kind === "node.updated" &&
-        ["dav.put", "upload.complete"].includes(row.operation_kind)) ||
-      (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.operation_kind)) ||
-      (row.kind === "node.restored" && row.operation_kind === "node.restore") ||
-      (row.kind === "node.purged" && row.operation_kind === "node.purge") ||
-      (row.kind === "node.renamed" &&
-        ["node.rename", "node.move", "dav.move"].includes(row.operation_kind)))
+    validateOutboxContract({ ...row, op_kind: row.operation_kind }) !== null
   );
 }
 
@@ -185,12 +175,9 @@ async function terminalizeDeadLetter(
             AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
               AND o.space_id=? AND o.state='committed' AND o.epoch=outbox.epoch
               AND o.kind=? AND o.operands_json=? AND o.result_json=?
-              AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
-                (outbox.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
-                (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-                (outbox.kind='node.restored' AND o.kind='node.restore') OR
-                (outbox.kind='node.purged' AND o.kind='node.purge') OR
-                (outbox.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+              AND o.principal_kind=? AND o.principal_id=? AND o.credential_id IS ?
+              AND o.credential_version IS ?
+              AND ${OUTBOX_PROVENANCE_SQL}
               AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
                 AND s.kind='node' AND s.affected_id=outbox.payload_ref))`,
         values: [
@@ -208,6 +195,10 @@ async function terminalizeDeadLetter(
           row.operation_kind,
           row.operands_json,
           row.result_json,
+          row.principal_kind,
+          row.principal_id,
+          row.credential_id,
+          row.credential_version,
         ],
       },
       assertOneChange,

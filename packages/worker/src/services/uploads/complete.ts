@@ -391,7 +391,7 @@ async function completeUpload(
       statements = [
         assertOpenPermit(permit),
         assertOperationClaim(claimed.claim),
-        validateClaimAuthorization(intent, permit, authorized, expectedSteps),
+        ...validateClaimAuthorization(intent, permit, authorized, expectedSteps),
         ...guards,
         assertCreateLocks(authorized.node.id, row.space_id, principal, hashes),
         assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=?)", [

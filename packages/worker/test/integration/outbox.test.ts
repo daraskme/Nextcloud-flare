@@ -187,11 +187,11 @@ it.each([{ status: 200 }, { status: 201, nodeId: "wrong" }])(
   "does not complete an event with a mismatched saved result %j",
   async (result) => {
     const f = await fixture(result);
-    expect(await dispatchOutbox(mutationEnv(), sender().queue, f.id, 1)).toBe("sent");
+    expect(await dispatchOutbox(mutationEnv(), sender().queue, f.id, 1)).toBe("busy");
     expect(await consumeOutbox(mutationEnv(), f.id)).toBe("retry");
     expect(
       await env.DB.prepare("SELECT state FROM outbox WHERE outbox_id=?").bind(f.id).first("state"),
-    ).toBe("sent");
+    ).toBe("pending");
   },
 );
 

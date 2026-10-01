@@ -1,5 +1,6 @@
 import type { MutationAdmission } from "../db/mutationAdmission";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
+import { OUTBOX_PROVENANCE_SQL, validateOutboxContract } from "../jobs/outboxContract";
 import { BINDING_PROBE_BYTES, BINDING_PROBE_KEY } from "../r2/bindingProbe";
 import {
   acquireGlobalMutation,
@@ -312,6 +313,102 @@ export async function inspectRecoveryFinalFence(db: D1Database, epoch: number): 
   if (ready === null) throw new Error("recovery_final_fence_pending");
 }
 
+function recoveryCredentialAssertions(
+  row: {
+    operation_kind: string;
+    kind: string;
+    operands_json: string;
+    principal_kind: string;
+    principal_id: string;
+    credential_id: string | null;
+    credential_version: number | null;
+    epoch: number;
+  },
+  contract: NonNullable<ReturnType<typeof validateOutboxContract>>,
+): SqlStatement[] {
+  const assertions = [
+    assertExists(
+      `SELECT 1 WHERE
+        (?='user' AND EXISTS(SELECT 1 FROM credentials c
+          JOIN sessions ss ON ss.id=c.session_id AND ss.kind='access'
+          JOIN users u ON u.id=ss.user_id
+          WHERE c.id=? AND c.kind='access' AND u.id=? AND u.disabled_at IS NULL
+            AND ss.revoked_at IS NULL AND ss.epoch=? AND ss.expires_at>strftime('%s','now')*1000))
+        OR (?='app_password' AND EXISTS(SELECT 1 FROM credentials c
+          JOIN app_passwords ap ON ap.id=c.app_password_id
+          JOIN users u ON u.id=ap.user_id
+          WHERE c.id=? AND c.kind='app_password' AND u.id=? AND u.disabled_at IS NULL
+            AND ap.revoked_at IS NULL AND ap.expires_at>strftime('%s','now')*1000))
+        OR (?='link_share' AND EXISTS(SELECT 1 FROM credentials c
+          JOIN share_sessions ss ON ss.id=c.share_session_id
+          JOIN shares sh ON sh.id=ss.share_id
+          JOIN users u ON u.id=sh.owner_id
+          WHERE c.id=? AND c.kind='share' AND sh.id=? AND sh.version=?
+            AND sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+            AND u.disabled_at IS NULL AND ss.share_version=sh.version AND ss.epoch=?
+            AND ss.revoked_at IS NULL AND ss.expires_at>strftime('%s','now')*1000))`,
+      [
+        row.principal_kind,
+        row.credential_id,
+        row.principal_id,
+        row.epoch,
+        row.principal_kind,
+        row.credential_id,
+        row.principal_id,
+        row.principal_kind,
+        row.credential_id,
+        row.principal_id,
+        row.credential_version,
+        row.epoch,
+      ],
+    ),
+  ];
+  const overwrite = contract.operands.overwriteTargetId !== undefined;
+  const scopes =
+    row.operation_kind === "upload.complete"
+      ? ["upload:write"]
+      : ["node.create", "dav.mkcol", "dav.lock"].includes(row.operation_kind) ||
+          row.operation_kind === "node.restore" ||
+          (row.operation_kind === "dav.put" && row.kind === "node.created")
+        ? ["node:create"]
+        : ["node.trash", "dav.delete", "node.purge"].includes(row.operation_kind)
+          ? ["node:delete"]
+          : ["node.copy", "dav.copy"].includes(row.operation_kind)
+            ? ["node:read", "node:create", ...(overwrite ? ["node:delete"] : [])]
+            : ["node.move", "dav.move"].includes(row.operation_kind)
+              ? ["node:write", "node:create", ...(overwrite ? ["node:delete"] : [])]
+              : ["node:write"];
+  if (row.principal_kind === "app_password")
+    assertions.push(
+      assertExists(
+        `SELECT COUNT(*) FROM credential_scopes WHERE credential_id=? AND scope IN (${scopes
+          .map(() => "?")
+          .join(",")}) HAVING COUNT(*)=?`,
+        [row.credential_id, ...scopes, scopes.length],
+      ),
+    );
+  if (row.principal_kind === "link_share") {
+    if (scopes.includes("node:delete")) throw new Error("recovery_outbox_share_authority");
+    const actions =
+      row.operation_kind === "upload.complete"
+        ? [row.kind === "node.created" ? "upload" : "edit"]
+        : [
+            ...(scopes.includes("node:read") ? ["read"] : []),
+            ...(scopes.includes("node:create") ? ["create"] : []),
+            ...(scopes.includes("node:write") ? ["edit"] : []),
+          ];
+    assertions.push(
+      assertExists(
+        `SELECT COUNT(*) FROM share_actions WHERE share_id=? AND action IN (${actions
+          .map(() => "?")
+          .join(",")}) HAVING COUNT(*)=?`,
+        [row.principal_id, ...actions, actions.length],
+      ),
+    );
+  }
+  return assertions;
+}
+
 /** Old-epoch node notifications cannot be safely replayed after recovery. */
 export async function failStaleRecoveryOutbox(
   env: SystemMutationSource,
@@ -326,14 +423,11 @@ export async function failStaleRecoveryOutbox(
   await assertQuiesced(db, epoch);
   const clock = "strftime('%s','now')*1000";
   const rows = await primary(db)
-    .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.epoch,o.space_id,s.owner_id
+    .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.epoch,o.space_id,s.owner_id,
+      o.kind AS operation_kind,o.principal_kind,o.principal_id,o.credential_id,
+      o.credential_version,o.operands_json,o.result_json
       FROM outbox b JOIN operations o ON o.op_id=b.op_id LEFT JOIN spaces s ON s.id=o.space_id
-      WHERE b.epoch<? AND ((b.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
-        (b.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
-        (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-        (b.kind='node.restored' AND o.kind='node.restore') OR
-        (b.kind='node.purged' AND o.kind='node.purge') OR
-        (b.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+      WHERE b.epoch<? AND ${OUTBOX_PROVENANCE_SQL.replaceAll("outbox.", "b.")}
         AND b.state IN ('pending','dispatching','sent')
         AND o.state='committed' AND o.epoch=b.epoch
         AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
@@ -351,12 +445,26 @@ export async function failStaleRecoveryOutbox(
       epoch: number;
       space_id: string | null;
       owner_id: string | null;
+      operation_kind: string;
+      principal_kind: string;
+      principal_id: string;
+      credential_id: string | null;
+      credential_version: number | null;
+      operands_json: string;
+      result_json: string | null;
     }>();
   let failed = 0;
   for (const row of rows.results) {
     if (Date.now() >= deadline) break;
     const { outbox_id, op_id, kind, payload_ref, epoch: sourceEpoch, space_id, owner_id } = row;
     if (!owner_id || !space_id) throw new Error("recovery_outbox_owner_missing");
+    if (
+      !validateOutboxContract({
+        ...row,
+        op_kind: row.operation_kind,
+      })
+    )
+      throw new Error("recovery_outbox_provenance_mismatch");
     const admission = await acquireSystemMutation(env, owner_id, "recovery.outbox-fail", deadline);
     withinRepairBudget(deadline);
     if (admission.space_id !== space_id) throw new Error("recovery_outbox_space_changed");
@@ -372,27 +480,58 @@ export async function failStaleRecoveryOutbox(
               AND ((claim_token IS NULL AND claim_expires_at IS NULL) OR
                 (claim_token IS NOT NULL AND claim_expires_at<=${clock}))
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id AND o.space_id=?
-                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
-                  (outbox.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
-                  (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-                  (outbox.kind='node.restored' AND o.kind='node.restore') OR
-                  (outbox.kind='node.purged' AND o.kind='node.purge') OR
-                  (outbox.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+                AND ${OUTBOX_PROVENANCE_SQL}
                 AND o.state='committed' AND o.epoch=outbox.epoch
+                AND o.kind=? AND o.principal_kind=? AND o.principal_id=?
+                AND o.credential_id IS ? AND o.credential_version IS ?
+                AND o.operands_json=? AND o.result_json=?
                 AND EXISTS(SELECT 1 FROM operation_steps s WHERE s.op_id=o.op_id
                   AND s.kind='node' AND s.affected_id=outbox.payload_ref))
               AND EXISTS(SELECT 1 FROM control WHERE singleton=1 AND epoch=?
                 AND maintenance=1 AND gc_paused=1)`,
-          values: [outbox_id, op_id, kind, payload_ref, sourceEpoch, epoch, space_id, epoch],
+          values: [
+            outbox_id,
+            op_id,
+            kind,
+            payload_ref,
+            sourceEpoch,
+            epoch,
+            space_id,
+            row.operation_kind,
+            row.principal_kind,
+            row.principal_id,
+            row.credential_id,
+            row.credential_version,
+            row.operands_json,
+            row.result_json,
+            epoch,
+          ],
         },
         assertOneChange,
       ]);
     } catch (error) {
       const terminal = await primary(db)
-        .prepare(
-          "SELECT 1 FROM outbox WHERE outbox_id=? AND op_id=? AND kind=? AND payload_ref=? AND epoch=? AND state='failed'",
+        .prepare(`SELECT 1 FROM outbox b JOIN operations o ON o.op_id=b.op_id
+          WHERE b.outbox_id=? AND b.op_id=? AND b.kind=? AND b.payload_ref=?
+            AND b.epoch=? AND b.state='failed' AND o.space_id=? AND o.state='committed'
+            AND o.epoch=b.epoch AND o.kind=? AND o.principal_kind=? AND o.principal_id=?
+            AND o.credential_id IS ? AND o.credential_version IS ?
+            AND o.operands_json=? AND o.result_json=? AND ${OUTBOX_PROVENANCE_SQL.replaceAll("outbox.", "b.")}`)
+        .bind(
+          outbox_id,
+          op_id,
+          kind,
+          payload_ref,
+          sourceEpoch,
+          space_id,
+          row.operation_kind,
+          row.principal_kind,
+          row.principal_id,
+          row.credential_id,
+          row.credential_version,
+          row.operands_json,
+          row.result_json,
         )
-        .bind(outbox_id, op_id, kind, payload_ref, sourceEpoch)
         .first<number>();
       if (terminal === null) throw error;
     }
@@ -419,17 +558,13 @@ export async function requeueDeliveryExhaustedOutbox(
     .prepare(`SELECT b.outbox_id,b.op_id,b.kind,b.payload_ref,b.epoch,
       b.dispatch_token,b.dispatch_expires_at,b.claim_token,b.claim_expires_at,
       d.queue_message_id,o.space_id,s.owner_id,o.kind AS operation_kind,
+      o.principal_kind,o.principal_id,o.credential_id,o.credential_version,
       o.operands_json,o.result_json
       FROM outbox b JOIN outbox_dead_letters d ON d.outbox_id=b.outbox_id
       JOIN operations o ON o.op_id=b.op_id JOIN spaces s ON s.id=o.space_id
       WHERE b.epoch=? AND b.state='failed' AND d.epoch=b.epoch AND d.status='failed'
         AND d.requeue_count=0 AND o.state='committed' AND o.epoch=b.epoch
-        AND ((b.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
-          (b.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
-          (b.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-          (b.kind='node.restored' AND o.kind='node.restore') OR
-          (b.kind='node.purged' AND o.kind='node.purge') OR
-          (b.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+        AND ${OUTBOX_PROVENANCE_SQL.replaceAll("outbox.", "b.")}
         AND EXISTS(SELECT 1 FROM operation_steps st WHERE st.op_id=o.op_id
           AND st.kind='node' AND st.affected_id=b.payload_ref)
       ORDER BY d.first_observed_at,d.queue_message_id LIMIT ?`)
@@ -448,12 +583,22 @@ export async function requeueDeliveryExhaustedOutbox(
       space_id: string;
       owner_id: string;
       operation_kind: string;
+      principal_kind: string;
+      principal_id: string;
+      credential_id: string | null;
+      credential_version: number | null;
       operands_json: string;
-      result_json: string;
+      result_json: string | null;
     }>();
   let requeued = 0;
   for (const row of rows.results) {
     withinRepairBudget(deadline);
+    const contract = validateOutboxContract({
+      ...row,
+      op_kind: row.operation_kind,
+    });
+    if (!contract) throw new Error("recovery_outbox_provenance_mismatch");
+    const authority = recoveryCredentialAssertions(row, contract);
     const admission = await acquireSystemMutation(
       env,
       row.owner_id,
@@ -466,6 +611,7 @@ export async function requeueDeliveryExhaustedOutbox(
     try {
       await commitSystemMutation(db, admission, row.owner_id, [
         repairFence(epoch, admission),
+        ...authority,
         {
           sql: `UPDATE outbox SET state='pending',dispatch_token=NULL,dispatch_expires_at=NULL,
             claim_token=NULL,claim_expires_at=NULL,updated_at=MAX(updated_at,${clock})
@@ -480,12 +626,9 @@ export async function requeueDeliveryExhaustedOutbox(
               AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id
                 AND o.space_id=? AND o.state='committed' AND o.epoch=outbox.epoch
                 AND o.kind=? AND o.operands_json=? AND o.result_json=?
-                AND ((outbox.kind='node.created' AND o.kind IN ('node.create','node.copy','dav.mkcol','dav.lock','dav.put','dav.copy','upload.complete')) OR
-                  (outbox.kind='node.updated' AND o.kind IN ('dav.put','upload.complete')) OR
-                  (outbox.kind='node.trashed' AND o.kind IN ('node.trash','dav.delete')) OR
-                  (outbox.kind='node.restored' AND o.kind='node.restore') OR
-                  (outbox.kind='node.purged' AND o.kind='node.purge') OR
-                  (outbox.kind='node.renamed' AND o.kind IN ('node.rename','node.move','dav.move')))
+                AND o.principal_kind=? AND o.principal_id=? AND o.credential_id IS ?
+                AND o.credential_version IS ?
+                AND ${OUTBOX_PROVENANCE_SQL}
                 AND EXISTS(SELECT 1 FROM operation_steps st WHERE st.op_id=o.op_id
                   AND st.kind='node' AND st.affected_id=outbox.payload_ref))`,
           values: [
@@ -504,6 +647,10 @@ export async function requeueDeliveryExhaustedOutbox(
             row.operation_kind,
             row.operands_json,
             row.result_json,
+            row.principal_kind,
+            row.principal_id,
+            row.credential_id,
+            row.credential_version,
           ],
         },
         assertOneChange,
@@ -521,10 +668,31 @@ export async function requeueDeliveryExhaustedOutbox(
     } catch (error) {
       const terminal = await primary(db)
         .prepare(`SELECT 1 FROM outbox b JOIN outbox_dead_letters d
-          ON d.outbox_id=b.outbox_id WHERE b.outbox_id=? AND b.op_id=? AND b.epoch=?
+          ON d.outbox_id=b.outbox_id JOIN operations o ON o.op_id=b.op_id
+          WHERE b.outbox_id=? AND b.op_id=? AND b.kind=? AND b.payload_ref=? AND b.epoch=?
           AND b.state='pending' AND d.queue_message_id=? AND d.epoch=b.epoch
-          AND d.status='requeued' AND d.requeue_count=1`)
-        .bind(row.outbox_id, row.op_id, row.epoch, row.queue_message_id)
+          AND d.status='requeued' AND d.requeue_count=1
+          AND o.space_id=? AND o.state='committed' AND o.epoch=b.epoch
+          AND o.kind=? AND o.principal_kind=? AND o.principal_id=?
+          AND o.credential_id IS ? AND o.credential_version IS ?
+          AND o.operands_json=? AND o.result_json=?
+          AND ${OUTBOX_PROVENANCE_SQL.replaceAll("outbox.", "b.")}`)
+        .bind(
+          row.outbox_id,
+          row.op_id,
+          row.kind,
+          row.payload_ref,
+          row.epoch,
+          row.queue_message_id,
+          row.space_id,
+          row.operation_kind,
+          row.principal_kind,
+          row.principal_id,
+          row.credential_id,
+          row.credential_version,
+          row.operands_json,
+          row.result_json,
+        )
         .first<number>();
       if (terminal === null) throw error;
     }
@@ -791,71 +959,18 @@ export async function inspectRecoveryPage(
       )
         throw new Error("recovery_outbox_provenance_mismatch");
       if (
-        !(
-          (row.kind === "node.created" &&
-            [
-              "node.create",
-              "node.copy",
-              "dav.mkcol",
-              "dav.lock",
-              "dav.put",
-              "dav.copy",
-              "upload.complete",
-            ].includes(row.operation_kind ?? "")) ||
-          (row.kind === "node.updated" &&
-            ["dav.put", "upload.complete"].includes(row.operation_kind ?? "")) ||
-          (row.kind === "node.trashed" &&
-            ["node.trash", "dav.delete"].includes(row.operation_kind ?? "")) ||
-          (row.kind === "node.restored" && row.operation_kind === "node.restore") ||
-          (row.kind === "node.purged" && row.operation_kind === "node.purge") ||
-          (row.kind === "node.renamed" &&
-            ["node.rename", "node.move", "dav.move"].includes(row.operation_kind ?? ""))
-        ) ||
+        !row.operation_kind ||
+        !row.operands_json ||
+        !validateOutboxContract({
+          kind: row.kind,
+          payload_ref: row.payload_ref,
+          op_kind: row.operation_kind,
+          operands_json: row.operands_json,
+          result_json: row.result_json,
+        }) ||
         row.node_step_id !== row.payload_ref
       )
         throw new Error("recovery_outbox_provenance_mismatch");
-      try {
-        const operands = JSON.parse(row.operands_json ?? "null") as {
-          parentId?: unknown;
-          overwriteTargetId?: unknown;
-          nodeId?: unknown;
-        } | null;
-        const result = JSON.parse(row.result_json ?? "null") as {
-          status?: unknown;
-          nodeId?: unknown;
-        } | null;
-        if (
-          !operands ||
-          typeof operands.parentId !== "string" ||
-          (row.kind === "node.renamed" ||
-          row.kind === "node.updated" ||
-          row.kind === "node.trashed" ||
-          row.kind === "node.restored" ||
-          row.kind === "node.purged"
-            ? operands.nodeId !== row.payload_ref
-            : operands.nodeId !== undefined) ||
-          !result ||
-          result.nodeId !== row.payload_ref ||
-          result.status !==
-            (row.kind === "node.created"
-              ? ["node.copy", "dav.copy"].includes(row.operation_kind ?? "") &&
-                typeof operands.overwriteTargetId === "string"
-                ? 204
-                : 201
-              : row.kind === "node.updated" || row.kind === "node.trashed"
-                ? 204
-                : row.kind === "node.restored" || row.kind === "node.purged"
-                  ? 200
-                  : ["node.move", "dav.move"].includes(row.operation_kind ?? "")
-                    ? typeof operands.overwriteTargetId === "string"
-                      ? 204
-                      : 201
-                    : 200)
-        )
-          throw new Error("recovery_outbox_provenance_mismatch");
-      } catch {
-        throw new Error("recovery_outbox_provenance_mismatch");
-      }
       if (
         (row.state === "dispatching" || row.state === "sent") &&
         (!row.dispatch_token || row.dispatch_expires_at === null)

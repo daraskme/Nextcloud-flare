@@ -1,5 +1,10 @@
 import { searchText } from "@next-cloud-flare/shared/names";
-import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import {
+  type AuthorizedNode,
+  authorizationAssertion,
+  authorizeNode,
+  type Principal,
+} from "../auth/authorize";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { AUDIO_GENERATOR_VERSION, type AudioInspection, inspectAudioObject } from "../media/audio";
@@ -10,6 +15,7 @@ import {
 } from "../services/systemMutation";
 import { epubCompletionStatements, prepareEpubProjection } from "./epub";
 import { type MediaJobEnv, processImageOutbox } from "./media";
+import { validateOutboxContract } from "./outboxContract";
 import { processVideoOutbox, type VideoJobEnv } from "./video";
 
 export const OUTBOX_CLAIM_LEASE_MS = 30_000;
@@ -82,6 +88,39 @@ function isAudioEvent(row: EventRow): boolean {
   return (
     row.kind === "node.updated" ||
     (row.kind === "node.created" && ["dav.put", "upload.complete"].includes(row.op_kind))
+  );
+}
+
+function overwriteAssertion(row: EventRow, principal: Principal, targetId: string): SqlStatement {
+  if (principal.kind !== "user" && principal.kind !== "app_password")
+    return assertExists("SELECT 1 WHERE 0");
+  return assertExists(
+    `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id
+      JOIN spaces s ON s.id=t.space_id AND s.owner_id=n.owner_id
+      WHERE t.op_id=? AND t.actor_id=? AND t.space_id=? AND t.root_node_id=?
+        AND t.state IN ('trashed','purging','purged') AND t.epoch=?
+        AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL AND n.orig_parent_id=?
+        AND (?<>'app_password' OR EXISTS(SELECT 1 FROM credential_scopes
+          WHERE credential_id=? AND scope='node:delete'))`,
+    [
+      row.op_id,
+      principal.user_id,
+      row.space_id,
+      targetId,
+      row.epoch,
+      JSON.parse(row.operands_json).parentId as string,
+      principal.kind,
+      principal.credential_id,
+    ],
+  );
+}
+
+function destructiveCredentialAssertion(principal: Principal): SqlStatement {
+  if (principal.kind === "user") return assertExists("SELECT 1");
+  if (principal.kind !== "app_password") return assertExists("SELECT 1 WHERE 0");
+  return assertExists(
+    "SELECT 1 FROM credential_scopes WHERE credential_id=? AND scope='node:delete'",
+    [principal.credential_id],
   );
 }
 
@@ -210,117 +249,95 @@ export async function consumeOutbox(
   const row = await eventRow(db, outboxId);
   if (row?.state === "completed") return "completed";
   if (row?.state === "failed") return "failed";
-  if (
-    !row ||
-    !(
-      (row.kind === "node.created" &&
-        [
-          "node.create",
-          "node.copy",
-          "dav.mkcol",
-          "dav.lock",
-          "dav.put",
-          "dav.copy",
-          "upload.complete",
-        ].includes(row.op_kind)) ||
-      (row.kind === "node.updated" && ["dav.put", "upload.complete"].includes(row.op_kind)) ||
-      (row.kind === "node.trashed" && ["node.trash", "dav.delete"].includes(row.op_kind)) ||
-      (row.kind === "node.restored" && row.op_kind === "node.restore") ||
-      (row.kind === "node.purged" && row.op_kind === "node.purge") ||
-      (row.kind === "node.renamed" &&
-        ["node.rename", "node.move", "dav.move"].includes(row.op_kind))
-    ) ||
-    row.op_state !== "committed" ||
-    !["dispatching", "sent"].includes(row.state)
-  )
+  if (!row || row.op_state !== "committed" || !["dispatching", "sent"].includes(row.state))
     return "retry";
   const principal = savedPrincipal(row);
   if (!principal) return "retry";
-  let parentId: string;
-  let nodeId: string | undefined;
+  const contract = validateOutboxContract(row);
+  if (!contract) return "retry";
+  const { operands } = contract;
+  let authorized: AuthorizedNode[];
   try {
-    const operands = JSON.parse(row.operands_json) as {
-      parentId?: unknown;
-      overwriteTargetId?: unknown;
-      nodeId?: unknown;
-    };
-    const result = JSON.parse(row.result_json ?? "null") as {
-      status?: unknown;
-      nodeId?: unknown;
-    } | null;
-    if (typeof operands.parentId !== "string") return "retry";
-    if (
-      !result ||
-      result.nodeId !== row.payload_ref ||
-      result.status !==
-        (row.kind === "node.created"
-          ? ["node.copy", "dav.copy"].includes(row.op_kind) &&
-            typeof operands.overwriteTargetId === "string"
-            ? 204
-            : 201
-          : row.kind === "node.updated" || row.kind === "node.trashed"
-            ? 204
-            : row.kind === "node.restored" || row.kind === "node.purged"
-              ? 200
-              : ["node.move", "dav.move"].includes(row.op_kind)
-                ? typeof operands.overwriteTargetId === "string"
-                  ? 204
-                  : 201
-                : 200)
-    )
-      return "retry";
-    parentId = operands.parentId;
-    if (
-      row.kind === "node.renamed" ||
-      row.kind === "node.updated" ||
-      row.kind === "node.trashed" ||
-      row.kind === "node.restored" ||
-      row.kind === "node.purged"
-    ) {
-      if (typeof operands.nodeId !== "string" || operands.nodeId !== row.payload_ref)
-        return "retry";
-      if (row.kind !== "node.trashed" && row.kind !== "node.purged") nodeId = operands.nodeId;
-    } else if (operands.nodeId !== undefined) {
-      return "retry";
-    }
-  } catch {
-    return "retry";
-  }
-  let authorized: Awaited<ReturnType<typeof authorizeNode>>;
-  try {
-    authorized =
-      row.kind === "node.trashed" || row.kind === "node.purged"
-        ? await authorizeNode(db, principal, {
-            operation: "node.read",
-            nodeId: parentId,
-            spaceId: row.space_id,
-          })
-        : nodeId
+    if (contract.operationKind === "node.copy" || contract.operationKind === "dav.copy") {
+      authorized = [
+        await authorizeNode(db, principal, {
+          operation: "node.read",
+          nodeId: operands.sourceNodeId!,
+          spaceId: row.space_id,
+        }),
+        await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId: operands.parentId,
+          spaceId: row.space_id,
+        }),
+      ];
+    } else if (contract.operationKind === "node.move" || contract.operationKind === "dav.move") {
+      authorized = [
+        await authorizeNode(db, principal, {
+          operation: "node.rename",
+          nodeId: operands.nodeId!,
+          spaceId: row.space_id,
+        }),
+        await authorizeNode(db, principal, {
+          operation: "node.create",
+          parentId: operands.parentId,
+          spaceId: row.space_id,
+        }),
+      ];
+    } else {
+      authorized = [
+        row.kind === "node.trashed" || row.kind === "node.purged"
           ? await authorizeNode(db, principal, {
-              operation: row.kind === "node.updated" ? "node.content.write" : "node.rename",
-              nodeId,
+              operation: "node.read",
+              nodeId: operands.parentId,
               spaceId: row.space_id,
             })
-          : await authorizeNode(db, principal, {
-              operation: "node.create",
-              parentId,
-              spaceId: row.space_id,
-            });
+          : row.kind === "node.restored"
+            ? await authorizeNode(db, principal, {
+                operation: "node.create",
+                parentId: operands.parentId,
+                spaceId: row.space_id,
+              })
+            : operands.nodeId
+              ? await authorizeNode(db, principal, {
+                  operation: row.kind === "node.updated" ? "node.content.write" : "node.rename",
+                  nodeId: operands.nodeId,
+                  spaceId: row.space_id,
+                })
+              : await authorizeNode(db, principal, {
+                  operation: "node.create",
+                  parentId: operands.parentId,
+                  spaceId: row.space_id,
+                }),
+      ];
+    }
     if (
-      (authorized.operation === "node.rename" || authorized.operation === "node.content.write") &&
-      authorized.parentId !== parentId
+      authorized.some(
+        (proof) =>
+          (proof.operation === "node.rename" || proof.operation === "node.content.write") &&
+          proof.parentId !== operands.parentId,
+      )
     )
       return "retry";
   } catch {
     return "retry";
   }
+  const authority = [
+    ...authorized.map(authorizationAssertion),
+    ...(row.kind === "node.trashed" || row.kind === "node.purged"
+      ? [destructiveCredentialAssertion(principal)]
+      : []),
+    ...(operands.overwriteTargetId
+      ? [overwriteAssertion(row, principal, operands.overwriteTargetId)]
+      : []),
+  ];
   const token = crypto.randomUUID();
   const clock = "strftime('%s','now')*1000";
   try {
     const claim = await acquireSystemMutation(env, row.owner_id, "outbox.consume-claim", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, claim, row.owner_id, [
-      authorizationAssertion(authorized),
+      ...authority,
       {
         sql: `UPDATE outbox SET claim_token=?,claim_expires_at=${clock}+?,updated_at=MAX(updated_at,${clock})
           WHERE outbox_id=? AND epoch=? AND state IN ('dispatching','sent')
@@ -329,6 +346,8 @@ export async function consumeOutbox(
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
                 AND o.kind=? AND o.operands_json=? AND o.result_json=?
+                AND o.principal_kind=? AND o.principal_id=? AND o.credential_id=?
+                AND o.credential_version IS ? AND o.space_id=?
                 AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
         values: [
@@ -340,6 +359,11 @@ export async function consumeOutbox(
           row.op_kind,
           row.operands_json,
           row.result_json,
+          row.principal_kind,
+          row.principal_id,
+          row.credential_id,
+          row.credential_version,
+          row.space_id,
         ],
       },
       assertOneChange,
@@ -411,7 +435,7 @@ export async function consumeOutbox(
     const completion = await acquireSystemMutation(env, row.owner_id, "outbox.complete", deadline);
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
-      authorizationAssertion(authorized),
+      ...authority,
       ...(source && inspection ? audioCompletionStatements(source, row, inspection) : []),
       ...epubCompletionStatements(epub),
       {
@@ -422,6 +446,8 @@ export async function consumeOutbox(
             AND EXISTS(SELECT 1 FROM operations o JOIN operation_steps s ON s.op_id=o.op_id
               WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch
                 AND o.kind=? AND o.operands_json=? AND o.result_json=?
+                AND o.principal_kind=? AND o.principal_id=? AND o.credential_id=?
+                AND o.credential_version IS ? AND o.space_id=?
                 AND s.kind='node'
                 AND s.affected_id=outbox.payload_ref)`,
         values: [
@@ -432,6 +458,11 @@ export async function consumeOutbox(
           row.op_kind,
           row.operands_json,
           row.result_json,
+          row.principal_kind,
+          row.principal_id,
+          row.credential_id,
+          row.credential_version,
+          row.space_id,
         ],
       },
       assertOneChange,

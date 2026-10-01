@@ -61,6 +61,7 @@ async function fixture(
 ) {
   const prefix = crypto.randomUUID();
   const f = foundationFixture(prefix, Date.now() - 1000);
+  const sourceNodeId = `${prefix}-source`;
   const key = `u/${f.ids.user}/b/${f.ids.blob}`;
   const object =
     options.put === false ? null : await env.BLOBS.put(key, content, { httpMetadata: {} });
@@ -83,6 +84,24 @@ async function fixture(
   await atomicBatch(env.DB, base);
   const search = searchName("File");
   await atomicBatch(env.DB, [
+    ...(options.copy
+      ? [
+          {
+            sql: `INSERT INTO nodes(
+              id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at
+            ) VALUES(?,?,?,?,'Source','source','file',?,?,?)`,
+            values: [
+              sourceNodeId,
+              f.ids.space,
+              f.ids.user,
+              f.ids.folder,
+              f.ids.blob,
+              Date.now() - 1000,
+              Date.now() - 1000,
+            ],
+          },
+        ]
+      : []),
     ...(options.storage === false
       ? []
       : [
@@ -125,7 +144,7 @@ async function fixture(
         permit.expires_at,
         JSON.stringify(
           options.copy
-            ? { parentId: f.ids.folder, sourceNodeId: crypto.randomUUID() }
+            ? { parentId: f.ids.folder, sourceNodeId }
             : { parentId: f.ids.folder, nodeId: f.ids.file },
         ),
         JSON.stringify({ status: options.copy ? 201 : 204, nodeId: f.ids.file }),

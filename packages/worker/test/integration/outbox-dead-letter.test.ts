@@ -387,6 +387,27 @@ it("redispatches the same durable ID and leaves completion to the existing consu
   ).toEqual({ state: "completed", status: "requeued", requeue_count: 1 });
 });
 
+it("does not requeue a delivery after its saved credential is revoked", async () => {
+  const f = await outboxFixture();
+  const dead = delivery({ outboxId: f.id });
+  expect(await handleDeadLetterBatch(mutationEnv(), { messages: [dead.message] })).toEqual({
+    acked: 1,
+    retried: 0,
+  });
+  await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+    .bind(Date.now(), f.ids.session)
+    .run();
+  await maintenance(f.ids.user);
+  await expect(requeueDeliveryExhaustedOutbox(mutationEnv(), 1, 1)).rejects.toThrow();
+  expect(
+    await primary(env.DB)
+      .prepare(`SELECT b.state,d.status,d.requeue_count FROM outbox b
+        JOIN outbox_dead_letters d ON d.outbox_id=b.outbox_id WHERE b.outbox_id=?`)
+      .bind(f.id)
+      .first(),
+  ).toEqual({ state: "failed", status: "failed", requeue_count: 0 });
+});
+
 it("rejects inconsistent dead-letter state during recovery audit", async () => {
   const f = await outboxFixture();
   const dead = delivery({ outboxId: f.id });
