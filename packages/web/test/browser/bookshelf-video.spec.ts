@@ -144,6 +144,7 @@ test("private Audio preserves terminal zero when selecting the next track", asyn
   await page.getByRole("link", { name: "オーディオ", exact: true }).click();
   await page.getByRole("button", { name: /First Track/ }).click();
   const audio = page.locator("audio");
+  await expect(audio).toHaveAttribute("src", /content\.ncf\.test/);
   await audio.dispatchEvent("loadedmetadata");
   await expect
     .poll(() => audio.evaluate((element) => (element as HTMLMediaElement).currentTime))
