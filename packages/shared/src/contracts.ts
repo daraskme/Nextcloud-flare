@@ -66,6 +66,7 @@ export const OPERATIONS = {
   "node.read": ["node:read"],
   "search.read": ["node:read"],
   "recent.read": ["node:read"],
+  "recent.record": ["state:write"],
   "starred.read": ["node:read"],
   "shared.read": ["node:read"],
   "trash.read": ["node:read"],

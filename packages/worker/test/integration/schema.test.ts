@@ -13,13 +13,39 @@ beforeAll(async () => {
 it("applies the production migrations on D1 with every foreign key enabled", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); // idempotent runner, not repeated SQL
   expect((await env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(48);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(49);
   const graph = [];
   for (const name of exportTables) {
     const result = await env.DB.prepare(`PRAGMA foreign_key_list('${name}')`).all<ForeignKey>();
     graph.push({ name, foreignKeys: result.results });
   }
   expect(deletionOrder(graph)).toEqual(purgeOrder);
+});
+
+it("installs normalized private user node state with backup barriers", async () => {
+  const table = await env.DB.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='user_node_state'",
+  ).first<string>("sql");
+  expect(table).toContain("PRIMARY KEY(user_id,node_id)");
+  expect(table).toContain("CHECK(starred=1 OR last_opened_at IS NOT NULL)");
+  const indexes = await env.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'user_node_state_%' ORDER BY name",
+  ).all<{ name: string }>();
+  expect(indexes.results.map(({ name }) => name)).toEqual([
+    "user_node_state_node_id_fk",
+    "user_node_state_recent",
+    "user_node_state_starred",
+  ]);
+  const triggers = await env.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '%user_node_state%' ORDER BY name",
+  ).all<{ name: string }>();
+  expect(triggers.results.map(({ name }) => name)).toEqual([
+    "backup_freeze_user_node_state_delete",
+    "backup_freeze_user_node_state_insert",
+    "backup_freeze_user_node_state_update",
+    "user_node_state_identity",
+  ]);
+  expect(exportTables).toContain("user_node_state");
 });
 
 it("rolls back a production-schema batch when a structural guard rejects a later step", async () => {

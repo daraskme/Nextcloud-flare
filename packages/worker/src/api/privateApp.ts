@@ -10,6 +10,7 @@ import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { SearchCursorTokens } from "../auth/searchCursor";
 import type { SharePasswordPepperRing } from "../auth/sharePassword";
 import type { UploadCapabilities } from "../auth/uploadCapability";
+import type { UserNodeCursorTokens } from "../auth/userNodeCursor";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
@@ -26,6 +27,7 @@ import { handleShareHttp, shareRoute } from "./shares";
 import { handleStatsHttp, statsRoute } from "./stats";
 import { handleTrashHttp, trashRoute } from "./trash";
 import { handleUploadHttp, uploadReadRoute, uploadRoute } from "./uploads";
+import { handleUserNodeStateHttp, userNodeStateRoute } from "./userNodeState";
 
 export interface PrivateAppDependencies {
   readonly verifier: AccessVerifier;
@@ -35,6 +37,7 @@ export interface PrivateAppDependencies {
   readonly cursors?: NodeCursorTokens;
   readonly searchCursors?: SearchCursorTokens;
   readonly listCursors?: ListCursorTokens;
+  readonly userNodeCursors?: UserNodeCursorTokens;
   readonly appPasswordPepper?: AppPasswordPepperRing;
   readonly sharePasswordPepper?: SharePasswordPepperRing;
   readonly uploadCapabilities?: UploadCapabilities;
@@ -48,6 +51,7 @@ export function privateAppRoute(request: Request): boolean {
     galleryRoute(request) ||
     audioRoute(request) ||
     searchRoute(request) ||
+    userNodeStateRoute(request) ||
     statsRoute(request) ||
     libraryRoute(request) ||
     trashRoute(request) ||
@@ -81,6 +85,7 @@ export async function handlePrivateAppHttp(
       !trashRoute(request) &&
       !uploadReadRoute(request) &&
       !searchRoute(request) &&
+      !userNodeStateRoute(request) &&
       !statsRoute(request)) ||
     url.hash
   )
@@ -92,6 +97,7 @@ export async function handlePrivateAppHttp(
   const gallery = galleryRoute(request);
   const audio = audioRoute(request);
   const search = searchRoute(request);
+  const userNodeState = userNodeStateRoute(request);
   const stats = statsRoute(request);
   const library = libraryRoute(request);
   const trashRead = trashRoute(request);
@@ -111,6 +117,7 @@ export async function handlePrivateAppHttp(
     !gallery &&
     !audio &&
     !search &&
+    !userNodeState &&
     !stats &&
     !library &&
     !trashRead &&
@@ -213,6 +220,19 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.searchCursors,
+    );
+  if (userNodeState)
+    return handleUserNodeStateHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+      dependencies.userNodeCursors,
     );
   if (nodeRead)
     return handleNodeReadHttp(

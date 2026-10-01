@@ -33,6 +33,8 @@ export async function acquireAccountMutation(
     | "group.create"
     | "group.update"
     | "group.disable"
+    | "node.star"
+    | "recent.record"
     | "share.unlock"
     | "share.logout"
     | "content.budget"

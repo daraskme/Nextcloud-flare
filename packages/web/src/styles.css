@@ -471,7 +471,7 @@ h1 {
 }
 .file-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) 170px 94px 36px;
+  grid-template-columns: minmax(160px, 1fr) 170px 94px 76px;
   gap: 18px;
   align-items: center;
   padding: 0 21px;
@@ -580,6 +580,15 @@ h1 {
   display: flex;
   justify-content: space-between;
   margin-bottom: 22px;
+}
+.file-card-actions,
+.file-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.star-control[aria-pressed="true"] {
+  color: #b46a35;
 }
 .file-card p {
   margin: 13px 0 0;
@@ -2026,7 +2035,7 @@ h1 {
     padding: 0 25px;
   }
   .file-row {
-    grid-template-columns: minmax(140px, 1fr) 140px 70px 30px;
+    grid-template-columns: minmax(140px, 1fr) 140px 70px 72px;
     gap: 12px;
     padding: 0 15px;
   }
@@ -2158,7 +2167,7 @@ h1 {
     margin: 5px 0;
   }
   .file-row {
-    grid-template-columns: minmax(100px, 1fr) 56px 28px;
+    grid-template-columns: minmax(100px, 1fr) 56px 72px;
     padding: 0 12px;
     gap: 9px;
   }

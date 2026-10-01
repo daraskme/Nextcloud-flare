@@ -318,7 +318,7 @@ function statements(
   const deletes: readonly [string, string, string][] = [
     ["copy_members", "copy_members", `source_node_id IN (${members})`],
     ["node_props", "node_props", `node_id IN (${members})`],
-    ["stars", "stars", `node_id IN (${members})`],
+    ["user_node_state", "user_node_state", `node_id IN (${members})`],
     ["node_tags", "node_tags", `node_id IN (${members})`],
     ["node_media", "node_media", `node_id IN (${members})`],
     ["library_items", "library_items", `node_id IN (${members})`],

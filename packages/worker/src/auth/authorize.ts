@@ -91,6 +91,10 @@ export type NodeRequest =
         | "audio.read"
         | "library.read"
         | "search.read"
+        | "recent.read"
+        | "starred.read"
+        | "recent.record"
+        | "node.star"
         | "node.rename"
         | "node.trash"
         | "node.props.write"
@@ -115,6 +119,11 @@ export interface LiveNode {
 export type AuthorizedNode =
   | {
       readonly operation: "node.read" | "automation.list" | "automation.metadata.read";
+      readonly principal: Principal;
+      readonly node: LiveNode;
+    }
+  | {
+      readonly operation: "recent.read" | "starred.read" | "recent.record" | "node.star";
       readonly principal: Principal;
       readonly node: LiveNode;
     }
@@ -265,8 +274,9 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
         (p.kind IN ('user','app_password') AND ?6 IN (
-          'node.read','gallery.read','audio.read','library.read','search.read','node.create','node.rename',
-          'node.trash','node.props.write','node.content.write'
+          'node.read','gallery.read','audio.read','library.read','search.read',
+          'node.create','node.rename','node.trash',
+          'node.props.write','node.content.write'
         ) AND EXISTS(
           SELECT 1 FROM user_authority u WHERE
             (u.id=n.owner_id AND u.root_allowed=1
@@ -344,6 +354,9 @@ export async function authorizeNode(
   principal: Principal,
   request: NodeRequest,
 ): Promise<AuthorizedNode> {
+  const userStateOperation = ["recent.read", "starred.read", "recent.record", "node.star"].includes(
+    request.operation,
+  );
   const nodeId = request.operation === "node.create" ? request.parentId : request.nodeId;
   if (
     ![
@@ -352,6 +365,10 @@ export async function authorizeNode(
       "audio.read",
       "library.read",
       "search.read",
+      "recent.read",
+      "starred.read",
+      "recent.record",
+      "node.star",
       "node.create",
       "node.rename",
       "node.trash",
@@ -364,6 +381,7 @@ export async function authorizeNode(
     !validId(nodeId) ||
     !validId(request.spaceId) ||
     !validId(principal.credential_id, 256) ||
+    (userStateOperation && principal.kind !== "user") ||
     !Number.isSafeInteger(principal.epoch) ||
     principal.epoch < 1 ||
     (principal.kind !== "link_share" && !validId(principal.user_id)) ||
@@ -394,6 +412,7 @@ export async function authorizeNode(
         principal.common_name.length > 1024))
   )
     throw new Error("authorization_denied");
+  const authorityOperation = userStateOperation ? "gallery.read" : request.operation;
   const identity = Object.freeze({ ...principal });
   const values = [
     nodeId,
@@ -401,17 +420,21 @@ export async function authorizeNode(
     JSON.stringify(identity),
     request.operation === "node.create"
       ? "node:create"
-      : request.operation === "gallery.read" ||
-          request.operation === "audio.read" ||
-          request.operation === "library.read"
-        ? "library:read"
-        : request.operation === "node.trash"
-          ? "node:delete"
-          : request.operation === "node.rename" ||
-              request.operation === "node.props.write" ||
-              request.operation === "node.content.write"
-            ? "node:write"
-            : "node:read",
+      : request.operation === "node.star"
+        ? "node:star"
+        : request.operation === "recent.record"
+          ? "state:write"
+          : request.operation === "gallery.read" ||
+              request.operation === "audio.read" ||
+              request.operation === "library.read"
+            ? "library:read"
+            : request.operation === "node.trash"
+              ? "node:delete"
+              : request.operation === "node.rename" ||
+                  request.operation === "node.props.write" ||
+                  request.operation === "node.content.write"
+                ? "node:write"
+                : "node:read",
     request.operation === "node.create"
       ? "create"
       : request.operation === "node.trash"
@@ -421,7 +444,7 @@ export async function authorizeNode(
             request.operation === "node.content.write"
           ? "edit"
           : "read",
-    request.operation,
+    authorityOperation,
   ] as const;
   const node = await prepare(primary(db), {
     sql: NODE_AUTHORITY,

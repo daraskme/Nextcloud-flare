@@ -6,6 +6,8 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 interface ChildRow {
   id: string;
+  parentId: string;
+  ownerId: string;
   name: string;
   nameCi: string;
   kind: "folder" | "file";
@@ -14,6 +16,7 @@ interface ChildRow {
   updatedAt: number;
   size: number | null;
   mime: string | null;
+  starred: number;
 }
 
 interface PathRow {
@@ -147,25 +150,35 @@ export async function listNodeChildren(
   const statement: SqlStatement =
     lastNameCi === undefined
       ? {
-          sql: `SELECT n.id,n.name,n.name_ci AS nameCi,n.kind,n.revision,
-            n.current_blob_id AS currentBlobId,n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime
+          sql: `SELECT n.id,n.parent_id AS parentId,n.owner_id AS ownerId,n.name,
+            n.name_ci AS nameCi,n.kind,n.revision,n.current_blob_id AS currentBlobId,
+            n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime,COALESCE(s.starred,0) AS starred
             FROM nodes n INDEXED BY nodes_children_keyset
             LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
               AND b.state IN ('committed','gc_candidate')
+            LEFT JOIN user_node_state s ON s.node_id=n.id AND s.user_id=?
             WHERE n.parent_id=? AND n.deleted_at IS NULL AND n.space_id=? AND n.owner_id=?
             ORDER BY n.name_ci,n.id LIMIT 201`,
-          values: [parent.id, parent.space_id, parent.owner_id],
+          values: [
+            principal.kind === "user" ? principal.user_id : "",
+            parent.id,
+            parent.space_id,
+            parent.owner_id,
+          ],
         }
       : {
-          sql: `SELECT n.id,n.name,n.name_ci AS nameCi,n.kind,n.revision,
-            n.current_blob_id AS currentBlobId,n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime
+          sql: `SELECT n.id,n.parent_id AS parentId,n.owner_id AS ownerId,n.name,
+            n.name_ci AS nameCi,n.kind,n.revision,n.current_blob_id AS currentBlobId,
+            n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime,COALESCE(s.starred,0) AS starred
             FROM nodes n INDEXED BY nodes_children_keyset
             LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
               AND b.state IN ('committed','gc_candidate')
+            LEFT JOIN user_node_state s ON s.node_id=n.id AND s.user_id=?
             WHERE n.parent_id=? AND n.deleted_at IS NULL AND n.space_id=? AND n.owner_id=?
               AND (n.name_ci>? OR (n.name_ci=? AND n.id>?))
             ORDER BY n.name_ci,n.id LIMIT 201`,
           values: [
+            principal.kind === "user" ? principal.user_id : "",
             parent.id,
             parent.space_id,
             parent.owner_id,
@@ -201,7 +214,10 @@ export async function listNodeChildren(
   return Object.freeze({
     parentId: parent.id,
     treeGeneration: parent.tree_generation,
-    children: page.map(({ nameCi: _nameCi, ...node }) => node),
+    children: page.map(({ nameCi: _nameCi, starred, ...node }) => ({
+      ...node,
+      starred: starred === 1,
+    })),
     nextCursor,
   });
 }

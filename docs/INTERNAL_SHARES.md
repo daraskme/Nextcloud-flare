@@ -105,3 +105,9 @@ output を表示して mutation input を送るだけである。owner の `root
 recipient provenance は `share_grants`、`share_group_grants`、`share_groups`、
 `share_group_members` の version/name から返す。browser-side share table、local storage、
 public session、追加の Durable Object state は作らない。
+
+recipientのstar/recent状態は migration `0050_user_node_state.sql` の
+`user_node_state(user_id,node_id,starred,last_opened_at)` に保存する。共有node metadataや
+ownerの状態には書き込まず、owner/recipientの一覧JOINは必ずcurrent user IDで限定する。
+Starred/Recent readとmutationは共有version、recipient/group membership version、live ancestry、
+epoch、maintenanceを再検証するため、revoke、membership removal、trash後の項目は即時に消える。

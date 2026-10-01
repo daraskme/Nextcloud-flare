@@ -296,6 +296,7 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `node.restore` | `node:create` | `[trashOp,root,destinationParent]` |
 | `node.purge` | `node:delete` | `[trashOp,root,memberSet]` |
 | `node.star` | `node:star` | `[currentUser,node]` |
+| `recent.record` | `state:write` / read | `[currentUser,node]` |
 | `zip.create`,`zip.read` | `node:read` / download | `[root,manifest,nodes,blobs,budgetId]` |
 | `gallery.read`,`audio.read`,`library.read` | `library:read` / read | `[root,node?,currentBlob?,index?,cursor?]` |
 | `library.write`,`audio.metadata.write` | `library:write` | `[node,currentBlob,extractedMetadata,override]` |
@@ -405,6 +406,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | POST | `/api/v1/nodes/:nodeId/move` | access | `node.move` | `source,sourceParent,destinationParent,overwriteTarget,sourceAncestors,destinationAncestors` | false | same-origin-json |
 | app | POST | `/api/v1/nodes/:nodeId/copy` | access | `node.copy` | `source,destinationParent,overwriteTarget,sourceAncestors,destinationAncestors` | false | same-origin-json |
 | app | PUT | `/api/v1/nodes/:nodeId/star` | access | `node.star` | `currentUser,node` | false | same-origin-json |
+| app | PUT | `/api/v1/nodes/:nodeId/recent` | access | `recent.record` | `currentUser,node` | false | same-origin-json |
 | app | POST | `/api/v1/nodes/:nodeId/zip` | access | `zip.create` | `root,subtree,blobs,budgetId` | false | same-origin-json |
 | app | GET | `/api/v1/zips/:id` | access | `zip.read` | `manifest,nodes,blobs,budgetId,ticket` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/gallery` | access | `gallery.read` | `folder,candidates,cursor` | false | same-origin-json |

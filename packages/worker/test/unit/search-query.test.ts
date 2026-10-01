@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { SearchCursorTokens } from "../../src/auth/searchCursor";
+import { UserNodeCursorTokens } from "../../src/auth/userNodeCursor";
 import { searchQuery } from "../../src/search/query";
 
 it.each(["ｶﾀｶﾅＡＢＣ", "Straße", "ヷ", "😀かな", "éé"])(
@@ -65,4 +66,26 @@ it("separates search cursors from listing cursors and binds exact claims and exp
   await expect(new SearchCursorTokens(ring, () => now + 600_000).verify(token)).rejects.toThrow();
   await expect(cursor.verify(`${token.slice(0, -3)}xxx`)).rejects.toThrow();
   await expect(cursor.issue({ ...claims, version: "old" })).rejects.toThrow();
+});
+
+it("binds Recent and Starred cursors to list kind, user, credential, epoch and expiry", async () => {
+  const ring = await contentKeyRing("test", {
+    test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  });
+  const now = 1_000_000;
+  const cursors = new UserNodeCursorTokens(ring, () => now);
+  const claims = {
+    kind: "recent" as const,
+    userId: "user",
+    credentialId: "credential",
+    epoch: 7,
+    lastOpenedAt: 900_000,
+    lastId: "node",
+  };
+  const token = await cursors.issue(claims);
+  expect(await cursors.verify(token)).toMatchObject(claims);
+  await expect(new SearchCursorTokens(ring, () => now).verify(token)).rejects.toThrow();
+  await expect(new UserNodeCursorTokens(ring, () => now + 600_000).verify(token)).rejects.toThrow();
+  await expect(cursors.verify("x".repeat(4097))).rejects.toThrow();
+  await expect(cursors.issue({ ...claims, kind: "starred", lastOpenedAt: 1 })).rejects.toThrow();
 });

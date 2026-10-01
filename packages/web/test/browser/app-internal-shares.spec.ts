@@ -321,7 +321,7 @@ test("recipient sees direct/group provenance and browses a read-only mount", asy
   await expect(page.getByRole("heading", { name: "共有プロジェクト", exact: true })).toBeVisible();
   await expect(page.getByText("所有者の非公開ルート")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "計画.txtの操作" })).toHaveCount(0);
-  await page.getByRole("button", { name: "仕様", exact: false }).click();
+  await page.getByRole("button", { name: "仕様 フォルダー", exact: true }).click();
   await expect(page).toHaveURL(/\/shared\/sh_direct\/shared-child$/);
   await expect(page.getByRole("heading", { name: "このフォルダーは空です" })).toBeVisible();
   await expect(page.getByText("現在表示できるファイルやフォルダーはありません。")).toBeVisible();

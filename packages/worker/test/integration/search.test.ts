@@ -258,7 +258,17 @@ it("caps the actual recursive scope at 10000 and keeps foreign matches outside t
   expect(result.truncated).toBe(true);
   const q = searchQuery("match");
   const row = await env.DB.prepare(searchStatement(true))
-    .bind(t.f.ids.folder, t.f.ids.space, t.f.ids.user, q.version, q.match, q.pattern, null, null)
+    .bind(
+      t.f.ids.folder,
+      t.f.ids.space,
+      t.f.ids.user,
+      q.version,
+      q.match,
+      q.pattern,
+      null,
+      null,
+      t.f.ids.user,
+    )
     .first<{ scopeCount: number; hitCount: number }>();
   expect(row?.scopeCount).toBe(10000);
   expect(row!.hitCount).toBeLessThan(10000);
