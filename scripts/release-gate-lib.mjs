@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, posix, sep, win32 } from "node:path";
 
 export const FORMAT = "nextcloud-flare.release-evidence";
 export const MANIFEST_VERSION = 1;
@@ -329,11 +329,14 @@ export function assertRelativeReference(path) {
 }
 
 export function assertOutputInside(root, output) {
-  const absolute = resolve(root, output);
-  const fromRoot = relative(root, absolute);
-  if (fromRoot === "" || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+  if (posix.isAbsolute(output) || win32.isAbsolute(output)) {
     throw new Error("release_gate_invalid_output");
   }
+  const path = /^[A-Za-z]:[\\/]/.test(root) || root.startsWith("\\\\") ? win32 : posix;
+  const absolute = path.resolve(root, output);
+  const fromRoot = path.relative(root, absolute);
+  if (fromRoot === "" || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot))
+    throw new Error("release_gate_invalid_output");
   return absolute;
 }
 

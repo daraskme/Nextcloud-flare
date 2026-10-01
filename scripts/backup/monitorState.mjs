@@ -31,7 +31,6 @@ async function chmodFile(path) {
   const file = await open(path, constants.O_RDONLY);
   try {
     await file.chmod(0o600);
-    await file.sync();
   } finally {
     await file.close();
   }
