@@ -35,7 +35,6 @@ describe("route binding coverage", () => {
     for (const key of [
       "app GET /api/v1/public/shares/:shareId/content/:nodeId",
       "app GET /api/v1/public/shares/:shareId/thumb/:nodeId",
-      "app GET /api/v1/public/shares/:shareId/library/:nodeId",
     ])
       expect(binding(key)).toMatchObject({
         availability: "unavailable",
@@ -118,6 +117,6 @@ describe("route binding coverage", () => {
       ROUTE_BINDINGS.find(
         (binding) => binding.key === "app GET /api/v1/public/shares/:shareId/gallery",
       ),
-    ).toMatchObject({ availability: "unavailable", handler: "unavailable" });
+    ).toMatchObject({ availability: "bound", handler: "public-share" });
   });
 });
