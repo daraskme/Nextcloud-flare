@@ -249,7 +249,7 @@ it("allows an internal grantee to search only within their live shared subtree",
 });
 
 // Fixture construction writes more than 10,000 nodes and FTS rows in workerd.
-// Match the Windows runner budget; this is not a production query deadline.
+// Match the slowest Windows shared-runner budget; this is not a production query deadline.
 it("caps the actual recursive scope at 10000 and keeps foreign matches outside that budget", async () => {
   const t = await fixture();
   await t.add(Array.from({ length: 10005 }, (_, i) => `Match ${String(i).padStart(5, "0")}`));
@@ -277,7 +277,7 @@ it("caps the actual recursive scope at 10000 and keeps foreign matches outside t
   const visible = await other.search("match");
   expect(visible.items.map((n) => n.name)).toEqual(["Match visible"]);
   expect(visible.truncated).toBe(false);
-}, 90_000);
+}, 180_000);
 
 it("validates the HTTP query and returns private cache headers", async () => {
   const t = await fixture();
