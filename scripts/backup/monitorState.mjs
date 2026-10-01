@@ -69,7 +69,8 @@ export async function writeMonitorReport(directory, report) {
 }
 
 export async function fileMode(path) {
-  return (await stat(path)).mode & 0o777;
+  const mode = (await stat(path)).mode & 0o777;
+  return process.platform === "win32" ? mode & 0o700 : mode;
 }
 
 export async function removeMonitorFiles(directory) {
