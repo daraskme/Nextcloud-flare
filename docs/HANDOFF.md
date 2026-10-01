@@ -25,39 +25,35 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-読み取り専用/upload-only公開linkに加え、Queue dead-letter repair、audio metadata/track、画像metadata/thumbnail、bounded private ZIP、direct-user internal shareとread-only shared DAVをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/version/ancestry/epoch fenceを持ち、`/dav/Shared/<mount>`のPROPFIND/GET/HEAD/Rangeだけを許可する。ZIPは既存content ticket、BudgetDO、blob pin、exact STORE sizing、分離`CONTENT_ORIGIN`を再利用する。audio原本、thumbnail derivative、ZIP manifestのpurposeを相互流用しない。
+読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、direct-user/group internal shareとread-only shared DAV、multipart closure settlementをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share-version/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。share action変更とmember削除/再追加のどちらでもbudget identityをrotateし、revoke済みbudgetを再利用しない。
 
-最新migrationは`0042`、通常tableは68、route契約は151。Queue/audio/image/ZIP/internal shareの各PRはUbuntu、Windows 2分割、browser、backupの全CIを通過した。ZIP統合後のinternal share branchではlint、typecheck、route/config contracts、production build、51 affected integration tests、focused DAV unit tests、diff checkも成功した。
+最新migrationは`0046`（全45件）、通常tableは74、route契約は156。PR #16、#17、#19はUbuntu、Windows 2分割、browser、backupの全CIを通過した。統合状態ではgroup budget回帰、video、multipart closure、schema/backupのfocused tests、lint、typecheck、route/config contracts、production build、diff checkが成功し、backup drillは74 tableでPASSした。
 
-前回の明示回収`c9a7ecd`は[CI36109311905](https://github.com/daraskme/Nextcloud-flare/actions/runs/36109311905)の全5ジョブ（Ubuntu、Windows両分割、backup、browser）が成功しました。
+multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。全bucket scanやabortだけで予約・保留容量を返さず、closure proofとexact receiptの成立後だけ精算する。
 
-「pnpm backup sweep」と「maintain --prune-expired」を追加しました。ControlDOがround・開始時刻・最大ID・走査cursorを永続化し、期限切れcompleted世代を少量ずつ回収します。100 stepで未完了なら次回へ継続し、破損世代は残して警告を保存しながら後続へ進みます。未知の通信失敗は同じ候補から再照合します。D1 receipt・元BLOBS・ローカル世代は維持します。
+backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 74 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
-maintainは日次取得・不足/鮮度補充と最終healthが正常な場合だけ、明示optionによる回収を実行します。Linux service例にも接続しましたが、hostへの設置・起動は行っていません。検査済みのhealthと回収結果cleanupを分け、回収未完了・破損保留は終了コード2で通知できます。1 RPCは100行・1世代・最大20部品、D1走査待ちを含む固定25秒の開始期限とR2要求ごとの10秒待機上限を維持します。詳細は[BACKUP_SWEEP](BACKUP_SWEEP.md)。
+次はpublic ZIP/media/library、Bookshelf/reader・video UI、大規模非同期tree処理、reshare/shared DAV編集、残るQueue event/repairを依存順に進める。並行してtimer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
-Node22件・workerd13件を追加しました。全Node696件（40file、44.23s）、新しい走査13件と既存prune26件の計39件（19.40s）が成功しています。専用bindingドリルは67table・SQL11,322bytes、全9操作の権限拒否、5世代の実取得と期限切れ回収、破損警告とhealthの分離を確認しました。型検査とsystemd構文検査も成功。実CLIドリルもSQL9,079bytesで成功し、4世代補充と最終5世代の検証、自動回収・再送・receipt保持を確認しました。全checkが成功し、Node696件・workerd2,100件（100file、1,245.15s）、計2,796件を確認しました。lint365file・型・契約/設定検査・Web build・Worker dry-runも成功。実CLIの4世代補充を追加したためbackup CI上限を30分へ延長しました。実行記録は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。schema0039・通常67table・依存は維持しています。
-
-次は独立性の高い残機能を並列化する。候補はGallery/player UI、Bookshelf/EPUB page、video metadata/track、group/team share、public ZIP、残るQueue event/repairである。並行してtimer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF/multipart、実OS client・実環境gateを残す。remote migration・deployは未実施。
-
-次のschema変更は0043以後を使い、既存migrationを編集しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。世代年齢はserverの作成時刻を基準にし、最少5世代の不足を理由に35日超を有効扱いしません。
+次のschema変更は`0047`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。68通常テーブル、migration `0001`〜`0042`、151 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。74通常テーブル、45 migrations（最新`0046`）、156 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
-直近の追加: Queue dead-letter repair、audio metadata/track、画像metadata/thumbnail、private ZIP、direct-user internal shareとread-only shared DAV。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
+直近の追加: video metadata/track、group internal share、multipart closure settlement。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
 
 主要な内部成果物（最新状態は進捗表を参照）:
 
 | ファイル | 実装内容 |
 |---|---|
-| `jobs/multipartBucketInventory.ts` / `jobs/multipartBucketAbort.ts` / ControlDO内部RPC | migration `0027`/`0028`、upload行不要の全bucket走査・part容量保留・発見handleの中止・不変receipt。fresh proofと復旧fence、所有者後日復元。全体閉鎖/精算は後続 |
+| `jobs/multipartBucketInventory.ts` / `jobs/multipartBucketAbort.ts` / `jobs/multipartClosure.ts` / ControlDO内部RPC | migration `0027`/`0028`/`0046`、upload行不要の全bucket走査・part容量保留・発見handleの中止・quiet period後のclosure proof・handle/upload settlement |
 | `do/controlAdmission.ts` / `ControlDO.resumeAdmission`・`resumeGarbageCollection` | migration `0025`、永続intentとD1 revision/token、最終batch fence、repair hold、停止と応答喪失の競合、初回bootstrapと実LockDO mutation |
 | `jobs/gc.ts` / `jobs/orphanInventory.ts` / `ControlDO.drainBlobGarbageCollection`・`drainOrphanGarbageCollection` | migration `0024`、旧deletingのみの停止中回収、dispatch/final fence・counter・physical精算、全復旧監査fixture |
-| `jobs/r2BindingVerification.ts` / `ControlDO.verifyInventoryBinding` | migration `0023`、固定64-byte system objectのfresh nonce/CASによるBLOBS/S3検証。scope内のみ有効なD1 fence、復旧監査・容量保持。全体閉鎖への接続は次段階 |
-| `jobs/multipartInventoryRepair.ts` / `ControlDO.repairUnidentifiedMultipartUploads` | migration `0022`でscan/handleを永続化。全ページ後の実BLOBS abort、immutable receipt、physical観測。予約・復旧再開は保持 |
-| `r2/s3Inventory.ts` / `jobs/multipartInventory.ts` / `ControlDO.inspectIncompleteMultipart` | S3署名付き未完了multipart/part/lifecycleのbounded診断。停止中のepoch fenceと監査再初期化へ接続。既存uploadの未知ID走査・中止は別serviceへ接続。予約解放は未接続 |
+| `jobs/r2BindingVerification.ts` / `ControlDO.verifyInventoryBinding` | migration `0023`、固定64-byte system objectのfresh nonce/CASによるBLOBS/S3検証。scope内のみ有効なD1 fence、復旧監査・容量保持。multipart closureへ接続済み |
+| `jobs/multipartInventoryRepair.ts` / `ControlDO.repairUnidentifiedMultipartUploads` | migration `0022`でscan/handleを永続化。全ページ後の実BLOBS abort、immutable receipt、physical観測。closure settlementまで予約・復旧fenceを保持 |
+| `r2/s3Inventory.ts` / `jobs/multipartInventory.ts` / `ControlDO.inspectIncompleteMultipart` | S3署名付き未完了multipart/part/lifecycleのbounded診断。停止中のepoch fence、監査再初期化、closure inspect/advance/settleへ接続 |
 | `jobs/orphanInventory.ts` / `ControlDO.inventoryOrphanObjects` | 永続cursor/lease付き完成済みR2走査、未知keyの隔離・実physical会計・35日回収・同key再利用拒否、停止中の走査と復旧監査 |
 | `services/uploads/` / `api/uploads.ts` / `auth/uploadCapability.ts` | private単一/分割uploadの予約、HMAC capability、R2送信/照合、LockDO/D1原子的complete、abort intent、期限切れ後のreceiptと最大200 partのHTTP照会 |
 | `jobs/uploadCleanup.ts` / `ControlDO.repairExpiredUploads` | 24時間後のHEAD照合、lease付き回収、予約/physical会計、GC handoff、停止中の旧epoch修復。汎用予約回収は全uploadを除外 |
@@ -96,12 +92,12 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 公開・接続していないもの
 
-- content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。Files SPAは[FILES_UI](FILES_UI.md)の範囲を接続済み。151 route の存在は handler の完成を意味しない。
+- content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。Files SPAは[FILES_UI](FILES_UI.md)の範囲を接続済み。156 route の存在は handler の完成を意味しない。
 - **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
-- private単一uploadのHTTP・D1予約・R2送信・原子的complete・abort・期限切れ回収・GC handoffは接続済み。multipartのD1予約/認可RPC/状態mirrorとR2 create/part送信は内部接続済み。multipartのR2 complete/HEAD・原子的新規/上書き公開は内部接続済み。既知IDのR2 abort・期限切れ回収は接続済み。private HTTPは接続済み。Files UIの一覧・操作・確認付き上書き/再開uploadは接続済み。未知object/multipart修復、全 operation の認可 tuple、検索/共有/contentの残り、DAV実client gate、Gallery/Bookshelf/Audio、運用・release は未完了。trash一覧・同期restore・同期purge・purge blob GCは接続済み。実環境のControlDO admission/Access/署名鍵設定、全route会計は未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
-- AVIF/AV1/Opus は形式基盤まで。実 track parser・配信経路・player/lightbox・ブラウザー実ファイル試験は未接続。
+- private/public upload、multipart closure、Files UI、private Gallery/Audio、private ZIP/EPUB、audio/video track、direct-user/group shareとread-only shared DAVは接続済み。public ZIP/media/library、Bookshelf/reader・video UI、全operation/route会計、DAV実client gate、運用・releaseは未完了。実環境のControlDO admission/Access/署名鍵設定も未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
+- AVIF/AV1/Opus は形式判定と対応projection/原本配信まで。実codec変換、video UI、複数browserでの実ファイル再生試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。
 - app password 作成と DAV 認証には `APP_PASSWORD_PEPPERS` と `APP_PASSWORD_ACTIVE_KID` の pepper ring が必要。未設定なら 503。remote secret 登録は未完了。
@@ -111,7 +107,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、backup barrier、logical export/隔離restore drill、日次取得と補充、期限切れ指定世代の回収、自動走査とmaintain/service例への接続まで実装済み。次は非0終了・長時間実行・24時間超の未実行を扱う運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。外部通知先や設置先の設定を要しないローカル実装から進める。実環境の設置・通知・配備には具体的な環境情報が必要。検証状態と未完了の製品機能は冒頭の再開点とCURRENT_STATEを参照。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収まで実装済み。次はpublic ZIP/media/library、Bookshelf/reader・video UI、大規模非同期tree処理、reshare/shared DAV編集、残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 
@@ -176,9 +172,9 @@ migration `0020`のmultipart_cleanup_started_atは回収開始後の再送/再�
 以下の全体gateも引き続き必要:
 
 1. **outbox Queue 実サービス / repair**: dead-letter台帳とbounded requeueは実装済み。実 Queue/DLQ/retry exhaustionを検証し、残る kind の saved operand/result CAS と chunk fencingを実装する。ControlDO admission が閉じている間は `retryAll` を維持する。
-2. **ControlDOの残る制御**: namespace以外のaccount mutation受付とbackup統合、終了証明を失ったKDFの運用収束・共有password/IP制限、backup専用barrier、実restore drill。全監査後の受付再開は空DB/実データ両方で実装・検証済み。未知multipartの予約hold・最終fenceは維持する。
+2. **ControlDOの残る制御**: namespace以外のaccount mutation受付、終了証明を失ったKDFの運用収束・共有password/IP制限、実restore drill。全監査後の受付再開、backup barrier、multipart closure settlementはローカル実装・検証済み。
 3. **Phase 1 の残り**: 各 operation の operand tuple、HTTP host/profile/CSRF、app-password/share secret 検証、operation lookup/commit_unknown response を接続。R6 §8 の全 fixture と完了条件を現在のテストへ対応付ける。
-4. Audio metadata/track、画像thumbnail、private ZIPは接続済み。Gallery/player/reader UI、video/EPUB、public ZIP、group/team共有を進め、最後に実環境 gate とリリース確認を行う。
+4. Audio/video metadata/track、画像thumbnail、private ZIP/EPUB、private Gallery/Audio、direct-user/group共有は接続済み。public ZIP/media/library、Bookshelf/reader・video UIを進め、最後に実環境 gate とリリース確認を行う。
 
 フォルダー作成は current parent/revision/tree を読み、7 step を一括確定する内部サービス。SQL plan は server code のみで生成し、外部から任意 step/SQL を受け付けない。
 名前検索は private API と Files UI へ接続済み（[SEARCH](SEARCH.md)）。media metadata の全文索引・索引更新の運用・実 D1 の処理量/応答時間 gate は未完了。
