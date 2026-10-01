@@ -218,7 +218,6 @@ export async function createLockedEmptyFile(
   });
   let claimed = false;
   const blobId = `${intent.id}_blob`;
-  const key = `u/${request.principal.user_id}/b/${blobId}`;
   try {
     const authorized = await authorizeNode(env.DB, request.principal, {
       operation: "node.create",
@@ -226,6 +225,7 @@ export async function createLockedEmptyFile(
       spaceId: request.spaceId,
     });
     if (authorized.operation !== "node.create") throw new Error("invalid_create_authorization");
+    const key = `u/${authorized.parent.owner_id}/b/${blobId}`;
     let object: R2Object | null = null;
     try {
       object = await env.BLOBS.put(key, "");

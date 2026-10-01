@@ -177,7 +177,7 @@ function output(row: ShareRow): ShareOutput {
 }
 
 function canonicalActions(actions: readonly string[]) {
-  return ["read", "download"].filter((action) => actions.includes(action));
+  return ["read", "download", "create", "edit"].filter((action) => actions.includes(action));
 }
 
 function orderedActions(kind: ShareRow["kind"], actions: readonly string[]) {
@@ -248,10 +248,10 @@ function validatedActions(actions: readonly string[]) {
   if (
     !Array.isArray(actions) ||
     actions.length < 1 ||
-    actions.length > 2 ||
-    actions.some((action) => !["read", "download"].includes(action)) ||
+    actions.length > 4 ||
+    actions.some((action) => !["read", "download", "create", "edit"].includes(action)) ||
     new Set(actions).size !== actions.length ||
-    (actions.includes("download") && !actions.includes("read"))
+    (actions.some((action) => action !== "read") && !actions.includes("read"))
   )
     throw new Error("invalid_share_request");
   return canonicalActions(actions);

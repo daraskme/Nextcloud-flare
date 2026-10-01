@@ -4,6 +4,7 @@ import {
   authorizationAssertion,
   authorizeNode,
   type Principal,
+  principalAuthorizationContext,
 } from "../auth/authorize";
 import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
@@ -24,6 +25,7 @@ export interface OperationRow {
   principal_id: string;
   credential_id: string;
   credential_version: number | null;
+  authorization_context: string | null;
   space_id: string;
   kind: Operation;
   state: "claimed" | "committed" | "failed";
@@ -96,8 +98,15 @@ export async function operationIntent(
 ): Promise<OperationIntent> {
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new Error("invalid_idempotency_key");
   const actor = principalId(principal);
-  const id = `op_${await digestJson([principal.kind, actor, principal.credential_id, key])}`;
-  const digest = await digestJson({ spaceId, kind, body });
+  const authorizationContext = principalAuthorizationContext(principal);
+  const id = `op_${await digestJson([
+    principal.kind,
+    actor,
+    principal.credential_id,
+    authorizationContext,
+    key,
+  ])}`;
+  const digest = await digestJson({ spaceId, kind, authorizationContext, body });
   const encoded = canonicalJson(operands, 8192);
   return Object.freeze({
     id,
@@ -124,6 +133,7 @@ function sameIntent(row: OperationRow, intent: OperationIntent, steps: number): 
     row.credential_id === intent.principal.credential_id &&
     row.credential_version ===
       (intent.principal.kind === "link_share" ? intent.principal.share_version : null) &&
+    row.authorization_context === principalAuthorizationContext(intent.principal) &&
     row.space_id === intent.spaceId &&
     row.kind === intent.kind &&
     row.request_digest === intent.digest &&
@@ -146,12 +156,13 @@ export async function findOperationIntent(
 export function assertOperationClaim(claim: OperationClaim): SqlStatement {
   const { intent, permit } = claim;
   return assertExists(
-    `SELECT 1 FROM operations WHERE op_id=? AND state='claimed' AND credential_id=? AND credential_version IS ? AND principal_kind=? AND principal_id=?
+    `SELECT 1 FROM operations WHERE op_id=? AND state='claimed' AND credential_id=? AND credential_version IS ? AND authorization_context IS ? AND principal_kind=? AND principal_id=?
     AND space_id=? AND kind=? AND request_digest=? AND epoch=? AND permit_id=? AND permit_expires_at=? AND claimed_expires_at=? AND expected_steps=? AND operands_json=?`,
     [
       intent.id,
       intent.principal.credential_id,
       intent.principal.kind === "link_share" ? intent.principal.share_version : null,
+      principalAuthorizationContext(intent.principal),
       intent.principal.kind,
       intent.principalId,
       intent.spaceId,
@@ -257,6 +268,8 @@ export function validateClaimAuthorization(
         principalId(proof.principal) !== intent.principalId ||
         proof.principal.credential_id !== intent.principal.credential_id ||
         proof.principal.epoch !== intent.principal.epoch ||
+        principalAuthorizationContext(proof.principal) !==
+          principalAuthorizationContext(intent.principal) ||
         (proof.principal.kind === "link_share" &&
           intent.principal.kind === "link_share" &&
           proof.principal.share_version !== intent.principal.share_version),
@@ -293,15 +306,16 @@ export async function claimOperation(
       assertOpenPermit(permit),
       ...authority,
       {
-        sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,space_id,kind,state,request_digest,epoch,
+        sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,credential_version,authorization_context,space_id,kind,state,request_digest,epoch,
           permit_id,permit_expires_at,claimed_expires_at,expected_steps,operands_json,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000) ON CONFLICT(op_id) DO NOTHING`,
+        VALUES(?,?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?,?,strftime('%s','now')*1000,strftime('%s','now')*1000) ON CONFLICT(op_id) DO NOTHING`,
         values: [
           intent.id,
           intent.principal.kind,
           intent.principalId,
           intent.principal.credential_id,
           intent.principal.kind === "link_share" ? intent.principal.share_version : null,
+          principalAuthorizationContext(intent.principal),
           intent.spaceId,
           intent.kind,
           intent.digest,
@@ -366,6 +380,23 @@ export async function lookupOperation(
   id: string,
 ): Promise<VisibleOperation | null> {
   const row = await operationRow(db, id);
+  let authorizedPrincipal = principal;
+  if (
+    row?.authorization_context &&
+    principal.kind === "app_password" &&
+    !principal.internal_share
+  ) {
+    try {
+      authorizedPrincipal = Object.freeze({
+        ...principal,
+        internal_share: JSON.parse(row.authorization_context) as NonNullable<
+          Extract<Principal, { kind: "app_password" }>["internal_share"]
+        >,
+      });
+    } catch {
+      return null;
+    }
+  }
   if (
     !row ||
     row.credential_id !== principal.credential_id ||
@@ -373,6 +404,7 @@ export async function lookupOperation(
     row.principal_id !== principalId(principal) ||
     row.epoch !== principal.epoch ||
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
+    row.authorization_context !== principalAuthorizationContext(authorizedPrincipal) ||
     (row.kind !== "node.create" &&
       row.kind !== "dav.mkcol" &&
       row.kind !== "dav.lock" &&
@@ -456,12 +488,12 @@ export async function lookupOperation(
     if (row.kind === "dav.copy" || row.kind === "node.copy") {
       if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
         return null;
-      await authorizeNode(db, principal, {
+      await authorizeNode(db, authorizedPrincipal, {
         operation: "node.read",
         nodeId: operands.sourceNodeId,
         spaceId: row.space_id,
       });
-      await authorizeNode(db, principal, {
+      await authorizeNode(db, authorizedPrincipal, {
         operation: "node.create",
         parentId: operands.parentId,
         spaceId: row.space_id,
@@ -473,13 +505,13 @@ export async function lookupOperation(
     ) {
       if (typeof operands.parentId !== "string") return null;
       if (row.kind === "node.purge")
-        await authorizeNode(db, principal, {
+        await authorizeNode(db, authorizedPrincipal, {
           operation: "node.read",
           nodeId: operands.parentId,
           spaceId: row.space_id,
         });
       else
-        await authorizeNode(db, principal, {
+        await authorizeNode(db, authorizedPrincipal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
@@ -502,7 +534,7 @@ export async function lookupOperation(
     } else if (["node.rename", "node.move", "dav.move", "node.restore"].includes(row.kind)) {
       if (typeof operands.parentId !== "string") return null;
       if (typeof operands.nodeId !== "string") return null;
-      const authorized = await authorizeNode(db, principal, {
+      const authorized = await authorizeNode(db, authorizedPrincipal, {
         operation: "node.rename",
         nodeId: operands.nodeId,
         spaceId: row.space_id,
@@ -514,22 +546,32 @@ export async function lookupOperation(
       if (authorized.operation !== "node.rename" || authorized.parentId !== expectedParent)
         return null;
       if (row.kind === "node.move" || row.kind === "dav.move")
-        await authorizeNode(db, principal, {
+        await authorizeNode(db, authorizedPrincipal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
         });
     } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
       if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
-      await authorizeNode(db, principal, {
+      const parent = await authorizeNode(db, authorizedPrincipal, {
         operation: "node.read",
         nodeId: operands.parentId,
         spaceId: row.space_id,
       });
-      if (!(await hasCredentialScope(db, principal, "node:delete"))) return null;
+      if (authorizedPrincipal.kind === "app_password" && authorizedPrincipal.internal_share)
+        await atomicBatch(db, [
+          authorizationAssertion(parent),
+          assertExists(
+            `SELECT 1 FROM share_actions a JOIN credential_scopes cs
+              ON cs.credential_id=? AND cs.scope='node:delete'
+              WHERE a.share_id=? AND a.action='edit'`,
+            [authorizedPrincipal.credential_id, authorizedPrincipal.internal_share.share_id],
+          ),
+        ]);
+      else if (!(await hasCredentialScope(db, authorizedPrincipal, "node:delete"))) return null;
     } else if (row.kind === "dav.put" || row.kind === "upload.complete") {
       if (typeof operands.nodeId === "string") {
-        const authorized = await authorizeNode(db, principal, {
+        const authorized = await authorizeNode(db, authorizedPrincipal, {
           operation: "node.content.write",
           nodeId: operands.nodeId,
           spaceId: row.space_id,
@@ -541,7 +583,7 @@ export async function lookupOperation(
           return null;
       } else {
         if (typeof operands.parentId !== "string") return null;
-        await authorizeNode(db, principal, {
+        await authorizeNode(db, authorizedPrincipal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
@@ -549,7 +591,7 @@ export async function lookupOperation(
       }
     } else {
       if (typeof operands.nodeId !== "string") return null;
-      await authorizeNode(db, principal, {
+      await authorizeNode(db, authorizedPrincipal, {
         operation: "node.props.write",
         nodeId: operands.nodeId,
         spaceId: row.space_id,
@@ -583,7 +625,7 @@ export async function lookupOperation(
       : null;
     if (terminalResult) {
       try {
-        const proof = await authorizeNode(db, principal, {
+        const proof = await authorizeNode(db, authorizedPrincipal, {
           operation: "node.read",
           nodeId: terminalResult.nodeId,
           spaceId: row.space_id,

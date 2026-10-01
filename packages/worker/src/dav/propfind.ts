@@ -183,8 +183,9 @@ function responseXml(
   request: PropfindRequest,
   props: readonly PropRow[],
   locks: readonly LockRow[],
+  readOnly: boolean,
 ): string {
-  const selected = requestedProperties(request, node, props, locks, path.shared);
+  const selected = requestedProperties(request, node, props, locks, readOnly);
   const propstat = (properties: readonly string[], status: number, text: string) =>
     properties.length === 0
       ? ""
@@ -200,6 +201,7 @@ export async function propfindResponse(
   depth: 0 | 1,
   request: PropfindRequest,
   extra: readonly SqlStatement[] = [],
+  readOnly = path.shared,
 ): Promise<Response> {
   if (authorized.operation !== "node.read") throw new Error("dav_node_unavailable");
   const nodeId = authorized.node.id;
@@ -310,6 +312,7 @@ export async function propfindResponse(
         request,
         props.filter((property) => property.nodeId === node.id),
         locks.filter((lock) => lock.nodeId === node.id),
+        readOnly,
       ),
     )
     .join("")}</D:multistatus>`;

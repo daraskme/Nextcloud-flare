@@ -9,12 +9,14 @@ import {
   authenticateAppPassword,
   hashAppPassword,
 } from "../../src/auth/appPassword";
+import { authorizationAssertion } from "../../src/auth/authorize";
 import { lockTokenHashes } from "../../src/auth/locks";
 import { davReadAssertion, parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
+import { lookupOperation } from "../../src/jobs/operations";
 import { prepareAuthorizedNodeBlobRead } from "../../src/services/blobRead";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
@@ -1795,6 +1797,18 @@ it("resolves a recipient shared mount outside its personal app-password root", a
     ring,
   );
   expect(response.status).toBe(405);
+  for (const method of ["MKCOL", "PUT", "PROPPATCH", "LOCK", "UNLOCK"]) {
+    const mutation = await handleDavHttp(
+      new Request("https://app.invalid/dav/Shared/stable-Folder/File", {
+        method,
+        headers: { Authorization: authorization },
+      }),
+      admittedDavEnv(),
+      1,
+      ring,
+    );
+    expect(mutation.status).toBe(405);
+  }
   for (const method of ["COPY", "MOVE"]) {
     const transfer = await handleDavHttp(
       new Request("https://app.invalid/dav/File", {
@@ -1822,6 +1836,295 @@ it("resolves a recipient shared mount outside its personal app-password root", a
     prepareAuthorizedNodeBlobRead(env.DB, staleVersionProof, [davReadAssertion(staleVersionProof)]),
   ).rejects.toThrow();
   await expect(resolveDavNode(env.DB, principal, sharedFilePath)).resolves.toBeDefined();
+});
+
+it("mutates an editable direct shared mount through DAV locks, conditions, and operation claims", async () => {
+  const { f: recipient, id, secret, ring, request } = await fixture("V");
+  const owner = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  const share = `share-${crypto.randomUUID()}`;
+  const credential = `ap:${id}`;
+  await atomicBatch(env.DB, [
+    ...owner.statements,
+    {
+      sql: `INSERT INTO credential_scopes(credential_id,scope)
+        VALUES(?,'node:read'),(?,'node:create'),(?,'node:write'),(?,'node:delete')`,
+      values: [credential, credential, credential, credential],
+    },
+    {
+      sql: `INSERT INTO shares(
+        id,owner_id,root_node_id,kind,mount_name,mount_name_ci,created_at
+      ) VALUES(?,?,?,'internal','editable-Folder','editable-folder',?)`,
+      values: [share, owner.ids.user, owner.ids.folder, Date.now()],
+    },
+    {
+      sql: `INSERT INTO share_actions(share_id,action)
+        VALUES(?,'read'),(?,'download'),(?,'create'),(?,'edit')`,
+      values: [share, share, share, share],
+    },
+    {
+      sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
+      values: [share, recipient.ids.user],
+    },
+  ]);
+  const authorization = `Basic ${btoa(`${id}:${secret}`)}`;
+  const headers = { Authorization: authorization };
+  const davEnv = admittedDavEnv();
+  const options = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder", {
+      method: "OPTIONS",
+      headers,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(options.status).toBe(200);
+  expect(options.headers.get("Allow")).toBe(
+    "OPTIONS, GET, HEAD, PROPFIND, PUT, COPY, MKCOL, LOCK, PROPPATCH, UNLOCK, DELETE, MOVE",
+  );
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Shared/editable-Folder", {
+          method: "DELETE",
+          headers,
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(404);
+
+  const createdFolder = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created", {
+      method: "MKCOL",
+      headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(createdFolder.status).toBe(201);
+  const created = await env.DB.prepare(
+    "SELECT id,owner_id AS ownerId,parent_id AS parentId FROM nodes WHERE owner_id=? AND name_ci='created'",
+  )
+    .bind(owner.ids.user)
+    .first<{ id: string; ownerId: string; parentId: string }>();
+  expect(created).toMatchObject({ ownerId: owner.ids.user, parentId: owner.ids.folder });
+
+  const put = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+      method: "PUT",
+      headers: { ...headers, "Content-Length": "3", "Content-Type": "text/plain" },
+      body: "abc",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(put.status).toBe(201);
+  const note = await env.DB.prepare(
+    `SELECT n.id,n.current_blob_id AS blobId,b.r2_key AS r2Key
+      FROM nodes n JOIN blobs b ON b.id=n.current_blob_id
+      WHERE n.parent_id=? AND n.name_ci='note.txt' AND n.deleted_at IS NULL`,
+  )
+    .bind(created!.id)
+    .first<{ id: string; blobId: string; r2Key: string }>();
+  expect(note).toBeTruthy();
+  expect(note!.r2Key).toBe(`u/${owner.ids.user}/b/${note!.blobId}`);
+
+  const conditionFailed = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+      method: "PUT",
+      headers: {
+        ...headers,
+        "Content-Length": "1",
+        If: '(["b-stale"])',
+      },
+      body: "x",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(conditionFailed.status).toBe(412);
+
+  const proppatch = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+      method: "PROPPATCH",
+      headers: {
+        ...headers,
+        "Content-Type": "application/xml",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: `<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:example">
+        <D:set><D:prop><X:label>shared</X:label></D:prop></D:set>
+      </D:propertyupdate>`,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(proppatch.status).toBe(207);
+  expect(
+    await env.DB.prepare(
+      "SELECT value_xml FROM node_props WHERE node_id=? AND namespace='urn:example' AND name='label'",
+    )
+      .bind(note!.id)
+      .first<string>("value_xml"),
+  ).toContain("shared");
+
+  const copied = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+      method: "COPY",
+      headers: {
+        ...headers,
+        Destination: "https://app.invalid/dav/Shared/editable-Folder/Created/Copy.txt",
+        Depth: "0",
+        Overwrite: "F",
+      },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(copied.status).toBe(201);
+  const moved = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Copy.txt", {
+      method: "MOVE",
+      headers: {
+        ...headers,
+        Destination: "https://app.invalid/dav/Shared/editable-Folder/Moved.txt",
+        Depth: "infinity",
+        Overwrite: "F",
+      },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(moved.status).toBe(201);
+
+  const lock = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+      method: "LOCK",
+      headers: {
+        ...headers,
+        "Content-Type": "application/xml",
+        Depth: "0",
+        Timeout: "Second-60",
+      },
+      body: `<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>
+        <D:locktype><D:write/></D:locktype></D:lockinfo>`,
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(lock.status).toBe(200);
+  const blocked = await handleDavHttp(
+    new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+      method: "PUT",
+      headers: {
+        ...headers,
+        "Content-Length": "1",
+        "If-Match": `"b-${note!.blobId}"`,
+      },
+      body: "x",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(blocked.status).toBe(423);
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+          method: "UNLOCK",
+          headers: { ...headers, "Lock-Token": lock.headers.get("Lock-Token")! },
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(204);
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Shared/editable-Folder/Moved.txt", {
+          method: "DELETE",
+          headers,
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(204);
+  const deleteOperationId = await env.DB.prepare(
+    "SELECT op_id FROM operations WHERE principal_id=? AND kind='dav.delete' ORDER BY created_at DESC LIMIT 1",
+  )
+    .bind(recipient.ids.user)
+    .first<string>("op_id");
+  expect(deleteOperationId).toBeTruthy();
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM operations WHERE authorization_context IS NOT NULL AND principal_id=?",
+    )
+      .bind(recipient.ids.user)
+      .first<number>("n"),
+  ).toBeGreaterThanOrEqual(6);
+
+  const principal = await authenticateAppPassword(
+    mutationEnv(env.DB),
+    request(),
+    "https://app.invalid",
+    1,
+    ring,
+  );
+  expect(await lookupOperation(env.DB, principal, deleteOperationId!)).toMatchObject({
+    state: "committed",
+    result: { status: 204 },
+  });
+  const sharedNote = parseDavPath("/dav/Shared/editable-Folder/Created/Note.txt");
+  const stale = await resolveDavNode(env.DB, principal, sharedNote);
+  await atomicBatch(env.DB, [
+    { sql: "UPDATE shares SET version=version+1 WHERE id=?", values: [share] },
+    { sql: "UPDATE share_grants SET version=version+1 WHERE share_id=?", values: [share] },
+  ]);
+  await expect(
+    atomicBatch(env.DB, [authorizationAssertion(stale), davReadAssertion(stale)]),
+  ).rejects.toThrow();
+  await expect(lookupOperation(env.DB, principal, deleteOperationId!)).resolves.toBeNull();
+  await expect(resolveDavNode(env.DB, principal, sharedNote)).resolves.toBeDefined();
+  await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='edit'")
+    .bind(share)
+    .run();
+  expect(
+    (
+      await handleDavHttp(
+        new Request("https://app.invalid/dav/Shared/editable-Folder/Created/Note.txt", {
+          method: "PROPPATCH",
+          headers: {
+            ...headers,
+            "Content-Type": "application/xml",
+            "Idempotency-Key": crypto.randomUUID(),
+          },
+          body: `<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:example">
+            <D:remove><D:prop><X:label/></D:prop></D:remove>
+          </D:propertyupdate>`,
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(405);
+  for (const object of (await env.BLOBS.list({ prefix: `u/${owner.ids.user}/b/` })).objects)
+    await env.BLOBS.delete(object.key);
 });
 
 it("rejects a DAV path whose node moves after its initial lookup", async () => {
