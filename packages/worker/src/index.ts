@@ -19,6 +19,8 @@ import { repairMultipartUploads } from "./jobs/multipartCleanup";
 import { collectOrphanObjects, scanOrphanObjects } from "./jobs/orphanInventory";
 import { dispatchPendingOutbox } from "./jobs/outbox";
 import { handleOutboxBatch } from "./jobs/queue";
+import { dispatchPendingTreeJobs } from "./jobs/treeJobStore";
+import { failStaleTreeJobs } from "./jobs/treeJobWorker";
 import { repairSingleUploads } from "./jobs/uploadCleanup";
 
 async function admittedEpoch(env: Env): Promise<number | null> {
@@ -158,6 +160,8 @@ export default {
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const epoch = await admittedEpoch(env);
     if (epoch === null) return;
+    await failStaleTreeJobs(env, epoch);
+    await dispatchPendingTreeJobs(env, env.JOBS, epoch);
     await dispatchPendingOutbox(env, env.JOBS, epoch);
     await repairSingleUploads(env, env.BLOBS, epoch);
     await repairMultipartUploads(env, env.BLOBS, epoch);

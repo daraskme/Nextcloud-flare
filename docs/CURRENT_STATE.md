@@ -2,13 +2,13 @@
 
 更新: 2026-10-01。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、public EPUB metadata/page/entry、direct-user・group internal shareとread-only shared DAV、multipart closure settlementを統合済みである。本branchはbounded public ZIP create/redirectとRange/HEAD配信を追加する。migrationは45件（最新`0046`）、通常tableは74、route契約は156。各統合済みfeature PRはUbuntu、Windows 2分割、browser、backupの全CIを通過している。
+最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、public EPUB metadata/page/entry、bounded public ZIP、direct-user・group internal shareとread-only shared DAV、multipart closure settlementを統合済みである。このbranchは1,000 node以下の既存同期trash/restore/purgeを維持し、1,001〜10,000 nodeをdurable Queue jobへ接続する。operationは202とjob progressを返し、250 node単位のcursor、operation/job lease、epoch/maintenance/current credential/owner/ancestry/revision fenceを各chunkと最終確定で再検査する。migrationは46件（最新`0047`）、通常tableは74、route契約は156。
 
 video、group internal share、multipart closureのPR #16、#17、#19は全5 CIを通過してmainへ統合済みである。group shareのaction変更後は`share.version`、member削除/再追加後はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
 
 multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。backup drillは74 tableでPASSしている。
 
-読み取り専用public shareのGallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP deliveryを既存projection、ticket、content-origin、BudgetDOへ接続した。次はBookshelf/readerとvideo UI、大規模非同期tree処理、reshare・shared DAV編集、残るoperation/Outbox/repair、復旧・運用の残りを進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AVIF/AV1/Opusの実codec、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP deliveryと、大規模treeの非同期trash/restore/purgeを既存のauthority、projection、ticket、content-origin、BudgetDO、Queueへ接続した。次はBookshelf/readerとvideo UI、reshare・shared DAV編集、残るoperation/Outbox/repair、復旧・運用の残りを進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AVIF/AV1/Opusの実codec、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
 
 ## 状態の意味
 
@@ -58,7 +58,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | 45 migrations（最新`0046`）、74通常table、FTS、156 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致、74-table backup drill | 全156 routeの機能実装は未完了 |
+| schema・契約 | 46 migrations（最新`0047`）、74通常table、FTS、156 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致、74-table backup drill | 全156 routeの機能実装は未完了 |
 | 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
@@ -71,7 +71,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | フォルダー集計 | Accessのaccount stats、所有folderの再帰件数/現在のlogical bytes、1万件上限と部分結果、Files情報dialog | D1の12件と検索9件の回帰、実APIでのbrowser集計/再集計/拒否時非表示。全check成功 | 実D1予算・負荷、共有/media別集計。[FOLDER_STATS](FOLDER_STATS.md) |
 | 検索 | Access検索API、現行権限/祖先、名前の正規化、範囲10,000・page200、用途/条件付きcursor、Files検索と元の保存先の保持 | Node query/cursor、実D1階層・共有/削除/失効・旧索引・上限、実browser検索/上書き/201件pagination/世代競合 | media metadata parser/同期、索引version再構築運用、実D1予算。[SEARCH](SEARCH.md) |
 | Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | 全route profile・実環境 |
-| Trash | 一覧、restore、purge、別trash子退避、名前衝突解決、GC稼働中の永続pauseと既存削除drain | 最大64層・1,000 node、冪等再送、期限/識別子/停止競合、応答喪失・再起動、実browser復元 | 単一hold、実環境、大規模非同期trash/purge。詳細は[RESTORE_GC](RESTORE_GC.md) |
+| Trash | 一覧、同期restore/purge、1,001〜10,000 nodeの非同期trash/restore/purge、別trash子退避、名前衝突解決、GC pause、D1確定後のGC candidate | 最大64層・10,000 node、冪等再送、job cursor/lease、期限/識別子/停止競合、応答喪失・再起動 | 実Queue/DLQ/Cron、実環境。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
 | GC | 35日猶予candidate・最後のnamespace参照解除による期限延長、claim lease、pin/ref/pause fence、R2 delete/head、physical精算 | 実workerd R2、複数pin、pause、応答喪失、lease再取得 | unknown multipart ID、既知keyの不正置換、実Cron運用 |
 | 未追跡object | D1のページcursor/lease、HEAD照合、隔離台帳、35日猶予、実physical会計、再利用拒否、Cronと停止中inventory | 応答喪失、同時走査/回収、置換・再出現、owner後日復元、pause/epoch、復旧監査 | incomplete multipart、他prefix、実R2運用 |
@@ -105,8 +105,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 ### サービスとデータ処理
 
-- 大規模tree向けの非同期trash/restore/purge job。
-- 残るoperationの認可tuple、terminal lookup、未接続Outbox event kindと大規模非同期tree処理。
+- 残るoperationの認可tuple、terminal lookup、未接続Outbox event kind。
 - 残るmedia/archive metadata parser、検索索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)、名前検索APIは[SEARCH](SEARCH.md)へ接続済み。
 - reshare、shared DAV編集、既存internal share管理UI。direct-user/group内部共有とread-only shared DAV、公開linkの読み取り/upload-onlyは接続済み。
 - Bookshelf/reader・video UI。public Gallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entry、private/public ZIP、private EPUB、audio/video track、thumbnail derivativeとprivate Gallery/Audio UIは接続済み。

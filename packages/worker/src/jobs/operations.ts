@@ -314,6 +314,12 @@ export interface VisibleOperation {
   state: OperationRow["state"];
   errorCode: string | null;
   result: { status: number; nodeId?: string; revision?: number } | null;
+  job?: {
+    id: string;
+    state: "pending" | "running" | "completed" | "failed" | "cancelled";
+    processed: number;
+    total: number | null;
+  };
 }
 
 /** R6 operation lookup uses the exact initiating credential, then current original-operand authorization. */
@@ -530,11 +536,41 @@ export async function lookupOperation(
               "stale_epoch",
               "mutation_rejected",
               "name_conflict",
+              "blob_unrecoverable",
+              "tree_too_large",
+              "queue_exhausted",
               "quota_exceeded",
             ].includes(row.error_code)
           ? row.error_code
           : "operation_failed";
-    return { id: row.op_id, state: row.state, errorCode, result: visible };
+    const job = await primary(db)
+      .prepare(`SELECT id,state,node_count,
+        CASE WHEN json_extract(checkpoint,'$.phase') IN ('finalize','completed')
+          THEN node_count ELSE NULL END AS total
+        FROM bulk_jobs WHERE op_id=? AND kind IN ('node.trash','node.restore','node.purge')`)
+      .bind(row.op_id)
+      .first<{
+        id: string;
+        state: "pending" | "running" | "completed" | "failed" | "cancelled";
+        node_count: number;
+        total: number | null;
+      }>();
+    return {
+      id: row.op_id,
+      state: row.state,
+      errorCode,
+      result: visible,
+      ...(job
+        ? {
+            job: {
+              id: job.id,
+              state: job.state,
+              processed: job.node_count,
+              total: job.total,
+            },
+          }
+        : {}),
+    };
   } catch {
     return null;
   }

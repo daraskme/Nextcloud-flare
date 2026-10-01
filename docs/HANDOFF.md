@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-09-29。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-10-01。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -27,22 +27,24 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、direct-user/group internal shareとread-only shared DAV、multipart closure settlementをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share-version/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。share action変更とmember削除/再追加のどちらでもbudget identityをrotateし、revoke済みbudgetを再利用しない。
 
-最新migrationは`0046`（全45件）、通常tableは74、route契約は156。PR #16、#17、#19はUbuntu、Windows 2分割、browser、backupの全CIを通過した。統合状態ではgroup budget回帰、video、multipart closure、schema/backupのfocused tests、lint、typecheck、route/config contracts、production build、diff checkが成功し、backup drillは74 tableでPASSした。
+このbranchはmigration `0047`（全46件）でdurable async tree jobを追加した。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
+
+workerは各chunkと最終確定でepoch、maintenance、current credential/authority、owner、root/parent ancestry、revision/tree generation、operation operand、job claimを再検査する。restoreは最終確定時にGC pauseを取得しrootからdepth順に復元、purgeはD1のnamespace/ref/quota/GC candidateを先に確定してR2 bytesを直接削除しない。Queue/DLQ/Cronの実Cloudflare検証とremote migration/deployは未実施である。
 
 multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。全bucket scanやabortだけで予約・保留容量を返さず、closure proofとexact receiptの成立後だけ精算する。
 
 backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 74 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
-読み取り専用public shareのGallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEADを接続した。次はBookshelf/reader・video UI、大規模非同期tree処理、reshare/shared DAV編集、残るQueue event/repairを依存順に進める。並行してtimer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEADを接続した。大規模treeの非同期trash/restore/purgeもdurable Queue jobへ接続した。次はBookshelf/reader・video UI、reshare/shared DAV編集、残るQueue event/repairを依存順に進める。並行してtimer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
-次のschema変更は`0047`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
+次のschema変更は`0048`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。74通常テーブル、45 migrations（最新`0046`）、156 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。74通常テーブル、46 migrations（最新`0047`）、156 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
-直近の追加: video metadata/track、group internal share、multipart closure settlement。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
+直近の追加: public EPUB metadata/page/entryと大規模非同期tree処理。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
 
 主要な内部成果物（最新状態は進捗表を参照）:
 
@@ -107,7 +109,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、public media/EPUB/ZIPまで実装済み。次はBookshelf/reader・video UI、大規模非同期tree処理、reshare/shared DAV編集、残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、public media/EPUB/ZIP、大規模非同期tree処理まで実装済み。次はBookshelf/reader・video UI、reshare/shared DAV編集、残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 

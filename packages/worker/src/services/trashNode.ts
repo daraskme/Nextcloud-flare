@@ -18,6 +18,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_DELETE_MAX_NODES = 1_000;
@@ -51,7 +52,6 @@ async function liveMembers(db: D1Database, nodeId: string, spaceId: string): Pro
     .bind(nodeId, spaceId, spaceId, DAV_DELETE_MAX_NODES + 1)
     .all<MemberRow>();
   if (rows.results.length === 0) throw new Error("authorization_denied");
-  if (rows.results.length > DAV_DELETE_MAX_NODES) throw new Error("dav_delete_too_large");
   return rows.results.map(({ id }) => id);
 }
 
@@ -283,7 +283,7 @@ export async function trashNode(
       terminalSlot.credential_id !== request.principal.credential_id ||
       terminalSlot.space_id !== request.spaceId ||
       terminalSlot.kind !== operationKind ||
-      terminalSlot.expected_steps !== TRASH_NODE_STEPS ||
+      ![1, TRASH_NODE_STEPS].includes(terminalSlot.expected_steps) ||
       operands.nodeId !== request.nodeId
     )
       throw new Error("idempotency_conflict");
@@ -298,23 +298,29 @@ export async function trashNode(
   });
   if (initial.operation !== "node.trash") throw new Error("invalid_trash_authorization");
   const members = await liveMembers(env.DB, request.nodeId, request.spaceId);
+  if (members.length > DAV_DELETE_MAX_NODES && operationKind === "dav.delete")
+    throw new Error("dav_delete_too_large");
+  const async = members.length > DAV_DELETE_MAX_NODES;
   const intent = await operationIntent(
     request.principal,
     request.requestId,
     request.spaceId,
     operationKind,
-    {
-      nodeId: request.nodeId,
-      memberCount: members.length,
-      memberDigest: await digestJson(members),
-    },
+    async
+      ? { nodeId: request.nodeId, async: true }
+      : {
+          nodeId: request.nodeId,
+          memberCount: members.length,
+          memberDigest: await digestJson(members),
+        },
     { nodeId: request.nodeId, parentId: initial.parentId },
   );
-  const existing = await findOperationIntent(env.DB, intent, TRASH_NODE_STEPS);
-  if (existing && existing.state !== "claimed") {
+  const steps = async ? 1 : TRASH_NODE_STEPS;
+  const existing = await findOperationIntent(env.DB, intent, steps);
+  if (existing) {
     const operation = await lookupOperation(env.DB, request.principal, intent.id);
     if (!operation) throw new Error("authorization_denied");
-    return { kind: "terminal", operation };
+    if (existing.state !== "claimed" || operation.job) return { kind: "terminal", operation };
   }
   const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
   const permit = await lock.acquireTrash({
@@ -334,9 +340,14 @@ export async function trashNode(
     if (authorized.operation !== "node.trash" || authorized.parentId !== initial.parentId)
       throw new Error("authorization_denied");
     const currentMembers = await liveMembers(env.DB, request.nodeId, request.spaceId);
-    if ((await digestJson(currentMembers)) !== (await digestJson(members)))
+    if (
+      (async && currentMembers.length <= DAV_DELETE_MAX_NODES) ||
+      (!async && (await digestJson(currentMembers)) !== (await digestJson(members))) ||
+      authorized.node.tree_generation !== initial.node.tree_generation ||
+      authorized.node.revision !== initial.node.revision
+    )
       throw new Error("authorization_denied");
-    const claimed = await claimOperation(env.DB, intent, permit, authorized, TRASH_NODE_STEPS);
+    const claimed = await claimOperation(env.DB, intent, permit, authorized, steps);
     if (claimed.kind === "terminal") {
       const operation = await lookupOperation(env.DB, request.principal, intent.id);
       if (!operation) throw new Error("authorization_denied");
@@ -348,6 +359,41 @@ export async function trashNode(
       .bind(authorized.parentId, request.spaceId)
       .first<number>("revision");
     if (parentRevision === null) throw new Error("authorization_denied");
+    if (async) {
+      const operation = await startTreeJob(
+        env.DB,
+        claimed.claim,
+        authorized.node.owner_id,
+        {
+          rootNodeId: authorized.node.id,
+          parentId: authorized.parentId,
+          trashOpId: intent.id,
+          sourceTreeGeneration: authorized.node.tree_generation,
+          sourceRevision: authorized.node.revision,
+          parentRevision,
+          lockTokenHashes: await lockTokenHashes(request.lockTokens),
+        },
+        [
+          {
+            sql: `INSERT INTO trash_ops(
+              op_id,actor_id,space_id,root_node_id,state,reason,created_at,purge_after,epoch
+            ) VALUES(?,?,?,?,'pending',?,strftime('%s','now')*1000,
+              strftime('%s','now')*1000+3024000000,?)`,
+            values: [
+              intent.id,
+              authorized.node.owner_id,
+              authorized.node.space_id,
+              authorized.node.id,
+              "node.trash",
+              permit.epoch,
+            ],
+          },
+          assertOneChange,
+        ],
+      );
+      terminal = true;
+      return { kind: "terminal", operation };
+    }
     const outcome = await commitMutationStatements(
       env.DB,
       claimed.claim,

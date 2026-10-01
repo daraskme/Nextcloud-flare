@@ -16,6 +16,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -42,6 +43,7 @@ interface TrashSnapshot {
   memberCount: number;
   memberDigest: string;
   levels: readonly { depth: number; count: number }[];
+  rootRevision: number;
 }
 
 async function snapshot(
@@ -51,15 +53,21 @@ async function snapshot(
   trashOpId: string,
 ): Promise<TrashSnapshot> {
   const row = await primary(db)
-    .prepare(`SELECT t.root_node_id AS rootId,n.name,
+    .prepare(`SELECT t.root_node_id AS rootId,n.name,n.revision AS rootRevision,
       (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) AS memberCount
       FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
       WHERE t.op_id=? AND t.space_id=? AND t.actor_id=? AND t.state='trashed'
         AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL`)
     .bind(trashOpId, spaceId, principal.user_id)
-    .first<{ rootId: string; name: string; memberCount: number }>();
-  if (!row || row.memberCount < 1 || row.memberCount > 1_000)
+    .first<{ rootId: string; name: string; memberCount: number; rootRevision: number }>();
+  if (!row || row.memberCount < 1 || row.memberCount > ASYNC_TREE_MAX_NODES)
     throw new Error("authorization_denied");
+  if (row.memberCount > 1_000)
+    return {
+      ...row,
+      memberDigest: "",
+      levels: [],
+    };
   const members = await primary(db)
     .prepare(`WITH RECURSIVE d(id,depth,path) AS (
       SELECT n.id,0,'/'||n.id||'/' FROM nodes n WHERE n.id=? AND n.space_id=?
@@ -352,8 +360,9 @@ export async function restoreTrash(
       terminalSlot.space_id !== request.spaceId ||
       terminalSlot.kind !== "node.restore" ||
       terminalSlot.request_digest !== slot.digest ||
-      terminalSlot.expected_steps < RESTORE_TRASH_BASE_STEPS ||
-      terminalSlot.expected_steps > RESTORE_TRASH_BASE_STEPS + 64 ||
+      (terminalSlot.expected_steps !== 1 &&
+        (terminalSlot.expected_steps < RESTORE_TRASH_BASE_STEPS ||
+          terminalSlot.expected_steps > RESTORE_TRASH_BASE_STEPS + 64)) ||
       operands.trashOpId !== request.trashOpId ||
       operands.parentId !== request.destinationParentId
     )
@@ -371,12 +380,13 @@ export async function restoreTrash(
     body,
     { trashOpId: request.trashOpId, nodeId: initial.rootId, parentId: request.destinationParentId },
   );
-  const steps = RESTORE_TRASH_BASE_STEPS + initial.levels.length;
+  const async = initial.memberCount > 1_000;
+  const steps = async ? 1 : RESTORE_TRASH_BASE_STEPS + initial.levels.length;
   const existing = await findOperationIntent(env.DB, intent, steps);
-  if (existing && existing.state !== "claimed") {
+  if (existing) {
     const operation = await lookupOperation(env.DB, principal, intent.id);
     if (!operation) throw new Error("authorization_denied");
-    return { kind: "terminal", operation };
+    if (existing.state !== "claimed" || operation.job) return { kind: "terminal", operation };
   }
   await authorizeNode(env.DB, principal, {
     operation: "node.create",
@@ -391,6 +401,65 @@ export async function restoreTrash(
     .bind(request.trashOpId, request.trashOpId)
     .first<number>();
   if (lost !== null) throw new Error("blob_unrecoverable");
+  if (async) {
+    const lock = env.LOCKS.get(env.LOCKS.idFromName(request.spaceId));
+    const permit = await lock.acquireRestore({
+      async: true,
+      requestId: intent.id,
+      spaceId: request.spaceId,
+      parentId: request.destinationParentId,
+      trashOpId: request.trashOpId,
+      rootNodeId: initial.rootId,
+      principal,
+      lockTokens: request.lockTokens,
+    });
+    let created = false;
+    try {
+      const destination = await authorizeNode(env.DB, principal, {
+        operation: "node.create",
+        parentId: request.destinationParentId,
+        spaceId: request.spaceId,
+      });
+      if (destination.operation !== "node.create") throw new Error("authorization_denied");
+      const current = await snapshot(env.DB, principal, request.spaceId, request.trashOpId);
+      if (
+        current.rootId !== initial.rootId ||
+        current.memberCount !== initial.memberCount ||
+        current.rootRevision !== initial.rootRevision
+      )
+        throw new Error("authorization_denied");
+      const claimed = await claimOperation(env.DB, intent, permit, destination, 1);
+      if (claimed.kind === "terminal") {
+        const operation = await lookupOperation(env.DB, principal, intent.id);
+        if (!operation) throw new Error("authorization_denied");
+        created = true;
+        return { kind: "terminal", operation };
+      }
+      const parentRevision = await primary(env.DB)
+        .prepare("SELECT revision FROM nodes WHERE id=? AND space_id=? AND deleted_at IS NULL")
+        .bind(destination.parent.id, request.spaceId)
+        .first<number>("revision");
+      if (parentRevision === null) throw new Error("authorization_denied");
+      const operation = await startTreeJob(env.DB, claimed.claim, principal.user_id, {
+        rootNodeId: initial.rootId,
+        parentId: destination.parent.id,
+        trashOpId: request.trashOpId,
+        sourceTreeGeneration: destination.parent.tree_generation,
+        sourceRevision: initial.rootRevision,
+        parentRevision,
+        lockTokenHashes: await lockTokenHashes(request.lockTokens),
+      });
+      created = true;
+      return { kind: "terminal", operation };
+    } finally {
+      if (created)
+        try {
+          await lock.release(intent.id, permit);
+        } catch {
+          /* Lease recovery releases it. */
+        }
+    }
+  }
   const control = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
   const gcPause = await control.acquireRestorePause(principal.epoch, intent.id);
   if (!gcPause.ready) throw new Error("gc_quiescing");

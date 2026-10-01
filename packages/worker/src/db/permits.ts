@@ -28,7 +28,11 @@ export function assertOpenPermit(permit: Permit): SqlStatement {
 function failClosedClaims(spaceId: string, code: string): SqlStatement {
   return {
     sql: `UPDATE operations SET state='failed',error_code=?,updated_at=MAX(updated_at,strftime('%s','now')*1000)
-      WHERE space_id=? AND state='claimed' AND EXISTS(SELECT 1 FROM permits p WHERE p.permit_id=operations.permit_id AND p.state<>'open')`,
+      WHERE space_id=? AND state='claimed'
+        AND NOT EXISTS(SELECT 1 FROM bulk_jobs j WHERE j.op_id=operations.op_id
+          AND j.state IN ('pending','running'))
+        AND EXISTS(SELECT 1 FROM permits p
+          WHERE p.permit_id=operations.permit_id AND p.state<>'open')`,
     values: [code, spaceId],
   };
 }
@@ -125,7 +129,7 @@ export async function grantPermit(
   return Object.freeze(permit);
 }
 
-/** Normal completion only. An unfinished operation must be explicitly revoked, not released. */
+/** Normal completion or durable async handoff. */
 export async function releasePermit(db: D1Database, permit: Permit): Promise<void> {
   await atomicBatch(db, [
     assertExists(
@@ -133,8 +137,13 @@ export async function releasePermit(db: D1Database, permit: Permit): Promise<voi
       [permit.permit_id, permit.space_id, permit.epoch, permit.expires_at],
     ),
     assertExists(
-      "SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operations WHERE permit_id=? AND state='claimed')",
-      [permit.permit_id],
+      `SELECT 1 WHERE NOT EXISTS(
+        SELECT 1 FROM operations WHERE permit_id=? AND state='claimed'
+      ) OR EXISTS(
+        SELECT 1 FROM operations o JOIN bulk_jobs j ON j.op_id=o.op_id
+        WHERE o.permit_id=? AND o.state='claimed' AND j.state IN ('pending','running')
+      )`,
+      [permit.permit_id, permit.permit_id],
     ),
     {
       sql: "UPDATE permits SET state='released' WHERE permit_id=? AND state='open'",

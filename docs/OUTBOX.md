@@ -1,6 +1,6 @@
 # OutboxとQueueの更新受付
 
-更新日: 2026-09-25。schema0033、migration・依存追加なし。
+更新日: 2026-10-01。async tree jobはschema0047を使用する。
 
 Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
 
@@ -11,6 +11,12 @@ Queueの送信・受信処理を共通system受付へ接続しました。送信
 `dispatchOutbox`はimmutableなoutbox/op/spaceから実際のownerを解決する。送信claim・送信前確認・sent保存はそれぞれ共通枠へ入る。claimはSQL時計で30秒leaseを設定し、待機時間で残りleaseを短くしない。送信直前のbatchでtoken、lease、current epoch、maintenance=0、committed operation、所有spaceを再検査し、直接ACKを受けた場合だけ`{outboxId}`をJSON送信する。ACKが遅く25秒期限を過ぎた場合も送信しない。
 
 Queue sendの応答喪失ではleaseを保持する。期限後に新しいclaimで同じ通知IDを再送できる。consumerがsent保存前にcompletedへ進んでも終端を戻さない。別処理のterminalで自分の未確定共通枠を解放しない。Cronは既定50件/最大100件、1 passの25秒期限を共有し、`inspected`は実際に検査を開始した件数を返す。
+
+### 非同期tree job
+
+1,001〜10,000 nodeのtrash/restore/purgeは`{treeJobId}`だけを送る。operation claimと同じD1 batchでjob/step/setup rowを作り、初期permitを解放してもactive jobのoperationを失敗させない。dispatch claim、send、sent、worker claim、chunk、finalize、failは所有spaceのsystem受付を使い、30秒のdispatch/worker leaseとexact tokenで置換をfenceする。
+
+manifestは250 node以下でcursorと同じtransactionに保存する。Queue retry、send/DB応答喪失、worker/DO喪失はdurable checkpointから再開し、completed/failedは読取りだけでackする。epoch変更はCronで`stale_epoch`へ、DLQ exhaustionは`queue_exhausted`へoperation/jobを同時に収束させる。実Queue retry exhaustionとDLQ転送はstaging未検証である。
 
 ## 受信
 
