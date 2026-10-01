@@ -321,6 +321,42 @@ export async function updateShareGroup(
         values: [groupId, JSON.stringify(memberIds), groupId],
       },
       {
+        sql: `WITH RECURSIVE invalid_share(id) AS (
+          SELECT delegation.share_id
+          FROM share_delegations delegation
+          JOIN share_group_grants grouped ON grouped.share_id=delegation.source_share_id
+          JOIN share_group_members member ON member.group_id=grouped.group_id
+            AND member.user_id=delegation.delegated_by_user_id
+          WHERE grouped.group_id=? AND delegation.source_group_id=?
+            AND member.disabled_at IS NULL
+            AND member.user_id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+          UNION ALL
+          SELECT child.share_id FROM share_delegations child
+          JOIN invalid_share parent ON parent.id=child.source_share_id
+        )
+        UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,${clock})
+        WHERE share_id IN (SELECT id FROM invalid_share)`,
+        values: [groupId, groupId, JSON.stringify(memberIds)],
+      },
+      {
+        sql: `WITH RECURSIVE invalid_share(id) AS (
+          SELECT delegation.share_id
+          FROM share_delegations delegation
+          JOIN share_group_grants grouped ON grouped.share_id=delegation.source_share_id
+          JOIN share_group_members member ON member.group_id=grouped.group_id
+            AND member.user_id=delegation.delegated_by_user_id
+          WHERE grouped.group_id=? AND delegation.source_group_id=?
+            AND member.disabled_at IS NULL
+            AND member.user_id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+          UNION ALL
+          SELECT child.share_id FROM share_delegations child
+          JOIN invalid_share parent ON parent.id=child.source_share_id
+        )
+        UPDATE budgets SET state='revoked'
+        WHERE state='active' AND share_id IN (SELECT id FROM invalid_share)`,
+        values: [groupId, groupId, JSON.stringify(memberIds)],
+      },
+      {
         sql: `UPDATE share_group_members SET disabled_at=COALESCE(disabled_at,${clock})
           WHERE group_id=? AND disabled_at IS NULL
             AND user_id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?))`,
@@ -379,6 +415,28 @@ export async function disableShareGroup(
     {
       sql: `UPDATE budgets SET state='revoked' WHERE state='active'
         AND share_id IN (SELECT share_id FROM share_group_grants WHERE group_id=?)`,
+      values: [groupId],
+    },
+    {
+      sql: `WITH RECURSIVE invalid_share(id) AS (
+        SELECT share_id FROM share_group_grants WHERE group_id=?
+        UNION ALL
+        SELECT delegation.share_id FROM share_delegations delegation
+        JOIN invalid_share parent ON parent.id=delegation.source_share_id
+      )
+      UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,${clock})
+      WHERE share_id IN (SELECT id FROM invalid_share)`,
+      values: [groupId],
+    },
+    {
+      sql: `WITH RECURSIVE invalid_share(id) AS (
+        SELECT share_id FROM share_group_grants WHERE group_id=?
+        UNION ALL
+        SELECT delegation.share_id FROM share_delegations delegation
+        JOIN invalid_share parent ON parent.id=delegation.source_share_id
+      )
+      UPDATE budgets SET state='revoked'
+      WHERE state='active' AND share_id IN (SELECT id FROM invalid_share)`,
       values: [groupId],
     },
     {

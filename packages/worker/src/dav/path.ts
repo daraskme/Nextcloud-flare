@@ -85,6 +85,8 @@ const SHARED_PATH_CTE = `WITH RECURSIVE path(depth,id,space_id,owner_id,share_id
       AND sh.disabled_at IS NULL
       AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
       AND sh.mount_name_ci=json_extract(?4,'$[1]')
+    JOIN current_internal_shares current
+      ON current.share_id=sh.id AND current.version=sh.version
     JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
     JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id AND n.deleted_at IS NULL
     JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=?3 AND ctl.maintenance=0

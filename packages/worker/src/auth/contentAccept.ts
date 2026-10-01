@@ -66,6 +66,10 @@ export async function acceptContentTicket(
               SELECT 1 FROM shares sh WHERE sh.id=? AND sh.version=?
                 AND sh.owner_id=ts.owner_id AND sh.disabled_at IS NULL
                 AND (sh.expires_at IS NULL OR sh.expires_at>=?)
+                AND (sh.kind<>'internal' OR EXISTS(
+                  SELECT 1 FROM current_internal_shares current
+                  WHERE current.share_id=sh.id AND current.version=sh.version
+                ))
                 AND ((? IS NULL AND sh.kind='link') OR
                   (? IS NOT NULL AND sh.kind='internal' AND (
                     EXISTS(SELECT 1 FROM share_grants g

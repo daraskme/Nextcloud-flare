@@ -6,6 +6,7 @@ import { hashSharePassword, type SharePasswordPepperRing } from "../auth/sharePa
 import { shareSecretDigest } from "../auth/shareSession";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
+import { digestJson } from "../jobs/operations";
 import { acquireAccountMutation, commitAccountMutation } from "./accountMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -31,6 +32,22 @@ export interface CreateInternalShareInput {
   readonly recipientGroupId?: string;
   readonly actions: readonly string[];
   readonly ttlDays?: number;
+  readonly sourceShareId?: string;
+  readonly idempotencyKey?: string;
+  readonly resharePolicy?: ResharePolicyInput;
+}
+
+export interface ResharePolicyInput {
+  readonly enabled: boolean;
+  readonly actions: readonly string[];
+  readonly maxDepth: number;
+  readonly maxFanout: number;
+  readonly ttlDays?: number;
+}
+
+export interface UpdateInternalShareInput {
+  readonly actions?: readonly string[];
+  readonly resharePolicy?: ResharePolicyInput;
 }
 
 interface ShareRow {
@@ -50,6 +67,15 @@ interface ShareRow {
   recipientGroupId: string | null;
   recipientGroupName: string | null;
   mountName: string | null;
+  sourceShareId: string | null;
+  delegatedByUserId: string | null;
+  delegationDepth: number | null;
+  policyEnabled: number | null;
+  policyActions: string;
+  policyMaxDepth: number | null;
+  policyMaxFanout: number | null;
+  policyExpiresAt: number | null;
+  policyVersion: number | null;
 }
 
 interface ShareOutput {
@@ -70,6 +96,17 @@ interface ShareOutput {
   recipientGroupName?: string | null;
   mountId?: string;
   mountName?: string | null;
+  sourceShareId?: string | null;
+  delegatedByUserId?: string | null;
+  delegationDepth?: number;
+  resharePolicy?: {
+    enabled: boolean;
+    actions: string[];
+    maxDepth: number;
+    maxFanout: number;
+    expiresAt: number | null;
+    version: number;
+  } | null;
 }
 
 function ulid(): string {
@@ -117,6 +154,20 @@ function output(row: ShareRow): ShareOutput {
           recipientGroupName: row.recipientGroupName,
           mountId: row.id,
           mountName: row.mountName,
+          sourceShareId: row.sourceShareId,
+          delegatedByUserId: row.delegatedByUserId,
+          delegationDepth: row.delegationDepth ?? 0,
+          resharePolicy:
+            row.policyVersion === null
+              ? null
+              : {
+                  enabled: row.policyEnabled === 1,
+                  actions: canonicalActions(JSON.parse(row.policyActions) as string[]),
+                  maxDepth: row.policyMaxDepth!,
+                  maxFanout: row.policyMaxFanout!,
+                  expiresAt: row.policyExpiresAt,
+                  version: row.policyVersion,
+                },
         }
       : {
           reservedBytes: row.reservedBytes,
@@ -143,18 +194,33 @@ const SHARE_SELECT = `SELECT sh.id,sh.kind,sh.root_node_id AS rootNodeId,sh.vers
     SELECT action FROM share_actions WHERE share_id=sh.id ORDER BY action
   )),'[]') AS actions,
   g.user_id AS recipientUserId,u.email AS recipientEmail,
-  gg.group_id AS recipientGroupId,sg.name AS recipientGroupName,sh.mount_name AS mountName
+  gg.group_id AS recipientGroupId,sg.name AS recipientGroupName,sh.mount_name AS mountName,
+  delegation.source_share_id AS sourceShareId,
+  delegation.delegated_by_user_id AS delegatedByUserId,
+  delegation.depth AS delegationDepth,
+  policy.enabled AS policyEnabled,
+  COALESCE((SELECT json_group_array(action) FROM (
+    SELECT action FROM share_reshare_policy_actions
+    WHERE share_id=policy.share_id ORDER BY action
+  )),'[]') AS policyActions,
+  policy.max_depth AS policyMaxDepth,policy.max_fanout AS policyMaxFanout,
+  policy.expires_at AS policyExpiresAt,policy.version AS policyVersion
   FROM shares sh
   LEFT JOIN share_grants g ON g.share_id=sh.id
   LEFT JOIN users u ON u.id=g.user_id
   LEFT JOIN share_group_grants gg ON gg.share_id=sh.id
-  LEFT JOIN share_groups sg ON sg.id=gg.group_id`;
+  LEFT JOIN share_groups sg ON sg.id=gg.group_id
+  LEFT JOIN share_delegations delegation ON delegation.share_id=sh.id
+  LEFT JOIN share_reshare_policies policy
+    ON policy.share_id=COALESCE(delegation.policy_share_id,sh.id)`;
 
 export async function listShares(db: D1Database, session: AccessSession) {
   const statements = currentAccess(session);
   await atomicBatch(db, statements);
   const rows = await primary(db)
     .prepare(`${SHARE_SELECT} WHERE sh.owner_id=? AND sh.kind IN ('link','upload_only','internal')
+      AND (delegation.share_id IS NULL
+        OR EXISTS(SELECT 1 FROM current_internal_shares current WHERE current.share_id=sh.id))
       ORDER BY sh.created_at DESC,sh.id DESC LIMIT 100`)
     .bind(session.user_id)
     .all<ShareRow>();
@@ -168,7 +234,9 @@ export async function readShare(db: D1Database, session: AccessSession, shareId:
   await atomicBatch(db, statements);
   const row = await primary(db)
     .prepare(`${SHARE_SELECT}
-      WHERE sh.id=? AND sh.owner_id=? AND sh.kind IN ('link','upload_only','internal')`)
+      WHERE sh.id=? AND sh.owner_id=? AND sh.kind IN ('link','upload_only','internal')
+        AND (delegation.share_id IS NULL
+          OR EXISTS(SELECT 1 FROM current_internal_shares current WHERE current.share_id=sh.id))`)
     .bind(shareId, session.user_id)
     .first<ShareRow>();
   if (!row) throw new Error("share_not_found");
@@ -187,6 +255,197 @@ function validatedActions(actions: readonly string[]) {
   )
     throw new Error("invalid_share_request");
   return canonicalActions(actions);
+}
+
+function validatedPolicy(input: ResharePolicyInput | undefined) {
+  if (input === undefined) return undefined;
+  if (
+    typeof input !== "object" ||
+    typeof input.enabled !== "boolean" ||
+    !Number.isInteger(input.maxDepth) ||
+    input.maxDepth < 1 ||
+    input.maxDepth > 4 ||
+    !Number.isInteger(input.maxFanout) ||
+    input.maxFanout < 1 ||
+    input.maxFanout > 20 ||
+    (input.ttlDays !== undefined &&
+      (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365))
+  )
+    throw new Error("invalid_share_request");
+  return Object.freeze({ ...input, actions: validatedActions(input.actions) });
+}
+
+interface SourceAuthority {
+  readonly id: string;
+  readonly ownerId: string;
+  readonly rootNodeId: string;
+  readonly rootParentId: string | null;
+  readonly spaceId: string;
+  readonly version: number;
+  readonly expiresAt: number | null;
+  readonly depth: number;
+  readonly policyShareId: string;
+  readonly policyVersion: number;
+  readonly policyExpiresAt: number | null;
+  readonly maxDepth: number;
+  readonly maxFanout: number;
+  readonly currentFanout: number;
+  readonly actions: string;
+  readonly policyActions: string;
+  readonly sourceGroupId: string | null;
+  readonly membershipVersion: number | null;
+}
+
+const SOURCE_AUTHORITY_SELECT = `SELECT source.id,source.owner_id AS ownerId,
+  source.root_node_id AS rootNodeId,root.parent_id AS rootParentId,root.space_id AS spaceId,
+  source.version,source.expires_at AS expiresAt,current.depth,
+  policy.share_id AS policyShareId,policy.version AS policyVersion,
+  policy.expires_at AS policyExpiresAt,policy.max_depth AS maxDepth,
+  policy.max_fanout AS maxFanout,
+  (SELECT COUNT(*) FROM share_delegations child
+    JOIN share_delegation_status status ON status.share_id=child.share_id AND status.valid=1
+    JOIN shares child_share ON child_share.id=child.share_id AND child_share.disabled_at IS NULL
+      AND (child_share.expires_at IS NULL OR child_share.expires_at>strftime('%s','now')*1000)
+    WHERE child.source_share_id=source.id) AS currentFanout,
+  (SELECT json_group_array(action) FROM (
+    SELECT action FROM share_actions WHERE share_id=source.id ORDER BY action
+  )) AS actions,
+  (SELECT json_group_array(action) FROM (
+    SELECT action FROM share_reshare_policy_actions
+    WHERE share_id=policy.share_id ORDER BY action
+  )) AS policyActions,
+  grouped.group_id AS sourceGroupId,member.version AS membershipVersion
+FROM current_internal_shares current
+JOIN shares source ON source.id=current.share_id
+JOIN nodes root ON root.id=source.root_node_id AND root.owner_id=source.owner_id
+JOIN share_reshare_policies policy
+  ON policy.share_id=COALESCE(current.policy_share_id,source.id)
+  AND policy.version=COALESCE(current.policy_version,policy.version)
+  AND policy.enabled=1
+LEFT JOIN share_grants direct ON direct.share_id=source.id AND direct.user_id=?
+  AND direct.disabled_at IS NULL AND direct.version=source.version
+LEFT JOIN share_group_grants grouped ON grouped.share_id=source.id
+LEFT JOIN share_groups recipient_group ON recipient_group.id=grouped.group_id
+  AND recipient_group.owner_id=source.owner_id AND recipient_group.disabled_at IS NULL
+LEFT JOIN share_group_members member ON member.group_id=recipient_group.id
+  AND member.user_id=? AND member.disabled_at IS NULL
+LEFT JOIN users delegated_user ON delegated_user.id=member.user_id
+  AND delegated_user.disabled_at IS NULL
+WHERE source.id=? AND (direct.user_id IS NOT NULL OR delegated_user.id IS NOT NULL)
+  AND (policy.expires_at IS NULL OR policy.expires_at>strftime('%s','now')*1000)
+ORDER BY grouped.group_id LIMIT 2`;
+
+async function sourceAuthority(
+  db: D1Database,
+  session: AccessSession,
+  sourceShareId: string,
+): Promise<SourceAuthority> {
+  const rows = await primary(db)
+    .prepare(SOURCE_AUTHORITY_SELECT)
+    .bind(session.user_id, session.user_id, sourceShareId)
+    .all<SourceAuthority>();
+  if (rows.results.length !== 1) throw new Error("share_source_not_found");
+  return rows.results[0]!;
+}
+
+function sourceAuthorityAssertion(session: AccessSession, source: SourceAuthority): SqlStatement {
+  return assertExists(
+    `SELECT 1 FROM current_internal_shares current
+      JOIN shares source ON source.id=current.share_id
+      JOIN nodes root ON root.id=source.root_node_id AND root.owner_id=source.owner_id
+      JOIN share_reshare_policies policy
+        ON policy.share_id=? AND policy.version=? AND policy.enabled=1
+      WHERE source.id=? AND source.version=? AND source.owner_id=?
+        AND source.root_node_id=? AND root.parent_id IS ? AND current.depth=?
+        AND (policy.expires_at IS NULL OR policy.expires_at>strftime('%s','now')*1000)
+        AND (SELECT COUNT(*) FROM share_delegations child
+          JOIN share_delegation_status status
+            ON status.share_id=child.share_id AND status.valid=1
+          JOIN shares child_share ON child_share.id=child.share_id
+            AND child_share.disabled_at IS NULL
+            AND (child_share.expires_at IS NULL
+              OR child_share.expires_at>strftime('%s','now')*1000)
+          WHERE child.source_share_id=source.id)<?
+        AND (
+          (? IS NULL AND EXISTS(
+            SELECT 1 FROM share_grants direct
+            WHERE direct.share_id=source.id AND direct.user_id=?
+              AND direct.disabled_at IS NULL AND direct.version=source.version
+          ))
+          OR
+          (? IS NOT NULL AND EXISTS(
+            SELECT 1 FROM share_group_grants grouped
+            JOIN share_groups recipient_group ON recipient_group.id=grouped.group_id
+              AND recipient_group.owner_id=source.owner_id
+              AND recipient_group.disabled_at IS NULL
+            JOIN share_group_members member ON member.group_id=recipient_group.id
+              AND member.user_id=? AND member.disabled_at IS NULL
+              AND member.version=?
+            JOIN users delegated_user ON delegated_user.id=member.user_id
+              AND delegated_user.disabled_at IS NULL
+            WHERE grouped.share_id=source.id AND recipient_group.id=?
+          ))
+        )`,
+    [
+      source.policyShareId,
+      source.policyVersion,
+      source.id,
+      source.version,
+      source.ownerId,
+      source.rootNodeId,
+      source.rootParentId,
+      source.depth,
+      source.maxFanout,
+      source.sourceGroupId,
+      session.user_id,
+      source.sourceGroupId,
+      session.user_id,
+      source.membershipVersion,
+      source.sourceGroupId,
+    ],
+  );
+}
+
+function descendantRevocationStatements(shareId: string): readonly SqlStatement[] {
+  const descendants = `WITH RECURSIVE descendants(id) AS (
+    SELECT ?
+    UNION ALL
+    SELECT delegation.share_id FROM share_delegations delegation
+    JOIN descendants ON descendants.id=delegation.source_share_id
+  )`;
+  const clock = "strftime('%s','now')*1000";
+  return [
+    {
+      sql: `${descendants} UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,${clock})
+        WHERE share_id IN (SELECT id FROM descendants)`,
+      values: [shareId],
+    },
+    {
+      sql: `${descendants} UPDATE budgets SET state='revoked'
+        WHERE share_id IN (SELECT id FROM descendants) AND state='active'`,
+      values: [shareId],
+    },
+  ];
+}
+
+async function reshareRequestIdentity(session: AccessSession, input: CreateInternalShareInput) {
+  if (!input.idempotencyKey || !/^[\x21-\x7e]{1,200}$/.test(input.idempotencyKey))
+    throw new Error("invalid_idempotency_key");
+  const id = `rs_${await digestJson([
+    session.user_id,
+    session.credential_id,
+    input.idempotencyKey,
+  ])}`;
+  const digest = await digestJson({
+    sourceShareId: input.sourceShareId,
+    rootNodeId: input.rootNodeId,
+    spaceId: input.spaceId,
+    recipientEmail: input.recipientEmail?.normalize("NFC").trim().toLowerCase() ?? null,
+    recipientGroupId: input.recipientGroupId ?? null,
+    actions: canonicalActions(input.actions),
+    ttlDays: input.ttlDays ?? 30,
+  });
+  return Object.freeze({ id, digest });
 }
 
 function stableMountName(shareId: string, rootName: string) {
@@ -213,11 +472,37 @@ export async function createInternalShare(
         input.recipientEmail.length < 3 ||
         input.recipientEmail.length > 320)) ||
     (input.recipientGroupId !== undefined && !ID.test(input.recipientGroupId)) ||
+    (input.sourceShareId !== undefined && !ID.test(input.sourceShareId)) ||
     (input.ttlDays !== undefined &&
       (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 365))
   )
     throw new Error("invalid_share_request");
   const actions = validatedActions(input.actions);
+  const policyInput = validatedPolicy(input.resharePolicy);
+  if (input.sourceShareId !== undefined && policyInput !== undefined)
+    throw new Error("invalid_share_request");
+  const requestIdentity =
+    input.sourceShareId === undefined ? undefined : await reshareRequestIdentity(session, input);
+  if (requestIdentity) {
+    const existingRequest = await primary(env.DB)
+      .prepare(
+        "SELECT request_digest AS digest,share_id AS shareId FROM share_reshare_requests WHERE id=? AND credential_id=?",
+      )
+      .bind(requestIdentity.id, session.credential_id)
+      .first<{ digest: string; shareId: string }>();
+    if (existingRequest) {
+      if (existingRequest.digest !== requestIdentity.digest)
+        throw new Error("idempotency_conflict");
+      await sourceAuthority(env.DB, session, input.sourceShareId!);
+      return readReshareResult(env.DB, session, requestIdentity.id, existingRequest.shareId);
+    }
+  }
+  await atomicBatch(env.DB, currentAccess(session));
+  const source =
+    input.sourceShareId === undefined
+      ? undefined
+      : await sourceAuthority(env.DB, session, input.sourceShareId);
+  const ownerId = source?.ownerId ?? session.user_id;
   const recipientEmail = input.recipientEmail?.normalize("NFC").trim();
   let recipient: { id: string; email: string } | undefined;
   let recipientGroup: { id: string; name: string } | undefined;
@@ -238,7 +523,7 @@ export async function createInternalShare(
           AND (SELECT COUNT(*) FROM share_group_members gm
             JOIN users u ON u.id=gm.user_id AND u.disabled_at IS NULL
             WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100`)
-        .bind(input.recipientGroupId, session.user_id)
+        .bind(input.recipientGroupId, ownerId)
         .first<{ id: string; name: string }>()) ?? undefined;
     if (!recipientGroup) throw new Error("share_recipient_not_found");
   }
@@ -260,48 +545,154 @@ export async function createInternalShare(
   }
   if (
     root.operation !== "node.read" ||
-    root.node.owner_id !== session.user_id ||
+    root.node.owner_id !== ownerId ||
     root.node.kind !== "folder"
   )
     throw new Error("share_root_not_found");
+  if (source) {
+    const withinSource = await primary(env.DB)
+      .prepare(`WITH RECURSIVE ancestry(id,parent_id,depth,path) AS (
+        SELECT id,parent_id,0,'/'||id||'/' FROM nodes
+        WHERE id=? AND space_id=? AND owner_id=? AND deleted_at IS NULL
+        UNION ALL
+        SELECT parent.id,parent.parent_id,ancestry.depth+1,ancestry.path||parent.id||'/'
+        FROM ancestry JOIN nodes parent ON parent.id=ancestry.parent_id
+        WHERE ancestry.depth<64 AND parent.space_id=? AND parent.owner_id=?
+          AND parent.deleted_at IS NULL AND instr(ancestry.path,'/'||parent.id||'/')=0
+      ) SELECT 1 FROM ancestry WHERE id=?`)
+      .bind(
+        root.node.id,
+        root.node.space_id,
+        ownerId,
+        root.node.space_id,
+        ownerId,
+        source.rootNodeId,
+      )
+      .first();
+    if (!withinSource) throw new Error("share_root_not_found");
+    const sourceActions = canonicalActions(JSON.parse(source.actions) as string[]);
+    const policyActions = canonicalActions(JSON.parse(source.policyActions) as string[]);
+    if (
+      actions.some(
+        (action) => !sourceActions.includes(action) || !policyActions.includes(action),
+      ) ||
+      source.depth + 1 > source.maxDepth ||
+      source.currentFanout >= source.maxFanout
+    )
+      throw new Error("share_authority_exceeded");
+  }
   const existing = recipient
     ? await primary(env.DB)
-        .prepare(`SELECT 1 FROM shares sh JOIN share_grants g ON g.share_id=sh.id
+        .prepare(`SELECT 1 FROM shares sh
+          JOIN current_internal_shares current ON current.share_id=sh.id
+          JOIN share_grants g ON g.share_id=sh.id
           WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
             AND sh.disabled_at IS NULL
             AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
             AND g.user_id=? AND g.disabled_at IS NULL AND g.version=sh.version`)
-        .bind(session.user_id, root.node.id, recipient.id)
+        .bind(ownerId, root.node.id, recipient.id)
         .first<number>()
     : await primary(env.DB)
-        .prepare(`SELECT 1 FROM shares sh JOIN share_group_grants gg ON gg.share_id=sh.id
+        .prepare(`SELECT 1 FROM shares sh
+          JOIN current_internal_shares current ON current.share_id=sh.id
+          JOIN share_group_grants gg ON gg.share_id=sh.id
           JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
           WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
             AND sh.disabled_at IS NULL
             AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
             AND sg.id=? AND sg.disabled_at IS NULL`)
-        .bind(session.user_id, root.node.id, recipientGroup!.id)
+        .bind(ownerId, root.node.id, recipientGroup!.id)
         .first<number>();
   if (existing !== null) throw new Error("share_exists");
   const active = await primary(env.DB)
-    .prepare(`SELECT COUNT(*) AS count FROM shares WHERE owner_id=? AND kind='internal'
-      AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000)`)
-    .bind(session.user_id)
+    .prepare(`SELECT COUNT(*) AS count FROM shares sh
+      JOIN current_internal_shares current ON current.share_id=sh.id
+      WHERE sh.owner_id=? AND sh.kind='internal'
+        AND sh.disabled_at IS NULL
+        AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)`)
+    .bind(ownerId)
     .first<number>("count");
   if (active === null || active >= ACTIVE_SHARE_LIMIT) throw new Error("share_limit");
   const id = ulid();
   const mount = stableMountName(id, root.node.name);
   const now = Date.now();
-  const expiresAt = now + (input.ttlDays ?? 30) * DAY_MS;
-  const admission = await acquireAccountMutation(
-    env,
-    session.user_id,
-    session.epoch,
-    "share.create",
-  );
-  await commitAccountMutation(env.DB, admission, session.user_id, [
+  const requestedExpiresAt = now + (input.ttlDays ?? 30) * DAY_MS;
+  const expiresAt = source
+    ? input.ttlDays === undefined
+      ? Math.min(
+          requestedExpiresAt,
+          source.expiresAt ?? requestedExpiresAt,
+          source.policyExpiresAt ?? requestedExpiresAt,
+        )
+      : requestedExpiresAt
+    : requestedExpiresAt;
+  if (
+    source &&
+    ((source.expiresAt !== null && expiresAt > source.expiresAt) ||
+      (source.policyExpiresAt !== null && expiresAt > source.policyExpiresAt))
+  )
+    throw new Error("share_authority_exceeded");
+  const policyExpiresAt =
+    policyInput?.ttlDays === undefined ? null : now + policyInput.ttlDays * DAY_MS;
+  if (
+    policyInput &&
+    (policyInput.actions.some((action) => !actions.includes(action)) ||
+      (policyExpiresAt !== null && policyExpiresAt > expiresAt))
+  )
+    throw new Error("invalid_share_request");
+  const admission = await acquireAccountMutation(env, ownerId, session.epoch, "share.create");
+  const delegationStatements: SqlStatement[] = source
+    ? [
+        sourceAuthorityAssertion(session, source),
+        assertExists(
+          `WITH RECURSIVE ancestry(id,parent_id,depth,path) AS (
+            SELECT id,parent_id,0,'/'||id||'/' FROM nodes
+            WHERE id=? AND space_id=? AND owner_id=? AND deleted_at IS NULL
+            UNION ALL
+            SELECT parent.id,parent.parent_id,ancestry.depth+1,ancestry.path||parent.id||'/'
+            FROM ancestry JOIN nodes parent ON parent.id=ancestry.parent_id
+            WHERE ancestry.depth<64 AND parent.space_id=? AND parent.owner_id=?
+              AND parent.deleted_at IS NULL
+              AND instr(ancestry.path,'/'||parent.id||'/')=0
+          ) SELECT 1 FROM ancestry WHERE id=?`,
+          [
+            root.node.id,
+            root.node.space_id,
+            ownerId,
+            root.node.space_id,
+            ownerId,
+            source.rootNodeId,
+          ],
+        ),
+      ]
+    : [];
+  const policyStatements: SqlStatement[] =
+    policyInput === undefined
+      ? []
+      : [
+          {
+            sql: `INSERT INTO share_reshare_policies(
+              share_id,enabled,max_depth,max_fanout,expires_at,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?)`,
+            values: [
+              id,
+              policyInput.enabled ? 1 : 0,
+              policyInput.maxDepth,
+              policyInput.maxFanout,
+              policyExpiresAt,
+              now,
+              now,
+            ],
+          },
+          ...policyInput.actions.map((action) => ({
+            sql: "INSERT INTO share_reshare_policy_actions(share_id,action) VALUES(?,?)",
+            values: [id, action],
+          })),
+        ];
+  await commitAccountMutation(env.DB, admission, ownerId, [
     ...currentAccess(session),
     authorizationAssertion(root),
+    ...delegationStatements,
     recipient
       ? assertExists(
           `SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL AND lower(email)=lower(?)
@@ -314,15 +705,19 @@ export async function createInternalShare(
             (SELECT COUNT(*) FROM share_group_members gm
               JOIN users u ON u.id=gm.user_id AND u.disabled_at IS NULL
               WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100`,
-          [recipientGroup!.id, session.user_id],
+          [recipientGroup!.id, ownerId],
         ),
     assertExists(
       `SELECT 1 WHERE
-        (SELECT COUNT(*) FROM shares WHERE owner_id=? AND kind='internal'
-          AND disabled_at IS NULL
-          AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000))<?
+        (SELECT COUNT(*) FROM shares counted
+          JOIN current_internal_shares current_counted ON current_counted.share_id=counted.id
+          WHERE counted.owner_id=? AND counted.kind='internal'
+            AND counted.disabled_at IS NULL
+            AND (counted.expires_at IS NULL
+              OR counted.expires_at>strftime('%s','now')*1000))<?
         AND NOT EXISTS(
           SELECT 1 FROM shares sh
+          JOIN current_internal_shares current ON current.share_id=sh.id
           WHERE sh.owner_id=? AND sh.root_node_id=? AND sh.kind='internal'
             AND sh.disabled_at IS NULL
             AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
@@ -336,9 +731,9 @@ export async function createInternalShare(
             )))
         )`,
       [
-        session.user_id,
+        ownerId,
         ACTIVE_SHARE_LIMIT,
-        session.user_id,
+        ownerId,
         root.node.id,
         recipient?.id ?? null,
         recipient?.id ?? null,
@@ -350,7 +745,7 @@ export async function createInternalShare(
       sql: `INSERT INTO shares(
         id,owner_id,root_node_id,kind,expires_at,created_at,mount_name,mount_name_ci
       ) VALUES(?,?,?,'internal',?,?,?,?)`,
-      values: [id, session.user_id, root.node.id, expiresAt, now, mount.name, mount.nameCi],
+      values: [id, ownerId, root.node.id, expiresAt, now, mount.name, mount.nameCi],
     },
     recipient
       ? {
@@ -365,26 +760,187 @@ export async function createInternalShare(
       sql: "INSERT INTO share_actions(share_id,action) VALUES(?,?)",
       values: [id, action],
     })),
+    ...policyStatements,
+    ...(source
+      ? [
+          {
+            sql: `INSERT INTO share_delegations(
+              share_id,source_share_id,source_share_version,policy_share_id,policy_version,
+              delegated_by_user_id,source_group_id,source_membership_version,depth,
+              source_root_parent_id,delegated_root_parent_id,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+            values: [
+              id,
+              source.id,
+              source.version,
+              source.policyShareId,
+              source.policyVersion,
+              session.user_id,
+              source.sourceGroupId,
+              source.membershipVersion,
+              source.depth + 1,
+              source.rootParentId,
+              root.node.parent_id,
+              now,
+            ],
+          },
+          {
+            sql: `WITH RECURSIVE ancestry(node_id,parent_id,depth,path) AS (
+              SELECT node.id,node.parent_id,0,'/'||node.id||'/'
+              FROM nodes node WHERE node.id=?
+              UNION ALL
+              SELECT parent.id,parent.parent_id,ancestry.depth+1,ancestry.path||parent.id||'/'
+              FROM ancestry
+              JOIN nodes parent ON parent.id=ancestry.parent_id
+              WHERE ancestry.node_id<>? AND ancestry.depth<64
+                AND instr(ancestry.path,'/'||parent.id||'/')=0
+            )
+            INSERT INTO share_delegation_ancestry(share_id,node_id,parent_id,depth)
+            SELECT ?,node_id,parent_id,depth FROM ancestry
+            WHERE depth<=(SELECT depth FROM ancestry WHERE node_id=?)`,
+            values: [root.node.id, source.rootNodeId, id, source.rootNodeId],
+          },
+          {
+            sql: "INSERT INTO share_delegation_status(share_id,valid) VALUES(?,1)",
+            values: [id],
+          },
+          {
+            sql: `INSERT INTO share_reshare_requests(
+              id,credential_id,request_digest,source_share_id,share_id,epoch,created_at
+            ) VALUES(?,?,?,?,?,?,?)`,
+            values: [
+              requestIdentity!.id,
+              session.credential_id,
+              requestIdentity!.digest,
+              source.id,
+              id,
+              session.epoch,
+              now,
+            ],
+          },
+        ]
+      : []),
   ]);
-  return readShare(env.DB, session, id);
+  return source
+    ? readReshareResult(env.DB, session, requestIdentity!.id, id)
+    : readShare(env.DB, session, id);
 }
 
-export async function updateInternalShareActions(
+async function readReshareResult(
+  db: D1Database,
+  session: AccessSession,
+  requestId: string,
+  shareId: string,
+) {
+  const assertions = currentAccess(session);
+  await atomicBatch(db, assertions);
+  const row = await primary(db)
+    .prepare(`${SHARE_SELECT}
+      JOIN share_reshare_requests request ON request.share_id=sh.id
+      JOIN current_internal_shares current ON current.share_id=sh.id
+      WHERE sh.id=? AND request.id=? AND request.credential_id=? AND request.epoch=?`)
+    .bind(shareId, requestId, session.credential_id, session.epoch)
+    .first<ShareRow>();
+  if (!row) throw new Error("share_source_not_found");
+  await atomicBatch(db, assertions);
+  return output(row);
+}
+
+interface ManagedInternalShare {
+  readonly rootNodeId: string;
+  readonly spaceId: string;
+  readonly ownerId: string;
+  readonly sourceShareId: string | null;
+  readonly delegatedByUserId: string | null;
+  readonly currentActions: string;
+  readonly sourceActions: string | null;
+  readonly policyActions: string | null;
+}
+
+async function managedInternalShare(
+  db: D1Database,
+  session: AccessSession,
+  shareId: string,
+): Promise<ManagedInternalShare> {
+  const row = await primary(db)
+    .prepare(`SELECT sh.root_node_id AS rootNodeId,root.space_id AS spaceId,
+      sh.owner_id AS ownerId,delegation.source_share_id AS sourceShareId,
+      delegation.delegated_by_user_id AS delegatedByUserId,
+      (SELECT json_group_array(action) FROM (
+        SELECT action FROM share_actions WHERE share_id=sh.id ORDER BY action
+      )) AS currentActions,
+      CASE WHEN delegation.share_id IS NULL THEN NULL ELSE (
+        SELECT json_group_array(action) FROM (
+          SELECT action FROM share_actions WHERE share_id=delegation.source_share_id
+          ORDER BY action
+        )
+      ) END AS sourceActions,
+      CASE WHEN delegation.share_id IS NULL THEN NULL ELSE (
+        SELECT json_group_array(action) FROM (
+          SELECT action FROM share_reshare_policy_actions
+          WHERE share_id=delegation.policy_share_id ORDER BY action
+        )
+      ) END AS policyActions
+    FROM shares sh
+    JOIN nodes root ON root.id=sh.root_node_id AND root.owner_id=sh.owner_id
+    JOIN current_internal_shares current ON current.share_id=sh.id
+    LEFT JOIN share_delegations delegation ON delegation.share_id=sh.id
+    WHERE sh.id=? AND sh.kind='internal'
+      AND (sh.owner_id=? OR delegation.delegated_by_user_id=?)`)
+    .bind(shareId, session.user_id, session.user_id)
+    .first<ManagedInternalShare>();
+  if (!row) throw new Error("share_not_found");
+  return row;
+}
+
+async function readManagedShare(db: D1Database, session: AccessSession, shareId: string) {
+  const assertions = currentAccess(session);
+  await atomicBatch(db, assertions);
+  const row = await primary(db)
+    .prepare(`${SHARE_SELECT}
+      JOIN current_internal_shares current ON current.share_id=sh.id
+      LEFT JOIN share_delegations managed_delegation ON managed_delegation.share_id=sh.id
+      WHERE sh.id=? AND sh.kind='internal'
+        AND (sh.owner_id=? OR managed_delegation.delegated_by_user_id=?)`)
+    .bind(shareId, session.user_id, session.user_id)
+    .first<ShareRow>();
+  if (!row) throw new Error("share_not_found");
+  await atomicBatch(db, assertions);
+  return output(row);
+}
+
+export async function updateInternalShare(
   env: Env,
   session: AccessSession,
   shareId: string,
-  actionsInput: readonly string[],
+  input: UpdateInternalShareInput,
 ) {
   if (!ID.test(shareId)) throw new Error("share_not_found");
-  const actions = validatedActions(actionsInput);
-  const row = await primary(env.DB)
-    .prepare(`SELECT sh.root_node_id AS rootNodeId,s.id AS spaceId
-      FROM shares sh JOIN nodes n ON n.id=sh.root_node_id
-      JOIN spaces s ON s.id=n.space_id AND s.owner_id=sh.owner_id
-      WHERE sh.id=? AND sh.owner_id=? AND sh.kind='internal'`)
-    .bind(shareId, session.user_id)
-    .first<{ rootNodeId: string; spaceId: string }>();
-  if (!row) throw new Error("share_not_found");
+  if (
+    !input ||
+    (input.actions === undefined && input.resharePolicy === undefined) ||
+    Object.keys(input).some((key) => !["actions", "resharePolicy"].includes(key))
+  )
+    throw new Error("invalid_share_request");
+  const actions = input.actions === undefined ? undefined : validatedActions(input.actions);
+  const policyInput = validatedPolicy(input.resharePolicy);
+  const row = await managedInternalShare(env.DB, session, shareId);
+  if (policyInput !== undefined && (row.ownerId !== session.user_id || row.sourceShareId !== null))
+    throw new Error("share_not_found");
+  if (actions && row.sourceShareId !== null) {
+    const currentActions = canonicalActions(JSON.parse(row.currentActions) as string[]);
+    const sourceActions = canonicalActions(JSON.parse(row.sourceActions!) as string[]);
+    const policyActions = canonicalActions(JSON.parse(row.policyActions!) as string[]);
+    if (
+      actions.some(
+        (action) =>
+          !currentActions.includes(action) ||
+          !sourceActions.includes(action) ||
+          !policyActions.includes(action),
+      )
+    )
+      throw new Error("share_authority_exceeded");
+  }
   let root;
   try {
     root = await authorizeNode(
@@ -400,35 +956,117 @@ export async function updateInternalShareActions(
   } catch {
     throw new Error("share_not_found");
   }
-  const admission = await acquireAccountMutation(
-    env,
-    session.user_id,
-    session.epoch,
-    "share.update",
-  );
+  const admission = await acquireAccountMutation(env, row.ownerId, session.epoch, "share.update");
   const clock = "strftime('%s','now')*1000";
-  await commitAccountMutation(env.DB, admission, session.user_id, [
+  const now = Date.now();
+  const policyExpiresAt =
+    policyInput?.ttlDays === undefined ? null : now + policyInput.ttlDays * DAY_MS;
+  const currentShare = await primary(env.DB)
+    .prepare(`SELECT sh.expires_at AS expiresAt,
+      (SELECT json_group_array(action) FROM (
+        SELECT action FROM share_actions WHERE share_id=sh.id ORDER BY action
+      )) AS actions
+      FROM shares sh WHERE sh.id=?`)
+    .bind(shareId)
+    .first<{ expiresAt: number | null; actions: string }>();
+  if (
+    policyInput &&
+    (policyInput.actions.some(
+      (action) =>
+        !(actions ?? canonicalActions(JSON.parse(currentShare!.actions) as string[])).includes(
+          action,
+        ),
+    ) ||
+      (policyExpiresAt !== null &&
+        currentShare?.expiresAt !== null &&
+        currentShare?.expiresAt !== undefined &&
+        policyExpiresAt > currentShare.expiresAt))
+  )
+    throw new Error("invalid_share_request");
+  const actionStatements: SqlStatement[] =
+    actions === undefined
+      ? []
+      : [
+          { sql: "DELETE FROM share_actions WHERE share_id=?", values: [shareId] },
+          ...actions.map((action) => ({
+            sql: "INSERT INTO share_actions(share_id,action) VALUES(?,?)",
+            values: [shareId, action],
+          })),
+          {
+            sql: "UPDATE shares SET version=version+1 WHERE id=? AND owner_id=? AND kind='internal'",
+            values: [shareId, row.ownerId],
+          },
+          {
+            sql: "UPDATE share_grants SET version=(SELECT version FROM shares WHERE id=?) WHERE share_id=?",
+            values: [shareId, shareId],
+          },
+          ...descendantRevocationStatements(shareId),
+        ];
+  const existingPolicy = await primary(env.DB)
+    .prepare("SELECT version FROM share_reshare_policies WHERE share_id=?")
+    .bind(shareId)
+    .first<number>("version");
+  const policyStatements: SqlStatement[] =
+    policyInput === undefined
+      ? []
+      : existingPolicy === null
+        ? [
+            {
+              sql: `INSERT INTO share_reshare_policies(
+                share_id,enabled,max_depth,max_fanout,expires_at,created_at,updated_at
+              ) VALUES(?,?,?,?,?,?,?)`,
+              values: [
+                shareId,
+                policyInput.enabled ? 1 : 0,
+                policyInput.maxDepth,
+                policyInput.maxFanout,
+                policyExpiresAt,
+                now,
+                now,
+              ],
+            },
+            ...policyInput.actions.map((action) => ({
+              sql: "INSERT INTO share_reshare_policy_actions(share_id,action) VALUES(?,?)",
+              values: [shareId, action],
+            })),
+          ]
+        : [
+            { sql: "DELETE FROM share_reshare_policy_actions WHERE share_id=?", values: [shareId] },
+            ...policyInput.actions.map((action) => ({
+              sql: "INSERT INTO share_reshare_policy_actions(share_id,action) VALUES(?,?)",
+              values: [shareId, action],
+            })),
+            {
+              sql: `UPDATE share_reshare_policies
+                SET version=version+1,enabled=?,max_depth=?,max_fanout=?,expires_at=?,updated_at=?
+                WHERE share_id=? AND version=?`,
+              values: [
+                policyInput.enabled ? 1 : 0,
+                policyInput.maxDepth,
+                policyInput.maxFanout,
+                policyExpiresAt,
+                now,
+                shareId,
+                existingPolicy,
+              ],
+            },
+            ...descendantRevocationStatements(shareId),
+          ];
+  await commitAccountMutation(env.DB, admission, row.ownerId, [
     ...currentAccess(session),
     authorizationAssertion(root),
     assertExists(
-      `SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind='internal'
-        AND root_node_id=? AND disabled_at IS NULL
-        AND (expires_at IS NULL OR expires_at>${clock})`,
-      [shareId, session.user_id, row.rootNodeId],
+      `SELECT 1 FROM current_internal_shares current
+        JOIN shares sh ON sh.id=current.share_id
+        LEFT JOIN share_delegations delegation ON delegation.share_id=sh.id
+        WHERE sh.id=? AND sh.owner_id=? AND sh.kind='internal'
+          AND sh.root_node_id=? AND sh.disabled_at IS NULL
+          AND (sh.expires_at IS NULL OR sh.expires_at>${clock})
+          AND (sh.owner_id=? OR delegation.delegated_by_user_id=?)`,
+      [shareId, row.ownerId, row.rootNodeId, session.user_id, session.user_id],
     ),
-    { sql: "DELETE FROM share_actions WHERE share_id=?", values: [shareId] },
-    ...actions.map((action) => ({
-      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,?)",
-      values: [shareId, action],
-    })),
-    {
-      sql: "UPDATE shares SET version=version+1 WHERE id=? AND owner_id=? AND kind='internal'",
-      values: [shareId, session.user_id],
-    },
-    {
-      sql: "UPDATE share_grants SET version=(SELECT version FROM shares WHERE id=?) WHERE share_id=?",
-      values: [shareId, shareId],
-    },
+    ...actionStatements,
+    ...policyStatements,
     {
       sql: `UPDATE content_sessions SET revoked_at=COALESCE(revoked_at,${clock})
         WHERE share_id=?`,
@@ -439,7 +1077,16 @@ export async function updateInternalShareActions(
       values: [shareId],
     },
   ]);
-  return readShare(env.DB, session, shareId);
+  return readManagedShare(env.DB, session, shareId);
+}
+
+export async function updateInternalShareActions(
+  env: Env,
+  session: AccessSession,
+  shareId: string,
+  actions: readonly string[],
+) {
+  return updateInternalShare(env, session, shareId, { actions });
 }
 
 export async function listSharedWithMe(db: D1Database, session: AccessSession) {
@@ -464,6 +1111,8 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
           owner.email,0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
         FROM recipient_share recipient
         JOIN shares sh ON sh.id=recipient.shareId
+        JOIN current_internal_shares current
+          ON current.share_id=sh.id AND current.version=sh.version
         JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
         JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
         JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=? AND ctl.maintenance=0
@@ -641,29 +1290,40 @@ export async function disableShare(
   if (!ID.test(shareId)) throw new Error("share_not_found");
   const exists = await primary(env.DB)
     .prepare(
-      "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only','internal')",
+      "SELECT kind,owner_id AS ownerId FROM shares WHERE id=? AND kind IN ('link','upload_only','internal')",
     )
-    .bind(shareId, session.user_id)
-    .first();
+    .bind(shareId)
+    .first<{ kind: ShareRow["kind"]; ownerId: string }>();
   if (!exists) throw new Error("share_not_found");
-  const admission = await acquireAccountMutation(
-    env,
-    session.user_id,
-    session.epoch,
-    "share.disable",
-  );
+  const managed =
+    exists.kind === "internal"
+      ? await managedInternalShare(env.DB, session, shareId)
+      : exists.ownerId === session.user_id
+        ? undefined
+        : null;
+  if (managed === null) throw new Error("share_not_found");
+  const ownerId = managed?.ownerId ?? exists.ownerId;
+  const admission = await acquireAccountMutation(env, ownerId, session.epoch, "share.disable");
   const clock = "strftime('%s','now')*1000";
-  await commitAccountMutation(env.DB, admission, session.user_id, [
+  await commitAccountMutation(env.DB, admission, ownerId, [
     ...currentAccess(session),
     assertExists(
-      "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only','internal')",
-      [shareId, session.user_id],
+      exists.kind === "internal"
+        ? `SELECT 1 FROM current_internal_shares current
+          JOIN shares sh ON sh.id=current.share_id
+          LEFT JOIN share_delegations delegation ON delegation.share_id=sh.id
+          WHERE sh.id=? AND sh.owner_id=? AND sh.kind='internal'
+            AND (sh.owner_id=? OR delegation.delegated_by_user_id=?)`
+        : "SELECT 1 FROM shares WHERE id=? AND owner_id=? AND kind IN ('link','upload_only')",
+      exists.kind === "internal"
+        ? [shareId, ownerId, session.user_id, session.user_id]
+        : [shareId, ownerId],
     ),
     {
       sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),
         version=CASE WHEN disabled_at IS NULL THEN version+1 ELSE version END
         WHERE id=? AND owner_id=? AND kind IN ('link','upload_only','internal')`,
-      values: [shareId, session.user_id],
+      values: [shareId, ownerId],
     },
     {
       sql: `UPDATE share_grants SET disabled_at=COALESCE(disabled_at,${clock})
@@ -684,5 +1344,6 @@ export async function disableShare(
       sql: "UPDATE budgets SET state='revoked' WHERE share_id=? AND state='active'",
       values: [shareId],
     },
+    ...(exists.kind === "internal" ? descendantRevocationStatements(shareId) : []),
   ]);
 }

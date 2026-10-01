@@ -93,6 +93,10 @@ function budgetAndShareAssertion(
             WHERE sh.id=? AND sh.owner_id=b.owner_id AND sh.version=?
               AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
               AND (sh.expires_at IS NULL OR sh.expires_at>=?)
+              AND (sh.kind<>'internal' OR EXISTS(
+                SELECT 1 FROM current_internal_shares current
+                WHERE current.share_id=sh.id AND current.version=sh.version
+              ))
               AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
               AND ((? IS NOT NULL AND sh.kind='internal' AND (
                 EXISTS(SELECT 1 FROM share_grants g
