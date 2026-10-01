@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -167,7 +167,7 @@ it("builds no event for an initial healthy result but records the baseline state
   expect(result).toMatchObject({ exitCode: 0, deliveredEventId: null });
   expect(delivered).toHaveLength(0);
   expect(await readMonitorState(root)).toMatchObject({ status: { state: "healthy", codes: [] } });
-  expect((await stat(join(root, "backup-monitor-state.json"))).mode & 0o777).toBe(0o600);
+  expect(await fileMode(join(root, "backup-monitor-state.json"))).toBe(0o600);
 });
 
 it("uses deterministic recovery IDs without leaking previous alert internals", () => {
