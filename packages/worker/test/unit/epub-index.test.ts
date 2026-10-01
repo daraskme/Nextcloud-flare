@@ -139,6 +139,22 @@ it("rejects scripted spine documents even when the manifest omits scripted prope
   });
 });
 
+it("rejects fixed-layout publications", async () => {
+  const bytes = epub({
+    "OEBPS/content.opf": strToU8(
+      `<package version="3.0"><metadata>
+        <meta property="rendition:layout">pre-paginated</meta>
+        </metadata><manifest>
+        <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+        </manifest><spine><itemref idref="chapter"/></spine></package>`,
+    ),
+  });
+  expect(await inspectEpubObject(bucket(bytes), source(bytes), Date.now() + 5000)).toEqual({
+    kind: "unsupported",
+    code: "unsupported_fixed_layout",
+  });
+});
+
 it("validates local headers and CRC before returning an indexed entry", async () => {
   const bytes = epub().slice();
   const entries = await inspectZipDirectory(bucket(bytes), source(bytes), Date.now() + 5000);

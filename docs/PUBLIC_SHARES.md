@@ -1,6 +1,6 @@
 # 公開リンク
 
-更新: 2026-09-29。
+更新: 2026-10-01。
 
 ## 実装範囲
 
@@ -18,7 +18,7 @@ public session は各 request で次を再検査する。
 - ControlDO mirror の current epoch と maintenance。
 - share action と、選択 root 配下の node coverage。
 
-接続済み public API は次の14経路である。
+接続済み public API は次の19経路である。
 
 - `POST /api/v1/public/shares/:shareId/unlock`
 - `GET /api/v1/public/shares/:shareId`
@@ -28,6 +28,9 @@ public session は各 request で次を再検査する。
 - `POST /api/v1/public/shares/:shareId/tickets`
 - `DELETE /api/v1/public/shares/:shareId/tickets/:ticketId`
 - `POST /api/v1/public/shares/:shareId/content-session`
+- `GET /api/v1/public/shares/:shareId/library/:nodeId`
+- `GET|HEAD /api/v1/public/shares/:shareId/library/:nodeId/pages/:page`
+- `GET|HEAD /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken`
 - `POST /api/v1/public/shares/:shareId/uploads`
 - `GET /api/v1/public/shares/:shareId/uploads/:uploadId`
 - `PUT /api/v1/public/shares/:shareId/uploads/:uploadId/content`
@@ -39,6 +42,8 @@ public mutation は app origin、`Origin`、Fetch Metadata、JSON、public 専�
 
 file 選択時は share root 配下の file だけを target manifest に固定し、share session の期限内で短命 content ticket を発行する。gallery と audio metadata は現在の image/audio projection だけを bounded query で列挙し、cursor を share、unlock credential、epoch、tree generation へ束縛する。thumbnail ticket は現在の immutable derivative、track ticket は現在の audio または AV1 video projection だけを対象にする。browser は分離された `CONTENT_ORIGIN/session` で ticket を HttpOnly content Cookie に交換してから purpose-bound content path を開く。R2 key は client へ返さない。content origin は D1 authority、manifest、share version/epoch/action、現在の blob/projection、BudgetDO lease を再検査し、Range/HEADを含む immutable R2 object 配信を行う。同じ unlock session の再発行は同じ budget を再利用し、ticket cancel は派生 content session も失効する。
 
+読み取り専用shareのEPUB metadataは、現行の`epub-index-v1` projectionとshare root coverageを再検査して返す。page/entry app routeは本文をproxyせず、同じprojectionを再検査して`CONTENT_ORIGIN`のbounded page/entry targetへ307 redirectする。`purpose=page` ticketは単一の現行EPUB targetだけに発行し、content originはsource/index hash、current blob、ZIP local header/CRC、entry上限、share version/epoch/actionとBudgetDOを再検査する。HEADは本文bytesを課金せずrequestを会計する。encrypted、scripted、fixed-layout、malformed、oversized、unsupportedまたはstaleなpublicationはmetadata、ticket、redirect、本文の全段階でfail closedにする。
+
 upload-only shareは`create`と`upload` actionだけを持ち、metadata、children、ticket、content session、downloadを拒否する。recipientは既存nodeの指定や上書きをできず、share root直下への新規作成だけを要求できる。各receiptはowner quotaとshare `reservation_limit`を同じD1 transactionで予約し、share/session/version/epoch/expiryを作成・転送・状態照会・完了・中止の各段階で再検査する。公開受信は1件10 GiB、同時active 8件、shareあたり累計1,000件を上限とする。
 
 singleとmultipartはprivate uploadと同じimmutable R2、UploadDO、LockDO、operation terminalを使う。名前衝突はnamespace lock内で自動解決し、public responseはreceipt ID、状態、進行情報だけを返して、入力名・内部upload名・最終保存名を返さない。初期化・part・完了の結果が不明な場合はreceipt、capability、作成/part/完了のIdempotency-Keyを保持して同じ送信を再照会し、推測でabortや予約解放をしない。batch途中で完了したfileは再送queueから除外する。multipart初期化・中止・完了の進行中状態は202と`Retry-After`で返す。
@@ -49,7 +54,7 @@ public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS �
 
 ## 公開surface
 
-public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket は read-only link session へ接続済みである。app origin の直接 content/thumb proxy、public ZIP、Bookshelf と public library route は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
+public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket、EPUB metadata/page/entryは read-only link session へ接続済みである。app origin の直接 content/thumb proxy、public ZIP、Bookshelf UI は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
 group internal shareもprivate認証surfaceだけへ接続する。group recipientのbudget identityはshare action versionとmembership versionの両方へ束縛し、action変更またはmember削除/再追加後にrevoke済みbudgetを再利用しない。このfenceをpublic shareのunlock/session budgetへ流用しない。
 
@@ -60,6 +65,7 @@ group internal shareもprivate認証surfaceだけへ接続する。group recipie
 - disabled/expired/epoch mismatch、KDF中のversion/password変更、失敗時session未発行。
 - share 間 Cookie 分離、version/epoch mismatch、CSRF logout と失効。
 - public ticket の CSRF、root coverage、target manifest、content Cookie 交換、budget 再利用、R2配信、ticket cancel 後の拒否。
+- public EPUB metadata、upload-only/root外拒否、page/entry redirect、projection hash、GET/HEAD/Range、exact budget、share action失効。
 - upload-only作成、owner/share二重予約、single/multipart転送・完了・中止、bounded status、容量上限、read/list拒否。
 - namespace lock内の衝突回避、最終名非開示、同じIdempotency-Keyによる完了再試行。
 - 初期化/partの202再照合と、batch途中の失敗後に完了済みfileを重複送信しないqueue。

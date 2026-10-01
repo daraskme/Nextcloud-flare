@@ -177,6 +177,11 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/public/shares/:shareId/children/:nodeId",
     "app GET /api/v1/public/shares/:shareId/gallery",
     "app GET /api/v1/public/shares/:shareId/tracks",
+    "app GET /api/v1/public/shares/:shareId/library/:nodeId",
+    "app GET /api/v1/public/shares/:shareId/library/:nodeId/pages/:page",
+    "app HEAD /api/v1/public/shares/:shareId/library/:nodeId/pages/:page",
+    "app GET /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken",
+    "app HEAD /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken",
   ]),
   ...bindings(appPublicForm, "bound", "public-share", [
     "app POST /api/v1/public/shares/:shareId/unlock",
@@ -244,11 +249,6 @@ export const ROUTE_BINDINGS = [
     "app HEAD /api/v1/public/shares/:shareId/content/:nodeId",
     "app GET /api/v1/public/shares/:shareId/thumb/:nodeId",
     "app HEAD /api/v1/public/shares/:shareId/thumb/:nodeId",
-    "app GET /api/v1/public/shares/:shareId/library/:nodeId",
-    "app GET /api/v1/public/shares/:shareId/library/:nodeId/pages/:page",
-    "app HEAD /api/v1/public/shares/:shareId/library/:nodeId/pages/:page",
-    "app GET /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken",
-    "app HEAD /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken",
   ]),
   ...bindings(appShareForm, "unavailable", "unavailable", [
     "app POST /api/v1/public/shares/:shareId/nodes/:nodeId/zip",
@@ -302,15 +302,13 @@ export const ROUTE_BINDINGS = [
   ]),
   ...bindings(contentCookie, "bound", "content", [
     "content HEAD /c/:nodeId/:blobId/thumb",
+    "content GET /c/:nodeId/:blobId/pages/:page",
+    "content HEAD /c/:nodeId/:blobId/pages/:page",
     "content GET /c/:nodeId/:blobId/entries/:entryToken",
     "content HEAD /c/:nodeId/:blobId/entries/:entryToken",
   ]),
   ...bindings(contentCookieCrossOrigin, "bound", "content", ["content GET /z/:targetSetId"]),
   ...bindings(contentCookie, "bound", "content", ["content HEAD /z/:targetSetId"]),
-  ...bindings(contentCookie, "unavailable", "unavailable", [
-    "content GET /c/:nodeId/:blobId/pages/:page",
-    "content HEAD /c/:nodeId/:blobId/pages/:page",
-  ]),
   ...bindings(contentPublic, "unavailable", "unavailable", ["content GET /reader/index.html"]),
   ...bindings(contentPublic, "unavailable", "unavailable", ["content GET /reader-assets/:asset"], {
     assetNamespace: "reader",

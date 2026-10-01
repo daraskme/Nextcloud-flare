@@ -295,6 +295,59 @@ export async function streamBudgetedEpubEntry(
   entryToken: string,
   request: Request,
 ): Promise<Response> {
+  return streamBudgetedEpubSelection(
+    db,
+    bucket,
+    budgets,
+    tokens,
+    cookieHeader,
+    nodeId,
+    blobId,
+    (index) => index.entries.find((candidate) => candidate.token === entryToken),
+    request,
+  );
+}
+
+export async function streamBudgetedEpubPage(
+  db: D1Database,
+  bucket: R2Bucket,
+  budgets: DurableObjectNamespace<BudgetDO>,
+  tokens: ContentTokens,
+  cookieHeader: string | null,
+  nodeId: string,
+  blobId: string,
+  page: number,
+  request: Request,
+): Promise<Response> {
+  if (!Number.isSafeInteger(page) || page < 1 || page > 1_000)
+    throw new Error("library_not_available");
+  return streamBudgetedEpubSelection(
+    db,
+    bucket,
+    budgets,
+    tokens,
+    cookieHeader,
+    nodeId,
+    blobId,
+    (index) => {
+      const token = index.spine[page - 1];
+      return token ? index.entries.find((candidate) => candidate.token === token) : undefined;
+    },
+    request,
+  );
+}
+
+async function streamBudgetedEpubSelection(
+  db: D1Database,
+  bucket: R2Bucket,
+  budgets: DurableObjectNamespace<BudgetDO>,
+  tokens: ContentTokens,
+  cookieHeader: string | null,
+  nodeId: string,
+  blobId: string,
+  select: (index: EpubIndex) => EpubIndex["entries"][number] | undefined,
+  request: Request,
+): Promise<Response> {
   request.signal.throwIfAborted();
   const located = await primary(db)
     .prepare("SELECT space_id AS spaceId FROM nodes WHERE id=? AND current_blob_id=?")
@@ -313,7 +366,7 @@ export async function streamBudgetedEpubEntry(
   const row = await currentIndexRow(db, nodeId, blobId, plan.blob);
   if (plan.blob.key !== `u/${row.ownerId}/b/${blobId}`) throw new Error("library_not_available");
   const index = await loadIndex(bucket, nodeId, row);
-  const entry = index.entries.find((candidate) => candidate.token === entryToken);
+  const entry = select(index);
   if (!entry) throw new Error("library_not_available");
   const etag = `"epub-${blobId}-${entry.token}-${entry.crc32.toString(16)}"`;
   const bytes = responseBytes(request, entry, etag);

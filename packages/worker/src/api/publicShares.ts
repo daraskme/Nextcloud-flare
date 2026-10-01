@@ -21,6 +21,7 @@ import { listAudio } from "../services/audio";
 import { issueContentTicket } from "../services/contentTicket";
 import { cancelContentTicket } from "../services/contentTicketCancel";
 import { listGallery } from "../services/gallery";
+import { readPrivateEpub } from "../services/library";
 import { listNodeChildren, readNode } from "../services/nodeRead";
 import { readContentTicketRequest } from "./contentTickets";
 import { hasEmptyBody } from "./emptyBody";
@@ -37,6 +38,11 @@ const CSRF = new RegExp(`^/api/v1/public/shares/(${ID})/csrf$`);
 const TICKETS = new RegExp(`^/api/v1/public/shares/(${ID})/tickets$`);
 const TICKET = new RegExp(`^/api/v1/public/shares/(${ID})/tickets/(${ID})$`);
 const CONTENT_SESSION = new RegExp(`^/api/v1/public/shares/(${ID})/content-session$`);
+const LIBRARY = new RegExp(`^/api/v1/public/shares/(${ID})/library/(${ID})$`);
+const LIBRARY_PAGE = new RegExp(
+  `^/api/v1/public/shares/(${ID})/library/(${ID})/pages/([1-9][0-9]{0,3})$`,
+);
+const LIBRARY_ENTRY = new RegExp(`^/api/v1/public/shares/(${ID})/library/(${ID})/entries/(${ID})$`);
 const MAX_BODY = 8192;
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -62,7 +68,13 @@ export function publicShareApiRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
   return (
     (request.method === "GET" &&
-      (SHARE.test(path) || CHILDREN.test(path) || GALLERY.test(path) || TRACKS.test(path))) ||
+      (SHARE.test(path) ||
+        CHILDREN.test(path) ||
+        GALLERY.test(path) ||
+        TRACKS.test(path) ||
+        LIBRARY.test(path))) ||
+    ((request.method === "GET" || request.method === "HEAD") &&
+      (LIBRARY_PAGE.test(path) || LIBRARY_ENTRY.test(path))) ||
     (request.method === "POST" &&
       (UNLOCK.test(path) ||
         LOGOUT.test(path) ||
@@ -240,6 +252,11 @@ export async function handlePublicShareHttp(
   const ticketsMatch = request.method === "POST" ? TICKETS.exec(url.pathname) : null;
   const contentSessionMatch = request.method === "POST" ? CONTENT_SESSION.exec(url.pathname) : null;
   const ticketMatch = request.method === "DELETE" ? TICKET.exec(url.pathname) : null;
+  const libraryMatch = request.method === "GET" ? LIBRARY.exec(url.pathname) : null;
+  const libraryPageMatch =
+    request.method === "GET" || request.method === "HEAD" ? LIBRARY_PAGE.exec(url.pathname) : null;
+  const libraryEntryMatch =
+    request.method === "GET" || request.method === "HEAD" ? LIBRARY_ENTRY.exec(url.pathname) : null;
   const uploadShareId = publicUploadRoute(request)
     ? url.pathname.match(/^\/api\/v1\/public\/shares\/([A-Za-z0-9_-]{1,128})\/uploads(?:\/|$)/)?.[1]
     : undefined;
@@ -253,6 +270,9 @@ export async function handlePublicShareHttp(
     ticketsMatch?.[1] ??
     contentSessionMatch?.[1] ??
     ticketMatch?.[1] ??
+    libraryMatch?.[1] ??
+    libraryPageMatch?.[1] ??
+    libraryEntryMatch?.[1] ??
     uploadShareId ??
     "";
   if (!shareId) return problem(404, "not_found");
@@ -306,7 +326,10 @@ export async function handlePublicShareHttp(
       tracksMatch ||
       ticketMatch ||
       ticketsMatch ||
-      contentSessionMatch)
+      contentSessionMatch ||
+      libraryMatch ||
+      libraryPageMatch ||
+      libraryEntryMatch)
   )
     return problem(404, "not_found");
   if (ticketMatch) {
@@ -343,12 +366,20 @@ export async function handlePublicShareHttp(
     let body;
     try {
       body = await readContentTicketRequest(request);
-      if (body.share || !["content", "thumb", "zip", "track"].includes(body.purpose))
+      if (body.share || !["content", "thumb", "page", "track", "zip"].includes(body.purpose))
         throw new Error("invalid_ticket_body");
+      if (body.purpose === "page") {
+        if (body.targets.length !== 1) throw new Error("invalid_ticket_body");
+      }
     } catch {
       return problem(400, "bad_request");
     }
     try {
+      if (body.purpose === "page") {
+        const target = body.targets[0];
+        if (!target) return problem(400, "bad_request");
+        await readPrivateEpub(env.DB, env.BLOBS, principal, target.nodeId);
+      }
       const issued = await issueContentTicket(
         env,
         env.BLOBS,
@@ -433,6 +464,49 @@ export async function handlePublicShareHttp(
       return Response.json(page, { headers: HEADERS });
     } catch (error) {
       return mediaFailure(error);
+    }
+  }
+  if (libraryMatch || libraryPageMatch || libraryEntryMatch) {
+    if (url.search) return problem(404, "not_found");
+    const nodeId = libraryMatch?.[2] ?? libraryPageMatch?.[2] ?? libraryEntryMatch?.[2] ?? "";
+    try {
+      const publication = await readPrivateEpub(env.DB, env.BLOBS, principal, nodeId);
+      const base = `/api/v1/public/shares/${shareId}/library/${publication.nodeId}`;
+      if (libraryMatch) {
+        return Response.json(
+          {
+            ...publication,
+            ticketPurpose: "page",
+            pageBaseUrl: `${env.APP_ORIGIN}${base}/pages/`,
+            contentBaseUrl: `${env.APP_ORIGIN}${base}/entries/`,
+          },
+          { headers: HEADERS },
+        );
+      }
+      if (libraryPageMatch) {
+        const page = Number(libraryPageMatch[3]);
+        if (!Number.isSafeInteger(page) || page < 1 || page > publication.pageCount)
+          return problem(404, "not_found");
+        return new Response(null, {
+          status: 307,
+          headers: {
+            ...HEADERS,
+            Location: `${env.CONTENT_ORIGIN}/c/${publication.nodeId}/${publication.blobId}/pages/${page}`,
+          },
+        });
+      }
+      const entryToken = libraryEntryMatch?.[3] ?? "";
+      if (!publication.entries.some((entry) => entry.token === entryToken))
+        return problem(404, "not_found");
+      return new Response(null, {
+        status: 307,
+        headers: {
+          ...HEADERS,
+          Location: `${env.CONTENT_ORIGIN}/c/${publication.nodeId}/${publication.blobId}/entries/${entryToken}`,
+        },
+      });
+    } catch {
+      return problem(404, "not_found");
     }
   }
   if (!childrenMatch) return problem(404, "not_found");

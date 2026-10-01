@@ -1,7 +1,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { portableName } from "@next-cloud-flare/shared/names";
-import { unzipSync } from "fflate";
+import { strToU8, unzipSync, zipSync } from "fflate";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { handleContentHttp } from "../../src/api/content";
@@ -22,6 +22,7 @@ import { shareSecretDigest } from "../../src/auth/shareSession";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
 import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
+import { EPUB_INDEX_GENERATOR, inspectEpubObject } from "../../src/media/epub/index";
 import { IMAGE_METADATA_GENERATOR } from "../../src/media/images/metadata";
 import { VIDEO_METADATA_GENERATOR } from "../../src/media/video";
 import { foundationFixture } from "../fixtures/foundation";
@@ -221,6 +222,117 @@ async function uploadSession(f: Awaited<ReturnType<typeof uploadFixture>>) {
       dependencies,
     );
   return { app, cookie, token, send };
+}
+
+function epubBook(chapter = "<html><body>Public chapter</body></html>"): Uint8Array {
+  return zipSync({
+    mimetype: [strToU8("application/epub+zip"), { level: 0 }],
+    "META-INF/container.xml": strToU8(
+      `<container version="1.0"><rootfiles>
+        <rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/>
+      </rootfiles></container>`,
+    ),
+    "OPS/book.opf": strToU8(
+      `<package version="3.0"><metadata><dc:title>Public Book</dc:title>
+        <dc:creator>Public Author</dc:creator></metadata><manifest>
+        <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+        </manifest><spine><itemref idref="chapter"/></spine></package>`,
+    ),
+    "OPS/chapter.xhtml": strToU8(chapter),
+  });
+}
+
+async function projectEpub(target: ReturnType<typeof foundationFixture>, chapter?: string) {
+  const bytes = epubBook(chapter);
+  const blobId = crypto.randomUUID();
+  const key = `u/${target.ids.user}/b/${blobId}`;
+  const source = await env.BLOBS.put(key, bytes);
+  if (!source) throw new Error("fixture_epub_missing");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,created_at)
+        VALUES(?,?,?,?,?,'committed',?)`,
+      values: [blobId, target.ids.user, key, bytes.byteLength, `"b-${blobId}"`, Date.now()],
+    },
+    {
+      sql: `UPDATE nodes SET current_blob_id=?,name='Public Book.epub',
+        name_ci='public book.epub' WHERE id=?`,
+      values: [blobId, target.ids.file],
+    },
+    {
+      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,?)",
+      values: [blobId, bytes.byteLength, source.etag, Date.now()],
+    },
+  ]);
+  const inspection = await inspectEpubObject(
+    env.BLOBS,
+    { key, size: bytes.byteLength, r2Etag: source.etag },
+    Date.now() + 5_000,
+  );
+  if (inspection.kind !== "indexed") throw new Error("fixture_epub_not_indexed");
+  const indexKey = `u/${target.ids.user}/d/${blobId}/${EPUB_INDEX_GENERATOR}/index/${target.ids.file}-${inspection.sha256}.json`;
+  const index = await env.BLOBS.put(indexKey, inspection.bytes);
+  if (!index) throw new Error("fixture_epub_index_missing");
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO library_items(
+        node_id,blob_id,kind,generator_version,title_extracted,author_extracted,page_count
+      ) VALUES(?,?,'epub',?,?,?,?)`,
+      values: [
+        target.ids.file,
+        blobId,
+        EPUB_INDEX_GENERATOR,
+        inspection.index.metadata.title,
+        inspection.index.metadata.author,
+        inspection.index.spine.length,
+      ],
+    },
+    {
+      sql: `INSERT INTO archive_index(
+        id,node_id,blob_id,generator_version,r2_key,sha256,entry_count,json_bytes
+      ) VALUES(?,?,?,?,?,?,?,?)`,
+      values: [
+        crypto.randomUUID(),
+        target.ids.file,
+        blobId,
+        EPUB_INDEX_GENERATOR,
+        indexKey,
+        inspection.sha256,
+        inspection.index.entries.length,
+        inspection.bytes.byteLength,
+      ],
+    },
+  ]);
+  return {
+    key,
+    indexKey,
+    blobId,
+    entryToken: inspection.index.spine[0] ?? "",
+    chapter: chapter ?? "<html><body>Public chapter</body></html>",
+  };
+}
+
+async function readOnlySession(f: Awaited<ReturnType<typeof fixture>>) {
+  const unlocked = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret),
+    shareEnv(),
+    1,
+    dependencies,
+  );
+  expect(unlocked.status).toBe(200);
+  const cookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  const csrfResponse = await handlePublicShareHttp(
+    sessionRequest(`/api/v1/public/shares/${f.shareId}/csrf`, cookie, {
+      method: "POST",
+      headers: { Origin: origin, "Sec-Fetch-Site": "same-origin" },
+    }),
+    shareEnv(),
+    1,
+    dependencies,
+  );
+  expect(csrfResponse.status).toBe(200);
+  const token = ((await csrfResponse.json()) as { token: string }).token;
+  return { cookie, token };
 }
 
 it("unlocks a capability into a share-bound cookie and reads only the selected tree", async () => {
@@ -874,7 +986,7 @@ it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets
     expect(new TextDecoder().decode(archive["Folder/File"])).toBe("abc");
     expect(
       (await issue(`/api/v1/public/shares/${f.shareId}/tickets`, f.owner.ids.file, "page")).status,
-    ).toBe(400);
+    ).toBe(404);
 
     const cancelled = await handlePublicShareHttp(
       sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets/${issued.ticketId}`, shareCookie, {
@@ -1168,6 +1280,274 @@ it("does not expose media reads or ZIP tickets to upload-only share sessions", a
       )
     ).status,
   ).toBe(404);
+  expect(
+    (
+      await handlePublicShareHttp(
+        sessionRequest(
+          `/api/v1/public/shares/${f.shareId}/library/${f.owner.ids.file}`,
+          session.cookie,
+        ),
+        session.app,
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(404);
+});
+
+it("delivers public EPUB metadata and bounded page and entry targets through a page budget", async () => {
+  const f = await fixture();
+  const publication = await projectEpub(f.owner);
+  const outside = await projectEpub(f.outside, "<html><body>Outside</body></html>");
+  try {
+    const session = await readOnlySession(f);
+    const base = `/api/v1/public/shares/${f.shareId}/library/${f.owner.ids.file}`;
+    const metadata = await handlePublicShareHttp(
+      sessionRequest(base, session.cookie),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(metadata.status).toBe(200);
+    expect(await metadata.json()).toMatchObject({
+      nodeId: f.owner.ids.file,
+      blobId: publication.blobId,
+      title: "Public Book",
+      author: "Public Author",
+      pageCount: 1,
+      spine: [publication.entryToken],
+      ticketPurpose: "page",
+      pageBaseUrl: `${origin}${base}/pages/`,
+      contentBaseUrl: `${origin}${base}/entries/`,
+    });
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(
+            `/api/v1/public/shares/${f.shareId}/library/${f.outside.ids.file}`,
+            session.cookie,
+          ),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+    ).toBe(404);
+
+    const pageTarget = await handlePublicShareHttp(
+      sessionRequest(`${base}/pages/1`, session.cookie),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(pageTarget.status).toBe(307);
+    expect(pageTarget.headers.get("Location")).toBe(
+      `${contentOrigin}/c/${f.owner.ids.file}/${publication.blobId}/pages/1`,
+    );
+    const pageHeadTarget = await handlePublicShareHttp(
+      sessionRequest(`${base}/pages/1`, session.cookie, { method: "HEAD" }),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(pageHeadTarget.status).toBe(307);
+    expect((await pageHeadTarget.arrayBuffer()).byteLength).toBe(0);
+    const entryTarget = await handlePublicShareHttp(
+      sessionRequest(`${base}/entries/${publication.entryToken}`, session.cookie),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(entryTarget.status).toBe(307);
+    expect(entryTarget.headers.get("Location")).toBe(
+      `${contentOrigin}/c/${f.owner.ids.file}/${publication.blobId}/entries/${publication.entryToken}`,
+    );
+    const entryHeadTarget = await handlePublicShareHttp(
+      sessionRequest(`${base}/entries/${publication.entryToken}`, session.cookie, {
+        method: "HEAD",
+      }),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(entryHeadTarget.status).toBe(307);
+    expect((await entryHeadTarget.arrayBuffer()).byteLength).toBe(0);
+    for (const path of [`${base}/pages/2`, `${base}/entries/missing`]) {
+      expect(
+        (
+          await handlePublicShareHttp(
+            sessionRequest(path, session.cookie),
+            shareEnv(),
+            1,
+            dependencies,
+          )
+        ).status,
+      ).toBe(404);
+    }
+
+    const issue = (nodeId: string) =>
+      handlePublicShareHttp(
+        sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets`, session.cookie, {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": session.token,
+          },
+          body: JSON.stringify({
+            targets: [{ spaceId: f.owner.ids.space, nodeId }],
+            purpose: "page",
+            ttlSeconds: 300,
+          }),
+        }),
+        shareEnv(),
+        1,
+        dependencies,
+      );
+    expect((await issue(f.outside.ids.file)).status).toBe(404);
+    const issuedResponse = await issue(f.owner.ids.file);
+    expect(issuedResponse.status).toBe(201);
+    const issued = (await issuedResponse.json()) as {
+      ticket: string;
+      budgetId: string;
+    };
+    const accepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(accepted.status).toBe(201);
+    const contentCookie = (accepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const pagePath = `/c/${f.owner.ids.file}/${publication.blobId}/pages/1`;
+    const page = await handleContentHttp(
+      new Request(`${contentOrigin}${pagePath}`, {
+        headers: { Cookie: contentCookie, Origin: origin },
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(page.status).toBe(200);
+    expect(new TextDecoder().decode(await page.arrayBuffer())).toBe(publication.chapter);
+    const head = await handleContentHttp(
+      new Request(`${contentOrigin}${pagePath}`, {
+        method: "HEAD",
+        headers: { Cookie: contentCookie },
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(head.status).toBe(200);
+    expect(head.headers.get("Content-Length")).toBe(
+      String(new TextEncoder().encode(publication.chapter).byteLength),
+    );
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+    const entryHead = await handleContentHttp(
+      new Request(
+        `${contentOrigin}/c/${f.owner.ids.file}/${publication.blobId}/entries/${publication.entryToken}`,
+        { method: "HEAD", headers: { Cookie: contentCookie } },
+      ),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(entryHead.status).toBe(200);
+    expect(entryHead.headers.get("Content-Length")).toBe(
+      String(new TextEncoder().encode(publication.chapter).byteLength),
+    );
+    expect((await entryHead.arrayBuffer()).byteLength).toBe(0);
+    const ranged = await handleContentHttp(
+      new Request(
+        `${contentOrigin}/c/${f.owner.ids.file}/${publication.blobId}/entries/${publication.entryToken}`,
+        { headers: { Cookie: contentCookie, Range: "bytes=0-5" } },
+      ),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(ranged.status).toBe(206);
+    expect(new TextDecoder().decode(await ranged.arrayBuffer())).toBe(
+      publication.chapter.slice(0, 6),
+    );
+    const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
+    expect(await budget.status()).toMatchObject({
+      bytesCharged: new TextEncoder().encode(publication.chapter).byteLength + 6,
+      requests: 4,
+      active: 0,
+    });
+
+    await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='read'")
+      .bind(f.shareId)
+      .run();
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(base, session.cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleContentHttp(
+          new Request(`${contentOrigin}${pagePath}`, { headers: { Cookie: contentCookie } }),
+          shareEnv(),
+          contentTokens,
+        )
+      ).status,
+    ).toBe(404);
+  } finally {
+    await env.BLOBS.delete([publication.key, publication.indexKey, outside.key, outside.indexKey]);
+  }
+});
+
+it("fails closed when a public EPUB projection is malformed", async () => {
+  const f = await fixture();
+  const publication = await projectEpub(f.owner);
+  try {
+    const session = await readOnlySession(f);
+    await env.BLOBS.put(publication.indexKey, "{}");
+    const base = `/api/v1/public/shares/${f.shareId}/library/${f.owner.ids.file}`;
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(base, session.cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets`, session.cookie, {
+            method: "POST",
+            headers: {
+              Origin: origin,
+              "Sec-Fetch-Site": "same-origin",
+              "Content-Type": "application/json",
+              "X-CSRF-Token": session.token,
+            },
+            body: JSON.stringify({
+              targets: [{ spaceId: f.owner.ids.space, nodeId: f.owner.ids.file }],
+              purpose: "page",
+              ttlSeconds: 300,
+            }),
+          }),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+    ).toBe(404);
+  } finally {
+    await env.BLOBS.delete([publication.key, publication.indexKey]);
+  }
 });
 
 it("requires current share/session state and revokes through public CSRF logout", async () => {

@@ -1,6 +1,6 @@
 # 現在の実装状態
 
-更新: 2026-09-29。直近の到達点は[PROGRESS](PROGRESS.md)。
+更新: 2026-10-01。直近の到達点は[PROGRESS](PROGRESS.md)。
 
 最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、direct-user・group internal shareとread-only shared DAV、multipart closure settlementを統合済みである。migrationは45件（最新`0046`）、通常tableは74、route契約は156。各feature PRはUbuntu、Windows 2分割、browser、backupの全CIを通過している。
 
@@ -8,7 +8,7 @@ video、group internal share、multipart closureのPR #16、#17、#19は全5 CI�
 
 multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。backup drillは74 tableでPASSしている。
 
-次はpublic ZIP/media/library、Bookshelf/readerとvideo UI、大規模非同期tree処理、reshare・shared DAV編集、残るoperation/Outbox/repair、復旧・運用の残りを進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AVIF/AV1/Opusの実codec、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
+読み取り専用public shareのEPUB metadataとbounded page/entry deliveryを、既存projection、`purpose=page` ticket、content-origin、BudgetDOへ接続した。次はpublic ZIPと残るmedia、Bookshelf/readerとvideo UI、大規模非同期tree処理、reshare・shared DAV編集、残るoperation/Outbox/repair、復旧・運用の残りを進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AVIF/AV1/Opusの実codec、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
 
 ## 状態の意味
 
@@ -26,7 +26,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| 公開リンク | owner作成/一覧/参照/無効化、password/fragment unlock、share Cookie、読み取り専用metadata/children/download、upload-onlyのsingle/multipart受信・owner/share予約・名前非開示、独立shell/assets、Files共有dialog | capability/session/version/epoch/root coverage、owner分離、失効、budget再利用、content-origin交換、R2配信、upload receipt/transfer/status/complete/abort、完了再試行、衝突回避、read/list拒否、hashed assetsとexact route | public ZIP/media/library、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
+| 公開リンク | owner作成/一覧/参照/無効化、password/fragment unlock、share Cookie、読み取り専用metadata/children/downloadとEPUB metadata/page/entry、upload-onlyのsingle/multipart受信・owner/share予約・名前非開示、独立shell/assets、Files共有dialog | capability/session/version/epoch/root coverage、owner分離、失効、budget再利用、content-origin交換、EPUB projection/source/entry fence、GET/HEAD/Rangeとexact budget、R2配信、upload receipt/transfer/status/complete/abort、完了再試行、衝突回避、read/list拒否、hashed assetsとexact route | public ZIPと残るmedia、Bookshelf UI、staging。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
 | 内部共有・shared DAV | ownerによるdirect-user/group share作成/一覧/action更新/revoke、group/member管理、rename-stable mount、`/dav/Shared/<mount>`のPROPFIND/GET/HEAD/Range | active user/group/member/grant/share、membership/share version、live ancestry、epoch、maintenance、action、rename/revoke後の失効、budget rotation、shared COPY/MOVE/mutation拒否 | reshare、編集DAV、管理UI、実OS client |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer実設置・外部通知・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
@@ -83,11 +83,11 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | private単一upload | HMAC capability、D1予約、1回だけのR2 PUT、SHA-256、GETによる応答喪失回収、原子的新規作成/上書き、status/abort HTTP、24時間後のCron回収・GC接続 | 実D1/R2/LockDO、0 byte、同時送信、10 step rollback、失効、DB/R2応答喪失、CSRF/Origin、回収lease競合、旧epoch、公開upload-only回帰 | stagingは未完了 |
 | private multipart upload | D1予約・immutable geometry、R2一度限りcreate、UploadDO認可RPC・状態/part mirror、streaming part/SHA-256、4並列・3試行、R2一度限りcomplete/HEAD、原子的新規/上書き公開、terminal照合、既知/未知IDの回収とclosure settlement、HTTP create/part/status/page/complete/abort | D1/R2/DO/LockDO、64 MiB+末尾の公開、同時確定、応答喪失、storage全喪失、失効、10 step rollback、complete/abort排他 | 実S3/lifecycle・staging |
 | WebDAV | OPTIONS、GET/HEAD/Range、PROPFIND Depth 0/1、MKCOL、PROPPATCH、PUT、DELETE、COPY、MOVE、LOCK/UNLOCK、`/dav/Shared` read-only mount | path、If/Lock-Token、ETag、dead props、95MB stream、各mutation、共有mountの認可/rename/revoke。詳細は[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) | 実OS client gate、共有編集、残るmethod/profile |
-| content ticket | target manifest、ticket発行/取消、Cookie交換、current blob/audio-video track/thumbnail配信、private ZIP STORE、bounded EPUB page/entry、BudgetDOの対象重複排除/共有使用量、R2/bodyへのlease期限伝播 | D1/R2、署名、失効、Range、budget reserve/settle、ZIP tree/path/blob pinとexact size、thumbnail/video/EPUB projection fence、実HTTPの発行・交換・取消し。詳細は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)と[CONTENT_LEASES](CONTENT_LEASES.md) | public ZIP/media/library、全route会計、長時間download再開UI・実環境 |
+| content ticket | target manifest、ticket発行/取消、Cookie交換、current blob/audio-video track/thumbnail配信、private ZIP STORE、private/public bounded EPUB page/entry、BudgetDOの対象重複排除/共有使用量、R2/bodyへのlease期限伝播 | D1/R2、署名、失効、Range、budget reserve/settle、ZIP tree/path/blob pinとexact size、thumbnail/video/EPUB projection fence、実HTTPの発行・交換・取消し。詳細は[BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md)と[CONTENT_LEASES](CONTENT_LEASES.md) | public ZIPと残るmedia、全route会計、長時間download再開UI・実環境 |
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、共通受付と固定25秒期限、dead-letter台帳とbounded requeue、audio/image/video/EPUB projection | send/D1応答喪失、重複delivery、dead-letter再投入、各media projectionのclaim/fence収束 | 実Queue retry exhaustion/DLQ、残るevent kind |
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
-| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ID3 audio metadata、画像width/height・immutable `sm256` WebP、video metadata、EPUB index/entry、ZIP STORE serializer、private Gallery/Audio UI | format vector、audio/image/video/EPUB projection、thumbnail/track/page/entry/ZIP配信、CRC、Unicode、cancel | Bookshelf/reader・video UI、public media/library、実Images codec |
+| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ID3 audio metadata、画像width/height・immutable `sm256` WebP、video metadata、EPUB index/entry、ZIP STORE serializer、private Gallery/Audio UI | format vector、audio/image/video/EPUB projection、private/public EPUB metadata/page/entry、thumbnail/track/ZIP配信、CRC、Unicode、cancel | Bookshelf/reader・video UI、EPUB以外のpublic media、実Images codec |
 
 今回のQueue受付とS3試験修正の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
@@ -109,7 +109,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 - 残るoperationの認可tuple、terminal lookup、未接続Outbox event kindと大規模非同期tree処理。
 - 残るmedia/archive metadata parser、検索索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)、名前検索APIは[SEARCH](SEARCH.md)へ接続済み。
 - reshare、shared DAV編集、既存internal share管理UI。direct-user/group内部共有とread-only shared DAV、公開linkの読み取り/upload-onlyは接続済み。
-- public ZIP/library、Bookshelf/reader・video UI。public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、private ZIP/EPUB、audio/video track、thumbnail derivativeとprivate Gallery/Audio UIは接続済み。
+- public ZIP、Bookshelf/reader・video UI。public Gallery/Audio metadata、thumbnail/audio/video ticket、EPUB metadata/page/entry、private ZIP/EPUB、audio/video track、thumbnail derivativeとprivate Gallery/Audio UIは接続済み。
 - バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
@@ -170,7 +170,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. public ZIP/media/libraryとBookshelf/reader・video UIを、既存ticket/manifest/projection fenceへ接続する。
+1. public ZIPと残るmedia、Bookshelf/reader・video UIを、既存ticket/manifest/projection fenceへ接続する。
 2. 大規模tree向けの非同期trash/restore/purgeと、残るoperation/Outbox eventを復旧監査・repairへ統合する。
 3. reshare、shared DAV編集、既存share管理UIを追加する。
 4. Queueの実DLQ/retry exhaustion、account mutation / 終了証明を失ったKDFの運用収束を閉じる。
