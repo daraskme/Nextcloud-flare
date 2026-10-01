@@ -6,6 +6,7 @@ import { handleContentHttp } from "../../src/api/content";
 import { handlePrivateContentTicketHttp } from "../../src/api/contentTickets";
 import { handlePrivateAppHttp } from "../../src/api/privateApp";
 import { privateAppDependencies } from "../../src/api/privateAppConfig";
+import { handlePrivateZipHttp } from "../../src/api/privateZips";
 import { appPasswordPepperRing } from "../../src/auth/appPassword";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
@@ -371,6 +372,177 @@ it("handles private HTTP ticket issue and cancellation with CSRF", async () => {
 });
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
+
+it("creates, replays, redirects, streams and cancels a private ZIP through its app facade", async () => {
+  const { f, tokens, principal, firstKey } = await fixture();
+  const key = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+  const ring = await csrfKeyRing("test", { test: key });
+  const csrf = new CsrfTokens(ring, ring, "https://app.invalid");
+  const appEnv: Env = {
+    ...mutationEnv(),
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
+  const csrfToken = (
+    await csrf.issue(
+      env.DB,
+      new Request("https://app.invalid/api/v1/csrf", {
+        method: "POST",
+        headers: { "Sec-Fetch-Site": "same-origin" },
+      }),
+      { kind: "access", credentialId: principal.credential_id, epoch: principal.epoch },
+    )
+  ).token;
+  const create = () =>
+    handlePrivateZipHttp(
+      new Request(`https://app.invalid/api/v1/nodes/${f.ids.folder}/zip`, {
+        method: "POST",
+        headers: {
+          Origin: "https://app.invalid",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+          "Idempotency-Key": "private-zip-replay",
+        },
+        body: "{}",
+      }),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+  let targetSetId: string | undefined;
+  try {
+    const first = await create();
+    expect(first.status).toBe(201);
+    const issued = await first.json<{
+      ticket: string;
+      ticketId: string;
+      targetSetId: string;
+    }>();
+    targetSetId = issued.targetSetId;
+    const replay = await create();
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toMatchObject({
+      ticketId: issued.ticketId,
+      targetSetId: issued.targetSetId,
+    });
+    const redirect = await handlePrivateZipHttp(
+      new Request(`https://app.invalid/api/v1/zips/${issued.targetSetId}`),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+    expect(redirect.status).toBe(307);
+    expect(redirect.headers.get("Location")).toBe(
+      `https://content.invalid/z/${issued.targetSetId}`,
+    );
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+    const head = () =>
+      handleContentHttp(
+        new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+          method: "HEAD",
+          headers: { Cookie: cookie },
+        }),
+        appEnv,
+        tokens,
+      );
+    expect((await head()).status).toBe(200);
+    const cancelled = await handlePrivateContentTicketHttp(
+      new Request(`https://app.invalid/api/v1/tickets/${issued.ticketId}`, {
+        method: "DELETE",
+        headers: {
+          Origin: "https://app.invalid",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+        },
+      }),
+      appEnv,
+      principal,
+      csrf,
+      tokens,
+    );
+    expect(cancelled.status).toBe(204);
+    expect((await head()).status).toBe(404);
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (targetSetId) await env.BLOBS.delete(`target-sets/${targetSetId}`);
+  }
+});
+
+it.each([
+  {
+    name: "file content version changes",
+    mutate: (f: ReturnType<typeof foundationFixture>) =>
+      env.DB.prepare("UPDATE nodes SET current_blob_id=NULL,revision=revision+1 WHERE id=?")
+        .bind(f.ids.file)
+        .run(),
+  },
+  {
+    name: "the folder is trashed",
+    mutate: async (f: ReturnType<typeof foundationFixture>) => {
+      const op = crypto.randomUUID();
+      await atomicBatch(env.DB, [
+        {
+          sql: "INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,created_at,epoch) VALUES(?,?,?,?,'trashed',?,1)",
+          values: [op, f.ids.user, f.ids.space, f.ids.folder, Date.now()],
+        },
+        {
+          sql: "UPDATE nodes SET deleted_at=?,deleted_op_id=?,revision=revision+1 WHERE id=?",
+          values: [Date.now(), op, f.ids.folder],
+        },
+      ]);
+    },
+  },
+  {
+    name: "the Access session is revoked",
+    mutate: (f: ReturnType<typeof foundationFixture>) =>
+      env.DB.prepare(
+        "UPDATE sessions SET revoked_at=? WHERE id=(SELECT session_id FROM credentials WHERE id=?)",
+      )
+        .bind(Date.now(), f.ids.credential)
+        .run(),
+  },
+])("rejects private ZIP delivery after $name", async ({ mutate }) => {
+  const { f, now, tokens, principal, firstKey } = await fixture();
+  let issued;
+  try {
+    issued = await issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.folder }],
+      "zip",
+      now + 300_000,
+    );
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+    const appEnv: Env = {
+      ...mutationEnv(),
+      APP_ORIGIN: "https://app.invalid",
+      CONTENT_ORIGIN: "https://content.invalid",
+    };
+    const head = () =>
+      handleContentHttp(
+        new Request(`https://content.invalid/z/${issued!.targetSetId}`, {
+          method: "HEAD",
+          headers: { Cookie: cookie },
+        }),
+        appEnv,
+        tokens,
+      );
+    expect((await head()).status).toBe(200);
+    await mutate(f);
+    expect((await head()).status).toBe(404);
+  } finally {
+    await env.BLOBS.delete(firstKey);
+    if (issued) await env.BLOBS.delete(`target-sets/${issued.targetSetId}`);
+  }
+});
 
 it("cancels the ticket and its redeemed sessions while preserving the shared budget", async () => {
   const { f, now, tokens, principal, firstKey } = await fixture();

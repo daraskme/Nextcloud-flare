@@ -22,6 +22,7 @@ import { groupRoute, handleGroupHttp } from "./groups";
 import { handleLibraryHttp, libraryRoute } from "./library";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
+import { handlePrivateZipHttp, privateZipRoute } from "./privateZips";
 import { handleSearchHttp, searchRoute } from "./search";
 import { handleShareHttp, shareRoute } from "./shares";
 import { handleStatsHttp, statsRoute } from "./stats";
@@ -60,6 +61,7 @@ export function privateAppRoute(request: Request): boolean {
     groupRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
+    privateZipRoute(request) ||
     (request.method === "POST" &&
       (url.pathname === "/api/v1/csrf" ||
         url.pathname === "/api/v1/content-session" ||
@@ -106,6 +108,7 @@ export async function handlePrivateAppHttp(
   const group = groupRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
+  const zip = privateZipRoute(request);
   const ticketIssue = url.pathname === "/api/v1/content-session" && request.method === "POST";
   const ticketCancel =
     /^\/api\/v1\/tickets\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && request.method === "DELETE";
@@ -126,6 +129,7 @@ export async function handlePrivateAppHttp(
     !group &&
     !share &&
     !upload &&
+    !zip &&
     !ticketIssue &&
     !ticketCancel
   )
@@ -293,6 +297,20 @@ export async function handlePrivateAppHttp(
         epoch: session.epoch,
       },
       dependencies.csrf,
+    );
+  if (zip)
+    return handlePrivateZipHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+      dependencies.tokens,
+      session.expires_at,
     );
   return handlePrivateContentTicketHttp(
     request,

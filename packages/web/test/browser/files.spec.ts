@@ -15,6 +15,36 @@ const localFetch = async (route: Route) => {
   });
 };
 
+function storedZipEntries(bytes: Buffer): Map<string, Buffer> {
+  let eocd = -1;
+  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65_557); offset--)
+    if (bytes.readUInt32LE(offset) === 0x06054b50) {
+      eocd = offset;
+      break;
+    }
+  expect(eocd).toBeGreaterThanOrEqual(0);
+  const entries = new Map<string, Buffer>();
+  let central = bytes.readUInt32LE(eocd + 16);
+  const count = bytes.readUInt16LE(eocd + 10);
+  for (let index = 0; index < count; index++) {
+    expect(bytes.readUInt32LE(central)).toBe(0x02014b50);
+    expect(bytes.readUInt16LE(central + 10)).toBe(0);
+    const size = bytes.readUInt32LE(central + 20);
+    const nameBytes = bytes.readUInt16LE(central + 28);
+    const extraBytes = bytes.readUInt16LE(central + 30);
+    const commentBytes = bytes.readUInt16LE(central + 32);
+    const local = bytes.readUInt32LE(central + 42);
+    const name = bytes.subarray(central + 46, central + 46 + nameBytes).toString();
+    expect(bytes.readUInt32LE(local)).toBe(0x04034b50);
+    const localNameBytes = bytes.readUInt16LE(local + 26);
+    const localExtraBytes = bytes.readUInt16LE(local + 28);
+    const start = local + 30 + localNameBytes + localExtraBytes;
+    entries.set(name, bytes.subarray(start, start + size));
+    central += 46 + nameBytes + extraBytes + commentBytes;
+  }
+  return entries;
+}
+
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
@@ -22,6 +52,17 @@ test.afterEach(async ({ page }) => {
 test("real Files API: create, rename, upload, open, trash, restore, copy and move", async ({
   page,
 }) => {
+  const zipRequests: Array<{ method: string; origin: string; path: string }> = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname.endsWith("/zip") ||
+      url.pathname.startsWith("/api/v1/zips/") ||
+      url.pathname === "/session" ||
+      url.pathname.startsWith("/z/")
+    )
+      zipRequests.push({ method: request.method(), origin: url.origin, path: url.pathname });
+  });
   await page.goto("/files");
   await expect(page.getByRole("heading", { name: "マイドライブ", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "新規フォルダー", exact: true }).click();
@@ -48,6 +89,50 @@ test("real Files API: create, rename, upload, open, trash, restore, copy and mov
     timeout: 60_000,
   });
   await expect(page.getByRole("button", { name: "こんにちは.txtの操作" })).toBeVisible();
+  const zipDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "ZIPダウンロード", exact: true }).click();
+  const archive = await zipDownload;
+  expect(archive.suggestedFilename()).toBe("download.zip");
+  const zipStream = await archive.createReadStream();
+  const zipChunks: Buffer[] = [];
+  for await (const chunk of zipStream!) zipChunks.push(Buffer.from(chunk));
+  expect(storedZipEntries(Buffer.concat(zipChunks))).toEqual(
+    new Map([["ブラウザーテスト/こんにちは.txt", Buffer.from("Nextcloud flare browser upload\n")]]),
+  );
+  expect(zipRequests).toEqual(
+    expect.arrayContaining([
+      {
+        method: "POST",
+        origin: "https://app.ncf.test:8879",
+        path: expect.stringMatching(/^\/api\/v1\/nodes\/[^/]+\/zip$/),
+      },
+      {
+        method: "POST",
+        origin: "https://content.ncf.test:8879",
+        path: "/session",
+      },
+      {
+        method: "HEAD",
+        origin: "https://content.ncf.test:8879",
+        path: expect.stringMatching(/^\/z\/[^/]+$/),
+      },
+      {
+        method: "GET",
+        origin: "https://app.ncf.test:8879",
+        path: expect.stringMatching(/^\/api\/v1\/zips\/[^/]+$/),
+      },
+      {
+        method: "GET",
+        origin: "https://content.ncf.test:8879",
+        path: expect.stringMatching(/^\/z\/[^/]+$/),
+      },
+    ]),
+  );
+  await page
+    .getByRole("dialog", { name: "ZIPでダウンロード" })
+    .getByRole("button")
+    .filter({ hasText: /^閉じる$/ })
+    .click();
   await page.getByRole("button", { name: "こんにちは.txtの操作" }).click();
   await page.getByRole("menuitem", { name: "名前を変更" }).click();
   await page.getByLabel("名前", { exact: true }).fill("保存したメモ.txt");
@@ -206,6 +291,7 @@ test("a lost restore response replays the same operation after GC has resumed", 
 test("mobile layout, grid and keyboard dialog", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/files");
+  await expect(page.getByRole("button", { name: "ZIPダウンロード", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "新規フォルダー", exact: true }).click();
   await page.getByLabel("名前", { exact: true }).fill("モバイルのフォルダー");
   await page.keyboard.press("Enter");
@@ -214,12 +300,81 @@ test("mobile layout, grid and keyboard dialog", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "モバイルのフォルダー", exact: true }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "モバイルのフォルダーの操作" }).click();
+  await expect(page.getByRole("menuitem", { name: "ZIPでダウンロード" })).toBeVisible();
+  await page.keyboard.press("Escape");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
   await page.getByRole("button", { name: "ナビゲーションを開く" }).click();
   await page.getByRole("navigation").getByRole("link", { name: "ごみ箱", exact: true }).click();
   await expect(page.getByRole("heading", { name: "ごみ箱", exact: true })).toBeVisible();
+});
+
+test("a stale private ZIP cancels its ticket and retries with a replacement key", async ({
+  page,
+}) => {
+  const keys: string[] = [];
+  const cancellations: string[] = [];
+  let checks = 0;
+  await page.route("**/api/v1/nodes/*/zip", (route) => {
+    keys.push(route.request().headers()["idempotency-key"]!);
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ticket: `signed-${keys.length}`,
+        ticketId: `ticket-${keys.length}`,
+        targetSetId: `target-${keys.length}`,
+        expiresAt: Date.now() + 300_000,
+      }),
+    });
+  });
+  await page.route("https://content.ncf.test:8879/session", (route) =>
+    route.fulfill({ status: 204 }),
+  );
+  await page.route("https://content.ncf.test:8879/z/*", (route) => {
+    if (route.request().method() === "HEAD")
+      return route.fulfill({ status: ++checks === 1 ? 404 : 200 });
+    return route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Disposition": "attachment; filename=download.zip",
+        "Content-Type": "application/zip",
+      },
+      body: Buffer.from("replacement zip"),
+    });
+  });
+  await page.route("**/api/v1/zips/*", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Disposition": "attachment; filename=download.zip",
+        "Content-Type": "application/zip",
+      },
+      body: Buffer.from("replacement zip"),
+    }),
+  );
+  await page.route("**/api/v1/tickets/*", (route) => {
+    cancellations.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto("/files");
+  await page.getByRole("button", { name: "ZIPダウンロード", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "ZIPでダウンロード" });
+  await expect(dialog.getByRole("alert")).toContainText("準備中にフォルダー");
+  await expect.poll(() => cancellations).toEqual(["/api/v1/tickets/ticket-1"]);
+  const download = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "再試行", exact: true }).click();
+  expect((await download).suggestedFilename()).toBe("download.zip");
+  await expect(dialog.getByRole("status")).toHaveAttribute("aria-busy", "false");
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).not.toBe(keys[0]);
+  await dialog.getByRole("button", { name: "ダウンロード枠を取り消す" }).click();
+  await expect(dialog.getByRole("status")).toContainText("取り消しました");
+  await expect
+    .poll(() => cancellations)
+    .toEqual(["/api/v1/tickets/ticket-1", "/api/v1/tickets/ticket-2"]);
 });
 
 test("a lost mutation response survives reload and reuses its original idempotency key", async ({
