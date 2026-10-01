@@ -29,7 +29,7 @@ focused unit、routeを含む1,001-node integration、restore GC pause、schema 
 - Videoはcurrent trackをcontent originのHEADで照合し、返されたcodec MIMEを`canPlayType()`で事前判定してnative `<video controls>`へ渡す。実media error、失効・拒否、非MP4/WebM、browser非対応は原本保存導線へfallbackし、request-path transcodingは行わない。
 - private route/navigation、loading/error/empty/refresh、responsive layoutを追加した。自動browser試験はstale EPUB ticketの置換・取消し、unsupported book、track ticketと`/track` URL、native error/revocation、unsupported containerを検証する。
 
-Node 739 + workerd 2,181 = **2,920 tests**、browser 21件、lint/typecheck/contracts/config、Web build、Wrangler dry-run buildは成功。EPUB library/content ticket/video readのfocused integration 19件と、Bookshelf/Videoのfocused browser 2件も成功。deploy、manual UI test、実fileのmulti-browser playbackは実施していない。
+Node 740 + workerd 2,183 = **2,923 tests**、browser 21件、lint/typecheck/contracts/config、Web build、Wrangler dry-run buildは成功。EPUB library/content ticket/video readのfocused integration 19件と、Bookshelf/Videoのfocused browser 2件も成功。deploy、manual UI test、実fileのmulti-browser playbackは実施していない。
 
 ## 2026-09-29 video・group share・multipart closure統合
 
