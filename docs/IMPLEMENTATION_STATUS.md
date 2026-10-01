@@ -3,6 +3,14 @@
 更新: 2026-10-02。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-10-02 audio metadata検索・移動receipt・実AVIF表示
+
+既存のaudio title/artist/album索引へ`mode=audio`を追加し、現行node blobと`AUDIO_GENERATOR_VERSION`が一致する投影だけを検索する。scope/権限・10,000 node走査・200件keysetを維持し、modeを署名cursorへ結び付けた。Filesの検索欄から通常/音声ファイルを選べる。通常検索の旧audio metadataは上書き後からOutbox更新まで残り得るため、現行投影が必要な場合はaudio modeを使う。
+
+移動操作のterminal lookupは保存済み移動元親の現在読取り権限を独立して確認し、Outboxに対応するnode stepがない確定結果を返さない。実AVIF fixtureのthumbnail/原本が隔離HTTPS上のChromiumで16×12としてデコードされることも確認した。AV1+Opusの実再生と複数browserは後続。
+
+focusedはaudio検索のNode14件・workerd10件、operation lookupのworkerd22件、ブラウザ2件が成功。`pnpm check`はlint453 file、型・route/config契約、Node774件（50 file）・workerd2,218件（117 file）、計**2,992件**、Web build・Worker dry-run buildが成功した。全browser **40/40件**が成功し、合計**3,032件**。D1 migration・依存追加なし。remote migration・deployは未実施。
+
 ## 2026-10-02 Files grid・Gallery・Outbox・media実ファイル
 
 Files gridを行単位で仮想化し、表示幅に応じた列数とmobileの2列を維持した。スクロール外のcardを描画せず、各cardの操作と一覧上の位置を保持する。private Galleryのthumbnail/原本content sessionは、写真の切替・閉じる操作・画面離脱時にticketを取消す。遅れて返ったsessionも破棄し、旧画像のURLを再利用しない。

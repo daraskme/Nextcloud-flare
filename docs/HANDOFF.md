@@ -25,7 +25,9 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
-2026-10-01のmainにはgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateのUIも統合済み。2026-10-02の作業ではFiles gridを行単位で仮想化し、private Galleryのthumbnail/原本ticketを画面切替・閉じる操作で取消す。Outboxの`node.move`/`dav.move`は保存済み移動元親の現在権限を独立検査する。DAV同時接続でKDF待機が中断される問題を修正し、Worker/ControlDOの並行password要求を即時503にした。実AVIF静止画とAV1+Opus WebMの単体fixtureも追加した。`pnpm check`はNode774件・workerd2,214件、全browser39件が成功。次はmedia metadata検索、実ファイル・複数browser再生、残るoperation/Outbox/repairと復旧・運用を進める。実環境へのmigration・deployは未実施。
+2026-10-01のmainにはgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateのUIも統合済み。2026-10-02の前回checkpointではFiles gridの仮想化、private Gallery ticket取消し、移動Outboxの移動元親権限検査、DAV同時接続のKDF即時503、実AVIF静止画とAV1+Opus WebMの単体fixtureを統合した。`pnpm check`はNode774件・workerd2,214件、全browser39件が成功した。
+
+同日の継続作業では、現行audio投影限定のmetadata検索をAPI・Files UIへ接続し、移動operationのterminal lookupで移動元親権限と対応node stepを再確認する。実AVIF静止画は隔離HTTPSのChromiumでthumbnail/原本とも16×12として表示できた。`pnpm check`はNode774件・workerd2,218件、全browser40件が成功した。次はvideo/image metadata検索、AV1+Opusの実再生・複数browser、残るoperation/Outbox/repairと復旧・運用を進める。実環境へのmigration・deployは未実施。
 
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user/group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share/policy/delegation/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。owner/recipient管理UIは現在有効な操作とprovenanceを表示し、share actionと再共有ポリシーを管理する。
 

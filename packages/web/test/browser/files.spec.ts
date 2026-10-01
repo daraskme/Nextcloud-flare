@@ -1239,6 +1239,34 @@ test("search finds nested names and preserves their destination for overwrite an
   ).toBeVisible();
 });
 
+test("Files search selects the current audio projection mode", async ({ page }) => {
+  const modes: string[] = [];
+  await page.route("**/api/v1/search?*", (route) => {
+    const url = new URL(route.request().url());
+    modes.push(url.searchParams.get("mode") ?? "name");
+    return route.fulfill({
+      json: {
+        scopeId: url.searchParams.get("scopeId"),
+        query: url.searchParams.get("q"),
+        treeGeneration: 1,
+        items: [],
+        nextCursor: null,
+        truncated: false,
+      },
+    });
+  });
+  await page.goto("/files");
+  await page.getByRole("searchbox", { name: "このフォルダー内を検索" }).fill("sonata");
+  await page.getByRole("combobox", { name: "検索対象" }).selectOption("audio");
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect.poll(() => modes.at(-1)).toBe("audio");
+  await expect(page.locator(".search-summary")).toContainText("音声ファイル");
+  await page.getByRole("combobox", { name: "検索対象" }).selectOption("name");
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect.poll(() => modes.at(-1)).toBe("name");
+  await expect(page.locator(".search-summary")).not.toContainText("音声ファイル");
+});
+
 test("search pages real API results and hides stale rows after a tree change or denied refresh", async ({
   page,
 }) => {

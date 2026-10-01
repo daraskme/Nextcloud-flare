@@ -5,6 +5,7 @@ import type { ContentKeyRing } from "./contentTokens";
 export interface SearchCursorClaims {
   readonly scopeId: string;
   readonly query: string;
+  readonly mode?: "audio";
   readonly version: string;
   readonly spaceId: string;
   readonly ownerId: string;
@@ -26,6 +27,7 @@ function valid(value: SearchCursorClaims, now: number): boolean {
     typeof value.query === "string" &&
     value.query.length > 0 &&
     value.query.length <= 256 &&
+    (value.mode === undefined || value.mode === "audio") &&
     value.version === SEARCH_NAME_VERSION &&
     ID.test(value.spaceId) &&
     ID.test(value.ownerId) &&
@@ -115,8 +117,10 @@ export class SearchCursorTokens {
         throw new Error("invalid_search_cursor");
       const payload = body as SearchCursorClaims;
       if (
-        Object.keys(payload).sort().join(",") !==
-          "credentialId,epoch,exp,generation,iat,lastId,lastNameCi,ownerId,query,scopeId,spaceId,userId,version" ||
+        ![
+          "credentialId,epoch,exp,generation,iat,lastId,lastNameCi,ownerId,query,scopeId,spaceId,userId,version",
+          "credentialId,epoch,exp,generation,iat,lastId,lastNameCi,mode,ownerId,query,scopeId,spaceId,userId,version",
+        ].includes(Object.keys(payload).sort().join(",")) ||
         !valid(payload, Math.floor(this.now() / 1000)) ||
         base64url.encode(JSON.stringify(payload)) !== bodyText
       )

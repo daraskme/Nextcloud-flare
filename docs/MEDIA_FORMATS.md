@@ -36,7 +36,7 @@ server derivative は既存の WebP / metadata 除去 / budget / claim fence に
 - 実装済み: bounded container sniff、AV1/Opus の MIME/codec string、native probe adapter、AVIF 原本/derivative 選択。単体20件。
 - 接続済み: private content route、track/metadata parser、Gallery/lightbox、Audio/Video player、Bookshelf/EPUB reader、public Gallery/Audio/Bookshelf/Video UIとthumbnail/audio/video ticket delivery、public EPUB metadata/page/entry、public/private ZIP、media reading/playback resume state。private Galleryはthumb/原本ticketを画面切替・close時に取消す。実codec変換と複数browserの実ファイルE2Eは後続とする。
 - 必須 fixture: AVIF 静止画/sequence、AV1 MP4/WebM（音声なし/Opus付き、8/10-bit）、Opus Ogg/WebM/MP4、偽装拡張子/truncated header、seek/Range、再生不可表示、AVIF derivative unavailable 時の原本表示。
-- 実ファイルfixtureはAVIF静止画（16×12）とAV1+Opus WebM（32×24）を追加した。前者は実byteのsniffとImages `info` adapterへの受渡し、後者は実WebM headerのmetadata解析を単体試験で確認した。Images bindingの実codec処理とbrowser再生はまだ検証していない。
+- 実ファイルfixtureはAVIF静止画（16×12）とAV1+Opus WebM（32×24）を追加した。前者は実byteのsniffとImages `info` adapterへの受渡し、後者は実WebM headerのmetadata解析を単体試験で確認した。AVIF静止画は隔離HTTPS上のChromiumでthumbnail/原本とも16×12として表示できた。Images bindingの実codec処理とAV1+Opus再生・複数browserはまだ検証していない。
 - Chrome/Edge/Firefox/Safari、desktop/mobile の実行時可否を support matrix に記録する。browser 名だけで再生成功としない。
 
 仕様根拠: [AVIF brands](https://aomediacodec.github.io/av1-avif/#brands)、[AV1 codec string](https://aomediacodec.github.io/av1-isobmff/#codecsparam)、[Ogg Opus](https://www.rfc-editor.org/rfc/rfc7845.html)、[MP4 Opus](https://opus-codec.org/docs/opus_in_isobmff.html)、[Cloudflare Images の入力制限](https://developers.cloudflare.com/images/get-started/limits/)。2026-09-22 確認。

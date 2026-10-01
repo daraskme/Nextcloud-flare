@@ -1,6 +1,6 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { portableName, searchName } from "@next-cloud-flare/shared/names";
+import { portableName, searchName, searchText } from "@next-cloud-flare/shared/names";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
 import { handleSearchHttp } from "../../src/api/search";
@@ -8,6 +8,7 @@ import { authorizeNode } from "../../src/auth/authorize";
 import { contentKeyRing } from "../../src/auth/contentTokens";
 import { SearchCursorTokens } from "../../src/auth/searchCursor";
 import { atomicBatch } from "../../src/db/primary";
+import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
 import { searchQuery } from "../../src/search/query";
 import { searchNodes, searchStatement } from "../../src/services/search";
 import { foundationFixture } from "../fixtures/foundation";
@@ -148,6 +149,82 @@ it("pages 201 matches and rejects cursors from another query, scope, credential 
     t.cursors,
   );
   expect(response.status).toBe(409);
+});
+
+it("searches only current audio projections and binds audio pagination to its mode", async () => {
+  const t = await fixture();
+  const rows = Array.from({ length: 201 }, (_, i) => {
+    const name = `Track ${String(i).padStart(3, "0")}`;
+    return {
+      id: crypto.randomUUID(),
+      name,
+      nameCi: portableName(name).nameCi,
+      ...searchText(name, ["Sonata"]),
+    };
+  });
+  const json = JSON.stringify(rows);
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at)
+        SELECT json_extract(value,'$.id'),?,?,?,json_extract(value,'$.name'),json_extract(value,'$.nameCi'),
+          'file',?,1,1 FROM json_each(?)`,
+      values: [t.f.ids.space, t.f.ids.user, t.f.ids.folder, t.f.ids.blob, json],
+    },
+    {
+      sql: `INSERT INTO node_audio(node_id,blob_id,generator_version,codec,title_extracted)
+        SELECT json_extract(value,'$.id'),?,?,'mp3','Sonata' FROM json_each(?)`,
+      values: [t.f.ids.blob, AUDIO_GENERATOR_VERSION, json],
+    },
+    {
+      sql: `INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision)
+        SELECT json_extract(value,'$.id'),?,json_extract(value,'$.textNorm'),
+          json_extract(value,'$.tokens'),json_extract(value,'$.version'),1 FROM json_each(?)`,
+      values: [t.f.ids.space, json],
+    },
+    {
+      sql: `INSERT INTO search_fts(rowid,text_norm,tokens)
+        SELECT rowid,text_norm,tokens FROM search_index
+        WHERE node_id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`,
+      values: [json],
+    },
+  ]);
+  const audio = (cursor?: string) =>
+    searchNodes(env.DB, t.principal, t.f.ids.folder, "sonata", t.cursors, cursor, "audio");
+  const first = await audio();
+  expect(first.items).toHaveLength(200);
+  expect(first.nextCursor).toBeTruthy();
+  expect((await audio(first.nextCursor!)).items.map((node) => node.name)).toEqual(["Track 200"]);
+  await expect(t.search("sonata", first.nextCursor!)).rejects.toThrow("invalid_search_cursor");
+  await env.DB.prepare("UPDATE node_audio SET generator_version='old' WHERE node_id=?")
+    .bind(rows[0]!.id)
+    .run();
+  await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(rows[1]!.id).run();
+  const current = await audio();
+  expect(current.items).toHaveLength(199);
+  expect(current.nextCursor).toBeNull();
+  expect(current.items.some((node) => node.id === rows[0]!.id || node.id === rows[1]!.id)).toBe(
+    false,
+  );
+  const response = await handleSearchHttp(
+    new Request(`https://app.invalid/api/v1/search?scopeId=${t.f.ids.folder}&q=sonata&mode=audio`),
+    { ...env, APP_ORIGIN: "https://app.invalid" },
+    t.principal,
+    t.cursors,
+  );
+  expect(response.status).toBe(200);
+  expect(((await response.json()) as { items: unknown[] }).items).toHaveLength(199);
+  expect(
+    (
+      await handleSearchHttp(
+        new Request(
+          `https://app.invalid/api/v1/search?scopeId=${t.f.ids.folder}&q=sonata&mode=video`,
+        ),
+        { ...env, APP_ORIGIN: "https://app.invalid" },
+        t.principal,
+        t.cursors,
+      )
+    ).status,
+  ).toBe(400);
 });
 
 it("never returns another owner's nodes or descendants of a deleted folder", async () => {

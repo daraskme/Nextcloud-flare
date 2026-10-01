@@ -467,9 +467,16 @@ export class ApiClient {
       signal ? { signal } : {},
     );
   }
-  search(scopeId: string, q: string, cursor?: string | null, signal?: AbortSignal) {
+  search(
+    scopeId: string,
+    q: string,
+    cursor?: string | null,
+    signal?: AbortSignal,
+    mode: "name" | "audio" = "name",
+  ) {
     const params = new URLSearchParams({ scopeId, q });
     if (cursor) params.set("cursor", cursor);
+    if (mode === "audio") params.set("mode", "audio");
     return this.request<SearchPage>(`/api/v1/search?${params}`, signal ? { signal } : {});
   }
   userNodes(kind: "recent" | "starred", cursor?: string | null, signal?: AbortSignal) {

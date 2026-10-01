@@ -1,12 +1,14 @@
 # フォルダー配下の検索
 
-更新: 2026-09-24。ローカル実装・検証の記録。リモート配備は未実施。
+更新: 2026-10-02。ローカル実装・検証の記録。リモート配備は未実施。
 
 ## HTTP と画面
 
 Access 認証の `GET /api/v1/search?scopeId=<folder>&q=<text>&cursor=<optional>` を接続した。`scopeId` は root または folder。scope 自身を除いた子孫を検索し、名前順で最大200件、次ページの署名 cursor と `truncated` を返す。結果には元の `parentId` があり、検索結果からの上書きも元の保存先を使う。保存場所へ移動する操作も追加した。
 
-Files の検索欄は Enter または「検索」で送信する。「検索を終了」で通常の一覧に戻る。ごみ箱の欄は従来の表示済み項目の絞り込みを維持する。検索範囲にはサブフォルダーも含むこと、結果が一部であることを画面に表示する。次ページ取得中の更新競合や認証拒否では古い結果を隠し、先頭から読み直す。ページ移動とログアウトでは検索状態を解除する。
+任意の`mode=audio`は現行blobと`AUDIO_GENERATOR_VERSION`が一致する`node_audio`投影を持つfileに対象を限定する。名前に加え、Outboxが原子的に索引へ反映したtitle/artist/albumを検索できる。modeは署名cursorへ結び付け、通常検索のcursorとの相互利用を拒否する。既存cursorを使う通常検索の互換性は維持する。
+
+Files の検索欄は通常/音声ファイルを選び、Enter または「検索」で送信する。「検索を終了」で通常の一覧に戻る。ごみ箱の欄は従来の表示済み項目の絞り込みを維持する。検索範囲にはサブフォルダーも含むこと、結果が一部であることを画面に表示する。次ページ取得中の更新競合や認証拒否では古い結果を隠し、先頭から読み直す。ページ移動とログアウトでは検索状態を解除する。
 
 ## 現行の認可
 
@@ -40,4 +42,4 @@ scope を確定してから、各索引 rowid に限定した FTS lookup を行�
 
 Node は正規化、literal query、fallback、byte 上限、cursor 用途/期限/改変を検証する。workerd は実 D1 の階層・200件 keyset・scope10,000上限・他 owner・削除祖先・internal grant・待機中失効・旧索引と rename/move の同期を検証する。ブラウザーは実 API の検索・保存先保持・上書き・再検索・201件 pagination・世代競合と認証拒否を確認する。件数と最終結果は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を参照。
 
-現在の索引入力は名前。media metadata の parser/同期、検索索引 version の再構築運用、共有管理画面、実 D1 の rows_read≤20,000/duration≤250ms と負荷試験は残る。所有folderの要求時集計は[FOLDER_STATS](FOLDER_STATS.md)へ接続し、索引付き走査を共通化した。ローカルの fixture 件数や所要時間を実 D1 の予算合格とは扱わない。D1 migration・依存追加はない。
+現在の索引入力は名前とaudioのtitle/artist/album。`mode=audio`は古いblob・generator投影を検索対象から外す。通常modeの既存`text_norm`には、上書き直後からOutbox更新まで旧audio metadataが残り得る。video/image等のmetadata検索、検索索引versionの再構築運用、実 D1 の rows_read≤20,000/duration≤250ms と負荷試験は残る。所有folderの要求時集計は[FOLDER_STATS](FOLDER_STATS.md)へ接続し、索引付き走査を共通化した。ローカルの fixture 件数や所要時間を実 D1 の予算合格とは扱わない。今回のaudio modeにD1 migration・依存追加はない。

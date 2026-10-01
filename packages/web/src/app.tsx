@@ -1122,7 +1122,12 @@ export function App() {
       : sharedMount?.provenance.recipientVersion;
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
-  const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
+  const [searchMode, setSearchMode] = useState<"name" | "audio">("name");
+  const [searchTerm, setSearchTerm] = useState<{
+    scopeId: string;
+    query: string;
+    mode: "name" | "audio";
+  } | null>(null);
   const searching = files && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
@@ -1158,10 +1163,12 @@ export function App() {
       me?.epoch,
       parentId,
       searchTerm?.query,
+      searchTerm?.mode,
       sharedMount?.shareVersion,
       mountAccessVersion,
     ],
-    queryFn: ({ pageParam, signal }) => api.search(parentId, searchTerm!.query, pageParam, signal),
+    queryFn: ({ pageParam, signal }) =>
+      api.search(parentId, searchTerm!.query, pageParam, signal, searchTerm!.mode),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
     enabled: !!me && files && !!parentId && (!shared || !!sharedMount) && searching,
@@ -1907,9 +1914,11 @@ export function App() {
                       event.preventDefault();
                       if (!trash && !userState) {
                         const term = filter.trim();
-                        setSearchTerm(term ? { scopeId: parentId, query: term } : null);
+                        setSearchTerm(
+                          term ? { scopeId: parentId, query: term, mode: searchMode } : null,
+                        );
                         void query.resetQueries({
-                          queryKey: ["search", me.id, me.epoch, parentId, term],
+                          queryKey: ["search", me.id, me.epoch, parentId, term, searchMode],
                         });
                       }
                     }}
@@ -1929,6 +1938,19 @@ export function App() {
                         onChange={(event) => setFilter(event.target.value)}
                       />
                     </label>
+                    {!trash && !userState && (
+                      <select
+                        className="search-mode"
+                        aria-label="検索対象"
+                        value={searchMode}
+                        onChange={(event) =>
+                          setSearchMode(event.target.value === "audio" ? "audio" : "name")
+                        }
+                      >
+                        <option value="name">通常</option>
+                        <option value="audio">音声ファイル</option>
+                      </select>
+                    )}
                     {!trash && !userState && (
                       <Button type="submit" size="small">
                         検索
@@ -1960,7 +1982,10 @@ export function App() {
               </div>
               {searching && (
                 <div className="search-summary" role="status">
-                  <span>「{searchTerm.query}」の検索結果 · サブフォルダーも含む</span>
+                  <span>
+                    「{searchTerm.query}」の検索結果
+                    {searchTerm.mode === "audio" && " · 音声ファイル"} · サブフォルダーも含む
+                  </span>
                   <Button
                     size="small"
                     variant="ghost"

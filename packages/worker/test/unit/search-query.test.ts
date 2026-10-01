@@ -66,6 +66,10 @@ it("separates search cursors from listing cursors and binds exact claims and exp
   await expect(new SearchCursorTokens(ring, () => now + 600_000).verify(token)).rejects.toThrow();
   await expect(cursor.verify(`${token.slice(0, -3)}xxx`)).rejects.toThrow();
   await expect(cursor.issue({ ...claims, version: "old" })).rejects.toThrow();
+  const audio = await cursor.issue({ ...claims, mode: "audio" });
+  expect((await cursor.verify(audio)).mode).toBe("audio");
+  expect((await cursor.verify(token)).mode).toBeUndefined();
+  await expect(cursor.verify(`${audio.slice(0, -3)}xxx`)).rejects.toThrow();
 });
 
 it("binds Recent and Starred cursors to list kind, user, credential, epoch and expiry", async () => {

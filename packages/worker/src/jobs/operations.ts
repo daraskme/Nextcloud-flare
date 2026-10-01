@@ -448,7 +448,11 @@ export async function lookupOperation(
         const events = await primary(db)
           .prepare(
             `SELECT b.kind,b.payload_ref,o.kind AS op_kind,o.operands_json,o.result_json
-              FROM outbox b JOIN operations o ON o.op_id=b.op_id WHERE b.op_id=?`,
+              FROM outbox b JOIN operations o ON o.op_id=b.op_id
+              WHERE b.op_id=? AND EXISTS(
+                SELECT 1 FROM operation_steps s WHERE s.op_id=b.op_id
+                  AND s.kind='node' AND s.affected_id=b.payload_ref
+              )`,
           )
           .bind(row.op_id)
           .all<{
@@ -545,12 +549,19 @@ export async function lookupOperation(
           : operands.parentId;
       if (authorized.operation !== "node.rename" || authorized.parentId !== expectedParent)
         return null;
-      if (row.kind === "node.move" || row.kind === "dav.move")
+      if (row.kind === "node.move" || row.kind === "dav.move") {
+        if (typeof operands.sourceParentId !== "string") return null;
+        await authorizeNode(db, authorizedPrincipal, {
+          operation: "node.read",
+          nodeId: operands.sourceParentId,
+          spaceId: row.space_id,
+        });
         await authorizeNode(db, authorizedPrincipal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,
         });
+      }
     } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
       if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
       const parent = await authorizeNode(db, authorizedPrincipal, {

@@ -1,6 +1,15 @@
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
-test("Gallery cancels thumbnail and original tickets when switching views", async ({ page }) => {
+const avifFixture = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../worker/test/fixtures/avif-still-16x12.avif",
+);
+
+test("Gallery decodes a real AVIF and cancels tickets when switching views", async ({ page }) => {
+  const avifBytes = await readFile(avifFixture);
   const issued: Array<{ id: string; purpose: string }> = [];
   const cancelled: string[] = [];
   await page.route("**/api/v1/me", (route) =>
@@ -33,8 +42,8 @@ test("Gallery cancels thumbnail and original tickets when switching views", asyn
             currentBlobId: "photo-blob",
             mime: "image/avif",
             size: 128,
-            width: 32,
-            height: 32,
+            width: 16,
+            height: 12,
             takenAt: null,
             updatedAt: Date.now(),
             thumbnail: "ready",
@@ -69,17 +78,24 @@ test("Gallery cancels thumbnail and original tickets when switching views", asyn
   await page.route("https://content.ncf.test:8879/c/**", (route) =>
     route.fulfill({
       status: 200,
-      contentType: "image/png",
-      body: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlqH4sAAAAASUVORK5CYII=",
-        "base64",
-      ),
+      contentType: "image/avif",
+      body: avifBytes,
     }),
   );
 
   await page.goto("/files");
   await page.getByRole("link", { name: "ギャラリー", exact: true }).click();
   await expect(page.locator(".gallery-card img")).toHaveAttribute("src", /\/thumb$/);
+  await expect
+    .poll(() =>
+      page.locator(".gallery-card img").evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(16);
+  await expect
+    .poll(() =>
+      page.locator(".gallery-card img").evaluate((image: HTMLImageElement) => image.naturalHeight),
+    )
+    .toBe(12);
   expect(issued.map((ticket) => ticket.purpose)).toEqual(["thumb"]);
 
   await page.getByRole("button", { name: /Photo\.avif/ }).click();
@@ -88,6 +104,14 @@ test("Gallery cancels thumbnail and original tickets when switching views", asyn
     "src",
     /\/c\/photo\/photo-blob$/,
   );
+  await expect
+    .poll(() =>
+      page
+        .getByRole("dialog", { name: "Photo.avif" })
+        .locator("img")
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(16);
   expect(issued.at(-1)?.purpose).toBe("content");
   const originalId = issued.at(-1)!.id;
 

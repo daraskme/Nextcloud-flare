@@ -443,6 +443,16 @@ h1 {
 .list-search input::placeholder {
   color: #9ba4b0;
 }
+.search-mode {
+  flex: 0 0 auto;
+  max-width: 112px;
+  padding: 6px 8px;
+  border: 1px solid #dce1e8;
+  border-radius: 7px;
+  background: #fff;
+  color: #586779;
+  font-size: 12px;
+}
 .view-switch {
   display: flex;
   padding: 3px;

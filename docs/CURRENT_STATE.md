@@ -8,7 +8,7 @@ video、group internal share、multipart closureのPR #16、#17、#19は全5 CI�
 
 multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。backup drillは80 tableでPASSしている。
 
-読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP delivery、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAVを既存のauthority、projection、ticket、content-origin、BudgetDO、Queueへ接続した。group lifecycle・recipient reshare・app password・Recent/Starred・private ZIPの各UIとmedia resume stateも接続済み。Files gridの仮想化、private Galleryのticket取消し、移動Outboxの移動元親権限検査を追加した。次はmedia metadata検索、残るoperation/Outbox/repair、復旧・運用を進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AVIF/AV1/Opusの実codecと複数browser実ファイル再生、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP delivery、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAVを既存のauthority、projection、ticket、content-origin、BudgetDO、Queueへ接続した。group lifecycle・recipient reshare・app password・Recent/Starred・private ZIPの各UIとmedia resume stateも接続済み。Files gridの仮想化、private Galleryのticket取消し、移動Outboxの移動元親権限検査に加え、現行audio投影に限定したmetadata検索とFiles UI、移動結果照会の移動元親権限・node step検査を追加した。実AVIF静止画のChromium表示も確認した。次はvideo/image metadata検索、残るoperation/Outbox/repair、復旧・運用を進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AV1/Opusを含む複数browser実ファイル再生、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
 
 ## 状態の意味
 
@@ -69,7 +69,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
 | Files UI | React/TanStackの一覧・操作・trash・確認付き上書き/再開upload・logout、認証付きprivate assets | ローカル実APIの19 browser scenario、NodeのCSRF競合4件 | 共有・media・実環境。検索は[SEARCH](SEARCH.md)。詳細は[FILES_UI](FILES_UI.md) |
 | フォルダー集計 | Accessのaccount stats、所有folderの再帰件数/現在のlogical bytes、1万件上限と部分結果、Files情報dialog | D1の12件と検索9件の回帰、実APIでのbrowser集計/再集計/拒否時非表示。全check成功 | 実D1予算・負荷、共有/media別集計。[FOLDER_STATS](FOLDER_STATS.md) |
-| 検索 | Access検索API、現行権限/祖先、名前の正規化、範囲10,000・page200、用途/条件付きcursor、Files検索と元の保存先の保持 | Node query/cursor、実D1階層・共有/削除/失効・旧索引・上限、実browser検索/上書き/201件pagination/世代競合 | media metadata parser/同期、索引version再構築運用、実D1予算。[SEARCH](SEARCH.md) |
+| 検索 | Access検索API、現行権限/祖先、名前とaudio title/artist/albumの正規化、現行audio blob/generator投影限定の`mode=audio`、範囲10,000・page200、mode付き署名cursor、Files検索UIと元の保存先の保持 | Node query/cursor、実D1階層・共有/削除/失効・旧索引・上限・audio投影、実browser検索/上書き/201件pagination/世代競合とmode切替 | video/image metadata検索、索引version再構築運用、実D1予算。[SEARCH](SEARCH.md) |
 | Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | 全route profile・実環境 |
 | Trash | 一覧、同期restore/purge、1,001〜10,000 nodeの非同期trash/restore/purge、別trash子退避、名前衝突解決、GC pause、D1確定後のGC candidate | 最大64層・10,000 node、冪等再送、job cursor/lease、期限/識別子/停止競合、応答喪失・再起動 | 実Queue/DLQ/Cron、実環境。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
@@ -169,7 +169,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 ### 次の優先順
 
 1. private/public media UIを実ファイル・複数browserで検証する。
-2. Filesのmedia metadata検索と詳細previewを進める。
+2. Filesのvideo/image metadata検索と詳細previewを進める。audio metadata検索は現行投影限定で接続済み。
 3. 残るoperation/Outbox eventを復旧監査・repairへ統合する。
 4. Queueの実DLQ/retry exhaustion、account mutation / 終了証明を失ったKDFの運用収束を閉じる。
 5. Files UIの残り（File System Access handle・大量データ時の操作性）を進める。
