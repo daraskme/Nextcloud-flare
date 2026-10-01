@@ -40,6 +40,7 @@ export function PrivateAudio({ account }: { account: Account }) {
   const content = useRef<PreparedContentSession | null>(null);
   const selection = useRef(0);
   const activeRef = useRef<AudioTrack | null>(null);
+  const terminal = useRef(false);
   const resume = useRef<{ blobId: string; positionMs: number; durationMs: number } | null>(null);
   const writer = useRef<DebouncedWriter<number> | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -97,8 +98,9 @@ export function PrivateAudio({ account }: { account: Account }) {
       else element.pause();
       return;
     }
-    if (persistCurrent) await flush().catch(() => undefined);
+    if (persistCurrent && !terminal.current) await flush().catch(() => undefined);
     release();
+    terminal.current = false;
     const selected = ++selection.current;
     activeRef.current = track;
     setActiveId(track.id);
@@ -221,8 +223,12 @@ export function PrivateAudio({ account }: { account: Account }) {
           setPlaying(false);
           if (!event.currentTarget.ended) void flush().catch(() => undefined);
         }}
-        onPlay={() => setPlaying(true)}
+        onPlay={() => {
+          terminal.current = false;
+          setPlaying(true);
+        }}
         onEnded={() => {
+          terminal.current = true;
           setPlaying(false);
           void flush(0)
             .catch(() => undefined)

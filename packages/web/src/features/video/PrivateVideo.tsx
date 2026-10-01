@@ -30,6 +30,7 @@ export function PrivateVideo({ account }: { account: Account }) {
   const content = useRef<PreparedContentSession | null>(null);
   const selection = useRef(0);
   const activeRef = useRef<FileNode | null>(null);
+  const terminal = useRef(false);
   const resume = useRef<PlaybackState | null>(null);
   const writer = useRef<DebouncedWriter<number> | null>(null);
   const [active, setActive] = useState<FileNode | null>(null);
@@ -44,9 +45,9 @@ export function PrivateVideo({ account }: { account: Account }) {
     return Math.min(Math.round(element.currentTime * 1_000), Math.round(element.duration * 1_000));
   };
 
-  const flush = (positionMs?: number) => {
+  const flush = async (positionMs?: number) => {
     const selected = positionMs ?? currentPositionMs();
-    if (selected !== null) void writer.current?.flush(selected).catch(() => undefined);
+    if (selected !== null) await writer.current?.flush(selected);
   };
 
   const release = () => {
@@ -61,15 +62,16 @@ export function PrivateVideo({ account }: { account: Account }) {
 
   useEffect(
     () => () => {
-      flush();
+      void flush().catch(() => undefined);
       release();
     },
     [],
   );
 
   const select = async (item: FileNode) => {
-    flush();
+    if (!terminal.current) await flush().catch(() => undefined);
     release();
+    terminal.current = false;
     const selected = ++selection.current;
     activeRef.current = item;
     setActive(item);
@@ -266,8 +268,14 @@ export function PrivateVideo({ account }: { account: Account }) {
                   const positionMs = currentPositionMs();
                   if (positionMs !== null) writer.current?.schedule(positionMs);
                 }}
-                onPause={() => flush()}
-                onEnded={() => flush(0)}
+                onPause={() => void flush().catch(() => undefined)}
+                onPlay={() => {
+                  terminal.current = false;
+                }}
+                onEnded={() => {
+                  terminal.current = true;
+                  void flush(0).catch(() => undefined);
+                }}
                 onError={() => {
                   setPlayerError(
                     "動画を再生できませんでした。セッションの失効または端末の codec 対応を確認してください。",
