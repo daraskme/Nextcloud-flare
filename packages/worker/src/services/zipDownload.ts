@@ -11,6 +11,7 @@ import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageBatchAssertions } from "../auth/shareCoverage";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { BudgetDO } from "../do/BudgetDO";
+import { parseRange } from "../platform/range";
 import { storeZip, storeZipSize } from "../platform/storeZip";
 import { type BlobReadPlan, prepareAuthorizedNodeBlobRead } from "./blobRead";
 import { streamLeasedContent } from "./contentStream";
@@ -464,14 +465,64 @@ async function prepareZipContent(
 
 function zipHeaders(plan: ZipContentPlan): Headers {
   return new Headers({
+    "Accept-Ranges": "bytes",
     "Cache-Control": "private, no-store",
     "Content-Disposition": "attachment; filename*=UTF-8''download.zip",
-    "Content-Length": String(plan.outputSize),
     "Content-Type": "application/zip",
     ETag: `"${plan.manifestHash}"`,
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
   });
+}
+
+function zipNotModified(value: string | null, etag: string): boolean {
+  if (!value) return false;
+  return value.split(",").some((part) => {
+    const candidate = part.trim();
+    return candidate === "*" || candidate === etag || candidate === `W/${etag}`;
+  });
+}
+
+function sliceZip(
+  source: ReadableStream<Uint8Array>,
+  offset: number,
+  length: number,
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  let skipped = 0;
+  let delivered = 0;
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        while (delivered < length) {
+          const next = await reader.read();
+          if (next.done) {
+            controller.error(new Error("zip_stream_length_mismatch"));
+            return;
+          }
+          let chunk = next.value;
+          if (skipped < offset) {
+            const discard = Math.min(offset - skipped, chunk.byteLength);
+            skipped += discard;
+            chunk = chunk.subarray(discard);
+            if (chunk.byteLength === 0) continue;
+          }
+          const take = Math.min(length - delivered, chunk.byteLength);
+          delivered += take;
+          controller.enqueue(chunk.subarray(0, take));
+          if (delivered === length) {
+            await reader.cancel().catch(() => undefined);
+            controller.close();
+          }
+          return;
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 function watchZipAuthority(
@@ -554,7 +605,19 @@ export async function streamBudgetedZip(
   if (request.method !== "GET" && request.method !== "HEAD") throw new Error("invalid_zip_read");
   request.signal.throwIfAborted();
   const plan = await prepareZipContent(db, bucket, tokens, cookieHeader, targetSetId);
-  const bytes = request.method === "GET" ? plan.outputSize : 0;
+  const etag = `"${plan.manifestHash}"`;
+  const notModified = zipNotModified(request.headers.get("If-None-Match"), etag);
+  const ifRange = request.headers.get("If-Range");
+  const range = parseRange(
+    !notModified && (ifRange === null || ifRange === etag) ? request.headers.get("Range") : null,
+    plan.outputSize,
+  );
+  const bytes =
+    request.method === "HEAD" || notModified || range.kind === "unsatisfiable"
+      ? 0
+      : range.kind === "range"
+        ? range.length
+        : plan.outputSize;
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   const lease = await budget.reserve({
@@ -569,7 +632,15 @@ export async function streamBudgetedZip(
       signal.throwIfAborted();
       if (Date.now() >= deadline) throw new Error("content_lease_expired");
       const headers = zipHeaders(plan);
-      if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+      if (notModified) return new Response(null, { status: 304, headers });
+      if (request.method === "HEAD") {
+        headers.set("Content-Length", String(plan.outputSize));
+        return new Response(null, { status: 200, headers });
+      }
+      if (range.kind === "unsatisfiable") {
+        headers.set("Content-Range", `bytes */${plan.outputSize}`);
+        return new Response(null, { status: 416, headers });
+      }
       const archive = storeZip(
         plan.sources.map(({ entry, blob }) => ({
           name: entry.path,
@@ -603,6 +674,18 @@ export async function streamBudgetedZip(
           ),
         ]),
       );
+      if (range.kind === "range") {
+        headers.set(
+          "Content-Range",
+          `bytes ${range.offset}-${range.offset + range.length - 1}/${plan.outputSize}`,
+        );
+        headers.set("Content-Length", String(range.length));
+        return new Response(sliceZip(guarded, range.offset, range.length), {
+          status: 206,
+          headers,
+        });
+      }
+      headers.set("Content-Length", String(plan.outputSize));
       return new Response(guarded, { status: 200, headers });
     },
     bytes,

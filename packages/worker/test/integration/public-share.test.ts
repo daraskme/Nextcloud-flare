@@ -886,6 +886,23 @@ it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets
         1,
         dependencies,
       );
+    const issueZip = (nodeId: string, key: string) =>
+      handlePublicShareHttp(
+        sessionRequest(`/api/v1/public/shares/${f.shareId}/nodes/${nodeId}/zip`, shareCookie, {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+            "Idempotency-Key": key,
+            "X-CSRF-Token": token,
+          },
+          body: "{}",
+        }),
+        shareEnv(),
+        1,
+        dependencies,
+      );
 
     const first = await issue(`/api/v1/public/shares/${f.shareId}/tickets`);
     expect(first.status).toBe(201);
@@ -949,20 +966,25 @@ it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets
     );
     expect(thumbnail.status).toBe(200);
     expect(new TextDecoder().decode(await thumbnail.arrayBuffer())).toBe("thumb");
-    const zipIssuedResponse = await issue(
-      `/api/v1/public/shares/${f.shareId}/tickets`,
-      f.owner.ids.folder,
-      "zip",
-    );
+    const zipKey = crypto.randomUUID();
+    const [zipIssuedResponse, concurrentZipReplay] = await Promise.all([
+      issueZip(f.owner.ids.folder, zipKey),
+      issueZip(f.owner.ids.folder, zipKey),
+    ]);
     expect(zipIssuedResponse.status).toBe(201);
     const zipIssued = (await zipIssuedResponse.json()) as {
       ticket: string;
+      ticketId: string;
       targetSetId: string;
+      budgetId: string;
     };
-    expect(
-      (await issue(`/api/v1/public/shares/${f.shareId}/tickets`, f.outside.ids.folder, "zip"))
-        .status,
-    ).toBe(404);
+    expect(concurrentZipReplay.status).toBe(201);
+    expect(await concurrentZipReplay.json()).toEqual(zipIssued);
+    const zipReplay = await issueZip(f.owner.ids.folder, zipKey);
+    expect(zipReplay.status).toBe(201);
+    expect(await zipReplay.json()).toEqual(zipIssued);
+    expect((await issueZip(f.owner.ids.file, zipKey)).status).toBe(409);
+    expect((await issueZip(f.outside.ids.folder, crypto.randomUUID())).status).toBe(404);
     const zipAccepted = await handleContentHttp(
       new Request(`${contentOrigin}/session`, {
         method: "POST",
@@ -974,8 +996,19 @@ it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets
     );
     expect(zipAccepted.status).toBe(201);
     const zipCookie = (zipAccepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const zipRedirect = await handlePublicShareHttp(
+      sessionRequest(
+        `/api/v1/public/shares/${f.shareId}/zips/${zipIssued.targetSetId}`,
+        shareCookie,
+      ),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(zipRedirect.status).toBe(307);
+    expect(zipRedirect.headers.get("Location")).toBe(`${contentOrigin}/z/${zipIssued.targetSetId}`);
     const zipped = await handleContentHttp(
-      new Request(`${contentOrigin}/z/${zipIssued.targetSetId}`, {
+      new Request(zipRedirect.headers.get("Location") ?? "", {
         headers: { Cookie: zipCookie },
       }),
       shareEnv(),
@@ -1014,11 +1047,7 @@ it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets
         )
       ).status,
     ).toBe(404);
-    const staleZipResponse = await issue(
-      `/api/v1/public/shares/${f.shareId}/tickets`,
-      f.owner.ids.folder,
-      "zip",
-    );
+    const staleZipResponse = await issueZip(f.owner.ids.folder, crypto.randomUUID());
     expect(staleZipResponse.status).toBe(201);
     const staleZip = (await staleZipResponse.json()) as {
       ticket: string;
@@ -1270,15 +1299,16 @@ it("does not expose media reads or ZIP tickets to upload-only share sessions", a
   expect(
     (
       await session.send(
-        `/api/v1/public/shares/${f.shareId}/tickets`,
+        `/api/v1/public/shares/${f.shareId}/nodes/${f.owner.ids.folder}/zip`,
         "POST",
-        JSON.stringify({
-          targets: [{ spaceId: f.owner.ids.space, nodeId: f.owner.ids.folder }],
-          purpose: "zip",
-          ttlSeconds: 300,
-        }),
+        "{}",
+        { "Idempotency-Key": crypto.randomUUID() },
       )
     ).status,
+  ).toBe(404);
+  expect(
+    (await session.send(`/api/v1/public/shares/${f.shareId}/zips/${crypto.randomUUID()}`, "GET"))
+      .status,
   ).toBe(404);
   expect(
     (

@@ -191,6 +191,8 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/public/shares/:shareId/tickets",
     "app DELETE /api/v1/public/shares/:shareId/tickets/:ticketId",
     "app POST /api/v1/public/shares/:shareId/content-session",
+    "app POST /api/v1/public/shares/:shareId/nodes/:nodeId/zip",
+    "app GET /api/v1/public/shares/:shareId/zips/:zipId",
   ]),
   ...bindings(appShareCsrf, "bound", "public-share", [
     "app POST /api/v1/public/shares/:shareId/csrf",
@@ -251,8 +253,6 @@ export const ROUTE_BINDINGS = [
     "app HEAD /api/v1/public/shares/:shareId/thumb/:nodeId",
   ]),
   ...bindings(appShareForm, "unavailable", "unavailable", [
-    "app POST /api/v1/public/shares/:shareId/nodes/:nodeId/zip",
-    "app GET /api/v1/public/shares/:shareId/zips/:zipId",
     "app POST /api/v1/public/shares/:shareId/nodes",
     "app PATCH /api/v1/public/shares/:shareId/nodes/:nodeId",
     "app DELETE /api/v1/public/shares/:shareId/nodes/:nodeId",

@@ -9,6 +9,10 @@
 
 upload-only、root外、action失効、stale session、encrypted、scripted、fixed-layout、malformed、oversized、unsupported publicationはfail closedを維持する。public metadata/redirect、GET/HEAD/Range、exact budget、projection破損、route bindingの回帰を追加した。migration、table、route契約の追加はない。remote migration・deploy・Cloudflare resource/secret作成は実施していない。
 
+## 2026-10-01 bounded public ZIP
+
+読み取り専用public shareへ既存のbounded ZIP STORE planner、immutable target manifest、blob pin、content ticket交換、BudgetDO、cancel/revoke fenceを接続した。専用create routeはpublic-form CSRFと`Idempotency-Key`を要求し、同一requestを同じmanifest/ticketへ収束させる。app routeは現行share sessionを検査してcontent originへredirectするだけでbodyをproxyしない。content originはHEAD、単一Range、416、range-aware budget精算を行う。upload-only routeは404を維持する。
+
 ## 2026-09-29 video・group share・multipart closure統合
 
 Queue/media/ZIP/internal share統合後のmainへ、private video metadata/track、bounded group internal share、multipart closure settlementを依存順に統合した。migrationは45件（最新`0046`）、通常tableは74、route契約は156。
@@ -16,7 +20,7 @@ Queue/media/ZIP/internal share統合後のmainへ、private video metadata/track
 - Videoはbounded MP4/WebM metadata projectionをOutboxへ追加し、current video projectionを検証した`purpose=track`でimmutable原本を配信する。audio projectionへの既存fallbackを維持する。
 - Group shareはowner管理のgroup/member lifecycle、membership version、group recipient grant、rename-stable shared mount、read-only shared DAVを追加した。share action更新は`share.version`、member削除/再追加はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
 - Multipart closureはquiet periodとbounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを追加した。
-- 画像GalleryとAudioのprivate UI、bounded EPUB index/page/entry配信もmainへ統合済み。public ZIP/media/library routeは引き続きfail closedである。
+- 画像GalleryとAudioのprivate UI、public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、private/public bounded EPUB index/page/entry配信もmainへ統合済み。Bookshelf UIは未接続である。
 
 PR #16、#17、#19はUbuntu、Windows 2分割、browser、backupの全5 CIを通過してmainへ統合済み。統合状態ではgroup budget回帰、video、multipart closure、schema/backupを対象にlint、typecheck、route/config contracts、build、focused test、backup drillを再確認した。backup drillは74 tableでPASS。remote migration・deploy・実Queue/DLQ・実Images codec・実OS DAV clientは未実施。
 
@@ -142,8 +146,8 @@ folder root向けupload-only shareをowner/public UIとWorker APIへ接続した
 | 4 trash read/restore/purge/GC | trash一覧、restore、purgeを接続。purgeはmigration `0014`のmanifestからFK順・深さ降順に確定し、7日猶予candidate化。migration `0015`のGC claimはpause/epoch/ref/複数pinを原子的に再検査し、R2 delete/head後だけdeleted/physical精算 | REST冪等再送、別trash子、深いsubtree、Outboxに加え、実R2削除、複数pin、pause、delete応答喪失、lease再取得、一方向stateを実D1/R2で検証。基本Files UIは接続済み。GC稼働中restoreのpause holdは未接続 |
 | 2 folder create HTTP | `POST /api/v1/nodes` の bounded JSON、CSRF、Idempotency-Key を LockDO/permit/D1 の folder mutation に接続。`GET /api/v1/operations/:id` は同 credential の current operand/result を照合 | 実 LockDO/D1 の作成・再送・照会、CSRF 欠落、異 payload の409を workerd で検証。test-only admission であり実 ControlDO 再開は未実装 |
 | 2 Files mutation HTTP | private REST の `DELETE /nodes/:id`、`POST /nodes/:id/move`、`POST /nodes/:id/copy` を CSRF、bounded JSON、Idempotency-Key、LockDO、固定 subtree manifest、atomic trash/MOVE/COW COPY へ接続。REST operation は `node.trash` / `node.move` / `node.copy` として DAV と区別し、consumer・復旧監査も両 provenance を検証 | copy→move→trash、各 namespace 結果、Outbox 消費、operation kind、削除後の同一 DELETE 再送を実 D1/DO で検証。ローカル実ControlDOとFiles UIを接続済み。実環境は未検証 |
-| 6 content HTTP 基盤 | content host の `/session`、`/c/:nodeId/:blobId`、`/c/:nodeId/:blobId/thumb`、`/z/:targetSetId`をticket/Cookie、現行D1認可、BudgetDO、R2へ接続。`content`/`track`は原本、`thumb`はimmutable derivative、`zip`はmanifest固定集合 | Cookie交換から実R2配信、Range、thumbnail generation fence、ZIP path/blob再検査とcancelをworkerd検証。remote署名鍵・host inventoryは未設定。page/entry/video/public ZIPと全route会計は未完了 |
-| 0.3/6 ZIP | STORE serializerのdry-run/CRC/Unicode/cancelに加え、private ticketのbounded tree、portable path、blob pin、exact output size、BudgetDO、content-origin streaming | 0/1,000 entries、ZIP32上限、重複/overlap/path衝突、R2 metadata、lease/切断をローカル検証。public ZIP、ZIP64、persisted archive、選択UIは未実装 |
+| 6 content HTTP 基盤 | content host の `/session`、`/c/:nodeId/:blobId`、`/c/:nodeId/:blobId/thumb`、`/z/:targetSetId`をticket/Cookie、現行D1認可、BudgetDO、R2へ接続。`content`/`track`は原本、`thumb`はimmutable derivative、`zip`はmanifest固定集合 | Cookie交換から実R2配信、Range/HEAD、thumbnail generation fence、ZIP path/blob再検査とcancelをworkerd検証。remote署名鍵・host inventoryは未設定。page/entry/videoと全route会計は未完了 |
+| 0.3/6 ZIP | STORE serializerのdry-run/CRC/Unicode/cancelに加え、private/public ticketのbounded tree、portable path、blob pin、exact output size、idempotent public create、BudgetDO、content-origin streaming | 0/1,000 entries、ZIP32上限、重複/overlap/path衝突、R2 metadata、Range/HEAD、lease/切断、public revoke/version/upload-onlyをローカル検証。ZIP64、persisted archive、複数選択UIは未実装 |
 | 1.1 契約・schema | 68通常テーブル + FTS、151経路、scope/operation catalogue、FK index/削除順の生成、tree/terminal/session/accounting guards | migration `0001`〜`0042`と基盤契約を追加。全機能の状態遷移・認可は未完了 |
 | 1.1 primary adapter | Sessions API を避け、全 authority query を直接 D1 binding へ発行 | 修正・回帰確認済み |
 | R6 #4 epoch | SQLite pending→R2 history→D1 mirror→公開、eviction/storage loss、例外後の照合、単一 ControlDO | ローカル実装済み。admission/復旧 verifier/再開は未完了 |

@@ -150,14 +150,26 @@ export async function encodeZipTargetManifest(
 async function stage(
   bucket: R2Bucket,
   encodedManifest: Promise<EncodedTargetManifest>,
+  requestedId?: string,
 ): Promise<TargetManifestRecord> {
   const value = await encodedManifest;
-  const id = crypto.randomUUID();
+  const id = requestedId ?? crypto.randomUUID();
+  if (!ID.test(id)) throw new Error("invalid_target_manifest");
   const ref = `target-sets/${id}`;
   const size = new TextEncoder().encode(value.json).byteLength;
   const object = await bucket.put(ref, value.json, { onlyIf: { etagDoesNotMatch: "*" } });
-  if (!object || object.size !== size) throw new Error("target_manifest_stage_failed");
   const record = Object.freeze({ id, ref, hash: value.hash, totalBytes: value.totalBytes });
+  if (!object) {
+    if (!requestedId) throw new Error("target_manifest_stage_failed");
+    try {
+      await loadTargetManifest(bucket, record);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "invalid_target_manifest") throw error;
+      throw new Error("idempotency_conflict");
+    }
+    return record;
+  }
+  if (object.size !== size) throw new Error("target_manifest_stage_failed");
   await loadTargetManifest(bucket, record);
   return record;
 }
@@ -166,16 +178,18 @@ async function stage(
 export function stageTargetManifest(
   bucket: R2Bucket,
   targets: readonly TargetEntry[],
+  requestedId?: string,
 ): Promise<TargetManifestRecord> {
-  return stage(bucket, encodeTargetManifest(targets));
+  return stage(bucket, encodeTargetManifest(targets), requestedId);
 }
 
 export function stageZipTargetManifest(
   bucket: R2Bucket,
   entries: readonly ZipTargetEntry[],
   outputSize: number,
+  requestedId?: string,
 ): Promise<TargetManifestRecord> {
-  return stage(bucket, encodeZipTargetManifest(entries, outputSize));
+  return stage(bucket, encodeZipTargetManifest(entries, outputSize), requestedId);
 }
 
 function validTarget(value: unknown): value is TargetEntry {

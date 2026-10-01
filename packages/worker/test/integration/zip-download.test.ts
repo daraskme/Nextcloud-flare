@@ -124,7 +124,28 @@ it("issues, pins, redeems and streams a deterministic folder ZIP from the conten
   );
   expect(head.status).toBe(200);
   expect(head.headers.get("Content-Length")).toBe(String(manifest.outputSize));
+  expect(head.headers.get("Accept-Ranges")).toBe("bytes");
   expect(head.body).toBeNull();
+  const ranged = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      headers: { Cookie: cookie, Range: "bytes=0-15" },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(ranged.status).toBe(206);
+  expect(ranged.headers.get("Content-Range")).toBe(`bytes 0-15/${manifest.outputSize}`);
+  expect(ranged.headers.get("Content-Length")).toBe("16");
+  const rangeBytes = new Uint8Array(await ranged.arrayBuffer());
+  const unsatisfiable = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      headers: { Cookie: cookie, Range: `bytes=${manifest.outputSize}-` },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(unsatisfiable.status).toBe(416);
+  expect(unsatisfiable.headers.get("Content-Range")).toBe(`bytes */${manifest.outputSize}`);
   const response = await handleContentHttp(
     new Request(`https://content.invalid/z/${issued.targetSetId}`, {
       headers: { Cookie: cookie, Origin: contentEnv.APP_ORIGIN },
@@ -135,12 +156,14 @@ it("issues, pins, redeems and streams a deterministic folder ZIP from the conten
   expect(response.status).toBe(200);
   expect(response.headers.get("Content-Type")).toBe("application/zip");
   expect(response.headers.get("Access-Control-Allow-Origin")).toBe(contentEnv.APP_ORIGIN);
-  const archive = unzipSync(new Uint8Array(await response.arrayBuffer()));
+  const archiveBytes = new Uint8Array(await response.arrayBuffer());
+  expect(rangeBytes).toEqual(archiveBytes.subarray(0, 16));
+  const archive = unzipSync(archiveBytes);
   expect(new TextDecoder().decode(archive["Folder/File"])).toBe("abc");
   expect(new TextDecoder().decode(archive["Folder/Nested/Second"])).toBe("de");
   expect(await env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId)).status()).toMatchObject({
-    requests: 2,
-    bytesCharged: manifest.outputSize,
+    requests: 4,
+    bytesCharged: manifest.outputSize + 16,
     byteLimit: (3 + 2 + 2 * 2_200) * 3,
   });
   const wrong = await handleContentHttp(

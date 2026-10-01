@@ -178,15 +178,18 @@ async function downloadZip(button) {
   let issued;
   try {
     csrfBody = await csrf();
-    issued = await request(`/api/v1/public/shares/${encodeURIComponent(shareId)}/tickets`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfBody.token },
-      body: JSON.stringify({
-        targets: [{ spaceId: state.share.root.spaceId, nodeId: current.id }],
-        purpose: "zip",
-        ttlSeconds: 300,
-      }),
-    });
+    issued = await request(
+      `/api/v1/public/shares/${encodeURIComponent(shareId)}/nodes/${encodeURIComponent(current.id)}/zip`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": crypto.randomUUID(),
+          "X-CSRF-Token": csrfBody.token,
+        },
+        body: "{}",
+      },
+    );
     const accepted = await fetch(`${state.share.contentOrigin}/session`, {
       method: "POST",
       credentials: "include",
@@ -196,7 +199,9 @@ async function downloadZip(button) {
       body: JSON.stringify({ ticket: issued.ticket }),
     });
     if (!accepted.ok) throw new Error(String(accepted.status));
-    location.assign(`${state.share.contentOrigin}/z/${encodeURIComponent(issued.targetSetId)}`);
+    location.assign(
+      `/api/v1/public/shares/${encodeURIComponent(shareId)}/zips/${encodeURIComponent(issued.targetSetId)}`,
+    );
   } catch {
     if (csrfBody && issued) {
       void request(

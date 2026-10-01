@@ -8,7 +8,7 @@ import type { ContentPurpose } from "../auth/contentSession";
 import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion, shareCoverageBatchAssertions } from "../auth/shareCoverage";
 import type { MutationAdmission } from "../db/mutationAdmission";
-import { assertExists, atomicBatch } from "../db/primary";
+import { assertExists, atomicBatch, primary } from "../db/primary";
 import {
   type AccountMutationEnv,
   acquireAccountMutation,
@@ -40,6 +40,17 @@ export interface IssuedContentTicket {
   readonly targetSetId: string;
   readonly budgetId: string;
   readonly expiresAt: number;
+}
+
+export interface ContentTicketIssueOptions {
+  readonly idempotencyKey?: string;
+}
+
+async function idempotencySlot(credentialId: string, key: string): Promise<string> {
+  if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new Error("invalid_idempotency_key");
+  const bytes = new TextEncoder().encode(JSON.stringify(["content.issue", credentialId, key]));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function identity(principal: Principal, share?: { readonly id: string; readonly version: number }) {
@@ -141,6 +152,7 @@ export async function issueContentTicket(
   purpose: ContentPurpose,
   expiresAt: number,
   share?: { readonly id: string; readonly version: number },
+  options: ContentTicketIssueOptions = {},
 ): Promise<IssuedContentTicket> {
   const db = env.DB;
   const now = Date.now();
@@ -156,7 +168,8 @@ export async function issueContentTicket(
     exp <= iat ||
     expiresAt > now + 600_000 ||
     (share !== undefined && principal.kind === "link_share") ||
-    (purpose === "track" && share !== undefined)
+    (purpose === "track" && share !== undefined) ||
+    (options.idempotencyKey !== undefined && purpose !== "zip")
   )
     throw new Error("invalid_content_ticket_request");
   const selectedShare =
@@ -222,50 +235,104 @@ export async function issueContentTicket(
       ),
     );
   const budget = await ensureContentBudget(env, first, expiresAt, share);
+  const slot =
+    options.idempotencyKey === undefined
+      ? undefined
+      : await idempotencySlot(principal.credential_id, options.idempotencyKey);
+  const ticketId = slot ? `ct_${slot}` : crypto.randomUUID();
+  const targetSetId = slot ? `ts_${slot}` : undefined;
   const record = zip
-    ? await stageZipTargetManifest(bucket, zip.entries, zip.outputSize)
-    : await stageTargetManifest(bucket, entries);
-  const ticketId = crypto.randomUUID();
-  const claims = {
-    ticket_id: ticketId,
-    credential_id: principal.credential_id,
-    target_set_id: record.id,
-    target_set_hash: record.hash,
-    budget_id: budget.id,
-    purpose,
-    epoch: principal.epoch,
-    user_id: identity(principal, share).userId,
-    share_id: identity(principal, share).shareId,
-    share_version: identity(principal, share).shareVersion,
-    iat,
-    exp,
-  };
+    ? await stageZipTargetManifest(bucket, zip.entries, zip.outputSize, targetSetId)
+    : await stageTargetManifest(bucket, entries, targetSetId);
   const result = Object.freeze({
     ticketId,
     targetSetId: record.id,
     budgetId: budget.id,
     expiresAt: exp * 1000,
   });
+  const guards = (guardExpiresAt: number) => [
+    assertExists("SELECT 1 WHERE ?>strftime('%s','now')*1000", [guardExpiresAt]),
+    ...authorizationBatchAssertions(proofs),
+    ...(selectedShare
+      ? shareCoverageBatchAssertions(
+          proofs.map((proof) => proof.node),
+          selectedShare,
+        )
+      : []),
+    ...(zip ? zipPathBatchAssertions(zip.entries, ownerId) : []),
+    budgetAndShareAssertion(principal, ownerId, budget.id, guardExpiresAt, share),
+  ];
+  const issueSigned = async (issuedAt: number, ticketExpiresAt: number) => {
+    const ticketIat = Math.floor(issuedAt / 1000);
+    const ticketExp = Math.floor(ticketExpiresAt / 1000);
+    const ticket = await tokens.issueTicket({
+      ticket_id: ticketId,
+      credential_id: principal.credential_id,
+      target_set_id: record.id,
+      target_set_hash: record.hash,
+      budget_id: budget.id,
+      purpose,
+      epoch: principal.epoch,
+      user_id: identity(principal, share).userId,
+      share_id: identity(principal, share).shareId,
+      share_version: identity(principal, share).shareVersion,
+      iat: ticketIat,
+      exp: ticketExp,
+    });
+    return Object.freeze({
+      ticket,
+      ticketId,
+      targetSetId: record.id,
+      budgetId: budget.id,
+      expiresAt: ticketExp * 1000,
+    });
+  };
+  const existingPublication = async (): Promise<IssuedContentTicket | null> => {
+    if (!slot) return null;
+    const existing = await primary(db)
+      .prepare(`SELECT t.issued_at AS issuedAt,t.expires_at AS expiresAt
+        FROM tickets t JOIN target_sets ts ON ts.id=t.target_set_id
+        WHERE t.id=? AND t.credential_id=? AND t.target_set_id=? AND t.budget_id=?
+          AND t.purpose=? AND t.epoch=? AND t.cancelled_at IS NULL
+          AND t.expires_at>strftime('%s','now')*1000
+          AND ts.owner_id=? AND ts.credential_id=t.credential_id
+          AND ts.manifest_ref=? AND ts.manifest_hash=? AND ts.total_bytes=?
+          AND ts.expires_at=t.expires_at AND ts.epoch=t.epoch`)
+      .bind(
+        ticketId,
+        principal.credential_id,
+        record.id,
+        budget.id,
+        purpose,
+        principal.epoch,
+        ownerId,
+        record.ref,
+        record.hash,
+        record.totalBytes,
+      )
+      .first<{ issuedAt: number; expiresAt: number }>();
+    if (!existing) return null;
+    await atomicBatch(db, guards(existing.expiresAt));
+    return issueSigned(existing.issuedAt, existing.expiresAt);
+  };
+  const replay = await existingPublication();
+  if (replay) return replay;
+  if (slot) {
+    const occupied = await primary(db)
+      .prepare("SELECT 1 FROM tickets WHERE id=? OR target_set_id=?")
+      .bind(ticketId, record.id)
+      .first<number>();
+    if (occupied !== null) throw new Error("idempotency_conflict");
+  }
   let signed: string | undefined;
   let admission: MutationAdmission | undefined;
   try {
-    signed = await tokens.issueTicket(claims);
-    const guards = [
-      assertExists("SELECT 1 WHERE ?>strftime('%s','now')*1000", [result.expiresAt]),
-      ...authorizationBatchAssertions(proofs),
-      ...(selectedShare
-        ? shareCoverageBatchAssertions(
-            proofs.map((proof) => proof.node),
-            selectedShare,
-          )
-        : []),
-      ...(zip ? zipPathBatchAssertions(zip.entries, ownerId) : []),
-      budgetAndShareAssertion(principal, ownerId, budget.id, result.expiresAt, share),
-    ];
-    await atomicBatch(db, guards);
+    signed = (await issueSigned(iat * 1000, result.expiresAt)).ticket;
+    const publicationGuards = guards(result.expiresAt);
+    await atomicBatch(db, publicationGuards);
     admission = await acquireAccountMutation(env, ownerId, principal.epoch, "content.issue");
     await commitAccountMutation(db, admission, ownerId, [
-      ...guards,
+      ...publicationGuards,
       {
         sql: `INSERT INTO target_sets
           (id,owner_id,credential_id,manifest_hash,manifest_ref,total_bytes,expires_at,epoch)
@@ -306,10 +373,44 @@ export async function issueContentTicket(
         : []),
     ]);
   } catch (error) {
+    const concurrentReplay = await existingPublication().catch(() => null);
+    if (concurrentReplay) {
+      if (admission) await closeReplayAdmission(db, admission, ticketId, record);
+      return concurrentReplay;
+    }
     await discardUnpublishedManifest(db, bucket, record, ticketId, admission, error);
     throw error;
   }
   return Object.freeze({ ...result, ticket: signed });
+}
+
+async function closeReplayAdmission(
+  db: D1Database,
+  admission: MutationAdmission,
+  ticketId: string,
+  record: TargetManifestRecord,
+): Promise<void> {
+  await atomicBatch(db, [
+    assertExists(
+      `SELECT 1 FROM tickets t JOIN target_sets ts ON ts.id=t.target_set_id
+        WHERE t.id=? AND t.target_set_id=? AND ts.manifest_ref=? AND ts.manifest_hash=?`,
+      [ticketId, record.id, record.ref, record.hash],
+    ),
+    {
+      sql: "UPDATE mutation_admissions SET state='closed' WHERE id=? AND permit_id=? AND space_id=? AND epoch=? AND expires_at=? AND state='active' AND committed_at IS NULL",
+      values: [
+        admission.id,
+        admission.permit_id,
+        admission.space_id,
+        admission.epoch,
+        admission.expires_at,
+      ],
+    },
+    assertExists(
+      "SELECT 1 FROM mutation_admissions WHERE id=? AND state='closed' AND committed_at IS NULL",
+      [admission.id],
+    ),
+  ]);
 }
 
 /** A primary absence read alone cannot fence an in-flight publication. */
