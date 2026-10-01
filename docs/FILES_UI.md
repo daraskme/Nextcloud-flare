@@ -76,8 +76,8 @@ browser scenarioは実操作・private ZIPのapp→content origin deliveryと展
 ## 残る制約
 
 - restoreは[RESTORE_GC](RESTORE_GC.md)の永続pauseを取得し、既存削除の終了後に原子的に復元する。競合・回収待ちは同じkeyで再試行する。管理者のGC停止設定は保持し、単一hold・5分期限・1,000ノード上限がある。
-- 公開/内部共有の管理画面、media metadata検索、Gallery/Bookshelf/Audio、詳細preview、offline cache、File System Access、operator画面は未実装。
-- gridの大量ページ仮想化、pagination競合の専用browser scenario、大容量/低速網/実Access/実R2/実Cookie policy/各ブラウザーのstaging試験は残る。
+- media metadata検索、詳細preview、offline cache、File System Access、operator画面は未実装。公開/内部共有の管理画面とGallery/Bookshelf/Audioは接続済み。
+- gridの大量ページ仮想化は接続済み。pagination競合の専用browser scenario、大容量/低速網/実Access/実R2/実Cookie policy/各ブラウザーのstaging試験は残る。
 - Browserの96 MiB成功は500 GiB・実R2 lifecycle・未知multipart ID閉鎖の証明ではない。既存の予約holdとrepair gateは変更していない。
 
 ## フォルダー配下の検索

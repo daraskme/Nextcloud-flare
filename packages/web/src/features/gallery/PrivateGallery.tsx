@@ -1,8 +1,15 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ArrowRight, Expand, Image, LoaderCircle, RefreshCw, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
-import { type Account, api, errorMessage, formatBytes, type GalleryItem } from "../../lib/api";
+import {
+  type Account,
+  api,
+  errorMessage,
+  formatBytes,
+  type GalleryItem,
+  type PreparedContentSession,
+} from "../../lib/api";
 
 export function PrivateGallery({ account }: { account: Account }) {
   const query = useInfiniteQuery({
@@ -20,39 +27,88 @@ export function PrivateGallery({ account }: { account: Account }) {
   const [originalUrl, setOriginalUrl] = useState("");
   const [opening, setOpening] = useState(false);
   const [thumbSession, setThumbSession] = useState(0);
+  const originalRequest = useRef<AbortController | null>(null);
+  const originalSession = useRef<PreparedContentSession | null>(null);
+  const selection = useRef(0);
 
   useEffect(() => {
     if (!ready.length || selected) return;
     const controller = new AbortController();
+    let session: PreparedContentSession | null = null;
+    setThumbUrls({});
     setThumbError("");
     void api
-      .prepareContent(account, ready, "thumb", controller.signal)
-      .then((url) => {
-        setThumbUrls(Object.fromEntries(ready.map((item) => [item.id, url(item)])));
+      .prepareContentSession(account, ready, "thumb", controller.signal)
+      .then((prepared) => {
+        if (controller.signal.aborted) {
+          void prepared.cancel().catch(() => undefined);
+          return;
+        }
+        session = prepared;
+        setThumbUrls(Object.fromEntries(ready.map((item) => [item.id, prepared.url(item)])));
       })
       .catch((error) => {
         if (!controller.signal.aborted) setThumbError(errorMessage(error));
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (session) void session.cancel().catch(() => undefined);
+    };
   }, [account, ready, selected, thumbSession]);
 
+  useEffect(
+    () => () => {
+      selection.current++;
+      originalRequest.current?.abort();
+      if (originalSession.current) void originalSession.current.cancel().catch(() => undefined);
+      originalRequest.current = null;
+      originalSession.current = null;
+    },
+    [],
+  );
+
   const open = async (item: GalleryItem) => {
+    selection.current++;
+    originalRequest.current?.abort();
+    if (originalSession.current) void originalSession.current.cancel().catch(() => undefined);
+    originalSession.current = null;
+    const currentSelection = selection.current;
+    const controller = new AbortController();
+    originalRequest.current = controller;
     setSelected(item);
     setOriginalUrl("");
     setOpening(true);
     try {
-      const url = await api.prepareContent(account, [item], "content");
-      setOriginalUrl(url(item));
+      const session = await api.prepareContentSession(
+        account,
+        [item],
+        "content",
+        controller.signal,
+      );
+      if (controller.signal.aborted || currentSelection !== selection.current) {
+        void session.cancel().catch(() => undefined);
+        return;
+      }
+      originalSession.current = session;
+      setOriginalUrl(session.url(item));
     } catch (error) {
-      setThumbError(errorMessage(error));
-      setSelected(null);
+      if (!controller.signal.aborted && currentSelection === selection.current) {
+        setThumbError(errorMessage(error));
+        setSelected(null);
+      }
     } finally {
-      setOpening(false);
+      if (currentSelection === selection.current) setOpening(false);
     }
   };
   const close = () => {
+    selection.current++;
+    originalRequest.current?.abort();
+    originalRequest.current = null;
+    if (originalSession.current) void originalSession.current.cancel().catch(() => undefined);
+    originalSession.current = null;
     setSelected(null);
     setOriginalUrl("");
+    setThumbUrls({});
     setThumbSession((value) => value + 1);
   };
 

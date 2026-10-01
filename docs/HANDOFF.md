@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-10-01。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-10-02。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -25,6 +25,8 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 ## 今回の再開点
 
+2026-10-01のmainにはgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateのUIも統合済み。2026-10-02の作業ではFiles gridを行単位で仮想化し、private Galleryのthumbnail/原本ticketを画面切替・閉じる操作で取消す。Outboxの`node.move`/`dav.move`は保存済み移動元親の現在権限を独立検査する。DAV同時接続でKDF待機が中断される問題を修正し、Worker/ControlDOの並行password要求を即時503にした。実AVIF静止画とAV1+Opus WebMの単体fixtureも追加した。`pnpm check`はNode774件・workerd2,214件、全browser39件が成功。次はmedia metadata検索、実ファイル・複数browser再生、残るoperation/Outbox/repairと復旧・運用を進める。実環境へのmigration・deployは未実施。
+
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user/group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share/policy/delegation/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。owner/recipient管理UIは現在有効な操作とprovenanceを表示し、share actionと再共有ポリシーを管理する。
 
 最新mainはmigration `0049`（全48件）・80通常tableで、bounded reshare authorityと編集可能なshared DAV authorization contextを持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
@@ -35,7 +37,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 80 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
-読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。次はgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateを並列実装する。並行してprivate mediaの実ファイル・複数browser検証、timer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。private mediaの実ファイル・複数browser検証、timer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
 次のschema変更は`0050`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
@@ -109,7 +111,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 ## 次に進める順序
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、private/public media/EPUB/ZIP、大規模非同期tree処理、bounded reshare、編集可能なshared DAV、内部共有管理UIまで実装済み。次はgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateと残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、private/public media/EPUB/ZIP、大規模非同期tree処理、bounded reshare、編集可能なshared DAV、内部共有管理UI、group lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateまで実装済み。次はmedia metadata検索と残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 
@@ -147,7 +149,7 @@ Accessのフォルダー配下検索APIとFiles検索画面を接続。共通正
 
 前回の追加は[確認付き上書き](UPLOAD_OVERWRITE.md)と[異なる配信対象のbudget台帳](BUDGET_ALLOWANCE.md)。上書きは対象node/revision/blobと元file名を保持し、全partのIf-Match、競合停止、完了応答喪失からのreceipt照合へ接続。配信budgetは認可manifestのpurpose/blobを重複排除し、対象追加でも使用量・回数・期限をリセットしない。同期transaction、1,024対象/lease・1 MiB上限、旧DO保存領域の期限までの制限を文書化した。実環境・共有/検索/media・全体admission等は引き続き未完了。全検証結果はIMPLEMENTATION_STATUSを参照。
 
-前回の追加は[KDF isolate内制限](KDF_ADMISSION.md)。app passwordの作成・検証・pepper更新を同時1件、待機256件・5秒へ制限した。取消し中の実計算が終わるまで枠を保持し、混雑は503 + Retry-Afterで返す。作成前のAccess/root検査と計算後の現行D1 assertionを維持する。Node/workerd/独立HTTPの試験を追加。ControlDOによる全体600回/分・20並列とmutation32並列・待ちqueueは未実装なので、local executorで完了扱いにしない。
+当時の[KDF isolate内制限](KDF_ADMISSION.md)はapp passwordの作成・検証・pepper更新を同時1件、待機256件・5秒へ制限した。現在は実browserの同時DAV接続でfetch eventをまたぐ待機が中断される問題を再現したため、Worker/ControlDOとも並行要求を即503へ返す。取消し中の実計算が終わるまで枠を保持し、作成前のAccess/root検査と計算後の現行D1 assertionを維持する。ControlDO/D1の全体600回/分・未精算20枠も接続済み。実Cloudflareの処理量・切断挙動は未検証。
 
 前回の追加は[本文なしHTTP操作](EMPTY_HTTP_BODY.md)。実HTTPで本文なしMKCOLが415になる不具合を修正し、DAVのCOPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutも共通検査へ接続した。実データ・既読/locked・失敗・取消しを拒否し、5秒・16回のreadで待機を制限する。Node境界13件、workerdの待機中失効/停止2件を追加し、既存D1/LockDO試験をclosed streamで拡張。独立HTTPでDAV作成から移動/コピー/削除/lock解除とticket取消しを検証した。`pnpm check`とbrowser試験は同一checkoutでは順番に実行する。並行buildによる開発サーバーreloadは進行中のfixtureを壊す。
 

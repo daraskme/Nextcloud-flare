@@ -889,6 +889,38 @@ function FileList({
   starPending: ReadonlySet<string>;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const gridScroller = useRef<HTMLDivElement>(null);
+  const [gridColumns, setGridColumns] = useState(1);
+  useEffect(() => {
+    if (view !== "grid") return;
+    const element = gridScroller.current;
+    if (!element) return;
+    const updateColumns = () => {
+      const width = element.clientWidth;
+      if (!width) return;
+      setGridColumns(
+        window.matchMedia("(max-width: 540px)").matches
+          ? 2
+          : Math.max(1, Math.floor((width + 15) / (175 + 15))),
+      );
+    };
+    updateColumns();
+    const observer = new ResizeObserver(updateColumns);
+    observer.observe(element);
+    window.addEventListener("resize", updateColumns);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateColumns);
+    };
+  }, [view]);
+  const gridRowCount = Math.ceil(rows.length / gridColumns);
+  const gridVirtual = useVirtualizer({
+    count: gridRowCount,
+    getScrollElement: () => gridScroller.current,
+    estimateSize: () => 190,
+    overscan: 3,
+    getItemKey: (index) => rows[index * gridColumns]?.id ?? `grid-row-${index}`,
+  });
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -898,37 +930,64 @@ function FileList({
   });
   if (view === "grid")
     return (
-      <div className="file-grid">
-        {rows.map((node) => (
-          <article key={node.id} className="file-card">
-            <div className="file-card-top">
-              <FileIcon node={node} />
-              <div className="file-card-actions">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="star-control"
-                  aria-label={`${node.name}を${node.starred ? "スターから外す" : "スターに追加"}`}
-                  aria-pressed={!!node.starred}
-                  disabled={starPending.has(node.id)}
-                  onClick={() => toggleStar(node)}
-                >
-                  <Star size={17} fill={node.starred ? "currentColor" : "none"} />
-                </Button>
-                {!readOnly && (!node.ownerId || node.ownerId === currentUserId) && (
-                  <NodeMenu node={node} act={act} open={() => open(node)} />
-                )}
-              </div>
+      <div ref={gridScroller} className="file-grid-scroll" role="list" aria-label="ファイル一覧">
+        <div className="file-grid-virtual" style={{ height: `${gridVirtual.getTotalSize()}px` }}>
+          {gridVirtual.getVirtualItems().map((item) => (
+            <div
+              key={item.key}
+              className="file-grid-row"
+              ref={gridVirtual.measureElement}
+              data-index={item.index}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              {rows
+                .slice(item.index * gridColumns, (item.index + 1) * gridColumns)
+                .map((node, columnIndex) => (
+                  <article
+                    key={node.id}
+                    className="file-card"
+                    role="listitem"
+                    aria-setsize={rows.length}
+                    aria-posinset={item.index * gridColumns + columnIndex + 1}
+                  >
+                    <div className="file-card-top">
+                      <FileIcon node={node} />
+                      <div className="file-card-actions">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="star-control"
+                          aria-label={`${node.name}を${node.starred ? "スターから外す" : "スターに追加"}`}
+                          aria-pressed={!!node.starred}
+                          disabled={starPending.has(node.id)}
+                          onClick={() => toggleStar(node)}
+                        >
+                          <Star size={17} fill={node.starred ? "currentColor" : "none"} />
+                        </Button>
+                        {!readOnly && (!node.ownerId || node.ownerId === currentUserId) && (
+                          <NodeMenu node={node} act={act} open={() => open(node)} />
+                        )}
+                      </div>
+                    </div>
+                    <button className="file-name" onClick={() => open(node)} title={node.name}>
+                      {node.name}
+                    </button>
+                    <p>
+                      {node.kind === "folder" ? "フォルダー" : formatBytes(node.size)}
+                      <span>{new Date(node.updatedAt).toLocaleDateString("ja-JP")}</span>
+                    </p>
+                  </article>
+                ))}
             </div>
-            <button className="file-name" onClick={() => open(node)} title={node.name}>
-              {node.name}
-            </button>
-            <p>
-              {node.kind === "folder" ? "フォルダー" : formatBytes(node.size)}
-              <span>{new Date(node.updatedAt).toLocaleDateString("ja-JP")}</span>
-            </p>
-          </article>
-        ))}
+          ))}
+        </div>
       </div>
     );
   return (

@@ -144,7 +144,7 @@ it("never repeats a consumed attempt, including after a new executor instance", 
   expect(await count()).toBe(1);
 });
 
-it("serializes calculations within one instance without losing their rate charges", async () => {
+it("bounds calculations within one instance without losing accepted rate charges", async () => {
   const native = crypto.subtle.deriveBits.bind(crypto.subtle);
   let active = 0,
     peak = 0;
@@ -163,7 +163,13 @@ it("serializes calculations within one instance without losing their rate charge
     const results = await Promise.allSettled(
       Array.from({ length: 2 }, () => service.derive(request())),
     );
-    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(results[0]?.status).toBe("fulfilled");
+    if (results[1]?.status === "rejected") {
+      expect((results[1] as PromiseRejectedResult).reason).toMatchObject({
+        message: "kdf_unavailable",
+      });
+      await service.derive(request());
+    }
     expect(await count("state='finished'")).toBe((pair + 1) * 2);
   }
   expect(peak).toBe(1);

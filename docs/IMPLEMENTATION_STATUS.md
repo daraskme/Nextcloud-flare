@@ -1,7 +1,17 @@
 # 実装進捗
 
-更新: 2026-10-01。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-10-02。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
+
+## 2026-10-02 Files grid・Gallery・Outbox・media実ファイル
+
+Files gridを行単位で仮想化し、表示幅に応じた列数とmobileの2列を維持した。スクロール外のcardを描画せず、各cardの操作と一覧上の位置を保持する。private Galleryのthumbnail/原本content sessionは、写真の切替・閉じる操作・画面離脱時にticketを取消す。遅れて返ったsessionも破棄し、旧画像のURLを再利用しない。
+
+`node.move`/`dav.move`のOutbox consumerは、保存済み移動元親の現在権限を移動済みnodeと移動先から独立して再検査する。実AVIF静止画とAV1+Opus WebMの小さなfixtureを追加し、前者の画像解析adapterへの受渡し、後者のcontainer metadata解析を検証した。実Images codecと複数browserの再生は引き続き未検証である。
+
+DAVの実browser同時接続で、fetch eventをまたぐKDF待機がworkerdで中断され、正しいsecretへの401/500や終了証明を持たない保留枠を生むことを再現した。WorkerとControlDOのpassword実行経路を同時1件・即時503へ変更し、予期しないHMAC失敗も401へ誤分類しない。8同時要求のfocused browser試験では503再試行が収束し、誤secret・失効後だけ401となった。
+
+`pnpm check`成功。lint453 file、型・route/config契約、Node 774件（50 file）・workerd 2,214件（117 file）、計**2,988件**、Web build・Worker dry-run buildが成功した。全browser **39/39件**が成功し、Files grid、Gallery ticket、DAV同時接続を含む。migration・依存追加なし。remote migration・deploy、実Cloudflare/Images codec・複数browser再生は実施していない。
 
 ## 2026-10-01 internal share管理UI
 
@@ -144,7 +154,7 @@ folder root向けupload-only shareをowner/public UIとWorker APIへ接続した
 | 2/3 作成receiptの回収 | 応答喪失後に対象revisionが進んでも同じkey/ID/capabilityを再取得し、中止できる。旧本文/確定は拒否し、二重予約/R2再初期化をしない | workerd HTTP追加5件、browser追加2件。最終結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) |
 | 2/3 上書きupload UI・配信対象budget | 確認付き上書き、target snapshot/元file名保持、single/全part If-Match、競合拒否、完了応答喪失/分割再開。BudgetDOの重複しない対象台帳と使用量保持、CORS error | browser追加3件、workerd追加6件と既存境界を検証。全check結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) / [BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md) |
 | 1/2 本文なしHTTP操作 | DAV MKCOLの415誤判定を修正。COPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutに5秒・16read上限の共通EOF検査 | Node境界13件、workerdの待機中失効/停止2件を追加。独立HTTPのDAV操作・ticket発行/交換/取消しを検証。全結果は実行記録。[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) |
-| 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、待機256件・5秒、取消し・例外時解放、503再試行、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件が成功。全check/browserの結果は実行記録。ControlDO/D1全体制限は上記へ接続済み。[KDF_ADMISSION](KDF_ADMISSION.md) |
+| 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、並行fetch eventは待機せず503、取消し・例外時解放、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件、8同時DAVのbrowser試験が成功。ControlDO/D1全体制限は上記へ接続済み。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 通常稼働中のtrash復元 | migration `0026`、永続GC pause、管理者設定保持、既存deleting drain、原子的なoperation/token/epoch/期限assertと解放alarm | 実ControlDO/LockDO/D1/R2の29件とschema制約1件を追加。連続alarm失敗6回で閉じる。実browserの復元・応答喪失再照会。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreもGC稼働中のfixtureで検証。詳細・残作業は[FILES_UI](FILES_UI.md) |
 | 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account mutation・終了証明を失ったKDFの運用収束は未完了 |

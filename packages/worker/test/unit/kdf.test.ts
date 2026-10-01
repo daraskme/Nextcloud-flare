@@ -55,6 +55,23 @@ it("releases capacity after synchronous and asynchronous exceptions", async () =
   expect(await gate.run(async () => "recovered")).toBe("recovered");
 });
 
+it("can reject a concurrent call immediately without losing the active slot", async () => {
+  const gate = new KdfExecutor(0),
+    held = deferred(),
+    entered = deferred(),
+    action = vi.fn(async () => "next");
+  const first = gate.run(async () => {
+    entered.resolve();
+    await held.promise;
+  });
+  await entered.promise;
+  await expect(gate.run(action)).rejects.toBeInstanceOf(KdfUnavailableError);
+  expect(action).not.toHaveBeenCalled();
+  held.resolve();
+  await first;
+  expect(await gate.run(action)).toBe("next");
+});
+
 it("bounds waiting work at 256 and immediately recovers cancelled queue capacity", async () => {
   const gate = new KdfExecutor(),
     held = deferred(),

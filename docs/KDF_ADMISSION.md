@@ -1,12 +1,12 @@
 # 認証KDFの実行・全体制限
 
-更新: 2026-09-29。アプリパスワードの作成・検証・pepper更新と公開share passwordの作成・unlockを、Worker内の待機制限とControlDO/D1の全体予算へ接続した。D1はmigration `0029`、ControlDO SQLiteの終了記録と修復を使用する。実CloudflareのCPU・費用・処理量・切断挙動と、共有password制限の実環境挙動は未検証。
+更新: 2026-10-02。アプリパスワードの作成・検証・pepper更新と公開share passwordの作成・unlockを、Worker内の待機制限とControlDO/D1の全体予算へ接続した。D1はmigration `0029`、ControlDO SQLiteの終了記録と修復を使用する。実CloudflareのCPU・費用・処理量・切断挙動と、共有password制限の実環境挙動は未検証。
 
 ## 実行経路
 
-Workerの`auth/kdf.ts`は1件実行・FIFO256件・待機5秒を維持する。形式・長さ検査後、HMAC pepperを計算し、`auth/globalKdf.ts`からcanonical ControlDOへ32-byte中間値と16-byte saltを渡す。元のpasswordとpepperはRPCへ渡さない。
+Workerの`auth/kdf.ts`は同時1件だけを実行し、並行するfetch eventのKDFは待機せず再試行可能な503を返す。形式・長さ検査後、HMAC pepperを計算し、`auth/globalKdf.ts`からcanonical ControlDOへ32-byte中間値と16-byte saltを渡す。元のpasswordとpepperはRPCへ渡さない。汎用`KdfExecutor`には上限付きFIFO実装も残すが、productionのpassword経路では使わない。
 
-ControlDOの`ControlKdf`は独立したexecutorで同時1件・FIFO256件を処理し、PBKDF2-SHA256を100,000回、出力32 bytesに固定する。callerからアルゴリズム・反復回数・出力長は受け付けない。現構成は単一ControlDOなので通常の計算は1件ずつであり、20並列の処理能力を意味しない。D1の20枠は旧instanceとの重複と未精算の試行も含む全体上限として使用する。600回/分を必要とする実環境の処理量・待ち時間はstagingで測定する。
+ControlDOの`ControlKdf`は同時1件だけを受け付け、実行中の並行RPCは予約やD1 claimより前に再試行可能な503へ返す。PBKDF2-SHA256を100,000回、出力32 bytesに固定し、callerからアルゴリズム・反復回数・出力長は受け付けない。現構成は単一ControlDOなので通常の計算は1件ずつであり、20並列の処理能力を意味しない。D1の20枠は旧instanceとの重複と未精算の試行も含む全体上限として使用する。600回/分を必要とする実環境の処理量・待ち時間はstagingで測定する。
 
 `AppPasswordPepperRing`と`SharePasswordPepperRing`はpurposeを分けたkey ringとderivation backendを必須とする。productionのprivate API・DAV・共有作成/unlock用設定は必ずControlDO backendを選び、ローカルPBKDF2への自動fallbackはしない。既存の暗号・認可fixtureだけがtest専用backendを明示する。発行・認証・共有password検証・pepper更新後の再検証も、それぞれ別の試行として数える。共有passwordは旧kidでの検証成功後、session作成と同じadmitted transactionでactive kidへre-hashし、参照中の旧key不足は503にする。
 
@@ -19,7 +19,7 @@ ControlDOの`ControlKdf`は独立したexecutorで同時1件・FIFO256件を処�
 | rate | 直近65秒の受付を最大600件。送信遅延最大5秒を含め、実行開始の任意60秒で600件以下となる保守的な窓 |
 | 全体の枠 | epochをまたぐ`claimed`を最大20件。期限切れやinstance再生成だけでは解放しない |
 | 送信期限 | RPC発行から最大5秒。D1が保存した期限も再検査し、遅延ACK後には計算しない |
-| queue | WorkerとControlDOそれぞれ1件実行・最大256件待機・5秒待機。期限は実行直前にも検査 |
+| queue | WorkerとControlDOのpassword経路はそれぞれ同時1件、待機列なし。実行中の別要求を503で返す。期限は実行直前にも検査 |
 | 保持と掃除 | `claimed`は削除禁止。終端receiptも65秒は保持し、次の受付で古い終端だけを削除 |
 | epoch復旧 | D1のepoch変更時に65秒のcooldownを設定。既存rate・未精算行は消さない |
 

@@ -279,6 +279,11 @@ export async function consumeOutbox(
           spaceId: row.space_id,
         }),
         await authorizeNode(db, principal, {
+          operation: "node.read",
+          nodeId: operands.sourceParentId!,
+          spaceId: row.space_id,
+        }),
+        await authorizeNode(db, principal, {
           operation: "node.create",
           parentId: operands.parentId,
           spaceId: row.space_id,

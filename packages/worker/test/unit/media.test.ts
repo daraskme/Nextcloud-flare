@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type Av1Configuration,
   av1CodecString,
@@ -11,6 +14,11 @@ import { inspectImage } from "../../src/media/images/metadata";
 import { generateThumbnail } from "../../src/media/images/thumbnail";
 import { MEDIA_SNIFF_BYTES, sniffMediaContainer } from "../../src/media/sniff";
 import { animatedPngPrefix, tinyPng } from "../fixtures/images";
+
+const avifFixturePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../fixtures/avif-still-16x12.avif",
+);
 
 function ftyp(major: string, compatible: string[] = [], extended = false) {
   const header = extended ? 16 : 8;
@@ -191,6 +199,26 @@ it("persists only bounded dimensions for a statically proven still image", async
   expect(await inspectImage({ info } as unknown as ImagesBinding, bytes)).toEqual({
     width: 1,
     height: 1,
+  });
+  expect(info).toHaveBeenCalledOnce();
+});
+
+it("forwards a real AVIF still image to the image-info adapter", async () => {
+  const bytes = new Uint8Array(await readFile(avifFixturePath));
+  const info = vi.fn(async (stream: ReadableStream<Uint8Array>) => {
+    const input = new Uint8Array(await new Response(stream).arrayBuffer());
+    expect(input).toEqual(bytes);
+    return {
+      format: "image/avif" as const,
+      fileSize: input.byteLength,
+      width: 16,
+      height: 12,
+    };
+  });
+
+  expect(await inspectImage({ info } as unknown as ImagesBinding, bytes)).toEqual({
+    width: 16,
+    height: 12,
   });
   expect(info).toHaveBeenCalledOnce();
 });

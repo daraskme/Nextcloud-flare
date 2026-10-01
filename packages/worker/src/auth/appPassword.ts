@@ -182,17 +182,21 @@ async function matchesSecret(
   const pepper = ring.keys.get(row.kid);
   if (!pepper || !/^[A-Za-z0-9_-]{22}$/.test(row.salt) || !SECRET.test(row.secret_digest))
     return false;
+  let salt: Uint8Array;
+  let expected: Uint8Array;
   try {
-    const salt = base64url.decode(row.salt);
-    const expected = base64url.decode(row.secret_digest);
-    return (
-      base64url.encode(salt) === row.salt &&
-      base64url.encode(expected) === row.secret_digest &&
-      equalBytes(await digest(secret, salt, pepper, ring.derive, signal), expected)
-    );
-  } catch (error) {
-    if (error instanceof KdfUnavailableError) throw error;
+    salt = base64url.decode(row.salt);
+    expected = base64url.decode(row.secret_digest);
+    if (base64url.encode(salt) !== row.salt || base64url.encode(expected) !== row.secret_digest)
+      return false;
+  } catch {
     return false;
+  }
+  try {
+    return equalBytes(await digest(secret, salt, pepper, ring.derive, signal), expected);
+  } catch {
+    // A transient HMAC/KDF failure cannot prove that an otherwise valid secret is wrong.
+    throw new KdfUnavailableError();
   }
 }
 

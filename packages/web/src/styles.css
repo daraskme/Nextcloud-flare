@@ -561,10 +561,21 @@ h1 {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.file-grid {
+.file-grid-scroll {
+  max-height: min(560px, calc(100dvh - 355px));
+  min-height: 132px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #dce1e8 transparent;
+}
+.file-grid-virtual {
+  position: relative;
+  width: 100%;
+}
+.file-grid-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
   gap: 15px;
+  padding-bottom: 15px;
 }
 .file-card {
   border: 1px solid #e4e8ed;
@@ -2580,6 +2591,9 @@ h1 {
   .file-scroll {
     max-height: 520px;
   }
+  .file-grid-scroll {
+    max-height: 520px;
+  }
   .main {
     padding: 22px 20px 85px;
   }
@@ -2700,9 +2714,9 @@ h1 {
   .name-cell {
     gap: 9px;
   }
-  .file-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .file-grid-row {
     gap: 11px;
+    padding-bottom: 11px;
   }
   .file-card {
     padding: 14px;
