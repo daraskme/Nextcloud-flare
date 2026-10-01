@@ -5,10 +5,13 @@ import {
   Folder,
   FolderOpen,
   LoaderCircle,
+  Pencil,
+  Plus,
   RefreshCw,
   Share2,
   ShieldCheck,
   Trash2,
+  UserPlus,
   UserRound,
   UsersRound,
 } from "lucide-react";
@@ -66,6 +69,8 @@ const actionLabel = (actions: readonly InternalShareAction[]) => {
 };
 
 const mountAuthorityChanged = (previous: SharedMount, current: SharedMount) => {
+  const previousPolicy = previous.reshareAuthority;
+  const currentPolicy = current.reshareAuthority;
   if (
     previous.shareVersion !== current.shareVersion ||
     previous.mountId !== current.mountId ||
@@ -74,10 +79,24 @@ const mountAuthorityChanged = (previous: SharedMount, current: SharedMount) => {
     previous.root.spaceId !== current.root.spaceId ||
     previous.root.ownerId !== current.root.ownerId ||
     previous.root.kind !== current.root.kind ||
+    previous.expiresAt !== current.expiresAt ||
+    previous.delegationDepth !== current.delegationDepth ||
     ACTION_ORDER.some(
       (action) => previous.actions.includes(action) !== current.actions.includes(action),
     ) ||
-    previous.provenance.kind !== current.provenance.kind
+    previous.provenance.kind !== current.provenance.kind ||
+    (previousPolicy === null) !== (currentPolicy === null) ||
+    (previousPolicy &&
+      currentPolicy &&
+      (previousPolicy.policyVersion !== currentPolicy.policyVersion ||
+        previousPolicy.maxDepth !== currentPolicy.maxDepth ||
+        previousPolicy.maxFanout !== currentPolicy.maxFanout ||
+        previousPolicy.currentFanout !== currentPolicy.currentFanout ||
+        previousPolicy.expiresAt !== currentPolicy.expiresAt ||
+        ACTION_ORDER.some(
+          (action) =>
+            previousPolicy.actions.includes(action) !== currentPolicy.actions.includes(action),
+        )))
   )
     return true;
   if (previous.provenance.kind === "direct" && current.provenance.kind === "direct")
@@ -89,6 +108,48 @@ const mountAuthorityChanged = (previous: SharedMount, current: SharedMount) => {
       previous.provenance.membershipVersion !== current.provenance.membershipVersion
     );
   return false;
+};
+
+const mountAuthorityKey = (mount: SharedMount) =>
+  [
+    mount.shareId,
+    mount.shareVersion,
+    mount.expiresAt ?? "none",
+    mount.delegationDepth,
+    mount.provenance.kind === "direct"
+      ? `direct:${mount.provenance.recipientVersion}`
+      : `group:${mount.provenance.groupId}:${mount.provenance.groupVersion}:${mount.provenance.membershipVersion}`,
+    mount.actions.join(","),
+    mount.reshareAuthority
+      ? [
+          mount.reshareAuthority.policyVersion,
+          mount.reshareAuthority.maxDepth,
+          mount.reshareAuthority.maxFanout,
+          mount.reshareAuthority.currentFanout,
+          mount.reshareAuthority.expiresAt ?? "none",
+          mount.reshareAuthority.actions.join(","),
+        ].join(":")
+      : "no-policy",
+  ].join("|");
+
+const maxReshareTtlDays = (mount: SharedMount) => {
+  const deadlines = [mount.expiresAt, mount.reshareAuthority?.expiresAt].filter(
+    (value): value is number => value !== null && value !== undefined,
+  );
+  return deadlines.length
+    ? Math.max(0, Math.floor((Math.min(...deadlines) - Date.now()) / DAY_MS))
+    : 365;
+};
+
+const canReshare = (mount: SharedMount) => {
+  const authority = mount.reshareAuthority;
+  return (
+    authority !== null &&
+    authority.actions.includes("read") &&
+    mount.delegationDepth < authority.maxDepth &&
+    authority.currentFanout < authority.maxFanout &&
+    maxReshareTtlDays(mount) >= 1
+  );
 };
 
 const policyInput = (draft: PolicyDraft): InternalShareResharePolicyInput => ({
@@ -207,6 +268,226 @@ function ResharePolicyFields({
         再共有は元の共有とこのポリシーの両方に含まれる操作だけに制限されます。
       </p>
     </div>
+  );
+}
+
+const normalizedMember = (value: string) => value.normalize("NFC").trim();
+
+function GroupDialog({
+  account,
+  group,
+  close,
+}: {
+  account: Account;
+  group?: ShareGroup;
+  close: () => void;
+}) {
+  const query = useQueryClient();
+  const [name, setName] = useState(group?.name ?? "");
+  const [memberEmails, setMemberEmails] = useState<string[]>([...(group?.memberEmails ?? [])]);
+  const [candidate, setCandidate] = useState("");
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState("");
+  const appendCandidate = () => {
+    const email = normalizedMember(candidate);
+    if (!email) return true;
+    if (email.length > 320 || !email.includes("@")) {
+      setFailure("有効なメールアドレスを入力してください。");
+      return false;
+    }
+    if (memberEmails.length >= 100) {
+      setFailure("グループには最大100人まで登録できます。");
+      return false;
+    }
+    if (
+      memberEmails.some(
+        (current) => current.toLocaleLowerCase("en-US") === email.toLocaleLowerCase("en-US"),
+      )
+    ) {
+      setFailure("同じメールアドレスは重複して登録できません。");
+      return false;
+    }
+    setMemberEmails((current) => [...current, email]);
+    setCandidate("");
+    setFailure("");
+    return true;
+  };
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const email = normalizedMember(candidate);
+    let members = memberEmails;
+    if (email) {
+      if (
+        email.length > 320 ||
+        !email.includes("@") ||
+        members.length >= 100 ||
+        members.some(
+          (current) => current.toLocaleLowerCase("en-US") === email.toLocaleLowerCase("en-US"),
+        )
+      ) {
+        setFailure("追加中のメールアドレスを確認してください。");
+        return;
+      }
+      members = [...members, email];
+    }
+    if (!name.trim()) {
+      setFailure("グループ名を入力してください。");
+      return;
+    }
+    setPending(true);
+    setFailure("");
+    try {
+      if (group) await api.updateGroup(group.id, { name: name.trim(), memberEmails: members });
+      else await api.createGroup(name.trim(), members);
+      await query.invalidateQueries({ queryKey: ["share-groups", account.id, account.epoch] });
+      close();
+    } catch (error) {
+      setFailure(errorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      title={group ? "共有グループを編集" : "共有グループを作成"}
+      description="登録済みユーザーのメールアドレスを最大100件まで指定できます。"
+      open
+      onOpenChange={(open) => {
+        if (!open && !pending) close();
+      }}
+    >
+      <form className="internal-share-form" onSubmit={(event) => void submit(event)}>
+        <fieldset disabled={pending}>
+          <legend>グループ情報</legend>
+          <label className="field-label">
+            グループ名
+            <input
+              required
+              maxLength={255}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <div className="field-label">
+            <span>メンバーのメールアドレス</span>
+            <div className="internal-member-entry">
+              <input
+                type="email"
+                maxLength={320}
+                autoComplete="off"
+                placeholder="member@example.com"
+                value={candidate}
+                onChange={(event) => setCandidate(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  appendCandidate();
+                }}
+              />
+              <Button
+                type="button"
+                size="small"
+                disabled={!candidate.trim() || memberEmails.length >= 100}
+                onClick={appendCandidate}
+              >
+                <UserPlus size={15} />
+                追加
+              </Button>
+            </div>
+          </div>
+          <div className="internal-members" aria-live="polite">
+            <div>
+              <strong>登録するメンバー</strong>
+              <span>{memberEmails.length}/100</span>
+            </div>
+            {memberEmails.length ? (
+              <ul>
+                {memberEmails.map((email) => (
+                  <li key={email.toLocaleLowerCase("en-US")}>
+                    <span>{email}</span>
+                    <button
+                      type="button"
+                      aria-label={`${email} を削除`}
+                      onClick={() =>
+                        setMemberEmails((current) => current.filter((item) => item !== email))
+                      }
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>メンバーはまだ指定されていません。</p>
+            )}
+          </div>
+          <p className="internal-inline-note">
+            保存時にサーバーが現在有効なユーザーを照合します。見つからない相手は登録されません。
+          </p>
+        </fieldset>
+        {failure && (
+          <p className="form-error" role="alert">
+            {failure}
+          </p>
+        )}
+        <div className="dialog-actions">
+          <Button variant="ghost" disabled={pending} onClick={close}>
+            閉じる
+          </Button>
+          <Button type="submit" variant="primary" disabled={pending}>
+            {pending ? <LoaderCircle className="spin" size={16} /> : <UsersRound size={16} />}
+            {group ? "変更を保存" : "グループを作成"}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+function GroupCard({
+  group,
+  edit,
+  disable,
+}: {
+  group: ShareGroup;
+  edit: (group: ShareGroup) => void;
+  disable: (group: ShareGroup) => void;
+}) {
+  return (
+    <article className="internal-card">
+      <div className="internal-card-heading">
+        <span className="internal-card-icon group">
+          <UsersRound size={20} />
+        </span>
+        <div>
+          <h3>{group.name}</h3>
+          <p>{group.memberEmails.length} 人のメンバー</p>
+        </div>
+        <span className="internal-status active">有効</span>
+      </div>
+      <div className="internal-group-members">
+        <strong>メンバー</strong>
+        {group.memberEmails.length ? (
+          <ul>
+            {group.memberEmails.map((email) => (
+              <li key={email.toLocaleLowerCase("en-US")}>{email}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>メンバーは登録されていません。</p>
+        )}
+      </div>
+      <div className="internal-card-actions">
+        <Button size="small" onClick={() => edit(group)}>
+          <Pencil size={15} />
+          名前とメンバーを編集
+        </Button>
+        <Button size="small" variant="danger" onClick={() => disable(group)}>
+          <Trash2 size={15} />
+          グループを無効化
+        </Button>
+      </div>
+    </article>
   );
 }
 
@@ -781,7 +1062,287 @@ function OwnedShareCard({
   );
 }
 
-function SharedMountCard({ mount }: { mount: SharedMount }) {
+interface RecipientGroupOption {
+  id: string;
+  name: string;
+  version: number;
+  membershipVersion: number;
+}
+
+const recipientGroupOptions = (
+  mounts: readonly SharedMount[],
+  ownerId: string,
+): RecipientGroupOption[] => {
+  const groups = new Map<string, RecipientGroupOption>();
+  for (const mount of mounts) {
+    if (mount.owner.id !== ownerId || mount.provenance.kind !== "group") continue;
+    groups.set(mount.provenance.groupId, {
+      id: mount.provenance.groupId,
+      name: mount.provenance.groupName,
+      version: mount.provenance.groupVersion,
+      membershipVersion: mount.provenance.membershipVersion,
+    });
+  }
+  return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name, "ja"));
+};
+
+function RecipientReshareDialog({
+  account,
+  mount,
+  recipientGroups,
+  refreshAuthority,
+  close,
+}: {
+  account: Account;
+  mount: SharedMount;
+  recipientGroups: readonly RecipientGroupOption[];
+  refreshAuthority: () => Promise<{
+    mount: SharedMount | undefined;
+    recipientGroups: readonly RecipientGroupOption[];
+  }>;
+  close: () => void;
+}) {
+  const query = useQueryClient();
+  const authority = mount.reshareAuthority;
+  const maxTtlDays = maxReshareTtlDays(mount);
+  const [recipientKind, setRecipientKind] = useState<"direct" | "group">("direct");
+  const [email, setEmail] = useState("");
+  const [groupId, setGroupId] = useState(recipientGroups[0]?.id ?? "");
+  const [download, setDownload] = useState(authority?.actions.includes("download") ?? false);
+  const [create, setCreate] = useState(authority?.actions.includes("create") ?? false);
+  const [edit, setEdit] = useState(authority?.actions.includes("edit") ?? false);
+  const [ttlDays, setTtlDays] = useState(Math.min(30, Math.max(1, maxTtlDays)));
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState("");
+  if (!authority) return null;
+  const rotateKey = () => setIdempotencyKey(crypto.randomUUID());
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setPending(true);
+    setFailure("");
+    try {
+      const latest = await refreshAuthority();
+      if (!latest.mount || mountAuthorityChanged(mount, latest.mount)) {
+        setFailure("再共有の権限が変更されました。最新の内容を確認してください。");
+        return;
+      }
+      const latestAuthority = latest.mount.reshareAuthority;
+      const actions = selectedActions({ download, create, edit });
+      const selectedRecipient =
+        recipientKind === "direct" ? { email: email.trim() } : { groupId: groupId.trim() };
+      const selectedGroup =
+        "groupId" in selectedRecipient
+          ? recipientGroups.find((group) => group.id === selectedRecipient.groupId)
+          : undefined;
+      const latestGroup = selectedGroup
+        ? latest.recipientGroups.find((group) => group.id === selectedGroup.id)
+        : undefined;
+      const groupStillCurrent =
+        selectedGroup !== undefined &&
+        latestGroup?.version === selectedGroup.version &&
+        latestGroup.membershipVersion === selectedGroup.membershipVersion;
+      if (
+        !latestAuthority ||
+        !canReshare(latest.mount) ||
+        actions.some((action) => !latestAuthority.actions.includes(action)) ||
+        ttlDays > maxReshareTtlDays(latest.mount) ||
+        !("email" in selectedRecipient ? selectedRecipient.email : groupStillCurrent)
+      ) {
+        setFailure("現在の権限ではこの再共有を作成できません。最新の内容を確認してください。");
+        return;
+      }
+      await api.createInternalReshare(
+        latest.mount,
+        selectedRecipient,
+        actions,
+        ttlDays,
+        idempotencyKey,
+      );
+      await Promise.all([
+        query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] }),
+        query.invalidateQueries({ queryKey: ["shared-with-me", account.id, account.epoch] }),
+      ]);
+      close();
+    } catch (error) {
+      setFailure(errorMessage(error));
+      await query.invalidateQueries({ queryKey: ["shared-with-me", account.id, account.epoch] });
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      title="受信共有を再共有"
+      description="サーバーが返した現在の操作、深度、ファンアウト、期限の範囲内で作成します。"
+      open
+      onOpenChange={(open) => {
+        if (!open && !pending) close();
+      }}
+    >
+      <form className="internal-share-form" onSubmit={(event) => void submit(event)}>
+        <fieldset disabled={pending}>
+          <legend>現在の再共有上限</legend>
+          <div className="internal-policy-summary">
+            <strong>{mount.root.name}</strong>
+            <span>操作: {actionLabel(authority.actions)}</span>
+            <span>
+              深度 {mount.delegationDepth}/{authority.maxDepth}
+            </span>
+            <span>
+              ファンアウト {authority.currentFanout}/{authority.maxFanout}
+            </span>
+            <span>最長 {maxTtlDays} 日</span>
+          </div>
+        </fieldset>
+        <fieldset disabled={pending}>
+          <legend>共有相手</legend>
+          <div className="internal-segmented">
+            <button
+              type="button"
+              aria-pressed={recipientKind === "direct"}
+              onClick={() => {
+                setRecipientKind("direct");
+                rotateKey();
+              }}
+            >
+              <UserRound size={16} />
+              ユーザー
+            </button>
+            <button
+              type="button"
+              disabled={!recipientGroups.length}
+              aria-pressed={recipientKind === "group"}
+              onClick={() => {
+                setRecipientKind("group");
+                rotateKey();
+              }}
+            >
+              <UsersRound size={16} />
+              既知のグループ
+            </button>
+          </div>
+          {recipientKind === "direct" ? (
+            <label className="field-label">
+              相手のメールアドレス
+              <input
+                required
+                type="email"
+                maxLength={320}
+                autoComplete="off"
+                value={email}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  rotateKey();
+                }}
+              />
+            </label>
+          ) : (
+            <label className="field-label">
+              共有元の所有者が管理する既知のグループ
+              <select
+                required
+                value={groupId}
+                onChange={(event) => {
+                  setGroupId(event.target.value);
+                  rotateKey();
+                }}
+              >
+                {recipientGroups.map((group) => (
+                  <option
+                    key={`${group.id}:${group.version}:${group.membershipVersion}`}
+                    value={group.id}
+                  >
+                    {group.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {!recipientGroups.length && (
+            <p className="internal-inline-note">
+              グループ再共有は、現在あなたが所属している、この所有者の共有グループだけを選択できます。
+            </p>
+          )}
+        </fieldset>
+        <fieldset disabled={pending}>
+          <legend>有効期限と操作</legend>
+          <label className="field-label">
+            有効期間（日）
+            <input
+              required
+              type="number"
+              min={1}
+              max={maxTtlDays}
+              value={ttlDays}
+              onChange={(event) => {
+                setTtlDays(Number(event.target.value));
+                rotateKey();
+              }}
+            />
+          </label>
+          <label className="internal-check">
+            <input type="checkbox" checked disabled />
+            閲覧
+          </label>
+          {(["download", "create", "edit"] as const).map((action) =>
+            authority.actions.includes(action) ? (
+              <label className="internal-check" key={action}>
+                <input
+                  type="checkbox"
+                  checked={{ download, create, edit }[action]}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    if (action === "download") setDownload(checked);
+                    else if (action === "create") setCreate(checked);
+                    else setEdit(checked);
+                    rotateKey();
+                  }}
+                />
+                {ACTION_LABELS[action]}
+              </label>
+            ) : null,
+          )}
+          <p className="internal-inline-note">
+            表示されない操作は選択できません。保存時にもサーバーが現在の権限を再確認します。
+          </p>
+        </fieldset>
+        {failure && (
+          <p className="form-error" role="alert">
+            {failure}
+          </p>
+        )}
+        <div className="dialog-actions">
+          <Button variant="ghost" disabled={pending} onClick={close}>
+            閉じる
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={
+              pending ||
+              ttlDays < 1 ||
+              ttlDays > maxTtlDays ||
+              (recipientKind === "group" && !recipientGroups.length)
+            }
+          >
+            {pending ? <LoaderCircle className="spin" size={16} /> : <Share2 size={16} />}
+            再共有を作成
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+function SharedMountCard({
+  mount,
+  reshare,
+}: {
+  mount: SharedMount;
+  reshare: (mount: SharedMount) => void;
+}) {
+  const authority = mount.reshareAuthority;
   return (
     <article className="internal-card internal-mount-card">
       <div className="internal-card-heading">
@@ -819,7 +1380,24 @@ function SharedMountCard({ mount }: { mount: SharedMount }) {
           <dt>マウント名</dt>
           <dd>{mount.mountName}</dd>
         </div>
+        <div>
+          <dt>有効期限</dt>
+          <dd>{mount.expiresAt ? date(mount.expiresAt) : "—"}</dd>
+        </div>
       </dl>
+      {authority && (
+        <div className="internal-policy-summary">
+          <strong>現在の再共有上限</strong>
+          <span>操作: {actionLabel(authority.actions)}</span>
+          <span>
+            深度 {mount.delegationDepth}/{authority.maxDepth}
+          </span>
+          <span>
+            ファンアウト {authority.currentFanout}/{authority.maxFanout}
+          </span>
+          <span>最長 {maxReshareTtlDays(mount)} 日</span>
+        </div>
+      )}
       <div className="internal-card-actions">
         <Button asChild variant="primary" size="small">
           <Link to="/shared/$shareId" params={{ shareId: mount.shareId }}>
@@ -827,6 +1405,12 @@ function SharedMountCard({ mount }: { mount: SharedMount }) {
             共有フォルダーを開く
           </Link>
         </Button>
+        {canReshare(mount) && (
+          <Button size="small" onClick={() => reshare(mount)}>
+            <Share2 size={15} />
+            再共有
+          </Button>
+        )}
       </div>
     </article>
   );
@@ -835,6 +1419,12 @@ function SharedMountCard({ mount }: { mount: SharedMount }) {
 export function InternalShares({ account }: { account: Account }) {
   const query = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<ShareGroup | null>(null);
+  const [disablingGroup, setDisablingGroup] = useState<ShareGroup | null>(null);
+  const [groupPending, setGroupPending] = useState(false);
+  const [groupFailure, setGroupFailure] = useState("");
+  const [resharingId, setResharingId] = useState<string | null>(null);
   const [editingPolicy, setEditingPolicy] = useState<InternalShare | null>(null);
   const [revoking, setRevoking] = useState<InternalShare | null>(null);
   const [revokePending, setRevokePending] = useState(false);
@@ -877,6 +1467,7 @@ export function InternalShares({ account }: { account: Account }) {
     (share): share is InternalShare => share.kind === "internal",
   );
   const mounts = received.data?.shares ?? [];
+  const resharing = mounts.find((mount) => mount.shareId === resharingId);
   const activeOwned = internal.filter(
     (share) =>
       share.disabledAt === null && (share.expiresAt === null || share.expiresAt > Date.now()),
@@ -898,6 +1489,23 @@ export function InternalShares({ account }: { account: Account }) {
       setRevokeFailure(errorMessage(error));
     } finally {
       setRevokePending(false);
+    }
+  };
+  const disableGroup = async () => {
+    if (!disablingGroup) return;
+    setGroupPending(true);
+    setGroupFailure("");
+    try {
+      await api.disableGroup(disablingGroup.id);
+      await Promise.all([
+        query.invalidateQueries({ queryKey: ["share-groups", account.id, account.epoch] }),
+        query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] }),
+      ]);
+      setDisablingGroup(null);
+    } catch (error) {
+      setGroupFailure(errorMessage(error));
+    } finally {
+      setGroupPending(false);
     }
   };
   return (
@@ -933,6 +1541,58 @@ export function InternalShares({ account }: { account: Account }) {
           </Button>
         </div>
       )}
+      <section className="internal-section" aria-labelledby="share-groups-heading">
+        <div className="internal-section-heading">
+          <div>
+            <p className="eyebrow">SHARE GROUPS</p>
+            <h2 id="share-groups-heading">共有グループ</h2>
+          </div>
+          <div className="internal-section-actions">
+            <p>所有者として管理する、最大100人の内部共有グループです。</p>
+            <Button size="small" onClick={() => setCreatingGroup(true)}>
+              <Plus size={15} />
+              グループを作成
+            </Button>
+          </div>
+        </div>
+        {groups.error ? (
+          <div className="internal-panel-error" role="alert">
+            <p>{errorMessage(groups.error)}</p>
+            <Button size="small" onClick={() => void groups.refetch()}>
+              再試行
+            </Button>
+          </div>
+        ) : groups.isPending ? (
+          <div className="internal-panel-loading">
+            <LoaderCircle className="spin" size={22} />
+            共有グループを読み込んでいます
+          </div>
+        ) : groups.data.groups.length ? (
+          <div className="internal-card-grid">
+            {groups.data.groups.map((group) => (
+              <GroupCard
+                key={`${group.id}:${group.version}`}
+                group={group}
+                edit={setEditingGroup}
+                disable={(current) => {
+                  setGroupFailure("");
+                  setDisablingGroup(current);
+                }}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="internal-panel-empty">
+            <UsersRound size={31} />
+            <h3>共有グループはまだありません</h3>
+            <p>登録済みユーザーをまとめて、同じ権限で共有できます。</p>
+            <Button size="small" onClick={() => setCreatingGroup(true)}>
+              <Plus size={15} />
+              最初のグループを作成
+            </Button>
+          </div>
+        )}
+      </section>
       <section className="internal-section" aria-labelledby="received-shares-heading">
         <div className="internal-section-heading">
           <div>
@@ -956,7 +1616,11 @@ export function InternalShares({ account }: { account: Account }) {
         ) : mounts.length ? (
           <div className="internal-card-grid">
             {mounts.map((mount) => (
-              <SharedMountCard key={`${mount.shareId}:${mount.shareVersion}`} mount={mount} />
+              <SharedMountCard
+                key={mountAuthorityKey(mount)}
+                mount={mount}
+                reshare={(current) => setResharingId(current.shareId)}
+              />
             ))}
           </div>
         ) : (
@@ -1017,12 +1681,62 @@ export function InternalShares({ account }: { account: Account }) {
           close={() => setCreating(false)}
         />
       )}
+      {creatingGroup && <GroupDialog account={account} close={() => setCreatingGroup(false)} />}
+      {!!editingGroup && (
+        <GroupDialog account={account} group={editingGroup} close={() => setEditingGroup(null)} />
+      )}
+      {!!resharing && canReshare(resharing) && (
+        <RecipientReshareDialog
+          key={mountAuthorityKey(resharing)}
+          account={account}
+          mount={resharing}
+          recipientGroups={recipientGroupOptions(mounts, resharing.owner.id)}
+          refreshAuthority={async () => {
+            const result = await received.refetch();
+            const currentMounts = result.data?.shares ?? [];
+            const mount = currentMounts.find((current) => current.shareId === resharing.shareId);
+            return {
+              mount,
+              recipientGroups: recipientGroupOptions(
+                currentMounts,
+                mount?.owner.id ?? resharing.owner.id,
+              ),
+            };
+          }}
+          close={() => setResharingId(null)}
+        />
+      )}
       {!!editingPolicy && (
         <ResharePolicyDialog
           account={account}
           share={editingPolicy}
           close={() => setEditingPolicy(null)}
         />
+      )}
+      {!!disablingGroup && (
+        <Dialog
+          title="共有グループを無効化しますか"
+          description={`${disablingGroup.name} を使う共有と、その下流の再共有はサーバー側で取り消されます。`}
+          open
+          onOpenChange={(open) => {
+            if (!open && !groupPending) setDisablingGroup(null);
+          }}
+        >
+          {groupFailure && (
+            <p className="form-error" role="alert">
+              {groupFailure}
+            </p>
+          )}
+          <div className="dialog-actions">
+            <Button variant="ghost" disabled={groupPending} onClick={() => setDisablingGroup(null)}>
+              閉じる
+            </Button>
+            <Button variant="danger" disabled={groupPending} onClick={() => void disableGroup()}>
+              {groupPending ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
+              グループを無効化
+            </Button>
+          </div>
+        </Dialog>
       )}
       {!!revoking && (
         <Dialog

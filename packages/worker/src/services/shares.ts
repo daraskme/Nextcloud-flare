@@ -1132,16 +1132,40 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       ), live_share(
         shareId,shareVersion,mountName,rootId,spaceId,ownerId,rootName,rootKind,rootRevision,
         ownerEmail,provenanceKind,recipientVersion,groupId,groupName,groupVersion,membershipVersion,
-        depth,path,currentId,currentKind,parentId,deletedAt
+        expiresAt,delegationDepth,policyVersion,policyExpiresAt,policyMaxDepth,policyMaxFanout,
+        currentFanout,policyActions,depth,path,currentId,currentKind,parentId,deletedAt
       ) AS (
         SELECT sh.id,sh.version,sh.mount_name,n.id,n.space_id,n.owner_id,n.name,n.kind,n.revision,
           owner.email,recipient.provenanceKind,recipient.recipientVersion,recipient.groupId,
           recipient.groupName,recipient.groupVersion,recipient.membershipVersion,
+          sh.expires_at,current.depth,policy.version,policy.expires_at,policy.max_depth,
+          policy.max_fanout,
+          CASE WHEN policy.share_id IS NULL THEN NULL ELSE (
+            SELECT COUNT(*) FROM share_delegations child
+            JOIN share_delegation_status status
+              ON status.share_id=child.share_id AND status.valid=1
+            JOIN shares child_share ON child_share.id=child.share_id
+              AND child_share.disabled_at IS NULL
+              AND (child_share.expires_at IS NULL
+                OR child_share.expires_at>strftime('%s','now')*1000)
+            WHERE child.source_share_id=sh.id
+          ) END,
+          CASE WHEN policy.share_id IS NULL THEN NULL ELSE (
+            SELECT json_group_array(action) FROM (
+              SELECT action FROM share_reshare_policy_actions
+              WHERE share_id=policy.share_id ORDER BY action
+            )
+          ) END,
           0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
         FROM recipient_share recipient
         JOIN shares sh ON sh.id=recipient.shareId
         JOIN current_internal_shares current
           ON current.share_id=sh.id AND current.version=sh.version
+        LEFT JOIN share_reshare_policies policy
+          ON policy.share_id=COALESCE(current.policy_share_id,sh.id)
+          AND policy.version=COALESCE(current.policy_version,policy.version)
+          AND policy.enabled=1
+          AND (policy.expires_at IS NULL OR policy.expires_at>strftime('%s','now')*1000)
         JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
         JOIN nodes n ON n.id=sh.root_node_id AND n.owner_id=sh.owner_id
         JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=? AND ctl.maintenance=0
@@ -1151,7 +1175,9 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
         UNION ALL
         SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
           a.rootKind,a.rootRevision,a.ownerEmail,a.provenanceKind,a.recipientVersion,
-          a.groupId,a.groupName,a.groupVersion,a.membershipVersion,a.depth+1,a.path||p.id||'/',
+          a.groupId,a.groupName,a.groupVersion,a.membershipVersion,a.expiresAt,
+          a.delegationDepth,a.policyVersion,a.policyExpiresAt,a.policyMaxDepth,
+          a.policyMaxFanout,a.currentFanout,a.policyActions,a.depth+1,a.path||p.id||'/',
           p.id,p.kind,p.parent_id,p.deleted_at
         FROM live_share a JOIN nodes p ON p.id=a.parentId
         WHERE a.depth<64 AND p.space_id=a.spaceId AND p.owner_id=a.ownerId
@@ -1159,7 +1185,9 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       )
       SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
         a.rootKind,a.rootRevision,a.ownerEmail,a.provenanceKind,a.recipientVersion,
-        a.groupId,a.groupName,a.groupVersion,a.membershipVersion,
+        a.groupId,a.groupName,a.groupVersion,a.membershipVersion,a.expiresAt,
+        a.delegationDepth,a.policyVersion,a.policyExpiresAt,a.policyMaxDepth,
+        a.policyMaxFanout,a.currentFanout,a.policyActions,
         (SELECT json_group_array(action) FROM (
           SELECT action FROM share_actions WHERE share_id=a.shareId ORDER BY action
         )) AS actions
@@ -1189,14 +1217,38 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       groupName: string | null;
       groupVersion: number | null;
       membershipVersion: number | null;
+      expiresAt: number | null;
+      delegationDepth: number;
+      policyVersion: number | null;
+      policyExpiresAt: number | null;
+      policyMaxDepth: number | null;
+      policyMaxFanout: number | null;
+      currentFanout: number | null;
+      policyActions: string | null;
       actions: string;
     };
+    const actions = canonicalActions(JSON.parse(row.actions) as string[]);
     return Object.freeze({
       shareId: row.shareId,
       shareVersion: row.shareVersion,
       mountId: row.shareId,
       mountName: row.mountName,
-      actions: canonicalActions(JSON.parse(row.actions) as string[]),
+      actions,
+      expiresAt: row.expiresAt,
+      delegationDepth: row.delegationDepth,
+      reshareAuthority:
+        row.policyVersion === null
+          ? null
+          : {
+              policyVersion: row.policyVersion,
+              actions: canonicalActions(JSON.parse(row.policyActions ?? "[]") as string[]).filter(
+                (action) => actions.includes(action),
+              ),
+              maxDepth: row.policyMaxDepth!,
+              maxFanout: row.policyMaxFanout!,
+              currentFanout: row.currentFanout!,
+              expiresAt: row.policyExpiresAt,
+            },
       root: {
         id: row.rootId,
         spaceId: row.spaceId,

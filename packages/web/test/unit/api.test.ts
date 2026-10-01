@@ -170,6 +170,82 @@ it("uses private CSRF mutations for direct and group internal shares", async () 
     expect(init.headers["X-CSRF-Token"]).toBe("csrf");
 });
 
+it("uses private CSRF mutations for share groups and bounded downstream resharing", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(Response.json({ id: "group" }, { status: 201 }))
+    .mockResolvedValueOnce(Response.json({ id: "group", name: "Renamed" }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(Response.json({ id: "child-direct" }, { status: 201 }))
+    .mockResolvedValueOnce(Response.json({ id: "child-group" }, { status: 201 }));
+  vi.stubGlobal("fetch", fetcher);
+  const api = new ApiClient();
+  await api.createGroup("Editors", ["alice@example.invalid", "bob@example.invalid"]);
+  await api.updateGroup("group", {
+    name: "Renamed",
+    memberEmails: ["alice@example.invalid"],
+  });
+  await api.disableGroup("group");
+  const source = {
+    shareId: "source",
+    root: {
+      id: "folder",
+      spaceId: "space",
+      ownerId: "owner",
+      name: "Shared",
+      kind: "folder" as const,
+      revision: 1,
+    },
+  };
+  await api.createInternalReshare(
+    source,
+    { email: "carol@example.invalid" },
+    ["read", "download"],
+    5,
+    "direct-key",
+  );
+  await api.createInternalReshare(source, { groupId: "group" }, ["read"], 3, "group-key");
+
+  expect(fetcher.mock.calls.slice(1).map(([path, init]) => [path, init.method])).toEqual([
+    ["/api/v1/groups", "POST"],
+    ["/api/v1/groups/group", "PATCH"],
+    ["/api/v1/groups/group", "DELETE"],
+    ["/api/v1/shares", "POST"],
+    ["/api/v1/shares", "POST"],
+  ]);
+  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({
+    name: "Editors",
+    memberEmails: ["alice@example.invalid", "bob@example.invalid"],
+  });
+  expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({
+    name: "Renamed",
+    memberEmails: ["alice@example.invalid"],
+  });
+  expect(JSON.parse(fetcher.mock.calls[4]![1].body)).toEqual({
+    kind: "internal",
+    sourceShareId: "source",
+    rootNodeId: "folder",
+    spaceId: "space",
+    recipientEmail: "carol@example.invalid",
+    actions: ["read", "download"],
+    ttlDays: 5,
+  });
+  expect(fetcher.mock.calls[4]![1].headers["Idempotency-Key"]).toBe("direct-key");
+  expect(JSON.parse(fetcher.mock.calls[5]![1].body)).toEqual({
+    kind: "internal",
+    sourceShareId: "source",
+    rootNodeId: "folder",
+    spaceId: "space",
+    recipientGroupId: "group",
+    actions: ["read"],
+    ttlDays: 3,
+  });
+  expect(fetcher.mock.calls[5]![1].headers["Idempotency-Key"]).toBe("group-key");
+  for (const [, init] of fetcher.mock.calls.slice(1))
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf");
+});
+
 it("cancels stale shared-mount reads with the caller signal", async () => {
   let signal!: AbortSignal;
   vi.stubGlobal(

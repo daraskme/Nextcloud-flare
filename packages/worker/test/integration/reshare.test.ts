@@ -93,6 +93,21 @@ it("serves owner policy and exact downstream idempotency through the API", async
     maxFanout: 3,
     version: 1,
   });
+  await expect(listSharedWithMe(env.DB, f.aliceSession)).resolves.toEqual([
+    expect.objectContaining({
+      shareId: source.id,
+      expiresAt: source.expiresAt,
+      delegationDepth: 0,
+      reshareAuthority: {
+        policyVersion: 1,
+        actions: ["read", "download"],
+        maxDepth: 3,
+        maxFanout: 3,
+        currentFanout: 0,
+        expiresAt: source.resharePolicy?.expiresAt,
+      },
+    }),
+  ]);
   const csrf = { verify: vi.fn(async () => undefined) };
   const serviceEnv = { ...mutationEnv(), APP_ORIGIN: "https://app.invalid" };
   const body = {
@@ -129,6 +144,12 @@ it("serves owner policy and exact downstream idempotency through the API", async
   const first = await create();
   expect(first.status).toBe(201);
   const created = (await first.json()) as { id: string; mountName: string };
+  await expect(listSharedWithMe(env.DB, f.aliceSession)).resolves.toEqual([
+    expect.objectContaining({
+      shareId: source.id,
+      reshareAuthority: expect.objectContaining({ currentFanout: 1 }),
+    }),
+  ]);
   const replay = await create();
   expect(replay.status).toBe(201);
   await expect(replay.json()).resolves.toEqual(expect.objectContaining({ id: created.id }));
@@ -158,7 +179,18 @@ it("serves owner policy and exact downstream idempotency through the API", async
   );
   expect(conflict.status).toBe(409);
   expect(await listSharedWithMe(env.DB, f.bobSession)).toEqual([
-    expect.objectContaining({ shareId: created.id, mountName: created.mountName }),
+    expect.objectContaining({
+      shareId: created.id,
+      mountName: created.mountName,
+      delegationDepth: 1,
+      reshareAuthority: expect.objectContaining({
+        policyVersion: 1,
+        actions: ["read", "download"],
+        maxDepth: 3,
+        maxFanout: 3,
+        currentFanout: 0,
+      }),
+    }),
   ]);
   const narrowed = await handleShareHttp(
     new Request(`https://app.invalid/api/v1/shares/${created.id}`, {
@@ -283,6 +315,13 @@ it("does not infer delegation authority from ordinary internal-share access", as
     recipientEmail: f.aliceEmail,
     actions: ["read", "download"],
   });
+  await expect(listSharedWithMe(env.DB, f.aliceSession)).resolves.toEqual([
+    expect.objectContaining({
+      shareId: source.id,
+      delegationDepth: 0,
+      reshareAuthority: null,
+    }),
+  ]);
   await expect(
     createInternalShare(mutationEnv(), f.aliceSession, {
       sourceShareId: source.id,
@@ -293,6 +332,41 @@ it("does not infer delegation authority from ordinary internal-share access", as
       idempotencyKey: "no-policy",
     }),
   ).rejects.toThrow("share_source_not_found");
+});
+
+it("creates a bounded downstream group share owned by the source owner", async () => {
+  const f = await fixture();
+  const source = await directSource(f, { actions: ["read"], maxDepth: 2, maxFanout: 2 });
+  const target = await createShareGroup(mutationEnv(), f.ownerSession, {
+    name: "Downstream recipients",
+    memberEmails: [f.bobEmail, f.carolEmail],
+  });
+  const child = await createInternalShare(mutationEnv(), f.aliceSession, {
+    sourceShareId: source.id,
+    rootNodeId: f.owner.ids.folder,
+    spaceId: f.owner.ids.space,
+    recipientGroupId: target.id,
+    actions: ["read"],
+    ttlDays: 5,
+    idempotencyKey: "downstream-group",
+  });
+  await expect(listSharedWithMe(env.DB, f.bobSession)).resolves.toEqual([
+    expect.objectContaining({
+      shareId: child.id,
+      actions: ["read"],
+      delegationDepth: 1,
+      provenance: {
+        kind: "group",
+        groupId: target.id,
+        groupName: target.name,
+        groupVersion: target.version,
+        membershipVersion: 1,
+      },
+    }),
+  ]);
+  await expect(listSharedWithMe(env.DB, f.carolSession)).resolves.toEqual([
+    expect.objectContaining({ shareId: child.id }),
+  ]);
 });
 
 it("invalidates group descendants and stale budgets across removal and re-addition", async () => {
