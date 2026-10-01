@@ -27,7 +27,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user/group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share/policy/delegation/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。owner/recipient管理UIは現在有効な操作とprovenanceを表示し、share actionと再共有ポリシーを管理する。
 
-最新mainはmigration `0049`（全48件）・80通常tableで、bounded reshare authorityと編集可能なshared DAV authorization contextを持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
+最新の統合headはmigration `0052`（全51件、`0045`欠番）・82通常tableで、bounded reshare authority、編集可能なshared DAV authorization context、private media resume state、user単位のAudio chapter設定を持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
 
 workerは各chunkと最終確定でepoch、maintenance、current credential/authority、owner、root/parent ancestry、revision/tree generation、operation operand、job claimを再検査する。restoreは最終確定時にGC pauseを取得しrootからdepth順に復元、purgeはD1のnamespace/ref/quota/GC candidateを先に確定してR2 bytesを直接削除しない。Queue/DLQ/Cronの実Cloudflare検証とremote migration/deployは未実施である。
 
@@ -35,13 +35,15 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 80 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
-読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。次はgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateを並列実装する。並行してprivate mediaの実ファイル・複数browser検証、timer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。次はgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIPを並列実装する。並行してprivate mediaの実ファイル・複数browser検証、timer設置・実webhook配送、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
-次のschema変更は`0050`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
+2026-10-01の統合batchでAudio chapter設定（`0051`）、durable operation authority registry、読み取り専用`ops:health`（`0052`のhealth index）、`backup:monitor`、`release:gate`を接続した。すべてローカル検証のみで、実Cloudflare Cron/Queue/D1 Time Travel/R2/Logpush、実webhook、systemd設置、remote migration・deployは未実施である。詳細は[OPS_HEALTH](OPS_HEALTH.md)、[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md)、[RELEASE_EVIDENCE](RELEASE_EVIDENCE.md)。
+
+次のschema変更は`0053`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
 ## 現在動いている範囲
 
-Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。80通常テーブル、48 migrations（最新`0049`）、156 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。82通常テーブル、51 migrations（最新`0052`）、161 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: public EPUB metadata/page/entryと大規模非同期tree処理。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。

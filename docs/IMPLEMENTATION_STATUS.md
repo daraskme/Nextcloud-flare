@@ -3,6 +3,20 @@
 更新: 2026-10-01。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-10-01 completion batch（Audio chapter・operation authority registry・ops health・backup monitor・release gate）
+
+media resume stateとinternal share self-service UIを含む`devin/1790847719-share-self-service`を基点に、5つの独立実装branchを依存順に統合した。
+
+- Audio chapter設定: migration `0051`で`user_audio_chapter_sets`/`user_audio_chapters`を追加し、user/node/current blob単位・最大200件・整数ms・256 byte title・一意orderのchapter setをoptimistic revision付きwhole-list PUTで原子的に置換する。private no-store GET/PUT `/api/v1/nodes/:nodeId/audio-chapters`と`audio_chapters.write`（`state:write`）を追加し、authorization、current blob/duration、epoch/maintenance、ancestry/share、credential、revisionを同一D1 batchで再検査する。PrivateAudioに設定mode（現在位置capture、title/時刻編集、keyboard並べ替え、削除、seek、dirty/save/cancel、conflict reload、stale guard）を追加した。
+- durable operation authority registry: `jobs/operationAuthority.ts`に全durable operation kindの型付きpolicyとclaim/lookup共通のinterpreterを置き、operand欠落・不整合をfail-closedで拒否する。`audio_chapters.write`はdurable operationではないため、`contracts.ts`のscope mappingと`authorize.ts`の直接認可に留める。
+- ops health snapshot: private `OperationsOperator.inspect(epoch)`とBackupOperatorを合成する読み取り専用`pnpm ops:health`、migration `0052`のhealth index（元branchの`0051`を改番）、`pnpm ops:operator-drill`を追加した。
+- backup health通知: `pnpm backup:monitor`がmaintain結果をv1 redacted eventへ正規化し、StateDirectoryの0600 stateで初回unhealthy/alert変化/recoveredのみをHTTPS webhookへ送る。systemd service例と環境変数例を更新した（install/enableはしない）。
+- release evidence gate: `pnpm release:gate`がclean tree・exact HEAD・Node 24.21.0・pnpm 12.4.1・frozen lockfileを要求し、check・backup drill・Playwrightを順次実行してallowlisted manifestとSHA-256を書く。CIは`--plan`のみ実行する。
+
+統合時の調整は`package.json`のscript追記と、ops health index migrationの`0051`→`0052`改番（schema testの適用件数51）のみで、機能変更はない。route契約は161、通常tableは82、migrationは51件（最新`0052`）。
+
+検証（ローカル）: lint（479 file）、typecheck、verify:contracts、verify:config、unit 56 file/832件、integration 118 file/2217件（focused audio-chapters・schema・operations・app-password・async-tree・rename-node・backup-barrier 98件を含む）、focused release-gate/backup-monitor/backup-webhook/ops-health 47件、`pnpm ops:operator-drill`、`pnpm backup:operator-drill`（82 table PASS）、`pnpm release:gate -- --plan`、Web/Worker build（privateManifest再生成で差分なし）、`git diff --check`。browser試験は本統合では実行していない。remote migration・deploy、実Cloudflare Cron/Queue/D1 Time Travel/R2/Logpush、実webhook配送、systemd設置は未実施である。
+
 ## 2026-10-01 internal share管理UI
 
 private React/TanStackの`/shares`へowner/recipient管理画面を接続した。ownerはdirect-user/group共有の作成、現在の`read`/`download`/`create`/`edit` action、再共有policy、delegation lineageの確認・更新、revokeを行える。source actionを縮小するとpolicy actionも同じPATCHで積集合へ狭め、UIがsource authorityを超えるpolicyを表示・送信しない。
