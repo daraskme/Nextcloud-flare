@@ -48,6 +48,7 @@ it("serves the direct-user lifecycle through private JSON and CSRF routes", asyn
     id: string;
     mountName: string;
     actions: string[];
+    expiresAt: number | null;
   };
   expect(created).toMatchObject({ actions: ["read", "download", "create", "edit"] });
   expect(csrf.verify).toHaveBeenCalledOnce();
@@ -65,6 +66,9 @@ it("serves the direct-user lifecycle through private JSON and CSRF routes", asyn
         shareId: created.id,
         mountName: created.mountName,
         actions: ["read", "download", "create", "edit"],
+        expiresAt: created.expiresAt ?? null,
+        delegationDepth: 0,
+        reshareAuthority: null,
         provenance: { kind: "direct", recipientVersion: 1 },
       }),
     ],

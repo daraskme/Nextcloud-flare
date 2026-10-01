@@ -20,6 +20,10 @@ browser は共有状態や認可結果を保存・合成せず、D1 を authorit
 - `DELETE /api/v1/shares/:shareId`: 既存 disable 処理で共有を取り消す。
 - `GET /api/v1/groups`: 所有者の既存 group を bounded list として選択する。browser
   は group や membership の別状態を作らない。
+- `POST /api/v1/groups`、`PATCH /api/v1/groups/:groupId`、
+  `DELETE /api/v1/groups/:groupId`: group の作成、名前/membership の置換、disable を行う。
+  email は明示入力だけを最大100件まで保持し、active user の解決と最終 bound は D1 mutation
+  が再検証する。
 
 mutation は既存 `ApiClient` の same-origin credential、private CSRF、no-store、
 redirect rejection、timeout、session lifetime cancellation を通る。recipient email は作成時の
@@ -54,10 +58,25 @@ direct/group の判定や effective action の計算は browser で行わない�
 から消えた場合は、取り消し、期限切れ、membership 変更のいずれかとして再取得を案内するが、
 過去の認可状態を保持して理由を断定しない。
 
+再共有可能な mount には、現在の share expiry/delegation depth と、D1 で有効な policy の
+version/action/max depth/max fan-out/current fan-out/expiry を同じ応答で返す。UI はこの
+authority projection の action だけを選択肢にし、残存 depth/fan-out がない場合や、share
+または policy expiry まで1日未満の場合は control を出さない。TTL は share expiry と policy
+expiry の早い方までに制限する。元 owner の group を広く列挙する API は追加せず、group 宛先は
+同じ owner から現在受信中の group provenance に現れる group だけを候補にする。
+
+downstream 作成の直前に `shared-with-me` を再取得し、share/policy/grant/membership version、
+effective action、expiry、depth、fan-out のいずれかが dialog を開いた時点から変わっていれば
+送信しない。現在値が一致する場合だけ、同じ draft に対して保持した `Idempotency-Key` と
+`sourceShareId` を送る。network uncertainty 後の同一 draft retry は同じ key を使い、recipient、
+action または TTL の変更時だけ新しい key に切り替える。最終 race は backend transaction が
+再検証する。
+
 同じ share ID が残っていても、share version、recipient/group/membership version、effective
-actions、root/mount identity が変化した場合は access-change notice を表示する。action を
-狭める owner mutation は既存 policy action も同じ PATCH と backend transaction で交差させ、
-policy summary が source action を超える操作を表示しない。
+actions、expiry、delegation depth、policy version/bounds/fan-out、root/mount identity が
+変化した場合は access-change notice を表示する。action を狭める owner mutation は既存
+policy action も同じ PATCH と backend transaction で交差させ、policy summary が source
+action を超える操作を表示しない。
 
 mount は `/shared/:shareId` と `/shared/:shareId/:folderId` で開く。この private SPA shell
 allowlist は share ID と高々1つの folder ID に限定し、未知の深い path は 404 のままにする。
@@ -77,9 +96,9 @@ breadcrumb は backend path から共有 root より下だけを表示する。�
 ## 状態と accessibility
 
 owner list、recipient list、group list、folder picker、shared mount の各 read は loading、
-empty、error、retry を持つ。作成、action 更新、取り消しは pending 中の重複操作を抑止し、
-server error を対象 card または dialog の alert として表示する。取り消しは確認 dialog を
-必須とする。
+empty、error、retry を持つ。share/group/reshare の作成、group membership/action 更新、
+取り消し/disable は pending 中の重複操作を抑止し、server error を対象 card または dialog の
+alert として表示する。share 取り消しと group disable は確認 dialog を必須とする。
 
 navigation、dialog、fieldset、form label、section heading、status/alert、icon button の
 accessible name を維持する。card grid、toolbar、details、dialog form は狭い viewport で
