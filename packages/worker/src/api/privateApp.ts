@@ -20,6 +20,7 @@ import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { groupRoute, handleGroupHttp } from "./groups";
 import { handleLibraryHttp, libraryRoute } from "./library";
+import { handleMediaStateHttp, mediaStateRoute } from "./mediaState";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
 import { handleNodeReadHttp, nodeReadRoute } from "./nodes";
 import { handlePrivateZipHttp, privateZipRoute } from "./privateZips";
@@ -55,6 +56,7 @@ export function privateAppRoute(request: Request): boolean {
     userNodeStateRoute(request) ||
     statsRoute(request) ||
     libraryRoute(request) ||
+    mediaStateRoute(request) ||
     trashRoute(request) ||
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
@@ -102,6 +104,7 @@ export async function handlePrivateAppHttp(
   const userNodeState = userNodeStateRoute(request);
   const stats = statsRoute(request);
   const library = libraryRoute(request);
+  const mediaState = mediaStateRoute(request);
   const trashRead = trashRoute(request);
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
@@ -123,6 +126,7 @@ export async function handlePrivateAppHttp(
     !userNodeState &&
     !stats &&
     !library &&
+    !mediaState &&
     !trashRead &&
     !nodeMutation &&
     !appPassword &&
@@ -183,6 +187,18 @@ export async function handlePrivateAppHttp(
       credential_id: session.credential_id,
       epoch: session.epoch,
     });
+  if (mediaState)
+    return handleMediaStateHttp(
+      request,
+      env,
+      {
+        kind: "user",
+        user_id: session.user_id,
+        credential_id: session.credential_id,
+        epoch: session.epoch,
+      },
+      dependencies.csrf,
+    );
   if (upload)
     return handleUploadHttp(
       request,

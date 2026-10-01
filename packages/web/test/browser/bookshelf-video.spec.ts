@@ -158,6 +158,117 @@ test("private Bookshelf replaces stale page tickets and rejects unsupported book
   await expect(page.getByRole("heading", { name: "この本はリーダーで開けません" })).toBeVisible();
 });
 
+test("private Bookshelf resumes and debounces bounded progress on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockPrivateShell(page);
+  const book = candidate("book-resume", "Resume Book.epub", "application/epub+zip");
+  const writes: Array<{ blobId: string; spineIndex: number; progress: number }> = [];
+  await page.route("**/api/v1/search?*", (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    return route.fulfill({
+      status: 200,
+      json: searchPage(query === ".epub" ? [book] : []),
+    });
+  });
+  await page.route("**/api/v1/library/book-resume", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        nodeId: book.id,
+        blobId: book.currentBlobId,
+        title: "Resume Book",
+        author: null,
+        series: null,
+        pageCount: 2,
+        coverToken: null,
+        spine: ["chapter-one", "chapter-two"],
+        entries: [
+          { token: "chapter-one", path: "one.xhtml", mime: "application/xhtml+xml", size: 100 },
+          { token: "chapter-two", path: "two.xhtml", mime: "application/xhtml+xml", size: 100 },
+        ],
+        ticketPurpose: "page",
+        contentBaseUrl: `${book.id}/${book.currentBlobId}/entries/`,
+      },
+    }),
+  );
+  await page.route("**/api/v1/library/book-resume/reading-state", async (route) => {
+    if (route.request().method() === "GET")
+      return route.fulfill({
+        status: 200,
+        json: {
+          nodeId: book.id,
+          blobId: book.currentBlobId,
+          pageCount: 2,
+          position: { spineIndex: 1, progress: 5_000 },
+          updatedAt: 1,
+        },
+      });
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      json: {
+        nodeId: book.id,
+        blobId: book.currentBlobId,
+        pageCount: 2,
+        position: writes.at(-1),
+        updatedAt: Date.now(),
+      },
+    });
+  });
+  await page.route("**/api/v1/content-session", (route) =>
+    route.fulfill({
+      status: 201,
+      json: { ticket: "resume-ticket", ticketId: crypto.randomUUID() },
+    }),
+  );
+  await page.route("**/api/v1/tickets/*", (route) => route.fulfill({ status: 204, body: "" }));
+  await page.route("https://content.ncf.test:8879/session", (route) =>
+    route.fulfill({
+      status: 201,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+      },
+      body: "",
+    }),
+  );
+  await page.route("https://content.ncf.test:8879/c/**/entries/chapter-two", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+      },
+      body: `<html><body><h1>Resumed chapter</h1>${"<p>Scrollable text.</p>".repeat(200)}</body></html>`,
+    }),
+  );
+
+  await page.goto("/files");
+  await page.getByRole("button", { name: "ナビゲーションを開く" }).click();
+  await page.getByRole("link", { name: "本棚", exact: true }).click();
+  await page.getByRole("button", { name: "Resume Book.epubを開く", exact: true }).click();
+  await expect(page.frameLocator("iframe").locator("body")).toContainText("Resumed chapter");
+  await expect(page.getByText("2 / 2", { exact: true })).toBeVisible();
+  await page
+    .frameLocator("iframe")
+    .locator("body")
+    .evaluate(() => {
+      const scrolling = document.scrollingElement;
+      if (!scrolling) throw new Error("missing_scrolling_element");
+      scrolling.scrollTop = scrolling.scrollHeight - scrolling.clientHeight;
+      window.dispatchEvent(new Event("scroll"));
+    });
+  await page.waitForTimeout(4_000);
+  expect(writes).toEqual([]);
+  await expect.poll(() => writes, { timeout: 2_000 }).toHaveLength(1);
+  expect(writes[0]).toMatchObject({
+    blobId: book.currentBlobId,
+    spineIndex: 1,
+  });
+  expect(writes[0]!.progress).toBeGreaterThan(9_000);
+  await expect(page.getByRole("dialog", { name: "Resume Book.epub" })).toBeVisible();
+});
+
 test("private Video probes current track metadata and shows revocation and format fallbacks", async ({
   page,
 }) => {

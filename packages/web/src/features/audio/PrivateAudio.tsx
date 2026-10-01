@@ -12,7 +12,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
-import { type Account, type AudioTrack, api, errorMessage } from "../../lib/api";
+import {
+  type Account,
+  type AudioTrack,
+  api,
+  errorMessage,
+  type PreparedContentSession,
+} from "../../lib/api";
+import { type DebouncedWriter, debouncedWriter } from "../../lib/mediaResume";
 
 const clock = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -29,6 +36,12 @@ export function PrivateAudio({ account }: { account: Account }) {
   });
   const tracks = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data]);
   const audio = useRef<HTMLAudioElement>(null);
+  const request = useRef<AbortController | null>(null);
+  const content = useRef<PreparedContentSession | null>(null);
+  const selection = useRef(0);
+  const activeRef = useRef<AudioTrack | null>(null);
+  const resume = useRef<{ blobId: string; positionMs: number; durationMs: number } | null>(null);
+  const writer = useRef<DebouncedWriter<number> | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -39,31 +52,88 @@ export function PrivateAudio({ account }: { account: Account }) {
   const activeIndex = tracks.findIndex((track) => track.id === activeId);
   const active = activeIndex >= 0 ? tracks[activeIndex] : undefined;
 
+  const currentPositionMs = () => {
+    const element = audio.current;
+    const track = activeRef.current;
+    if (
+      !element ||
+      !track ||
+      track.durationMs === null ||
+      !Number.isFinite(element.duration) ||
+      element.duration <= 0
+    )
+      return null;
+    return Math.min(Math.round(element.currentTime * 1_000), Math.round(element.duration * 1_000));
+  };
+
+  const flush = (positionMs?: number) => {
+    const selected = positionMs ?? currentPositionMs();
+    if (selected !== null) void writer.current?.flush(selected).catch(() => undefined);
+  };
+
+  const release = () => {
+    request.current?.abort();
+    request.current = null;
+    if (content.current) void content.current.cancel().catch(() => undefined);
+    content.current = null;
+    resume.current = null;
+    writer.current?.clear();
+    writer.current = null;
+  };
+
   useEffect(() => {
     const element = audio.current;
     if (!element) return;
     const update = () => {
       setPosition(element.currentTime);
       setDuration(Number.isFinite(element.duration) ? element.duration : 0);
+      const selected = currentPositionMs();
+      if (selected !== null) writer.current?.schedule(selected);
     };
-    const paused = () => setPlaying(false);
+    const paused = () => {
+      setPlaying(false);
+      flush();
+    };
     const started = () => setPlaying(true);
+    const loaded = () => {
+      const state = resume.current;
+      const track = activeRef.current;
+      if (
+        !state ||
+        !track ||
+        state.blobId !== track.currentBlobId ||
+        !Number.isFinite(element.duration) ||
+        element.duration <= 0
+      )
+        return;
+      const seconds = Math.min(state.positionMs / 1_000, element.duration);
+      if (seconds > 0 && seconds < element.duration) element.currentTime = seconds;
+      resume.current = null;
+    };
+    const ended = () => {
+      setPlaying(false);
+      flush(0);
+    };
     const failed = () => {
       setPlaying(false);
       setPlayerError("このトラックを再生できませんでした。");
     };
     element.addEventListener("timeupdate", update);
     element.addEventListener("durationchange", update);
+    element.addEventListener("loadedmetadata", loaded);
     element.addEventListener("pause", paused);
     element.addEventListener("play", started);
-    element.addEventListener("ended", paused);
+    element.addEventListener("ended", ended);
     element.addEventListener("error", failed);
     return () => {
+      flush();
+      release();
       element.removeEventListener("timeupdate", update);
       element.removeEventListener("durationchange", update);
+      element.removeEventListener("loadedmetadata", loaded);
       element.removeEventListener("pause", paused);
       element.removeEventListener("play", started);
-      element.removeEventListener("ended", paused);
+      element.removeEventListener("ended", ended);
       element.removeEventListener("error", failed);
     };
   }, []);
@@ -76,20 +146,56 @@ export function PrivateAudio({ account }: { account: Account }) {
       else element.pause();
       return;
     }
+    flush();
+    release();
+    const selected = ++selection.current;
+    activeRef.current = track;
+    setActiveId(track.id);
     setPreparing(true);
     setPlayerError("");
+    setPosition(0);
+    setDuration(0);
+    const controller = new AbortController();
+    request.current = controller;
     try {
-      const url = await api.prepareContent(account, [track], "track");
-      element.src = url(track);
+      const [session, state] = await Promise.all([
+        api.prepareContentSession(account, [track], "track", controller.signal),
+        track.durationMs === null
+          ? undefined
+          : api.playbackState(track.id, controller.signal).catch(() => undefined),
+      ]);
+      if (controller.signal.aborted || selected !== selection.current) {
+        await session.cancel().catch(() => undefined);
+        return;
+      }
+      content.current = session;
+      writer.current =
+        track.durationMs === null
+          ? null
+          : debouncedWriter((positionMs) =>
+              api.writePlaybackState(track.id, track.currentBlobId, positionMs),
+            );
+      resume.current =
+        state?.nodeId === track.id &&
+        state.blobId === track.currentBlobId &&
+        state.positionMs !== null &&
+        state.durationMs > 0
+          ? {
+              blobId: state.blobId,
+              positionMs: Math.min(state.positionMs, state.durationMs),
+              durationMs: state.durationMs,
+            }
+          : null;
+      element.src = session.url(track);
       element.volume = volume;
-      setActiveId(track.id);
-      setPosition(0);
       await element.play();
     } catch (error) {
-      setPlayerError(errorMessage(error));
-      setPlaying(false);
+      if (!controller.signal.aborted && selected === selection.current) {
+        setPlayerError(errorMessage(error));
+        setPlaying(false);
+      }
     } finally {
-      setPreparing(false);
+      if (!controller.signal.aborted && selected === selection.current) setPreparing(false);
     }
   };
   const move = (offset: number) => {

@@ -255,6 +255,70 @@ it("does not dispatch a stale app-password creation after its caller aborts", as
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
 
+it("uses private no-store media state reads and CSRF writes", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      Response.json({
+        nodeId: "track",
+        blobId: "blob",
+        durationMs: 10_000,
+        positionMs: 2_000,
+        updatedAt: 1,
+      }),
+    )
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        nodeId: "track",
+        blobId: "blob",
+        durationMs: 10_000,
+        positionMs: 3_000,
+        updatedAt: 2,
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        nodeId: "book",
+        blobId: "epub",
+        pageCount: 3,
+        position: { spineIndex: 1, progress: 5_000 },
+        updatedAt: 3,
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        nodeId: "book",
+        blobId: "epub",
+        pageCount: 3,
+        position: { spineIndex: 2, progress: 0 },
+        updatedAt: 4,
+      }),
+    );
+  vi.stubGlobal("fetch", fetcher);
+  const client = new ApiClient();
+  await client.playbackState("track");
+  await client.writePlaybackState("track", "blob", 3_000);
+  await client.readingState("book");
+  await client.writeReadingState("book", "epub", 2, 0);
+  expect(fetcher.mock.calls.map(([path, init]) => [path, init?.method ?? "GET"])).toEqual([
+    ["/api/v1/nodes/track/playback-state", "GET"],
+    ["/api/v1/csrf", "POST"],
+    ["/api/v1/nodes/track/playback-state", "PUT"],
+    ["/api/v1/library/book/reading-state", "GET"],
+    ["/api/v1/library/book/reading-state", "PUT"],
+  ]);
+  expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({
+    blobId: "blob",
+    positionMs: 3_000,
+  });
+  expect(JSON.parse(fetcher.mock.calls[4]![1].body)).toEqual({
+    blobId: "epub",
+    spineIndex: 2,
+    progress: 0,
+  });
+});
+
 it("exchanges media tickets at the exact content origin and returns direct media URLs", async () => {
   const fetcher = vi
     .fn()

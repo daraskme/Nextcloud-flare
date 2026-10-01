@@ -412,6 +412,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/api/v1/nodes/:nodeId/gallery` | access | `gallery.read` | `folder,candidates,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/nodes/:nodeId/tracks` | access | `audio.read` | `folder,tracks,cursor` | false | same-origin-json |
 | app | PATCH | `/api/v1/nodes/:nodeId/audio` | access | `audio.metadata.write` | `node,blob,audioMetadata` | false | same-origin-json |
+| app | GET | `/api/v1/nodes/:nodeId/playback-state` | access | `library.read` | `currentUser,node,blob` | false | same-origin-json |
 | app | PUT | `/api/v1/nodes/:nodeId/playback-state` | access | `playback_state.write` | `currentUser,node,blob` | false | same-origin-json |
 | app | GET | `/api/v1/library/items` | access | `library.read` | `scopeRoot,cursor` | false | same-origin-json |
 | app | GET | `/api/v1/library/items/:itemId` | access | `library.read` | `item,node,blob` | false | same-origin-json |
@@ -423,6 +424,7 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | HEAD | `/api/v1/library/:nodeId/pages/:page/thumb` | access | `library.read` | `node,blob,index,page` | false | same-origin-json |
 | app | GET | `/api/v1/library/:nodeId/entries/:entryToken` | access | `library.read` | `node,blob,index,entry` | false | same-origin-json |
 | app | HEAD | `/api/v1/library/:nodeId/entries/:entryToken` | access | `library.read` | `node,blob,index,entry` | false | same-origin-json |
+| app | GET | `/api/v1/library/:nodeId/reading-state` | access | `library.read` | `currentUser,node,blob` | false | same-origin-json |
 | app | PUT | `/api/v1/library/:nodeId/reading-state` | access | `reading_state.write` | `currentUser,node,blob` | false | same-origin-json |
 | app | GET | `/api/v1/library/roots` | access | `library.read` | `currentUser` | false | same-origin-json |
 | app | POST | `/api/v1/library/roots` | access | `library.write` | `currentUser,rootNode` | false | same-origin-json |

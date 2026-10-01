@@ -9,8 +9,10 @@ import {
   errorMessage,
   type FileNode,
   formatBytes,
+  type PlaybackState,
   type PreparedContentSession,
 } from "../../lib/api";
+import { type DebouncedWriter, debouncedWriter } from "../../lib/mediaResume";
 
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "mkv", "avi"] as const;
 
@@ -26,28 +28,50 @@ export function PrivateVideo({ account }: { account: Account }) {
   const video = useRef<HTMLVideoElement>(null);
   const request = useRef<AbortController | null>(null);
   const content = useRef<PreparedContentSession | null>(null);
+  const selection = useRef(0);
+  const activeRef = useRef<FileNode | null>(null);
+  const resume = useRef<PlaybackState | null>(null);
+  const writer = useRef<DebouncedWriter<number> | null>(null);
   const [active, setActive] = useState<FileNode | null>(null);
   const [source, setSource] = useState("");
   const [contentType, setContentType] = useState("");
   const [preparing, setPreparing] = useState(false);
   const [playerError, setPlayerError] = useState("");
 
+  const currentPositionMs = () => {
+    const element = video.current;
+    if (!element || !Number.isFinite(element.duration) || element.duration <= 0) return null;
+    return Math.min(Math.round(element.currentTime * 1_000), Math.round(element.duration * 1_000));
+  };
+
+  const flush = (positionMs?: number) => {
+    const selected = positionMs ?? currentPositionMs();
+    if (selected !== null) void writer.current?.flush(selected).catch(() => undefined);
+  };
+
   const release = () => {
     request.current?.abort();
     request.current = null;
     if (content.current) void content.current.cancel().catch(() => undefined);
     content.current = null;
+    resume.current = null;
+    writer.current?.clear();
+    writer.current = null;
   };
 
   useEffect(
     () => () => {
+      flush();
       release();
     },
     [],
   );
 
   const select = async (item: FileNode) => {
+    flush();
     release();
+    const selected = ++selection.current;
+    activeRef.current = item;
     setActive(item);
     setSource("");
     setContentType("");
@@ -58,7 +82,8 @@ export function PrivateVideo({ account }: { account: Account }) {
       element.removeAttribute("src");
       element.load();
     }
-    if (!["mp4", "webm"].includes(extension(item.name)) || !item.currentBlobId) {
+    const blobId = item.currentBlobId;
+    if (!["mp4", "webm"].includes(extension(item.name)) || !blobId) {
       setPlayerError(
         "この動画形式はブラウザー再生に対応していません。原本を保存して確認できます。",
       );
@@ -68,14 +93,15 @@ export function PrivateVideo({ account }: { account: Account }) {
     request.current = controller;
     setPreparing(true);
     try {
+      const stateFlight = api.playbackState(item.id, controller.signal).catch(() => undefined);
       const session = await api.prepareContentSession(
         account,
-        [{ id: item.id, currentBlobId: item.currentBlobId }],
+        [{ id: item.id, currentBlobId: blobId }],
         "track",
         controller.signal,
       );
       content.current = session;
-      const url = session.url({ id: item.id, currentBlobId: item.currentBlobId });
+      const url = session.url({ id: item.id, currentBlobId: blobId });
       const response = await fetch(url, {
         method: "HEAD",
         credentials: "include",
@@ -95,10 +121,24 @@ export function PrivateVideo({ account }: { account: Account }) {
         return;
       }
       controller.signal.throwIfAborted();
+      if (selected !== selection.current) {
+        await session.cancel().catch(() => undefined);
+        return;
+      }
+      const state = await stateFlight;
+      controller.signal.throwIfAborted();
+      if (selected !== selection.current) {
+        await session.cancel().catch(() => undefined);
+        return;
+      }
+      writer.current = debouncedWriter((positionMs) =>
+        api.writePlaybackState(item.id, blobId, positionMs),
+      );
+      resume.current = state?.nodeId === item.id && state.blobId === blobId ? state : null;
       setContentType(type);
       setSource(url);
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && selected === selection.current) {
         const stale = content.current;
         if (stale) {
           void stale.cancel().catch(() => undefined);
@@ -111,7 +151,7 @@ export function PrivateVideo({ account }: { account: Account }) {
         );
       }
     } finally {
-      if (!controller.signal.aborted) setPreparing(false);
+      if (!controller.signal.aborted && selected === selection.current) setPreparing(false);
     }
   };
 
@@ -199,6 +239,35 @@ export function PrivateVideo({ account }: { account: Account }) {
                 preload="none"
                 playsInline
                 aria-label={active?.name}
+                onLoadedMetadata={(event) => {
+                  const state = resume.current;
+                  const item = activeRef.current;
+                  const element = event.currentTarget;
+                  if (
+                    !state ||
+                    !item ||
+                    state.nodeId !== item.id ||
+                    state.blobId !== item.currentBlobId ||
+                    state.positionMs === null ||
+                    state.durationMs <= 0 ||
+                    !Number.isFinite(element.duration) ||
+                    element.duration <= 0
+                  )
+                    return;
+                  const seconds = Math.min(
+                    state.positionMs / 1_000,
+                    state.durationMs / 1_000,
+                    element.duration,
+                  );
+                  if (seconds > 0 && seconds < element.duration) element.currentTime = seconds;
+                  resume.current = null;
+                }}
+                onTimeUpdate={() => {
+                  const positionMs = currentPositionMs();
+                  if (positionMs !== null) writer.current?.schedule(positionMs);
+                }}
+                onPause={() => flush()}
+                onEnded={() => flush(0)}
                 onError={() => {
                   setPlayerError(
                     "動画を再生できませんでした。セッションの失効または端末の codec 対応を確認してください。",

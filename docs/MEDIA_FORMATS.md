@@ -19,6 +19,14 @@ AVIF に media element の `canPlayType()` を流用しない。
 原本は既存の content-session / purpose / current blob / Range / no-store 契約で直接配信する。
 大きな画像・音声・動画を fetch→全体 buffer→blob URL に変換しない。動画の seek / Opus の seek は単一 Range で検証する。
 
+## private resume state
+
+Audio/Video の再生位置と EPUB の読書位置は D1 の user/node/current-blob 単位で保持する。read/write は private Access user のみを対象にし、毎回 live ancestry、current blob、owner または有効な internal share、credential、epoch、maintenance を再検証する。public share へ状態 API を公開しない。
+
+Audio/Video は抽出済みの current metadata の duration に位置を clamp し、browser が有限 duration を報告するまで自動 seek しない。約5秒の debounce と pause/end/selection change の flush を使い、blob replacement 後の古い応答や書込みは採用しない。
+
+EPUB は current blob の bounded index に対する `{spineIndex, progress}` のみを保持する。`spineIndex` は current `page_count` 未満、`progress` は 0–10000 とし、publication の path、markup、識別子を状態として信用しない。表示は既存の text extraction、escape、sandbox、CSP を維持する。
+
 Cloudflare Images による AVIF 入力は Enterprise 条件があるため、サムネイルの可否を原本の対応可否と混同しない。
 変換 unavailable/failed/pending の場合、detail は認可済み原本、grid は placeholder とし、大量の原本を grid で一括読込みしない。
 server derivative は既存の WebP / metadata 除去 / budget / claim fence に従う。client thumbnail 受付は追加しない。

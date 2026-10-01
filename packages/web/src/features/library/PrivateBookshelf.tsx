@@ -23,6 +23,7 @@ import {
   type LibraryPublication,
   type PreparedContentSession,
 } from "../../lib/api";
+import { type DebouncedWriter, debouncedWriter } from "../../lib/mediaResume";
 
 const BOOK_EXTENSIONS = ["epub", "pdf", "cbz", "cbr", "rar", "7z"] as const;
 
@@ -77,6 +78,17 @@ export function PrivateBookshelf({ account }: { account: Account }) {
     queryFn: ({ signal }) => api.library(selected!.id, signal),
     enabled: selected !== null && extension(selected.name) === "epub",
   });
+  const readingState = useQuery({
+    queryKey: [
+      "epub-reading-state",
+      account.id,
+      account.epoch,
+      selected?.id,
+      selected?.currentBlobId,
+    ],
+    queryFn: ({ signal }) => api.readingState(selected!.id, signal),
+    enabled: selected !== null && extension(selected.name) === "epub",
+  });
   const [chapter, setChapter] = useState(0);
   const [chapterContent, setChapterContent] = useState("");
   const [chapterError, setChapterError] = useState("");
@@ -85,12 +97,83 @@ export function PrivateBookshelf({ account }: { account: Account }) {
   const [fontSize, setFontSize] = useState(17);
   const [theme, setTheme] = useState<"light" | "sepia" | "dark">("light");
   const activeSession = useRef<PreparedContentSession | null>(null);
+  const frame = useRef<HTMLIFrameElement | null>(null);
+  const chapterRef = useRef(0);
+  const restoredBlob = useRef<string | null>(null);
+  const restoredProgress = useRef(0);
+  const writer = useRef<DebouncedWriter<{ spineIndex: number; progress: number }> | null>(null);
+
+  const frameProgress = () => {
+    const scrolling = frame.current?.contentDocument?.scrollingElement;
+    if (!scrolling) return 0;
+    const maximum = scrolling.scrollHeight - scrolling.clientHeight;
+    return maximum <= 0 ? 0 : Math.round((scrolling.scrollTop / maximum) * 10_000);
+  };
+
+  const flushReading = () => {
+    void writer.current
+      ?.flush({ spineIndex: chapterRef.current, progress: frameProgress() })
+      .catch(() => undefined);
+  };
+
+  const changeChapter = (next: number) => {
+    flushReading();
+    chapterRef.current = next;
+    restoredProgress.current = 0;
+    setChapter(next);
+    writer.current?.schedule({ spineIndex: next, progress: 0 });
+  };
 
   useEffect(() => {
+    flushReading();
+    writer.current?.clear();
+    writer.current = null;
+    chapterRef.current = 0;
+    restoredBlob.current = null;
+    restoredProgress.current = 0;
     setChapter(0);
     setChapterContent("");
     setChapterError("");
   }, [selected?.id, selected?.currentBlobId]);
+
+  useEffect(() => {
+    const book = selected;
+    const metadata = publication.data;
+    const state = readingState.data;
+    if (
+      !book?.currentBlobId ||
+      !metadata ||
+      restoredBlob.current === book.currentBlobId ||
+      state?.nodeId !== book.id ||
+      state.blobId !== book.currentBlobId ||
+      state.position === null ||
+      state.pageCount !== metadata.pageCount ||
+      state.position.spineIndex >= metadata.spine.length
+    )
+      return;
+    restoredBlob.current = book.currentBlobId;
+    restoredProgress.current = state.position.progress;
+    chapterRef.current = state.position.spineIndex;
+    setChapter(state.position.spineIndex);
+  }, [publication.data, readingState.data, selected]);
+
+  useEffect(() => {
+    const book = selected;
+    const metadata = publication.data;
+    const blobId = book?.currentBlobId;
+    if (!book || !blobId || !metadata) return;
+    const active = debouncedWriter<{ spineIndex: number; progress: number }>(
+      ({ spineIndex, progress }) => api.writeReadingState(book.id, blobId, spineIndex, progress),
+    );
+    writer.current = active;
+    return () => {
+      void active
+        .flush({ spineIndex: chapterRef.current, progress: frameProgress() })
+        .catch(() => undefined);
+      active.clear();
+      if (writer.current === active) writer.current = null;
+    };
+  }, [publication.data, selected]);
 
   useEffect(() => {
     const book = selected;
@@ -148,6 +231,8 @@ export function PrivateBookshelf({ account }: { account: Account }) {
 
   useEffect(
     () => () => {
+      flushReading();
+      writer.current?.clear();
       if (activeSession.current) void activeSession.current.cancel().catch(() => undefined);
     },
     [],
@@ -215,7 +300,10 @@ export function PrivateBookshelf({ account }: { account: Account }) {
             <button
               className="book-card"
               key={item.id}
-              onClick={() => setSelected(item)}
+              onClick={() => {
+                flushReading();
+                setSelected(item);
+              }}
               aria-label={`${item.name}を開く`}
             >
               <span className="book-cover">
@@ -275,7 +363,10 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                 variant="ghost"
                 size="icon"
                 aria-label="リーダーを閉じる"
-                onClick={() => setSelected(null)}
+                onClick={() => {
+                  flushReading();
+                  setSelected(null);
+                }}
               >
                 <X size={21} />
               </Button>
@@ -307,7 +398,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                   <button
                     key={token}
                     aria-current={chapter === index ? "page" : undefined}
-                    onClick={() => setChapter(index)}
+                    onClick={() => changeChapter(index)}
                   >
                     第 {index + 1} 章
                   </button>
@@ -318,7 +409,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                   <Button
                     size="small"
                     disabled={chapter <= 0}
-                    onClick={() => setChapter((value) => value - 1)}
+                    onClick={() => changeChapter(chapterRef.current - 1)}
                   >
                     <ChevronLeft size={16} />
                     前の章
@@ -329,7 +420,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                   <Button
                     size="small"
                     disabled={chapter >= publication.data.spine.length - 1}
-                    onClick={() => setChapter((value) => value + 1)}
+                    onClick={() => changeChapter(chapterRef.current + 1)}
                   >
                     次の章
                     <ChevronRight size={16} />
@@ -350,10 +441,30 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                 ) : (
                   srcDoc && (
                     <iframe
+                      ref={frame}
                       className="reader-frame"
-                      sandbox=""
+                      sandbox="allow-same-origin"
                       srcDoc={srcDoc}
                       title={`${publication.data.title ?? selected.name} 第${chapter + 1}章`}
+                      onLoad={(event) => {
+                        const scrolling = event.currentTarget.contentDocument?.scrollingElement;
+                        if (!scrolling) return;
+                        const progress = restoredProgress.current;
+                        const maximum = scrolling.scrollHeight - scrolling.clientHeight;
+                        if (progress > 0 && maximum > 0)
+                          scrolling.scrollTop = Math.round((maximum * progress) / 10_000);
+                        restoredProgress.current = 0;
+                        event.currentTarget.contentWindow?.addEventListener(
+                          "scroll",
+                          () => {
+                            writer.current?.schedule({
+                              spineIndex: chapterRef.current,
+                              progress: frameProgress(),
+                            });
+                          },
+                          { passive: true },
+                        );
+                      }}
                     />
                   )
                 )}
