@@ -76,6 +76,19 @@ target one internal user or one owner-managed internal group, using the same rec
 an original internal share. `read` is required whenever `download`, `create`, or `edit` is present;
 the backend canonical order is `read`, `download`, `create`, `edit`.
 
+## Web management surface
+
+The private `/shares` surface lets an owner create direct-user or group shares, inspect delegation
+lineage, change the current `read`/`download`/`create`/`edit` action set, configure the owner policy,
+and revoke an active share. Policy controls never offer actions outside the source share, and
+narrowing source actions also narrows the effective policy shown to the owner.
+
+Recipients see the authoritative effective action set and direct/group provenance returned by
+`shared-with-me`. Mount refreshes compare the share, grant or membership versions and actions, so a
+same-share permission change produces an access-change notice instead of silently retaining stale
+capabilities. Creating a downstream delegation remains an API operation; recipient reshare and
+group lifecycle controls are the next UI integration.
+
 ## Bounds
 
 Ancestry walks stop at 64 nodes and reject cycles. Delegation depth, policy fan-out, the existing

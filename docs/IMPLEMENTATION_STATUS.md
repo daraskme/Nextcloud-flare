@@ -3,6 +3,22 @@
 更新: 2026-10-01。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-10-01 internal share管理UI
+
+private React/TanStackの`/shares`へowner/recipient管理画面を接続した。ownerはdirect-user/group共有の作成、現在の`read`/`download`/`create`/`edit` action、再共有policy、delegation lineageの確認・更新、revokeを行える。source actionを縮小するとpolicy actionも同じPATCHで積集合へ狭め、UIがsource authorityを超えるpolicyを表示・送信しない。
+
+recipientはdirect/group provenance、delegation depth、現在有効な操作、rename-stable mountを確認してshared routeへ移動できる。refreshは削除だけでなくshare/grant/group/membership version、action、root/mount identityの変化を検出し、同じshare IDの権限縮小でもaccess-change noticeを表示する。stale requestはversion付きquery keyとauthoritative API応答へ収束させ、browser側にshare authorityを複製しない。
+
+lint、typecheck、route/config契約、unit 756件、integration 2,196件、focused browser 3件、全browser 27件、Web/Worker build、80-table backup drill、diff checkが成功した。migrationは追加せず、`0048`/`0049`を変更していない。remote migration・deploy、実group/Access環境、実OS DAV clientは未検証である。
+
+## 2026-10-01 bounded internal reshare・編集可能なshared DAV
+
+ownerが明示したpolicyの範囲内で、direct-user/group内部共有を再共有できるようにした。`read`を必須とする`download`/`create`/`edit` action、最大深度1〜4、最大fan-out 1〜20、任意TTLをD1へ保存し、source share、policy、delegation、recipient/grant/membership、epoch、live ancestryをAPI、DAV解決、認可、budget、ticket、content session、BudgetDOで共通検査する。無効化、期限切れ、action縮小、group membership変更、owner policy更新は`current_internal_shares`から即時除外し、子孫の再利用を許可しない。
+
+`/dav/Shared/<mount>`は現在有効なshare actionとapp password scopeの積から能力を導出する。`create`はMKCOL、新規PUT、COPY先、lock-null作成、`edit`は既存PUT、PROPPATCH、MOVE元、LOCK/UNLOCK、`edit` + `node:delete`はDELETEと置換trashを許可する。個人領域、別共有、別ownerとのCOPY/MOVEを拒否し、saved authority contextを操作claim、commit、upload、回収まで再検査する。
+
+migration `0048`/`0049`を追加し、全48 migration・80通常table・156 route契約となった。PR #29/#30はUbuntu、Windows 2分割、browser、backupの全5 CIを通過してmainへ統合済み。remote migration・deploy、実OS DAV client、実Cloudflare環境は未検証である。
+
 ## 2026-10-01 public EPUB metadata・page/entry
 
 読み取り専用public shareへEPUB metadata、app-originのpage/entry redirect、content-originのbounded page deliveryを接続した。既存`epub-index-v1` projectionとentry streamerを共用し、単一EPUB targetの`purpose=page` ticket、current share session/password/version/epoch/root/action、current blob/source/index hash、ZIP local header/CRC、entry上限、BudgetDO leaseを各段階で再検査する。app originは本文をproxyしない。
