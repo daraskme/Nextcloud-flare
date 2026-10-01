@@ -10,6 +10,7 @@ import { NodeCursorTokens } from "../auth/nodeCursor";
 import { SearchCursorTokens } from "../auth/searchCursor";
 import { sharePasswordPepperRing } from "../auth/sharePassword";
 import { UploadCapabilities } from "../auth/uploadCapability";
+import { UserNodeCursorTokens } from "../auth/userNodeCursor";
 import type { Env } from "../env";
 import type { PrivateAppDependencies } from "./privateApp";
 
@@ -107,6 +108,7 @@ export async function privateAppDependencies(
     ...(cursorRing ? { searchCursors: new SearchCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(cursorRing ? { listCursors: new ListCursorTokens(cursorRing) } : {}),
+    ...(cursorRing ? { userNodeCursors: new UserNodeCursorTokens(cursorRing) } : {}),
     ...(appPasswordPepper ? { appPasswordPepper } : {}),
     ...(sharePasswordPepper ? { sharePasswordPepper } : {}),
     ...(uploadCapabilities ? { uploadCapabilities } : {}),

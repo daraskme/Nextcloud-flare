@@ -8,6 +8,7 @@ import {
   BookOpen,
   Check,
   ChevronRight,
+  Clock3,
   Cloud,
   File,
   FileAudio,
@@ -31,6 +32,7 @@ import {
   RefreshCw,
   Search,
   Share2,
+  Star,
   Trash2,
   Upload,
   UsersRound,
@@ -710,12 +712,18 @@ function FileList({
   act,
   open,
   readOnly = false,
+  currentUserId,
+  toggleStar,
+  starPending,
 }: {
   rows: FileNode[];
   view: "list" | "grid";
   act: (action: Action) => void;
   open: (node: FileNode) => void;
   readOnly?: boolean;
+  currentUserId: string;
+  toggleStar: (node: FileNode) => void;
+  starPending: ReadonlySet<string>;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({
@@ -732,7 +740,22 @@ function FileList({
           <article key={node.id} className="file-card">
             <div className="file-card-top">
               <FileIcon node={node} />
-              {!readOnly && <NodeMenu node={node} act={act} open={() => open(node)} />}
+              <div className="file-card-actions">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="star-control"
+                  aria-label={`${node.name}を${node.starred ? "スターから外す" : "スターに追加"}`}
+                  aria-pressed={!!node.starred}
+                  disabled={starPending.has(node.id)}
+                  onClick={() => toggleStar(node)}
+                >
+                  <Star size={17} fill={node.starred ? "currentColor" : "none"} />
+                </Button>
+                {!readOnly && (!node.ownerId || node.ownerId === currentUserId) && (
+                  <NodeMenu node={node} act={act} open={() => open(node)} />
+                )}
+              </div>
             </div>
             <button className="file-name" onClick={() => open(node)} title={node.name}>
               {node.name}
@@ -799,7 +822,22 @@ function FileList({
                   {node.kind === "folder" ? "—" : formatBytes(node.size)}
                 </div>
                 <div role="cell">
-                  {!readOnly && <NodeMenu node={node} act={act} open={() => open(node)} />}
+                  <div className="file-actions">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="star-control"
+                      aria-label={`${node.name}を${node.starred ? "スターから外す" : "スターに追加"}`}
+                      aria-pressed={!!node.starred}
+                      disabled={starPending.has(node.id)}
+                      onClick={() => toggleStar(node)}
+                    >
+                      <Star size={17} fill={node.starred ? "currentColor" : "none"} />
+                    </Button>
+                    {!readOnly && (!node.ownerId || node.ownerId === currentUserId) && (
+                      <NodeMenu node={node} act={act} open={() => open(node)} />
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -824,6 +862,8 @@ export function App() {
     account.error instanceof ApiError && [401, 403].includes(account.error.status);
   const me = authExpired ? undefined : account.data;
   const trash = pathname === "/trash";
+  const recent = pathname === "/recent";
+  const starred = pathname === "/starred";
   const gallery = pathname === "/gallery";
   const audio = pathname === "/audio";
   const bookshelf = pathname === "/bookshelf";
@@ -831,7 +871,9 @@ export function App() {
   const sharing = pathname === "/shares";
   const sharedMatch = /^\/shared\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
   const shared = !!sharedMatch;
-  const files = !trash && !gallery && !audio && !bookshelf && !video && !sharing;
+  const userState = recent || starred;
+  const files =
+    !trash && !recent && !starred && !gallery && !audio && !bookshelf && !video && !sharing;
   const personalFiles = files && !shared;
   const sharedMounts = useQuery({
     queryKey: ["shared-with-me", me?.id, me?.epoch],
@@ -860,6 +902,7 @@ export function App() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [recovery, setRecovery] = useState<Pending | null>(null);
   const [recovering, setRecovering] = useState(false);
+  const [starPending, setStarPending] = useState<Set<string>>(new Set());
   const input = useRef<HTMLInputElement>(null);
   const channel = useRef<BroadcastChannel | null>(null);
   const listing = useInfiniteQuery({
@@ -907,6 +950,15 @@ export function App() {
     enabled: !!me && trash,
     retry: false,
   });
+  const userNodes = useInfiniteQuery({
+    queryKey: ["user-nodes", me?.id, me?.epoch, recent ? "recent" : "starred"],
+    queryFn: ({ pageParam, signal }) =>
+      api.userNodes(recent ? "recent" : "starred", pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page) => page.nextCursor,
+    enabled: !!me && userState,
+    retry: false,
+  });
   const refresh = () => {
     for (const key of [
       "children",
@@ -918,6 +970,7 @@ export function App() {
       "shared-with-me",
       "shares",
       "share-groups",
+      "user-nodes",
     ])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
@@ -1003,14 +1056,24 @@ export function App() {
       }
     }
   };
+  const recordOpen = (nodeId: string) => {
+    if (!me) return;
+    void api
+      .recordRecent(nodeId)
+      .then(() => query.invalidateQueries({ queryKey: ["user-nodes", me.id, me.epoch, "recent"] }))
+      .catch(() => undefined);
+  };
   const openNode = (node: FileNode) => {
     if (node.kind === "folder") {
-      if (sharedMount)
-        void navigate({
-          to: "/shared/$shareId/$folderId",
-          params: { shareId: sharedMount.shareId, folderId: node.id },
-        });
-      else void navigate({ to: "/files/$folderId", params: { folderId: node.id } });
+      const navigation = sharedMount
+        ? navigate({
+            to: "/shared/$shareId/$folderId",
+            params: { shareId: sharedMount.shareId, folderId: node.id },
+          })
+        : navigate({ to: "/files/$folderId", params: { folderId: node.id } });
+      void navigation
+        .then(() => recordOpen(node.id))
+        .catch((error) => setNotice(errorMessage(error)));
       return;
     }
     if (sharedMount && !sharedMount.actions.includes("download")) {
@@ -1023,7 +1086,35 @@ export function App() {
       return;
     }
     target.opener = null;
-    void api.openFile(me, node, target).catch((error) => setNotice(errorMessage(error)));
+    void api
+      .openFile(me, node, target)
+      .then(() => recordOpen(node.id))
+      .catch((error) => setNotice(errorMessage(error)));
+  };
+  const toggleStar = async (node: FileNode) => {
+    if (starPending.has(node.id)) return;
+    setStarPending((current) => new Set(current).add(node.id));
+    try {
+      await Promise.all([
+        query.cancelQueries({ queryKey: ["children"] }),
+        query.cancelQueries({ queryKey: ["search"] }),
+        query.cancelQueries({ queryKey: ["user-nodes"] }),
+      ]);
+      await api.setStar(node.id, !node.starred);
+      await Promise.all([
+        query.invalidateQueries({ queryKey: ["children"] }),
+        query.invalidateQueries({ queryKey: ["search"] }),
+        query.invalidateQueries({ queryKey: ["user-nodes"] }),
+      ]);
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setStarPending((current) => {
+        const next = new Set(current);
+        next.delete(node.id);
+        return next;
+      });
+    }
   };
   const logout = async () => {
     setLoggingOut(true);
@@ -1042,15 +1133,24 @@ export function App() {
   };
   const rows = listing.data?.pages.flatMap((page) => page.children) ?? [];
   const items = trashed.data?.pages.flatMap((page) => page.items) ?? [];
-  const filtered = searching
-    ? results.error
-      ? []
-      : (results.data?.pages.flatMap((page) => page.items) ?? [])
-    : rows;
+  const stateRows = userNodes.data?.pages.flatMap((page) => page.items) ?? [];
+  const filtered = (
+    userState
+      ? stateRows
+      : searching
+        ? results.error
+          ? []
+          : (results.data?.pages.flatMap((page) => page.items) ?? [])
+        : rows
+  ).filter((item) =>
+    userState
+      ? item.name.toLocaleLowerCase("ja-JP").includes(filter.toLocaleLowerCase("ja-JP"))
+      : true,
+  );
   const filteredTrash = items.filter((item) =>
     item.name.toLocaleLowerCase("ja-JP").includes(filter.toLocaleLowerCase("ja-JP")),
   );
-  const data = trash ? trashed : searching ? results : listing;
+  const data = trash ? trashed : userState ? userNodes : searching ? results : listing;
   const truncated = searching && results.data?.pages.some((page) => page.truncated);
   const sharedRootIndex = sharedMount
     ? (path.data?.path.findIndex((crumb) => crumb.id === sharedMount.root.id) ?? -1)
@@ -1063,21 +1163,25 @@ export function App() {
     : path.data?.path.slice(1);
   const title = trash
     ? "ごみ箱"
-    : sharing
-      ? "内部共有"
-      : shared
-        ? sharedMount && !sharedPathInvalid
-          ? path.data?.path.at(-1)?.name || sharedMount.root.name
-          : "共有フォルダー"
-        : gallery
-          ? "ギャラリー"
-          : audio
-            ? "オーディオ"
-            : bookshelf
-              ? "本棚"
-              : video
-                ? "動画"
-                : path.data?.path.at(-1)?.name || "マイドライブ";
+    : recent
+      ? "最近使った項目"
+      : starred
+        ? "スター付き"
+        : sharing
+          ? "内部共有"
+          : shared
+            ? sharedMount && !sharedPathInvalid
+              ? path.data?.path.at(-1)?.name || sharedMount.root.name
+              : "共有フォルダー"
+            : gallery
+              ? "ギャラリー"
+              : audio
+                ? "オーディオ"
+                : bookshelf
+                  ? "本棚"
+                  : video
+                    ? "動画"
+                    : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1107,6 +1211,16 @@ export function App() {
           <Link to="/files" className={personalFiles ? "nav-link active" : "nav-link"}>
             <HardDrive size={19} />
             マイドライブ
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/recent" className={recent ? "nav-link active" : "nav-link"}>
+            <Clock3 size={19} />
+            最近使った項目
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/starred" className={starred ? "nav-link active" : "nav-link"}>
+            <Star size={19} />
+            スター付き
             <span className="nav-dot" />
           </Link>
           <Link to="/shares" className={sharing || shared ? "nav-link active" : "nav-link"}>
@@ -1277,6 +1391,18 @@ export function App() {
                 ごみ箱
               </span>
             )}
+            {recent && (
+              <span>
+                <ChevronRight size={13} />
+                最近使った項目
+              </span>
+            )}
+            {starred && (
+              <span>
+                <ChevronRight size={13} />
+                スター付き
+              </span>
+            )}
             {gallery && (
               <span>
                 <ChevronRight size={13} />
@@ -1307,37 +1433,45 @@ export function App() {
               <p className="eyebrow">
                 {trash
                   ? "TRASH"
-                  : sharing
-                    ? "PRIVATE SHARING"
-                    : shared
-                      ? "SHARED FOLDER"
-                      : gallery
-                        ? "YOUR PHOTOS"
-                        : audio
-                          ? "YOUR MUSIC"
-                          : bookshelf
-                            ? "YOUR BOOKS"
-                            : video
-                              ? "YOUR VIDEOS"
-                              : "YOUR FILES, YOUR SPACE"}
+                  : recent
+                    ? "RECENT"
+                    : starred
+                      ? "STARRED"
+                      : sharing
+                        ? "PRIVATE SHARING"
+                        : shared
+                          ? "SHARED FOLDER"
+                          : gallery
+                            ? "YOUR PHOTOS"
+                            : audio
+                              ? "YOUR MUSIC"
+                              : bookshelf
+                                ? "YOUR BOOKS"
+                                : video
+                                  ? "YOUR VIDEOS"
+                                  : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
                 {trash
                   ? "不要になったファイルを確認・復元できます。"
-                  : sharing
-                    ? "ログイン済みのユーザーとグループに、フォルダーを安全に共有できます。"
-                    : shared
-                      ? "所有者が許可した現在の操作だけを利用できます。"
-                      : gallery
-                        ? "アップロードした写真を、サムネイルからすばやく探せます。"
-                        : audio
-                          ? "プライベートなオーディオを、このスペースから再生できます。"
-                          : bookshelf
-                            ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
-                            : video
-                              ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
-                              : "大切なファイルを、いつでも使いやすく。"}
+                  : recent
+                    ? "最近開いた項目を、現在のアクセス権で確認できます。"
+                    : starred
+                      ? "自分だけのスターを付けた項目をまとめて確認できます。"
+                      : sharing
+                        ? "ログイン済みのユーザーとグループに、フォルダーを安全に共有できます。"
+                        : shared
+                          ? "所有者が許可した現在の操作だけを利用できます。"
+                          : gallery
+                            ? "アップロードした写真を、サムネイルからすばやく探せます。"
+                            : audio
+                              ? "プライベートなオーディオを、このスペースから再生できます。"
+                              : bookshelf
+                                ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
+                                : video
+                                  ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
+                                  : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
             {me && personalFiles && (
@@ -1479,10 +1613,16 @@ export function App() {
                   <strong>{trash ? filteredTrash.length : filtered.length}</strong> 件
                   {!data.error && (data.hasNextPage || truncated) && <span>以上</span>}
                   <span className="toolbar-divider" />
-                  {trash ? "削除した項目" : "名前順"}
+                  {trash
+                    ? "削除した項目"
+                    : recent
+                      ? "最近開いた順"
+                      : starred
+                        ? "スター付きの項目"
+                        : "名前順"}
                 </div>
                 <div className="toolbar-controls">
-                  {!trash && (
+                  {!trash && !userState && (
                     <Button
                       variant="ghost"
                       size="icon"
@@ -1497,7 +1637,7 @@ export function App() {
                     role="search"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (!trash) {
+                      if (!trash && !userState) {
                         const term = filter.trim();
                         setSearchTerm(term ? { scopeId: parentId, query: term } : null);
                         void query.resetQueries({
@@ -1510,14 +1650,18 @@ export function App() {
                       <Search size={16} />
                       <input
                         type="search"
-                        aria-label={trash ? "表示中の名前で絞り込む" : "このフォルダー内を検索"}
-                        placeholder={trash ? "表示中の名前で絞り込む" : "このフォルダー内を検索"}
+                        aria-label={
+                          trash || userState ? "表示中の名前で絞り込む" : "このフォルダー内を検索"
+                        }
+                        placeholder={
+                          trash || userState ? "表示中の名前で絞り込む" : "このフォルダー内を検索"
+                        }
                         maxLength={256}
                         value={filter}
                         onChange={(event) => setFilter(event.target.value)}
                       />
                     </label>
-                    {!trash && (
+                    {!trash && !userState && (
                       <Button type="submit" size="small">
                         検索
                       </Button>
@@ -1526,7 +1670,7 @@ export function App() {
                   <Button variant="ghost" size="icon" aria-label="一覧を更新" onClick={refresh}>
                     <RefreshCw size={17} className={data.isFetching ? "spin" : ""} />
                   </Button>
-                  {!trash && (
+                  {!trash && !userState && (
                     <div className="view-switch">
                       <button
                         aria-label="リスト表示"
@@ -1588,31 +1732,43 @@ export function App() {
                   <span className="empty-illustration">
                     {trash ? (
                       <Trash2 size={43} strokeWidth={1.3} />
+                    ) : starred ? (
+                      <Star size={44} strokeWidth={1.3} />
+                    ) : recent ? (
+                      <Clock3 size={44} strokeWidth={1.3} />
                     ) : (
                       <Folder size={48} strokeWidth={1.3} />
                     )}
                   </span>
                   <h2>
-                    {searching || (trash && filter)
+                    {searching || ((trash || userState) && filter)
                       ? "一致する項目がありません"
                       : trash
                         ? "ごみ箱は空です"
-                        : shared
-                          ? "このフォルダーは空です"
-                          : "ファイルを置く場所ができました"}
+                        : recent
+                          ? "最近使った項目はありません"
+                          : starred
+                            ? "スター付きの項目はありません"
+                            : shared
+                              ? "このフォルダーは空です"
+                              : "ファイルを置く場所ができました"}
                   </h2>
                   <p>
                     {searching
                       ? "検索語や検索するフォルダーを変更してください。"
-                      : trash && filter
+                      : (trash || userState) && filter
                         ? "絞り込み条件を変更するか、次のページを読み込んでください。"
                         : trash
                           ? "ごみ箱に移動した項目は、ここに表示されます。"
-                          : shared
-                            ? "現在表示できるファイルやフォルダーはありません。"
-                            : "ファイルをドラッグするか、アップロードから追加できます。"}
+                          : recent
+                            ? "ファイルやフォルダーを開くと、ここに表示されます。"
+                            : starred
+                              ? "一覧のスターを選ぶと、ここに表示されます。"
+                              : shared
+                                ? "現在表示できるファイルやフォルダーはありません。"
+                                : "ファイルをドラッグするか、アップロードから追加できます。"}
                   </p>
-                  {!trash && !searching && !shared && (
+                  {!trash && !searching && !shared && !userState && (
                     <Button variant="primary" onClick={() => input.current?.click()}>
                       <Upload size={17} />
                       最初のファイルを追加
@@ -1650,15 +1806,28 @@ export function App() {
                   ))}
                 </div>
               ) : (
-                <FileList rows={filtered} view={view} act={act} open={openNode} readOnly={shared} />
+                <FileList
+                  rows={filtered}
+                  view={view}
+                  act={act}
+                  open={openNode}
+                  readOnly={shared}
+                  currentUserId={me.id}
+                  toggleStar={toggleStar}
+                  starPending={starPending}
+                />
               )}
               <div className="list-footer">
                 <span>
-                  {searching
-                    ? "検索結果は名前順に表示されます"
-                    : filter && trash
-                      ? "読み込み済みの項目を絞り込んでいます"
-                      : "ファイルは名前順に表示されます"}
+                  {recent
+                    ? "現在もアクセスできる項目だけを最近開いた順に表示します"
+                    : starred
+                      ? "スターは自分のアカウントだけに保存されます"
+                      : searching
+                        ? "検索結果は名前順に表示されます"
+                        : filter && trash
+                          ? "読み込み済みの項目を絞り込んでいます"
+                          : "ファイルは名前順に表示されます"}
                 </span>
                 {data.hasNextPage && !data.error && (
                   <Button

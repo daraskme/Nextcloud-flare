@@ -13,6 +13,7 @@ export interface Account {
 export interface FileNode {
   id: string;
   parentId?: string;
+  ownerId?: string;
   name: string;
   kind: "folder" | "file";
   revision: number;
@@ -20,6 +21,13 @@ export interface FileNode {
   updatedAt: number;
   size: number | null;
   mime: string | null;
+  starred?: boolean;
+  lastOpenedAt?: number | null;
+}
+export interface UserNodePage {
+  kind: "recent" | "starred";
+  items: FileNode[];
+  nextCursor: string | null;
 }
 export interface Children {
   parentId: string;
@@ -396,6 +404,26 @@ export class ApiClient {
     const params = new URLSearchParams({ scopeId, q });
     if (cursor) params.set("cursor", cursor);
     return this.request<SearchPage>(`/api/v1/search?${params}`, signal ? { signal } : {});
+  }
+  userNodes(kind: "recent" | "starred", cursor?: string | null, signal?: AbortSignal) {
+    return this.request<UserNodePage>(
+      `/api/v1/${kind}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+  setStar(nodeId: string, starred: boolean) {
+    return this.json<{ starred: boolean }>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/star`,
+      "PUT",
+      { starred },
+    );
+  }
+  recordRecent(nodeId: string) {
+    return this.json<{ recorded: boolean }>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/recent`,
+      "PUT",
+      {},
+    );
   }
   stats(scopeId: string, signal?: AbortSignal) {
     return this.request<FolderStats>(

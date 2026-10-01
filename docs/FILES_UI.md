@@ -28,9 +28,21 @@ uploadのIndexedDBはID、capability、epoch、name/size/mtime、先頭・末尾
 - 完了時とlogout時に記録を削除する。scope変更/認証失効では旧送信を止め、遅れて戻るCSRF/create結果で保存情報を復活させない。
 - logoutはサーバー失効を先に確認し、BroadcastChannel→memory/Query/IndexedDB/sessionStorage削除→Access logoutへ進む。アプリ専用Cache Storageは現在作成していない。
 
+## Recent と Starred
+
+`/recent` と `/starred` はD1の `(user_id,node_id)` 状態を表示し、node metadataや共有状態に
+個人のstar/open履歴を混ぜない。各ページは署名cursorで10件ずつ返し、候補を16件以内に
+制限してから現在のepoch、maintenance、live ancestry、owner/internal-share authorityを再検証する。
+trash、share revoke、membership変更で見えなくなったnodeは次のreadから即時に消える。
+
+star更新は冪等なPUT、recent openは60秒以内の同一node更新を抑止するPUTであり、どちらも
+account mutation admissionと再認可を通る。Files/search/Recent/Starredの表示はserverの
+current-user stateだけを使い、mutation前に旧queryをcancelし、成功後に関連queryをinvalidateする。
+fileはcontent open成功後、folderはnavigation成功後だけrecentを記録する。
+
 ## private assets
 
-Viteのprivate entry graphから `scripts/generate-private-assets.mjs` がファイル名の完全一致allowlistを生成する。Workerは `/`、`/files`、`/files/:id`、`/trash` とそのallowlistだけをapp host・ControlDO admission・Access認証後に配信する。unknown/public/service/content hostにSPA fallbackを渡さない。`index.html`とVite manifestの直接配信も拒否する。
+Viteのprivate entry graphから `scripts/generate-private-assets.mjs` がファイル名の完全一致allowlistを生成する。Workerは `/`、`/files`、`/files/:id`、`/recent`、`/starred`、`/trash` とそのallowlistだけをapp host・ControlDO admission・Access認証後に配信する。unknown/public/service/content hostにSPA fallbackを渡さない。`index.html`とVite manifestの直接配信も拒否する。
 
 HTML/chunk/CSSはprivate, no-store。CSPのscriptはselfのみ、connect先はselfと設定済みhttps content originのみ。styleのinlineはReactの仮想行位置/Radix表示に必要。画像はself/data、object/frame-ancestor/baseは禁止。React側にHTML文字列の挿入はない。
 

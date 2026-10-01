@@ -317,6 +317,16 @@ export const ROUTES = [
   },
   {
     host: "app",
+    method: "PUT",
+    template: "/api/v1/nodes/:nodeId/recent",
+    auth: ["access"],
+    operation: "recent.record",
+    operands: ["currentUser", "node"],
+    adminOnly: false,
+    csrf: "same-origin-json",
+  },
+  {
+    host: "app",
     method: "POST",
     template: "/api/v1/nodes/:nodeId/zip",
     auth: ["access"],

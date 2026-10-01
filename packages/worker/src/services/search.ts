@@ -7,6 +7,7 @@ import { BOUNDED_SUBTREE_CTE } from "./subtree";
 interface SearchRow {
   id: string;
   parentId: string;
+  ownerId: string;
   name: string;
   nameCi: string;
   kind: "folder" | "file";
@@ -15,13 +16,15 @@ interface SearchRow {
   updatedAt: number;
   size: number | null;
   mime: string | null;
+  starred: number;
 }
 
 /** Scope drives rowid-constrained FTS lookups, never an unbounded global hit scan. */
 export function searchStatement(indexed: boolean): string {
   return `${BOUNDED_SUBTREE_CTE}, eligible AS MATERIALIZED (
-    SELECT n.id,n.parent_id,n.name,n.name_ci,n.kind,n.revision,n.current_blob_id,n.updated_at,
-      si.rowid AS index_id,si.text_norm,si.normalization_version,si.revision AS index_revision
+    SELECT n.id,n.parent_id,n.owner_id,n.name,n.name_ci,n.kind,n.revision,n.current_blob_id,
+      n.updated_at,si.rowid AS index_id,si.text_norm,si.normalization_version,
+      si.revision AS index_revision
     FROM scope s CROSS JOIN nodes n ON n.id=s.id
       LEFT JOIN search_index si ON si.node_id=n.id AND si.space_id=?2
     WHERE s.id<>?1 AND n.kind IN ('folder','file')
@@ -31,17 +34,19 @@ export function searchStatement(indexed: boolean): string {
       ${indexed ? "AND EXISTS(SELECT 1 FROM search_fts WHERE rowid=e.index_id AND search_fts MATCH ?5)" : ""}
       LIMIT 10000
   ), page AS (
-    SELECT h.*,b.size,b.mime_sniffed FROM hits h
+    SELECT h.*,b.size,b.mime_sniffed,COALESCE(us.starred,0) AS starred FROM hits h
       LEFT JOIN blobs b ON b.id=h.current_blob_id AND b.owner_id=?3 AND b.state IN ('committed','gc_candidate')
+      LEFT JOIN user_node_state us ON us.node_id=h.id AND us.user_id=?9
     WHERE h.text_norm LIKE ?6 ESCAPE '\\'
       AND (?7 IS NULL OR h.name_ci>?7 OR (h.name_ci=?7 AND h.id>?8))
     ORDER BY h.name_ci,h.id LIMIT 201
   ) SELECT (SELECT COUNT(*) FROM scope) AS scopeCount,
     (SELECT COUNT(*) FROM hits) AS hitCount,
     (SELECT COUNT(*) FROM eligible WHERE index_id IS NULL OR normalization_version<>?4 OR index_revision>revision) AS staleCount,
-    (SELECT json_group_array(json_object('id',id,'parentId',parent_id,'name',name,'nameCi',name_ci,
+    (SELECT json_group_array(json_object('id',id,'parentId',parent_id,'ownerId',owner_id,
+      'name',name,'nameCi',name_ci,
       'kind',kind,'revision',revision,'currentBlobId',current_blob_id,'updatedAt',updated_at,
-      'size',size,'mime',mime_sniffed)) FROM page) AS items`;
+      'size',size,'mime',mime_sniffed,'starred',starred)) FROM page) AS items`;
 }
 
 export async function searchNodes(
@@ -102,6 +107,7 @@ export async function searchNodes(
         query.pattern,
         lastName,
         lastId,
+        principal.user_id,
       ],
     },
   ]);
@@ -132,7 +138,10 @@ export async function searchNodes(
     scopeId,
     query: query.text,
     treeGeneration: scope.tree_generation,
-    items: page.map(({ nameCi: _nameCi, ...node }) => node),
+    items: page.map(({ nameCi: _nameCi, starred, ...node }) => ({
+      ...node,
+      starred: starred === 1,
+    })),
     nextCursor,
     truncated: record.scopeCount >= 10000 || record.hitCount >= 10000 || record.staleCount > 0,
   });

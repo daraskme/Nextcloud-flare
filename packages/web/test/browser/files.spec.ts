@@ -113,6 +113,55 @@ test("real Files API: create, rename, upload, open, trash, restore, copy and mov
   await popup.close();
 });
 
+test("Recent and Starred use authoritative private node state", async ({ page }) => {
+  const name = "最近とスターのテスト";
+  await page.goto("/files");
+  await page.getByRole("button", { name: "新規フォルダー", exact: true }).click();
+  await page.getByLabel("名前", { exact: true }).fill(name);
+  await page.keyboard.press("Enter");
+
+  const starRequest = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      response.url().includes("/api/v1/nodes/") &&
+      response.url().endsWith("/star"),
+  );
+  await page.getByRole("button", { name: `${name}をスターに追加` }).click();
+  expect((await starRequest).status()).toBe(200);
+  await expect(page.getByRole("button", { name: `${name}をスターから外す` })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await page.getByRole("navigation").getByRole("link", { name: "スター付き" }).click();
+  await expect(page.getByRole("heading", { name: "スター付き", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name, exact: true })).toBeVisible();
+
+  const recentRequest = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      response.url().includes("/api/v1/nodes/") &&
+      response.url().endsWith("/recent"),
+  );
+  await page.getByRole("button", { name, exact: true }).click();
+  expect((await recentRequest).status()).toBe(200);
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+
+  await page.getByRole("navigation").getByRole("link", { name: "最近使った項目" }).click();
+  await expect(page.getByRole("heading", { name: "最近使った項目", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name, exact: true })).toBeVisible();
+  await page.getByRole("button", { name: `${name}をスターから外す` }).click();
+  await expect(page.getByRole("button", { name: `${name}をスターに追加` })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+
+  await page.getByRole("navigation").getByRole("link", { name: "スター付き" }).click();
+  await expect(page.getByRole("heading", { name: "スター付き", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "スター付きの項目はありません" })).toBeVisible();
+});
+
 test("a lost restore response replays the same operation after GC has resumed", async ({
   page,
 }) => {
