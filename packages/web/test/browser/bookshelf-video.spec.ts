@@ -45,6 +45,132 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
+test("private Audio preserves terminal zero when selecting the next track", async ({ page }) => {
+  await mockPrivateShell(page);
+  const first = {
+    ...candidate("audio-1", "First Track.opus", "audio/ogg"),
+    durationMs: 120_000,
+    codec: "opus",
+    title: "First Track",
+    artist: null,
+    album: null,
+    trackNumber: 1,
+    discNumber: 1,
+  };
+  const second = {
+    ...candidate("audio-2", "Second Track.opus", "audio/ogg"),
+    durationMs: 120_000,
+    codec: "opus",
+    title: "Second Track",
+    artist: null,
+    album: null,
+    trackNumber: 2,
+    discNumber: 1,
+  };
+  const writes: number[] = [];
+  await page.addInitScript(() => {
+    Object.defineProperty(HTMLMediaElement.prototype, "duration", {
+      configurable: true,
+      get() {
+        return 120;
+      },
+    });
+    HTMLMediaElement.prototype.play = async function () {
+      this.dispatchEvent(new Event("play"));
+    };
+    HTMLMediaElement.prototype.pause = function () {
+      this.dispatchEvent(new Event("pause"));
+    };
+  });
+  await page.route("**/api/v1/nodes/root/tracks?*", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        rootId: "root",
+        treeGeneration: 1,
+        recursive: true,
+        items: [first, second],
+        nextCursor: null,
+        limitReached: false,
+        trackLimit: 2,
+      },
+    }),
+  );
+  await page.route("**/api/v1/nodes/*/playback-state", (route) => {
+    const nodeId = new URL(route.request().url()).pathname.split("/").at(-2) ?? "";
+    const track = nodeId === first.id ? first : second;
+    if (route.request().method() === "GET")
+      return route.fulfill({
+        status: 200,
+        json: {
+          nodeId,
+          blobId: track.currentBlobId,
+          durationMs: track.durationMs,
+          positionMs: nodeId === first.id ? 12_000 : null,
+          updatedAt: nodeId === first.id ? 1 : null,
+        },
+      });
+    writes.push(route.request().postDataJSON().positionMs);
+    return route.fulfill({
+      status: 200,
+      json: {
+        nodeId,
+        blobId: track.currentBlobId,
+        durationMs: track.durationMs,
+        positionMs: writes.at(-1),
+        updatedAt: Date.now(),
+      },
+    });
+  });
+  await page.route("**/api/v1/content-session", (route) =>
+    route.fulfill({
+      status: 201,
+      json: { ticket: crypto.randomUUID(), ticketId: crypto.randomUUID() },
+    }),
+  );
+  await page.route("**/api/v1/tickets/*", (route) => route.fulfill({ status: 204, body: "" }));
+  await page.route("https://content.ncf.test:8879/session", (route) =>
+    route.fulfill({
+      status: 201,
+      headers: {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
+      },
+      body: "",
+    }),
+  );
+
+  await page.goto("/files");
+  await page.getByRole("link", { name: "オーディオ", exact: true }).click();
+  await page.getByRole("button", { name: /First Track/ }).click();
+  const audio = page.locator("audio");
+  await audio.dispatchEvent("loadedmetadata");
+  await expect
+    .poll(() => audio.evaluate((element) => (element as HTMLMediaElement).currentTime))
+    .toBe(12);
+  await audio.evaluate((element) => {
+    const media = element as HTMLMediaElement;
+    media.currentTime = 24;
+    media.dispatchEvent(new Event("timeupdate"));
+  });
+  await page.waitForTimeout(4_000);
+  expect(writes).toEqual([]);
+  await expect.poll(() => writes, { timeout: 2_000 }).toEqual([24_000]);
+  await audio.evaluate((element) => {
+    const media = element as HTMLMediaElement;
+    media.currentTime = 31;
+    media.dispatchEvent(new Event("pause"));
+  });
+  await expect.poll(() => writes).toEqual([24_000, 31_000]);
+  await audio.evaluate((element) => {
+    const media = element as HTMLMediaElement;
+    media.currentTime = 78;
+    media.dispatchEvent(new Event("ended"));
+  });
+  await expect(page.getByText("Second Track", { exact: true }).first()).toBeVisible();
+  await expect.poll(() => writes).toEqual([24_000, 31_000, 0]);
+});
+
 test("private Bookshelf replaces stale page tickets and rejects unsupported books", async ({
   page,
 }) => {
