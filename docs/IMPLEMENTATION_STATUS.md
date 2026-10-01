@@ -3,6 +3,17 @@
 更新: 2026-09-29。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-09-29 video・group share・multipart closure統合
+
+Queue/media/ZIP/internal share統合後のmainへ、private video metadata/track、bounded group internal share、multipart closure settlementを依存順に統合した。migrationは45件（最新`0046`）、通常tableは74、route契約は156。
+
+- Videoはbounded MP4/WebM metadata projectionをOutboxへ追加し、current video projectionを検証した`purpose=track`でimmutable原本を配信する。audio projectionへの既存fallbackを維持する。
+- Group shareはowner管理のgroup/member lifecycle、membership version、group recipient grant、rename-stable shared mount、read-only shared DAVを追加した。share action更新は`share.version`、member削除/再追加はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
+- Multipart closureはquiet periodとbounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを追加した。
+- 画像GalleryとAudioのprivate UI、bounded EPUB index/entry配信もmainへ統合済み。public ZIP/media/library routeは引き続きfail closedである。
+
+PR #16、#17、#19はUbuntu、Windows 2分割、browser、backupの全5 CIを通過してmainへ統合済み。統合状態ではgroup budget回帰、video、multipart closure、schema/backupを対象にlint、typecheck、route/config contracts、build、focused test、backup drillを再確認した。backup drillは74 tableでPASS。remote migration・deploy・実Queue/DLQ・実Images codec・実OS DAV clientは未実施。
+
 ## 2026-09-29 Queue・media・ZIP・internal share統合
 
 upload-only共有後のmainへ、依存順にQueue dead-letter repair、audio metadata indexing、画像metadata/immutable thumbnail、bounded private ZIP、direct-user internal shareとread-only shared DAVを統合した。migrationは`0042`まで、通常tableは68、route契約は151。

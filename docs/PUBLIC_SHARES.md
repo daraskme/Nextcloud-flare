@@ -51,6 +51,8 @@ public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS �
 
 app origin の直接 content proxy、public ZIP、Gallery、Bookshelf、Audio と public media/library route は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
+group internal shareもprivate認証surfaceだけへ接続する。group recipientのbudget identityはshare action versionとmembership versionの両方へ束縛し、action変更またはmember削除/再追加後にrevoke済みbudgetを再利用しない。このfenceをpublic shareのunlock/session budgetへ流用しない。
+
 ## ローカル検証
 
 - capability の正誤、Cookie 属性、metadata/children、root 外拒否。
