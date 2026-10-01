@@ -254,7 +254,9 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
       AND NOT EXISTS(SELECT 1 FROM uploads
         WHERE state IN ('created','receiving','uploading','completing','aborting'))
       AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.cleanup_token IS NOT NULL
-        OR (u.mode='multipart' AND u.state<>'completed' AND u.multipart_cleanup_closed IS NULL)
+        OR (u.mode='multipart' AND u.state<>'completed' AND u.multipart_cleanup_closed IS NULL
+          AND NOT EXISTS(SELECT 1 FROM multipart_upload_settlements x
+            WHERE x.upload_id=u.id AND x.state='settled'))
         OR (u.cleanup_pending=1 AND NOT EXISTS(SELECT 1 FROM gc_candidates g
           JOIN blob_storage s ON s.blob_id=g.blob_id
           WHERE g.blob_id=u.blob_id AND g.state='candidate' AND s.removed_at IS NULL)))
@@ -275,12 +277,19 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
           OR (owner_id IS NULL AND EXISTS(SELECT 1 FROM users WHERE id=owner_key)))))
       AND NOT EXISTS(SELECT 1 FROM r2_inventory_scan WHERE lease_token IS NOT NULL)
       AND NOT EXISTS(SELECT 1 FROM r2_binding_probe WHERE phase<>'idle' OR lease_token IS NOT NULL OR epoch>c.epoch)
-      AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans)
+      AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans s
+        WHERE NOT EXISTS(SELECT 1 FROM multipart_upload_settlements x
+          WHERE x.upload_id=s.upload_id AND x.state='settled'))
+      AND NOT EXISTS(SELECT 1 FROM multipart_closure_runs WHERE phase IN ('waiting','scanning'))
       AND NOT EXISTS(SELECT 1 FROM multipart_bucket_scan s WHERE s.completed_at IS NULL OR s.epoch<>c.epoch
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=s.source AND p.epoch=c.epoch AND p.phase='idle'))
-      AND NOT EXISTS(SELECT 1 FROM multipart_bucket_handles h WHERE h.state='quarantined'
+      AND NOT EXISTS(SELECT 1 FROM multipart_bucket_handles h WHERE
+        (h.state='quarantined' AND NOT EXISTS(
+          SELECT 1 FROM multipart_bucket_handle_settlements x WHERE x.handle_id=h.id))
         OR NOT EXISTS(SELECT 1 FROM r2_binding_probe p WHERE p.source=h.source)
-        OR NOT EXISTS(SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id))
+        OR (h.state='tracked' AND NOT EXISTS(
+          SELECT 1 FROM uploads u JOIN blobs b ON b.id=u.blob_id
+          WHERE b.r2_key=h.r2_key AND u.r2_upload_id=h.r2_upload_id)))
       AND NOT EXISTS(SELECT 1 FROM permits WHERE state='open')
       AND NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE state<>'closed')
       AND NOT EXISTS(SELECT 1 FROM kdf_attempts WHERE state='claimed')

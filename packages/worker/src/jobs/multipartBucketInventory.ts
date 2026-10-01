@@ -157,6 +157,16 @@ export async function scanMultipartBucket(
   );
 }
 
+export function scanVerifiedMultipartBucket(
+  env: GlobalMutationSource,
+  verified: VerifiedR2Inventory,
+  epoch: number,
+  limit = 20,
+): Promise<MultipartBucketScanResult> {
+  limits(epoch, limit);
+  return scanPage(env, verified, epoch, limit, Date.now() + 25_000);
+}
+
 async function scanPage(
   env: GlobalMutationSource,
   verified: VerifiedR2Inventory,

@@ -30,6 +30,14 @@ import {
 } from "../jobs/multipartBucketInventory";
 import { repairMultipartUploads } from "../jobs/multipartCleanup";
 import {
+  advanceMultipartClosure,
+  type MultipartClosureAdvanceResult,
+  type MultipartClosureSettlementResult,
+  type MultipartClosureStatus,
+  multipartClosureStatus,
+  settleMultipartClosure,
+} from "../jobs/multipartClosure";
+import {
   inspectMultipartInventory,
   type MultipartInventoryObservation,
   type MultipartInventoryQuery,
@@ -710,6 +718,55 @@ export class ControlDO extends DurableObject<Env> {
       ),
     );
     return { abort, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Operator summary exposes only bounded handles and durable accounting totals. */
+  async inspectMultipartClosure(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ closure: MultipartClosureStatus; audit: RecoveryAuditStatus }> {
+    const closure = await this.#maintenance(expectedEpoch, () =>
+      multipartClosureStatus(this.env.DB, expectedEpoch, limit),
+    );
+    return { closure, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Advance one quiet-pass transition or one verified whole-bucket inventory page. */
+  async advanceMultipartClosure(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ closure: MultipartClosureAdvanceResult; audit: RecoveryAuditStatus }> {
+    const client = new R2S3Inventory(this.env);
+    const closure = await this.#maintenance(expectedEpoch, () =>
+      advanceMultipartClosure(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        client,
+        expectedEpoch,
+        { limit },
+      ),
+    );
+    return { closure, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Settle a bounded receipt page; ambiguous R2 reads retain every capacity hold. */
+  async settleMultipartClosure(
+    expectedEpoch: number,
+    closureId: string,
+    limit = 20,
+  ): Promise<{ settlement: MultipartClosureSettlementResult; audit: RecoveryAuditStatus }> {
+    const client = new R2S3Inventory(this.env);
+    const settlement = await this.#maintenance(expectedEpoch, () =>
+      settleMultipartClosure(
+        { DB: this.env.DB, systemControl: this },
+        this.env.BLOBS,
+        client,
+        expectedEpoch,
+        closureId,
+        { limit },
+      ),
+    );
+    return { settlement, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */
