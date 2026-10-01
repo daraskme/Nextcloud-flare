@@ -65,7 +65,9 @@ export async function ensureContentBudget(
               WHERE gg.share_id=sh.id)
             END AS version
             FROM shares sh WHERE sh.id=? AND sh.version=? AND sh.kind='internal'
-              AND sh.disabled_at IS NULL`)
+              AND sh.disabled_at IS NULL
+              AND EXISTS(SELECT 1 FROM current_internal_shares current
+                WHERE current.share_id=sh.id AND current.version=sh.version)`)
           .bind(userId, userId, shareId, share?.version ?? null)
           .first<number>("version")
       : null;
@@ -132,6 +134,8 @@ export async function ensureContentBudget(
             SELECT 1 FROM shares sh
             WHERE sh.id=? AND sh.version=? AND sh.owner_id=? AND sh.kind='internal'
               AND sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>=?)
+              AND EXISTS(SELECT 1 FROM current_internal_shares current
+                WHERE current.share_id=sh.id AND current.version=sh.version)
               AND (
                 (?=0 AND EXISTS(SELECT 1 FROM share_grants g
                   WHERE g.share_id=sh.id AND g.user_id=u.id

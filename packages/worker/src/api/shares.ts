@@ -13,8 +13,10 @@ import {
   disableShare,
   listSharedWithMe,
   listShares,
+  type ResharePolicyInput,
   readShare,
-  updateInternalShareActions,
+  type UpdateInternalShareInput,
+  updateInternalShare,
 } from "../services/shares";
 import { hasEmptyBody } from "./emptyBody";
 
@@ -83,6 +85,8 @@ async function createBody(
             "recipientGroupId",
             "actions",
             "ttlDays",
+            "sourceShareId",
+            "resharePolicy",
           ].includes(key),
       ) ||
       typeof body.rootNodeId !== "string" ||
@@ -92,9 +96,12 @@ async function createBody(
       (body.recipientGroupId !== undefined && typeof body.recipientGroupId !== "string") ||
       !Array.isArray(body.actions) ||
       body.actions.some((action) => typeof action !== "string") ||
-      (body.ttlDays !== undefined && typeof body.ttlDays !== "number")
+      (body.ttlDays !== undefined && typeof body.ttlDays !== "number") ||
+      (body.sourceShareId !== undefined && typeof body.sourceShareId !== "string")
     )
       throw new Error("invalid_share_request");
+    const resharePolicy =
+      body.resharePolicy === undefined ? undefined : policyBody(body.resharePolicy);
     return {
       kind: "internal",
       rootNodeId: body.rootNodeId,
@@ -107,6 +114,8 @@ async function createBody(
         : { recipientGroupId: body.recipientGroupId as string }),
       actions: body.actions as string[],
       ...(body.ttlDays === undefined ? {} : { ttlDays: body.ttlDays as number }),
+      ...(body.sourceShareId === undefined ? {} : { sourceShareId: body.sourceShareId as string }),
+      ...(resharePolicy === undefined ? {} : { resharePolicy }),
     };
   }
   if (
@@ -138,15 +147,44 @@ async function createBody(
   };
 }
 
-async function actionBody(request: Request) {
-  const body = await jsonBody(request);
+function policyBody(value: unknown): ResharePolicyInput {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("invalid_share_request");
+  const body = value as Record<string, unknown>;
   if (
-    Object.keys(body).some((key) => key !== "actions") ||
+    Object.keys(body).some(
+      (key) => !["enabled", "actions", "maxDepth", "maxFanout", "ttlDays"].includes(key),
+    ) ||
+    typeof body.enabled !== "boolean" ||
     !Array.isArray(body.actions) ||
-    body.actions.some((action) => typeof action !== "string")
+    body.actions.some((action) => typeof action !== "string") ||
+    typeof body.maxDepth !== "number" ||
+    typeof body.maxFanout !== "number" ||
+    (body.ttlDays !== undefined && typeof body.ttlDays !== "number")
   )
     throw new Error("invalid_share_request");
-  return body.actions as string[];
+  return {
+    enabled: body.enabled,
+    actions: body.actions as string[],
+    maxDepth: body.maxDepth,
+    maxFanout: body.maxFanout,
+    ...(body.ttlDays === undefined ? {} : { ttlDays: body.ttlDays as number }),
+  };
+}
+
+async function updateBody(request: Request): Promise<UpdateInternalShareInput> {
+  const body = await jsonBody(request);
+  if (
+    Object.keys(body).some((key) => !["actions", "resharePolicy"].includes(key)) ||
+    (body.actions === undefined && body.resharePolicy === undefined) ||
+    (body.actions !== undefined &&
+      (!Array.isArray(body.actions) || body.actions.some((action) => typeof action !== "string")))
+  )
+    throw new Error("invalid_share_request");
+  return {
+    ...(body.actions === undefined ? {} : { actions: body.actions as string[] }),
+    ...(body.resharePolicy === undefined ? {} : { resharePolicy: policyBody(body.resharePolicy) }),
+  };
 }
 
 export async function handleShareHttp(
@@ -218,17 +256,16 @@ export async function handleShareHttp(
     }
   }
   if (update) {
-    let actions: string[];
+    let body: UpdateInternalShareInput;
     try {
-      actions = await actionBody(request);
+      body = await updateBody(request);
     } catch {
       return problem(400, "bad_request");
     }
     try {
-      return Response.json(
-        await updateInternalShareActions(env, session, detail?.[1] ?? "", actions),
-        { headers: PRIVATE_HEADERS },
-      );
+      return Response.json(await updateInternalShare(env, session, detail?.[1] ?? "", body), {
+        headers: PRIVATE_HEADERS,
+      });
     } catch (error) {
       if (error instanceof MutationUnavailableError) {
         const response = problem(503, "not_ready");
@@ -239,6 +276,8 @@ export async function handleShareHttp(
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "share_not_found")
         return problem(404, "not_found");
+      if (error instanceof Error && error.message === "share_authority_exceeded")
+        return problem(403, "forbidden");
       return problem(503, "not_ready");
     }
   }
@@ -250,7 +289,15 @@ export async function handleShareHttp(
   }
   try {
     if ("kind" in body && body.kind === "internal") {
-      const created = await createInternalShare(env, session, body);
+      const idempotencyKey =
+        body.sourceShareId === undefined
+          ? undefined
+          : (request.headers.get("Idempotency-Key") ?? undefined);
+      if (body.sourceShareId !== undefined && !idempotencyKey) return problem(400, "bad_request");
+      const created = await createInternalShare(env, session, {
+        ...body,
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      });
       return Response.json(created, { status: 201, headers: PRIVATE_HEADERS });
     }
     const created = await createShare(env, session, body, passwordRing, request.signal);
@@ -276,6 +323,14 @@ export async function handleShareHttp(
       return problem(404, "not_found");
     if (error instanceof Error && error.message === "share_recipient_not_found")
       return problem(404, "not_found");
+    if (error instanceof Error && error.message === "share_source_not_found")
+      return problem(404, "not_found");
+    if (error instanceof Error && error.message === "share_authority_exceeded")
+      return problem(403, "forbidden");
+    if (error instanceof Error && error.message === "invalid_idempotency_key")
+      return problem(400, "bad_request");
+    if (error instanceof Error && error.message === "idempotency_conflict")
+      return problem(409, "conflict");
     if (error instanceof Error && error.message === "share_limit") return problem(409, "conflict");
     if (error instanceof Error && error.message === "share_exists") return problem(409, "conflict");
     if (error instanceof Error && error.message === "share_password_unavailable") {

@@ -13,7 +13,7 @@ beforeAll(async () => {
 it("applies the production migrations on D1 with every foreign key enabled", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); // idempotent runner, not repeated SQL
   expect((await env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(46);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(47);
   const graph = [];
   for (const name of exportTables) {
     const result = await env.DB.prepare(`PRAGMA foreign_key_list('${name}')`).all<ForeignKey>();
@@ -36,6 +36,48 @@ it("rolls back a production-schema batch when a structural guard rejects a later
       .bind(ids.user)
       .first("used_bytes"),
   ).toBe(3);
+});
+
+it("installs immutable bounded-reshare authority and lifecycle schema", async () => {
+  const tables = await env.DB.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name IN (
+      'share_reshare_policies','share_reshare_policy_actions','share_delegations',
+      'share_delegation_ancestry','share_delegation_status','share_reshare_requests'
+    ) ORDER BY name`,
+  ).all<{ name: string }>();
+  expect(tables.results.map(({ name }) => name)).toEqual([
+    "share_delegation_ancestry",
+    "share_delegation_status",
+    "share_delegations",
+    "share_reshare_policies",
+    "share_reshare_policy_actions",
+    "share_reshare_requests",
+  ]);
+  const triggers = await env.DB.prepare(
+    `SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (
+      'share_delegations_immutable','share_delegation_source_changed',
+      'share_delegation_policy_changed','share_delegation_group_recipient_changed',
+      'share_delegation_ancestry_changed','share_reshare_requests_immutable',
+      'share_delegation_status_insert','share_delegation_status_no_reactivate',
+      'share_delegation_status_invalidate_descendants'
+    ) ORDER BY name`,
+  ).all<{ name: string }>();
+  expect(triggers.results.map(({ name }) => name)).toEqual([
+    "share_delegation_ancestry_changed",
+    "share_delegation_group_recipient_changed",
+    "share_delegation_policy_changed",
+    "share_delegation_source_changed",
+    "share_delegation_status_insert",
+    "share_delegation_status_invalidate_descendants",
+    "share_delegation_status_no_reactivate",
+    "share_delegations_immutable",
+    "share_reshare_requests_immutable",
+  ]);
+  expect(
+    await env.DB.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='view' AND name='current_internal_shares'",
+    ).first<string>("sql"),
+  ).toContain("share_delegation_status");
 });
 
 it("enforces depth 64/65 in actual D1 triggers", async () => {

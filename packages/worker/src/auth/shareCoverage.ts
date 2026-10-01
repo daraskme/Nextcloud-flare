@@ -12,6 +12,10 @@ const QUERY = `WITH RECURSIVE a(id,parent_id,depth,path) AS (
   WHERE sh.id=? AND sh.version=? AND sh.owner_id=?
     AND sh.disabled_at IS NULL
     AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+    AND (sh.kind<>'internal' OR EXISTS(
+      SELECT 1 FROM current_internal_shares current
+      WHERE current.share_id=sh.id AND current.version=sh.version
+    ))
     AND EXISTS(SELECT 1 FROM share_actions sa
       WHERE sa.share_id=sh.id AND sa.action='read')`;
 

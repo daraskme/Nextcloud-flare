@@ -210,6 +210,10 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
         AND (?6<>'node.rename' OR sh.root_node_id<>?1)
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
+        AND (sh.kind<>'internal' OR EXISTS(
+          SELECT 1 FROM current_internal_shares current
+          WHERE current.share_id=sh.id AND current.version=sh.version
+        ))
   )
   SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,sp.tree_generation
     FROM nodes n JOIN spaces sp ON sp.id=n.space_id AND sp.owner_id=n.owner_id
