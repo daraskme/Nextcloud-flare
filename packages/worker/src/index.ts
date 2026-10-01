@@ -39,6 +39,7 @@ export { BudgetDO } from "./do/BudgetDO";
 export { ControlDO } from "./do/ControlDO";
 export { LockDO } from "./do/LockDO";
 export { UploadDO } from "./do/UploadDO";
+export { OperationsOperator } from "./ops/operator";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

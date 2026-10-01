@@ -19,15 +19,19 @@ remoteは[run/dailyと同じ権限・設定](BACKUP_OPERATOR.md)を使う。`--i
 
 終了コードは最終検査が正常なら0、不足・破損・検査未完了なら2、処理失敗なら1。途中の`maintenance_health`イベントは補充前後の不足数と警告を示し、最後の`command:maintain`のJSONには`completed`、`initial`、`health`、`cleanup`がある。外部監視は非0終了を失敗と扱い、長時間実行や24時間超の未実行も検知する必要がある。`--prune-expired`を指定すると、最終healthが完了・正常・active backupなしの場合だけ[期限切れ世代の自動走査](BACKUP_SWEEP.md)を行う。省略時は削除せず、`cleanup:null`を返す。指定時は走査未完了・破損保留も終了コード2とし、健全性検査の結果は`health`に維持する。回収の接続失敗等は終了コード1となる。特定UUIDの回収には[prune](BACKUP_PRUNING.md)を使う。
 
+`pnpm backup:monitor`は定時実行用の薄いwrapperで、同じ`maintain --prune-expired`を実行した後に、最終health/cleanupをv1のredacted eventへ正規化する。初回のunhealthy/error、alert code集合の変化、最初のrecoveredだけを通知し、同一状態の再実行は黙る。成功した状態はhostの`StateDirectory`へ0600のJSONで保存し、通知失敗時は終了コード1を返して再送可能なredacted reportだけを残す。backupの世代作成・保持・receipt・barrier・sweep状態は通知の成否で変更しない。
+
+dry runはstdoutだけへeventを書き、webhookはHTTPS JSONだけを受け付ける（loopback testを除く）。redirect、2xx以外、timeout、過大なrequest/responseは失敗にし、endpoint、response本文、Authorization、世代UUID、object key、manifest hash、SQL、source path、provider detailはpayload/logへ出さない。
+
 ## Linuxでの定期起動例
 
-[service](../ops/backup/nextcloud-flare-backup.service)、[timer](../ops/backup/nextcloud-flare-backup.timer)、[環境変数例](../ops/backup/backup.env.example)を用意した。service例は`--prune-expired`で健全性確認後の回収を有効にする。走査が1回の上限を超えた場合は次の定期実行で継続する。repositoryやCIからinstall/enableは行わない。
+[service](../ops/backup/nextcloud-flare-backup.service)、[timer](../ops/backup/nextcloud-flare-backup.timer)、[環境変数例](../ops/backup/backup.env.example)を用意した。service例は`backup:monitor`相当のwrapperで`--prune-expired`を固定し、健全性確認後の回収とdeduplicated通知を有効にする。走査が1回の上限を超えた場合は次の定期実行で継続する。repositoryやCIからinstall/enableは行わない。
 
 例はUTC 00:30に起動し、最大5分の分散待機を入れる。`Persistent=true`は停止中に逃した起動を後から1回実行するための設定であり、過去日のsnapshotを生成しない。同じserviceが実行中ならtimerは別instanceを開始しない。仕様は[systemd公式timer文書](https://raw.githubusercontent.com/systemd/systemd/v261/man/systemd.timer.xml)を参照。
 
-導入時は承認済みの環境inventoryを使い、専用利用者`ncf-backup`、書込み可能な状態保存先とhome、固定したNode版・依存導入済みの`/opt/nextcloud-flare`、D1/Worker descriptor、R2資格情報、現在のepochを準備する。例のpathを実環境に合わせる。`backup.env`はhost側で制限した権限のファイルとして配置し、実secretをrepositoryへ保存しない。環境変数例のepochは空欄であり、設定前は開始できない。
+導入時は承認済みの環境inventoryを使い、専用利用者`ncf-backup`、書込み可能な状態保存先とhome、固定したNode版・依存導入済みの`/opt/nextcloud-flare`、D1/Worker descriptor、R2資格情報、現在のepoch、通知先URLを準備する。例のpathを実環境に合わせる。`backup.env`はhost側で制限した権限のファイルとして配置し、実secretやendpointをrepositoryへ保存しない。環境変数例のepochと通知先は空欄であり、設定前は開始できない。
 
-`TimeoutStartSec=infinity`は大きな抽出をsystemdの起動期限だけで強制終了しないために明示する（[公式service文書](https://raw.githubusercontent.com/systemd/systemd/v261/man/systemd.service.xml)）。長時間実行は外部監視で検知する。終了コード2を`SuccessExitStatus`で正常へ変更しない。通知先は別途接続する。現時点でtimerは未設置で、remoteの実行も未検証である。
+`TimeoutStartSec=infinity`は大きな抽出をsystemdの起動期限だけで強制終了しないために明示する（[公式service文書](https://raw.githubusercontent.com/systemd/systemd/v261/man/systemd.service.xml)）。長時間実行は外部監視で検知する。終了コード2を`SuccessExitStatus`で正常へ変更しない。現時点でtimerは未設置で、remoteの実行も未検証である。
 
 設定の構文確認には`systemd-analyze verify ops/backup/nextcloud-flare-backup.service ops/backup/nextcloud-flare-backup.timer`を使う。これは起動試験や認証確認ではない。hostへの設置・起動前に、実設定で単発実行して正常終了、失敗通知、再実行、日付変更を確認する。
 

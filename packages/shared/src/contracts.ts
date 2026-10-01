@@ -86,6 +86,7 @@ export const OPERATIONS = {
   "library.read": ["library:read"],
   "library.write": ["library:write"],
   "audio.metadata.write": ["library:write"],
+  "audio_chapters.write": ["state:write"],
   "reading_state.write": ["state:write"],
   "playback_state.write": ["state:write"],
   "tag.read": ["node:read"],

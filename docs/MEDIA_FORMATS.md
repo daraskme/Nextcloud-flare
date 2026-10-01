@@ -27,6 +27,8 @@ Audio/Video は抽出済みの current metadata の duration に位置を clamp 
 
 EPUB は current blob の bounded index に対する `{spineIndex, progress}` のみを保持する。`spineIndex` は current `page_count` 未満、`progress` は 0–10000 とし、publication の path、markup、識別子を状態として信用しない。表示は既存の text extraction、escape、sandbox、CSP を維持する。
 
+Audio の chapter 設定も同じ user/node/current-blob 単位で保持する。整数 ms の位置、256 byte 以内の title、一意な order、最大200件、optimistic revision 付きの whole-list PUT を要求し、current metadata の duration を超える位置、blob replacement 後の古い set、public share への公開を認めない。
+
 Cloudflare Images による AVIF 入力は Enterprise 条件があるため、サムネイルの可否を原本の対応可否と混同しない。
 変換 unavailable/failed/pending の場合、detail は認可済み原本、grid は placeholder とし、大量の原本を grid で一括読込みしない。
 server derivative は既存の WebP / metadata 除去 / budget / claim fence に従う。client thumbnail 受付は追加しない。
