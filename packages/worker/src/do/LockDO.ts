@@ -1,6 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { problem } from "@next-cloud-flare/shared/errors";
-import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
+import {
+  authorizationAssertion,
+  authorizeNode,
+  type Principal,
+  principalAuthorizationContext,
+} from "../auth/authorize";
 import {
   assertCreateLocks,
   assertTrashLocks,
@@ -241,6 +246,7 @@ export class LockDO extends DurableObject<Env> {
       request.parentId,
       request.principal.kind,
       request.principal.credential_id,
+      principalAuthorizationContext(request.principal),
       request.principal.kind === "link_share"
         ? request.principal.share_id
         : request.principal.user_id,
@@ -319,6 +325,7 @@ export class LockDO extends DurableObject<Env> {
       authorized.parentId,
       request.principal.kind,
       request.principal.credential_id,
+      principalAuthorizationContext(request.principal),
       request.principal.kind === "link_share"
         ? request.principal.share_id
         : request.principal.user_id,
@@ -424,6 +431,7 @@ export class LockDO extends DurableObject<Env> {
       request.overwriteTargetId ?? null,
       request.principal.kind,
       request.principal.credential_id,
+      principalAuthorizationContext(request.principal),
       request.principal.kind === "link_share"
         ? request.principal.share_id
         : request.principal.user_id,
@@ -515,6 +523,7 @@ export class LockDO extends DurableObject<Env> {
       request.overwriteTargetId ?? null,
       request.principal.kind,
       request.principal.credential_id,
+      principalAuthorizationContext(request.principal),
       request.principal.kind === "link_share"
         ? request.principal.share_id
         : request.principal.user_id,
@@ -578,6 +587,7 @@ export class LockDO extends DurableObject<Env> {
       request.nodeId,
       request.principal.kind,
       request.principal.credential_id,
+      principalAuthorizationContext(request.principal),
       request.principal.kind === "link_share"
         ? request.principal.share_id
         : request.principal.user_id,
@@ -643,6 +653,7 @@ export class LockDO extends DurableObject<Env> {
       authorized.parentId,
       request.principal.kind,
       request.principal.credential_id,
+      principalAuthorizationContext(request.principal),
       request.principal.kind === "link_share"
         ? request.principal.share_id
         : request.principal.user_id,

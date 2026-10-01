@@ -1,5 +1,6 @@
 import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
+import { principalAuthorizationContext } from "../auth/authorize";
 import { KdfUnavailableError } from "../auth/kdf";
 import { evaluateDavRequestIf } from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
@@ -7,13 +8,16 @@ import { davEtag } from "../dav/etag";
 import { parseDavLockDepth, parseDavTimeout } from "../dav/lockProtocol";
 import {
   davReadAssertion,
+  davSharedCapabilities,
   parseDavPath,
   resolveDavCreateParent,
   resolveDavCredentialPath,
   resolveDavMoveNode,
   resolveDavNode,
   resolveDavPropsNode,
+  resolveDavSharedCapabilities,
   resolveDavTransferDestination,
+  resolveDavTrashNode,
 } from "../dav/path";
 import { propfindResponse } from "../dav/propfind";
 import {
@@ -112,6 +116,15 @@ const METHODS = new Set([
   "UNLOCK",
 ]);
 
+function sameDavAuthority(
+  left: { readonly principal: Parameters<typeof principalAuthorizationContext>[0] },
+  right: { readonly principal: Parameters<typeof principalAuthorizationContext>[0] },
+) {
+  return (
+    principalAuthorizationContext(left.principal) === principalAuthorizationContext(right.principal)
+  );
+}
+
 export function davPath(request: Request): boolean {
   const path = new URL(request.url).pathname;
   return path === "/dav" || path.startsWith("/dav/");
@@ -128,6 +141,7 @@ export async function handleDavHttp(
   let resolved:
     | Awaited<ReturnType<typeof resolveDavNode>>
     | Awaited<ReturnType<typeof resolveDavMoveNode>>
+    | Awaited<ReturnType<typeof resolveDavTrashNode>>
     | undefined;
   if (
     !davPath(request) ||
@@ -176,8 +190,25 @@ export async function handleDavHttp(
     response.headers.set("WWW-Authenticate", 'Basic realm="Nextcloud Flare DAV"');
     return response;
   }
-  if (path.shared && !["OPTIONS", "GET", "HEAD", "PROPFIND"].includes(request.method))
-    return problem(405, "method_not_allowed");
+  if (path.shared && !["OPTIONS", "GET", "HEAD", "PROPFIND"].includes(request.method)) {
+    let capabilities;
+    try {
+      capabilities = await resolveDavSharedCapabilities(env.DB, principal, path);
+    } catch {
+      return problem(404, "not_found");
+    }
+    const allowed =
+      request.method === "MKCOL" || request.method === "COPY"
+        ? capabilities.canCreate
+        : request.method === "DELETE"
+          ? capabilities.canDelete
+          : request.method === "MOVE"
+            ? capabilities.canCreate && capabilities.canEdit && capabilities.canDelete
+            : request.method === "PUT" || request.method === "LOCK"
+              ? capabilities.canCreate || capabilities.canEdit
+              : capabilities.canEdit;
+    if (!allowed) return problem(405, "method_not_allowed");
+  }
   if (request.method === "MKCOL") {
     if (path.segments.length === 0) return problem(405, "method_not_allowed");
     if (
@@ -199,7 +230,7 @@ export async function handleDavHttp(
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const parent = await resolveDavCreateParent(env.DB, principal, parentPath);
       const outcome = await createFolder(env, {
-        principal,
+        principal: parent.principal,
         idempotencyKey: key,
         spaceId: parent.spaceId,
         parentId: parent.parent.id,
@@ -276,7 +307,11 @@ export async function handleDavHttp(
     try {
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const parent = target
-        ? { spaceId: target.node.space_id, parent: { id: target.node.parent_id! } }
+        ? {
+            spaceId: target.node.space_id,
+            parent: { id: target.node.parent_id! },
+            principal: target.principal,
+          }
         : await resolveDavCreateParent(env.DB, principal, {
             segments: path.segments.slice(0, -1),
             trailingSlash: true,
@@ -292,7 +327,7 @@ export async function handleDavHttp(
       const contentType =
         request.headers.get("Content-Type")?.split(";", 1)[0]?.trim() || "application/octet-stream";
       const outcome = await putFile(env, {
-        principal,
+        principal: parent.principal,
         requestId: crypto.randomUUID(),
         spaceId: parent.spaceId,
         parentId: parent.parent.id,
@@ -357,7 +392,13 @@ export async function handleDavHttp(
     } catch {
       return problem(404, "not_found");
     }
-  } else if (["PROPFIND", "GET", "HEAD", "DELETE", "COPY"].includes(request.method)) {
+  } else if (request.method === "DELETE") {
+    try {
+      resolved = await resolveDavTrashNode(env.DB, principal, path);
+    } catch {
+      return problem(404, "not_found");
+    }
+  } else if (["PROPFIND", "GET", "HEAD", "COPY"].includes(request.method)) {
     try {
       resolved = await resolveDavNode(
         env.DB,
@@ -375,15 +416,20 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
-      if (destination.path.shared) return problem(405, "method_not_allowed");
+      if (
+        destination.path.shared &&
+        !(await resolveDavSharedCapabilities(env.DB, principal, destination.path)).canCreate
+      )
+        return problem(405, "method_not_allowed");
       const depth = parseDavTransferDepth("COPY", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
       const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
+      if (!sameDavAuthority(resolved, target.parent)) return problem(403, "forbidden");
       if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
       if (target.target && !overwrite) return problem(412, "precondition_failed");
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const outcome = await copyNode(env, {
-        principal,
+        principal: resolved.principal,
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
         sourceNodeId: resolved.node.id,
@@ -456,7 +502,7 @@ export async function handleDavHttp(
     try {
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const outcome = await trashNode(env, {
-        principal,
+        principal: resolved.principal,
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
         nodeId: resolved.node.id,
@@ -501,15 +547,24 @@ export async function handleDavHttp(
       return problem(400, "bad_request");
     try {
       const destination = parseDavDestination(request.headers.get("Destination"), env.APP_ORIGIN);
-      if (destination.path.shared) return problem(405, "method_not_allowed");
+      if (destination.path.shared) {
+        const capabilities = await resolveDavSharedCapabilities(
+          env.DB,
+          principal,
+          destination.path,
+        );
+        if (!(capabilities.canCreate && capabilities.canEdit && capabilities.canDelete))
+          return problem(405, "method_not_allowed");
+      }
       parseDavTransferDepth("MOVE", request.headers.get("Depth"));
       const overwrite = parseDavOverwrite(request.headers.get("Overwrite"));
       const target = await resolveDavTransferDestination(env.DB, principal, destination.path);
+      if (!sameDavAuthority(resolved, target.parent)) return problem(403, "forbidden");
       if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
       if (target.target && !overwrite) return problem(412, "precondition_failed");
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const outcome = await moveNode(env, {
-        principal,
+        principal: resolved.principal,
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
         nodeId: resolved.node.id,
@@ -574,7 +629,8 @@ export async function handleDavHttp(
   }
   if (request.method === "OPTIONS") {
     try {
-      await resolveDavCredentialPath(env.DB, principal, path);
+      if (path.shared) resolved = await resolveDavNode(env.DB, principal, path);
+      else await resolveDavCredentialPath(env.DB, principal, path);
     } catch {
       return problem(404, "not_found");
     }
@@ -582,7 +638,16 @@ export async function handleDavHttp(
       status: 200,
       headers: {
         Allow: path.shared
-          ? "OPTIONS, GET, HEAD, PROPFIND"
+          ? (() => {
+              const capabilities = davSharedCapabilities(resolved!);
+              const methods = ["OPTIONS", "GET", "HEAD", "PROPFIND"];
+              if (capabilities.canCreate) methods.push("PUT", "COPY", "MKCOL", "LOCK");
+              if (capabilities.canEdit) methods.push("PROPPATCH", "PUT", "LOCK", "UNLOCK");
+              if (capabilities.canDelete) methods.push("DELETE");
+              if (capabilities.canCreate && capabilities.canEdit && capabilities.canDelete)
+                methods.push("MOVE");
+              return [...new Set(methods)].join(", ");
+            })()
           : "OPTIONS, GET, HEAD, PUT, DELETE, COPY, MOVE, PROPFIND, PROPPATCH, MKCOL, LOCK, UNLOCK",
         "Cache-Control": "private, no-store",
         DAV: "1",
@@ -620,6 +685,7 @@ export async function handleDavHttp(
         Number(depth) as 0 | 1,
         propfind,
         path.shared ? [davReadAssertion(resolved)] : [],
+        path.shared ? !davSharedCapabilities(resolved).canEdit : false,
       );
     } catch (error) {
       if (error instanceof Error && error.message === "mutation_unavailable") {
@@ -659,7 +725,7 @@ export async function handleDavHttp(
     try {
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const outcome = await proppatch(env, {
-        principal,
+        principal: target.principal,
         idempotencyKey: key,
         spaceId: target.node.space_id,
         nodeId: target.node.id,
@@ -719,7 +785,7 @@ export async function handleDavHttp(
         });
         const href = `/dav/${encodedPath}`;
         const created = await createLockedEmptyFile(env, {
-          principal,
+          principal: parent.principal,
           requestId: crypto.randomUUID(),
           spaceId: parent.spaceId,
           parentId: parent.parent.id,
@@ -753,7 +819,7 @@ export async function handleDavHttp(
           await lock.refreshDavLock({
             spaceId: target.node.space_id,
             nodeId: target.node.id,
-            principal,
+            principal: target.principal,
             token: tokens[0]!,
             timeoutSeconds,
           }),
@@ -766,7 +832,7 @@ export async function handleDavHttp(
           requestId: crypto.randomUUID(),
           spaceId: target.node.space_id,
           nodeId: target.node.id,
-          principal,
+          principal: target.principal,
           displayHref: href,
           depth,
           ownerText: body.ownerXml,
@@ -809,7 +875,7 @@ export async function handleDavHttp(
       await lock.unlockDavLock({
         spaceId: target.node.space_id,
         nodeId: target.node.id,
-        principal,
+        principal: target.principal,
         token,
       });
       return new Response(null, {

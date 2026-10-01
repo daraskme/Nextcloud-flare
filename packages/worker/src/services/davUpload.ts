@@ -1,4 +1,8 @@
-import { type AuthorizedNode, authorizationAssertion } from "../auth/authorize";
+import {
+  type AuthorizedNode,
+  authorizationAssertion,
+  principalAuthorizationContext,
+} from "../auth/authorize";
 import { assertCreateLocks } from "../auth/locks";
 import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import {
@@ -34,6 +38,7 @@ export interface DavUploadRow {
   blob_id: string;
   reservation_id: string;
   credential_id: string;
+  authorization_context: string | null;
   epoch: number;
   declared_size: number;
   request_digest: string;
@@ -95,6 +100,7 @@ export async function startDavUpload(
     blob_id: op + "_blob",
     reservation_id: op + "_reservation",
     credential_id: request.principal.credential_id,
+    authorization_context: principalAuthorizationContext(request.principal),
     epoch: intent.principal.epoch,
     declared_size: request.size,
     request_digest: intent.digest,
@@ -139,9 +145,9 @@ export async function startDavUpload(
       assertOneChange,
       {
         sql: `INSERT INTO uploads(id,source,owner_id,space_id,parent_id,target_id,target_revision,blob_id,reservation_id,
-        credential_id,epoch,mode,state,declared_size,capability_hash,upload_name,request_digest,completion_op_id,
+        credential_id,authorization_context,epoch,mode,state,declared_size,capability_hash,upload_name,request_digest,completion_op_id,
         write_attempt_id,write_lease_expires_at,created_at,expires_at,last_progress_at,accept_parts,in_flight,data_calls,data_bytes)
-        VALUES(?,'dav',?,?,?,?,?,?,?,?,?,'single','receiving',?,'internal:dav',?,?,?,?,?,?,?,?,0,1,1,?)`,
+        VALUES(?,'dav',?,?,?,?,?,?,?,?,?,?,'single','receiving',?,'internal:dav',?,?,?,?,?,?,?,?,0,1,1,?)`,
         values: [
           row.id,
           owner,
@@ -152,6 +158,7 @@ export async function startDavUpload(
           row.blob_id,
           row.reservation_id,
           row.credential_id,
+          row.authorization_context,
           row.epoch,
           row.declared_size,
           request.name,
@@ -178,7 +185,8 @@ function source(row: DavUploadRow): SqlStatement {
     JOIN blobs b ON b.id=u.blob_id LEFT JOIN operations o ON u.id='dav_'||o.op_id
     JOIN spaces space ON space.id=u.space_id AND space.owner_id=u.owner_id JOIN control c ON c.singleton=1
     WHERE (u.id=? AND u.source='dav' AND u.owner_id=? AND u.space_id=? AND u.parent_id=? AND u.target_id IS ?
-      AND u.target_revision IS ? AND u.blob_id=? AND u.reservation_id=? AND u.credential_id=? AND u.epoch=?)
+      AND u.target_revision IS ? AND u.blob_id=? AND u.reservation_id=? AND u.credential_id=?
+      AND u.authorization_context IS ? AND u.epoch=?)
       AND (u.declared_size=? AND u.request_digest=? AND u.completion_op_id IS ? AND u.write_attempt_id=?
       AND u.write_lease_expires_at=? AND u.expires_at=? AND u.mode='single' AND c.epoch=u.epoch)
       AND (r.owner_id=u.owner_id AND r.bytes=u.declared_size AND r.epoch=u.epoch AND r.expires_at=u.expires_at
@@ -187,6 +195,7 @@ function source(row: DavUploadRow): SqlStatement {
       AND b.r2_key='u/'||u.owner_id||'/b/'||u.blob_id)
       AND ((o.op_id IS NULL AND u.completion_op_id IS NULL) OR
       (o.kind='dav.put' AND o.principal_kind='app_password' AND o.credential_id=u.credential_id
+      AND o.authorization_context IS u.authorization_context
       AND o.epoch=u.epoch AND o.space_id=u.space_id AND o.request_digest=u.request_digest
       AND (u.completion_op_id IS NULL OR u.completion_op_id=o.op_id)
       AND json_extract(o.operands_json,'$.parentId')=u.parent_id
@@ -202,6 +211,7 @@ function source(row: DavUploadRow): SqlStatement {
       row.blob_id,
       row.reservation_id,
       row.credential_id,
+      row.authorization_context,
       row.epoch,
       row.declared_size,
       row.request_digest,

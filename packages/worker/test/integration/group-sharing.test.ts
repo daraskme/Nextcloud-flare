@@ -208,7 +208,7 @@ it("owns bounded group lifecycle and rejects cross-owner or inactive membership"
 
 it("keeps group mounts stable and fences DAV action, version, ancestry, epoch and writes", async () => {
   const f = await sharingFixture();
-  const { share } = await createGroupShare(f);
+  const { group, share } = await createGroupShare(f);
   if (!share.mountName) throw new Error("fixture_mount_missing");
   expect(await listSharedWithMe(env.DB, f.memberSession)).toEqual([
     expect.objectContaining({ shareId: share.id, mountName: share.mountName }),
@@ -252,6 +252,35 @@ it("keeps group mounts stable and fences DAV action, version, ancestry, epoch an
     ),
   ).rejects.toThrow("dav_node_unavailable");
 
+  await updateInternalShareActions(mutationEnv(), f.ownerSession, share.id, [
+    "read",
+    "download",
+    "create",
+    "edit",
+  ]);
+  const writable = await resolveDavPropsNode(env.DB, principal, path);
+  expect(writable.principal).toMatchObject({
+    internal_share: {
+      share_id: share.id,
+      recipient: {
+        kind: "group",
+        group_id: group.id,
+        membership_version: 1,
+      },
+    },
+  });
+  await expect(resolveDavCreateParent(env.DB, principal, sharedRoot)).resolves.toBeDefined();
+  await updateShareGroup(mutationEnv(), f.ownerSession, group.id, { memberEmails: [] });
+  await expect(atomicBatch(env.DB, [authorizationAssertion(writable)])).rejects.toThrow();
+  await expect(resolveDavPropsNode(env.DB, principal, path)).rejects.toThrow(
+    "dav_node_unavailable",
+  );
+  await updateShareGroup(mutationEnv(), f.ownerSession, group.id, {
+    memberEmails: [f.memberEmail],
+  });
+  expect((await resolveDavPropsNode(env.DB, principal, path)).principal).toMatchObject({
+    internal_share: { recipient: { kind: "group", membership_version: 2 } },
+  });
   await updateInternalShareActions(mutationEnv(), f.ownerSession, share.id, ["read", "download"]);
   await expect(
     atomicBatch(env.DB, [authorizationAssertion(proof), davReadAssertion(proof)]),

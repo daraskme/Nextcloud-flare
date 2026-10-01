@@ -8,6 +8,21 @@ export type Principal =
       readonly user_id: string;
       readonly credential_id: string;
       readonly epoch: number;
+      readonly internal_share?: {
+        readonly share_id: string;
+        readonly share_version: number;
+        readonly recipient:
+          | {
+              readonly kind: "direct";
+              readonly version: number;
+            }
+          | {
+              readonly kind: "group";
+              readonly group_id: string;
+              readonly group_version: number;
+              readonly membership_version: number;
+            };
+      };
     }
   | {
       readonly kind: "link_share";
@@ -34,6 +49,12 @@ export function accessPrincipal(session: AccessSession): Principal {
     credential_id: session.credential_id,
     epoch: session.epoch,
   });
+}
+
+export function principalAuthorizationContext(principal: Principal): string | null {
+  return principal.kind === "app_password" && principal.internal_share
+    ? JSON.stringify(principal.internal_share)
+    : null;
 }
 
 export async function servicePrincipal(
@@ -181,6 +202,13 @@ const NODE_AUTHORITY = `WITH RECURSIVE
   p AS (SELECT json_extract(?3,'$.kind') AS kind,json_extract(?3,'$.user_id') AS user_id,
     json_extract(?3,'$.credential_id') AS credential_id,json_extract(?3,'$.epoch') AS epoch,
     json_extract(?3,'$.share_id') AS share_id,json_extract(?3,'$.share_version') AS share_version,
+    json_extract(?3,'$.internal_share.share_id') AS internal_share_id,
+    json_extract(?3,'$.internal_share.share_version') AS internal_share_version,
+    json_extract(?3,'$.internal_share.recipient.kind') AS internal_recipient_kind,
+    json_extract(?3,'$.internal_share.recipient.version') AS internal_recipient_version,
+    json_extract(?3,'$.internal_share.recipient.group_id') AS internal_group_id,
+    json_extract(?3,'$.internal_share.recipient.group_version') AS internal_group_version,
+    json_extract(?3,'$.internal_share.recipient.membership_version') AS internal_membership_version,
     json_extract(?3,'$.service_principal_id') AS service_id,json_extract(?3,'$.token_expires_at') AS token_expiry,
     json_extract(?3,'$.access_iss') AS access_iss,json_extract(?3,'$.common_name') AS common_name),
   a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
@@ -208,7 +236,9 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     SELECT sh.* FROM shares sh JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
       JOIN a ON a.id=sh.root_node_id AND a.owner_id=sh.owner_id
       WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
-        AND (?6<>'node.rename' OR sh.root_node_id<>?1)
+        AND (?6 NOT IN ('node.rename','node.trash') OR sh.root_node_id<>?1)
+        AND (p.internal_share_id IS NULL OR
+          (sh.id=p.internal_share_id AND sh.version=p.internal_share_version))
         AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action=?5)
         AND (sh.kind<>'internal' OR EXISTS(
           SELECT 1 FROM current_internal_shares current
@@ -246,19 +276,35 @@ const NODE_AUTHORITY = `WITH RECURSIVE
                     AND ap.root_node_id=?1)))
             OR (ctl.maintenance=0 AND EXISTS(
             SELECT 1 FROM live_shares sh
-              WHERE ?6<>'node.trash' AND sh.kind='internal' AND (
-                EXISTS(SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=u.id
-                  AND g.disabled_at IS NULL AND g.version=sh.version)
-                OR EXISTS(
+              WHERE sh.kind='internal' AND (
+                (p.internal_share_id IS NULL AND ?6<>'node.trash' AND (
+                  EXISTS(SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=u.id
+                    AND g.disabled_at IS NULL AND g.version=sh.version)
+                  OR EXISTS(
+                    SELECT 1 FROM share_group_grants gg
+                    JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                      AND sg.disabled_at IS NULL
+                    JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=u.id
+                      AND gm.disabled_at IS NULL
+                    JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
+                    WHERE gg.share_id=sh.id
+                  )))
+                OR (p.internal_share_id IS NOT NULL AND (
+                  (p.internal_recipient_kind='direct' AND EXISTS(
+                    SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=u.id
+                      AND g.disabled_at IS NULL AND g.version=sh.version
+                      AND g.version=p.internal_recipient_version))
+                  OR (p.internal_recipient_kind='group' AND EXISTS(
                   SELECT 1 FROM share_group_grants gg
                   JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
-                    AND sg.disabled_at IS NULL
+                    AND sg.disabled_at IS NULL AND sg.id=p.internal_group_id
+                    AND sg.version=p.internal_group_version
                   JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=u.id
-                    AND gm.disabled_at IS NULL
+                    AND gm.disabled_at IS NULL AND gm.version=p.internal_membership_version
                   JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
                   WHERE gg.share_id=sh.id
-                )
-              )))))
+                  )))
+              ))))))
         OR (p.kind='link_share' AND ?6 IN ('node.read','gallery.read','audio.read','library.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
@@ -321,6 +367,20 @@ export async function authorizeNode(
     !Number.isSafeInteger(principal.epoch) ||
     principal.epoch < 1 ||
     (principal.kind !== "link_share" && !validId(principal.user_id)) ||
+    (principal.kind === "app_password" &&
+      principal.internal_share !== undefined &&
+      (!validId(principal.internal_share.share_id) ||
+        !Number.isSafeInteger(principal.internal_share.share_version) ||
+        principal.internal_share.share_version < 1 ||
+        !["direct", "group"].includes(principal.internal_share.recipient.kind) ||
+        (principal.internal_share.recipient.kind === "direct"
+          ? !Number.isSafeInteger(principal.internal_share.recipient.version) ||
+            principal.internal_share.recipient.version < 1
+          : !validId(principal.internal_share.recipient.group_id) ||
+            !Number.isSafeInteger(principal.internal_share.recipient.group_version) ||
+            principal.internal_share.recipient.group_version < 1 ||
+            !Number.isSafeInteger(principal.internal_share.recipient.membership_version) ||
+            principal.internal_share.recipient.membership_version < 1))) ||
     (principal.kind === "link_share" &&
       (!validId(principal.share_id) ||
         !Number.isSafeInteger(principal.share_version) ||
