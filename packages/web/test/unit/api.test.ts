@@ -3,6 +3,19 @@ import { ApiClient, ApiError } from "../../src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
+const account = {
+  id: "user",
+  email: "user@example.invalid",
+  role: "user",
+  spaceId: "space",
+  rootNodeId: "root",
+  epoch: 1,
+  quotaBytes: 100,
+  usedBytes: 1,
+  reservedBytes: 0,
+  contentOrigin: "https://content.example.invalid",
+};
+
 it("does not dispatch a waiting mutation after logout invalidates its CSRF flight", async () => {
   let finish!: (response: Response) => void;
   const fetcher = vi.fn(
@@ -236,4 +249,132 @@ it("rejects a non-HTTPS media origin before issuing a content ticket", async () 
     ),
   ).rejects.toThrow("invalid_content_origin");
   expect(fetcher).not.toHaveBeenCalled();
+});
+
+it("prepares a private ZIP through the content origin and returns the app redirect", async () => {
+  const expiresAt = Date.now() + 300_000;
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(
+      Response.json(
+        {
+          ticket: "signed-ticket",
+          ticketId: "ticket",
+          targetSetId: "target-set",
+          expiresAt,
+        },
+        { status: 201 },
+      ),
+    )
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(new Response(null, { status: 200 }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  const prepared = await new ApiClient().prepareZip(account, "folder/id", "zip-key");
+  expect(fetcher.mock.calls[1]![0]).toBe("/api/v1/nodes/folder%2Fid/zip");
+  expect(fetcher.mock.calls[1]![1]).toMatchObject({ method: "POST", body: "{}" });
+  expect(fetcher.mock.calls[1]![1].headers).toMatchObject({
+    "Idempotency-Key": "zip-key",
+    "X-CSRF-Token": "csrf",
+  });
+  expect(fetcher.mock.calls[2]![0]).toBe("https://content.example.invalid/session");
+  expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({ ticket: "signed-ticket" });
+  expect(fetcher.mock.calls[3]![0]).toBe("https://content.example.invalid/z/target-set");
+  expect(fetcher.mock.calls[3]![1]).toMatchObject({
+    method: "HEAD",
+    credentials: "include",
+    redirect: "error",
+  });
+  expect(prepared).toMatchObject({
+    ticketId: "ticket",
+    targetSetId: "target-set",
+    expiresAt,
+    downloadUrl: "/api/v1/zips/target-set",
+  });
+  await prepared.cancel();
+  await prepared.cancel();
+  expect(fetcher.mock.calls[4]![0]).toBe("/api/v1/tickets/ticket");
+  expect(fetcher.mock.calls[4]![1]).toMatchObject({ method: "DELETE" });
+  expect(fetcher.mock.calls[4]![1].body).toBeUndefined();
+  expect(fetcher).toHaveBeenCalledTimes(5);
+});
+
+it("keeps a budget-limited private ZIP available for an idempotent retry", async () => {
+  const publication = {
+    ticket: "signed-ticket",
+    ticketId: "ticket",
+    targetSetId: "target-set",
+    expiresAt: Date.now() + 300_000,
+  };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(Response.json(publication))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(new Response(null, { status: 429 }))
+    .mockResolvedValueOnce(Response.json(publication))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(new Response(null, { status: 200 }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  const client = new ApiClient();
+  await expect(client.prepareZip(account, "folder", "zip-key")).rejects.toEqual(
+    new ApiError(429, "budget_exceeded"),
+  );
+  const retried = await client.prepareZip(account, "folder", "zip-key");
+  expect(fetcher.mock.calls[1]![1].headers["Idempotency-Key"]).toBe("zip-key");
+  expect(fetcher.mock.calls[4]![1].headers["Idempotency-Key"]).toBe("zip-key");
+  await retried.cancel();
+  expect(fetcher.mock.calls[7]![0]).toBe("/api/v1/tickets/ticket");
+});
+
+it("cancels a private ZIP ticket when a newer request aborts preparation", async () => {
+  const controller = new AbortController();
+  let entered!: () => void;
+  const contentRequest = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(
+      Response.json({
+        ticket: "signed-ticket",
+        ticketId: "ticket",
+        targetSetId: "target-set",
+        expiresAt: Date.now() + 300_000,
+      }),
+    )
+    .mockImplementationOnce((_url: string, init: RequestInit) => {
+      const signal = init.signal as AbortSignal;
+      entered();
+      return new Promise<Response>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
+    })
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  const preparation = new ApiClient().prepareZip(account, "folder", "zip-key", controller.signal);
+  await contentRequest;
+  controller.abort();
+  await expect(preparation).rejects.toMatchObject({ name: "AbortError" });
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+  expect(fetcher.mock.calls[3]![0]).toBe("/api/v1/tickets/ticket");
+});
+
+it.each([
+  [413, "payload_too_large"],
+  [415, "unsupported_media_type"],
+])("keeps private ZIP creation error %s actionable", async (status, code) => {
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+      .mockResolvedValueOnce(Response.json({ title: code }, { status })),
+  );
+  await expect(new ApiClient().prepareZip(account, "folder", "zip-key")).rejects.toEqual(
+    new ApiError(status, code),
+  );
 });

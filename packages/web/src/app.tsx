@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  Archive,
   ArrowLeft,
   ArrowRight,
   BookOpen,
@@ -38,7 +39,14 @@ import {
   UsersRound,
   X,
 } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { PrivateAudio } from "./features/audio/PrivateAudio";
@@ -63,6 +71,7 @@ type Action =
   | { kind: "create" }
   | { kind: "rename" | "move" | "copy" | "trash"; node: FileNode }
   | { kind: "share"; node: Pick<FileNode, "id" | "name" | "kind"> }
+  | { kind: "zip"; node: Pick<FileNode, "id" | "name" | "kind"> }
   | { kind: "overwrite"; node: FileNode }
   | { kind: "restore" | "purge"; item: TrashItem };
 type Pending = {
@@ -278,7 +287,7 @@ function OperationDialog({
   onClose,
   refresh,
 }: {
-  action: Exclude<Action, { kind: "overwrite" | "share" }>;
+  action: Exclude<Action, { kind: "overwrite" | "share" | "zip" }>;
   account: Account;
   parentId: string;
   onClose: () => void;
@@ -434,6 +443,155 @@ function OperationDialog({
           </Button>
         </div>
       </form>
+    </Dialog>
+  );
+}
+
+function ZipDialog({
+  action,
+  account,
+  onClose,
+}: {
+  action: Extract<Action, { kind: "zip" }>;
+  account: Account;
+  onClose: () => void;
+}) {
+  type Phase = "preparing" | "started" | "expired" | "cancelled" | "failed";
+  const [phase, setPhase] = useState<Phase>("preparing");
+  const [failure, setFailure] = useState<unknown>();
+  const [expiresAt, setExpiresAt] = useState<number>();
+  const key = useRef(crypto.randomUUID());
+  const generation = useRef(0);
+  const active = useRef<
+    | {
+        controller: AbortController;
+        cancel?: () => Promise<void>;
+        timer?: number;
+      }
+    | undefined
+  >(undefined);
+  const cancelActive = useCallback((next?: Phase) => {
+    generation.current++;
+    const current = active.current;
+    active.current = undefined;
+    current?.controller.abort();
+    if (current?.timer) window.clearTimeout(current.timer);
+    if (current?.cancel) void current.cancel().catch(() => undefined);
+    if (next) setPhase(next);
+  }, []);
+  const start = useCallback(
+    async (fresh: boolean) => {
+      cancelActive();
+      if (fresh) key.current = crypto.randomUUID();
+      const currentGeneration = generation.current;
+      const controller = new AbortController();
+      active.current = { controller };
+      setPhase("preparing");
+      setFailure(undefined);
+      setExpiresAt(undefined);
+      try {
+        const prepared = await api.prepareZip(
+          account,
+          action.node.id,
+          key.current,
+          controller.signal,
+        );
+        if (generation.current !== currentGeneration) {
+          await prepared.cancel().catch(() => undefined);
+          return;
+        }
+        const delay = Math.max(0, prepared.expiresAt - Date.now());
+        const timer = window.setTimeout(() => {
+          if (generation.current !== currentGeneration) return;
+          void prepared.cancel().catch(() => undefined);
+          active.current = undefined;
+          setPhase("expired");
+        }, delay);
+        active.current = { controller, cancel: prepared.cancel, timer };
+        setExpiresAt(prepared.expiresAt);
+        setPhase("started");
+        const link = document.createElement("a");
+        link.href = prepared.downloadUrl;
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+      } catch (error) {
+        if (controller.signal.aborted || generation.current !== currentGeneration) return;
+        active.current = undefined;
+        setFailure(error);
+        setPhase("failed");
+      }
+    },
+    [account, action.node.id, cancelActive],
+  );
+  useEffect(() => {
+    void start(false);
+    return () => cancelActive();
+  }, [cancelActive, start]);
+  const stale =
+    failure instanceof ApiError &&
+    (failure.status === 404 || failure.status === 409 || failure.code === "zip_stale");
+  const status =
+    phase === "preparing"
+      ? "フォルダーの内容と権限を確認し、ZIPを準備しています。"
+      : phase === "started"
+        ? `ダウンロードを開始しました。${expiresAt ? `${time(expiresAt)}まで有効です。` : ""}`
+        : phase === "expired"
+          ? "ZIPのダウンロード期限が切れました。"
+          : phase === "cancelled"
+            ? "ZIPのダウンロード枠を取り消しました。"
+            : errorMessage(failure);
+  return (
+    <Dialog
+      open
+      title="ZIPでダウンロード"
+      description={`「${action.node.name}」をサーバーで安全に準備します。ブラウザーではZIPを作成しません。`}
+      onOpenChange={(open) => {
+        if (!open) {
+          cancelActive();
+          onClose();
+        }
+      }}
+    >
+      <div
+        className={`zip-status${phase === "failed" ? " zip-status-error" : ""}`}
+        role={phase === "failed" ? "alert" : "status"}
+        aria-live="polite"
+        aria-busy={phase === "preparing"}
+      >
+        {phase === "preparing" ? (
+          <LoaderCircle className="spin" size={20} />
+        ) : (
+          <Archive size={20} />
+        )}
+        <p>{status}</p>
+      </div>
+      <div className="dialog-actions zip-actions">
+        {phase === "failed" || phase === "expired" || phase === "cancelled" ? (
+          <Button
+            type="button"
+            variant="primary"
+            onClick={() => void start(stale || phase !== "failed")}
+          >
+            再試行
+          </Button>
+        ) : (
+          <Button type="button" variant="ghost" onClick={() => cancelActive("cancelled")}>
+            {phase === "preparing" ? "準備をキャンセル" : "ダウンロード枠を取り消す"}
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            cancelActive();
+            onClose();
+          }}
+        >
+          閉じる
+        </Button>
+      </div>
     </Dialog>
   );
 }
@@ -691,6 +849,9 @@ function NodeMenu({
             <Menu.Item onSelect={() => act({ kind: "overwrite", node })}>
               ファイルを上書き
             </Menu.Item>
+          )}
+          {node.kind === "folder" && (
+            <Menu.Item onSelect={() => act({ kind: "zip", node })}>ZIPでダウンロード</Menu.Item>
           )}
           <Menu.Item onSelect={() => act({ kind: "rename", node })}>名前を変更</Menu.Item>
           <Menu.Item onSelect={() => act({ kind: "move", node })}>移動</Menu.Item>
@@ -1479,6 +1640,15 @@ export function App() {
                 <Button
                   disabled={!!recovery}
                   onClick={() =>
+                    act({ kind: "zip", node: { id: parentId, name: title, kind: "folder" } })
+                  }
+                >
+                  <Archive size={17} />
+                  ZIPダウンロード
+                </Button>
+                <Button
+                  disabled={!!recovery}
+                  onClick={() =>
                     act({ kind: "share", node: { id: parentId, name: title, kind: "folder" } })
                   }
                 >
@@ -1873,22 +2043,34 @@ export function App() {
           onClose={() => setAction(null)}
         />
       )}
-      {action && action.kind !== "overwrite" && action.kind !== "share" && me && (
-        <OperationDialog
+      {action?.kind === "zip" && me && (
+        <ZipDialog
           key={JSON.stringify(action)}
           action={action}
           account={me}
-          parentId={parentId}
-          onClose={() => {
-            setAction(null);
-            try {
-              const saved = sessionStorage.getItem(PENDING_KEY);
-              if (saved) setRecovery(JSON.parse(saved) as Pending);
-            } catch {}
-          }}
-          refresh={refresh}
+          onClose={() => setAction(null)}
         />
       )}
+      {action &&
+        action.kind !== "overwrite" &&
+        action.kind !== "share" &&
+        action.kind !== "zip" &&
+        me && (
+          <OperationDialog
+            key={JSON.stringify(action)}
+            action={action}
+            account={me}
+            parentId={parentId}
+            onClose={() => {
+              setAction(null);
+              try {
+                const saved = sessionStorage.getItem(PENDING_KEY);
+                if (saved) setRecovery(JSON.parse(saved) as Pending);
+              } catch {}
+            }}
+            refresh={refresh}
+          />
+        )}
     </div>
   );
 }

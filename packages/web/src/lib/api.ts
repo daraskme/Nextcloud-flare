@@ -144,6 +144,13 @@ export interface PreparedContentSession {
   url(target: { id: string; currentBlobId: string }, entryToken?: string): string;
   cancel(): Promise<void>;
 }
+export interface PreparedZipSession {
+  ticketId: string;
+  targetSetId: string;
+  expiresAt: number;
+  downloadUrl: string;
+  cancel(): Promise<void>;
+}
 export interface Operation {
   id: string;
   state: "claimed" | "committed" | "failed";
@@ -276,6 +283,16 @@ export class ApiError extends Error {
 export function errorMessage(error: unknown): string {
   if (!(error instanceof ApiError))
     return "接続を確認できませんでした。しばらくしてから再試行してください。";
+  if (error.code === "payload_too_large")
+    return "このフォルダーはZIPの項目数またはサイズ上限を超えています。内容を分けて再試行してください。";
+  if (error.code === "unsupported_media_type")
+    return "このフォルダーにはZIPで扱えない名前または構成が含まれています。";
+  if (error.code === "zip_stale")
+    return "準備中にフォルダー、共有、またはファイルの版が変更されました。一覧を更新して再試行してください。";
+  if (error.code === "zip_expired")
+    return "ZIPのダウンロード期限が切れました。もう一度準備してください。";
+  if (error.code === "budget_exceeded")
+    return "ダウンロード上限に達しました。しばらく待ってから再試行してください。";
   if (error.code === "gc_quiescing")
     return "削除処理の完了を待っています。少し待ってから同じ操作を再確認してください。";
   if (error.code === "blob_unrecoverable")
@@ -359,10 +376,12 @@ export class ApiClient {
     body: unknown,
     key?: string,
     extra: Record<string, string> = {},
+    signal?: AbortSignal,
   ): Promise<T> {
     const lifetime = this.#lifetime;
     const token = await this.csrf();
     lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
     return this.request<T>(path, {
       method,
       headers: {
@@ -372,6 +391,7 @@ export class ApiClient {
         ...extra,
       },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
   }
 
@@ -637,6 +657,103 @@ export class ApiClient {
       };
     } catch (error) {
       if (issued) void this.cancelTicket(issued.ticketId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async prepareZip(
+    account: Account,
+    nodeId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<PreparedZipSession> {
+    const lifetime = this.#lifetime;
+    const origin = new URL(account.contentOrigin);
+    if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
+      throw new Error("invalid_content_origin");
+    let issued:
+      | {
+          ticket: string;
+          ticketId: string;
+          targetSetId: string;
+          expiresAt: number;
+        }
+      | undefined;
+    try {
+      const publication = await this.json<{
+        ticket: string;
+        ticketId: string;
+        targetSetId: string;
+        expiresAt: number;
+      }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/zip`, "POST", {}, idempotencyKey, {}, signal);
+      issued = publication;
+      lifetime.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      const signals = [lifetime.signal, AbortSignal.timeout(30_000)];
+      if (signal) signals.push(signal);
+      const requestSignal = AbortSignal.any(signals);
+      const accepted = await fetch(`${origin.origin}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: publication.ticket }),
+        credentials: "include",
+        cache: "no-store",
+        redirect: "error",
+        signal: requestSignal,
+      });
+      lifetime.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      if (!accepted.ok)
+        throw new ApiError(
+          accepted.status,
+          accepted.status === 401 || accepted.status === 404
+            ? "zip_stale"
+            : "content_session_failed",
+        );
+      const checked = await fetch(
+        `${origin.origin}/z/${encodeURIComponent(publication.targetSetId)}`,
+        {
+          method: "HEAD",
+          credentials: "include",
+          cache: "no-store",
+          redirect: "error",
+          signal: requestSignal,
+        },
+      );
+      lifetime.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      if (!checked.ok)
+        throw new ApiError(
+          checked.status,
+          checked.status === 429
+            ? "budget_exceeded"
+            : checked.status === 404
+              ? Date.now() >= publication.expiresAt
+                ? "zip_expired"
+                : "zip_stale"
+              : "request_failed",
+        );
+      let cancelled = false;
+      return {
+        ticketId: publication.ticketId,
+        targetSetId: publication.targetSetId,
+        expiresAt: publication.expiresAt,
+        downloadUrl: `/api/v1/zips/${encodeURIComponent(publication.targetSetId)}`,
+        cancel: async () => {
+          if (cancelled) return;
+          cancelled = true;
+          try {
+            await this.cancelTicket(publication.ticketId);
+          } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 404) throw error;
+          }
+        },
+      };
+    } catch (error) {
+      const stale =
+        error instanceof ApiError && (error.code === "zip_stale" || error.code === "zip_expired");
+      if (issued && (stale || signal?.aborted || lifetime.signal.aborted))
+        void this.cancelTicket(issued.ticketId).catch(() => undefined);
       throw error;
     }
   }

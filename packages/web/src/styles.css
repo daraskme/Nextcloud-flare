@@ -853,6 +853,28 @@ h1 {
   font-size: 13px;
   line-height: 1.8;
 }
+.zip-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 9px;
+  background: #f4f6f9;
+  color: #596476;
+}
+.zip-status svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.zip-status p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.zip-status-error {
+  background: #fff5f1;
+  color: #a74b42;
+}
 .internal-shares {
   display: grid;
   gap: 38px;
@@ -2147,6 +2169,16 @@ h1 {
   .list-toolbar {
     flex-wrap: wrap-reverse;
     gap: 14px;
+  }
+  .heading-actions {
+    flex-wrap: wrap;
+  }
+  .heading-actions .button {
+    flex: 1 1 calc(50% - 9px);
+  }
+  .zip-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
   .toolbar-controls {
     width: 100%;

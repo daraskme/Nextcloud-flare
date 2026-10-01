@@ -1,6 +1,6 @@
 # Files UI とローカルブラウザー試験
 
-更新: 2026-09-24。製品全体の完了宣言ではない。実環境への配備、Access設定、remote secret登録は未実施。
+更新: 2026-10-01。製品全体の完了宣言ではない。実環境への配備、Access設定、remote secret登録は未実施。
 
 ## 接続した画面
 
@@ -11,9 +11,18 @@
 - 単一・multipart upload、確認付き上書き、容量表示、進捗、中止、reload後の元ファイル再選択。上書きの詳細は[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md)。
 - フォルダー情報dialogから要求時に配下のファイル数・サブフォルダー数・合計サイズを集計。上限到達とcontent不足を明示。再集計中/拒否後は旧数値を隠す。[FOLDER_STATS](FOLDER_STATS.md)参照。
 - content ticketをPOSTして別originのHttpOnly Cookieへ交換し、別タブでファイルを開く/保存。tokenをURLに置かない。
+- private Filesの現在フォルダーとfolder menuからbounded ZIPを開始。進捗、取消し、再試行、期限切れ、変更済み/上限超過/非対応構成/budget拒否をdialogで通知する。
 - desktop/mobile、keyboard dialog、文字列としてのファイル名、認証失効時の一覧非表示、複数タブlogout。
 
 `/me` は既存の容量・identityに加えて設定済み `contentOrigin` を返す。childrenはcurrent blobを同owner/state条件付きでJOINしsize/mimeを返す。一覧ごとの追加R2取得はしない。logoutの空HTTPストリームはEOFだけを受け入れ、非空payloadはbufferせず拒否する。
+
+## private folder ZIP
+
+personal Filesだけが `POST /api/v1/nodes/:nodeId/zip` を同一origin CSRFとIdempotency-Key付きで呼ぶ。Workerは既存のZIP ticket発行器を使い、D1の現在権限・epoch・ancestry・owner/action、tree/path/size上限、immutable blob pin、BudgetDOを確定する。ブラウザーはZIPを組み立てず、返されたticketを設定済みcontent originの `POST /session` へ渡してHttpOnly Cookieへ交換する。ticketをURL、DOM、保存領域へ置かない。
+
+交換後、UIはcontent originの `HEAD /z/:targetSetId` で現在のdelivery authorityを確認する。成功時だけapp originの `GET /api/v1/zips/:id` を開き、このrouteは現在のuser/session/epoch/ticket/target set/budgetを再確認してcontent originへ307する。ZIP本文、HEAD、Range、If-Range、BudgetDO reservation/settlement、stream取消しはcontent originに残り、app Workerとブラウザーは本文をproxyしない。
+
+同じ準備の通常再試行は同じIdempotency-Keyを使う。folder/share/file versionが変わったstale応答、期限切れ、明示取消し後は古いrequestとticketを取消して新しいkeyで置き換える。dialogを閉じる時も未使用ticketを取消す。404/409、413、415、429と期限を、stale、上限超過、非対応構成、download budget、期限切れとして区別する。public share ZIPとupload-only UI/APIにはこのprivate actionを表示せず、既存の公開share ZIP lifecycleも変更しない。
 
 ## 操作結果とuploadの保持
 
@@ -62,7 +71,7 @@ pnpm test:browser
 
 設定/状態は `.wrangler/browser-config.json` と `.wrangler/browser-tests/` のみ。起動時に後者だけを作り直し、開発DB・remote DBは変更しない。HTTPSのapp/content test hostをChromeのhost-resolverでloopbackへ向け、hosts/OS設定は変えない。port8879を専用に使い、他processが使用中なら失敗させる。
 
-19件のbrowser scenarioは実操作・mobile keyboard/grid・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・app password発行と独立DAV request 8件の並行認証/取消し・実HTTPの本文なしDAV mutationとticket取消し・上書き確認/空file/確定応答喪失・確認中/PUT直前の上書き競合・分割上書きのreload/同attempt・single/multipart作成応答喪失後の対象更新/reload/receipt回収/中止・深いフォルダーの検索/上書き保存先/改名・201件検索pagination/再検索/世代競合と拒否後の非表示・要求時のfolder集計/コピー/削除後再集計/拒否時非表示/部分結果表示・複数タブlogout。filename/認証失効の応答fixtureと通信障害をPlaywrightで注入する。それ以外は実APIへ接続する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合の4件を追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
+browser scenarioは実操作・private ZIPのapp→content origin deliveryと展開後のbyte照合・stale ticket取消し/key置換・mobileでのfolder action・mutation応答喪失/reload・復元完了応答喪失後の同一key再照会・filename injection/認証失効・asset認証/host/fallback・96 MiB multipart中断/reload/part省略・single中止/purge確認・app password発行と独立DAV request 8件の並行認証/取消し・実HTTPの本文なしDAV mutationとticket取消し・上書き確認/空file/確定応答喪失・確認中/PUT直前の上書き競合・分割上書きのreload/同attempt・single/multipart作成応答喪失後の対象更新/reload/receipt回収/中止・深いフォルダーの検索/上書き保存先/改名・201件検索pagination/再検索/世代競合と拒否後の非表示・要求時のfolder集計/コピー/削除後再集計/拒否時非表示/部分結果表示・複数タブlogout。filename/認証失効の応答fixtureと通信障害をPlaywrightで注入する。それ以外は実APIへ接続する。Node側の補助fetchはloopback接続にHostと同一originのFetch Metadataを引き継ぐ。応答を破棄する前に実APIの成功statusをassertし、拒否された呼出しをcommit応答喪失と扱わない。Node側にはCSRF失効競合とoperation再照合、private ZIP API lifecycleを追加。workerdのnode read/account試験も拡張する。最新の成否・件数はIMPLEMENTATION_STATUSを参照。
 
 ## 残る制約
 

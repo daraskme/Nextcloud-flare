@@ -129,4 +129,13 @@ describe("route binding coverage", () => {
       ),
     ).toMatchObject({ availability: "bound", handler: "public-share" });
   });
+
+  it("binds private ZIP creation and redirect through the private app", () => {
+    for (const key of ["app POST /api/v1/nodes/:nodeId/zip", "app GET /api/v1/zips/:id"])
+      expect(ROUTE_BINDINGS.find((binding) => binding.key === key)).toMatchObject({
+        availability: "bound",
+        handler: "private-app",
+        auth: ["access"],
+      });
+  });
 });
