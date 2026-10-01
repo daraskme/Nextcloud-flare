@@ -12,7 +12,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
-import { type Account, type AudioTrack, api, errorMessage } from "../../lib/api";
+import {
+  type Account,
+  type AudioTrack,
+  api,
+  errorMessage,
+  type PreparedContentSession,
+} from "../../lib/api";
+import { type DebouncedWriter, debouncedWriter } from "../../lib/mediaResume";
 
 const clock = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -29,6 +36,13 @@ export function PrivateAudio({ account }: { account: Account }) {
   });
   const tracks = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data]);
   const audio = useRef<HTMLAudioElement>(null);
+  const request = useRef<AbortController | null>(null);
+  const content = useRef<PreparedContentSession | null>(null);
+  const selection = useRef(0);
+  const activeRef = useRef<AudioTrack | null>(null);
+  const terminal = useRef(false);
+  const resume = useRef<{ blobId: string; positionMs: number; durationMs: number } | null>(null);
+  const writer = useRef<DebouncedWriter<number> | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -39,36 +53,44 @@ export function PrivateAudio({ account }: { account: Account }) {
   const activeIndex = tracks.findIndex((track) => track.id === activeId);
   const active = activeIndex >= 0 ? tracks[activeIndex] : undefined;
 
-  useEffect(() => {
+  const currentPositionMs = () => {
     const element = audio.current;
-    if (!element) return;
-    const update = () => {
-      setPosition(element.currentTime);
-      setDuration(Number.isFinite(element.duration) ? element.duration : 0);
-    };
-    const paused = () => setPlaying(false);
-    const started = () => setPlaying(true);
-    const failed = () => {
-      setPlaying(false);
-      setPlayerError("このトラックを再生できませんでした。");
-    };
-    element.addEventListener("timeupdate", update);
-    element.addEventListener("durationchange", update);
-    element.addEventListener("pause", paused);
-    element.addEventListener("play", started);
-    element.addEventListener("ended", paused);
-    element.addEventListener("error", failed);
-    return () => {
-      element.removeEventListener("timeupdate", update);
-      element.removeEventListener("durationchange", update);
-      element.removeEventListener("pause", paused);
-      element.removeEventListener("play", started);
-      element.removeEventListener("ended", paused);
-      element.removeEventListener("error", failed);
-    };
-  }, []);
+    const track = activeRef.current;
+    if (
+      !element ||
+      !track ||
+      track.durationMs === null ||
+      !Number.isFinite(element.duration) ||
+      element.duration <= 0
+    )
+      return null;
+    return Math.min(Math.round(element.currentTime * 1_000), Math.round(element.duration * 1_000));
+  };
 
-  const select = async (track: AudioTrack) => {
+  const flush = async (positionMs?: number) => {
+    const selected = positionMs ?? currentPositionMs();
+    if (selected !== null) await writer.current?.flush(selected);
+  };
+
+  const release = () => {
+    request.current?.abort();
+    request.current = null;
+    if (content.current) void content.current.cancel().catch(() => undefined);
+    content.current = null;
+    resume.current = null;
+    writer.current?.clear();
+    writer.current = null;
+  };
+
+  useEffect(
+    () => () => {
+      void flush().catch(() => undefined);
+      release();
+    },
+    [],
+  );
+
+  const select = async (track: AudioTrack, persistCurrent = true) => {
     const element = audio.current;
     if (!element) return;
     if (activeId === track.id && element.src) {
@@ -76,25 +98,62 @@ export function PrivateAudio({ account }: { account: Account }) {
       else element.pause();
       return;
     }
+    if (persistCurrent && !terminal.current) await flush().catch(() => undefined);
+    release();
+    terminal.current = false;
+    const selected = ++selection.current;
+    activeRef.current = track;
+    setActiveId(track.id);
     setPreparing(true);
     setPlayerError("");
+    setPosition(0);
+    setDuration(0);
+    const controller = new AbortController();
+    request.current = controller;
     try {
-      const url = await api.prepareContent(account, [track], "track");
-      element.src = url(track);
+      const [session, state] = await Promise.all([
+        api.prepareContentSession(account, [track], "track", controller.signal),
+        track.durationMs === null
+          ? undefined
+          : api.playbackState(track.id, controller.signal).catch(() => undefined),
+      ]);
+      if (controller.signal.aborted || selected !== selection.current) {
+        await session.cancel().catch(() => undefined);
+        return;
+      }
+      content.current = session;
+      writer.current =
+        track.durationMs === null
+          ? null
+          : debouncedWriter((positionMs) =>
+              api.writePlaybackState(track.id, track.currentBlobId, positionMs),
+            );
+      resume.current =
+        state?.nodeId === track.id &&
+        state.blobId === track.currentBlobId &&
+        state.positionMs !== null &&
+        state.durationMs > 0
+          ? {
+              blobId: state.blobId,
+              positionMs: Math.min(state.positionMs, state.durationMs),
+              durationMs: state.durationMs,
+            }
+          : null;
+      element.src = session.url(track);
       element.volume = volume;
-      setActiveId(track.id);
-      setPosition(0);
       await element.play();
     } catch (error) {
-      setPlayerError(errorMessage(error));
-      setPlaying(false);
+      if (!controller.signal.aborted && selected === selection.current) {
+        setPlayerError(errorMessage(error));
+        setPlaying(false);
+      }
     } finally {
-      setPreparing(false);
+      if (!controller.signal.aborted && selected === selection.current) setPreparing(false);
     }
   };
-  const move = (offset: number) => {
+  const move = (offset: number, persistCurrent = true) => {
     const next = tracks[activeIndex + offset];
-    if (next) void select(next);
+    if (next) void select(next, persistCurrent);
   };
 
   if (query.isPending)
@@ -127,7 +186,59 @@ export function PrivateAudio({ account }: { account: Account }) {
 
   return (
     <>
-      <audio ref={audio} preload="metadata" onEnded={() => move(1)}>
+      <audio
+        ref={audio}
+        preload="metadata"
+        onTimeUpdate={(event) => {
+          const element = event.currentTarget;
+          setPosition(element.currentTime);
+          setDuration(Number.isFinite(element.duration) ? element.duration : 0);
+          const selected = currentPositionMs();
+          if (selected !== null) writer.current?.schedule(selected);
+        }}
+        onDurationChange={(event) => {
+          const element = event.currentTarget;
+          setPosition(element.currentTime);
+          setDuration(Number.isFinite(element.duration) ? element.duration : 0);
+        }}
+        onLoadedMetadata={(event) => {
+          const state = resume.current;
+          const track = activeRef.current;
+          const element = event.currentTarget;
+          if (
+            !state ||
+            !track ||
+            state.blobId !== track.currentBlobId ||
+            !Number.isFinite(element.duration) ||
+            element.duration <= 0
+          )
+            return;
+          const seconds = Math.min(state.positionMs / 1_000, element.duration);
+          if (seconds > 0 && seconds < element.duration) element.currentTime = seconds;
+          setPosition(element.currentTime);
+          setDuration(element.duration);
+          resume.current = null;
+        }}
+        onPause={(event) => {
+          setPlaying(false);
+          if (!event.currentTarget.ended) void flush().catch(() => undefined);
+        }}
+        onPlay={() => {
+          terminal.current = false;
+          setPlaying(true);
+        }}
+        onEnded={() => {
+          terminal.current = true;
+          setPlaying(false);
+          void flush(0)
+            .catch(() => undefined)
+            .then(() => move(1, false));
+        }}
+        onError={() => {
+          setPlaying(false);
+          setPlayerError("このトラックを再生できませんでした。");
+        }}
+      >
         <track kind="captions" />
       </audio>
       <div className="media-toolbar">

@@ -42,6 +42,27 @@ describe("route binding coverage", () => {
       });
   });
 
+  it("binds private media state without exposing public-share state routes", () => {
+    for (const key of [
+      "app GET /api/v1/nodes/:nodeId/playback-state",
+      "app PUT /api/v1/nodes/:nodeId/playback-state",
+      "app GET /api/v1/library/:nodeId/reading-state",
+      "app PUT /api/v1/library/:nodeId/reading-state",
+    ])
+      expect(ROUTE_BINDINGS.find((binding) => binding.key === key)).toMatchObject({
+        availability: "bound",
+        handler: "private-app",
+        auth: ["access"],
+      });
+    expect(
+      ROUTE_BINDINGS.some(
+        (binding) =>
+          binding.key.includes("/public/shares/") &&
+          (binding.key.includes("playback-state") || binding.key.includes("reading-state")),
+      ),
+    ).toBe(false);
+  });
+
   it("rejects missing and duplicate bindings", () => {
     const missing = ROUTE_BINDINGS.slice(1);
     expect(verifyRouteBindings(ROUTES, missing)).toContain(

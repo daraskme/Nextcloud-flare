@@ -134,6 +134,23 @@ export interface LibraryPublication {
   ticketPurpose: "page";
   contentBaseUrl: string;
 }
+export interface PlaybackState {
+  nodeId: string;
+  blobId: string;
+  durationMs: number;
+  positionMs: number | null;
+  updatedAt: number | null;
+}
+export interface ReadingState {
+  nodeId: string;
+  blobId: string;
+  pageCount: number;
+  position: {
+    spineIndex: number;
+    progress: number;
+  } | null;
+  updatedAt: number | null;
+}
 export interface FileCandidates {
   items: FileNode[];
   truncated: boolean;
@@ -606,6 +623,36 @@ export class ApiClient {
     return this.request<LibraryPublication>(
       `/api/v1/library/${encodeURIComponent(nodeId)}`,
       signal ? { signal } : {},
+    );
+  }
+
+  playbackState(nodeId: string, signal?: AbortSignal) {
+    return this.request<PlaybackState>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/playback-state`,
+      signal ? { signal } : {},
+    );
+  }
+
+  writePlaybackState(nodeId: string, blobId: string, positionMs: number) {
+    return this.json<PlaybackState>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/playback-state`,
+      "PUT",
+      { blobId, positionMs },
+    );
+  }
+
+  readingState(nodeId: string, signal?: AbortSignal) {
+    return this.request<ReadingState>(
+      `/api/v1/library/${encodeURIComponent(nodeId)}/reading-state`,
+      signal ? { signal } : {},
+    );
+  }
+
+  writeReadingState(nodeId: string, blobId: string, spineIndex: number, progress: number) {
+    return this.json<ReadingState>(
+      `/api/v1/library/${encodeURIComponent(nodeId)}/reading-state`,
+      "PUT",
+      { blobId, spineIndex, progress },
     );
   }
 
