@@ -38,7 +38,7 @@ it("serves the direct-user lifecycle through private JSON and CSRF routes", asyn
       rootNodeId: owner.ids.folder,
       spaceId: owner.ids.space,
       recipientEmail: "recipient@example.invalid",
-      actions: ["read", "download"],
+      actions: ["read", "download", "create", "edit"],
     }),
   });
   expect(shareRoute(createRequest)).toBe(true);
@@ -49,7 +49,7 @@ it("serves the direct-user lifecycle through private JSON and CSRF routes", asyn
     mountName: string;
     actions: string[];
   };
-  expect(created).toMatchObject({ actions: ["read", "download"] });
+  expect(created).toMatchObject({ actions: ["read", "download", "create", "edit"] });
   expect(csrf.verify).toHaveBeenCalledOnce();
 
   const sharedResponse = await handleShareHttp(
@@ -64,7 +64,8 @@ it("serves the direct-user lifecycle through private JSON and CSRF routes", asyn
       expect.objectContaining({
         shareId: created.id,
         mountName: created.mountName,
-        actions: ["read", "download"],
+        actions: ["read", "download", "create", "edit"],
+        provenance: { kind: "direct", recipientVersion: 1 },
       }),
     ],
   });

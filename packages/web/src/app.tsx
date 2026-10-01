@@ -15,6 +15,7 @@ import {
   FileText,
   FileVideo,
   Folder,
+  FolderOpen,
   FolderPlus,
   HardDrive,
   Images,
@@ -32,6 +33,7 @@ import {
   Share2,
   Trash2,
   Upload,
+  UsersRound,
   X,
 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -41,6 +43,7 @@ import { PrivateAudio } from "./features/audio/PrivateAudio";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { PrivateBookshelf } from "./features/library/PrivateBookshelf";
+import { InternalShares } from "./features/shares/InternalShares";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import { PrivateVideo } from "./features/video/PrivateVideo";
@@ -706,11 +709,13 @@ function FileList({
   view,
   act,
   open,
+  readOnly = false,
 }: {
   rows: FileNode[];
   view: "list" | "grid";
   act: (action: Action) => void;
   open: (node: FileNode) => void;
+  readOnly?: boolean;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({
@@ -727,7 +732,7 @@ function FileList({
           <article key={node.id} className="file-card">
             <div className="file-card-top">
               <FileIcon node={node} />
-              <NodeMenu node={node} act={act} open={() => open(node)} />
+              {!readOnly && <NodeMenu node={node} act={act} open={() => open(node)} />}
             </div>
             <button className="file-name" onClick={() => open(node)} title={node.name}>
               {node.name}
@@ -794,7 +799,7 @@ function FileList({
                   {node.kind === "folder" ? "—" : formatBytes(node.size)}
                 </div>
                 <div role="cell">
-                  <NodeMenu node={node} act={act} open={() => open(node)} />
+                  {!readOnly && <NodeMenu node={node} act={act} open={() => open(node)} />}
                 </div>
               </div>
             );
@@ -823,8 +828,25 @@ export function App() {
   const audio = pathname === "/audio";
   const bookshelf = pathname === "/bookshelf";
   const video = pathname === "/video";
-  const files = !trash && !gallery && !audio && !bookshelf && !video;
-  const parentId = /^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "";
+  const sharing = pathname === "/shares";
+  const sharedMatch = /^\/shared\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
+  const shared = !!sharedMatch;
+  const files = !trash && !gallery && !audio && !bookshelf && !video && !sharing;
+  const personalFiles = files && !shared;
+  const sharedMounts = useQuery({
+    queryKey: ["shared-with-me", me?.id, me?.epoch],
+    queryFn: ({ signal }) => api.sharedWithMe(signal),
+    enabled: !!me && shared,
+    retry: false,
+  });
+  const sharedMount = sharedMounts.data?.shares.find((mount) => mount.shareId === sharedMatch?.[1]);
+  const parentId = shared
+    ? (sharedMatch?.[2] ?? sharedMount?.root.id ?? "")
+    : (/^\/files\/([^/]+)$/.exec(pathname)?.[1] ?? me?.rootNodeId ?? "");
+  const mountAccessVersion =
+    sharedMount?.provenance.kind === "group"
+      ? sharedMount.provenance.membershipVersion
+      : sharedMount?.provenance.recipientVersion;
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
@@ -841,25 +863,40 @@ export function App() {
   const input = useRef<HTMLInputElement>(null);
   const channel = useRef<BroadcastChannel | null>(null);
   const listing = useInfiniteQuery({
-    queryKey: ["children", me?.id, me?.epoch, parentId],
+    queryKey: [
+      "children",
+      me?.id,
+      me?.epoch,
+      parentId,
+      sharedMount?.shareVersion,
+      mountAccessVersion,
+    ],
     queryFn: ({ pageParam, signal }) => api.children(parentId, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && files && !searching,
+    enabled: !!me && files && !!parentId && (!shared || !!sharedMount) && !searching,
     retry: false,
   });
   const results = useInfiniteQuery({
-    queryKey: ["search", me?.id, me?.epoch, parentId, searchTerm?.query],
+    queryKey: [
+      "search",
+      me?.id,
+      me?.epoch,
+      parentId,
+      searchTerm?.query,
+      sharedMount?.shareVersion,
+      mountAccessVersion,
+    ],
     queryFn: ({ pageParam, signal }) => api.search(parentId, searchTerm!.query, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
-    enabled: !!me && files && searching,
+    enabled: !!me && files && !!parentId && (!shared || !!sharedMount) && searching,
     retry: false,
   });
   const path = useQuery({
-    queryKey: ["path", me?.id, me?.epoch, parentId],
+    queryKey: ["path", me?.id, me?.epoch, parentId, sharedMount?.shareVersion, mountAccessVersion],
     queryFn: ({ signal }) => api.path(parentId, signal),
-    enabled: !!me && files,
+    enabled: !!me && files && !!parentId && (!shared || !!sharedMount),
     retry: false,
   });
   const trashed = useInfiniteQuery({
@@ -871,7 +908,17 @@ export function App() {
     retry: false,
   });
   const refresh = () => {
-    for (const key of ["children", "trash", "path", "picker", "search", "stats"])
+    for (const key of [
+      "children",
+      "trash",
+      "path",
+      "picker",
+      "search",
+      "stats",
+      "shared-with-me",
+      "shares",
+      "share-groups",
+    ])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
   };
@@ -946,7 +993,7 @@ export function App() {
     setAction(next);
   };
   const addFiles = async (selectedFiles: FileList | null) => {
-    if (!selectedFiles || !me || !files) return;
+    if (!selectedFiles || !me || !personalFiles) return;
     for (const file of Array.from(selectedFiles)) {
       try {
         await uploads.enqueue(file, me, parentId);
@@ -958,7 +1005,16 @@ export function App() {
   };
   const openNode = (node: FileNode) => {
     if (node.kind === "folder") {
-      void navigate({ to: "/files/$folderId", params: { folderId: node.id } });
+      if (sharedMount)
+        void navigate({
+          to: "/shared/$shareId/$folderId",
+          params: { shareId: sharedMount.shareId, folderId: node.id },
+        });
+      else void navigate({ to: "/files/$folderId", params: { folderId: node.id } });
+      return;
+    }
+    if (sharedMount && !sharedMount.actions.includes("download")) {
+      setNotice("この共有ではファイルのダウンロードが許可されていません。");
       return;
     }
     const target = window.open("about:blank", "_blank");
@@ -996,17 +1052,32 @@ export function App() {
   );
   const data = trash ? trashed : searching ? results : listing;
   const truncated = searching && results.data?.pages.some((page) => page.truncated);
+  const sharedRootIndex = sharedMount
+    ? (path.data?.path.findIndex((crumb) => crumb.id === sharedMount.root.id) ?? -1)
+    : -1;
+  const sharedPathInvalid = !!sharedMount && !!path.data && sharedRootIndex < 0;
+  const breadcrumbPath = sharedMount
+    ? sharedRootIndex >= 0
+      ? path.data?.path.slice(sharedRootIndex + 1)
+      : []
+    : path.data?.path.slice(1);
   const title = trash
     ? "ごみ箱"
-    : gallery
-      ? "ギャラリー"
-      : audio
-        ? "オーディオ"
-        : bookshelf
-          ? "本棚"
-          : video
-            ? "動画"
-            : path.data?.path.at(-1)?.name || "マイドライブ";
+    : sharing
+      ? "内部共有"
+      : shared
+        ? sharedMount && !sharedPathInvalid
+          ? path.data?.path.at(-1)?.name || sharedMount.root.name
+          : "共有フォルダー"
+        : gallery
+          ? "ギャラリー"
+          : audio
+            ? "オーディオ"
+            : bookshelf
+              ? "本棚"
+              : video
+                ? "動画"
+                : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1033,9 +1104,14 @@ export function App() {
         </Link>
         <div className="workspace-label">PERSONAL WORKSPACE</div>
         <nav aria-label="メインナビゲーション">
-          <Link to="/files" className={files ? "nav-link active" : "nav-link"}>
+          <Link to="/files" className={personalFiles ? "nav-link active" : "nav-link"}>
             <HardDrive size={19} />
             マイドライブ
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/shares" className={sharing || shared ? "nav-link active" : "nav-link"}>
+            <UsersRound size={19} />
+            内部共有
             <span className="nav-dot" />
           </Link>
           <Link to="/gallery" className={gallery ? "nav-link active" : "nav-link"}>
@@ -1099,7 +1175,7 @@ export function App() {
             <span className="workspace-avatar">
               <Cloud size={17} />
             </span>
-            <span>パーソナルスペース</span>
+            <span>{sharing || shared ? "内部共有" : "パーソナルスペース"}</span>
             <ChevronRight size={14} />
             <span className="muted">{title}</span>
           </div>
@@ -1133,7 +1209,7 @@ export function App() {
           id="main-content"
           className={dragging ? "main dragging" : "main"}
           onDragOver={(event) => {
-            if (files && event.dataTransfer.types.includes("Files")) {
+            if (personalFiles && event.dataTransfer.types.includes("Files")) {
               event.preventDefault();
               setDragging(true);
             }
@@ -1156,14 +1232,43 @@ export function App() {
             </div>
           )}
           <div className="breadcrumbs" aria-label="パンくず">
-            {files ? <Link to="/files">マイドライブ</Link> : <span>パーソナルスペース</span>}
+            {personalFiles ? (
+              <Link to="/files">マイドライブ</Link>
+            ) : shared ? (
+              <Link to="/shares">内部共有</Link>
+            ) : (
+              <span>パーソナルスペース</span>
+            )}
+            {sharing && (
+              <span>
+                <ChevronRight size={13} />
+                内部共有
+              </span>
+            )}
+            {shared && sharedMount && (
+              <span>
+                <ChevronRight size={13} />
+                <Link to="/shared/$shareId" params={{ shareId: sharedMount.shareId }}>
+                  {sharedMount.root.name}
+                </Link>
+              </span>
+            )}
             {files &&
-              path.data?.path.slice(1).map((crumb) => (
+              breadcrumbPath?.map((crumb) => (
                 <span key={crumb.id}>
                   <ChevronRight size={13} />
-                  <Link to="/files/$folderId" params={{ folderId: crumb.id }}>
-                    {crumb.name}
-                  </Link>
+                  {sharedMount ? (
+                    <Link
+                      to="/shared/$shareId/$folderId"
+                      params={{ shareId: sharedMount.shareId, folderId: crumb.id }}
+                    >
+                      {crumb.name}
+                    </Link>
+                  ) : (
+                    <Link to="/files/$folderId" params={{ folderId: crumb.id }}>
+                      {crumb.name}
+                    </Link>
+                  )}
                 </span>
               ))}
             {trash && (
@@ -1202,32 +1307,40 @@ export function App() {
               <p className="eyebrow">
                 {trash
                   ? "TRASH"
-                  : gallery
-                    ? "YOUR PHOTOS"
-                    : audio
-                      ? "YOUR MUSIC"
-                      : bookshelf
-                        ? "YOUR BOOKS"
-                        : video
-                          ? "YOUR VIDEOS"
-                          : "YOUR FILES, YOUR SPACE"}
+                  : sharing
+                    ? "PRIVATE SHARING"
+                    : shared
+                      ? "SHARED FOLDER"
+                      : gallery
+                        ? "YOUR PHOTOS"
+                        : audio
+                          ? "YOUR MUSIC"
+                          : bookshelf
+                            ? "YOUR BOOKS"
+                            : video
+                              ? "YOUR VIDEOS"
+                              : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
                 {trash
                   ? "不要になったファイルを確認・復元できます。"
-                  : gallery
-                    ? "アップロードした写真を、サムネイルからすばやく探せます。"
-                    : audio
-                      ? "プライベートなオーディオを、このスペースから再生できます。"
-                      : bookshelf
-                        ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
-                        : video
-                          ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
-                          : "大切なファイルを、いつでも使いやすく。"}
+                  : sharing
+                    ? "ログイン済みのユーザーとグループに、フォルダーを安全に共有できます。"
+                    : shared
+                      ? "所有者が許可した現在の操作だけを利用できます。"
+                      : gallery
+                        ? "アップロードした写真を、サムネイルからすばやく探せます。"
+                        : audio
+                          ? "プライベートなオーディオを、このスペースから再生できます。"
+                          : bookshelf
+                            ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
+                            : video
+                              ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
+                              : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
-            {me && files && (
+            {me && personalFiles && (
               <div className="heading-actions">
                 <Button
                   disabled={!!recovery}
@@ -1305,6 +1418,43 @@ export function App() {
                   再接続
                 </Button>
               )}
+            </div>
+          ) : sharing ? (
+            <InternalShares account={me} />
+          ) : shared && sharedMounts.isPending ? (
+            <div className="empty-state">
+              <LoaderCircle size={28} className="spin" />
+              <p>共有フォルダーを確認しています</p>
+            </div>
+          ) : shared && sharedMounts.error ? (
+            <div className="empty-state">
+              <FolderOpen size={40} />
+              <h2>共有フォルダーを確認できません</h2>
+              <p>{errorMessage(sharedMounts.error)}</p>
+              <Button onClick={() => void sharedMounts.refetch()}>
+                <RefreshCw size={16} />
+                再試行
+              </Button>
+            </div>
+          ) : shared && !sharedMount ? (
+            <div className="empty-state">
+              <FolderOpen size={40} />
+              <h2>この共有は利用できません</h2>
+              <p>共有の取り消し、期限切れ、またはグループ所属の変更が考えられます。</p>
+              <Button asChild>
+                <Link to="/shares">内部共有へ戻る</Link>
+              </Button>
+            </div>
+          ) : sharedPathInvalid ? (
+            <div className="empty-state">
+              <FolderOpen size={40} />
+              <h2>共有フォルダーの範囲外です</h2>
+              <p>この共有のルートからフォルダーを開き直してください。</p>
+              <Button asChild>
+                <Link to="/shared/$shareId" params={{ shareId: sharedMount!.shareId }}>
+                  共有の先頭へ戻る
+                </Link>
+              </Button>
             </div>
           ) : gallery ? (
             <PrivateGallery account={me} />
@@ -1447,7 +1597,9 @@ export function App() {
                       ? "一致する項目がありません"
                       : trash
                         ? "ごみ箱は空です"
-                        : "ファイルを置く場所ができました"}
+                        : shared
+                          ? "このフォルダーは空です"
+                          : "ファイルを置く場所ができました"}
                   </h2>
                   <p>
                     {searching
@@ -1456,9 +1608,11 @@ export function App() {
                         ? "絞り込み条件を変更するか、次のページを読み込んでください。"
                         : trash
                           ? "ごみ箱に移動した項目は、ここに表示されます。"
-                          : "ファイルをドラッグするか、アップロードから追加できます。"}
+                          : shared
+                            ? "現在表示できるファイルやフォルダーはありません。"
+                            : "ファイルをドラッグするか、アップロードから追加できます。"}
                   </p>
-                  {!trash && !searching && (
+                  {!trash && !searching && !shared && (
                     <Button variant="primary" onClick={() => input.current?.click()}>
                       <Upload size={17} />
                       最初のファイルを追加
@@ -1496,7 +1650,7 @@ export function App() {
                   ))}
                 </div>
               ) : (
-                <FileList rows={filtered} view={view} act={act} open={openNode} />
+                <FileList rows={filtered} view={view} act={act} open={openNode} readOnly={shared} />
               )}
               <div className="list-footer">
                 <span>

@@ -64,7 +64,7 @@ Owner policy is accepted as `resharePolicy` on internal-share creation or PATCH:
 ```json
 {
   "enabled": true,
-  "actions": ["read", "download"],
+  "actions": ["read", "download", "create", "edit"],
   "maxDepth": 2,
   "maxFanout": 5,
   "ttlDays": 30
@@ -73,7 +73,8 @@ Owner policy is accepted as `resharePolicy` on internal-share creation or PATCH:
 
 A downstream internal-share POST supplies `sourceShareId` and an `Idempotency-Key` header. It may
 target one internal user or one owner-managed internal group, using the same recipient fields as
-an original internal share.
+an original internal share. `read` is required whenever `download`, `create`, or `edit` is present;
+the backend canonical order is `read`, `download`, `create`, `edit`.
 
 ## Bounds
 

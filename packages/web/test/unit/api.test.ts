@@ -79,6 +79,102 @@ it("a still-claimed operation remains uncertain", async () => {
   ).rejects.toEqual(new ApiError(503, "commit_unknown", "op_fixture"));
 });
 
+it("uses private CSRF mutations for direct and group internal shares", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_direct" }, { status: 201 }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_group" }, { status: 201 }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_group", actions: ["read"] }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_group", resharePolicy: { enabled: true } }));
+  vi.stubGlobal("fetch", fetcher);
+  const api = new ApiClient();
+  await api.createInternalShare(
+    "folder",
+    "space",
+    { email: "member@example.invalid" },
+    ["read", "download", "create", "edit"],
+    30,
+    {
+      enabled: true,
+      actions: ["read", "create", "edit"],
+      maxDepth: 2,
+      maxFanout: 5,
+      ttlDays: 7,
+    },
+  );
+  await api.createInternalShare("folder", "space", { groupId: "group" }, ["read"], 7);
+  await api.updateInternalShare("sh_group", { actions: ["read", "create", "edit"] });
+  await api.updateInternalShare("sh_group", {
+    resharePolicy: {
+      enabled: true,
+      actions: ["read", "create"],
+      maxDepth: 3,
+      maxFanout: 8,
+    },
+  });
+  expect(fetcher.mock.calls.slice(1).map(([path, init]) => [path, init.method])).toEqual([
+    ["/api/v1/shares", "POST"],
+    ["/api/v1/shares", "POST"],
+    ["/api/v1/shares/sh_group", "PATCH"],
+    ["/api/v1/shares/sh_group", "PATCH"],
+  ]);
+  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({
+    kind: "internal",
+    rootNodeId: "folder",
+    spaceId: "space",
+    recipientEmail: "member@example.invalid",
+    actions: ["read", "download", "create", "edit"],
+    ttlDays: 30,
+    resharePolicy: {
+      enabled: true,
+      actions: ["read", "create", "edit"],
+      maxDepth: 2,
+      maxFanout: 5,
+      ttlDays: 7,
+    },
+  });
+  expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({
+    kind: "internal",
+    rootNodeId: "folder",
+    spaceId: "space",
+    recipientGroupId: "group",
+    actions: ["read"],
+    ttlDays: 7,
+  });
+  expect(JSON.parse(fetcher.mock.calls[3]![1].body)).toEqual({
+    actions: ["read", "create", "edit"],
+  });
+  expect(JSON.parse(fetcher.mock.calls[4]![1].body)).toEqual({
+    resharePolicy: {
+      enabled: true,
+      actions: ["read", "create"],
+      maxDepth: 3,
+      maxFanout: 8,
+    },
+  });
+  for (const [, init] of fetcher.mock.calls.slice(1))
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf");
+});
+
+it("cancels stale shared-mount reads with the caller signal", async () => {
+  let signal!: AbortSignal;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((_path: string, init: RequestInit) => {
+      signal = init.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }),
+  );
+  const controller = new AbortController();
+  const request = new ApiClient().sharedWithMe(controller.signal);
+  controller.abort();
+  await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  expect(signal.aborted).toBe(true);
+});
+
 it("exchanges media tickets at the exact content origin and returns direct media URLs", async () => {
   const fetcher = vi
     .fn()
