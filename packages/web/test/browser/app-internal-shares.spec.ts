@@ -6,7 +6,7 @@ const directMount = {
   shareVersion: 1,
   mountId: "sh_direct",
   mountName: "direct-project",
-  actions: ["read", "download"],
+  actions: ["read", "download", "create", "edit"],
   root: {
     id: "shared-root",
     spaceId: "owner-space",
@@ -37,6 +37,7 @@ const groupMount = {
     kind: "group",
     groupId: "group-engineering",
     groupName: "Engineering",
+    groupVersion: 2,
     membershipVersion: 4,
   },
 };
@@ -106,6 +107,7 @@ test.afterEach(async ({ page }) => {
 });
 
 test("owner creates, inspects, changes and revokes a private internal share", async ({ page }) => {
+  const patches: Record<string, unknown>[] = [];
   const shares: Record<string, unknown>[] = [
     {
       id: "sh_delegated",
@@ -176,10 +178,10 @@ test("owner creates, inspects, changes and revokes a private internal share", as
       expect(request.postDataJSON()).toMatchObject({
         kind: "internal",
         recipientEmail: "member@example.invalid",
-        actions: ["read", "download"],
+        actions: ["read", "download", "create", "edit"],
         resharePolicy: {
           enabled: true,
-          actions: ["read", "download"],
+          actions: ["read", "download", "create", "edit"],
           maxDepth: 2,
           maxFanout: 7,
           ttlDays: 14,
@@ -196,7 +198,7 @@ test("owner creates, inspects, changes and revokes a private internal share", as
         expiresAt: now + 30 * 86_400_000,
         createdAt: now,
         passwordProtected: false,
-        actions: ["read", "download"],
+        actions: body.actions,
         recipientUserId: "member",
         recipientEmail: "member@example.invalid",
         recipientGroupId: null,
@@ -218,6 +220,7 @@ test("owner creates, inspects, changes and revokes a private internal share", as
     if (request.method() === "PATCH") {
       const share = shares.find((value) => value.id === "sh_created")!;
       const body = request.postDataJSON();
+      patches.push(body);
       if (body.actions) {
         share.actions = body.actions;
         share.version = Number(share.version) + 1;
@@ -249,14 +252,18 @@ test("owner creates, inspects, changes and revokes a private internal share", as
   await expect(page.getByText("委任者 ID").locator("..")).toContainText("member");
   await page.getByRole("button", { name: "内部共有を作成" }).click();
   await page.getByLabel("相手のメールアドレス").fill("member@example.invalid");
+  await page.getByLabel("ファイルとフォルダーの作成を許可").check();
+  await page.getByLabel("ファイル名と内容の編集を許可").check();
   await page.getByLabel("再共有ポリシーを設定").check();
+  await page.getByLabel("作成", { exact: true }).check();
+  await page.getByLabel("編集", { exact: true }).check();
   await page.getByLabel("最大委任深度").selectOption("2");
   await page.getByLabel("最大ファンアウト").fill("7");
   await page.getByLabel("ポリシー独自の有効期限を設定").check();
   await page.getByLabel("ポリシー有効期間（日）").fill("14");
   await page.getByRole("button", { name: "共有を作成", exact: true }).click();
   await expect(page.getByText("member@example.invalid")).toBeVisible();
-  await expect(page.getByText("閲覧・ダウンロード", { exact: true })).toBeVisible();
+  await expect(page.getByText("閲覧・ダウンロード・作成・編集", { exact: true })).toBeVisible();
   const createdCard = page.getByRole("article").filter({ hasText: "member@example.invalid" });
   await expect(createdCard.getByText("最大深度 2")).toBeVisible();
   await expect(createdCard.getByText("最大ファンアウト 7")).toBeVisible();
@@ -264,11 +271,23 @@ test("owner creates, inspects, changes and revokes a private internal share", as
   const policyDialog = page.getByRole("dialog");
   await policyDialog.getByLabel("最大ファンアウト").fill("9");
   await policyDialog.getByLabel("ダウンロード").uncheck();
+  await policyDialog.getByLabel("ポリシー独自の有効期限を設定").uncheck();
   await policyDialog.getByRole("button", { name: "ポリシーを保存" }).click();
   await expect(createdCard.getByText("最大ファンアウト 9")).toBeVisible();
-  await expect(createdCard.getByText("操作: 閲覧のみ")).toBeVisible();
+  await expect(createdCard.getByText("操作: 閲覧・作成・編集")).toBeVisible();
+  await createdCard.getByRole("button", { name: "編集を停止" }).click();
+  expect(patches.at(-1)).toEqual({
+    actions: ["read", "download", "create"],
+    resharePolicy: {
+      enabled: true,
+      actions: ["read", "create"],
+      maxDepth: 2,
+      maxFanout: 9,
+    },
+  });
+  await expect(createdCard.getByText("閲覧・ダウンロード・作成", { exact: true })).toBeVisible();
   await createdCard.getByRole("button", { name: "ダウンロードを停止" }).click();
-  await expect(createdCard.getByText("閲覧のみ", { exact: true })).toBeVisible();
+  await expect(createdCard.getByText("閲覧・作成", { exact: true })).toBeVisible();
   await createdCard.getByRole("button", { name: "共有を取り消す" }).click();
   await page
     .getByRole("dialog")
@@ -287,7 +306,7 @@ test("recipient sees direct/group provenance and browses a read-only mount", asy
   await page.goto("/shares");
   await expect(page.getByText("あなたに直接")).toBeVisible();
   await expect(page.getByText("Engineering", { exact: true })).toBeVisible();
-  await expect(page.getByText("閲覧・ダウンロード", { exact: true })).toBeVisible();
+  await expect(page.getByText("閲覧・ダウンロード・作成・編集", { exact: true })).toBeVisible();
   await expect(page.getByText("閲覧のみ", { exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -332,20 +351,21 @@ test("permission, revocation and stale mount responses cannot restore obsolete a
     await route.fulfill({ json: { shares: current } });
   });
   await page.goto("/shares");
-  await expect(page.getByText("閲覧・ダウンロード", { exact: true })).toBeVisible();
+  await expect(page.getByText("閲覧・ダウンロード・作成・編集", { exact: true })).toBeVisible();
   current = [
     {
       ...directMount,
       shareVersion: 2,
-      actions: ["read"],
+      actions: ["read", "download"],
     },
   ];
   const refresh = page.getByRole("button", { name: "内部共有を更新" });
   await refresh.click();
   await refresh.click();
-  await expect(page.getByText("閲覧のみ", { exact: true })).toBeVisible();
+  await expect(page.getByText("閲覧・ダウンロード", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("アクセスが変更されました");
   releaseStale();
-  await expect(page.getByText("閲覧のみ", { exact: true })).toBeVisible();
+  await expect(page.getByText("閲覧・ダウンロード", { exact: true })).toBeVisible();
   current = [];
   await refresh.click();
   await expect(page.getByText("共有されたフォルダーはありません")).toBeVisible();

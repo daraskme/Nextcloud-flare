@@ -218,6 +218,7 @@ it("keeps group mounts stable and fences DAV action, version, ancestry, epoch an
         kind: "group",
         groupId: expect.any(String),
         groupName: "Engineering",
+        groupVersion: 1,
         membershipVersion: 1,
       },
     }),

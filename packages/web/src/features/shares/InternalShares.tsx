@@ -20,27 +20,80 @@ import {
   api,
   errorMessage,
   type InternalShare,
+  type InternalShareAction,
   type InternalShareResharePolicyInput,
   type SharedMount,
   type ShareGroup,
 } from "../../lib/api";
 
 const DAY_MS = 86_400_000;
+const ACTION_ORDER: readonly InternalShareAction[] = ["read", "download", "create", "edit"];
+const ACTION_LABELS: Record<InternalShareAction, string> = {
+  read: "閲覧",
+  download: "ダウンロード",
+  create: "作成",
+  edit: "編集",
+};
 const date = (value: number) =>
   new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(value);
 
-interface PolicyDraft {
-  enabled: boolean;
+interface ActionDraft {
   download: boolean;
+  create: boolean;
+  edit: boolean;
+}
+
+interface PolicyDraft extends ActionDraft {
+  enabled: boolean;
   expires: boolean;
   ttlDays: number;
   maxDepth: number;
   maxFanout: number;
 }
 
+const selectedActions = (draft: ActionDraft): InternalShareAction[] => [
+  "read",
+  ...(draft.download ? (["download"] as const) : []),
+  ...(draft.create ? (["create"] as const) : []),
+  ...(draft.edit ? (["edit"] as const) : []),
+];
+
+const actionLabel = (actions: readonly InternalShareAction[]) => {
+  const labels = ACTION_ORDER.filter((action) => actions.includes(action)).map(
+    (action) => ACTION_LABELS[action],
+  );
+  return labels.length === 1 ? "閲覧のみ" : labels.join("・");
+};
+
+const mountAuthorityChanged = (previous: SharedMount, current: SharedMount) => {
+  if (
+    previous.shareVersion !== current.shareVersion ||
+    previous.mountId !== current.mountId ||
+    previous.mountName !== current.mountName ||
+    previous.root.id !== current.root.id ||
+    previous.root.spaceId !== current.root.spaceId ||
+    previous.root.ownerId !== current.root.ownerId ||
+    previous.root.kind !== current.root.kind ||
+    ACTION_ORDER.some(
+      (action) => previous.actions.includes(action) !== current.actions.includes(action),
+    ) ||
+    previous.provenance.kind !== current.provenance.kind
+  )
+    return true;
+  if (previous.provenance.kind === "direct" && current.provenance.kind === "direct")
+    return previous.provenance.recipientVersion !== current.provenance.recipientVersion;
+  if (previous.provenance.kind === "group" && current.provenance.kind === "group")
+    return (
+      previous.provenance.groupId !== current.provenance.groupId ||
+      previous.provenance.groupVersion !== current.provenance.groupVersion ||
+      previous.provenance.membershipVersion !== current.provenance.membershipVersion
+    );
+  return false;
+};
+
 const policyInput = (draft: PolicyDraft): InternalShareResharePolicyInput => ({
   enabled: draft.enabled,
-  actions: draft.download ? ["read", "download"] : ["read"],
+  actions: selectedActions(draft),
   maxDepth: draft.maxDepth,
   maxFanout: draft.maxFanout,
   ...(draft.expires ? { ttlDays: draft.ttlDays } : {}),
@@ -49,12 +102,12 @@ const policyInput = (draft: PolicyDraft): InternalShareResharePolicyInput => ({
 function ResharePolicyFields({
   draft,
   setDraft,
-  allowDownload,
+  allowedActions,
   maxTtlDays,
 }: {
   draft: PolicyDraft;
   setDraft: (draft: PolicyDraft) => void;
-  allowDownload: boolean;
+  allowedActions: readonly InternalShareAction[];
   maxTtlDays: number;
 }) {
   return (
@@ -78,10 +131,28 @@ function ResharePolicyFields({
               <input
                 type="checkbox"
                 checked={draft.download}
-                disabled={!allowDownload}
+                disabled={!allowedActions.includes("download")}
                 onChange={(event) => setDraft({ ...draft, download: event.target.checked })}
               />{" "}
               ダウンロード
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={draft.create}
+                disabled={!allowedActions.includes("create")}
+                onChange={(event) => setDraft({ ...draft, create: event.target.checked })}
+              />{" "}
+              作成
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={draft.edit}
+                disabled={!allowedActions.includes("edit")}
+                onChange={(event) => setDraft({ ...draft, edit: event.target.checked })}
+              />{" "}
+              編集
             </label>
           </span>
         </div>
@@ -225,11 +296,15 @@ function CreateInternalShareDialog({
   const [email, setEmail] = useState("");
   const [groupId, setGroupId] = useState(groups[0]?.id ?? "");
   const [download, setDownload] = useState(true);
+  const [create, setCreate] = useState(false);
+  const [edit, setEdit] = useState(false);
   const [ttlDays, setTtlDays] = useState(30);
   const [configurePolicy, setConfigurePolicy] = useState(false);
   const [policy, setPolicy] = useState<PolicyDraft>({
     enabled: true,
     download: true,
+    create: false,
+    edit: false,
     expires: false,
     ttlDays: 30,
     maxDepth: 1,
@@ -244,9 +319,11 @@ function CreateInternalShareDialog({
     setPolicy((current) => ({
       ...current,
       download: download && current.download,
+      create: create && current.create,
+      edit: edit && current.edit,
       ttlDays: Math.min(current.ttlDays, ttlDays),
     }));
-  }, [download, ttlDays]);
+  }, [create, download, edit, ttlDays]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const recipient =
@@ -262,7 +339,7 @@ function CreateInternalShareDialog({
         folderId,
         account.spaceId,
         recipient,
-        download ? ["read", "download"] : ["read"],
+        selectedActions({ download, create, edit }),
         ttlDays,
         configurePolicy ? policyInput(policy) : undefined,
       );
@@ -277,7 +354,7 @@ function CreateInternalShareDialog({
   return (
     <Dialog
       title="内部共有を作成"
-      description="ログイン済みの相手だけが利用できる、読み取り専用の共有を作成します。"
+      description="ログイン済みの相手だけが利用できる共有を、必要な操作に限定して作成します。"
       open
       onOpenChange={(open) => {
         if (!open && !pending) close();
@@ -369,8 +446,24 @@ function CreateInternalShareDialog({
             />
             ファイルのダウンロードを許可
           </label>
+          <label className="internal-check">
+            <input
+              type="checkbox"
+              checked={create}
+              onChange={(event) => setCreate(event.target.checked)}
+            />
+            ファイルとフォルダーの作成を許可
+          </label>
+          <label className="internal-check">
+            <input
+              type="checkbox"
+              checked={edit}
+              onChange={(event) => setEdit(event.target.checked)}
+            />
+            ファイル名と内容の編集を許可
+          </label>
           <p className="internal-inline-note">
-            フォルダーの閲覧は常に必要です。アップロード・変更・削除は許可されません。
+            閲覧は常に必要です。作成と編集は WebDAV から利用でき、削除は許可されません。
           </p>
         </fieldset>
         <fieldset disabled={pending}>
@@ -387,7 +480,7 @@ function CreateInternalShareDialog({
             <ResharePolicyFields
               draft={policy}
               setDraft={setPolicy}
-              allowDownload={download}
+              allowedActions={selectedActions({ download, create, edit })}
               maxTtlDays={ttlDays}
             />
           )}
@@ -436,7 +529,7 @@ function PolicySummary({ share }: { share: InternalShare }) {
     <div className="internal-policy-summary">
       <strong>{share.sourceShareId ? "適用中の再共有ポリシー" : "再共有ポリシー"}</strong>
       <span>{policy.enabled ? "有効" : "無効"}</span>
-      <span>操作: {policy.actions.includes("download") ? "閲覧・ダウンロード" : "閲覧のみ"}</span>
+      <span>操作: {actionLabel(policy.actions)}</span>
       <span>最大深度 {policy.maxDepth}</span>
       <span>最大ファンアウト {policy.maxFanout}</span>
       <span>期限: {policy.expiresAt ? date(policy.expiresAt) : "共有本体の期限まで"}</span>
@@ -466,6 +559,11 @@ function ResharePolicyDialog({
     download:
       share.actions.includes("download") &&
       (share.resharePolicy?.actions.includes("download") ?? false),
+    create:
+      share.actions.includes("create") &&
+      (share.resharePolicy?.actions.includes("create") ?? false),
+    edit:
+      share.actions.includes("edit") && (share.resharePolicy?.actions.includes("edit") ?? false),
     expires: share.resharePolicy?.expiresAt !== null && share.resharePolicy !== null,
     ttlDays: Math.min(policyTtlDays, Math.max(1, maxTtlDays)),
     maxDepth: share.resharePolicy?.maxDepth ?? 1,
@@ -506,7 +604,7 @@ function ResharePolicyDialog({
           <ResharePolicyFields
             draft={draft}
             setDraft={setDraft}
-            allowDownload={share.actions.includes("download")}
+            allowedActions={share.actions}
             maxTtlDays={maxTtlDays}
           />
         </fieldset>
@@ -546,23 +644,40 @@ function OwnedShareCard({
   editPolicy: (share: InternalShare) => void;
 }) {
   const query = useQueryClient();
-  const [pending, setPending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<InternalShareAction | null>(null);
   const [failure, setFailure] = useState("");
   const active =
     share.disabledAt === null && (share.expiresAt === null || share.expiresAt > Date.now());
-  const download = share.actions.includes("download");
-  const changeDownload = async () => {
-    setPending(true);
+  const pending = pendingAction !== null;
+  const changeAction = async (action: Exclude<InternalShareAction, "read">) => {
+    const enabled = share.actions.includes(action);
+    const actions = enabled
+      ? share.actions.filter((current) => current !== action)
+      : ACTION_ORDER.filter((current) => current === action || share.actions.includes(current));
+    const narrowedPolicy =
+      enabled &&
+      share.sourceShareId === null &&
+      share.resharePolicy?.expiresAt === null &&
+      share.resharePolicy.actions.includes(action)
+        ? {
+            enabled: share.resharePolicy.enabled,
+            actions: share.resharePolicy.actions.filter((current) => current !== action),
+            maxDepth: share.resharePolicy.maxDepth,
+            maxFanout: share.resharePolicy.maxFanout,
+          }
+        : undefined;
+    setPendingAction(action);
     setFailure("");
     try {
       await api.updateInternalShare(share.id, {
-        actions: download ? ["read"] : ["read", "download"],
+        actions,
+        ...(narrowedPolicy ? { resharePolicy: narrowedPolicy } : {}),
       });
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
     } catch (error) {
       setFailure(errorMessage(error));
     } finally {
-      setPending(false);
+      setPendingAction(null);
     }
   };
   return (
@@ -598,7 +713,7 @@ function OwnedShareCard({
         </div>
         <div>
           <dt>許可</dt>
-          <dd>{download ? "閲覧・ダウンロード" : "閲覧のみ"}</dd>
+          <dd>{actionLabel(share.actions)}</dd>
         </div>
         <div>
           <dt>共有 ID</dt>
@@ -635,10 +750,27 @@ function OwnedShareCard({
               再共有ポリシーを編集
             </Button>
           )}
-          <Button size="small" disabled={pending} onClick={() => void changeDownload()}>
-            {pending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
-            ダウンロードを{download ? "停止" : "許可"}
-          </Button>
+          {(["download", "create", "edit"] as const).map((action) => {
+            const enabled = share.actions.includes(action);
+            if (share.sourceShareId && !enabled) return null;
+            return (
+              <Button
+                key={action}
+                size="small"
+                disabled={pending}
+                onClick={() => void changeAction(action)}
+              >
+                {pendingAction === action ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : action === "download" ? (
+                  <Download size={15} />
+                ) : (
+                  <ShieldCheck size={15} />
+                )}
+                {ACTION_LABELS[action]}を{enabled ? "停止" : "許可"}
+              </Button>
+            );
+          })}
           <Button size="small" variant="danger" disabled={pending} onClick={() => revoke(share)}>
             <Trash2 size={15} />
             共有を取り消す
@@ -681,7 +813,7 @@ function SharedMountCard({ mount }: { mount: SharedMount }) {
         </div>
         <div>
           <dt>有効な操作</dt>
-          <dd>{mount.actions.includes("download") ? "閲覧・ダウンロード" : "閲覧のみ"}</dd>
+          <dd>{actionLabel(mount.actions)}</dd>
         </div>
         <div>
           <dt>マウント名</dt>
@@ -730,10 +862,13 @@ export function InternalShares({ account }: { account: Account }) {
     const current = new Map(received.data.shares.map((mount) => [mount.shareId, mount]));
     const previous = previousMounts.current;
     if (previous) {
-      const removed = [...previous.values()].filter((mount) => !current.has(mount.shareId));
-      if (removed.length)
+      const changed = [...previous.values()].filter((mount) => {
+        const next = current.get(mount.shareId);
+        return !next || mountAuthorityChanged(mount, next);
+      });
+      if (changed.length)
         setAccessNotice(
-          `${removed.map((mount) => mount.root.name).join("、")} へのアクセスが変更されました。共有の取り消し、期限切れ、またはグループ所属の変更が考えられます。`,
+          `${changed.map((mount) => mount.root.name).join("、")} へのアクセスが変更されました。共有の取り消し、期限切れ、権限、またはグループ所属の変更が考えられます。`,
         );
     }
     previousMounts.current = current;
@@ -868,7 +1003,7 @@ export function InternalShares({ account }: { account: Account }) {
           <div className="internal-panel-empty">
             <Share2 size={31} />
             <h3>内部共有はまだありません</h3>
-            <p>フォルダーと共有相手を選び、読み取り専用の共有を作成できます。</p>
+            <p>フォルダーと共有相手を選び、必要な操作だけを許可した共有を作成できます。</p>
           </div>
         )}
       </section>

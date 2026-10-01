@@ -1005,6 +1005,23 @@ export async function updateInternalShare(
             sql: "UPDATE share_grants SET version=(SELECT version FROM shares WHERE id=?) WHERE share_id=?",
             values: [shareId, shareId],
           },
+          ...(policyInput === undefined
+            ? [
+                {
+                  sql: `UPDATE share_reshare_policies SET version=version+1,updated_at=?
+                    WHERE share_id=? AND EXISTS(
+                      SELECT 1 FROM share_reshare_policy_actions
+                      WHERE share_id=? AND action NOT IN (${actions.map(() => "?").join(",")})
+                    )`,
+                  values: [now, shareId, shareId, ...actions],
+                },
+                {
+                  sql: `DELETE FROM share_reshare_policy_actions
+                    WHERE share_id=? AND action NOT IN (${actions.map(() => "?").join(",")})`,
+                  values: [shareId, ...actions],
+                },
+              ]
+            : []),
           ...descendantRevocationStatements(shareId),
         ];
   const existingPolicy = await primary(env.DB)
@@ -1099,13 +1116,13 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
     ...currentAccess(session),
     {
       sql: `WITH RECURSIVE recipient_share(
-        shareId,provenanceKind,recipientVersion,groupId,groupName,membershipVersion
+        shareId,provenanceKind,recipientVersion,groupId,groupName,groupVersion,membershipVersion
       ) AS (
-        SELECT g.share_id,'direct',g.version,NULL,NULL,NULL
+        SELECT g.share_id,'direct',g.version,NULL,NULL,NULL,NULL
         FROM share_grants g JOIN shares direct ON direct.id=g.share_id
         WHERE g.user_id=? AND g.disabled_at IS NULL AND g.version=direct.version
         UNION
-        SELECT gg.share_id,'group',NULL,sg.id,sg.name,gm.version
+        SELECT gg.share_id,'group',NULL,sg.id,sg.name,sg.version,gm.version
         FROM share_group_grants gg
         JOIN share_groups sg ON sg.id=gg.group_id AND sg.disabled_at IS NULL
         JOIN shares grouped ON grouped.id=gg.share_id AND grouped.owner_id=sg.owner_id
@@ -1114,12 +1131,12 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
         JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
       ), live_share(
         shareId,shareVersion,mountName,rootId,spaceId,ownerId,rootName,rootKind,rootRevision,
-        ownerEmail,provenanceKind,recipientVersion,groupId,groupName,membershipVersion,
+        ownerEmail,provenanceKind,recipientVersion,groupId,groupName,groupVersion,membershipVersion,
         depth,path,currentId,currentKind,parentId,deletedAt
       ) AS (
         SELECT sh.id,sh.version,sh.mount_name,n.id,n.space_id,n.owner_id,n.name,n.kind,n.revision,
           owner.email,recipient.provenanceKind,recipient.recipientVersion,recipient.groupId,
-          recipient.groupName,recipient.membershipVersion,
+          recipient.groupName,recipient.groupVersion,recipient.membershipVersion,
           0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
         FROM recipient_share recipient
         JOIN shares sh ON sh.id=recipient.shareId
@@ -1134,7 +1151,7 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
         UNION ALL
         SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
           a.rootKind,a.rootRevision,a.ownerEmail,a.provenanceKind,a.recipientVersion,
-          a.groupId,a.groupName,a.membershipVersion,a.depth+1,a.path||p.id||'/',
+          a.groupId,a.groupName,a.groupVersion,a.membershipVersion,a.depth+1,a.path||p.id||'/',
           p.id,p.kind,p.parent_id,p.deleted_at
         FROM live_share a JOIN nodes p ON p.id=a.parentId
         WHERE a.depth<64 AND p.space_id=a.spaceId AND p.owner_id=a.ownerId
@@ -1142,7 +1159,7 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       )
       SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
         a.rootKind,a.rootRevision,a.ownerEmail,a.provenanceKind,a.recipientVersion,
-        a.groupId,a.groupName,a.membershipVersion,
+        a.groupId,a.groupName,a.groupVersion,a.membershipVersion,
         (SELECT json_group_array(action) FROM (
           SELECT action FROM share_actions WHERE share_id=a.shareId ORDER BY action
         )) AS actions
@@ -1170,6 +1187,7 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       recipientVersion: number | null;
       groupId: string | null;
       groupName: string | null;
+      groupVersion: number | null;
       membershipVersion: number | null;
       actions: string;
     };
@@ -1194,6 +1212,7 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
               kind: "group" as const,
               groupId: row.groupId!,
               groupName: row.groupName!,
+              groupVersion: row.groupVersion!,
               membershipVersion: row.membershipVersion!,
             }
           : {

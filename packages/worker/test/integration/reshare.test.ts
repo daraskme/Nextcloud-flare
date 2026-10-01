@@ -11,6 +11,7 @@ import {
   createInternalShare,
   disableShare,
   listSharedWithMe,
+  readShare,
   updateInternalShare,
 } from "../../src/services/shares";
 import { foundationFixture } from "../fixtures/foundation";
@@ -425,10 +426,10 @@ it("preserves mount names on rename and invalidates descendants on root moves an
     rootNodeId: f.owner.ids.folder,
     spaceId: f.owner.ids.space,
     recipientEmail: f.carolEmail,
-    actions: ["read", "download"],
+    actions: ["read", "download", "create", "edit"],
     resharePolicy: {
       enabled: true,
-      actions: ["read", "download"],
+      actions: ["read", "download", "create", "edit"],
       maxDepth: 2,
       maxFanout: 2,
     },
@@ -441,7 +442,16 @@ it("preserves mount names on rename and invalidates descendants on root moves an
     actions: ["read"],
     idempotencyKey: "lifecycle-child",
   });
-  await updateInternalShare(mutationEnv(), f.ownerSession, source2.id, { actions: ["read"] });
+  await updateInternalShare(mutationEnv(), f.ownerSession, source2.id, {
+    actions: ["read", "create"],
+  });
+  expect(await readShare(env.DB, f.ownerSession, source2.id)).toMatchObject({
+    actions: ["read", "create"],
+    resharePolicy: {
+      actions: ["read", "create"],
+      version: 2,
+    },
+  });
   expect(await listSharedWithMe(env.DB, f.daveSession)).toEqual([]);
   await expect(disableShare(mutationEnv(), f.carolSession, child2.id)).rejects.toThrow(
     "share_not_found",

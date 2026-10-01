@@ -93,22 +93,22 @@ it("uses private CSRF mutations for direct and group internal shares", async () 
     "folder",
     "space",
     { email: "member@example.invalid" },
-    ["read", "download"],
+    ["read", "download", "create", "edit"],
     30,
     {
       enabled: true,
-      actions: ["read"],
+      actions: ["read", "create", "edit"],
       maxDepth: 2,
       maxFanout: 5,
       ttlDays: 7,
     },
   );
   await api.createInternalShare("folder", "space", { groupId: "group" }, ["read"], 7);
-  await api.updateInternalShare("sh_group", { actions: ["read"] });
+  await api.updateInternalShare("sh_group", { actions: ["read", "create", "edit"] });
   await api.updateInternalShare("sh_group", {
     resharePolicy: {
       enabled: true,
-      actions: ["read"],
+      actions: ["read", "create"],
       maxDepth: 3,
       maxFanout: 8,
     },
@@ -124,11 +124,11 @@ it("uses private CSRF mutations for direct and group internal shares", async () 
     rootNodeId: "folder",
     spaceId: "space",
     recipientEmail: "member@example.invalid",
-    actions: ["read", "download"],
+    actions: ["read", "download", "create", "edit"],
     ttlDays: 30,
     resharePolicy: {
       enabled: true,
-      actions: ["read"],
+      actions: ["read", "create", "edit"],
       maxDepth: 2,
       maxFanout: 5,
       ttlDays: 7,
@@ -142,11 +142,13 @@ it("uses private CSRF mutations for direct and group internal shares", async () 
     actions: ["read"],
     ttlDays: 7,
   });
-  expect(JSON.parse(fetcher.mock.calls[3]![1].body)).toEqual({ actions: ["read"] });
+  expect(JSON.parse(fetcher.mock.calls[3]![1].body)).toEqual({
+    actions: ["read", "create", "edit"],
+  });
   expect(JSON.parse(fetcher.mock.calls[4]![1].body)).toEqual({
     resharePolicy: {
       enabled: true,
-      actions: ["read"],
+      actions: ["read", "create"],
       maxDepth: 3,
       maxFanout: 8,
     },

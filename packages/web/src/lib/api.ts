@@ -182,7 +182,7 @@ export interface CreatedLinkShare extends LinkShare {
   secret: string;
   shareUrl: string;
 }
-export type InternalShareAction = "read" | "download";
+export type InternalShareAction = "read" | "download" | "create" | "edit";
 export interface InternalShareResharePolicy {
   enabled: boolean;
   actions: readonly InternalShareAction[];
@@ -250,6 +250,7 @@ export interface SharedMount {
         kind: "group";
         groupId: string;
         groupName: string;
+        groupVersion: number;
         membershipVersion: number;
       };
 }
