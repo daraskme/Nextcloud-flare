@@ -25,7 +25,9 @@
     "backup": "node scripts/backup.mjs",
     "backup:drill": "node scripts/backup-drill.mjs",
     "backup:operator-drill": "node scripts/backup-operator-drill.mjs",
-    "backup:run-drill": "node scripts/backup-run-drill.mjs"
+    "backup:run-drill": "node scripts/backup-run-drill.mjs",
+    "ops:health": "node scripts/ops-health.mjs",
+    "ops:operator-drill": "node scripts/ops-operator-drill.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",
