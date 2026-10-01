@@ -66,9 +66,9 @@ export function PrivateAudio({ account }: { account: Account }) {
     return Math.min(Math.round(element.currentTime * 1_000), Math.round(element.duration * 1_000));
   };
 
-  const flush = (positionMs?: number) => {
+  const flush = async (positionMs?: number) => {
     const selected = positionMs ?? currentPositionMs();
-    if (selected !== null) void writer.current?.flush(selected).catch(() => undefined);
+    if (selected !== null) await writer.current?.flush(selected);
   };
 
   const release = () => {
@@ -81,64 +81,15 @@ export function PrivateAudio({ account }: { account: Account }) {
     writer.current = null;
   };
 
-  useEffect(() => {
-    const element = audio.current;
-    if (!element) return;
-    const update = () => {
-      setPosition(element.currentTime);
-      setDuration(Number.isFinite(element.duration) ? element.duration : 0);
-      const selected = currentPositionMs();
-      if (selected !== null) writer.current?.schedule(selected);
-    };
-    const paused = () => {
-      setPlaying(false);
-      flush();
-    };
-    const started = () => setPlaying(true);
-    const loaded = () => {
-      const state = resume.current;
-      const track = activeRef.current;
-      if (
-        !state ||
-        !track ||
-        state.blobId !== track.currentBlobId ||
-        !Number.isFinite(element.duration) ||
-        element.duration <= 0
-      )
-        return;
-      const seconds = Math.min(state.positionMs / 1_000, element.duration);
-      if (seconds > 0 && seconds < element.duration) element.currentTime = seconds;
-      resume.current = null;
-    };
-    const ended = () => {
-      setPlaying(false);
-      flush(0);
-    };
-    const failed = () => {
-      setPlaying(false);
-      setPlayerError("このトラックを再生できませんでした。");
-    };
-    element.addEventListener("timeupdate", update);
-    element.addEventListener("durationchange", update);
-    element.addEventListener("loadedmetadata", loaded);
-    element.addEventListener("pause", paused);
-    element.addEventListener("play", started);
-    element.addEventListener("ended", ended);
-    element.addEventListener("error", failed);
-    return () => {
-      flush();
+  useEffect(
+    () => () => {
+      void flush().catch(() => undefined);
       release();
-      element.removeEventListener("timeupdate", update);
-      element.removeEventListener("durationchange", update);
-      element.removeEventListener("loadedmetadata", loaded);
-      element.removeEventListener("pause", paused);
-      element.removeEventListener("play", started);
-      element.removeEventListener("ended", ended);
-      element.removeEventListener("error", failed);
-    };
-  }, []);
+    },
+    [],
+  );
 
-  const select = async (track: AudioTrack) => {
+  const select = async (track: AudioTrack, persistCurrent = true) => {
     const element = audio.current;
     if (!element) return;
     if (activeId === track.id && element.src) {
@@ -146,7 +97,7 @@ export function PrivateAudio({ account }: { account: Account }) {
       else element.pause();
       return;
     }
-    flush();
+    if (persistCurrent) await flush().catch(() => undefined);
     release();
     const selected = ++selection.current;
     activeRef.current = track;
@@ -198,9 +149,9 @@ export function PrivateAudio({ account }: { account: Account }) {
       if (!controller.signal.aborted && selected === selection.current) setPreparing(false);
     }
   };
-  const move = (offset: number) => {
+  const move = (offset: number, persistCurrent = true) => {
     const next = tracks[activeIndex + offset];
-    if (next) void select(next);
+    if (next) void select(next, persistCurrent);
   };
 
   if (query.isPending)
@@ -233,7 +184,55 @@ export function PrivateAudio({ account }: { account: Account }) {
 
   return (
     <>
-      <audio ref={audio} preload="metadata" onEnded={() => move(1)}>
+      <audio
+        ref={audio}
+        preload="metadata"
+        onTimeUpdate={(event) => {
+          const element = event.currentTarget;
+          setPosition(element.currentTime);
+          setDuration(Number.isFinite(element.duration) ? element.duration : 0);
+          const selected = currentPositionMs();
+          if (selected !== null) writer.current?.schedule(selected);
+        }}
+        onDurationChange={(event) => {
+          const element = event.currentTarget;
+          setPosition(element.currentTime);
+          setDuration(Number.isFinite(element.duration) ? element.duration : 0);
+        }}
+        onLoadedMetadata={(event) => {
+          const state = resume.current;
+          const track = activeRef.current;
+          const element = event.currentTarget;
+          if (
+            !state ||
+            !track ||
+            state.blobId !== track.currentBlobId ||
+            !Number.isFinite(element.duration) ||
+            element.duration <= 0
+          )
+            return;
+          const seconds = Math.min(state.positionMs / 1_000, element.duration);
+          if (seconds > 0 && seconds < element.duration) element.currentTime = seconds;
+          setPosition(element.currentTime);
+          setDuration(element.duration);
+          resume.current = null;
+        }}
+        onPause={(event) => {
+          setPlaying(false);
+          if (!event.currentTarget.ended) void flush().catch(() => undefined);
+        }}
+        onPlay={() => setPlaying(true)}
+        onEnded={() => {
+          setPlaying(false);
+          void flush(0)
+            .catch(() => undefined)
+            .then(() => move(1, false));
+        }}
+        onError={() => {
+          setPlaying(false);
+          setPlayerError("このトラックを再生できませんでした。");
+        }}
+      >
         <track kind="captions" />
       </audio>
       <div className="media-toolbar">

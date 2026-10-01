@@ -101,6 +101,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
   const chapterRef = useRef(0);
   const restoredBlob = useRef<string | null>(null);
   const restoredProgress = useRef(0);
+  const latestReading = useRef({ spineIndex: 0, progress: 0 });
   const writer = useRef<DebouncedWriter<{ spineIndex: number; progress: number }> | null>(null);
 
   const frameProgress = () => {
@@ -111,26 +112,28 @@ export function PrivateBookshelf({ account }: { account: Account }) {
   };
 
   const flushReading = () => {
-    void writer.current
-      ?.flush({ spineIndex: chapterRef.current, progress: frameProgress() })
-      .catch(() => undefined);
+    const position = {
+      spineIndex: chapterRef.current,
+      progress: frame.current ? frameProgress() : latestReading.current.progress,
+    };
+    latestReading.current = position;
+    void writer.current?.flush(position).catch(() => undefined);
   };
 
   const changeChapter = (next: number) => {
     flushReading();
     chapterRef.current = next;
     restoredProgress.current = 0;
+    latestReading.current = { spineIndex: next, progress: 0 };
     setChapter(next);
-    writer.current?.schedule({ spineIndex: next, progress: 0 });
+    writer.current?.schedule(latestReading.current);
   };
 
   useEffect(() => {
-    flushReading();
-    writer.current?.clear();
-    writer.current = null;
     chapterRef.current = 0;
     restoredBlob.current = null;
     restoredProgress.current = 0;
+    latestReading.current = { spineIndex: 0, progress: 0 };
     setChapter(0);
     setChapterContent("");
     setChapterError("");
@@ -154,6 +157,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
     restoredBlob.current = book.currentBlobId;
     restoredProgress.current = state.position.progress;
     chapterRef.current = state.position.spineIndex;
+    latestReading.current = state.position;
     setChapter(state.position.spineIndex);
   }, [publication.data, readingState.data, selected]);
 
@@ -167,9 +171,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
     );
     writer.current = active;
     return () => {
-      void active
-        .flush({ spineIndex: chapterRef.current, progress: frameProgress() })
-        .catch(() => undefined);
+      void active.flush(latestReading.current).catch(() => undefined);
       active.clear();
       if (writer.current === active) writer.current = null;
     };
@@ -231,8 +233,6 @@ export function PrivateBookshelf({ account }: { account: Account }) {
 
   useEffect(
     () => () => {
-      flushReading();
-      writer.current?.clear();
       if (activeSession.current) void activeSession.current.cancel().catch(() => undefined);
     },
     [],
@@ -300,10 +300,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
             <button
               className="book-card"
               key={item.id}
-              onClick={() => {
-                flushReading();
-                setSelected(item);
-              }}
+              onClick={() => setSelected(item)}
               aria-label={`${item.name}を開く`}
             >
               <span className="book-cover">
@@ -363,10 +360,7 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                 variant="ghost"
                 size="icon"
                 aria-label="リーダーを閉じる"
-                onClick={() => {
-                  flushReading();
-                  setSelected(null);
-                }}
+                onClick={() => setSelected(null)}
               >
                 <X size={21} />
               </Button>
@@ -457,10 +451,11 @@ export function PrivateBookshelf({ account }: { account: Account }) {
                         event.currentTarget.contentWindow?.addEventListener(
                           "scroll",
                           () => {
-                            writer.current?.schedule({
+                            latestReading.current = {
                               spineIndex: chapterRef.current,
                               progress: frameProgress(),
-                            });
+                            };
+                            writer.current?.schedule(latestReading.current);
                           },
                           { passive: true },
                         );
