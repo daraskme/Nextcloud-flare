@@ -255,7 +255,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
                   WHERE gg.share_id=sh.id
                 )
               )))))
-        OR (p.kind='link_share' AND ?6 IN ('node.read','library.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
+        OR (p.kind='link_share' AND ?6 IN ('node.read','gallery.read','audio.read','library.read','node.create','node.rename','node.props.write','node.content.write') AND EXISTS(
           SELECT 1 FROM credentials c JOIN share_sessions ss ON ss.id=c.share_session_id
             JOIN live_shares sh ON sh.id=ss.share_id
             WHERE c.id=p.credential_id AND c.kind='share' AND sh.kind='link'

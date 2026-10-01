@@ -766,6 +766,17 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
       sql: "INSERT INTO credentials(id,kind,share_session_id) VALUES(?,'share',?)",
       values: [credentialId, unlockId],
     },
+    {
+      sql: "UPDATE blobs SET mime_sniffed='video/mp4' WHERE id=?",
+      values: [f.ids.blob],
+    },
+    {
+      sql: `INSERT INTO node_media(
+        node_id,blob_id,generator_version,width,height,duration_ms,container,video_codec,
+        codec_profile,codec_level,codec_tier,bit_depth
+      ) VALUES(?,?,?,1920,1080,9000,'mp4','av1',0,8,'M',10)`,
+      values: [f.ids.file, f.ids.blob, "video-av1-metadata-v1"],
+    },
   ]);
   const principal = {
     kind: "link_share" as const,
@@ -776,24 +787,13 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
   };
   let issued;
   try {
-    await expect(
-      issueContentTicket(
-        mutationEnv(),
-        env.BLOBS,
-        tokens,
-        principal,
-        [{ spaceId: f.ids.space, nodeId: f.ids.file }],
-        "track",
-        now + 300_000,
-      ),
-    ).rejects.toThrow("invalid_content_ticket_request");
     issued = await issueContentTicket(
       mutationEnv(),
       env.BLOBS,
       tokens,
       principal,
       [{ spaceId: f.ids.space, nodeId: f.ids.file }],
-      "content",
+      "track",
       now + 300_000,
     );
     expect(issued.budgetId).toBe(`s:${shareId}:c:${unlockId}`);
@@ -807,7 +807,7 @@ it("issues an anonymous-share ticket bound to its unlock session", async () => {
           accepted.setCookie.split(";", 1)[0] ?? "",
           f.ids.space,
           f.ids.file,
-          "content",
+          "track",
         )
       ).budgetId,
     ).toBe(issued.budgetId);

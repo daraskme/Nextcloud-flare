@@ -175,6 +175,8 @@ export const ROUTE_BINDINGS = [
   ...bindings(appShare, "bound", "public-share", [
     "app GET /api/v1/public/shares/:shareId",
     "app GET /api/v1/public/shares/:shareId/children/:nodeId",
+    "app GET /api/v1/public/shares/:shareId/gallery",
+    "app GET /api/v1/public/shares/:shareId/tracks",
   ]),
   ...bindings(appPublicForm, "bound", "public-share", [
     "app POST /api/v1/public/shares/:shareId/unlock",
@@ -242,8 +244,6 @@ export const ROUTE_BINDINGS = [
     "app HEAD /api/v1/public/shares/:shareId/content/:nodeId",
     "app GET /api/v1/public/shares/:shareId/thumb/:nodeId",
     "app HEAD /api/v1/public/shares/:shareId/thumb/:nodeId",
-    "app GET /api/v1/public/shares/:shareId/gallery",
-    "app GET /api/v1/public/shares/:shareId/tracks",
     "app GET /api/v1/public/shares/:shareId/library/:nodeId",
     "app GET /api/v1/public/shares/:shareId/library/:nodeId/pages/:page",
     "app HEAD /api/v1/public/shares/:shareId/library/:nodeId/pages/:page",

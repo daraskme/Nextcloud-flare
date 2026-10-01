@@ -61,6 +61,14 @@ function galleryTruncationStatement(recursive: boolean) {
     SELECT CASE WHEN COUNT(*)>=${GALLERY_CANDIDATE_LIMIT} THEN 1 ELSE 0 END AS truncated FROM scope`;
 }
 
+function mediaSubjectId(principal: Principal): string | null {
+  return principal.kind === "user"
+    ? principal.user_id
+    : principal.kind === "link_share"
+      ? principal.share_id
+      : null;
+}
+
 export async function listGallery(
   db: D1Database,
   principal: Principal,
@@ -69,8 +77,8 @@ export async function listGallery(
   tokens: GalleryCursorTokens,
   cursor?: string,
 ): Promise<GalleryPage> {
-  if (principal.kind !== "user" || !/^[A-Za-z0-9_-]{1,128}$/.test(rootId))
-    throw new Error("gallery_unavailable");
+  const subjectId = mediaSubjectId(principal);
+  if (!subjectId || !/^[A-Za-z0-9_-]{1,128}$/.test(rootId)) throw new Error("gallery_unavailable");
   const spaceId = await primary(db)
     .prepare("SELECT space_id FROM nodes WHERE id=?")
     .bind(rootId)
@@ -94,7 +102,7 @@ export async function listGallery(
       claim.rootId !== rootId ||
       claim.spaceId !== spaceId ||
       claim.ownerId !== authorized.node.owner_id ||
-      claim.userId !== principal.user_id ||
+      claim.userId !== subjectId ||
       claim.credentialId !== principal.credential_id ||
       claim.epoch !== principal.epoch ||
       claim.generation !== authorized.node.tree_generation ||
@@ -144,7 +152,7 @@ export async function listGallery(
             rootId,
             spaceId,
             ownerId: authorized.node.owner_id,
-            userId: principal.user_id,
+            userId: subjectId,
             credentialId: principal.credential_id,
             epoch: principal.epoch,
             generation: authorized.node.tree_generation,

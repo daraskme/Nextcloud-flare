@@ -1,6 +1,8 @@
 import { problem } from "@next-cloud-flare/shared/errors";
+import { AudioCursorTokens } from "../auth/audioCursor";
 import type { ContentTokens } from "../auth/contentTokens";
 import type { CsrfTokens } from "../auth/csrf";
+import { GalleryCursorTokens } from "../auth/galleryCursor";
 import { KdfUnavailableError } from "../auth/kdf";
 import type { NodeCursorTokens } from "../auth/nodeCursor";
 import type { SharePasswordPepperRing } from "../auth/sharePassword";
@@ -15,8 +17,10 @@ import {
 } from "../auth/shareSession";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
+import { listAudio } from "../services/audio";
 import { issueContentTicket } from "../services/contentTicket";
 import { cancelContentTicket } from "../services/contentTicketCancel";
+import { listGallery } from "../services/gallery";
 import { listNodeChildren, readNode } from "../services/nodeRead";
 import { readContentTicketRequest } from "./contentTickets";
 import { hasEmptyBody } from "./emptyBody";
@@ -25,6 +29,8 @@ import { handlePublicUploadHttp, publicUploadRoute } from "./publicUploads";
 const ID = "[A-Za-z0-9_-]{1,128}";
 const SHARE = new RegExp(`^/api/v1/public/shares/(${ID})$`);
 const CHILDREN = new RegExp(`^/api/v1/public/shares/(${ID})/children/(${ID})$`);
+const GALLERY = new RegExp(`^/api/v1/public/shares/(${ID})/gallery$`);
+const TRACKS = new RegExp(`^/api/v1/public/shares/(${ID})/tracks$`);
 const UNLOCK = new RegExp(`^/api/v1/public/shares/(${ID})/unlock$`);
 const LOGOUT = new RegExp(`^/api/v1/public/shares/(${ID})/logout$`);
 const CSRF = new RegExp(`^/api/v1/public/shares/(${ID})/csrf$`);
@@ -55,7 +61,8 @@ class SharePasswordRateLimitError extends Error {
 export function publicShareApiRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
   return (
-    (request.method === "GET" && (SHARE.test(path) || CHILDREN.test(path))) ||
+    (request.method === "GET" &&
+      (SHARE.test(path) || CHILDREN.test(path) || GALLERY.test(path) || TRACKS.test(path))) ||
     (request.method === "POST" &&
       (UNLOCK.test(path) ||
         LOGOUT.test(path) ||
@@ -118,6 +125,32 @@ function sessionCsrf(session: Awaited<ReturnType<typeof authenticateShareSession
 
 function nodeFailure(error: unknown): Response {
   return error instanceof Error && error.message === "invalid_node_cursor"
+    ? problem(400, "bad_request")
+    : problem(404, "not_found");
+}
+
+function mediaQuery(url: URL): { recursive: boolean; cursor?: string } | null {
+  if ([...url.searchParams.keys()].some((key) => key !== "recursive" && key !== "cursor"))
+    return null;
+  const recursive = url.searchParams.getAll("recursive");
+  const cursors = url.searchParams.getAll("cursor");
+  if (
+    recursive.length > 1 ||
+    cursors.length > 1 ||
+    (recursive.length === 1 && recursive[0] !== "0" && recursive[0] !== "1")
+  )
+    return null;
+  const cursor = cursors[0];
+  if (cursor !== undefined && (cursor.length === 0 || cursor.length > 4096)) return null;
+  return {
+    recursive: recursive[0] === "1",
+    ...(cursor === undefined ? {} : { cursor }),
+  };
+}
+
+function mediaFailure(error: unknown): Response {
+  return error instanceof Error &&
+    (error.message === "invalid_gallery_cursor" || error.message === "invalid_audio_cursor")
     ? problem(400, "bad_request")
     : problem(404, "not_found");
 }
@@ -200,6 +233,8 @@ export async function handlePublicShareHttp(
   }
   const shareMatch = request.method === "GET" ? SHARE.exec(url.pathname) : null;
   const childrenMatch = request.method === "GET" ? CHILDREN.exec(url.pathname) : null;
+  const galleryMatch = request.method === "GET" ? GALLERY.exec(url.pathname) : null;
+  const tracksMatch = request.method === "GET" ? TRACKS.exec(url.pathname) : null;
   const csrfMatch = request.method === "POST" ? CSRF.exec(url.pathname) : null;
   const logoutMatch = request.method === "POST" ? LOGOUT.exec(url.pathname) : null;
   const ticketsMatch = request.method === "POST" ? TICKETS.exec(url.pathname) : null;
@@ -211,6 +246,8 @@ export async function handlePublicShareHttp(
   const shareId =
     shareMatch?.[1] ??
     childrenMatch?.[1] ??
+    galleryMatch?.[1] ??
+    tracksMatch?.[1] ??
     csrfMatch?.[1] ??
     logoutMatch?.[1] ??
     ticketsMatch?.[1] ??
@@ -264,7 +301,12 @@ export async function handlePublicShareHttp(
   const principal = sharePrincipal(session);
   if (
     session.kind === "upload_only" &&
-    (childrenMatch || ticketMatch || ticketsMatch || contentSessionMatch)
+    (childrenMatch ||
+      galleryMatch ||
+      tracksMatch ||
+      ticketMatch ||
+      ticketsMatch ||
+      contentSessionMatch)
   )
     return problem(404, "not_found");
   if (ticketMatch) {
@@ -301,7 +343,7 @@ export async function handlePublicShareHttp(
     let body;
     try {
       body = await readContentTicketRequest(request);
-      if (body.share || !["content", "thumb", "zip"].includes(body.purpose))
+      if (body.share || !["content", "thumb", "zip", "track"].includes(body.purpose))
         throw new Error("invalid_ticket_body");
     } catch {
       return problem(400, "bad_request");
@@ -364,6 +406,33 @@ export async function handlePublicShareHttp(
       );
     } catch (error) {
       return nodeFailure(error);
+    }
+  }
+  if (galleryMatch || tracksMatch) {
+    if (!dependencies.cursors) return problem(503, "not_ready");
+    const query = mediaQuery(url);
+    if (!query) return problem(400, "bad_request");
+    try {
+      const page = galleryMatch
+        ? await listGallery(
+            env.DB,
+            principal,
+            session.rootNodeId,
+            query.recursive,
+            new GalleryCursorTokens(dependencies.cursors.ring, dependencies.cursors.now),
+            query.cursor,
+          )
+        : await listAudio(
+            env.DB,
+            principal,
+            session.rootNodeId,
+            query.recursive,
+            new AudioCursorTokens(dependencies.cursors.ring, dependencies.cursors.now),
+            query.cursor,
+          );
+      return Response.json(page, { headers: HEADERS });
+    } catch (error) {
+      return mediaFailure(error);
     }
   }
   if (!childrenMatch) return problem(404, "not_found");

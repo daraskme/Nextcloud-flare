@@ -109,7 +109,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 - 残るoperationの認可tuple、terminal lookup、未接続Outbox event kindと大規模非同期tree処理。
 - 残るmedia/archive metadata parser、検索索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)、名前検索APIは[SEARCH](SEARCH.md)へ接続済み。
 - reshare、shared DAV編集、既存internal share管理UI。direct-user/group内部共有とread-only shared DAV、公開linkの読み取り/upload-onlyは接続済み。
-- public ZIP/media/library、Bookshelf/reader・video UI。private ZIP/EPUB、audio/video track、thumbnail derivativeとprivate Gallery/Audio UIは接続済み。
+- public ZIP/library、Bookshelf/reader・video UI。public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、private ZIP/EPUB、audio/video track、thumbnail derivativeとprivate Gallery/Audio UIは接続済み。
 - バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 

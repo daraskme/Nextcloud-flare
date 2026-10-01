@@ -96,7 +96,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
 - LockDO namespace mutation の成功テストは test-only admission と実 DO SQLite/D1 を組み合わせる。実 ControlDO による稼働許可を実証したものではない。
 - Queue handler と Cron は ControlDO/D1 admission gate を通過した場合に outbox を処理する。ControlDO が閉じている間は Queue を retry し、Cron は送信しない。実 Queue ack/DLQ の配信試験は未完了。
-- private/public upload、multipart closure、Files UI、private Gallery/Audio、private ZIP/EPUB、audio/video track、direct-user/group shareとread-only shared DAVは接続済み。public ZIP/media/library、Bookshelf/reader・video UI、全operation/route会計、DAV実client gate、運用・releaseは未完了。実環境のControlDO admission/Access/署名鍵設定も未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
+- private/public upload、multipart closure、Files UI、private Gallery/Audio、private ZIP/EPUB、public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、audio/video track、direct-user/group shareとread-only shared DAVは接続済み。public ZIP/library、Bookshelf/reader・video UI、全operation/route会計、DAV実client gate、運用・releaseは未完了。実環境のControlDO admission/Access/署名鍵設定も未完了。ローカルbrowser fixtureは実ControlDOで受付を再開する。
 - AVIF/AV1/Opus は形式判定と対応projection/原本配信まで。実codec変換、video UI、複数browserでの実ファイル再生試験は未接続。
 - Cloudflare staging inventory/Access/MFA・実 Images codec/費用・実 D1/Queue・backup復旧等の gate は未完了。ローカル成功で代替しない。
 - private app route のリモート設定は `ACCESS_ISSUER`、`ACCESS_USER_AUDIENCE`、`ACCESS_SERVICE_AUDIENCE`、`BOOTSTRAP_OWNER_EMAILS`/`BOOTSTRAP_OWNER_IDENTITIES`、`BOOTSTRAP_QUOTA_BYTES`、`CSRF_PRIVATE_KEYS`/`CSRF_PUBLIC_KEYS` と各 active kid、content ticket/Cookie の kid ring。local `wrangler.jsonc` に秘密を置かず、未設定時は 503。

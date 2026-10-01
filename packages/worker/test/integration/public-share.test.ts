@@ -21,6 +21,9 @@ import {
 import { shareSecretDigest } from "../../src/auth/shareSession";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
+import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
+import { IMAGE_METADATA_GENERATOR } from "../../src/media/images/metadata";
+import { VIDEO_METADATA_GENERATOR } from "../../src/media/video";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
@@ -284,6 +287,112 @@ it("unlocks a capability into a share-bound cookie and reads only the selected t
     dependencies,
   );
   expect(wrongShare.status).toBe(401);
+});
+
+it("lists current public gallery and audio projections only while read access remains active", async () => {
+  const f = await fixture();
+  const now = Date.now();
+  const audioBlob = crypto.randomUUID();
+  const audioNode = crypto.randomUUID();
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE blobs SET mime_sniffed='image/jpeg' WHERE id=?",
+      values: [f.owner.ids.blob],
+    },
+    {
+      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,'image-etag',?)",
+      values: [f.owner.ids.blob, now],
+    },
+    {
+      sql: "INSERT INTO node_media(node_id,blob_id,generator_version,width,height) VALUES(?,?,?,?,?)",
+      values: [f.owner.ids.file, f.owner.ids.blob, IMAGE_METADATA_GENERATOR, 1600, 900],
+    },
+    {
+      sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,mime_sniffed,created_at)
+        VALUES(?,?,?,12,'audio-etag','committed','audio/mpeg',?)`,
+      values: [audioBlob, f.owner.ids.user, `u/${f.owner.ids.user}/b/${audioBlob}`, now],
+    },
+    {
+      sql: `INSERT INTO nodes
+        (id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at)
+        VALUES(?,?,?,?,'Track.mp3','track.mp3','file',?,?,?)`,
+      values: [
+        audioNode,
+        f.owner.ids.space,
+        f.owner.ids.user,
+        f.owner.ids.folder,
+        audioBlob,
+        now,
+        now,
+      ],
+    },
+    {
+      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,12,'audio-etag',?)",
+      values: [audioBlob, now],
+    },
+    {
+      sql: `INSERT INTO node_audio
+        (node_id,blob_id,generator_version,duration_ms,codec,title_extracted)
+        VALUES(?,?,?,185000,'mp3','Track title')`,
+      values: [audioNode, audioBlob, AUDIO_GENERATOR_VERSION],
+    },
+  ]);
+  const unlocked = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret),
+    shareEnv(),
+    1,
+    dependencies,
+  );
+  const cookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  const gallery = await handlePublicShareHttp(
+    sessionRequest(`/api/v1/public/shares/${f.shareId}/gallery?recursive=1`, cookie),
+    shareEnv(),
+    1,
+    dependencies,
+  );
+  expect(gallery.status).toBe(200);
+  expect(await gallery.json()).toMatchObject({
+    rootId: f.owner.ids.folder,
+    recursive: true,
+    items: [{ id: f.owner.ids.file, mime: "image/jpeg", width: 1600, height: 900 }],
+  });
+  const tracks = await handlePublicShareHttp(
+    sessionRequest(`/api/v1/public/shares/${f.shareId}/tracks?recursive=1`, cookie),
+    shareEnv(),
+    1,
+    dependencies,
+  );
+  expect(tracks.status).toBe(200);
+  expect(await tracks.json()).toMatchObject({
+    rootId: f.owner.ids.folder,
+    recursive: true,
+    items: [{ id: audioNode, mime: "audio/mpeg", title: "Track title" }],
+  });
+  expect(
+    (
+      await handlePublicShareHttp(
+        sessionRequest(`/api/v1/public/shares/${f.shareId}/gallery?extra=1`, cookie),
+        shareEnv(),
+        1,
+        dependencies,
+      )
+    ).status,
+  ).toBe(400);
+  await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='read'")
+    .bind(f.shareId)
+    .run();
+  for (const media of ["gallery", "tracks"]) {
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}/${media}?recursive=1`, cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+    ).toBe(401);
+  }
 });
 
 it("requires the current password and applies share and IP limits only before password KDF", async () => {
@@ -844,9 +953,208 @@ it("issues, redeems, reuses, and cancels budgeted public content and ZIP tickets
   }
 });
 
-it("does not expose ZIP tickets to upload-only share sessions", async () => {
+it("streams public audio and video track tickets with current projection and budget fences", async () => {
+  const f = await fixture();
+  const now = Date.now();
+  const videoKey = `u/${f.owner.ids.user}/b/${f.owner.ids.blob}`;
+  const videoObject = await env.BLOBS.put(videoKey, "abc");
+  if (!videoObject) throw new Error("fixture_video_missing");
+  const audioBlob = crypto.randomUUID();
+  const audioNode = crypto.randomUUID();
+  const audioKey = `u/${f.owner.ids.user}/b/${audioBlob}`;
+  const audioObject = await env.BLOBS.put(audioKey, "audio");
+  if (!audioObject) throw new Error("fixture_audio_missing");
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE blobs SET mime_sniffed='video/mp4' WHERE id=?",
+      values: [f.owner.ids.blob],
+    },
+    {
+      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,?)",
+      values: [f.owner.ids.blob, videoObject.size, videoObject.etag, now],
+    },
+    {
+      sql: "INSERT INTO node_media(node_id,blob_id,generator_version,width,height) VALUES(?,?,?,1920,1080)",
+      values: [f.owner.ids.file, f.owner.ids.blob, "stale-video-generator"],
+    },
+    {
+      sql: `INSERT INTO blobs(id,owner_id,r2_key,size,content_etag,state,mime_sniffed,created_at)
+        VALUES(?,?,?,?,?,'committed','audio/mpeg',?)`,
+      values: [audioBlob, f.owner.ids.user, audioKey, audioObject.size, `"b-${audioBlob}"`, now],
+    },
+    {
+      sql: `INSERT INTO nodes
+        (id,space_id,owner_id,parent_id,name,name_ci,kind,current_blob_id,created_at,updated_at)
+        VALUES(?,?,?,?,'Track.mp3','track.mp3','file',?,?,?)`,
+      values: [
+        audioNode,
+        f.owner.ids.space,
+        f.owner.ids.user,
+        f.owner.ids.folder,
+        audioBlob,
+        now,
+        now,
+      ],
+    },
+    {
+      sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,?)",
+      values: [audioBlob, audioObject.size, audioObject.etag, now],
+    },
+    {
+      sql: `INSERT INTO node_audio
+        (node_id,blob_id,generator_version,duration_ms,codec,title_extracted)
+        VALUES(?,?,?,3000,'mp3','Track title')`,
+      values: [audioNode, audioBlob, AUDIO_GENERATOR_VERSION],
+    },
+  ]);
+  const issuedTargetSets: string[] = [];
+  try {
+    const unlocked = await handlePublicShareHttp(
+      unlockRequest(f.shareId, f.secret),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    const shareCookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const csrfResponse = await handlePublicShareHttp(
+      sessionRequest(`/api/v1/public/shares/${f.shareId}/csrf`, shareCookie, {
+        method: "POST",
+        headers: { Origin: origin, "Sec-Fetch-Site": "same-origin" },
+      }),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    const { token } = (await csrfResponse.json()) as { token: string };
+    const issue = (nodeId: string) =>
+      handlePublicShareHttp(
+        sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets`, shareCookie, {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Sec-Fetch-Site": "same-origin",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+          },
+          body: JSON.stringify({
+            targets: [{ spaceId: f.owner.ids.space, nodeId }],
+            purpose: "track",
+            ttlSeconds: 300,
+          }),
+        }),
+        shareEnv(),
+        1,
+        dependencies,
+      );
+    expect((await issue(f.owner.ids.file)).status).toBe(404);
+    await env.DB.prepare(`UPDATE node_media SET
+      generator_version=?,duration_ms=9000,container='mp4',video_codec='av1',audio_codec='opus',
+      codec_profile=0,codec_level=8,codec_tier='M',bit_depth=10
+      WHERE node_id=?`)
+      .bind(VIDEO_METADATA_GENERATOR, f.owner.ids.file)
+      .run();
+    const videoIssuedResponse = await issue(f.owner.ids.file);
+    expect(videoIssuedResponse.status).toBe(201);
+    const videoIssued = (await videoIssuedResponse.json()) as {
+      ticket: string;
+      budgetId: string;
+      targetSetId: string;
+    };
+    issuedTargetSets.push(videoIssued.targetSetId);
+    const videoAccepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: videoIssued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    const videoCookie = (videoAccepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const videoUrl = `${contentOrigin}/c/${f.owner.ids.file}/${f.owner.ids.blob}/track`;
+    const videoRange = await handleContentHttp(
+      new Request(videoUrl, { headers: { Cookie: videoCookie, Range: "bytes=1-3" } }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(videoRange.status).toBe(206);
+    expect(videoRange.headers.get("Content-Range")).toBe("bytes 1-2/3");
+    expect(videoRange.headers.get("Content-Type")).toBe('video/mp4; codecs="av01.0.08M.10,Opus"');
+    expect(new TextDecoder().decode(await videoRange.arrayBuffer())).toBe("bc");
+    const videoHead = await handleContentHttp(
+      new Request(videoUrl, { method: "HEAD", headers: { Cookie: videoCookie } }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(videoHead.status).toBe(200);
+    expect(videoHead.headers.get("Content-Length")).toBe("3");
+    expect(videoHead.body).toBeNull();
+
+    const audioIssuedResponse = await issue(audioNode);
+    expect(audioIssuedResponse.status).toBe(201);
+    const audioIssued = (await audioIssuedResponse.json()) as {
+      ticket: string;
+      budgetId: string;
+      targetSetId: string;
+    };
+    issuedTargetSets.push(audioIssued.targetSetId);
+    expect(audioIssued.budgetId).toBe(videoIssued.budgetId);
+    const audioAccepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: audioIssued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    const audioCookie = (audioAccepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const audioUrl = `${contentOrigin}/c/${audioNode}/${audioBlob}/track`;
+    const audio = await handleContentHttp(
+      new Request(audioUrl, { headers: { Cookie: audioCookie } }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(audio.status).toBe(200);
+    expect(audio.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(new TextDecoder().decode(await audio.arrayBuffer())).toBe("audio");
+
+    await env.DB.prepare("DELETE FROM share_actions WHERE share_id=? AND action='read'")
+      .bind(f.shareId)
+      .run();
+    expect(
+      (
+        await handleContentHttp(
+          new Request(audioUrl, { headers: { Cookie: audioCookie } }),
+          shareEnv(),
+          contentTokens,
+        )
+      ).status,
+    ).toBe(404);
+  } finally {
+    await env.BLOBS.delete([
+      videoKey,
+      audioKey,
+      ...issuedTargetSets.map((id) => `target-sets/${id}`),
+    ]);
+  }
+});
+
+it("does not expose media reads or ZIP tickets to upload-only share sessions", async () => {
   const f = await uploadFixture();
   const session = await uploadSession(f);
+  for (const media of ["gallery", "tracks"]) {
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}/${media}`, session.cookie),
+          session.app,
+          1,
+          dependencies,
+        )
+      ).status,
+    ).toBe(404);
+  }
   expect(
     (
       await session.send(
