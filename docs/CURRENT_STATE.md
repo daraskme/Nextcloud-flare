@@ -2,7 +2,7 @@
 
 更新: 2026-10-01。直近の到達点は[PROGRESS](PROGRESS.md)。
 
-最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、direct-user・group internal shareとread-only shared DAV、multipart closure settlementを統合済みである。本branchはbounded public ZIP create/redirectとRange/HEAD配信を追加する。migrationは45件（最新`0046`）、通常tableは74、route契約は156。各統合済みfeature PRはUbuntu、Windows 2分割、browser、backupの全CIを通過している。
+最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private ZIP/EPUB、private Gallery/Audio UI、public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、public EPUB metadata/page/entry、direct-user・group internal shareとread-only shared DAV、multipart closure settlementを統合済みである。本branchはbounded public ZIP create/redirectとRange/HEAD配信を追加する。migrationは45件（最新`0046`）、通常tableは74、route契約は156。各統合済みfeature PRはUbuntu、Windows 2分割、browser、backupの全CIを通過している。
 
 video、group internal share、multipart closureのPR #16、#17、#19は全5 CIを通過してmainへ統合済みである。group shareのaction変更後は`share.version`、member削除/再追加後はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
 
@@ -87,7 +87,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、共通受付と固定25秒期限、dead-letter台帳とbounded requeue、audio/image/video/EPUB projection | send/D1応答喪失、重複delivery、dead-letter再投入、各media projectionのclaim/fence収束 | 実Queue retry exhaustion/DLQ、残るevent kind |
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
-| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ID3 audio metadata、画像width/height・immutable `sm256` WebP、video metadata、EPUB index/entry、ZIP STORE serializer、private Gallery/Audio UI | format vector、audio/image/video/EPUB projection、private/public EPUB metadata/page/entry、thumbnail/track/ZIP配信、CRC、Unicode、cancel | Bookshelf/reader・video UI、EPUB以外のpublic media、実Images codec |
+| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ID3 audio metadata、画像width/height・immutable `sm256` WebP、video metadata、EPUB index/entry、ZIP STORE serializer、private Gallery/Audio UI、public Gallery/Audio metadata | format vector、audio/image/video/EPUB projection、private/public EPUB metadata/page/entry、thumbnail/track/ZIP配信、CRC、Unicode、cancel | Bookshelf/reader・video UI、実Images codec |
 
 今回のQueue受付とS3試験修正の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 

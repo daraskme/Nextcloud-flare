@@ -18,11 +18,13 @@ public session は各 request で次を再検査する。
 - ControlDO mirror の current epoch と maintenance。
 - share action と、選択 root 配下の node coverage。
 
-接続済み public API は次の21経路である。
+接続済み public API は次の23経路である。
 
 - `POST /api/v1/public/shares/:shareId/unlock`
 - `GET /api/v1/public/shares/:shareId`
 - `GET /api/v1/public/shares/:shareId/children/:nodeId`
+- `GET /api/v1/public/shares/:shareId/gallery`
+- `GET /api/v1/public/shares/:shareId/tracks`
 - `POST /api/v1/public/shares/:shareId/csrf`
 - `POST /api/v1/public/shares/:shareId/logout`
 - `POST /api/v1/public/shares/:shareId/tickets`
@@ -58,7 +60,7 @@ public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS �
 
 ## 公開surface
 
-public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket、EPUB metadata/page/entry、bounded ZIPは read-only link session へ接続済みである。app origin の直接 content/thumb proxyとBookshelf UIは未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
+public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket、EPUB metadata/page/entry、bounded ZIPは read-only link session へ接続済みである。app origin の直接 content/thumb/ZIP proxyとBookshelf UIは未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
 group internal shareもprivate認証surfaceだけへ接続する。group recipientのbudget identityはshare action versionとmembership versionの両方へ束縛し、action変更またはmember削除/再追加後にrevoke済みbudgetを再利用しない。このfenceをpublic shareのunlock/session budgetへ流用しない。
 
