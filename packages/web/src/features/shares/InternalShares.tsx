@@ -20,12 +20,124 @@ import {
   api,
   errorMessage,
   type InternalShare,
+  type InternalShareResharePolicyInput,
   type SharedMount,
   type ShareGroup,
 } from "../../lib/api";
 
+const DAY_MS = 86_400_000;
 const date = (value: number) =>
   new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(value);
+
+interface PolicyDraft {
+  enabled: boolean;
+  download: boolean;
+  expires: boolean;
+  ttlDays: number;
+  maxDepth: number;
+  maxFanout: number;
+}
+
+const policyInput = (draft: PolicyDraft): InternalShareResharePolicyInput => ({
+  enabled: draft.enabled,
+  actions: draft.download ? ["read", "download"] : ["read"],
+  maxDepth: draft.maxDepth,
+  maxFanout: draft.maxFanout,
+  ...(draft.expires ? { ttlDays: draft.ttlDays } : {}),
+});
+
+function ResharePolicyFields({
+  draft,
+  setDraft,
+  allowDownload,
+  maxTtlDays,
+}: {
+  draft: PolicyDraft;
+  setDraft: (draft: PolicyDraft) => void;
+  allowDownload: boolean;
+  maxTtlDays: number;
+}) {
+  return (
+    <div className="internal-policy-fields">
+      <label className="internal-check">
+        <input
+          type="checkbox"
+          checked={draft.enabled}
+          onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
+        />
+        再共有を有効にする
+      </label>
+      <div className="internal-policy-grid">
+        <div className="field-label">
+          <span>再共有できる操作</span>
+          <span className="internal-policy-actions">
+            <label>
+              <input type="checkbox" checked disabled /> 閲覧
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={draft.download}
+                disabled={!allowDownload}
+                onChange={(event) => setDraft({ ...draft, download: event.target.checked })}
+              />{" "}
+              ダウンロード
+            </label>
+          </span>
+        </div>
+        <label className="field-label">
+          最大委任深度
+          <select
+            value={draft.maxDepth}
+            onChange={(event) => setDraft({ ...draft, maxDepth: Number(event.target.value) })}
+          >
+            {[1, 2, 3, 4].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field-label">
+          最大ファンアウト
+          <input
+            type="number"
+            min={1}
+            max={20}
+            required
+            value={draft.maxFanout}
+            onChange={(event) => setDraft({ ...draft, maxFanout: Number(event.target.value) })}
+          />
+        </label>
+      </div>
+      <label className="internal-check">
+        <input
+          type="checkbox"
+          checked={draft.expires}
+          disabled={maxTtlDays < 1}
+          onChange={(event) => setDraft({ ...draft, expires: event.target.checked })}
+        />
+        ポリシー独自の有効期限を設定
+      </label>
+      {draft.expires && (
+        <label className="field-label">
+          ポリシー有効期間（日）
+          <input
+            type="number"
+            min={1}
+            max={maxTtlDays}
+            required
+            value={draft.ttlDays}
+            onChange={(event) => setDraft({ ...draft, ttlDays: Number(event.target.value) })}
+          />
+        </label>
+      )}
+      <p className="internal-inline-note">
+        再共有は元の共有とこのポリシーの両方に含まれる操作だけに制限されます。
+      </p>
+    </div>
+  );
+}
 
 function FolderPicker({
   account,
@@ -114,11 +226,27 @@ function CreateInternalShareDialog({
   const [groupId, setGroupId] = useState(groups[0]?.id ?? "");
   const [download, setDownload] = useState(true);
   const [ttlDays, setTtlDays] = useState(30);
+  const [configurePolicy, setConfigurePolicy] = useState(false);
+  const [policy, setPolicy] = useState<PolicyDraft>({
+    enabled: true,
+    download: true,
+    expires: false,
+    ttlDays: 30,
+    maxDepth: 1,
+    maxFanout: 5,
+  });
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
   useEffect(() => {
     if (!groupId && groups[0]) setGroupId(groups[0].id);
   }, [groupId, groups]);
+  useEffect(() => {
+    setPolicy((current) => ({
+      ...current,
+      download: download && current.download,
+      ttlDays: Math.min(current.ttlDays, ttlDays),
+    }));
+  }, [download, ttlDays]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const recipient =
@@ -136,6 +264,7 @@ function CreateInternalShareDialog({
         recipient,
         download ? ["read", "download"] : ["read"],
         ttlDays,
+        configurePolicy ? policyInput(policy) : undefined,
       );
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
       close();
@@ -244,6 +373,30 @@ function CreateInternalShareDialog({
             フォルダーの閲覧は常に必要です。アップロード・変更・削除は許可されません。
           </p>
         </fieldset>
+        <fieldset disabled={pending}>
+          <legend>再共有ポリシー</legend>
+          <label className="internal-check">
+            <input
+              type="checkbox"
+              checked={configurePolicy}
+              onChange={(event) => setConfigurePolicy(event.target.checked)}
+            />
+            再共有ポリシーを設定
+          </label>
+          {configurePolicy && (
+            <ResharePolicyFields
+              draft={policy}
+              setDraft={setPolicy}
+              allowDownload={download}
+              maxTtlDays={ttlDays}
+            />
+          )}
+          {!configurePolicy && (
+            <p className="internal-inline-note">
+              ポリシーを設定しない共有は、受信者がさらに共有することはできません。
+            </p>
+          )}
+        </fieldset>
         {failure && (
           <p className="form-error" role="alert">
             {failure}
@@ -270,26 +423,141 @@ function CreateInternalShareDialog({
   );
 }
 
+function PolicySummary({ share }: { share: InternalShare }) {
+  const policy = share.resharePolicy;
+  if (!policy)
+    return (
+      <div className="internal-policy-summary">
+        <strong>再共有ポリシー</strong>
+        <span>未設定</span>
+      </div>
+    );
+  return (
+    <div className="internal-policy-summary">
+      <strong>{share.sourceShareId ? "適用中の再共有ポリシー" : "再共有ポリシー"}</strong>
+      <span>{policy.enabled ? "有効" : "無効"}</span>
+      <span>操作: {policy.actions.includes("download") ? "閲覧・ダウンロード" : "閲覧のみ"}</span>
+      <span>最大深度 {policy.maxDepth}</span>
+      <span>最大ファンアウト {policy.maxFanout}</span>
+      <span>期限: {policy.expiresAt ? date(policy.expiresAt) : "共有本体の期限まで"}</span>
+    </div>
+  );
+}
+
+function ResharePolicyDialog({
+  account,
+  share,
+  close,
+}: {
+  account: Account;
+  share: InternalShare;
+  close: () => void;
+}) {
+  const query = useQueryClient();
+  const maxTtlDays =
+    share.expiresAt === null
+      ? 365
+      : Math.max(0, Math.floor((share.expiresAt - Date.now()) / DAY_MS));
+  const policyTtlDays = share.resharePolicy?.expiresAt
+    ? Math.max(1, Math.floor((share.resharePolicy.expiresAt - Date.now()) / DAY_MS))
+    : Math.min(30, Math.max(1, maxTtlDays));
+  const [draft, setDraft] = useState<PolicyDraft>({
+    enabled: share.resharePolicy?.enabled ?? false,
+    download:
+      share.actions.includes("download") &&
+      (share.resharePolicy?.actions.includes("download") ?? false),
+    expires: share.resharePolicy?.expiresAt !== null && share.resharePolicy !== null,
+    ttlDays: Math.min(policyTtlDays, Math.max(1, maxTtlDays)),
+    maxDepth: share.resharePolicy?.maxDepth ?? 1,
+    maxFanout: share.resharePolicy?.maxFanout ?? 5,
+  });
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (draft.expires && maxTtlDays < 1) {
+      setFailure("共有本体の期限まで24時間未満のため、ポリシー期限を更新できません。");
+      return;
+    }
+    setPending(true);
+    setFailure("");
+    try {
+      await api.updateInternalShare(share.id, { resharePolicy: policyInput(draft) });
+      await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
+      close();
+    } catch (error) {
+      setFailure(errorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      title="再共有ポリシーを編集"
+      description="元の共有を超えない範囲で、受信者が委任できる操作と上限を設定します。"
+      open
+      onOpenChange={(open) => {
+        if (!open && !pending) close();
+      }}
+    >
+      <form className="internal-share-form" onSubmit={(event) => void submit(event)}>
+        <fieldset disabled={pending}>
+          <legend>{share.rootName ?? share.mountName ?? "内部共有"}</legend>
+          <ResharePolicyFields
+            draft={draft}
+            setDraft={setDraft}
+            allowDownload={share.actions.includes("download")}
+            maxTtlDays={maxTtlDays}
+          />
+        </fieldset>
+        {share.resharePolicy?.expiresAt && (
+          <p className="internal-inline-note">
+            期限を設定したまま保存すると、入力した日数を保存時点から再設定します。
+          </p>
+        )}
+        {failure && (
+          <p className="form-error" role="alert">
+            {failure}
+          </p>
+        )}
+        <div className="dialog-actions">
+          <Button variant="ghost" disabled={pending} onClick={close}>
+            閉じる
+          </Button>
+          <Button type="submit" variant="primary" disabled={pending}>
+            {pending ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
+            ポリシーを保存
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
 function OwnedShareCard({
   account,
   share,
   revoke,
+  editPolicy,
 }: {
   account: Account;
   share: InternalShare;
   revoke: (share: InternalShare) => void;
+  editPolicy: (share: InternalShare) => void;
 }) {
   const query = useQueryClient();
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState("");
   const active =
-    share.disabledAt === null && share.expiresAt !== null && share.expiresAt > Date.now();
+    share.disabledAt === null && (share.expiresAt === null || share.expiresAt > Date.now());
   const download = share.actions.includes("download");
   const changeDownload = async () => {
     setPending(true);
     setFailure("");
     try {
-      await api.updateInternalShareActions(share.id, download ? ["read"] : ["read", "download"]);
+      await api.updateInternalShare(share.id, {
+        actions: download ? ["read"] : ["read", "download"],
+      });
       await query.invalidateQueries({ queryKey: ["shares", account.id, account.epoch] });
     } catch (error) {
       setFailure(errorMessage(error));
@@ -336,7 +604,24 @@ function OwnedShareCard({
           <dt>共有 ID</dt>
           <dd>{share.id}</dd>
         </div>
+        {share.sourceShareId && (
+          <>
+            <div>
+              <dt>委任深度</dt>
+              <dd>{share.delegationDepth}</dd>
+            </div>
+            <div>
+              <dt>共有元 ID</dt>
+              <dd>{share.sourceShareId}</dd>
+            </div>
+            <div>
+              <dt>委任者 ID</dt>
+              <dd>{share.delegatedByUserId ?? "—"}</dd>
+            </div>
+          </>
+        )}
       </dl>
+      <PolicySummary share={share} />
       {failure && (
         <p className="form-error" role="alert">
           {failure}
@@ -344,6 +629,12 @@ function OwnedShareCard({
       )}
       {active && (
         <div className="internal-card-actions">
+          {!share.sourceShareId && (
+            <Button size="small" disabled={pending} onClick={() => editPolicy(share)}>
+              <ShieldCheck size={15} />
+              再共有ポリシーを編集
+            </Button>
+          )}
           <Button size="small" disabled={pending} onClick={() => void changeDownload()}>
             {pending ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
             ダウンロードを{download ? "停止" : "許可"}
@@ -412,6 +703,7 @@ function SharedMountCard({ mount }: { mount: SharedMount }) {
 export function InternalShares({ account }: { account: Account }) {
   const query = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [editingPolicy, setEditingPolicy] = useState<InternalShare | null>(null);
   const [revoking, setRevoking] = useState<InternalShare | null>(null);
   const [revokePending, setRevokePending] = useState(false);
   const [revokeFailure, setRevokeFailure] = useState("");
@@ -452,7 +744,7 @@ export function InternalShares({ account }: { account: Account }) {
   const mounts = received.data?.shares ?? [];
   const activeOwned = internal.filter(
     (share) =>
-      share.disabledAt === null && share.expiresAt !== null && share.expiresAt > Date.now(),
+      share.disabledAt === null && (share.expiresAt === null || share.expiresAt > Date.now()),
   ).length;
   const refresh = () => {
     void owned.refetch();
@@ -568,6 +860,7 @@ export function InternalShares({ account }: { account: Account }) {
                 account={account}
                 share={share}
                 revoke={setRevoking}
+                editPolicy={setEditingPolicy}
               />
             ))}
           </div>
@@ -589,10 +882,17 @@ export function InternalShares({ account }: { account: Account }) {
           close={() => setCreating(false)}
         />
       )}
+      {!!editingPolicy && (
+        <ResharePolicyDialog
+          account={account}
+          share={editingPolicy}
+          close={() => setEditingPolicy(null)}
+        />
+      )}
       {!!revoking && (
         <Dialog
           title="内部共有を取り消しますか"
-          description={`${revoking.rootName ?? revoking.mountName} は相手の共有一覧から外れ、開いている操作もサーバー側で再評価されます。`}
+          description={`${revoking.rootName ?? revoking.mountName ?? "この共有"} は相手の共有一覧から外れ、開いている操作もサーバー側で再評価されます。`}
           open
           onOpenChange={(open) => {
             if (!open && !revokePending) setRevoking(null);

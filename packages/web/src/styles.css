@@ -993,6 +993,31 @@ h1 {
   gap: 8px;
   margin-top: 18px;
 }
+.internal-policy-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 16px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: #f7f9f8;
+  color: #647267;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.internal-policy-summary strong {
+  width: 100%;
+  color: #4f6256;
+  font-size: 12px;
+}
+.internal-policy-summary span {
+  padding-right: 8px;
+  border-right: 1px solid #dfe6e1;
+}
+.internal-policy-summary span:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
 .internal-panel-empty,
 .internal-panel-loading,
 .internal-panel-error {
@@ -1148,6 +1173,40 @@ h1 {
   font-size: 13px;
 }
 .internal-check input {
+  accent-color: #d56340;
+}
+.internal-policy-fields {
+  display: grid;
+  gap: 13px;
+  padding: 13px;
+  border: 1px solid #e4e8ed;
+  border-radius: 9px;
+  background: #fafbfc;
+}
+.internal-policy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(100px, 1fr));
+  gap: 11px;
+}
+.internal-policy-actions {
+  display: flex;
+  min-height: 38px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #dfe3e8;
+  border-radius: 7px;
+  background: #fff;
+  color: #596679;
+  font-size: 12px;
+}
+.internal-policy-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.internal-policy-actions input {
   accent-color: #d56340;
 }
 .internal-inline-note {
@@ -2190,6 +2249,9 @@ h1 {
   }
   .internal-details > div:last-child {
     grid-column: auto;
+  }
+  .internal-policy-grid {
+    grid-template-columns: 1fr;
   }
   .reader-layout {
     grid-template-columns: 1fr;

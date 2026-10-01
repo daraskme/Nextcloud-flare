@@ -182,6 +182,22 @@ export interface CreatedLinkShare extends LinkShare {
   secret: string;
   shareUrl: string;
 }
+export type InternalShareAction = "read" | "download";
+export interface InternalShareResharePolicy {
+  enabled: boolean;
+  actions: readonly InternalShareAction[];
+  maxDepth: number;
+  maxFanout: number;
+  expiresAt: number | null;
+  version: number;
+}
+export interface InternalShareResharePolicyInput {
+  enabled: boolean;
+  actions: readonly InternalShareAction[];
+  maxDepth: number;
+  maxFanout: number;
+  ttlDays?: number;
+}
 export interface InternalShare {
   id: string;
   rootNodeId: string;
@@ -192,13 +208,17 @@ export interface InternalShare {
   expiresAt: number | null;
   createdAt: number;
   passwordProtected: false;
-  actions: readonly ("read" | "download")[];
+  actions: readonly InternalShareAction[];
   recipientUserId: string | null;
   recipientEmail: string | null;
   recipientGroupId: string | null;
   recipientGroupName: string | null;
   mountId: string;
-  mountName: string;
+  mountName: string | null;
+  sourceShareId: string | null;
+  delegatedByUserId: string | null;
+  delegationDepth: number;
+  resharePolicy: InternalShareResharePolicy | null;
 }
 export type OwnedShare = LinkShare | InternalShare;
 export interface ShareGroup {
@@ -214,7 +234,7 @@ export interface SharedMount {
   shareVersion: number;
   mountId: string;
   mountName: string;
-  actions: readonly ("read" | "download")[];
+  actions: readonly InternalShareAction[];
   root: {
     id: string;
     spaceId: string;
@@ -425,8 +445,9 @@ export class ApiClient {
     rootNodeId: string,
     spaceId: string,
     recipient: { email: string } | { groupId: string },
-    actions: readonly ("read" | "download")[],
+    actions: readonly InternalShareAction[],
     ttlDays: number,
+    resharePolicy?: InternalShareResharePolicyInput,
   ) {
     return this.json<InternalShare>("/api/v1/shares", "POST", {
       kind: "internal",
@@ -437,12 +458,21 @@ export class ApiClient {
         : { recipientGroupId: recipient.groupId }),
       actions,
       ttlDays,
+      ...(resharePolicy === undefined ? {} : { resharePolicy }),
     });
   }
-  updateInternalShareActions(shareId: string, actions: readonly ("read" | "download")[]) {
-    return this.json<InternalShare>(`/api/v1/shares/${encodeURIComponent(shareId)}`, "PATCH", {
-      actions,
-    });
+  updateInternalShare(
+    shareId: string,
+    input: {
+      actions?: readonly InternalShareAction[];
+      resharePolicy?: InternalShareResharePolicyInput;
+    },
+  ) {
+    return this.json<InternalShare>(
+      `/api/v1/shares/${encodeURIComponent(shareId)}`,
+      "PATCH",
+      input,
+    );
   }
   path(id: string, signal?: AbortSignal) {
     return this.request<{ path: Breadcrumb[] }>(
