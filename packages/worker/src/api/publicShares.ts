@@ -15,6 +15,7 @@ import {
   sharePrincipal,
   unlockShare,
 } from "../auth/shareSession";
+import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { listAudio } from "../services/audio";
@@ -43,6 +44,8 @@ const LIBRARY_PAGE = new RegExp(
   `^/api/v1/public/shares/(${ID})/library/(${ID})/pages/([1-9][0-9]{0,3})$`,
 );
 const LIBRARY_ENTRY = new RegExp(`^/api/v1/public/shares/(${ID})/library/(${ID})/entries/(${ID})$`);
+const ZIP_CREATE = new RegExp(`^/api/v1/public/shares/(${ID})/nodes/(${ID})/zip$`);
+const ZIP_READ = new RegExp(`^/api/v1/public/shares/(${ID})/zips/(${ID})$`);
 const MAX_BODY = 8192;
 const HEADERS = {
   "Cache-Control": "private, no-store",
@@ -72,7 +75,8 @@ export function publicShareApiRoute(request: Request): boolean {
         CHILDREN.test(path) ||
         GALLERY.test(path) ||
         TRACKS.test(path) ||
-        LIBRARY.test(path))) ||
+        LIBRARY.test(path) ||
+        ZIP_READ.test(path))) ||
     ((request.method === "GET" || request.method === "HEAD") &&
       (LIBRARY_PAGE.test(path) || LIBRARY_ENTRY.test(path))) ||
     (request.method === "POST" &&
@@ -80,7 +84,8 @@ export function publicShareApiRoute(request: Request): boolean {
         LOGOUT.test(path) ||
         CSRF.test(path) ||
         TICKETS.test(path) ||
-        CONTENT_SESSION.test(path))) ||
+        CONTENT_SESSION.test(path) ||
+        ZIP_CREATE.test(path))) ||
     (request.method === "DELETE" && TICKET.test(path)) ||
     publicUploadRoute(request)
   );
@@ -251,6 +256,8 @@ export async function handlePublicShareHttp(
   const logoutMatch = request.method === "POST" ? LOGOUT.exec(url.pathname) : null;
   const ticketsMatch = request.method === "POST" ? TICKETS.exec(url.pathname) : null;
   const contentSessionMatch = request.method === "POST" ? CONTENT_SESSION.exec(url.pathname) : null;
+  const zipCreateMatch = request.method === "POST" ? ZIP_CREATE.exec(url.pathname) : null;
+  const zipReadMatch = request.method === "GET" ? ZIP_READ.exec(url.pathname) : null;
   const ticketMatch = request.method === "DELETE" ? TICKET.exec(url.pathname) : null;
   const libraryMatch = request.method === "GET" ? LIBRARY.exec(url.pathname) : null;
   const libraryPageMatch =
@@ -269,6 +276,8 @@ export async function handlePublicShareHttp(
     logoutMatch?.[1] ??
     ticketsMatch?.[1] ??
     contentSessionMatch?.[1] ??
+    zipCreateMatch?.[1] ??
+    zipReadMatch?.[1] ??
     ticketMatch?.[1] ??
     libraryMatch?.[1] ??
     libraryPageMatch?.[1] ??
@@ -329,9 +338,102 @@ export async function handlePublicShareHttp(
       contentSessionMatch ||
       libraryMatch ||
       libraryPageMatch ||
-      libraryEntryMatch)
+      libraryEntryMatch ||
+      zipCreateMatch ||
+      zipReadMatch)
   )
     return problem(404, "not_found");
+  if (zipReadMatch) {
+    if (url.search) return problem(404, "not_found");
+    const zipId = zipReadMatch[2] ?? "";
+    const visible = await primary(env.DB)
+      .prepare(`SELECT 1 FROM target_sets ts
+        JOIN tickets t ON t.target_set_id=ts.id AND t.credential_id=ts.credential_id
+        JOIN budgets b ON b.id=t.budget_id AND b.owner_id=ts.owner_id AND b.epoch=t.epoch
+        WHERE ts.id=? AND ts.credential_id=? AND ts.owner_id=? AND ts.epoch=?
+          AND ts.expires_at>strftime('%s','now')*1000
+          AND t.purpose='zip' AND t.cancelled_at IS NULL
+          AND t.expires_at>strftime('%s','now')*1000
+          AND b.share_id=? AND b.unlock_session_id=? AND b.state='active'
+          AND b.expires_at>strftime('%s','now')*1000`)
+      .bind(
+        zipId,
+        session.credentialId,
+        session.ownerId,
+        session.epoch,
+        session.shareId,
+        session.id,
+      )
+      .first<number>();
+    if (visible === null) return problem(404, "not_found");
+    return new Response(null, {
+      status: 307,
+      headers: {
+        ...HEADERS,
+        Location: `${env.CONTENT_ORIGIN}/z/${encodeURIComponent(zipId)}`,
+      },
+    });
+  }
+  if (zipCreateMatch) {
+    if (url.search) return problem(404, "not_found");
+    if (!dependencies.tokens) return problem(503, "not_ready");
+    try {
+      await dependencies.csrf.verify(env.DB, request, sessionCsrf(session));
+    } catch {
+      return problem(403, "forbidden");
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await jsonBody(request);
+    } catch {
+      return problem(400, "bad_request");
+    }
+    if (Object.keys(body).length !== 0) return problem(400, "bad_request");
+    const idempotencyKey = request.headers.get("Idempotency-Key");
+    if (!idempotencyKey) return problem(400, "bad_request");
+    try {
+      const issued = await issueContentTicket(
+        env,
+        env.BLOBS,
+        dependencies.tokens,
+        principal,
+        [{ spaceId: session.spaceId, nodeId: zipCreateMatch[2] ?? "" }],
+        "zip",
+        Math.min(Date.now() + 300_000, session.expiresAt),
+        undefined,
+        { idempotencyKey },
+      );
+      return Response.json(issued, {
+        status: 201,
+        headers: {
+          ...HEADERS,
+          Location: `/api/v1/public/shares/${encodeURIComponent(
+            session.shareId,
+          )}/zips/${encodeURIComponent(issued.targetSetId)}`,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        ["invalid_idempotency_key", "invalid_content_ticket_request"].includes(error.message)
+      )
+        return problem(400, "bad_request");
+      if (error instanceof Error && error.message === "idempotency_conflict")
+        return problem(409, "conflict");
+      if (
+        error instanceof MutationUnavailableError ||
+        (error instanceof Error &&
+          ["content_ticket_commit_unknown", "content_budget_commit_unknown"].includes(
+            error.message,
+          ))
+      ) {
+        const response = problem(503, "not_ready");
+        response.headers.set("Retry-After", "1");
+        return response;
+      }
+      return problem(404, "not_found");
+    }
+  }
   if (ticketMatch) {
     if (url.search) return problem(404, "not_found");
     try {

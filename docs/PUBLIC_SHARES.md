@@ -18,7 +18,7 @@ public session は各 request で次を再検査する。
 - ControlDO mirror の current epoch と maintenance。
 - share action と、選択 root 配下の node coverage。
 
-接続済み public API は次の19経路である。
+接続済み public API は次の21経路である。
 
 - `POST /api/v1/public/shares/:shareId/unlock`
 - `GET /api/v1/public/shares/:shareId`
@@ -31,6 +31,8 @@ public session は各 request で次を再検査する。
 - `GET /api/v1/public/shares/:shareId/library/:nodeId`
 - `GET|HEAD /api/v1/public/shares/:shareId/library/:nodeId/pages/:page`
 - `GET|HEAD /api/v1/public/shares/:shareId/library/:nodeId/entries/:entryToken`
+- `POST /api/v1/public/shares/:shareId/nodes/:nodeId/zip`
+- `GET /api/v1/public/shares/:shareId/zips/:zipId`
 - `POST /api/v1/public/shares/:shareId/uploads`
 - `GET /api/v1/public/shares/:shareId/uploads/:uploadId`
 - `PUT /api/v1/public/shares/:shareId/uploads/:uploadId/content`
@@ -44,6 +46,8 @@ file 選択時は share root 配下の file だけを target manifest に固定�
 
 読み取り専用shareのEPUB metadataは、現行の`epub-index-v1` projectionとshare root coverageを再検査して返す。page/entry app routeは本文をproxyせず、同じprojectionを再検査して`CONTENT_ORIGIN`のbounded page/entry targetへ307 redirectする。`purpose=page` ticketは単一の現行EPUB targetだけに発行し、content originはsource/index hash、current blob、ZIP local header/CRC、entry上限、share version/epoch/actionとBudgetDOを再検査する。HEADは本文bytesを課金せずrequestを会計する。encrypted、scripted、fixed-layout、malformed、oversized、unsupportedまたはstaleなpublicationはmetadata、ticket、redirect、本文の全段階でfail closedにする。
 
+読み取り専用folderのZIP作成はpublic-form CSRFと`Idempotency-Key`を必須とし、share root配下のbounded treeだけを既存STORE plannerへ渡す。同じcredential/key/requestは同じimmutable manifest、ticket、budgetを再発行し、異なるrequestは409で拒否する。app originのZIP GETは現行share session、ticket、manifest、budgetを検査して`CONTENT_ORIGIN/z/:targetSetId`へredirectするだけで、ZIP bodyをproxyしない。content originはHEAD、単一Range、416、BudgetDOのrange-aware精算とsource cancelを行い、version/epoch/action/blob/path/pinを再検査する。
+
 upload-only shareは`create`と`upload` actionだけを持ち、metadata、children、ticket、content session、downloadを拒否する。recipientは既存nodeの指定や上書きをできず、share root直下への新規作成だけを要求できる。各receiptはowner quotaとshare `reservation_limit`を同じD1 transactionで予約し、share/session/version/epoch/expiryを作成・転送・状態照会・完了・中止の各段階で再検査する。公開受信は1件10 GiB、同時active 8件、shareあたり累計1,000件を上限とする。
 
 singleとmultipartはprivate uploadと同じimmutable R2、UploadDO、LockDO、operation terminalを使う。名前衝突はnamespace lock内で自動解決し、public responseはreceipt ID、状態、進行情報だけを返して、入力名・内部upload名・最終保存名を返さない。初期化・part・完了の結果が不明な場合はreceipt、capability、作成/part/完了のIdempotency-Keyを保持して同じ送信を再照会し、推測でabortや予約解放をしない。batch途中で完了したfileは再送queueから除外する。multipart初期化・中止・完了の進行中状態は202と`Retry-After`で返す。
@@ -54,7 +58,7 @@ public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS �
 
 ## 公開surface
 
-public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket、EPUB metadata/page/entryは read-only link session へ接続済みである。app origin の直接 content/thumb proxy、public ZIP、Bookshelf UI は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
+public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket、EPUB metadata/page/entry、bounded ZIPは read-only link session へ接続済みである。app origin の直接 content/thumb proxyとBookshelf UIは未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
 group internal shareもprivate認証surfaceだけへ接続する。group recipientのbudget identityはshare action versionとmembership versionの両方へ束縛し、action変更またはmember削除/再追加後にrevoke済みbudgetを再利用しない。このfenceをpublic shareのunlock/session budgetへ流用しない。
 
