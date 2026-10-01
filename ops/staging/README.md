@@ -1,0 +1,51 @@
+# Cloudflare staging 配備案
+
+`wrangler.staging.example.jsonc` はレビュー用の独立した設定案である。D1 と KV の ID は意図的に無効な値にしてある。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義するが、リモートのリソース作成、secret 登録、migration、deploy は未実施。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+
+## リソース台帳と設定
+
+| 項目 | staging 専用値・確認事項 |
+| --- | --- |
+| Worker | `next-cloud-flare-staging`; `workers_dev=false`, `preview_urls=false` |
+| Custom Domain | `staging-app.darask.date`, `staging-content.darask.date`; 両方とも同じ Worker の origin |
+| D1 | `ncf-staging`; 作成後に実 UUID を記入し、`packages/worker/migrations` を適用 |
+| R2 | private `ncf-staging-blobs`, private `ncf-staging-backups`; public access と `r2.dev` を無効化 |
+| KV | staging 専用 `CACHE` namespace ID |
+| Durable Objects | staging Worker に属する `CONTROL`, `LOCKS`, `UPLOADS`, `BUDGETS`; `v1-sqlite-do` migration |
+| Queues | `ncf-staging-jobs` と `ncf-staging-jobs-dlq`; primary の DLQ 指定と両 consumer を確認 |
+| その他 | `ASSETS`, `IMAGES`, 3 種の rate limiting binding（3 つの `namespace_id` が account 内の他 Worker と重複しないことを確認）、毎分 Cron |
+| Access | private user と service 用の staging 専用 application / audience / policy |
+
+本番・ローカルと D1、R2、KV、Queues、Access audience、署名鍵を共有しない。Cloudflare の [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) は Worker 自体を origin にする設定である。通常の Routes は既存 origin を前提にするため、この案では使わない。設定ファイル内のパスは `ops/staging/` からの相対パス。Wrangler の [environment 設定](https://developers.cloudflare.com/workers/wrangler/environments/)では vars や bindings が非継承なので、この案は `env.staging` ではなく完全な別設定にした。
+
+`vars` は staging marker、厳密な HTTPS origin、Queue 名、PBKDF2 反復回数だけを置く。`secrets.required` は必要なキー名の一覧であり、値の登録や実在を証明しない。値はリポジトリや CI ログに書かず、staging 専用の保護された secret store で管理する。`ACCESS_ISSUER`, `ACCESS_USER_AUDIENCE`, `ACCESS_SERVICE_AUDIENCE` は実際の Access application と一致させる。`BOOTSTRAP_OWNER_EMAILS` は JSON 文字列配列、`BOOTSTRAP_OWNER_IDENTITIES` は `iss`/`sub` の JSON オブジェクト配列、`BOOTSTRAP_QUOTA_BYTES` は非負の安全な整数。両 bootstrap 配列の合計は 1 件以上。CSRF、content ticket/cookie、cursor、app/share password、upload capability は用途別の key ring と active kid を揃える。`R2_INVENTORY_*` は `ncf-staging-blobs` の読み取り専用 S3 inventory 資格情報を指定する。追加の jurisdiction が必要なら `R2_INVENTORY_JURISDICTION` を明示する。
+
+`EPOCH_FLOOR` は復旧時の制御値なので通常配備では設定しない。`BACKUP_OPERATOR_ENABLED` は別の backup operator Worker の設定であり、この app Worker では設定しない。backup operator の遠隔 schedule と資格情報も、現行 CI の backup drill だけでは構成されない。
+
+## Access とアプリの入口
+
+| host / path | Access policy | Worker 側 |
+| --- | --- | --- |
+| app の `/`, `/private-assets/*`, private `/api/v1/*` | staging user application の認証 | user JWT と既存 user/session |
+| app の `/api/v1/automation/*` | Service Auth（設計上の境界） | 現行 Worker に handler はなく、404。service API は未実装 |
+| app の `/s`, `/s/*`, `/public-assets/*`, `/api/v1/public/shares/*` | Bypass | share secret、session、CSRF、route manifest |
+| app の `/dav`, `/dav/*` | Bypass | app password Basic |
+| content host 全体 | Bypass | content ticket/cookie、host と route 検証 |
+
+Access policy は public share、DAV、content host を入口で遮断しないよう、path と host ごとに作る。未知 method/path が private 権限に繰り上がらないか、Access policy と Worker route の双方で確認する。content host に user Access を要求すると、別 origin の ticket/cookie flow が成立しない。Service Auth は将来の automation route の入口契約であり、Access 設定を作っても現行 Worker に service API が追加されるわけではない。
+
+**追加ユーザー:** `bootstrapOwner` は最初の管理者 1 人だけを作る。Access Allow に複数メールを登録した後、管理者がアプリの設定画面から各メールを招待する。7日間有効な招待は Access が検証した正確な issuer・メール表記と一致する本人の初回ログインで一度だけ消費され、`iss+sub` と専用 space/root を原子的に固定する。一般利用者の初期 quota は1 GiB。Access Allow だけではアプリ利用者にならず、D1 への手動 `INSERT` や暗黙のメール一致登録は行わない。この機能はローカル実装・試験段階で、remote migration・実 Access 接続は未検証。手順は [STAGING_ACCESS](../../docs/STAGING_ACCESS.md) を参照する。
+
+## 初回準備と手動配備
+
+1. Cloudflare account と zone、上表の staging 専用リソース、Access application/policy、secret 名と値の管理責任者を確定する。D1/KV の実 ID、Queue と bucket の実在、Custom Domain の zone 所属、公開設定を台帳で照合する。`REPLACE_WITH_` が残る設定は拒否する。
+2. GitHub repository の **Settings → Environments → New environment** で `staging` を作り、必要な reviewer と配備可能 branch を `main` に制限する。`staging` environment secrets に `CLOUDFLARE_ACCOUNT_ID` と最小権限の `CLOUDFLARE_API_TOKEN`、environment variables に実 ID の `STAGING_D1_DATABASE_ID` と `STAGING_KV_NAMESPACE_ID` を登録する。secret 値は workflow file や通常の repository variables へ転記しない。workflow 自体も `main` 以外を拒否し、同時実行を 1 件に制限する。PR や一般の push job に Cloudflare 資格情報を渡さない。
+3. 初回実行前に staging リソース、Access、Worker の必要 secret を別の承認済み手順で用意し、remote D1 migration を差分と backup/rollback を確認してから別途適用する。この workflow は既存 Worker の `wrangler secret list` が成功することを前提にする。初回 Worker 作成・secret 投入・migration は行わない。[`wrangler secret put`](https://developers.cloudflare.com/workers/configuration/secrets/) は新 version を即時 deploy する。初回作成時は保護された一時 secret file を使う `wrangler versions upload --secrets-file` など、別の手順をレビューして実施する。
+4. GitHub Actions の **Staging preflight and deploy → Run workflow** で `main` を選び、まず `deploy=false` で実行する。workflow は環境 ID の形式・placeholder を検査し、gitignored の設定ファイルを生成して `pnpm check` を通し、Environment secret で Wrangler を認証して Worker の secret 名を照合する。`deploy=true` を明示した実行のみ `wrangler deploy` に進む。[Wrangler deploy](https://developers.cloudflare.com/workers/wrangler/configuration/#secrets) も `secrets.required` に挙げた secret の未設定を検出する。値の形式・Access audience との一致、Cloudflare resource や Access policy の正確さは別途人が確認する。
+5. staging deploy 後に両 host の正しい dispatch、Access user/Bypass、未実装の automation route が 404 になること、private R2、初期化済み D1 と ControlDO、Queue と DLQ、Cron、Images、rate limiter、backup 経路を実環境で smoke test する。小さい fixture と少数リクエストに限定し、失敗時は traffic を止めて復旧状態を確認する。
+
+Cloudflare の [GitHub Actions 配備手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)は非対話の Wrangler に account ID と API token を使用する。[Workers 権限表](https://developers.cloudflare.com/workers/authorization/)では既存 Worker の deploy は対象 Worker の Editor、新規 Worker 作成は Workers product の Admin、Custom Domain 変更は対象 zone の Workers Routes Write も要る。D1 の直接 migration と staging resource 作成にはそれぞれ別の権限が要るため、初回 provision と継続 deploy の token は用途別に分ける。
+
+## 費用の上限
+
+運用予算は**staging の追加費用で月 1 万円**。Cloudflare の [Budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/)は Pay-as-you-go アカウントで利用できる USD 建て・account 全体対象の通知で、上限到達時も使用を停止しない。staging 単独の強制上限としては使えない。配備前に既存アカウントの課金基準値と staging 専用リソースの使用量を記録し、追加分の月額見込みが1万円以内であることを確認する。追加費用の予測が検証できるまでは小さい fixture、低頻度の手動検証、少量の R2/Images/Queue 処理だけにする。利用可能な場合は account 全体の通知閾値を適切に設定し、Cloudflare Usage/Billing と staging 向けリソースの使用量を日次で照合する。Queue 再試行・DLQ、毎分 Cron、Images 変換、R2 保存/転送、D1 と Workers の実使用量を監視し、当月の追加費用と残日数から見積もる月末額が1万円に達する見込みなら、負荷試験と配備を止めて原因を確認する。Budget alerts を費用の強制停止装置として扱わない。

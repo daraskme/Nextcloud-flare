@@ -86,7 +86,7 @@ Module Worker は `fetch`、`queue`、`scheduled` と SQLite-backed DO class を
 
 | surface | path | Access | Worker auth |
 |---|---|---|---|
-| private app | `/`, `/assets/*`, private `/api/v1/*` | user app 必須 | Access user JWT |
+| private app | `/`, `/private-assets/*`, private `/api/v1/*` | user app 必須 | Access user JWT |
 | service | `/api/v1/automation/*` の完全 manifest | Service Auth | Access service JWT + mapping |
 | share | `/s`, `/s/:shareId`, public API | Bypass | share secret / session / CSRF |
 | public assets | `/public-assets/:asset` | Bypass | build manifest `auth:public` + exact file |
@@ -286,6 +286,7 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 |---|---|---|
 | `spa.read`,`public.asset.read`,`share.landing`,`reader.shell` | surface policy / public manifest | `[currentUser? ,assetManifest?,shareId?]` |
 | `account.read`,`account.logout`,`csrf.issue` | self | `[currentUser]` |
+| `admin.user.invite` | `admin:user` | `[actor,invite?]`。管理者が正確なメールアドレスを期限付きで承認し、初回の Access 検証時に issuer と subject へ一度だけ結び付ける |
 | `node.read`,`search.read`,`recent.read`,`starred.read`,`shared.read`,`trash.read` | `node:read` / read | `[scopeRoot,node?,ancestors?,currentBlob?,cursor?]` |
 | `node.create` | `node:create` / create | `[parent,space]` |
 | `node.content.write` | `node:write` / edit | `[node,parent,oldBlob?,newBlob]` |
@@ -462,6 +463,9 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | POST | `/api/v1/jobs/:jobId/retry` | access | `job.retry` | `job,originalOperands` | false | same-origin-json |
 | app | GET | `/api/v1/admin/dlq` | access | `admin.dlq` | `dlqCursor` | true | same-origin-json |
 | app | POST | `/api/v1/admin/dlq/:jobId/requeue` | access | `admin.dlq` | `job,originalOperands` | true | same-origin-json |
+| app | GET | `/api/v1/admin/invites` | access | `admin.user.invite` | `actor` | true | same-origin-json |
+| app | POST | `/api/v1/admin/invites` | access | `admin.user.invite` | `actor,invite` | true | same-origin-json |
+| app | DELETE | `/api/v1/admin/invites/:inviteId` | access | `admin.user.invite` | `actor,invite` | true | same-origin-json |
 | app | POST | `/api/v1/admin/users/:userId/disable` | access | `admin.user.disable` | `actor,targetUser` | true | same-origin-json |
 | app | POST | `/api/v1/admin/transfer` | access | `admin.transfer` | `actor,targetUser,newAdmin` | true | same-origin-json |
 | app | POST | `/api/v1/admin/locks/:lockId/force-unlock` | access | `admin.lock.force_unlock` | `actor,lock,node` | true | same-origin-json |

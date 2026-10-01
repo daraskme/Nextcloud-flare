@@ -306,6 +306,18 @@ export interface AppPassword {
   expiresAt: number;
   scopes: AppPasswordScope[];
 }
+
+export interface AdminInvite {
+  id: string;
+  email: string;
+  createdAt: number;
+  expiresAt: number;
+  revokedAt: number | null;
+  claimedAt: number | null;
+  claimedUserId: string | null;
+}
+
+export type CreatedAdminInvite = Pick<AdminInvite, "id" | "email" | "createdAt" | "expiresAt">;
 export interface CreatedAppPassword extends AppPassword {
   secret: string;
 }
@@ -539,6 +551,36 @@ export class ApiClient {
     lifetime.signal.throwIfAborted();
     signal?.throwIfAborted();
     await this.request(`/api/v1/app-passwords/${encodeURIComponent(credentialId)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+      ...(signal ? { signal } : {}),
+    });
+  }
+  adminInvites(signal?: AbortSignal) {
+    return this.request<{ invites: AdminInvite[] }>(
+      "/api/v1/admin/invites",
+      signal ? { signal } : {},
+    );
+  }
+  createAdminInvite(email: string, signal?: AbortSignal) {
+    return this.json<CreatedAdminInvite>(
+      "/api/v1/admin/invites",
+      "POST",
+      { email },
+      undefined,
+      {},
+      signal,
+    );
+  }
+  async revokeAdminInvite(id: string, signal?: AbortSignal): Promise<void> {
+    const lifetime = this.#lifetime;
+    const token = await this.csrf();
+    lifetime.signal.throwIfAborted();
+    signal?.throwIfAborted();
+    await this.request(`/api/v1/admin/invites/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: {
         "Content-Type": "application/json",

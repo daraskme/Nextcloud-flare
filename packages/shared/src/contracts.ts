@@ -114,6 +114,7 @@ export const OPERATIONS = {
   "job.retry": ["job:cancel"],
   "operation.read": [],
   "admin.user.disable": ["admin:user"],
+  "admin.user.invite": ["admin:user"],
   "admin.transfer": ["admin:user"],
   "admin.lock.force_unlock": ["admin:lock"],
   "admin.dlq": ["admin:dlq"],

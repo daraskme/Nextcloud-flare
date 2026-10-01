@@ -2237,6 +2237,16 @@ h1 {
   font-size: 13px;
   line-height: 1.65;
 }
+.admin-invites-guidance {
+  margin: -8px 0 18px;
+}
+.admin-invite-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+  margin-bottom: 18px;
+}
 .settings-icon {
   display: grid;
   place-items: center;

@@ -29,15 +29,19 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 同日の継続作業では、現行audio投影限定のmetadata検索をAPI・Files UIへ接続し、移動operationのterminal lookupで移動元親権限と対応node stepを再確認する。実AVIF静止画は隔離HTTPSのChromiumでthumbnail/原本とも16×12として表示できた。`pnpm check`はNode774件・workerd2,218件、全browser40件が成功した。次はvideo/image metadata検索、AV1+Opusの実再生・複数browser、残るoperation/Outbox/repairと復旧・運用を進める。実環境へのmigration・deployは未実施。
 
+Cloudflare stagingの候補hostは`staging-app.darask.date`と`staging-content.darask.date`。設定テンプレートと台帳は[ops/staging](../ops/staging/README.md)、複数テスト利用者のAccess設定は[STAGING_ACCESS](STAGING_ACCESS.md)。ユーザーの予算はstagingの追加費用で月1万円。CloudflareのBudget alertsはアカウント全体の通知で、staging単独の強制停止ではない。Cloudflare scoped API tokenをGitHub Environment `staging`から使う手動ワークフローを追加した。初回Worker/resource作成・remote migrationは別手順で、account ID・resource実ID・token/secretは未設定。remote作成・migration・deployは未実施。
+
+アプリ側は初回管理者だけをbootstrapし、管理者の7日間の明示招待をAccessの正確なissuer・メール表記と照合して、本人の初回ログインで`iss+sub`と専用space/rootへ一度だけ結び付ける。管理者設定画面には招待の追加・保留一覧・取消を接続した。アプリはメールを送らず、AccessのAllowとアプリ招待の両方が必要。一般利用者の初期quotaは1 GiB。実Cloudflare Accessでの複数利用者試験は未実施。
+
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user/group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share/policy/delegation/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。owner/recipient管理UIは現在有効な操作とprovenanceを表示し、share actionと再共有ポリシーを管理する。
 
-最新mainはmigration `0049`（全48件）・80通常tableで、bounded reshare authorityと編集可能なshared DAV authorization contextを持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
+最新変更はmigration `0051`（全50件）・81通常tableで、bounded reshare authority、編集可能なshared DAV authorization context、Access招待台帳を持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
 
 workerは各chunkと最終確定でepoch、maintenance、current credential/authority、owner、root/parent ancestry、revision/tree generation、operation operand、job claimを再検査する。restoreは最終確定時にGC pauseを取得しrootからdepth順に復元、purgeはD1のnamespace/ref/quota/GC candidateを先に確定してR2 bytesを直接削除しない。Queue/DLQ/Cronの実Cloudflare検証とremote migration/deployは未実施である。
 
 multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。全bucket scanやabortだけで予約・保留容量を返さず、closure proofとexact receiptの成立後だけ精算する。
 
-backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 80 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
+backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 81 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
 読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。private mediaの実ファイル・複数browser検証、timer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 

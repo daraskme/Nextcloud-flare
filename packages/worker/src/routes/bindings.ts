@@ -245,6 +245,11 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/admin/transfer",
     "app POST /api/v1/admin/locks/:lockId/force-unlock",
   ]),
+  ...bindings(appAdmin, "bound", "private-app", [
+    "app GET /api/v1/admin/invites",
+    "app POST /api/v1/admin/invites",
+    "app DELETE /api/v1/admin/invites/:inviteId",
+  ]),
   ...bindings(appService, "unavailable", "unavailable", [
     "app GET /api/v1/automation/nodes",
     "app GET /api/v1/automation/nodes/:nodeId",

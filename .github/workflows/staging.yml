@@ -1,0 +1,58 @@
+name: Staging preflight and deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the reviewed staging Worker after preflight
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: staging
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+      STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
+      STAGING_KV_NAMESPACE_ID: ${{ vars.STAGING_KV_NAMESPACE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@12.4.1
+      - run: pnpm install --frozen-lockfile
+      - name: Generate staging config and validate resource IDs
+        run: node ops/staging/staging-config.mjs generate
+      - name: Local quality gates
+        run: pnpm check
+      - name: Validate staging Wrangler build
+        run: pnpm exec wrangler deploy --dry-run --config ops/staging/wrangler.staging.generated.jsonc --outdir "$RUNNER_TEMP/staging-worker-dry-run"
+      - name: Check Cloudflare credentials and required Worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          pnpm exec wrangler secret list --config ops/staging/wrangler.staging.generated.jsonc --format json > "$RUNNER_TEMP/staging-secret-list.json"
+          node ops/staging/staging-config.mjs check-secrets "$RUNNER_TEMP/staging-secret-list.json"
+      - name: Deploy staging Worker
+        if: inputs.deploy == true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy --config ops/staging/wrangler.staging.generated.jsonc

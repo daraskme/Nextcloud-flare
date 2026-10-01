@@ -19,6 +19,7 @@ import { audioRoute, handleAudioHttp } from "./audio";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { groupRoute, handleGroupHttp } from "./groups";
+import { handleInviteHttp, inviteRoute } from "./invites";
 import { handleLibraryHttp, libraryRoute } from "./library";
 import { handleMediaStateHttp, mediaStateRoute } from "./mediaState";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
@@ -61,6 +62,7 @@ export function privateAppRoute(request: Request): boolean {
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
     groupRoute(request) ||
+    inviteRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
     privateZipRoute(request) ||
@@ -109,6 +111,7 @@ export async function handlePrivateAppHttp(
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
   const group = groupRoute(request);
+  const invite = inviteRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
   const zip = privateZipRoute(request);
@@ -131,6 +134,7 @@ export async function handlePrivateAppHttp(
     !nodeMutation &&
     !appPassword &&
     !group &&
+    !invite &&
     !share &&
     !upload &&
     !zip &&
@@ -221,6 +225,7 @@ export async function handlePrivateAppHttp(
       dependencies.appPasswordPepper,
     );
   if (group) return handleGroupHttp(request, env, session, dependencies.csrf);
+  if (invite) return handleInviteHttp(request, env, session, dependencies.csrf);
   if (share)
     return handleShareHttp(
       request,

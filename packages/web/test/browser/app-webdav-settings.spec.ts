@@ -4,6 +4,116 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
+async function mockSettingsAccount(page: import("@playwright/test").Page, role: string) {
+  await page.route("**/api/v1/me", (route) =>
+    route.fulfill({
+      json: {
+        id: "settings-user",
+        email: "settings@example.test",
+        role,
+        spaceId: "settings-space",
+        rootNodeId: "settings-root",
+        epoch: 1,
+        quotaBytes: 1_000_000,
+        usedBytes: 0,
+        reservedBytes: 0,
+        contentOrigin: "https://content.ncf.test:8879",
+      },
+    }),
+  );
+  await page.route("**/api/v1/csrf", (route) =>
+    route.fulfill({ json: { token: "settings-csrf" } }),
+  );
+  await page.route("**/api/v1/app-passwords", (route) =>
+    route.fulfill({ json: { passwords: [] } }),
+  );
+}
+
+test("admin manages pending invites and sees Access and email-delivery guidance", async ({
+  page,
+}) => {
+  await mockSettingsAccount(page, "app_admin");
+  const invites = [
+    {
+      id: "invite-existing",
+      email: "existing@example.test",
+      createdAt: Date.now() - 60_000,
+      expiresAt: Date.now() + 86_400_000,
+      revokedAt: null,
+      claimedAt: null,
+      claimedUserId: null,
+    },
+  ];
+  const posts: unknown[] = [];
+  let failFirstCreate = true;
+  await page.route("**/api/v1/admin/invites", async (route) => {
+    const method = route.request().method();
+    if (method === "GET") return route.fulfill({ status: 200, json: { invites } });
+    if (method === "POST") {
+      const body = route.request().postDataJSON();
+      posts.push(body);
+      if (failFirstCreate) {
+        failFirstCreate = false;
+        return route.fulfill({
+          status: 503,
+          contentType: "application/problem+json",
+          body: JSON.stringify({ title: "not_ready" }),
+        });
+      }
+      const created = {
+        id: "invite-created",
+        email: String(body.email),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 86_400_000,
+        revokedAt: null,
+        claimedAt: null,
+        claimedUserId: null,
+      };
+      invites.push(created);
+      return route.fulfill({ status: 201, json: created });
+    }
+    return route.fulfill({ status: 405 });
+  });
+  const revoked: string[] = [];
+  await page.route("**/api/v1/admin/invites/**", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fulfill({ status: 405 });
+    const id = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
+    revoked.push(id);
+    const index = invites.findIndex((invite) => invite.id === id);
+    if (index >= 0) invites.splice(index, 1);
+    return route.fulfill({ status: 204, body: "" });
+  });
+
+  await page.goto("/settings/webdav");
+  await expect(page.getByRole("heading", { name: "利用者の招待", exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Cloudflare Access の許可設定にも追加", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("招待メールは送信されません", { exact: false })).toBeVisible();
+  await expect(page.getByText("有効期間は7日間", { exact: false })).toBeVisible();
+  await expect(page.getByText("一般利用者として登録", { exact: false })).toBeVisible();
+  await expect(page.getByText("existing@example.test", { exact: true })).toBeVisible();
+
+  await page.getByLabel("メールアドレス", { exact: true }).fill("new@example.test");
+  await page.getByRole("button", { name: "追加", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("現在サービスを利用できません");
+  await page.getByRole("button", { name: "追加", exact: true }).click();
+  await expect(page.getByText("new@example.test", { exact: true })).toBeVisible();
+  expect(posts).toEqual([{ email: "new@example.test" }, { email: "new@example.test" }]);
+
+  await page.getByRole("button", { name: "existing@example.testの招待を取り消す" }).click();
+  await expect(page.getByText("existing@example.test", { exact: true })).toHaveCount(0);
+  expect(revoked).toEqual(["invite-existing"]);
+});
+
+test("does not show invite management to a member", async ({ page }) => {
+  await mockSettingsAccount(page, "member");
+  await page.goto("/settings/webdav");
+  await expect(page.getByRole("heading", { name: "WebDAV 設定", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "利用者の招待", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("メールアドレス", { exact: true })).toHaveCount(0);
+});
+
 test("creates a root-scoped app password, reveals its secret once, and revokes it", async ({
   page,
   request,

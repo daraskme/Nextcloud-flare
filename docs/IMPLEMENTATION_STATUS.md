@@ -3,6 +3,14 @@
 更新: 2026-10-02。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-10-02 staging 準備・Access 複数利用者
+
+`darask.date` に `staging-app` と `staging-content` を置く独立 Wrangler 設定案、必要な D1/R2/KV/DO/Queues/Images/Access/secret の台帳、Cloudflare Access の複数利用者・MFA・公開経路 Bypass 手順を追加した。staging の追加費用上限は月1万円。Cloudflare Budget alerts はアカウント全体の USD 通知で、staging 単独の強制停止ではないため、実使用量の照合と負荷の段階的制限を運用 gate とする。GitHub の手動 `workflow_dispatch` は保護された `staging` Environment の Cloudflare token と実D1/KV IDを検査し、`deploy=true` のときだけ既存 Worker を配備する。初回 resource/Worker作成・remote migrationは別手順。設定案の Wrangler dry-run は成功したが、実 ID、secret、Cloudflare リソース、GitHub staging Environment は未設定。remote migration・deploy・実 Access は未検証。
+
+初回管理者1人の bootstrap を維持し、管理者だけが7日間有効な Access メール招待を発行・取消できるようにした。検証済み Access JWT の issuer と正確なメール表記を招待と照合し、本人の初回ログインで subject と個人 space/root を原子的に作成する。新規一般利用者の quota は1 GiB。設定画面から複数メールを招待でき、Access の Allow policy とアプリ招待の両方が必要。招待メールはアプリから送信しない。新 migration `0051` と通常 table `access_invites` を backup freeze・capture/restore に追加した。migration は全50件、通常tableは81、route契約は162。
+
+隔離HTTPSの全browser試験42件と、バックアップ/スキーマの修正対象121件が成功。`pnpm check` はlint・型・契約/設定検証、Node774件、Workerd 2,228件中2,227件まで通過し、残る1件は新migrationに伴う固定期待値49→50の更新漏れだった。修正後にそのschema fileのWorkerd 7/7件、最終lint459 file、Web/Worker buildとstaging Wrangler dry-runが成功した。全Workerdを含む一括再実行はpush後のCIで確認する。
+
 ## 2026-10-02 audio metadata検索・移動receipt・実AVIF表示
 
 既存のaudio title/artist/album索引へ`mode=audio`を追加し、現行node blobと`AUDIO_GENERATOR_VERSION`が一致する投影だけを検索する。scope/権限・10,000 node走査・200件keysetを維持し、modeを署名cursorへ結び付けた。Filesの検索欄から通常/音声ファイルを選べる。通常検索の旧audio metadataは上書き後からOutbox更新まで残り得るため、現行投影が必要な場合はaudio modeを使う。

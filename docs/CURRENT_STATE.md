@@ -2,7 +2,7 @@
 
 更新: 2026-10-02。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user・group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、1,001〜10,000 nodeのdurable非同期trash/restore/purgeを統合済みである。内部共有UIはowner lifecycle、再共有ポリシー、recipient provenanceと現在有効な操作を表示する。migrationは48件（最新`0049`）、通常tableは80、route契約は156。
+最新の変更ではQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user・group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、1,001〜10,000 nodeのdurable非同期trash/restore/purge、管理者招待による複数Access利用者の作成とstaging設定案を統合した。内部共有UIはowner lifecycle、再共有ポリシー、recipient provenanceと現在有効な操作を表示する。migrationは50件（最新`0051`）、通常tableは81、route契約は162。
 
 video、group internal share、multipart closureのPR #16、#17、#19は全5 CIを通過してmainへ統合済みである。group shareのaction変更後は`share.version`、member削除/再追加後はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
 
@@ -58,8 +58,8 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | 48 migrations（最新`0049`）、80通常table、FTS、156 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致、80-table backup drill | 全156 routeの機能実装は未完了 |
-| 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
+| schema・契約 | 50 migrations（最新`0051`）、81通常table、FTS、162 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致、81-table backup drill | 全162 routeの機能実装は未完了 |
+| 認証 | Access JWT/JWKS、user/service分離、単一管理者bootstrap、明示的な7日間招待による追加利用者の`iss+sub`固定、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、招待の権限・期限・失効・競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret、stagingでの複数利用者試験。[STAGING_ACCESS](STAGING_ACCESS.md) |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
 | KDF実行制限 | Worker/ControlDO各1件・並行要求は予約前に即503、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失、実browserの8同時DAV接続。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
