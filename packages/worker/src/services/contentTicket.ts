@@ -156,7 +156,7 @@ export async function issueContentTicket(
     exp <= iat ||
     expiresAt > now + 600_000 ||
     (share !== undefined && principal.kind === "link_share") ||
-    (purpose === "track" && (share !== undefined || principal.kind === "link_share"))
+    (purpose === "track" && share !== undefined)
   )
     throw new Error("invalid_content_ticket_request");
   const selectedShare =

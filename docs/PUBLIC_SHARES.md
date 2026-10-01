@@ -37,7 +37,7 @@ public session は各 request で次を再検査する。
 
 public mutation は app origin、`Origin`、Fetch Metadata、JSON、public 専用 CSRF、share/session の現行性を検査する。unlock確定時は capability、epoch、share version、password metadata、live ancestryを同じD1 batchで再検査し、KDF中の変更から古いsessionを発行しない。logout は share session と派生 content session を失効し、active budget を revoke する。
 
-file 選択時は share root 配下の file だけを target manifest に固定し、share session の期限内で短命 content ticket を発行する。browser は分離された `CONTENT_ORIGIN/session` で ticket を HttpOnly content Cookie に交換してから `/c/<nodeId>/<blobId>` を開く。R2 key は client へ返さない。content origin は D1 authority、manifest、share version/epoch/action、現在の blob、BudgetDO lease を再検査して immutable R2 object を配信する。同じ unlock session の再発行は同じ budget を再利用し、ticket cancel は派生 content session も失効する。
+file 選択時は share root 配下の file だけを target manifest に固定し、share session の期限内で短命 content ticket を発行する。gallery と audio metadata は現在の image/audio projection だけを bounded query で列挙し、cursor を share、unlock credential、epoch、tree generation へ束縛する。thumbnail ticket は現在の immutable derivative、track ticket は現在の audio または AV1 video projection だけを対象にする。browser は分離された `CONTENT_ORIGIN/session` で ticket を HttpOnly content Cookie に交換してから purpose-bound content path を開く。R2 key は client へ返さない。content origin は D1 authority、manifest、share version/epoch/action、現在の blob/projection、BudgetDO lease を再検査し、Range/HEADを含む immutable R2 object 配信を行う。同じ unlock session の再発行は同じ budget を再利用し、ticket cancel は派生 content session も失効する。
 
 upload-only shareは`create`と`upload` actionだけを持ち、metadata、children、ticket、content session、downloadを拒否する。recipientは既存nodeの指定や上書きをできず、share root直下への新規作成だけを要求できる。各receiptはowner quotaとshare `reservation_limit`を同じD1 transactionで予約し、share/session/version/epoch/expiryを作成・転送・状態照会・完了・中止の各段階で再検査する。公開受信は1件10 GiB、同時active 8件、shareあたり累計1,000件を上限とする。
 
@@ -47,9 +47,9 @@ singleとmultipartはprivate uploadと同じimmutable R2、UploadDO、LockDO、o
 
 public shell は `/s` と `/s/:shareId` だけを no-store で返す。JS/CSS は private SPA と別 Vite entry から content hash 付き `/public-assets/*` へ出力し、生成 manifest の完全一致だけを immutable cache で配信する。private `/private-assets/*` と相互参照しない。
 
-## 公開surfaceで未接続
+## 公開surface
 
-app origin の直接 content proxy、public ZIP、Gallery、Bookshelf、Audio と public media/library route は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
+public Gallery と Audio metadata、thumbnail ticket、audio/video track ticket は read-only link session へ接続済みである。app origin の直接 content/thumb proxy、public ZIP、Bookshelf と public library route は未接続であり、route registry は 404 fail closed を維持する。direct-user内部共有とread-only shared DAVはprivate認証surfaceへ接続済みで、この公開link session/actionを共有認可へ流用しない。remote secret、remote migration、staging/production deployは実施していない。
 
 group internal shareもprivate認証surfaceだけへ接続する。group recipientのbudget identityはshare action versionとmembership versionの両方へ束縛し、action変更またはmember削除/再追加後にrevoke済みbudgetを再利用しない。このfenceをpublic shareのunlock/session budgetへ流用しない。
 

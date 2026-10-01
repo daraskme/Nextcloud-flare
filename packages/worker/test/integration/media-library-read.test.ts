@@ -158,6 +158,61 @@ it("lists only current private image and audio metadata with derivative separati
       new GalleryCursorTokens(ring),
     ),
   ).rejects.toThrow();
+  const shareId = crypto.randomUUID();
+  const unlockId = crypto.randomUUID();
+  const sharePrincipal = {
+    kind: "link_share" as const,
+    share_id: shareId,
+    share_version: 1,
+    credential_id: `ss:${unlockId}`,
+    epoch: 1,
+  };
+  await atomicBatch(env.DB, [
+    {
+      sql: "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'link',?)",
+      values: [shareId, f.ids.user, f.ids.root, now],
+    },
+    { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [shareId] },
+    {
+      sql: `INSERT INTO share_sessions(id,share_id,share_version,secret_digest,epoch,issued_at,expires_at)
+        VALUES(?,?,1,?,1,?,?)`,
+      values: [unlockId, shareId, `digest-${unlockId}`, now, now + 600_000],
+    },
+    {
+      sql: "INSERT INTO credentials(id,kind,share_session_id) VALUES(?,'share',?)",
+      values: [sharePrincipal.credential_id, unlockId],
+    },
+  ]);
+  expect(
+    (await listGallery(env.DB, sharePrincipal, f.ids.root, true, new GalleryCursorTokens(ring)))
+      .items,
+  ).toHaveLength(1);
+  expect(
+    (await listAudio(env.DB, sharePrincipal, f.ids.root, true, new AudioCursorTokens(ring))).items,
+  ).toHaveLength(1);
+  const generation = await env.DB.prepare("SELECT tree_generation FROM spaces WHERE id=?")
+    .bind(f.ids.space)
+    .first<number>("tree_generation");
+  expect(generation).toBeTypeOf("number");
+  const galleryTokens = new GalleryCursorTokens(ring);
+  for (const changes of [{ credentialId: "ss:other" }, { epoch: 2 }, { userId: "other-share" }]) {
+    const cursor = await galleryTokens.issue({
+      rootId: f.ids.root,
+      spaceId: f.ids.space,
+      ownerId: f.ids.user,
+      userId: shareId,
+      credentialId: sharePrincipal.credential_id,
+      epoch: 1,
+      generation: generation!,
+      recursive: true,
+      lastSort: now,
+      lastId: f.ids.file,
+      ...changes,
+    });
+    await expect(
+      listGallery(env.DB, sharePrincipal, f.ids.root, true, galleryTokens, cursor),
+    ).rejects.toThrow("invalid_gallery_cursor");
+  }
 });
 
 it("rejects malformed media list query parameters before reading metadata", async () => {

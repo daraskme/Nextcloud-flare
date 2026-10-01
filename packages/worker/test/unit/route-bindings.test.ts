@@ -21,6 +21,28 @@ describe("route binding coverage", () => {
     expect(ROUTE_BINDINGS).toHaveLength(ROUTES.length);
   });
 
+  it("binds only public media metadata while direct public blob routes stay unavailable", () => {
+    const binding = (key: string) => ROUTE_BINDINGS.find((route) => route.key === key);
+    for (const key of [
+      "app GET /api/v1/public/shares/:shareId/gallery",
+      "app GET /api/v1/public/shares/:shareId/tracks",
+    ])
+      expect(binding(key)).toMatchObject({
+        availability: "bound",
+        handler: "public-share",
+        auth: ["share"],
+      });
+    for (const key of [
+      "app GET /api/v1/public/shares/:shareId/content/:nodeId",
+      "app GET /api/v1/public/shares/:shareId/thumb/:nodeId",
+      "app GET /api/v1/public/shares/:shareId/library/:nodeId",
+    ])
+      expect(binding(key)).toMatchObject({
+        availability: "unavailable",
+        handler: "unavailable",
+      });
+  });
+
   it("rejects missing and duplicate bindings", () => {
     const missing = ROUTE_BINDINGS.slice(1);
     expect(verifyRouteBindings(ROUTES, missing)).toContain(
