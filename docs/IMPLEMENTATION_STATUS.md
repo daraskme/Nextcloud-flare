@@ -10,7 +10,7 @@ Queue/media/ZIP/internal share統合後のmainへ、private video metadata/track
 - Videoはbounded MP4/WebM metadata projectionをOutboxへ追加し、current video projectionを検証した`purpose=track`でimmutable原本を配信する。audio projectionへの既存fallbackを維持する。
 - Group shareはowner管理のgroup/member lifecycle、membership version、group recipient grant、rename-stable shared mount、read-only shared DAVを追加した。share action更新は`share.version`、member削除/再追加はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
 - Multipart closureはquiet periodとbounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを追加した。
-- 画像GalleryとAudioのprivate UI、bounded EPUB index/entry配信もmainへ統合済み。public ZIP/media/library routeは引き続きfail closedである。
+- 画像GalleryとAudioのprivate UI、bounded EPUB index/page/entry配信もmainへ統合済み。public ZIP/media/library routeは引き続きfail closedである。
 
 PR #16、#17、#19はUbuntu、Windows 2分割、browser、backupの全5 CIを通過してmainへ統合済み。統合状態ではgroup budget回帰、video、multipart closure、schema/backupを対象にlint、typecheck、route/config contracts、build、focused test、backup drillを再確認した。backup drillは74 tableでPASS。remote migration・deploy・実Queue/DLQ・実Images codec・実OS DAV clientは未実施。
 
