@@ -1669,6 +1669,8 @@ it("serves an isolated no-store shell and immutable hashed public assets", async
   expect(shell.headers.get("Content-Security-Policy")).toContain(
     `connect-src 'self' ${contentOrigin}`,
   );
+  expect(shell.headers.get("Content-Security-Policy")).toContain(`img-src 'self' ${contentOrigin}`);
+  expect(shell.headers.get("Content-Security-Policy")).toContain(`media-src ${contentOrigin}`);
   const html = await shell.text();
   for (const path of publicAssets) expect(html).toContain(path);
   expect(html).not.toContain("/private-assets/");
