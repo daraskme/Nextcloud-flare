@@ -28,7 +28,8 @@
     "backup:operator-drill": "node scripts/backup-operator-drill.mjs",
     "backup:run-drill": "node scripts/backup-run-drill.mjs",
     "ops:health": "node scripts/ops-health.mjs",
-    "ops:operator-drill": "node scripts/ops-operator-drill.mjs"
+    "ops:operator-drill": "node scripts/ops-operator-drill.mjs",
+    "release:gate": "node scripts/release-gate.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",

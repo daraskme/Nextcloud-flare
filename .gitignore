@@ -4,6 +4,7 @@ node_modules/
 dist/
 coverage/
 test-results/
+.release-evidence/
 .dev.vars*
 .env*
 !.env.example
