@@ -27,6 +27,34 @@ it("separates PUT create and overwrite plus LOCK existing and lock-null authorit
   ]);
 });
 
+it("declares authorization tuples for every persisted single-operand mutation", () => {
+  expect(OPERATION_SCOPE_TUPLES["node.create"]).toEqual([
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["node.content.write"]).toEqual([
+    { operand: "source", when: "always", scopes: ["node:write"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["node.rename"]).toEqual([
+    { operand: "source", when: "always", scopes: ["node:write"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["node.restore"]).toEqual([
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["node.purge"]).toEqual([
+    { operand: "source", when: "always", scopes: ["node:delete"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["dav.mkcol"]).toEqual([
+    { operand: "destinationParent", when: "always", scopes: ["node:create"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["dav.proppatch"]).toEqual([
+    { operand: "source", when: "always", scopes: ["node:write"] },
+  ]);
+  expect(OPERATION_SCOPE_TUPLES["upload.complete"]).toEqual([
+    { operand: "destinationParent", when: "create", scopes: ["upload:write"] },
+    { operand: "source", when: "overwrite", scopes: ["upload:write"] },
+  ]);
+});
+
 it("keeps each flat operation scope declaration equal to its tuple union", () => {
   for (const [operation, tuples] of Object.entries(OPERATION_SCOPE_TUPLES)) {
     const tupleScopes = [...new Set(tuples.flatMap((tuple) => tuple.scopes))].sort();

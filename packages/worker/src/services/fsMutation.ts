@@ -45,7 +45,7 @@ export function mutationStatements(plan: MutationPlan): SqlStatement[] {
   const statements: SqlStatement[] = [
     assertOpenPermit(claim.permit),
     assertOperationClaim(claim),
-    authority,
+    ...authority,
     assertCreateLocks(
       authorized.parent.id,
       authorized.spaceId,

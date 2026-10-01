@@ -254,9 +254,17 @@ it("fails old-epoch create and rename notifications only after their claims drai
     .run();
   await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
     space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
-    claimed_expires_at,expected_steps,created_at,updated_at)
-    VALUES(?,'user',?,?,?,'node.create','committed','digest',1,?,1,1,0,1,1)`)
-    .bind(opId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
+    claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+    VALUES(?,'user',?,?,?,'node.create','committed','digest',1,?,1,1,1,1,1,?,?)`)
+    .bind(
+      opId,
+      fixture.ids.user,
+      fixture.ids.credential,
+      fixture.ids.space,
+      permitId,
+      JSON.stringify({ parentId: fixture.ids.root }),
+      JSON.stringify({ status: 201, nodeId: fixture.ids.folder }),
+    )
     .run();
   await env.DB.prepare(
     "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
@@ -265,9 +273,17 @@ it("fails old-epoch create and rename notifications only after their claims drai
     .run();
   await env.DB.prepare(`INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,
     space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,
-    claimed_expires_at,expected_steps,created_at,updated_at)
-    VALUES(?,'user',?,?,?,'node.rename','committed','digest',1,?,1,1,0,1,1)`)
-    .bind(renameOpId, fixture.ids.user, fixture.ids.credential, fixture.ids.space, permitId)
+    claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+    VALUES(?,'user',?,?,?,'node.rename','committed','digest',1,?,1,1,1,1,1,?,?)`)
+    .bind(
+      renameOpId,
+      fixture.ids.user,
+      fixture.ids.credential,
+      fixture.ids.space,
+      permitId,
+      JSON.stringify({ parentId: fixture.ids.root, nodeId: fixture.ids.folder }),
+      JSON.stringify({ status: 200, nodeId: fixture.ids.folder }),
+    )
     .run();
   await env.DB.prepare(
     "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",

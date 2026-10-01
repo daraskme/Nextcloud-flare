@@ -51,9 +51,18 @@ export async function recoveryRepairFixture(kind: RepairKind, actor: Foundation,
         values: [permitId, f.ids.space, epoch - 1],
       },
       {
-        sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at)
-      VALUES(?,'user',?,?,?,'node.create','committed','digest',?,?,1,1,0,1,1)`,
-        values: [opId, actor.ids.user, actor.ids.credential, f.ids.space, epoch - 1, permitId],
+        sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,created_at,updated_at,operands_json,result_json)
+      VALUES(?,'user',?,?,?,'node.create','committed','digest',?,?,1,1,1,1,1,?,?)`,
+        values: [
+          opId,
+          actor.ids.user,
+          actor.ids.credential,
+          f.ids.space,
+          epoch - 1,
+          permitId,
+          JSON.stringify({ parentId: f.ids.root }),
+          JSON.stringify({ status: 201, nodeId: f.ids.folder }),
+        ],
       },
       {
         sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",

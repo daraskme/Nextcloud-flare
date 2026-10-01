@@ -5,6 +5,7 @@ import {
   type SystemMutationSource,
   systemMutationStatements,
 } from "../services/systemMutation";
+import { validateOutboxContract } from "./outboxContract";
 
 export const OUTBOX_DISPATCH_LEASE_MS = 30_000;
 export interface OutboxMessage {
@@ -17,23 +18,54 @@ interface DispatchRow {
   outbox_id: string;
   state: string;
   dispatch_token: string | null;
+  kind: string;
+  payload_ref: string;
+  epoch: number;
+  op_id: string;
+  op_kind: string;
+  principal_kind: string;
+  principal_id: string;
+  credential_id: string | null;
+  credential_version: number | null;
   space_id: string;
   owner_id: string;
+  operands_json: string;
+  result_json: string | null;
 }
 async function row(db: D1Database, id: string): Promise<DispatchRow | null> {
   return primary(db)
-    .prepare(`SELECT b.outbox_id,b.state,b.dispatch_token,o.space_id,s.owner_id FROM outbox b
+    .prepare(`SELECT b.outbox_id,b.state,b.dispatch_token,b.kind,b.payload_ref,b.epoch,
+      o.op_id,o.kind AS op_kind,o.principal_kind,o.principal_id,o.credential_id,
+      o.credential_version,o.space_id,s.owner_id,o.operands_json,o.result_json FROM outbox b
       JOIN operations o ON o.op_id=b.op_id JOIN spaces s ON s.id=o.space_id WHERE b.outbox_id=?`)
     .bind(id)
     .first<DispatchRow>();
 }
 
-function dispatchAssertion(id: string, token: string, epoch: number, spaceId: string) {
+function dispatchAssertion(row: DispatchRow, token: string) {
   return assertExists(
     `SELECT 1 FROM outbox b JOIN operations o ON o.op_id=b.op_id JOIN control c ON c.singleton=1
     WHERE b.outbox_id=? AND b.dispatch_token=? AND b.state='dispatching' AND b.dispatch_expires_at>strftime('%s','now')*1000
-      AND b.epoch=? AND c.epoch=b.epoch AND c.maintenance=0 AND o.state='committed' AND o.epoch=b.epoch AND o.space_id=?`,
-    [id, token, epoch, spaceId],
+      AND b.kind=? AND b.payload_ref=? AND b.epoch=? AND c.epoch=b.epoch AND c.maintenance=0
+      AND o.op_id=? AND o.state='committed' AND o.epoch=b.epoch AND o.kind=?
+      AND o.principal_kind=? AND o.principal_id=? AND o.credential_id IS ?
+      AND o.credential_version IS ? AND o.space_id=? AND o.operands_json=? AND o.result_json=?`,
+    [
+      row.outbox_id,
+      token,
+      row.kind,
+      row.payload_ref,
+      row.epoch,
+      row.op_id,
+      row.op_kind,
+      row.principal_kind,
+      row.principal_id,
+      row.credential_id,
+      row.credential_version,
+      row.space_id,
+      row.operands_json,
+      row.result_json,
+    ],
   );
 }
 
@@ -59,7 +91,13 @@ async function dispatch(
     throw new Error("invalid_outbox_dispatch");
   const current = await row(db, outboxId);
   if (current?.state === "completed") return "completed";
-  if (!current || current.state === "failed") return "busy";
+  if (
+    !current ||
+    current.state === "failed" ||
+    current.epoch !== epoch ||
+    !validateOutboxContract(current)
+  )
+    return "busy";
   const token = crypto.randomUUID();
   try {
     const admission = await acquireSystemMutation(
@@ -78,7 +116,7 @@ async function dispatch(
         AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=outbox.op_id AND o.state='committed' AND o.epoch=outbox.epoch)`,
         values: [token, OUTBOX_DISPATCH_LEASE_MS, outboxId, epoch, epoch],
       },
-      dispatchAssertion(outboxId, token, epoch, current.space_id),
+      dispatchAssertion(current, token),
     ]);
   } catch {
     // Check the exact persisted token after an ambiguous claim response.
@@ -92,16 +130,14 @@ async function dispatch(
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await atomicBatch(
       db,
-      systemMutationStatements(send, current.owner_id, [
-        dispatchAssertion(outboxId, token, epoch, current.space_id),
-      ]),
+      systemMutationStatements(send, current.owner_id, [dispatchAssertion(current, token)]),
     );
     // This invocation needs direct ACK. A later leased retry may resend the same durable ID.
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await queue.send({ outboxId }, { contentType: "json" });
     const sent = await acquireSystemMutation(env, current.owner_id, "outbox.sent");
     await commitSystemMutation(db, sent, current.owner_id, [
-      dispatchAssertion(outboxId, token, epoch, current.space_id),
+      dispatchAssertion(current, token),
       {
         sql: `UPDATE outbox SET state='sent',updated_at=MAX(updated_at,strftime('%s','now')*1000)
         WHERE outbox_id=? AND state='dispatching' AND dispatch_token=? AND epoch=? AND dispatch_expires_at>strftime('%s','now')*1000

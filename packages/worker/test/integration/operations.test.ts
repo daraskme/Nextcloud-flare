@@ -79,13 +79,23 @@ async function fixture(kind: "user" | "link_share" = "user") {
 
 async function commitFixture(f: Awaited<ReturnType<typeof fixture>>) {
   await claimOperation(env.DB, f.intent, f.permit, f.proof, 1);
-  // Operation-lookup fixture only; namespace commits will go through fsMutation.
-  await env.DB.prepare("UPDATE operations SET state='committed',result_json=? WHERE op_id=?")
-    .bind(
-      JSON.stringify({ status: 201, nodeId: f.ids.file, name: "never disclose this snapshot" }),
-      f.intent.id,
-    )
-    .run();
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE operations SET state='committed',result_json=? WHERE op_id=?",
+      values: [
+        JSON.stringify({ status: 201, nodeId: f.ids.file, name: "never disclose this snapshot" }),
+        f.intent.id,
+      ],
+    },
+    {
+      sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+      values: [f.intent.id, f.ids.file],
+    },
+    {
+      sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,'node.created',?,'pending',1,1,1)",
+      values: [crypto.randomUUID(), f.intent.id, f.ids.file],
+    },
+  ]);
 }
 
 it("canonicalizes bounded JSON intents and refuses cycles, excessive depth and unsupported values", async () => {
@@ -190,9 +200,20 @@ it("claims rename only for its exact node and parent, then exposes a current ter
     state: "claimed",
     result: null,
   });
-  await env.DB.prepare("UPDATE operations SET state='committed',result_json=? WHERE op_id=?")
-    .bind(JSON.stringify({ status: 200, nodeId: f.ids.file }), intent.id)
-    .run();
+  await atomicBatch(env.DB, [
+    {
+      sql: "UPDATE operations SET state='committed',result_json=? WHERE op_id=?",
+      values: [JSON.stringify({ status: 200, nodeId: f.ids.file }), intent.id],
+    },
+    {
+      sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+      values: [intent.id, f.ids.file],
+    },
+    {
+      sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,'node.renamed',?,'pending',1,1,1)",
+      values: [crypto.randomUUID(), intent.id, f.ids.file],
+    },
+  ]);
   expect(await lookupOperation(env.DB, f.principal, intent.id)).toMatchObject({
     state: "committed",
     result: { status: 200, nodeId: f.ids.file },
@@ -201,6 +222,41 @@ it("claims rename only for its exact node and parent, then exposes a current ter
     .bind(Date.now(), f.ids.session)
     .run();
   expect(await lookupOperation(env.DB, f.principal, intent.id)).toBeNull();
+});
+
+it("claims move only with independent source and destination proofs", async () => {
+  const f = await fixture();
+  const source = await authorizeNode(env.DB, f.principal, {
+    operation: "node.rename",
+    nodeId: f.ids.file,
+    spaceId: f.ids.space,
+  });
+  const destination = await authorizeNode(env.DB, f.principal, {
+    operation: "node.create",
+    parentId: f.ids.root,
+    spaceId: f.ids.space,
+  });
+  const intent = await operationIntent(
+    f.principal,
+    f.key,
+    f.ids.space,
+    "node.move",
+    { name: "Moved" },
+    {
+      nodeId: f.ids.file,
+      sourceParentId: f.ids.folder,
+      parentId: f.ids.root,
+    },
+  );
+  await expect(claimOperation(env.DB, intent, f.permit, source, 1)).rejects.toThrow(
+    "invalid_operation_claim",
+  );
+  await expect(claimOperation(env.DB, intent, f.permit, [destination, source], 1)).rejects.toThrow(
+    "invalid_operation_claim",
+  );
+  expect((await claimOperation(env.DB, intent, f.permit, [source, destination], 1)).kind).toBe(
+    "claimed",
+  );
 });
 
 it("allows one winner for concurrent conflicting payloads without overwriting the durable intent", async () => {
