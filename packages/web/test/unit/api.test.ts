@@ -79,6 +79,67 @@ it("a still-claimed operation remains uncertain", async () => {
   ).rejects.toEqual(new ApiError(503, "commit_unknown", "op_fixture"));
 });
 
+it("uses private CSRF mutations for direct and group internal shares", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_direct" }, { status: 201 }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_group" }, { status: 201 }))
+    .mockResolvedValueOnce(Response.json({ id: "sh_group", actions: ["read"] }));
+  vi.stubGlobal("fetch", fetcher);
+  const api = new ApiClient();
+  await api.createInternalShare(
+    "folder",
+    "space",
+    { email: "member@example.invalid" },
+    ["read", "download"],
+    30,
+  );
+  await api.createInternalShare("folder", "space", { groupId: "group" }, ["read"], 7);
+  await api.updateInternalShareActions("sh_group", ["read"]);
+  expect(fetcher.mock.calls.slice(1).map(([path, init]) => [path, init.method])).toEqual([
+    ["/api/v1/shares", "POST"],
+    ["/api/v1/shares", "POST"],
+    ["/api/v1/shares/sh_group", "PATCH"],
+  ]);
+  expect(JSON.parse(fetcher.mock.calls[1]![1].body)).toEqual({
+    kind: "internal",
+    rootNodeId: "folder",
+    spaceId: "space",
+    recipientEmail: "member@example.invalid",
+    actions: ["read", "download"],
+    ttlDays: 30,
+  });
+  expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({
+    kind: "internal",
+    rootNodeId: "folder",
+    spaceId: "space",
+    recipientGroupId: "group",
+    actions: ["read"],
+    ttlDays: 7,
+  });
+  for (const [, init] of fetcher.mock.calls.slice(1))
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf");
+});
+
+it("cancels stale shared-mount reads with the caller signal", async () => {
+  let signal!: AbortSignal;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((_path: string, init: RequestInit) => {
+      signal = init.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }),
+  );
+  const controller = new AbortController();
+  const request = new ApiClient().sharedWithMe(controller.signal);
+  controller.abort();
+  await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  expect(signal.aborted).toBe(true);
+});
+
 it("exchanges media tickets at the exact content origin and returns direct media URLs", async () => {
   const fetcher = vi
     .fn()

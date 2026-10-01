@@ -167,6 +167,7 @@ export interface UploadReceipt {
 export interface LinkShare {
   id: string;
   rootNodeId: string | null;
+  rootName: string | null;
   kind: "link" | "upload_only";
   version: number;
   disabledAt: number | null;
@@ -180,6 +181,57 @@ export interface LinkShare {
 export interface CreatedLinkShare extends LinkShare {
   secret: string;
   shareUrl: string;
+}
+export interface InternalShare {
+  id: string;
+  rootNodeId: string;
+  rootName: string | null;
+  kind: "internal";
+  version: number;
+  disabledAt: number | null;
+  expiresAt: number | null;
+  createdAt: number;
+  passwordProtected: false;
+  actions: readonly ("read" | "download")[];
+  recipientUserId: string | null;
+  recipientEmail: string | null;
+  recipientGroupId: string | null;
+  recipientGroupName: string | null;
+  mountId: string;
+  mountName: string;
+}
+export type OwnedShare = LinkShare | InternalShare;
+export interface ShareGroup {
+  id: string;
+  name: string;
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+  memberEmails: readonly string[];
+}
+export interface SharedMount {
+  shareId: string;
+  shareVersion: number;
+  mountId: string;
+  mountName: string;
+  actions: readonly ("read" | "download")[];
+  root: {
+    id: string;
+    spaceId: string;
+    ownerId: string;
+    name: string;
+    kind: "folder";
+    revision: number;
+  };
+  owner: { id: string; email: string };
+  provenance:
+    | { kind: "direct"; recipientVersion: number }
+    | {
+        kind: "group";
+        groupId: string;
+        groupName: string;
+        membershipVersion: number;
+      };
 }
 
 export class ApiError extends Error {
@@ -331,7 +383,16 @@ export class ApiClient {
     );
   }
   shares(signal?: AbortSignal) {
-    return this.request<{ shares: LinkShare[] }>("/api/v1/shares", signal ? { signal } : {});
+    return this.request<{ shares: OwnedShare[] }>("/api/v1/shares", signal ? { signal } : {});
+  }
+  sharedWithMe(signal?: AbortSignal) {
+    return this.request<{ shares: SharedMount[] }>(
+      "/api/v1/shared-with-me",
+      signal ? { signal } : {},
+    );
+  }
+  groups(signal?: AbortSignal) {
+    return this.request<{ groups: ShareGroup[] }>("/api/v1/groups", signal ? { signal } : {});
   }
   createShare(
     rootNodeId: string,
@@ -358,6 +419,29 @@ export class ApiClient {
         "Content-Type": "application/json",
         "X-CSRF-Token": token,
       },
+    });
+  }
+  createInternalShare(
+    rootNodeId: string,
+    spaceId: string,
+    recipient: { email: string } | { groupId: string },
+    actions: readonly ("read" | "download")[],
+    ttlDays: number,
+  ) {
+    return this.json<InternalShare>("/api/v1/shares", "POST", {
+      kind: "internal",
+      rootNodeId,
+      spaceId,
+      ...("email" in recipient
+        ? { recipientEmail: recipient.email }
+        : { recipientGroupId: recipient.groupId }),
+      actions,
+      ttlDays,
+    });
+  }
+  updateInternalShareActions(shareId: string, actions: readonly ("read" | "download")[]) {
+    return this.json<InternalShare>(`/api/v1/shares/${encodeURIComponent(shareId)}`, "PATCH", {
+      actions,
     });
   }
   path(id: string, signal?: AbortSignal) {

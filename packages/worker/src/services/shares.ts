@@ -54,6 +54,7 @@ interface ShareRow {
   id: string;
   kind: "link" | "upload_only" | "internal";
   rootNodeId: string | null;
+  rootName: string | null;
   version: number;
   disabledAt: number | null;
   expiresAt: number | null;
@@ -82,6 +83,7 @@ interface ShareOutput {
   id: string;
   kind: ShareRow["kind"];
   rootNodeId: string | null;
+  rootName: string | null;
   version: number;
   disabledAt: number | null;
   expiresAt: number | null;
@@ -140,6 +142,7 @@ function output(row: ShareRow): ShareOutput {
     id: row.id,
     kind: row.kind,
     rootNodeId: row.rootNodeId,
+    rootName: row.rootName,
     version: row.version,
     disabledAt: row.disabledAt,
     expiresAt: row.expiresAt,
@@ -187,7 +190,7 @@ function orderedActions(kind: ShareRow["kind"], actions: readonly string[]) {
   );
 }
 
-const SHARE_SELECT = `SELECT sh.id,sh.kind,sh.root_node_id AS rootNodeId,sh.version,
+const SHARE_SELECT = `SELECT sh.id,sh.kind,sh.root_node_id AS rootNodeId,root.name AS rootName,sh.version,
   sh.disabled_at AS disabledAt,sh.expires_at AS expiresAt,sh.created_at AS createdAt,
   sh.password_digest IS NOT NULL AS passwordProtected,sh.reserved_bytes AS reservedBytes,
   sh.reservation_limit AS reservationLimit,
@@ -207,6 +210,7 @@ const SHARE_SELECT = `SELECT sh.id,sh.kind,sh.root_node_id AS rootNodeId,sh.vers
   policy.max_depth AS policyMaxDepth,policy.max_fanout AS policyMaxFanout,
   policy.expires_at AS policyExpiresAt,policy.version AS policyVersion
   FROM shares sh
+  LEFT JOIN nodes root ON root.id=sh.root_node_id AND root.owner_id=sh.owner_id
   LEFT JOIN share_grants g ON g.share_id=sh.id
   LEFT JOIN users u ON u.id=g.user_id
   LEFT JOIN share_group_grants gg ON gg.share_id=sh.id
@@ -1094,11 +1098,15 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
   const result = await atomicBatch(db, [
     ...currentAccess(session),
     {
-      sql: `WITH RECURSIVE recipient_share(shareId) AS (
-        SELECT g.share_id FROM share_grants g JOIN shares direct ON direct.id=g.share_id
+      sql: `WITH RECURSIVE recipient_share(
+        shareId,provenanceKind,recipientVersion,groupId,groupName,membershipVersion
+      ) AS (
+        SELECT g.share_id,'direct',g.version,NULL,NULL,NULL
+        FROM share_grants g JOIN shares direct ON direct.id=g.share_id
         WHERE g.user_id=? AND g.disabled_at IS NULL AND g.version=direct.version
         UNION
-        SELECT gg.share_id FROM share_group_grants gg
+        SELECT gg.share_id,'group',NULL,sg.id,sg.name,gm.version
+        FROM share_group_grants gg
         JOIN share_groups sg ON sg.id=gg.group_id AND sg.disabled_at IS NULL
         JOIN shares grouped ON grouped.id=gg.share_id AND grouped.owner_id=sg.owner_id
         JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=?
@@ -1106,10 +1114,13 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
         JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
       ), live_share(
         shareId,shareVersion,mountName,rootId,spaceId,ownerId,rootName,rootKind,rootRevision,
-        ownerEmail,depth,path,currentId,currentKind,parentId,deletedAt
+        ownerEmail,provenanceKind,recipientVersion,groupId,groupName,membershipVersion,
+        depth,path,currentId,currentKind,parentId,deletedAt
       ) AS (
         SELECT sh.id,sh.version,sh.mount_name,n.id,n.space_id,n.owner_id,n.name,n.kind,n.revision,
-          owner.email,0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
+          owner.email,recipient.provenanceKind,recipient.recipientVersion,recipient.groupId,
+          recipient.groupName,recipient.membershipVersion,
+          0,'/'||n.id||'/',n.id,n.kind,n.parent_id,n.deleted_at
         FROM recipient_share recipient
         JOIN shares sh ON sh.id=recipient.shareId
         JOIN current_internal_shares current
@@ -1122,14 +1133,16 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
           AND EXISTS(SELECT 1 FROM share_actions WHERE share_id=sh.id AND action='read')
         UNION ALL
         SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
-          a.rootKind,a.rootRevision,a.ownerEmail,a.depth+1,a.path||p.id||'/',
+          a.rootKind,a.rootRevision,a.ownerEmail,a.provenanceKind,a.recipientVersion,
+          a.groupId,a.groupName,a.membershipVersion,a.depth+1,a.path||p.id||'/',
           p.id,p.kind,p.parent_id,p.deleted_at
         FROM live_share a JOIN nodes p ON p.id=a.parentId
         WHERE a.depth<64 AND p.space_id=a.spaceId AND p.owner_id=a.ownerId
           AND instr(a.path,'/'||p.id||'/')=0
       )
       SELECT a.shareId,a.shareVersion,a.mountName,a.rootId,a.spaceId,a.ownerId,a.rootName,
-        a.rootKind,a.rootRevision,a.ownerEmail,
+        a.rootKind,a.rootRevision,a.ownerEmail,a.provenanceKind,a.recipientVersion,
+        a.groupId,a.groupName,a.membershipVersion,
         (SELECT json_group_array(action) FROM (
           SELECT action FROM share_actions WHERE share_id=a.shareId ORDER BY action
         )) AS actions
@@ -1153,6 +1166,11 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
       rootKind: "folder";
       rootRevision: number;
       ownerEmail: string;
+      provenanceKind: "direct" | "group";
+      recipientVersion: number | null;
+      groupId: string | null;
+      groupName: string | null;
+      membershipVersion: number | null;
       actions: string;
     };
     return Object.freeze({
@@ -1170,6 +1188,18 @@ export async function listSharedWithMe(db: D1Database, session: AccessSession) {
         revision: row.rootRevision,
       },
       owner: { id: row.ownerId, email: row.ownerEmail },
+      provenance:
+        row.provenanceKind === "group"
+          ? {
+              kind: "group" as const,
+              groupId: row.groupId!,
+              groupName: row.groupName!,
+              membershipVersion: row.membershipVersion!,
+            }
+          : {
+              kind: "direct" as const,
+              recipientVersion: row.recipientVersion!,
+            },
     });
   });
 }

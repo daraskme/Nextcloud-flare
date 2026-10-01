@@ -75,13 +75,23 @@ describe("route binding coverage", () => {
   });
 
   it("limits the private SPA shell to its exact navigation paths", () => {
-    for (const path of ["/", "/files", "/files/node_123", "/trash"])
+    for (const path of [
+      "/",
+      "/files",
+      "/files/node_123",
+      "/trash",
+      "/shares",
+      "/shared/share_123",
+      "/shared/share_123/folder_456",
+    ])
       expect(privateSpaPath(path)).toBe(true);
     for (const path of [
       "/s/share",
       "/public-assets/app.js",
       "/api/v1/me",
       "/files/a/b",
+      "/shared",
+      "/shared/share/child/grandchild",
       "/unknown",
     ])
       expect(privateSpaPath(path)).toBe(false);

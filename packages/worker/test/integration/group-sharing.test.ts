@@ -211,7 +211,16 @@ it("keeps group mounts stable and fences DAV action, version, ancestry, epoch an
   const { group, share } = await createGroupShare(f);
   if (!share.mountName) throw new Error("fixture_mount_missing");
   expect(await listSharedWithMe(env.DB, f.memberSession)).toEqual([
-    expect.objectContaining({ shareId: share.id, mountName: share.mountName }),
+    expect.objectContaining({
+      shareId: share.id,
+      mountName: share.mountName,
+      provenance: {
+        kind: "group",
+        groupId: expect.any(String),
+        groupName: "Engineering",
+        membershipVersion: 1,
+      },
+    }),
   ]);
   expect(await listSharedWithMe(env.DB, f.outsiderSession)).toEqual([]);
   expect(await readShare(env.DB, f.ownerSession, share.id)).toMatchObject({
@@ -411,7 +420,11 @@ it("revokes removed members immediately and never revives stale content sessions
   await updateShareGroup(mutationEnv(), f.ownerSession, group.id, {
     memberEmails: [f.memberEmail],
   });
-  expect(await listSharedWithMe(env.DB, f.memberSession)).toHaveLength(1);
+  expect(await listSharedWithMe(env.DB, f.memberSession)).toEqual([
+    expect.objectContaining({
+      provenance: expect.objectContaining({ kind: "group", membershipVersion: 2 }),
+    }),
+  ]);
   await expect(contentAssertion()).rejects.toThrow();
   const membershipVersion = await env.DB.prepare(
     "SELECT version FROM share_group_members WHERE group_id=? AND user_id=?",
@@ -560,7 +573,10 @@ it("keeps direct-user sharing intact beside group grants", async () => {
     actions: ["read"],
   });
   expect(await listSharedWithMe(env.DB, f.memberSession)).toEqual([
-    expect.objectContaining({ shareId: direct.id }),
+    expect.objectContaining({
+      shareId: direct.id,
+      provenance: { kind: "direct", recipientVersion: 1 },
+    }),
   ]);
   await disableShare(mutationEnv(), f.ownerSession, direct.id);
   expect(await listSharedWithMe(env.DB, f.memberSession)).toEqual([]);

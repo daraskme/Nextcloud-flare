@@ -65,6 +65,7 @@ it("serves the direct-user lifecycle through private JSON and CSRF routes", asyn
         shareId: created.id,
         mountName: created.mountName,
         actions: ["read", "download"],
+        provenance: { kind: "direct", recipientVersion: 1 },
       }),
     ],
   });

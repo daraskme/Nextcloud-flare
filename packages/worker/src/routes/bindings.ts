@@ -324,13 +324,16 @@ export const PRIVATE_SPA_PATHS = [
   "/bookshelf",
   "/video",
   "/trash",
+  "/shares",
 ] as const;
 const PRIVATE_FILE_PATH = /^\/files\/[A-Za-z0-9_-]{1,128}$/;
+const PRIVATE_SHARED_PATH = /^\/shared\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?$/;
 
 export function privateSpaPath(path: string): boolean {
   return (
     PRIVATE_SPA_PATHS.includes(path as (typeof PRIVATE_SPA_PATHS)[number]) ||
-    PRIVATE_FILE_PATH.test(path)
+    PRIVATE_FILE_PATH.test(path) ||
+    PRIVATE_SHARED_PATH.test(path)
   );
 }
 
