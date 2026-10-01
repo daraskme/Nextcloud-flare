@@ -619,6 +619,15 @@ export async function lookupOperation(
         )
         .first();
       if (!overwrite) return null;
+      if (
+        authorizedPrincipal.kind === "app_password" &&
+        authorizedPrincipal.internal_share &&
+        !(await primary(db)
+          .prepare("SELECT 1 FROM share_actions WHERE share_id=? AND action='edit'")
+          .bind(authorizedPrincipal.internal_share.share_id)
+          .first())
+      )
+        return null;
     }
     let visible: VisibleOperation["result"] = terminalResult
       ? { status: terminalResult.status }
