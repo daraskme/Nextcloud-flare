@@ -181,6 +181,7 @@ function canonicalActions(actions: readonly string[]) {
 }
 
 function orderedActions(kind: ShareRow["kind"], actions: readonly string[]) {
+  if (kind === "internal") return canonicalActions(actions);
   return (kind === "upload_only" ? ["create", "upload"] : ["read", "download"]).filter((action) =>
     actions.includes(action),
   );

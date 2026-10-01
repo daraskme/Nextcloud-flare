@@ -11,6 +11,7 @@ import {
 } from "../../src/auth/appPassword";
 import { authorizationAssertion } from "../../src/auth/authorize";
 import { lockTokenHashes } from "../../src/auth/locks";
+import { readAccessSession } from "../../src/auth/sessions";
 import { davReadAssertion, parseDavPath, resolveDavNode } from "../../src/dav/path";
 import { atomicBatch } from "../../src/db/primary";
 import { LockDO } from "../../src/do/LockDO";
@@ -18,6 +19,7 @@ import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { lookupOperation } from "../../src/jobs/operations";
 import { prepareAuthorizedNodeBlobRead } from "../../src/services/blobRead";
+import { createInternalShare, updateInternalShare } from "../../src/services/shares";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
@@ -2125,6 +2127,137 @@ it("mutates an editable direct shared mount through DAV locks, conditions, and o
   ).toBe(405);
   for (const object of (await env.BLOBS.list({ prefix: `u/${owner.ids.user}/b/` })).objects)
     await env.BLOBS.delete(object.key);
+});
+
+it("rejects delegated shared DAV mutations after source authority is invalidated", async () => {
+  const { f: recipient, id, secret, ring, request } = await fixture("W");
+  const owner = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  const delegate = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  const ownerEmail = `dav-owner-${crypto.randomUUID()}@test.invalid`;
+  const delegateEmail = `dav-delegate-${crypto.randomUUID()}@test.invalid`;
+  const recipientEmail = `dav-recipient-${crypto.randomUUID()}@test.invalid`;
+  await atomicBatch(env.DB, [
+    ...owner.statements,
+    ...delegate.statements,
+    { sql: "UPDATE users SET email=? WHERE id=?", values: [ownerEmail, owner.ids.user] },
+    { sql: "UPDATE users SET email=? WHERE id=?", values: [delegateEmail, delegate.ids.user] },
+    { sql: "UPDATE users SET email=? WHERE id=?", values: [recipientEmail, recipient.ids.user] },
+  ]);
+  const ownerSession = await readAccessSession(env.DB, owner.ids.credential, 1);
+  const delegateSession = await readAccessSession(env.DB, delegate.ids.credential, 1);
+  if (!ownerSession || !delegateSession) throw new Error("fixture_session_missing");
+  const actions = ["read", "download", "create", "edit"];
+  const source = await createInternalShare(mutationEnv(), ownerSession, {
+    rootNodeId: owner.ids.folder,
+    spaceId: owner.ids.space,
+    recipientEmail: delegateEmail,
+    actions,
+    resharePolicy: {
+      enabled: true,
+      actions,
+      maxDepth: 2,
+      maxFanout: 2,
+    },
+  });
+  expect(source.actions).toEqual(actions);
+  expect(source.resharePolicy?.actions).toEqual(actions);
+  const child = await createInternalShare(mutationEnv(), delegateSession, {
+    sourceShareId: source.id,
+    rootNodeId: owner.ids.folder,
+    spaceId: owner.ids.space,
+    recipientEmail,
+    actions,
+    idempotencyKey: "delegated-editable-dav",
+  });
+  expect(child.actions).toEqual(actions);
+  const credential = `ap:${id}`;
+  await atomicBatch(env.DB, [
+    {
+      sql: `INSERT INTO credential_scopes(credential_id,scope)
+        VALUES(?,'node:read'),(?,'node:create'),(?,'node:write'),(?,'node:delete')`,
+      values: [credential, credential, credential, credential],
+    },
+  ]);
+  const headers = { Authorization: `Basic ${btoa(`${id}:${secret}`)}` };
+  const davEnv = admittedDavEnv();
+  const before = await handleDavHttp(
+    new Request(`https://app.invalid/dav/Shared/${child.mountName}/Before`, {
+      method: "MKCOL",
+      headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(before.status).toBe(201);
+  const principal = await authenticateAppPassword(
+    mutationEnv(env.DB),
+    request(),
+    "https://app.invalid",
+    1,
+    ring,
+  );
+  const stale = await resolveDavNode(
+    env.DB,
+    principal,
+    parseDavPath(`/dav/Shared/${child.mountName}/Before`),
+  );
+
+  let invalidated = false;
+  const blobs = new Proxy(env.BLOBS, {
+    get(target, key) {
+      if (key === "put")
+        return async (...args: Parameters<R2Bucket["put"]>) => {
+          await updateInternalShare(mutationEnv(), ownerSession, source.id, { actions: ["read"] });
+          invalidated = true;
+          return target.put(...args);
+        };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const stored = await handleDavHttp(
+    new Request(`https://app.invalid/dav/Shared/${child.mountName}/Before/Stored.txt`, {
+      method: "PUT",
+      headers: { ...headers, "Content-Length": "3", "Content-Type": "text/plain" },
+      body: "abc",
+    }),
+    { ...davEnv, BLOBS: blobs },
+    1,
+    ring,
+  );
+  expect(invalidated).toBe(true);
+  expect(stored.status).toBe(404);
+  expect(
+    await env.DB.prepare("SELECT valid FROM share_delegation_status WHERE share_id=?")
+      .bind(child.id)
+      .first<number>("valid"),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM nodes WHERE parent_id=? AND name_ci='stored.txt'",
+    )
+      .bind(
+        await env.DB.prepare("SELECT id FROM nodes WHERE parent_id=? AND name_ci='before'")
+          .bind(owner.ids.folder)
+          .first<string>("id"),
+      )
+      .first<number>("n"),
+  ).toBe(0);
+  await expect(atomicBatch(env.DB, [authorizationAssertion(stale)])).rejects.toThrow();
+  expect(
+    (
+      await handleDavHttp(
+        new Request(`https://app.invalid/dav/Shared/${child.mountName}/After`, {
+          method: "MKCOL",
+          headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+        }),
+        davEnv,
+        1,
+        ring,
+      )
+    ).status,
+  ).toBe(404);
 });
 
 it("rejects a DAV path whose node moves after its initial lookup", async () => {

@@ -1,3 +1,141 @@
+DROP TRIGGER share_delegations_insert;
+
+CREATE TABLE share_reshare_policy_actions_editable(
+  share_id TEXT NOT NULL REFERENCES share_reshare_policies(share_id),
+  action TEXT NOT NULL CHECK(action IN ('read','download','create','edit')),
+  PRIMARY KEY(share_id,action)
+) STRICT;
+
+INSERT INTO share_reshare_policy_actions_editable(share_id,action)
+SELECT share_id,action FROM share_reshare_policy_actions;
+
+DROP TABLE share_reshare_policy_actions;
+ALTER TABLE share_reshare_policy_actions_editable RENAME TO share_reshare_policy_actions;
+
+CREATE TRIGGER share_reshare_policy_actions_insert
+BEFORE INSERT ON share_reshare_policy_actions
+WHEN NOT EXISTS(
+  SELECT 1 FROM share_actions sa
+  WHERE sa.share_id=NEW.share_id AND sa.action=NEW.action
+)
+BEGIN SELECT RAISE(ABORT,'invalid_share_reshare_action'); END;
+
+CREATE TRIGGER share_delegations_insert BEFORE INSERT ON share_delegations
+WHEN NEW.share_id=NEW.source_share_id
+  OR NOT EXISTS(
+    SELECT 1
+    FROM shares child
+    JOIN shares source ON source.id=NEW.source_share_id
+    JOIN share_reshare_policies policy ON policy.share_id=NEW.policy_share_id
+    JOIN nodes source_root ON source_root.id=source.root_node_id
+    JOIN nodes child_root ON child_root.id=child.root_node_id
+    WHERE child.id=NEW.share_id AND child.kind='internal' AND child.disabled_at IS NULL
+      AND source.kind='internal' AND source.disabled_at IS NULL
+      AND child.owner_id=source.owner_id
+      AND source.version=NEW.source_share_version
+      AND source_root.parent_id IS NEW.source_root_parent_id
+      AND child_root.parent_id IS NEW.delegated_root_parent_id
+      AND policy.enabled=1 AND policy.version=NEW.policy_version
+      AND (policy.expires_at IS NULL OR policy.expires_at>strftime('%s','now')*1000)
+      AND NEW.depth<=policy.max_depth
+      AND (
+        (NEW.depth=1 AND NEW.policy_share_id=source.id)
+        OR EXISTS(
+          SELECT 1 FROM share_delegations parent
+          WHERE parent.share_id=source.id AND parent.depth+1=NEW.depth
+            AND parent.policy_share_id=NEW.policy_share_id
+            AND parent.policy_version=NEW.policy_version
+        )
+      )
+      AND (
+        (NEW.source_group_id IS NULL AND EXISTS(
+          SELECT 1 FROM share_grants grant_row
+          WHERE grant_row.share_id=source.id
+            AND grant_row.user_id=NEW.delegated_by_user_id
+            AND grant_row.disabled_at IS NULL AND grant_row.version=source.version
+        ))
+        OR
+        (NEW.source_group_id IS NOT NULL AND EXISTS(
+          SELECT 1
+          FROM share_group_grants group_grant
+          JOIN share_groups share_group ON share_group.id=group_grant.group_id
+            AND share_group.owner_id=source.owner_id AND share_group.disabled_at IS NULL
+          JOIN share_group_members member ON member.group_id=share_group.id
+            AND member.user_id=NEW.delegated_by_user_id AND member.disabled_at IS NULL
+          JOIN users delegated_user ON delegated_user.id=member.user_id
+            AND delegated_user.disabled_at IS NULL
+          WHERE group_grant.share_id=source.id
+            AND share_group.id=NEW.source_group_id
+            AND member.version=NEW.source_membership_version
+        ))
+      )
+      AND NOT EXISTS(
+        SELECT 1 FROM share_actions child_action
+        WHERE child_action.share_id=child.id AND (
+          NOT EXISTS(
+            SELECT 1 FROM share_actions source_action
+            WHERE source_action.share_id=source.id AND source_action.action=child_action.action
+          )
+          OR NOT EXISTS(
+            SELECT 1 FROM share_reshare_policy_actions policy_action
+            WHERE policy_action.share_id=policy.share_id
+              AND policy_action.action=child_action.action
+          )
+        )
+      )
+      AND (source.expires_at IS NULL OR child.expires_at<=source.expires_at)
+      AND (policy.expires_at IS NULL OR child.expires_at<=policy.expires_at)
+      AND (
+        SELECT COUNT(*) FROM share_delegations sibling
+        JOIN share_delegation_status sibling_status
+          ON sibling_status.share_id=sibling.share_id AND sibling_status.valid=1
+        JOIN shares sibling_share ON sibling_share.id=sibling.share_id
+        WHERE sibling.source_share_id=source.id
+          AND sibling_share.disabled_at IS NULL
+          AND (sibling_share.expires_at IS NULL
+            OR sibling_share.expires_at>strftime('%s','now')*1000)
+      )<policy.max_fanout
+      AND NOT EXISTS(
+        WITH RECURSIVE ancestors(id,path) AS (
+          SELECT NEW.source_share_id,'/'||NEW.source_share_id||'/'
+          UNION ALL
+          SELECT parent.source_share_id,ancestors.path||parent.source_share_id||'/'
+          FROM ancestors
+          JOIN share_delegations parent ON parent.share_id=ancestors.id
+          WHERE instr(ancestors.path,'/'||parent.source_share_id||'/')=0
+        )
+        SELECT 1 FROM ancestors WHERE id=NEW.share_id
+      )
+  )
+BEGIN SELECT RAISE(ABORT,'invalid_share_delegation'); END;
+
+CREATE TRIGGER share_delegation_policy_action_removed
+AFTER DELETE ON share_reshare_policy_actions
+BEGIN
+  UPDATE share_delegation_status SET valid=0 WHERE share_id IN (
+    WITH RECURSIVE descendants(share_id) AS (
+      SELECT share_id FROM share_delegations WHERE policy_share_id=OLD.share_id
+      UNION ALL
+      SELECT child.share_id FROM share_delegations child
+      JOIN descendants parent ON parent.share_id=child.source_share_id
+    )
+    SELECT share_id FROM descendants
+  );
+END;
+
+CREATE TRIGGER backup_freeze_share_reshare_policy_actions_insert
+BEFORE INSERT ON share_reshare_policy_actions
+WHEN (SELECT backup_frozen FROM control WHERE singleton=1)=1
+BEGIN SELECT RAISE(ABORT,'backup_frozen'); END;
+CREATE TRIGGER backup_freeze_share_reshare_policy_actions_update
+BEFORE UPDATE ON share_reshare_policy_actions
+WHEN (SELECT backup_frozen FROM control WHERE singleton=1)=1
+BEGIN SELECT RAISE(ABORT,'backup_frozen'); END;
+CREATE TRIGGER backup_freeze_share_reshare_policy_actions_delete
+BEFORE DELETE ON share_reshare_policy_actions
+WHEN (SELECT backup_frozen FROM control WHERE singleton=1)=1
+BEGIN SELECT RAISE(ABORT,'backup_frozen'); END;
+
 ALTER TABLE operations ADD COLUMN authorization_context TEXT
   CHECK(authorization_context IS NULL OR (
     json_valid(authorization_context)
@@ -54,7 +192,8 @@ WHEN NEW.source='dav' AND (
           AND (
             (NEW.authorization_context IS NULL AND ap.user_id=NEW.owner_id)
             OR (NEW.authorization_context IS NOT NULL AND EXISTS(
-              SELECT 1 FROM shares sh
+              SELECT 1 FROM current_internal_shares current
+              JOIN shares sh ON sh.id=current.share_id AND sh.version=current.version
               JOIN users recipient ON recipient.id=ap.user_id AND recipient.disabled_at IS NULL
               WHERE sh.id=json_extract(NEW.authorization_context,'$.share_id')
                 AND sh.version=json_extract(NEW.authorization_context,'$.share_version')
@@ -114,6 +253,50 @@ WHEN NEW.source='dav' AND (
           AND r.id=NEW.reservation_id AND r.owner_id=NEW.owner_id
           AND r.bytes=NEW.declared_size AND r.epoch=NEW.epoch
           AND r.expires_at=NEW.expires_at AND r.share_id IS NULL
+          AND (NEW.authorization_context IS NULL OR EXISTS(
+            SELECT 1 FROM credentials c
+            JOIN app_passwords ap ON ap.id=c.app_password_id
+            JOIN users recipient ON recipient.id=ap.user_id AND recipient.disabled_at IS NULL
+            JOIN current_internal_shares current
+              ON current.share_id=json_extract(NEW.authorization_context,'$.share_id')
+              AND current.version=json_extract(NEW.authorization_context,'$.share_version')
+            JOIN shares sh ON sh.id=current.share_id AND sh.version=current.version
+              AND sh.owner_id=NEW.owner_id
+            WHERE c.id=NEW.credential_id AND c.kind='app_password'
+              AND EXISTS(
+                SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id
+                  AND sa.action=CASE WHEN NEW.target_id IS NULL THEN 'create' ELSE 'edit' END
+              )
+              AND (
+                (json_extract(NEW.authorization_context,'$.recipient.kind')='direct'
+                  AND EXISTS(
+                    SELECT 1 FROM share_grants g
+                    WHERE g.share_id=sh.id AND g.user_id=recipient.id
+                      AND g.disabled_at IS NULL AND g.version=sh.version
+                      AND g.version=json_extract(
+                        NEW.authorization_context,'$.recipient.version'
+                      )
+                  ))
+                OR (json_extract(NEW.authorization_context,'$.recipient.kind')='group'
+                  AND EXISTS(
+                    SELECT 1 FROM share_group_grants gg
+                    JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                      AND sg.disabled_at IS NULL
+                      AND sg.id=json_extract(
+                        NEW.authorization_context,'$.recipient.group_id'
+                      )
+                      AND sg.version=json_extract(
+                        NEW.authorization_context,'$.recipient.group_version'
+                      )
+                    JOIN share_group_members gm ON gm.group_id=sg.id
+                      AND gm.user_id=recipient.id AND gm.disabled_at IS NULL
+                      AND gm.version=json_extract(
+                        NEW.authorization_context,'$.recipient.membership_version'
+                      )
+                    WHERE gg.share_id=sh.id
+                  ))
+              )
+          ))
       ))
   )
 ) IS NOT 1
@@ -133,5 +316,49 @@ WHEN NEW.source='dav' AND OLD.completion_op_id IS NULL AND NEW.completion_op_id 
       AND r.owner_id=NEW.owner_id
       AND json_extract(o.operands_json,'$.parentId')=NEW.parent_id
       AND json_extract(o.operands_json,'$.nodeId') IS NEW.target_id
+      AND (NEW.authorization_context IS NULL OR EXISTS(
+        SELECT 1 FROM credentials c
+        JOIN app_passwords ap ON ap.id=c.app_password_id
+        JOIN users recipient ON recipient.id=ap.user_id AND recipient.disabled_at IS NULL
+        JOIN current_internal_shares current
+          ON current.share_id=json_extract(NEW.authorization_context,'$.share_id')
+          AND current.version=json_extract(NEW.authorization_context,'$.share_version')
+        JOIN shares sh ON sh.id=current.share_id AND sh.version=current.version
+          AND sh.owner_id=NEW.owner_id
+        WHERE c.id=NEW.credential_id AND c.kind='app_password'
+          AND EXISTS(
+            SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id
+              AND sa.action=CASE WHEN NEW.target_id IS NULL THEN 'create' ELSE 'edit' END
+          )
+          AND (
+            (json_extract(NEW.authorization_context,'$.recipient.kind')='direct'
+              AND EXISTS(
+                SELECT 1 FROM share_grants g
+                WHERE g.share_id=sh.id AND g.user_id=recipient.id
+                  AND g.disabled_at IS NULL AND g.version=sh.version
+                  AND g.version=json_extract(
+                    NEW.authorization_context,'$.recipient.version'
+                  )
+              ))
+            OR (json_extract(NEW.authorization_context,'$.recipient.kind')='group'
+              AND EXISTS(
+                SELECT 1 FROM share_group_grants gg
+                JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                  AND sg.disabled_at IS NULL
+                  AND sg.id=json_extract(
+                    NEW.authorization_context,'$.recipient.group_id'
+                  )
+                  AND sg.version=json_extract(
+                    NEW.authorization_context,'$.recipient.group_version'
+                  )
+                JOIN share_group_members gm ON gm.group_id=sg.id
+                  AND gm.user_id=recipient.id AND gm.disabled_at IS NULL
+                  AND gm.version=json_extract(
+                    NEW.authorization_context,'$.recipient.membership_version'
+                  )
+                WHERE gg.share_id=sh.id
+              ))
+          )
+      ))
   )) IS NOT 1
 BEGIN SELECT RAISE(ABORT,'invalid_dav_upload_completion'); END;

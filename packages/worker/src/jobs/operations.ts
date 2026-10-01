@@ -562,10 +562,16 @@ export async function lookupOperation(
         await atomicBatch(db, [
           authorizationAssertion(parent),
           assertExists(
-            `SELECT 1 FROM share_actions a JOIN credential_scopes cs
+            `SELECT 1 FROM current_internal_shares current
+              JOIN share_actions a ON a.share_id=current.share_id
+              JOIN credential_scopes cs
               ON cs.credential_id=? AND cs.scope='node:delete'
-              WHERE a.share_id=? AND a.action='edit'`,
-            [authorizedPrincipal.credential_id, authorizedPrincipal.internal_share.share_id],
+              WHERE current.share_id=? AND current.version=? AND a.action='edit'`,
+            [
+              authorizedPrincipal.credential_id,
+              authorizedPrincipal.internal_share.share_id,
+              authorizedPrincipal.internal_share.share_version,
+            ],
           ),
         ]);
       else if (!(await hasCredentialScope(db, authorizedPrincipal, "node:delete"))) return null;
@@ -623,8 +629,13 @@ export async function lookupOperation(
         authorizedPrincipal.kind === "app_password" &&
         authorizedPrincipal.internal_share &&
         !(await primary(db)
-          .prepare("SELECT 1 FROM share_actions WHERE share_id=? AND action='edit'")
-          .bind(authorizedPrincipal.internal_share.share_id)
+          .prepare(`SELECT 1 FROM current_internal_shares current
+            JOIN share_actions action ON action.share_id=current.share_id AND action.action='edit'
+            WHERE current.share_id=? AND current.version=?`)
+          .bind(
+            authorizedPrincipal.internal_share.share_id,
+            authorizedPrincipal.internal_share.share_version,
+          )
           .first())
       )
         return null;
