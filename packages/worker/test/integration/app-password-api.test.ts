@@ -87,6 +87,7 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
   expect(credential.scopes).toEqual(["node:read", "node:write"]);
   const listed = await handleAppPasswordHttp(new Request(url), appEnv, session, csrf);
   expect(listed.status).toBe(200);
+  expect(listed.headers.get("Cache-Control")).toBe("private, no-store");
   const listBody = await listed.text();
   expect(listBody).not.toContain(credential.secret);
   expect(JSON.parse(listBody)).toMatchObject({
@@ -167,6 +168,7 @@ it("creates, lists, authenticates and revokes a scoped app password through the 
     csrf,
   );
   expect(revoked.status).toBe(204);
+  expect(revoked.headers.get("Cache-Control")).toBe("private, no-store");
   expect(
     await env.DB.prepare("SELECT revoked_at FROM content_sessions WHERE id=?")
       .bind(contentSessionId)
@@ -229,6 +231,15 @@ it("rejects privilege scopes and roots outside the Access user's space", async (
       pepper,
     ),
   ).rejects.toThrow("invalid_app_password_root");
+  for (const input of [
+    { name: "zero expiry", scopes: ["node:read"], ttlDays: 0 },
+    { name: "long expiry", scopes: ["node:read"], ttlDays: 366 },
+    { name: "duplicate scope", scopes: ["node:read", "node:read"] },
+    { name: "unpaired root", scopes: ["node:read"], rootNodeId: own.ids.folder },
+  ])
+    await expect(createAppPassword(mutationEnv(env.DB), session, input, pepper)).rejects.toThrow(
+      "invalid_app_password_request",
+    );
   expect(
     await env.DB.prepare("SELECT COUNT(*) FROM app_passwords WHERE user_id=?")
       .bind(own.ids.user)

@@ -32,6 +32,7 @@ import {
   PlaySquare,
   RefreshCw,
   Search,
+  Settings2,
   Share2,
   Star,
   Trash2,
@@ -53,6 +54,7 @@ import { PrivateAudio } from "./features/audio/PrivateAudio";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { PrivateBookshelf } from "./features/library/PrivateBookshelf";
+import { WebDavSettings } from "./features/settings/WebDavSettings";
 import { InternalShares } from "./features/shares/InternalShares";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
@@ -1030,11 +1032,20 @@ export function App() {
   const bookshelf = pathname === "/bookshelf";
   const video = pathname === "/video";
   const sharing = pathname === "/shares";
+  const webDavSettings = pathname === "/settings/webdav";
   const sharedMatch = /^\/shared\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
   const shared = !!sharedMatch;
   const userState = recent || starred;
   const files =
-    !trash && !recent && !starred && !gallery && !audio && !bookshelf && !video && !sharing;
+    !trash &&
+    !recent &&
+    !starred &&
+    !gallery &&
+    !audio &&
+    !bookshelf &&
+    !video &&
+    !sharing &&
+    !webDavSettings;
   const personalFiles = files && !shared;
   const sharedMounts = useQuery({
     queryKey: ["shared-with-me", me?.id, me?.epoch],
@@ -1342,7 +1353,9 @@ export function App() {
                   ? "本棚"
                   : video
                     ? "動画"
-                    : path.data?.path.at(-1)?.name || "マイドライブ";
+                    : webDavSettings
+                      ? "WebDAV 設定"
+                      : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1413,6 +1426,11 @@ export function App() {
             <Trash2 size={19} />
             ごみ箱
           </Link>
+          <Link to="/settings/webdav" className={webDavSettings ? "nav-link active" : "nav-link"}>
+            <Settings2 size={19} />
+            WebDAV 設定
+            <span className="nav-dot" />
+          </Link>
         </nav>
         <div className="sidebar-bottom">
           <section className="storage-card" aria-label="ストレージ使用状況">
@@ -1450,7 +1468,9 @@ export function App() {
             <span className="workspace-avatar">
               <Cloud size={17} />
             </span>
-            <span>{sharing || shared ? "内部共有" : "パーソナルスペース"}</span>
+            <span>
+              {sharing || shared ? "内部共有" : webDavSettings ? "設定" : "パーソナルスペース"}
+            </span>
             <ChevronRight size={14} />
             <span className="muted">{title}</span>
           </div>
@@ -1465,6 +1485,13 @@ export function App() {
               <Menu.Portal>
                 <Menu.Content className="context-menu" align="end">
                   <Menu.Label>{me?.email ?? "未接続"}</Menu.Label>
+                  <Menu.Separator />
+                  <Menu.Item asChild>
+                    <Link to="/settings/webdav">
+                      <Settings2 size={15} />
+                      WebDAV 設定
+                    </Link>
+                  </Menu.Item>
                   <Menu.Separator />
                   <Menu.Item
                     disabled={loggingOut || !me}
@@ -1588,6 +1615,12 @@ export function App() {
                 動画
               </span>
             )}
+            {webDavSettings && (
+              <span>
+                <ChevronRight size={13} />
+                WebDAV 設定
+              </span>
+            )}
           </div>
           <div className="page-heading">
             <div>
@@ -1610,7 +1643,9 @@ export function App() {
                                 ? "YOUR BOOKS"
                                 : video
                                   ? "YOUR VIDEOS"
-                                  : "YOUR FILES, YOUR SPACE"}
+                                  : webDavSettings
+                                    ? "PRIVATE ACCESS"
+                                    : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
@@ -1632,7 +1667,9 @@ export function App() {
                                 ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
                                 : video
                                   ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
-                                  : "大切なファイルを、いつでも使いやすく。"}
+                                  : webDavSettings
+                                    ? "専用の認証情報で、WebDAV クライアントのアクセスを限定できます。"
+                                    : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
             {me && personalFiles && (
@@ -1725,6 +1762,8 @@ export function App() {
             </div>
           ) : sharing ? (
             <InternalShares account={me} />
+          ) : webDavSettings ? (
+            <WebDavSettings account={me} />
           ) : shared && sharedMounts.isPending ? (
             <div className="empty-state">
               <LoaderCircle size={28} className="spin" />

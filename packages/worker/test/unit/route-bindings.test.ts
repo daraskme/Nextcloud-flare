@@ -81,6 +81,7 @@ describe("route binding coverage", () => {
       "/files/node_123",
       "/trash",
       "/shares",
+      "/settings/webdav",
       "/shared/share_123",
       "/shared/share_123/folder_456",
     ])

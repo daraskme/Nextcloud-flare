@@ -188,6 +188,73 @@ it("cancels stale shared-mount reads with the caller signal", async () => {
   expect(signal.aborted).toBe(true);
 });
 
+it("uses private abortable requests for app-password list, creation and revoke", async () => {
+  const created = {
+    id: "ap_00000000000000000000000000",
+    credentialId: "ap:ap_00000000000000000000000000",
+    name: "DAV client",
+    rootNodeId: "folder",
+    createdAt: 1,
+    expiresAt: 2,
+    scopes: ["node:read", "node:write"],
+    secret: "secret",
+  };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ passwords: [] }))
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(Response.json(created, { status: 201 }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  const client = new ApiClient();
+  await expect(client.appPasswords()).resolves.toEqual({ passwords: [] });
+  await expect(
+    client.createAppPassword({
+      name: "DAV client",
+      scopes: ["node:read", "node:write"],
+      ttlDays: 30,
+      spaceId: "space",
+      rootNodeId: "folder",
+    }),
+  ).resolves.toEqual(created);
+  await expect(client.revokeAppPassword(created.credentialId)).resolves.toBeUndefined();
+  expect(fetcher.mock.calls.map(([path, init]) => [path, init?.method ?? "GET"])).toEqual([
+    ["/api/v1/app-passwords", "GET"],
+    ["/api/v1/csrf", "POST"],
+    ["/api/v1/app-passwords", "POST"],
+    ["/api/v1/app-passwords/ap%3Aap_00000000000000000000000000", "DELETE"],
+  ]);
+  expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({
+    name: "DAV client",
+    scopes: ["node:read", "node:write"],
+    ttlDays: 30,
+    spaceId: "space",
+    rootNodeId: "folder",
+  });
+  for (const call of [fetcher.mock.calls[2]!, fetcher.mock.calls[3]!])
+    expect(call[1].headers["X-CSRF-Token"]).toBe("csrf");
+});
+
+it("does not dispatch a stale app-password creation after its caller aborts", async () => {
+  let finishCsrf!: (response: Response) => void;
+  const fetcher = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        finishCsrf = resolve;
+      }),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  const controller = new AbortController();
+  const creation = new ApiClient().createAppPassword(
+    { name: "stale", scopes: ["node:read"], ttlDays: 30 },
+    controller.signal,
+  );
+  controller.abort();
+  finishCsrf(Response.json({ token: "csrf" }));
+  await expect(creation).rejects.toMatchObject({ name: "AbortError" });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
 it("exchanges media tickets at the exact content origin and returns direct media URLs", async () => {
   const fetcher = vi
     .fn()

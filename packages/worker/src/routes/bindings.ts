@@ -326,6 +326,7 @@ export const PRIVATE_SPA_PATHS = [
   "/video",
   "/trash",
   "/shares",
+  "/settings/webdav",
 ] as const;
 const PRIVATE_FILE_PATH = /^\/files\/[A-Za-z0-9_-]{1,128}$/;
 const PRIVATE_SHARED_PATH = /^\/shared\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?$/;
