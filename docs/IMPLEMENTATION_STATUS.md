@@ -9,7 +9,9 @@
 
 初回管理者1人の bootstrap を維持し、管理者だけが7日間有効な Access メール招待を発行・取消できるようにした。検証済み Access JWT の issuer と正確なメール表記を招待と照合し、本人の初回ログインで subject と個人 space/root を原子的に作成する。新規一般利用者の quota は1 GiB。設定画面から複数メールを招待でき、Access の Allow policy とアプリ招待の両方が必要。招待メールはアプリから送信しない。新 migration `0051` と通常 table `access_invites` を backup freeze・capture/restore に追加した。migration は全50件、通常tableは81、route契約は162。
 
-隔離HTTPSの全browser試験42件と、バックアップ/スキーマの修正対象121件が成功。`pnpm check` はlint・型・契約/設定検証、Node774件、Workerd 2,228件中2,227件まで通過し、残る1件は新migrationに伴う固定期待値49→50の更新漏れだった。修正後にそのschema fileのWorkerd 7/7件、最終lint459 file、Web/Worker buildとstaging Wrangler dry-runが成功した。全Workerdを含む一括再実行はpush後のCIで確認する。
+隔離HTTPSの全browser試験42件と、バックアップ/スキーマの修正対象121件が成功。途中の`pnpm check`ではNode774件、Workerd 2,228件中2,227件まで通過し、残る1件は新migrationに伴う固定期待値49→50の更新漏れだった。修正後にそのschema fileのWorkerd 7/7件、最終lint459 file、Web/Worker buildとstaging Wrangler dry-runが成功した。
+
+コミット`1d9c87a`の最終ローカル`pnpm check`はNode774件・Workerd2,228件、計3,002件、全browser42件が成功した。GitHub CIはUbuntu、Windows 2分割、browserの4 jobが成功し、backup jobだけ実Wranglerドリルの旧table期待値80で失敗した。期待値を81へ修正後、`backup:drill`、`backup:operator-drill`、`backup:run-drill`がいずれもローカルでPASSし、lintも成功した。修正コミットのCI結果を次に確認する。
 
 ## 2026-10-02 audio metadata検索・移動receipt・実AVIF表示
 
