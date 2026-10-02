@@ -154,7 +154,7 @@ export function buildProbePlan({ appOrigin = APP_ORIGIN, contentOrigin = CONTENT
       name: "public-api-unknown-share",
       method: "GET",
       url: new URL("/api/v1/public/shares/ncf-smoke-no-share", appOrigin).href,
-      expectation: "404 from Worker; no Access login",
+      expectation: "401 problem+json from Worker without a share session; no Access login",
     },
     {
       name: "dav-basic-challenge",
@@ -254,8 +254,8 @@ export async function runHttpProbes({ appOrigin, contentOrigin, fetchImpl = fetc
       passed = response.status === 200;
       outcome = passed ? "public_bypass" : outcome;
     } else if (probe.name === "public-api-unknown-share") {
-      passed = response.status === 404 && isWorkerProblem(response);
-      outcome = passed ? "worker_not_found" : outcome;
+      passed = response.status === 401 && isWorkerProblem(response);
+      outcome = passed ? "worker_share_auth" : outcome;
     } else if (probe.name === "dav-basic-challenge") {
       passed =
         response.status === 401 &&

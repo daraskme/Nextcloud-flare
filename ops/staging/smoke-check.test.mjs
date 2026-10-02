@@ -59,7 +59,7 @@ function fakeFetchForHealthyBoundary(calls) {
       return new Response(null, { status: 200 });
     if (url.pathname.startsWith("/api/v1/public/shares/"))
       return new Response(null, {
-        status: 404,
+        status: 401,
         headers: { "Content-Type": "application/problem+json" },
       });
     if (url.pathname === "/dav")

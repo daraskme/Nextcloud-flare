@@ -1272,15 +1272,15 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
       "images": { "binding": "IMAGES" },
       "ratelimits": [
         {
-          "name": "EDGE_LIMITER", "namespace_id": "2001",
+          "name": "EDGE_LIMITER", "namespace_id": "4001",
           "simple": { "limit": 300, "period": 60 }
         },
         {
-          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "2002",
+          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "4002",
           "simple": { "limit": 10, "period": 60 }
         },
         {
-          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "2003",
+          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "4003",
           "simple": { "limit": 30, "period": 60 }
         }
       ],

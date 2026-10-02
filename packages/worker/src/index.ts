@@ -39,6 +39,7 @@ export { BudgetDO } from "./do/BudgetDO";
 export { ControlDO } from "./do/ControlDO";
 export { LockDO } from "./do/LockDO";
 export { UploadDO } from "./do/UploadDO";
+export { StagingControlOperator } from "./ops/stagingControlOperator";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -158,7 +159,13 @@ export default {
     await handleDeadLetterBatch(env, batch);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
-    const epoch = await admittedEpoch(env);
+    let epoch: number | null;
+    try {
+      epoch = await admittedEpoch(env);
+    } catch {
+      // A closed or unavailable coordinator leaves scheduled maintenance idle.
+      return;
+    }
     if (epoch === null) return;
     await failStaleTreeJobs(env, epoch);
     await dispatchPendingTreeJobs(env, env.JOBS, epoch);

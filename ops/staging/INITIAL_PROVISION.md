@@ -1,6 +1,6 @@
 # Staging 初回 provision 手順
 
-この手順は初回 Worker が存在せず、`staging.yml` の `wrangler secret list` がまだ成功しない状態を埋める。ここに記載するコマンドは**未実行**。リポジトリ内の `bootstrap-plan.mjs` は Cloudflare に接続せず、現行 template と一致するリソース名・作成コマンドだけを JSON で表示する。
+この手順は初回 Worker が存在せず、`staging.yml` の `wrangler secret list` がまだ成功しない状態を埋める。`darask.date` の staging では専用リソース作成、50 件の D1 migration、初回 Worker 配備まで完了した。再実行時は各リソースと migration の現状を先に照合する。リポジトリ内の `bootstrap-plan.mjs` は Cloudflare に接続せず、現行 template と一致するリソース名・作成コマンドだけを JSON で表示する。
 
 ```sh
 node ops/staging/bootstrap-plan.mjs
@@ -27,7 +27,7 @@ pnpm exec wrangler queues create ncf-staging-jobs-dlq
 pnpm exec wrangler queues create ncf-staging-jobs
 ```
 
-R2 の 2 bucket は public access / `r2.dev` を有効にしない。Queue と DLQ は名前を取り違えない。Rate Limiting の namespace ID `2001`–`2003` が account 内の他 Worker に使われていないことを確認する。Images binding、Workers Paid と R2/Queues/D1/KV の利用可否も配備前に確認する。
+R2 の 2 bucket は public access / `r2.dev` を有効にしない。Queue と DLQ は名前を取り違えない。Rate Limiting の namespace ID `4001`–`4003` が account 内の他 Worker に使われていないことを確認する。初回調査で `2001`–`2003` は別 Worker が使用していた。Images binding、Workers Paid と R2/Queues/D1/KV の利用可否も配備前に確認する。
 
 ## 2. 実 ID を照合する
 
@@ -59,6 +59,55 @@ remote D1 migration は workflow から自動実行しない。生成 config の
 ```sh
 pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
 pnpm exec wrangler d1 migrations apply ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
+```
+
+`0003_invariant_guards.sql` など trigger を含む migration が `incomplete input: SQLITE_ERROR [code: 7500]` で失敗した場合、D1 の `/query` 経路で複数の trigger 文を分割する問題を回避するため、次の手順で **失敗した 1 ファイルだけ** `/import` 経路から適用する。`migrations apply` は migration 本文と `d1_migrations` への記録を 1 件の `/query` に送る。準備スクリプトは同じ記録を SQL の末尾に追加し、先行 migration を適用した SQLite で検証したうえで `/tmp` に `0600` のファイルを作る。Cloudflare には接続しない。
+
+適用前に `migrations list` で対象が未適用で、その前の migration がすべて適用済みであることを確認する。特に `0003` では `0001` と `0002` のみが適用済みであることを確認する。対象の trigger が既に作成されていないかも確認する。予期しない状態なら実行せず調査する。
+
+```sh
+pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name;"
+node ops/staging/prepare-d1-trigger-import.mjs 0003_invariant_guards.sql
+```
+
+出力された `path` と `sha256` を確認する。次の `<path>` は出力された絶対パスに置き換える。このコマンドは remote D1 を変更する。Cloudflare の [D1 import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) は失敗時に DB を元の状態へ戻す。適用後は migration 記録と trigger 数を確認し、`0003` が 1 回だけ記録され、trigger が 30 個あることを確かめる。
+
+```sh
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --file <path>
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT name, COUNT(*) AS n FROM d1_migrations GROUP BY name ORDER BY name;"
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger';"
+pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
+```
+
+後続 migration でも同じ `7500` が発生した場合は、その migration の前までが適用済みであることを確認し、ファイル名を指定して同じ準備・適用・検証を 1 件ずつ繰り返す。二重適用や migration 記録だけの手動追加はしない。
+
+### 空の staging D1 で 0003 の適用後に残りをまとめて適用する
+
+この方法は **0001–0003 だけが適用済み** の空の staging D1 に限る。`0004` から `0051` の 47 ファイルを番号順に連結し、各ファイルの直後に対応する `d1_migrations` 記録を入れる。準備スクリプトは先行 3 ファイルから連結 payload の終わりまでを SQLite で実行し、全記録と最終 trigger 数を検査する。既存の `0001`–`0003` は再実行しない。
+
+まず remote の migration 記録が `0001_foundation.sql`、`0002_content_media.sql`、`0003_invariant_guards.sql` の各 1 件だけであり、trigger が 30 個であることを確認する。`migrations list` では `0004` から `0051` がすべて未適用である必要がある。異なる状態ならこの一括 import は実行しない。
+
+```sh
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT name, COUNT(*) AS n FROM d1_migrations GROUP BY name ORDER BY name;"
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger';"
+pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
+node ops/staging/prepare-d1-trigger-import.mjs 0004_catalogue_indexes.sql 0051_access_invites.sql
+```
+
+準備結果が `precedingMigrations: 3`、`migrations: 47`、`expectedTotalMigrations: 50`、`expectedTotalTriggers: 458` であることを確認し、出力された `path` と `sha256sum <path>` の値を照合する。次の `<path>` を出力された絶対パスに置き換えて 1 回だけ実行する。
+
+```sh
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --file <path>
+```
+
+成功後、各 migration の `n` が 1、記録の総数が 50、trigger が 458、`migrations list` に未適用ファイルがないことを確認する。import が失敗した場合は再実行前に同じ照会を行い、部分適用や記録の欠落がないことを確認する。
+
+```sh
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT name, COUNT(*) AS n FROM d1_migrations GROUP BY name ORDER BY name;"
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT COUNT(*) AS n FROM d1_migrations;"
+pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger';"
+pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
 ```
 
 ## 4. Worker 用 secret 値の登録

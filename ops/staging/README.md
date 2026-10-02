@@ -1,6 +1,6 @@
-# Cloudflare staging 配備案
+# Cloudflare staging 配備
 
-`wrangler.staging.example.jsonc` はレビュー用の独立した設定案である。D1 と KV の ID は意図的に無効な値にしてある。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義するが、リモートのリソース作成、secret 登録、migration、deploy は未実施。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、50 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。人の Access ログインと招待後の操作、GitHub Actions の最小権限 deploy token は未検証・未設定。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
 
 ## リソース台帳と設定
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | Worker | `next-cloud-flare-staging`; `workers_dev=false`, `preview_urls=false` |
 | Custom Domain | `staging-app.darask.date`, `staging-content.darask.date`; 両方とも同じ Worker の origin |
-| D1 | `ncf-staging`; 作成後に実 UUID を記入し、`packages/worker/migrations` を適用 |
+| D1 | `ncf-staging`; 50 件の migration 適用済み。実 UUID は生成した非追跡 config と GitHub Environment variable に設定 |
 | R2 | private `ncf-staging-blobs`, private `ncf-staging-backups`; public access と `r2.dev` を無効化 |
 | KV | staging 専用 `CACHE` namespace ID |
 | Durable Objects | staging Worker に属する `CONTROL`, `LOCKS`, `UPLOADS`, `BUDGETS`; `v1-sqlite-do` migration |
@@ -20,25 +20,27 @@
 
 `vars` は staging marker、厳密な HTTPS origin、Queue 名、PBKDF2 反復回数だけを置く。`secrets.required` は必要なキー名の一覧であり、値の登録や実在を証明しない。値はリポジトリや CI ログに書かず、staging 専用の保護された secret store で管理する。`ACCESS_ISSUER`, `ACCESS_USER_AUDIENCE`, `ACCESS_SERVICE_AUDIENCE` は実際の Access application と一致させる。`BOOTSTRAP_OWNER_EMAILS` は JSON 文字列配列、`BOOTSTRAP_OWNER_IDENTITIES` は `iss`/`sub` の JSON オブジェクト配列、`BOOTSTRAP_QUOTA_BYTES` は非負の安全な整数。両 bootstrap 配列の合計は 1 件以上。CSRF、content ticket/cookie、cursor、app/share password、upload capability は用途別の key ring と active kid を揃える。`R2_INVENTORY_*` は `ncf-staging-blobs` の読み取り専用 S3 inventory 資格情報を指定する。追加の jurisdiction が必要なら `R2_INVENTORY_JURISDICTION` を明示する。
 
-`EPOCH_FLOOR` は復旧時の制御値なので通常配備では設定しない。`BACKUP_OPERATOR_ENABLED` は別の backup operator Worker の設定であり、この app Worker では設定しない。backup operator の遠隔 schedule と資格情報も、現行 CI の backup drill だけでは構成されない。
+`EPOCH_FLOOR=2` は初回 ControlDO 復旧後の安全な下限であり、通常配備にも残す。`STAGING_CONTROL_OPERATOR_ENABLED` は通常 `false`。`BACKUP_OPERATOR_ENABLED` は別の backup operator Worker の設定であり、この app Worker では設定しない。backup operator の遠隔 schedule と資格情報も、現行 CI の backup drill だけでは構成されない。
 
 ## Access とアプリの入口
 
 | host / path | Access policy | Worker 側 |
 | --- | --- | --- |
 | app host の `/*`（深い SPA path、`/private-assets/*`、private `/api/v1/*` を含む） | staging user application の root Allow | user JWT と既存 user/session |
-| app の `/api/v1/automation/*` | Service Auth（設計上の境界） | 現行 Worker に handler はなく、404。service API は未実装 |
+| app の `/api/v1/automation/*` | 現在は Everyone を Deny。実装後は Service Auth を設計 | 現行 Worker に handler はなく、404。service API は未実装 |
 | app の `/s`, `/s/*`, `/public-assets/*`, `/api/v1/public/shares/*` | Bypass | share secret、session、CSRF、route manifest |
 | app の `/dav`, `/dav/*` | Bypass | app password Basic |
 | content host 全体 | Bypass | content ticket/cookie、host と route 検証 |
 
-app host の root Allow は `staging-app.darask.date/*` で深い SPA path も覆い、public share、DAV、automation にはより具体的な Bypass / Service Auth application を設定する。Access の path 優先順位と Worker route の双方で、未知 method/path が private 権限に繰り上がらないことを確認する。content host に user Access を要求すると、別 origin の ticket/cookie flow が成立しない。Service Auth は将来の automation route の入口契約であり、Access 設定を作っても現行 Worker に service API が追加されるわけではない。
+app host の root Allow は `staging-app.darask.date/*` で深い SPA path も覆い、public share と DAV にはより具体的な Bypass、automation には Deny application を設定した。Access の path 優先順位と Worker route の双方で、未知 method/path が private 権限に繰り上がらないことを確認する。content host に user Access を要求すると、別 origin の ticket/cookie flow が成立しない。Service Auth は将来の automation route の入口契約であり、現行 Worker に service API はない。
 
-**追加ユーザー:** `bootstrapOwner` は最初の管理者 1 人だけを作る。Access Allow に複数メールを登録した後、管理者がアプリの設定画面から各メールを招待する。7日間有効な招待は Access が検証した正確な issuer・メール表記と一致する本人の初回ログインで一度だけ消費され、`iss+sub` と専用 space/root を原子的に固定する。一般利用者の初期 quota は1 GiB。Access Allow だけではアプリ利用者にならず、D1 への手動 `INSERT` や暗黙のメール一致登録は行わない。この機能はローカル実装・試験段階で、remote migration・実 Access 接続は未検証。手順は [STAGING_ACCESS](../../docs/STAGING_ACCESS.md) を参照する。
+**追加ユーザー:** `bootstrapOwner` は最初の管理者 1 人だけを作る。Access Allow に複数メールを登録した後、管理者がアプリの設定画面から各メールを招待する。7日間有効な招待は Access が検証した正確な issuer・メール表記と一致する本人の初回ログインで一度だけ消費され、`iss+sub` と専用 space/root を原子的に固定する。一般利用者の初期 quota は1 GiB。Access Allow だけではアプリ利用者にならず、D1 への手動 `INSERT` や暗黙のメール一致登録は行わない。remote migration は完了したが、実 Access 本人ログインと招待は未検証。手順は [STAGING_ACCESS](../../docs/STAGING_ACCESS.md) を参照する。
 
 ## 初回準備と手動配備
 
 初回 Worker がない状態からのリソース作成、ID 取得、remote D1 migration、Worker secret の準備と同時登録は [INITIAL_PROVISION](INITIAL_PROVISION.md) に記載した。宣言的な resource plan は `node ops/staging/bootstrap-plan.mjs` でローカル表示できる。このコマンド自体は Cloudflare に接続しない。
+
+初回 deploy 後の `503 not_ready` は [CONTROL_CRON_RECOVERY](CONTROL_CRON_RECOVERY.md) の一時 Cron Worker で復旧済み。D1 は epoch 2、受付と GC が有効、BACKUPS に `sys/epoch/2.json` がある。一時 Cron Worker は削除し、通常の generated config では operator gate を無効にした。[CONTROL_RECOVERY](CONTROL_RECOVERY.md) はローカル service binding が使える環境向けの別手順。
 
 1. Cloudflare account と zone、上表の staging 専用リソース、Access application/policy、secret 名と値の管理責任者を確定する。D1/KV の実 ID、Queue と bucket の実在、Custom Domain の zone 所属、公開設定を台帳で照合する。`REPLACE_WITH_` が残る設定は拒否する。
 2. GitHub repository の **Settings → Environments → New environment** で `staging` を作り、必要な reviewer と配備可能 branch を `main` に制限する。`staging` environment secrets に `CLOUDFLARE_ACCOUNT_ID` と最小権限の `CLOUDFLARE_API_TOKEN`、environment variables に実 ID の `STAGING_D1_DATABASE_ID` と `STAGING_KV_NAMESPACE_ID` を登録する。secret 値は workflow file や通常の repository variables へ転記しない。workflow 自体も `main` 以外を拒否し、同時実行を 1 件に制限する。PR や一般の push job に Cloudflare 資格情報を渡さない。

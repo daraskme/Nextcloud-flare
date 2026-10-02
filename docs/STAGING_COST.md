@@ -2,14 +2,45 @@
 
 対象は `darask.date` の staging 専用リソースにより増える Cloudflare 請求額で、上限は **月 10,000 円**。既存の有料プラン料金はこの枠に含めない。ただし Cloudflare の無料枠と有料プランの包含量はアカウント全体で共有されるため、staging のリソース使用量を単価に掛けるだけでは追加請求額を確定できない。
 
-## 初回配備前に記録する値
+## 現在のアカウント基準値
+
+2026-10-03 の確認値: Workers Paid、R2 Paid、Cloudflare One Free。請求画面の契約一覧に Images Paid はないため Images Free と見込むが、画像変換試験の前に Dashboard で確定する。Cloudflare の請求期間は 2026-09-19 開始で、10-02 までのアカウント全体の billable usage は **USD 0.30**。この $0.30 は staging 配備前の基準であり、staging の費用ではない。アカウント全体のサービス別内訳と各共有枠の残量は別途 Dashboard で照合する。Cloudflare One Free は50人以下を対象とするプランで、今回の3人の Access 利用者はその範囲内である（[Cloudflare One plans](https://www.cloudflare.com/plans/zero-trust-services/)）。プランと請求期間は変更され得るため毎月確認する。
+
+## 月額の目安
+
+次は公式単価を使った概算。円換算は比較用に **USD 1 = ¥150** と仮定する（請求換算、税、カード手数料とは一致しない）。Workers Paid の $5/月はすでにアカウントで契約済みなので、今回の「追加費用」には含めない。Workers、D1、DO、KV、Queues の included usage はアカウント単位の共有枠であり、残りがあれば追加課金は $0、使い切っていれば下の超過分が追加になる。R2 の Standard 無料枠も同様にアカウント共有。
+
+| 月の利用例 | 月間 workload | 全包含量が残る想定 | 共有枠が残らない想定 |
+| --- | --- | ---: | ---: |
+| 少人数の手動試験 | 3 人、月10万 Worker requests・平均 CPU 5 ms、D1/DO/Queue/KV は各 Paid 包含量以下、R2 Standard 5 GB・PUT 5万・GET 50万 | **$0（追加従量分）** | 各サービスの実量を下の単価式に入れる。D1 rows/storage と DO duration が未計測なので一つの数字には固定しない。 |
+| 継続利用と中程度の fixture | 15 million Worker requests・平均7 ms CPU、DO 1.5 million requests、R2 Standard 50 GB・Class A 2 million・Class B 20 million、Queue 1 million messages | **約 $12.65（約 ¥1,900）** | **約 $25.05（約 ¥3,760）** |
+| 負荷試験の例 | 100 million Worker requests・平均7 ms CPU、R2 Standard 100 GB・Class A 10 million・Class B 100 million、Queue 10 million messages | **約 $126.25（約 ¥18,940）** | **約 $138.50（約 ¥20,780）** |
+
+「全包含量が残る」は追加費用が少なくなる側の仮定である。包含量が一部残る場合の請求額は両列の間になる。中程度シナリオは残量ありの場合 Workers $3.00 + DO $0.15 + R2 $8.70 + Queues $0.80 = $12.65、残量なしの場合 Workers $6.60 + DO $0.30 + R2 $16.95 + Queues $1.20 = $25.05。負荷試験例は同様に $126.25 / $138.50。D1 と KV の実操作量、DO の duration、画像変換は表の前提に含めておらず、超過すればさらに追加費用が生じる。実際の残量はアカウント全体の usage を見て選ぶ。
+
+少人数の手動試験は ¥10,000/月をかなり下回る見込みだが、Cloudflare は staging 単独のハード上限を提供しないため、実際の増分は請求画面とリソース別 Analytics で日次確認する。とくに R2 の繰り返し PUT/GET、Queue retry/DLQ、Cron の実 CPU と毎分の R2 inventory/list を追う。画像変換 Free は月 5,000 unique transformations までで、超過時は有料化ではなく新しい変換がエラーになる。
+
+簡易式（USD、全包含量が残っている前提の超過目安。共有量がゼロなら `max(0, usage - allowance)` を `usage` に置き換える）:
+
+```text
+Workers = max(0, requests - 10,000,000) / 1,000,000 * 0.30
+        + max(0, CPU_ms - 30,000,000) / 1,000,000 * 0.02
+R2 Standard = max(0, GB-month - 10) * 0.015
+            + max(0, Class_A - 1,000,000) / 1,000,000 * 4.50
+            + max(0, Class_B - 10,000,000) / 1,000,000 * 0.36
+Queues = max(0, operations - 1,000,000) / 1,000,000 * 0.40
+```
+
+有料枠の D1/DO SQLite は 25 billion rows read、50 million rows written、5 GB-month が包含量で、超過単価はそれぞれ $0.001/million、$1/million、D1 $0.75/GB-month・DO SQLite $0.20/GB-month。KV は 10 million reads・1 million write/delete/list が包含量で、超過は reads $0.50/million、write/delete/list $5/million。ここに表示した個別上限もアカウント全体の利用で消費される。
+
+## 初回配備時の基準値と日次で記録する値
 
 Cloudflare Billing と各サービスの Analytics から、作成前日の値を保存する。請求月の区切り、請求通貨、税、換算レートも請求画面で確認する。既存利用量の変動がある場合は、直近 7 日の日次値も記録して基準にする。
 
 | 記録欄 | 値 | 確認先 |
 | --- | --- | --- |
-| 請求月の開始・終了、タイムゾーン | 未記入 | Billing |
-| 既存プラン以外の当月利用料、税、通貨 | 未記入 | Billing |
+| 請求月の開始・終了、タイムゾーン | 2026-09-19 開始。終了と timezone は請求画面で確認 | Billing |
+| 既存プラン以外の当月利用料、税、通貨 | 2026-10-02 時点 USD 0.30（アカウント全体の基準値） | Billing |
 | 直近 7 日の既存利用量と通常の増加傾向 | 未記入 | Billing / Analytics |
 | Workers requests / CPU、Durable Objects requests / duration / storage | 未記入 | Workers / DO Analytics |
 | D1 rows read / written / storage | 未記入 | D1 Analytics |
@@ -17,7 +48,7 @@ Cloudflare Billing と各サービスの Analytics から、作成前日の値�
 | KV reads / writes / deletes / lists / storage | 未記入 | KV Analytics |
 | Queues operations、再試行、DLQ | 未記入 | Queues Analytics |
 | Images の一意な変換数 | 未記入 | Images Analytics |
-| 追加 Access 利用者の契約上の席数・単価 | 未確認 | Zero Trust plan / Billing |
+| 追加 Access 利用者の契約上の席数・単価 | Cloudflare One Free。3 利用者は公式 Free plan の50人以下の対象範囲 | [Cloudflare One plans](https://www.cloudflare.com/plans/zero-trust-services/) / Billing |
 
 staging 作成後は `next-cloud-flare-staging`、`ncf-staging`、`ncf-staging-blobs`、`ncf-staging-backups`、`ncf-staging-jobs`、`ncf-staging-jobs-dlq`、専用 KV のメトリクスを同じ請求月で日次に記録する。アカウント全体の利用料の増加と照合し、他の workload による変動を差し引く。区別できない料金は暫定的に staging 側へ計上する。請求確定後は実際の増分で見直す。
 
@@ -45,4 +76,4 @@ staging 作成後は `next-cloud-flare-staging`、`ncf-staging`、`ncf-staging-b
 | Queues | operations。送信、受信、削除や再試行を含む | [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/) |
 | Images | 一意な変換数 | [Images pricing](https://developers.cloudflare.com/images/pricing/) |
 
-staging の作成前には請求基準値がまだ埋められない。実際の Cloudflare アカウントで上の記録を埋めてから費用見込みを判断する。
+料金表は変更され得るため、配備日にも公式資料を再確認する。例の単価と計算は budget forecast であり、Cloudflare 請求の確定見積りではない。
