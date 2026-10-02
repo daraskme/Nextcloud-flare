@@ -14,7 +14,7 @@ Access ポリシーにテスターを追加しても、Nextcloud-flare の D1 `u
 
 | Host / path | Cloudflare Access | Worker 側の認証・認可 |
 | --- | --- | --- |
-| `staging-app.darask.date` の private app (`/`, `/private-assets/*`, private `/api/v1/*`) | Allow。承認済み user identity のみ | Access user JWT とアプリ DB の既存 user |
+| `staging-app.darask.date/*`（app host 全体。以下のより具体的な例外を除く） | Allow。承認済み user identity のみ | Access user JWT とアプリ DB の既存 user |
 | `staging-app.darask.date/api/v1/automation/*` | 実装時の設計: Service Auth。登録済み Service Token のみ | handler 未実装。現在は Worker が 404 を返す |
 | app host の `/s`, `/s/*`, `/api/v1/public/shares/*`, `/public-assets/*`, `/dav`, `/dav/*` | path-specific Bypass | share secret / session / CSRF、公開 asset manifest、または app password Basic |
 | `staging-content.darask.date` | Host を Bypass | `/session`, `/c/*`, `/reader/*` は content-session Cookie / ticket を検証 |
@@ -26,7 +26,7 @@ Bypass は Access の認証と request logging を外す設定です。上記の
 1. Cloudflare dashboard で **Zero Trust → Integrations → Identity providers** を開き、既存の組織 IdP を使うか、ゲスト向けに **One-time PIN** を追加します。IdP は dashboard と IdP の双方で設定します。[Identity providers](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/)
 2. **Zero Trust → Access controls → Policies → Add a policy** で `Staging testers` などの Allow policy を作成します。テスト対象を限定するため、Include に個々の **Emails** を列挙するか、管理済み IdP group を指定します。ポリシーは deny-by-default の application に割り当てます。[Access policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/)
 3. Access application の login methods で必要な IdP を選びます。IdP が 1 つだけなら Apply instant authentication を使うと、Access login page を挟まず IdP に送れます。[Self-hosted application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)
-4. 人のテスターには private app の path に `Staging testers` を設定します。初回管理者はアプリの「設定 → WebDAV → 利用者の招待」で同じメール表記の招待を作成します。本人がログインし、個別のアカウントと個人スペースが作成されたことを確認します。Access の許可だけでアプリログイン可能とは判定しません。
+4. `staging-app.darask.date/*` に `Staging testers` の Allow を設定し、その下に表の public / DAV Bypass と automation Service Auth のより具体的な path application を作成します。Cloudflare は空の Path 欄または `/*` で hostname 全体を保護します。`/` だけでは SPA deep link を網羅しないため使いません。初回管理者はアプリの「設定 → WebDAV → 利用者の招待」で同じメール表記の招待を作成します。本人がログインし、個別のアカウントと個人スペースが作成されたことを確認します。Access の許可だけでアプリログイン可能とは判定しません。
 
 One-time PIN は Allow policy に含まれるメールアドレスにだけ送信され、PIN は 10 分で失効します。OTP を Include にするだけでメール範囲を制限しない設定は、任意の有効な email login method を許可するため使わないでください。[One-time PIN](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/), [Common Access policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/)
 
@@ -45,17 +45,36 @@ Cloudflare dashboard の **Zero Trust → Access controls → Applications → C
 - public share、public assets、DAV の Bypass path を private Allow path より具体的に設定し、path 外へ拡張しないことを確認します。Bypass は `/s`, `/s/*`, `/api/v1/public/shares/*`, `/public-assets/*`, `/dav`, `/dav/*` に限定します。
 - `staging-content.darask.date` は Access Bypass。Access Allow を設定せず、Worker の session / ticket 検証に委ねます。
 
-Cloudflare は同じ root path 上でより具体的な application path を優先します。さらに path override の wildcard は自動で下位 path 全体に広がらない場合があるため、`/dav` と `/dav/*` のように必要な path を明示して確認します。[Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/), [Bypass a public endpoint](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/)
+Cloudflare は同じ root path 上でより具体的な application path を優先し、その path では root application の policy を継承しません。`/*` は hostname 全体、`/dav/*` は `/dav` より下位の path を対象にしますが、親の `/dav` 自体は含みません。`/s` と `/s/*`、`/dav` と `/dav/*` のように、親 path と子 path を両方明示して確認します。[Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/), [Bypass a public endpoint](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/)
 
 staging gate では、少なくとも次を browser と HTTP client の両方で確認します。
 
+秘密値やCloudflare API tokenを使わない、read-onlyのローカル事前確認と限定HTTP smoke runnerを用意しています。引数なしでは静的契約を確認してdry-run計画だけ表示し、ネットワークへ接続しません。
+
+```sh
+node ops/staging/smoke-check.mjs
+```
+
+staging の配備後に固定された両 origin を明示して実行します。runner は最大9件を順番に送り、GET/HEAD のみ、Cookie/Authorization/body なし、response body 非保存、再試行なし、各 request 5秒 timeout です。Private gate は Access login path または Access 固有 host への遷移だけを合格にし、Worker のみの401、曖昧な403、未検証の外部 IdP への redirect は手動確認に回します。公開経路の一部に GET を使いますが、fixture 作成や upload、変換、Queue 起動などは行いません。
+
+```sh
+node ops/staging/smoke-check.mjs --execute \
+  --app-origin https://staging-app.darask.date \
+  --content-origin https://staging-content.darask.date
+```
+
+これはpublic bypassとanonymous private gateの配線だけを確認します。複数identityのAllow/拒否、招待後の初回loginと個人space、実ファイルのcontent ticket有無は別の手動browser確認が必要です。HTTP smokeが成功してもCloudflare設定全体の安全性を証明した扱いにはしません。
+
 - 許可 identity は private app にログインでき、未許可 identity は Access で拒否される。
+- 少なくとも2人のAllow済みテスターを別々のbrowser profileで試し、招待をclaimした一般利用者の個別アカウント・spaceと、互いのprivate data分離を確認する。
+- Allowに含めていないidentityを別profileで試し、Accessがprivate app全体とbundleを拒否することを確認する。
 - 実 build の `/private-assets/*` にも user Access が適用され、許可 identity の画面が JS/CSS を読み込んで表示される。未許可 identity へ bundle をそのまま配らない。
 - automation handler の実装後に限り、`/api/v1/automation/*` が有効な Service Token でだけ通り、通常の browser login へフォールバックしないことを gate に追加する。現時点では未実装のため 404 が期待値であり、Service Token 通過を現行の合格条件にしない。
 - public share と `/public-assets/*` は Access login に redirect されず、Worker の share / manifest 認証を受ける。
 - `/dav` は Access login に redirect されず、正しい app password Basic を要求する。
 - content host は Access login に redirect されず、正しい content-session Cookie / ticket なしでは Worker が拒否する。
 - path specificity、未知 path / method、別 host、preview URL、`workers.dev` が private app に迂回路を作らない。
+- content hostの実在するfixtureで、正しいticket/session cookieだけが内容を取得でき、cookieなし・期限切れcookieは拒否されることを確認する。smoke runnerの架空ID probeはAccess Bypass経路とWorker応答を見るだけで、この認可条件は証明しない。
 
 Cloudflare の Bypass は一致 request に対する Access controls と request logging を無効にします。path precedence や host 側の設定が意図どおりであることが未確認なら、staging を利用者へ開放しないでください。[Common Access policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/)
 

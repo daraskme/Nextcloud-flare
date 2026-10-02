@@ -96,6 +96,32 @@ function checkSecrets(listPath) {
   );
 }
 
+function inspectResourceIds(d1ListPath, kvListPath) {
+  assert(d1ListPath && kvListPath, "Expected D1 and KV list JSON paths");
+  const config = readJsonc(templatePath);
+  validateTemplate(config);
+  const databases = JSON.parse(readFileSync(d1ListPath, "utf8"));
+  const namespaces = JSON.parse(readFileSync(kvListPath, "utf8"));
+  assert(Array.isArray(databases) && Array.isArray(namespaces), "Invalid resource list JSON");
+  const d1Matches = databases.filter((row) => row?.name === config.d1_databases[0].database_name);
+  const kvMatches = namespaces.filter((row) => row?.title === "ncf-staging-cache");
+  assert(
+    d1Matches.length === 1 && kvMatches.length === 1,
+    "Expected one exact D1 and KV name match",
+  );
+  const d1 = d1Matches[0].uuid;
+  const kv = kvMatches[0].id;
+  assert(
+    typeof d1 === "string" && /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(d1),
+    "Invalid D1 UUID in resource list",
+  );
+  assert(typeof kv === "string" && /^[a-f\d]{32}$/i.test(kv), "Invalid KV ID in resource list");
+  assert(d1 !== "00000000-0000-0000-0000-000000000000", "Local D1 placeholder rejected");
+  assert(kv !== "00000000000000000000000000000000", "Local KV placeholder rejected");
+  console.log(`STAGING_D1_DATABASE_ID=${d1}`);
+  console.log(`STAGING_KV_NAMESPACE_ID=${kv}`);
+}
+
 switch (process.argv[2]) {
   case "generate":
     generate();
@@ -103,6 +129,11 @@ switch (process.argv[2]) {
   case "check-secrets":
     checkSecrets(process.argv[3]);
     break;
+  case "inspect-ids":
+    inspectResourceIds(process.argv[3], process.argv[4]);
+    break;
   default:
-    throw new Error("Usage: node staging-config.mjs generate|check-secrets [secret-list.json]");
+    throw new Error(
+      "Usage: node staging-config.mjs generate|check-secrets|inspect-ids [JSON files]",
+    );
 }

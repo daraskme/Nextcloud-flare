@@ -7,11 +7,13 @@
 
 `darask.date` に `staging-app` と `staging-content` を置く独立 Wrangler 設定案、必要な D1/R2/KV/DO/Queues/Images/Access/secret の台帳、Cloudflare Access の複数利用者・MFA・公開経路 Bypass 手順を追加した。staging の追加費用上限は月1万円。Cloudflare Budget alerts はアカウント全体の USD 通知で、staging 単独の強制停止ではないため、実使用量の照合と負荷の段階的制限を運用 gate とする。GitHub の手動 `workflow_dispatch` は保護された `staging` Environment の Cloudflare token と実D1/KV IDを検査し、`deploy=true` のときだけ既存 Worker を配備する。初回 resource/Worker作成・remote migrationは別手順。設定案の Wrangler dry-run は成功したが、実 ID、secret、Cloudflare リソース、GitHub staging Environment は未設定。remote migration・deploy・実 Access は未検証。
 
+初回の [provision 手順](../ops/staging/INITIAL_PROVISION.md)、現行設定から6リソースと26 secret 名を抽出するローカル計画、実 D1/KV ID の一覧照合、repo 外0600の Worker secret 下書き・構造検査、費用の基準値と日次判断表、9件に制限した読み取り専用 HTTP smoke を追加した。Cloudflare Access の private root Allow は app host 全体の `/*` とし、公開 share・DAV・content host の Bypass を別に指定する。smoke の既定動作はネットワークなしで、静的契約と予定リクエストを表示する。ローカルの9テスト、設定検証、仮 ID での Wrangler dry-run、変更した JavaScript の Biome 検査が成功した。実アカウントへの最初の操作で Cloudflare account ID と API token が必要になり、作成・migration・実 HTTP smoke は未実施。
+
 初回管理者1人の bootstrap を維持し、管理者だけが7日間有効な Access メール招待を発行・取消できるようにした。検証済み Access JWT の issuer と正確なメール表記を招待と照合し、本人の初回ログインで subject と個人 space/root を原子的に作成する。新規一般利用者の quota は1 GiB。設定画面から複数メールを招待でき、Access の Allow policy とアプリ招待の両方が必要。招待メールはアプリから送信しない。新 migration `0051` と通常 table `access_invites` を backup freeze・capture/restore に追加した。migration は全50件、通常tableは81、route契約は162。
 
 隔離HTTPSの全browser試験42件と、バックアップ/スキーマの修正対象121件が成功。途中の`pnpm check`ではNode774件、Workerd 2,228件中2,227件まで通過し、残る1件は新migrationに伴う固定期待値49→50の更新漏れだった。修正後にそのschema fileのWorkerd 7/7件、最終lint459 file、Web/Worker buildとstaging Wrangler dry-runが成功した。
 
-コミット`1d9c87a`の最終ローカル`pnpm check`はNode774件・Workerd2,228件、計3,002件、全browser42件が成功した。GitHub CIはUbuntu、Windows 2分割、browserの4 jobが成功し、backup jobだけ実Wranglerドリルの旧table期待値80で失敗した。期待値を81へ修正後、`backup:drill`、`backup:operator-drill`、`backup:run-drill`がいずれもローカルでPASSし、lintも成功した。修正コミットのCI結果を次に確認する。
+コミット`1d9c87a`の最終ローカル`pnpm check`はNode774件・Workerd2,228件、計3,002件、全browser42件が成功した。GitHub CIはbackup jobだけ実Wranglerドリルの旧table期待値80で失敗したため、コミット`5e367be`で81へ修正した。修正後の`backup:drill`、`backup:operator-drill`、`backup:run-drill`がローカルでPASSし、[CI run 36975405856](https://github.com/daraskme/Nextcloud-flare/actions/runs/36975405856) はUbuntu、Windows 2分割、browser、backupの5 jobすべて成功した。
 
 ## 2026-10-02 audio metadata検索・移動receipt・実AVIF表示
 
