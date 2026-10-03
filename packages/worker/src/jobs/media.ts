@@ -158,6 +158,15 @@ async function persistMetadata(
     [
       sourceFence(row),
       {
+        sql: `UPDATE blobs SET mime_sniffed=? WHERE id=? AND owner_id=?
+          AND state IN ('committed','gc_candidate')`,
+        values: [metadata.mime, row.blob_id, row.owner_id],
+      },
+      assertExists("SELECT 1 FROM blobs WHERE id=? AND mime_sniffed=?", [
+        row.blob_id,
+        metadata.mime,
+      ]),
+      {
         sql: `INSERT INTO node_media(node_id,blob_id,generator_version,width,height)
           VALUES(?,?,?,?,?)
           ON CONFLICT(node_id) DO UPDATE SET blob_id=excluded.blob_id,

@@ -109,6 +109,11 @@ export async function handleContentHttp(
         error instanceof MutationUnavailableError ||
         (error instanceof Error && error.message === "content_session_commit_unknown")
       ) {
+        if (env.ENVIRONMENT === "staging")
+          console.warn(
+            "staging_content_session_rejected",
+            error instanceof MutationUnavailableError ? "admission" : "commit_unknown",
+          );
         const response = problem(503, "not_ready");
         response.headers.set("Retry-After", "1");
         return cors(response, env.APP_ORIGIN);

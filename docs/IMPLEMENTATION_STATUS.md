@@ -1,7 +1,19 @@
 # 実装進捗
 
-更新: 2026-10-03。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-10-04。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
+
+## 2026-10-04 実ファイルの画像・音声・動画検証
+
+画像解析で検証済みMIMEをcurrent metadataと同じ認可・outbox・blob fence内へ保存するよう修正した。AVIFはboundedなprimary AV1 itemの検査で寸法を取得し、Imagesの入力対応に依存しない。圧縮画像中のMPEG風byteをMP3と誤認して画像MIMEを上書きする問題は、既知containerの除外とraw Layer IIIの連続frame検査で修正した。既存の合成AVIFにMPEG風のfree boxを加えた恒久試験で、thumbnail生成失敗時にもGalleryの原本が残り、Audioへ混入しないことを確認する。
+
+実Cloudflareで観測した`future_deadline`による受付503は、ControlDOが受信したdeadlineを「呼出元の期限と受信時刻+5秒の短い方」へ制限して修正した。期限切れ・不正値を拒否し、D1の容量・期限・epoch・停止・認可fenceは維持する。stagingだけに固定した段階コードの診断を追加した。
+
+単体809件、画像・音声の関連統合12件、受付の関連統合22件、lint・型・契約・設定検査が成功した。任意の非公開manifestを指定する追加ブラウザー試験は、実file chooserからのupload、AVIF Gallery、Opus/MP4 Audio、1080p 10-bit AV1+Opus/MP4 Video、先頭・中間・末尾へのseek後の再生、全byteの206 Range/SHA-256一致まで成功した。focused試験の後、同じmanifestを含むブラウザー全46件が7.0分で成功した。対象の個人ファイル・ファイル名・画像・traceはrepositoryへ追加していない。再実行方法は [MEDIA_FORMATS](MEDIA_FORMATS.md) を参照する。
+
+schemaは52 migrations・83通常table・168 routeのまま。staging Worker version `cb254cbe-4cbd-42d7-9d28-a749ecba0fa1` を配備し、匿名HTTP smoke 9件が成功した。
+
+本人のAccessログイン後、実stagingの専用非公開フォルダーへ3ファイルを保存し、Gallery原本の表示、AudioとVideoの実デコード・先頭/中間/末尾へのseek、3ファイル合計64,932,182 bytesの全RangeとSHA-256一致を確認した。修正版でのこの最終検証中に受付503は再発しなかった。具体的な形式と未確認範囲は [MEDIA_FORMATS](MEDIA_FORMATS.md) に記録した。
 
 ## 2026-10-03 管理者の全利用者ファイル閲覧・メディア配信
 

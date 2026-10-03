@@ -20,3 +20,19 @@ export function animatedPngPrefix(): Uint8Array {
   result.set(png.subarray(iend), iend + chunk.length);
   return result;
 }
+
+/** Byte-for-byte copy of the checked-in 16×12 still fixture for workerd tests. */
+export function stillAvif(): Uint8Array {
+  return decode(
+    "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAbAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAAQAAAADAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAjbWRhdAoGGAz+2wCAMhEcgAAAWAAAQKPPoquW6wqVKA==",
+  );
+}
+
+/** Preserve the AVIF bitstream while placing an MPEG-like sync in a valid BMFF free box. */
+export function stillAvifWithMpegNoise(): Uint8Array {
+  const original = stillAvif();
+  const bytes = new Uint8Array(original.length + 12);
+  bytes.set(original);
+  bytes.set([0, 0, 0, 12, 102, 114, 101, 101, 0xff, 0xfb, 0x90, 0x64], original.length);
+  return bytes;
+}

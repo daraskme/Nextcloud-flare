@@ -1,5 +1,6 @@
 import { assertImageInput } from "../../platform/images";
 import { sniffMediaContainer } from "../sniff";
+import { inspectAvif } from "./avif";
 
 export const IMAGE_METADATA_GENERATOR = "image-metadata-v1";
 const PNG = [137, 80, 78, 71, 13, 10, 26, 10] as const;
@@ -7,6 +8,7 @@ const PNG = [137, 80, 78, 71, 13, 10, 26, 10] as const;
 export interface ImageMetadata {
   readonly width: number;
   readonly height: number;
+  readonly mime: "image/jpeg" | "image/png" | "image/webp" | "image/avif";
 }
 
 function ascii(bytes: Uint8Array, offset: number, length: number): string {
@@ -62,6 +64,10 @@ export async function inspectImage(
 ): Promise<ImageMetadata | null> {
   const expected = staticFormat(bytes);
   if (!expected) return null;
+  if (expected === "image/avif") {
+    const dimensions = inspectAvif(bytes);
+    return dimensions ? { ...dimensions, mime: expected } : null;
+  }
   const info = await images.info(new Blob([bytes]).stream());
   if (
     !("width" in info) ||
@@ -72,5 +78,5 @@ export async function inspectImage(
   )
     return null;
   assertImageInput(bytes.byteLength, info.width, info.height);
-  return { width: info.width, height: info.height };
+  return { width: info.width, height: info.height, mime: expected };
 }

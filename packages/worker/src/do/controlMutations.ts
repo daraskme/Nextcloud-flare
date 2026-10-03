@@ -5,6 +5,7 @@ import {
   enqueueMutation,
   enqueueSystemMutation,
   MUTATION_QUEUE_LIMIT,
+  MUTATION_WAIT_MS,
   type MutationReceipt,
 } from "../db/mutationAdmission";
 
@@ -16,17 +17,31 @@ export class ControlMutations {
     private readonly db: D1Database,
     private readonly admit: (request: AnyMutationRequest) => Promise<void>,
     private readonly current: (request: AnyMutationRequest) => void,
+    private readonly diagnostic?: (stage: string) => void,
   ) {}
 
   async acquire(request: AnyMutationRequest): Promise<MutationReceipt & { expires_at: number }> {
+    const receivedAt = Date.now();
     if (
       !request ||
       this.#pending >= MUTATION_QUEUE_LIMIT ||
       !Number.isSafeInteger(request.deadline) ||
-      request.deadline <= Date.now() ||
-      request.deadline > Date.now() + 5000
-    )
+      request.deadline <= receivedAt
+    ) {
+      this.diagnostic?.(
+        !request
+          ? "missing_request"
+          : this.#pending >= MUTATION_QUEUE_LIMIT
+            ? "queue_full"
+            : !Number.isSafeInteger(request.deadline)
+              ? "invalid_deadline"
+              : "expired_deadline",
+      );
       throw new Error("mutation_unavailable");
+    }
+    // RPC callers and the coordinator can observe different clocks. Shorten a future
+    // caller deadline to this receiver's budget; never extend an earlier deadline.
+    request = { ...request, deadline: Math.min(request.deadline, receivedAt + MUTATION_WAIT_MS) };
     this.#pending++;
     const action = this.#acquire(request).finally(() => {
       this.#pending--;
@@ -37,7 +52,10 @@ export class ControlMutations {
         action,
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error("mutation_unavailable")),
+            () => {
+              this.diagnostic?.("wait_timeout");
+              reject(new Error("mutation_unavailable"));
+            },
             Math.max(0, request.deadline - Date.now()),
           );
         }),
@@ -50,27 +68,40 @@ export class ControlMutations {
   }
 
   async #acquire(request: AnyMutationRequest): Promise<MutationReceipt & { expires_at: number }> {
-    await this.admit(request);
-    this.current(request);
-    let receipt = await ("system" in request
-      ? request.spaceId === null
-        ? enqueueGlobalMutation(this.db, request)
-        : enqueueSystemMutation(this.db, request)
-      : enqueueMutation(this.db, request));
-    for (;;) {
+    let stage = "admit";
+    try {
+      await this.admit(request);
+      stage = "current_before_enqueue";
       this.current(request);
-      if (Date.now() >= request.deadline) throw new Error("mutation_unavailable");
-      if (
-        receipt.state === "active" &&
-        receipt.expires_at !== null &&
-        receipt.expires_at > Date.now()
-      )
-        return { ...receipt, expires_at: receipt.expires_at };
-      if (receipt.state !== "waiting") throw new Error("mutation_unavailable");
-      const rows = await this.#poll();
-      const next = rows.find((row) => row.id === receipt.id);
-      if (!next) throw new Error("mutation_unavailable");
-      receipt = next;
+      stage = "enqueue";
+      let receipt = await ("system" in request
+        ? request.spaceId === null
+          ? enqueueGlobalMutation(this.db, request)
+          : enqueueSystemMutation(this.db, request)
+        : enqueueMutation(this.db, request));
+      for (;;) {
+        stage = "current_after_enqueue";
+        this.current(request);
+        stage = "deadline_after_enqueue";
+        if (Date.now() >= request.deadline) throw new Error("mutation_unavailable");
+        if (
+          receipt.state === "active" &&
+          receipt.expires_at !== null &&
+          receipt.expires_at > Date.now()
+        )
+          return { ...receipt, expires_at: receipt.expires_at };
+        stage = receipt.state === "active" ? "expired_receipt" : "closed_receipt";
+        if (receipt.state !== "waiting") throw new Error("mutation_unavailable");
+        stage = "poll";
+        const rows = await this.#poll();
+        stage = "missing_receipt";
+        const next = rows.find((row) => row.id === receipt.id);
+        if (!next) throw new Error("mutation_unavailable");
+        receipt = next;
+      }
+    } catch (error) {
+      this.diagnostic?.(stage);
+      throw error;
     }
   }
 

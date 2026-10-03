@@ -202,6 +202,9 @@ export class ControlDO extends DurableObject<Env> {
         "system" in request
           ? this.#admission.assertSystemMutationMode(request.epoch, request.maintenance)
           : this.#admission.assertMutationOpen(request.epoch),
+      env.ENVIRONMENT === "staging"
+        ? (stage) => console.warn("staging_mutation_rejected", stage)
+        : undefined,
     );
   }
 

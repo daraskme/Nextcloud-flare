@@ -1,6 +1,8 @@
 # 現在の実装状態
 
-更新: 2026-10-03。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+更新: 2026-10-04。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+
+2026-10-04 は手元の実ファイルによるAVIF・Opus/MP4・1080p 10-bit AV1+Opus/MP4のupload・表示・再生・seek・全byte照合を追加した。AVIFをMP3と誤判定してGalleryから消す問題、画像MIMEの保存不足、サーバー間の時計差による受付期限の誤拒否を修正し、stagingへ配備した。個人メディアはrepositoryに含めない。
 
 2026-10-03 の追加は、監査付き読み取り専用の [管理者ファイル閲覧](ADMIN_FILES.md) と、実upload後のMP3/Opus/AV1形式判定・再生経路の修正。現在のschemaは52 migrations（最新`0053`）、83通常table、168 route契約。stagingは配備済みで、管理者1人と一般利用者2人のログイン、upload/download、一般利用者間の一覧分離をユーザーが確認した。追加機能の配備・試験結果は進捗表と [staging runbook](../ops/staging/README.md) を参照する。
 

@@ -16,6 +16,7 @@ export type AudioParseResult =
 
 export type AudioPrefixResult =
   | { readonly kind: "metadata"; readonly metadata: AudioMetadata }
+  | { readonly kind: "unsupported" }
   | {
       readonly kind: "tail";
       readonly metadata: AudioMetadata | null;
@@ -105,22 +106,50 @@ function id3v1(tail: Uint8Array): AudioMetadata | null {
   };
 }
 
-function mpegFrameAt(bytes: Uint8Array, offset: number): boolean {
+const BITRATE_MPEG1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const BITRATE_MPEG2_L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+const SAMPLE_RATES = [44_100, 48_000, 32_000];
+
+function mpegLayer3Frame(bytes: Uint8Array, offset: number) {
   const first = bytes[offset];
   const second = bytes[offset + 1];
   const third = bytes[offset + 2];
-  if (first !== 0xff || second === undefined || third === undefined || (second & 0xe0) !== 0xe0)
-    return false;
-  const version = (second >> 3) & 0x03;
-  const layer = (second >> 1) & 0x03;
-  const bitrate = (third >> 4) & 0x0f;
-  const sampleRate = (third >> 2) & 0x03;
-  return version !== 1 && layer !== 0 && bitrate !== 0 && bitrate !== 15 && sampleRate !== 3;
+  const fourth = bytes[offset + 3];
+  if (
+    first !== 0xff ||
+    second === undefined ||
+    third === undefined ||
+    fourth === undefined ||
+    (second & 0xe0) !== 0xe0 ||
+    (second & 0x06) !== 0x02
+  )
+    return null;
+  const version = (second >> 3) & 3;
+  const bitrateIndex = third >> 4;
+  const rateIndex = (third >> 2) & 3;
+  if (version === 1 || bitrateIndex === 0 || bitrateIndex === 15 || rateIndex === 3) return null;
+  const bitrate = (version === 3 ? BITRATE_MPEG1_L3 : BITRATE_MPEG2_L3)[bitrateIndex];
+  const rate = SAMPLE_RATES[rateIndex]! / (version === 3 ? 1 : version === 2 ? 2 : 4);
+  if (!bitrate) return null;
+  const length =
+    Math.floor(((version === 3 ? 144 : 72) * bitrate * 1000) / rate) + ((third >> 1) & 1);
+  return { version, rateIndex, length };
 }
 
-function hasMpegFrame(bytes: Uint8Array, start = 0): boolean {
-  const end = Math.min(bytes.length - 2, start + 4096);
-  for (let offset = start; offset < end; offset++) if (mpegFrameAt(bytes, offset)) return true;
+function hasRawMpegFrames(bytes: Uint8Array): boolean {
+  const first = mpegLayer3Frame(bytes, 0);
+  if (!first || first.length < 4) return false;
+  const next = mpegLayer3Frame(bytes, first.length);
+  return next !== null && next.version === first.version && next.rateIndex === first.rateIndex;
+}
+
+function knownNonMp3(bytes: Uint8Array): boolean {
+  if (sniffMediaContainer(bytes.subarray(0, Math.min(bytes.length, MEDIA_SNIFF_BYTES))))
+    return true;
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
+  if (bytes.length >= 8 && ascii(bytes, 0, 8) === "\x89PNG\r\n\x1a\n") return true;
+  if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 4) === "WEBP")
+    return true;
   return false;
 }
 
@@ -192,13 +221,14 @@ export function parseId3Prefix(prefix: Uint8Array, totalBytes: number): AudioPre
   )
     return { kind: "malformed" };
   try {
+    if (knownNonMp3(prefix)) return { kind: "unsupported" };
     if (prefix.length >= 3 && ascii(prefix, 0, 3) === "ID3") {
       const metadata = parseV2(prefix, totalBytes);
       if (metadata.title && metadata.artist && metadata.album)
         return { kind: "metadata", metadata };
       return { kind: "tail", metadata, hasMpegFrame: true };
     }
-    return { kind: "tail", metadata: null, hasMpegFrame: hasMpegFrame(prefix) };
+    return { kind: "tail", metadata: null, hasMpegFrame: hasRawMpegFrames(prefix) };
   } catch {
     return { kind: "malformed" };
   }
@@ -235,3 +265,5 @@ export function parseId3Metadata(
   const parsed = parseId3Prefix(prefix, totalBytes);
   return parsed.kind === "tail" ? parseId3Tail(parsed, tail, totalBytes) : parsed;
 }
+
+import { MEDIA_SNIFF_BYTES, sniffMediaContainer } from "../sniff";

@@ -5,6 +5,7 @@ import {
   AUDIO_TAIL_BYTES,
   parseId3Metadata,
 } from "../../src/media/audio/id3";
+import { stillAvifWithMpegNoise, tinyPng } from "../fixtures/images";
 
 const text = new TextEncoder();
 
@@ -150,4 +151,31 @@ it("treats arbitrary bytes as unsupported and enforces exact bounded input windo
   expect(
     parseId3Metadata(bytes.subarray(0, 100), bytes.subarray(-AUDIO_TAIL_BYTES), bytes.length).kind,
   ).toBe("malformed");
+});
+
+it("does not infer MP3 from MPEG-like bytes inside a known image container", () => {
+  for (const bytes of [stillAvifWithMpegNoise(), tinyPng()]) {
+    expect(
+      parseId3Metadata(
+        bytes,
+        bytes.subarray(-Math.min(bytes.length, AUDIO_TAIL_BYTES)),
+        bytes.length,
+      ),
+    ).toEqual({ kind: "unsupported" });
+  }
+});
+
+it("requires consecutive Layer III frames at the raw stream boundary", () => {
+  const bytes = new Uint8Array(834);
+  bytes.set([0xff, 0xfb, 0x90, 0x64], 0);
+  bytes.set([0xff, 0xfb, 0x90, 0x64], 417);
+  expect(parseId3Metadata(bytes, bytes.subarray(-AUDIO_TAIL_BYTES), bytes.length).kind).toBe(
+    "metadata",
+  );
+  const noise = bytes.slice();
+  noise.copyWithin(1, 0, 4);
+  noise[0] = 0;
+  expect(parseId3Metadata(noise, noise.subarray(-AUDIO_TAIL_BYTES), noise.length).kind).toBe(
+    "unsupported",
+  );
 });
