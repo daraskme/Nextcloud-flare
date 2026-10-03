@@ -396,7 +396,7 @@ test("private Bookshelf resumes and debounces bounded progress on mobile", async
   await expect(page.getByRole("dialog", { name: "Resume Book.epub" })).toBeVisible();
 });
 
-test("private Video probes current track metadata and shows revocation and format fallbacks", async ({
+test("private Video separates media failures, preserves retry position, and allows explicit session retries", async ({
   page,
 }) => {
   await mockPrivateShell(page);
@@ -404,8 +404,23 @@ test("private Video probes current track metadata and shows revocation and forma
   const unsupported = candidate("video-2", "Legacy Video.mov", "video/quicktime");
   const cancelled: string[] = [];
   let tickets = 0;
+  let headStatus = 429;
   await page.addInitScript(() => {
     HTMLMediaElement.prototype.canPlayType = (type) => (type.includes("av01") ? "probably" : "");
+    const positions = new WeakMap<HTMLMediaElement, number>();
+    Object.defineProperty(HTMLMediaElement.prototype, "duration", {
+      configurable: true,
+      get: () => 120,
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
+      configurable: true,
+      get() {
+        return positions.get(this as HTMLMediaElement) ?? 0;
+      },
+      set(value: number) {
+        positions.set(this as HTMLMediaElement, value);
+      },
+    });
   });
   await page.route("**/api/v1/search?*", (route) => {
     const query = new URL(route.request().url()).searchParams.get("q");
@@ -440,7 +455,7 @@ test("private Video probes current track metadata and shows revocation and forma
   );
   await page.route("https://content.ncf.test:8879/c/**/track", (route) =>
     route.fulfill({
-      status: route.request().method() === "HEAD" ? 200 : 206,
+      status: route.request().method() === "HEAD" ? headStatus : 206,
       headers: {
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Origin": "https://app.ncf.test:8879",
@@ -456,13 +471,51 @@ test("private Video probes current track metadata and shows revocation and forma
   await page.reload();
   await expect(page.getByRole("heading", { name: "動画", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Private AV1\.mp4/ }).click();
+  await expect(page.getByRole("alert")).toContainText("混み合っています");
+  await expect(page.getByRole("button", { name: "再試行", exact: true })).toBeVisible();
+  headStatus = 503;
+  await page.getByRole("button", { name: "再試行", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("一時利用できません");
+  headStatus = 200;
+  await page.getByRole("button", { name: "再試行", exact: true }).click();
   const element = page.locator('video[aria-label="Private AV1.mp4"]');
   await expect(element).toHaveAttribute("controls", "");
   await expect(element).toHaveAttribute("src", /\/c\/video-1\/blob-video-1\/track$/);
   await expect(page.getByText(/video\/mp4; codecs="av01/)).toBeVisible();
-  await element.dispatchEvent("error");
-  await expect(page.getByRole("alert")).toContainText("セッションの失効");
-  await expect.poll(() => cancelled).toContain("video-ticket-1");
+  const failWithCode = (code: number) =>
+    element.evaluate((node, mediaErrorCode) => {
+      Object.defineProperty(node, "error", {
+        configurable: true,
+        value: { code: mediaErrorCode },
+      });
+      node.dispatchEvent(new Event("error", { bubbles: true }));
+    }, code);
+  await element.evaluate((node) => {
+    (node as HTMLVideoElement).currentTime = 37;
+  });
+  await failWithCode(2);
+  await expect(page.getByRole("alert")).toContainText("読み込みに失敗");
+  await expect(page.getByRole("button", { name: "再試行", exact: true })).toBeVisible();
+  await expect.poll(() => cancelled).toContain("video-ticket-3");
+  await page.getByRole("button", { name: "再試行", exact: true }).click();
+  await expect.poll(() => tickets).toBe(4);
+  await expect(element).toBeVisible();
+  await expect(element).toHaveAttribute("src", /\/c\/video-1\/blob-video-1\/track$/);
+  await element.evaluate((node) =>
+    node.dispatchEvent(new Event("loadedmetadata", { bubbles: true })),
+  );
+  await expect
+    .poll(() => element.evaluate((node) => (node as HTMLVideoElement).currentTime))
+    .toBe(37);
+  await failWithCode(3);
+  await expect(page.getByRole("alert")).toContainText("デコードできませんでした");
+  await expect(page.getByRole("button", { name: "再試行", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "再試行", exact: true }).click();
+  await expect.poll(() => tickets).toBe(5);
+  await expect(element).toBeVisible();
+  await failWithCode(4);
+  await expect(page.getByRole("alert")).toContainText("動画形式に対応していないか");
+  await expect(page.getByRole("button", { name: "再試行", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: /Legacy Video\.mov/ }).click();
   await expect(page.getByRole("alert")).toContainText("ブラウザー再生に対応していません");
   await expect(page.getByRole("button", { name: "原本を保存", exact: true })).toBeVisible();

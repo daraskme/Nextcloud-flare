@@ -1672,13 +1672,29 @@ it("serves an isolated no-store shell and immutable hashed public assets", async
   expect(shell.headers.get("Content-Security-Policy")).toContain(`img-src 'self' ${contentOrigin}`);
   expect(shell.headers.get("Content-Security-Policy")).toContain(`media-src ${contentOrigin}`);
   const html = await shell.text();
-  for (const path of publicAssets) expect(html).toContain(path);
+  for (const path of publicAssets)
+    if (path !== "/public-assets/client-media-worker.js") expect(html).toContain(path);
   expect(html).not.toContain("/private-assets/");
   for (const path of publicAssets) {
     const asset = await servePublicShare(new Request(`${origin}${path}`), shareEnv());
     expect(asset.status).toBe(200);
-    expect(asset.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    if (path === "/public-assets/client-media-worker.js") {
+      expect(asset.headers.get("Cache-Control")).toBe("public, no-store");
+      expect(asset.headers.get("Service-Worker-Allowed")).toBe("/");
+      expect(asset.headers.get("Content-Type")).toMatch(/javascript/);
+    } else {
+      expect(asset.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+      expect(asset.headers.has("Service-Worker-Allowed")).toBe(false);
+    }
   }
+  expect(
+    (
+      await servePublicShare(
+        new Request(`${origin}/public-assets/client-media-worker.js?unexpected=1`),
+        shareEnv(),
+      )
+    ).status,
+  ).toBe(404);
 });
 
 it("accepts and aborts an upload-only single file without exposing its name", async () => {

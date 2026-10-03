@@ -256,7 +256,7 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/admin/invites",
     "app DELETE /api/v1/admin/invites/:inviteId",
   ]),
-  ...bindings(appService, "unavailable", "unavailable", [
+  ...bindings(appService, "bound", "private-app", [
     "app GET /api/v1/automation/nodes",
     "app GET /api/v1/automation/nodes/:nodeId",
   ]),
@@ -337,6 +337,7 @@ export const PRIVATE_SPA_PATHS = [
   "/audio",
   "/bookshelf",
   "/video",
+  "/encryption",
   "/trash",
   "/shares",
   "/settings/webdav",

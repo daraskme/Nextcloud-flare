@@ -92,7 +92,9 @@
     "JOBS_DLQ_NAME": "ncf-staging-jobs-dlq",
     "PBKDF2_ITERATIONS": "100000",
     "EPOCH_FLOOR": "2",
-    "STAGING_CONTROL_OPERATOR_ENABLED": "false"
+    "STAGING_CONTROL_OPERATOR_ENABLED": "false",
+    "BACKUP_OPERATOR_ENABLED": "false",
+    "CLIENT_ENCRYPTION_REQUIRED": "true"
   },
   "secrets": {
     "required": [

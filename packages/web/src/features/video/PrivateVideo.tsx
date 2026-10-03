@@ -16,6 +16,62 @@ import { type DebouncedWriter, debouncedWriter } from "../../lib/mediaResume";
 
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "mkv", "avi"] as const;
 
+function playerFailure(code: number | undefined): { message: string; retryable: boolean } {
+  switch (code) {
+    case 2:
+      return {
+        message:
+          "動画データの読み込みに失敗しました。接続や認証状態を確認し、「再試行」を押してください。",
+        retryable: true,
+      };
+    case 3:
+      return {
+        message:
+          "動画データをデコードできませんでした。ファイル破損や対応コーデックを確認し、必要なら原本を保存してください。再試行できます。",
+        retryable: true,
+      };
+    case 4:
+      return {
+        message:
+          "動画形式に対応していないか、配信されたデータが動画ではありません。原本を保存して確認してください。",
+        retryable: false,
+      };
+    default:
+      return {
+        message: "動画の再生に失敗しました。接続を確認して再試行してください。",
+        retryable: true,
+      };
+  }
+}
+
+function requestFailure(error: unknown): { message: string; retryable: boolean } {
+  if (error instanceof Error && error.message === "invalid_video_content_type")
+    return {
+      message: "配信応答が動画として認識できません。ファイル形式または配信内容を確認してください。",
+      retryable: false,
+    };
+  if (error instanceof ApiError && error.status === 429)
+    return {
+      message: "動画配信が混み合っています。少し待ってから「再試行」を押してください。",
+      retryable: true,
+    };
+  if (error instanceof ApiError && error.status === 503)
+    return {
+      message: "動画配信を一時利用できません。復旧後に「再試行」を押してください。",
+      retryable: true,
+    };
+  if (error instanceof ApiError && [401, 403, 404].includes(error.status))
+    return {
+      message:
+        "動画セッションが失効したか、動画が更新されたため再生できません。一覧を更新して確認してください。",
+      retryable: false,
+    };
+  return {
+    message: errorMessage(error),
+    retryable: !(error instanceof ApiError && [400, 401, 403, 404].includes(error.status)),
+  };
+}
+
 function extension(name: string) {
   return name.split(".").at(-1)?.toLowerCase() ?? "";
 }
@@ -32,12 +88,14 @@ export function PrivateVideo({ account }: { account: Account }) {
   const activeRef = useRef<FileNode | null>(null);
   const terminal = useRef(false);
   const resume = useRef<PlaybackState | null>(null);
+  const retryPosition = useRef<PlaybackState | null>(null);
   const writer = useRef<DebouncedWriter<number> | null>(null);
   const [active, setActive] = useState<FileNode | null>(null);
   const [source, setSource] = useState("");
   const [contentType, setContentType] = useState("");
   const [preparing, setPreparing] = useState(false);
   const [playerError, setPlayerError] = useState("");
+  const [retryable, setRetryable] = useState(false);
 
   const currentPositionMs = () => {
     const element = video.current;
@@ -69,6 +127,12 @@ export function PrivateVideo({ account }: { account: Account }) {
   );
 
   const select = async (item: FileNode) => {
+    const retainedPosition =
+      retryPosition.current?.nodeId === item.id &&
+      retryPosition.current.blobId === item.currentBlobId
+        ? retryPosition.current
+        : null;
+    if (retryPosition.current && !retainedPosition) retryPosition.current = null;
     if (!terminal.current) await flush().catch(() => undefined);
     release();
     terminal.current = false;
@@ -78,6 +142,7 @@ export function PrivateVideo({ account }: { account: Account }) {
     setSource("");
     setContentType("");
     setPlayerError("");
+    setRetryable(false);
     setPreparing(false);
     const element = video.current;
     if (element) {
@@ -120,6 +185,7 @@ export function PrivateVideo({ account }: { account: Account }) {
         setPlayerError(
           "この端末は動画の codec を再生できません。原本を保存するか、対応ブラウザーで確認してください。",
         );
+        setRetryable(false);
         return;
       }
       controller.signal.throwIfAborted();
@@ -136,7 +202,8 @@ export function PrivateVideo({ account }: { account: Account }) {
       writer.current = debouncedWriter((positionMs) =>
         api.writePlaybackState(item.id, blobId, positionMs),
       );
-      resume.current = state?.nodeId === item.id && state.blobId === blobId ? state : null;
+      resume.current =
+        retainedPosition ?? (state?.nodeId === item.id && state.blobId === blobId ? state : null);
       setContentType(type);
       setSource(url);
     } catch (error) {
@@ -146,11 +213,9 @@ export function PrivateVideo({ account }: { account: Account }) {
           void stale.cancel().catch(() => undefined);
           content.current = null;
         }
-        setPlayerError(
-          error instanceof ApiError && [401, 403, 404].includes(error.status)
-            ? "動画セッションが失効したか、動画が更新されました。再読み込みしてください。"
-            : errorMessage(error),
-        );
+        const failure = requestFailure(error);
+        setPlayerError(failure.message);
+        setRetryable(failure.retryable);
       }
     } finally {
       if (!controller.signal.aborted && selected === selection.current) setPreparing(false);
@@ -263,6 +328,7 @@ export function PrivateVideo({ account }: { account: Account }) {
                   );
                   if (seconds > 0 && seconds < element.duration) element.currentTime = seconds;
                   resume.current = null;
+                  retryPosition.current = null;
                 }}
                 onTimeUpdate={() => {
                   const positionMs = currentPositionMs();
@@ -276,10 +342,32 @@ export function PrivateVideo({ account }: { account: Account }) {
                   terminal.current = true;
                   void flush(0).catch(() => undefined);
                 }}
-                onError={() => {
-                  setPlayerError(
-                    "動画を再生できませんでした。セッションの失効または端末の codec 対応を確認してください。",
-                  );
+                onError={(event) => {
+                  const media = event.currentTarget;
+                  const item = activeRef.current;
+                  if (
+                    item &&
+                    item.currentBlobId &&
+                    Number.isFinite(media.duration) &&
+                    media.duration > 0 &&
+                    Number.isFinite(media.currentTime)
+                  ) {
+                    const positionMs = Math.min(
+                      Math.round(media.currentTime * 1_000),
+                      Math.round(media.duration * 1_000),
+                    );
+                    retryPosition.current = {
+                      nodeId: item.id,
+                      blobId: item.currentBlobId,
+                      durationMs: Math.round(media.duration * 1_000),
+                      positionMs,
+                      updatedAt: Date.now(),
+                    };
+                    void flush(positionMs).catch(() => undefined);
+                  }
+                  const failure = playerFailure(media.error?.code);
+                  setPlayerError(failure.message);
+                  setRetryable(failure.retryable);
                   setSource("");
                   setContentType("");
                   release();
@@ -297,6 +385,12 @@ export function PrivateVideo({ account }: { account: Account }) {
               <Film size={50} strokeWidth={1.2} />
               <h2>{active ? active.name : "動画を選択"}</h2>
               <p>一覧から動画を選ぶと、安全な原本配信セッションを準備します。</p>
+              {active && retryable && (
+                <Button onClick={() => void select(active)}>
+                  <RefreshCw size={16} />
+                  再試行
+                </Button>
+              )}
               {active && (
                 <Button onClick={() => download(active)}>
                   <Download size={16} />

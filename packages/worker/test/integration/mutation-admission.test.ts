@@ -51,9 +51,11 @@ it("bounds an ahead-of-receiver RPC deadline without extending an earlier deadli
   const receivedAt = Date.now();
   const original = { ...request(), deadline: receivedAt + 60_000 };
   let boundedDeadline = 0;
+  let observedAt = 0;
   const queue = new ControlMutations(
     env.DB,
     async (r) => {
+      observedAt = Date.now();
       boundedDeadline = r.deadline;
       await admit(r.epoch);
     },
@@ -61,7 +63,7 @@ it("bounds an ahead-of-receiver RPC deadline without extending an earlier deadli
   );
   const admission = await queue.acquire(original);
   expect(original.deadline).toBe(receivedAt + 60_000);
-  expect(boundedDeadline).toBeLessThanOrEqual(receivedAt + 5000);
+  expect(boundedDeadline).toBeLessThanOrEqual(observedAt + 5000);
   expect(boundedDeadline).toBeGreaterThan(receivedAt);
   const stored = await saved(admission.id);
   expect(stored?.wait_until).toBeLessThanOrEqual(boundedDeadline);

@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { FileText, FolderOpen, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
@@ -9,6 +10,7 @@ import {
   type FileNode,
   type PreparedContentSession,
 } from "../../lib/api";
+import { isEncryptedFile } from "../../lib/encryptionSession";
 
 const dateTime = (value: number) =>
   new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(value);
@@ -262,22 +264,26 @@ export function AllUserFiles({ account }: { account: Account }) {
               </span>
               <span role="cell" className="admin-files-actions">
                 {node.kind === "file" && node.currentBlobId ? (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="small"
-                      onClick={() => void openContent(node, "preview")}
-                    >
-                      プレビュー
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="small"
-                      onClick={() => void openContent(node, "download")}
-                    >
-                      ダウンロード
-                    </Button>
-                  </>
+                  isEncryptedFile(node.name) ? (
+                    <Link to="/encryption">暗号化画面で復号</Link>
+                  ) : (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="small"
+                        onClick={() => void openContent(node, "preview")}
+                      >
+                        プレビュー
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="small"
+                        onClick={() => void openContent(node, "download")}
+                      >
+                        ダウンロード
+                      </Button>
+                    </>
+                  )
                 ) : (
                   "—"
                 )}

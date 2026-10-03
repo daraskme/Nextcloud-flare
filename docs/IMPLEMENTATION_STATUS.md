@@ -3,6 +3,28 @@
 更新: 2026-10-04。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
+## 2026-10-04 staging復元試験・動画シーク・自動化API
+
+実stagingのBackupOperatorを一時的な非公開Cron service bindingから開始し、epoch 2を凍結して整合した世代を取得した。R2 BACKUPSへの条件付き保存、R2から新しいディレクトリへの再取得、独立した新規SQLiteへの復元を実施し、83通常table・388行・論理SQL119,993 bytesをschema/全行hash/FK/FTSで照合した。固定世代・manifest hashのcomplete receiptが成立し、maintenance/gc_paused/backup_frozenはすべて0へ復帰した。一時Workerを削除し、アプリのBACKUP_OPERATOR_ENABLEDもfalseへ戻した。復元DBに記載された原本6 object・64,953,590 bytesは、読み取り専用R2資格情報で別ディレクトリへ複写してsize/ETag/SHAを照合した。詳細は [BACKUP_BLOB_AUDIT](BACKUP_BLOB_AUDIT.md) と [BACKUP_CRON_BRIDGE](../ops/staging/BACKUP_CRON_BRIDGE.md)。これは実D1への上書き復元・元BLOBS bucket喪失後の復旧・恒久的な日次ジョブ設置の証明ではない。
+
+native動画のopen-ended Rangeを4MiB単位に制限し、Range応答とBudgetDO予約量を一致させた。従来はシークによる中断のたびに動画の残り全体を予約し、繰り返すと429になった。認可・総budget上限・明示closed Rangeは維持する。実stagingで8回連続シーク、映像フレーム増加、429なしを確認した。PrivateVideoはnetwork/decode/unsupportedを分け、新しいticketで明示再試行できる。修正後の全ブラウザー46件が成功した。
+
+既存のServiceAuth専用GET `/api/v1/automation/nodes` と `/api/v1/automation/nodes/:nodeId` を実装した。限定root・owner・scope・credential・epochを再検査し、一覧cursorもprincipal/credential/root/tree generationへ結合する。ServiceAuthの失効・異なるsubject/issuer/AUD・root外・cursor改変を統合試験した。stagingのAccess経路は引き続き拒否設定で、実利用するservice principalの運用登録は未完了。mutation/upload APIは追加していない。
+
+## 2026-10-04 クライアント暗号化
+
+本人と管理者の端末内鍵、AES-GCM chunk container、元ファイル名の暗号化、OPFSでの同一暗号文再送、専用復号画面、同一clientに限定したService Worker Range復号を接続した。ユーザー報告では実管理者アカウントの鍵初期設定は完了し、既存ファイルの暗号化移行を進行中。他の所有者は本人鍵の設定が必要で、移行完了は未確認。利用条件・脅威の境界・未対応機能は [CLIENT_ENCRYPTION](CLIENT_ENCRYPTION.md) を参照する。
+
+単体872件・Worker統合2,253件（計3,125件）、lint・型・route/config契約が成功した。本人の復旧鍵だけで既存ファイルを読む経路と、管理者公開鍵がない場合の新規暗号化upload拒否を分けた。ChromeのM4A形式別名を暗号化メタデータ内で`audio/mp4`へ正規化した。暗号化のfocusedブラウザー2件に続き、非公開manifestを含む全ブラウザー48件が成功し、下記の配信修正後も48件すべてが8.0分で成功した。本人と管理者の復号・保存・監査・鍵ロックと、実AVIF/Opus MP4/AV1+Opus MP4の暗号化upload・再生・シーク・全byte照合を確認した。実ファイル計64,932,182 bytesの照合は隔離ローカル環境の結果で、実利用者の移行完了は未確認。初回の運用手順は [CLIENT_ENCRYPTION_SETUP](CLIENT_ENCRYPTION_SETUP.md)。
+
+実ChromeのService Worker登録要求ではAccess Cookieが付かず、private scriptが302へ転送されることを確認した。復号処理コードを依存ファイルのない単一の`/public-assets/client-media-worker.js`にビルドし、既存の公開asset Bypassから配信するよう修正した。この正確なpathだけにscope `/`を許可し、`no-store`を付ける。鍵・データ・private UIは含めず、実行時の`/me`、client ID、content ticket、ETag検証を維持する。修正後の公開経路Worker統合17件、route単体15件、lint514 files・型・契約・設定、Web/Worker buildとstaging dry-runが成功した。
+
+staging Worker version `10e3ac76-2846-436b-bda1-50f20d6b479f`を配備し、匿名HTTP smoke 9件、公開bootstrapのscope/no-store、本人のログイン済みChromeでのService Worker登録・未知の復号URL拒否・鍵未設定時のupload送信0件を確認した。追加のAccess BypassやD1 migrationはない。
+
+実Cloudflareの暗号文206には`Content-Length`が付かない場合があり、page readerだけがこれを必須として復号を止めていた。省略を許容し、存在する不一致値は拒否するように修正した。正確な`Content-Range`、ETag、URL、受信byte数と暗号認証は必須のまま。実containerを使う回帰2件を追加し、最終単体872件（65 files）が成功した。ブラウザー回帰では本文・URL・ETag・Content-Rangeを保ってpage-visibleなContent-Lengthのみを省略し、focused 2件とmanifest付き全48件（8.0分）が成功した。
+
+最終Worker `580f9cd8-9114-4ca7-97f5-d3e782e4a8bd`へ修正を反映し、匿名HTTP smoke 9件が再成功した。実Cloudflareでは、ログインだけを引き継ぐ別の隔離ブラウザーと一時検証鍵を使い、公開fixtureのAVIF・MP3・AV1+Opus WebM（合計351,797 bytes）をUIから暗号化uploadした。診断用ヘッダー補助を無効にした状態で、暗号文magic、画像寸法、音声/動画の再生とseek・frame増加、復号後のSHA-256とUI保存byte一致を3件すべて確認した。試験で作った3件だけをtrash/purgeし、一時復旧ファイルも端末から削除した。この隔離試験には実利用者用ブラウザー鍵を使っていない。その後の実利用者鍵の状態はユーザー報告に基づき、管理者鍵の初期設定は完了、既存ファイルの暗号化移行は進行中で、完了と他所有者の鍵設定は未確認。暗号文backup＋独立復旧鍵の復元試験も未確認。
+
 ## 2026-10-04 実ファイルの画像・音声・動画検証
 
 画像解析で検証済みMIMEをcurrent metadataと同じ認可・outbox・blob fence内へ保存するよう修正した。AVIFはboundedなprimary AV1 itemの検査で寸法を取得し、Imagesの入力対応に依存しない。圧縮画像中のMPEG風byteをMP3と誤認して画像MIMEを上書きする問題は、既知containerの除外とraw Layer IIIの連続frame検査で修正した。既存の合成AVIFにMPEG風のfree boxを加えた恒久試験で、thumbnail生成失敗時にもGalleryの原本が残り、Audioへ混入しないことを確認する。

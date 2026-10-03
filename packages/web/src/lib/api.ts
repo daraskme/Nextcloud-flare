@@ -9,6 +9,7 @@ export interface Account {
   usedBytes: number;
   reservedBytes: number;
   contentOrigin: string;
+  clientEncryptionRequired?: boolean;
 }
 export interface AdminFileUser {
   id: string;

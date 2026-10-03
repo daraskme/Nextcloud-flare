@@ -5,7 +5,7 @@ import { foundationFixture } from "../../../packages/worker/test/fixtures/founda
 import { captureGeneration } from "../../backup/generation.mjs";
 import { initialize, migrations, quote } from "../../backup/snapshot.mjs";
 
-export async function fixtureGeneration(directory, paddingRows = 0) {
+export async function fixtureGeneration(directory, paddingRows = 0, seed = () => {}) {
   const versions = await migrations(),
     db = initialize(":memory:", versions),
     id = randomUUID();
@@ -13,6 +13,7 @@ export async function fixtureGeneration(directory, paddingRows = 0) {
     const fixture = foundationFixture("publication", Date.now() - 1000);
     for (const statement of fixture.statements)
       db.prepare(statement.sql).run(...(statement.values ?? []));
+    seed(db, fixture.ids);
     for (let i = 0; i < paddingRows; i++) {
       // Separate bounded TEXT rows exercise multi-object SQL without increasing the SQL statement cap.
       db.prepare(

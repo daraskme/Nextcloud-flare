@@ -10,6 +10,9 @@ if (parsed.error) throw new Error("invalid_local_config");
 const config = parsed.config;
 const state = resolve(root, ".wrangler/browser-tests");
 const configFile = resolve(root, ".wrangler/browser-config.json");
+// Checked-in, publicly known test key. Never use this certificate outside the isolated browser harness.
+const httpsKey = resolve(root, "scripts/test/fixtures/browser-test-only.key.pem");
+const httpsCert = resolve(root, "scripts/test/fixtures/browser-test-only.cert.pem");
 config.name = "ncf-browser-test";
 config.main = resolve(root, "packages/worker/test/browser/entry.ts");
 config.assets.directory = resolve(root, "packages/web/dist");
@@ -50,6 +53,10 @@ const server = run([
   "8879",
   "--local-protocol",
   "https",
+  "--https-key-path",
+  httpsKey,
+  "--https-cert-path",
+  httpsCert,
   "--persist-to",
   state,
 ]);

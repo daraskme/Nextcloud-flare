@@ -144,6 +144,9 @@ function hasRawMpegFrames(bytes: Uint8Array): boolean {
 }
 
 function knownNonMp3(bytes: Uint8Array): boolean {
+  // Encrypted payloads can coincidentally contain MPEG sync bytes or an ID3v1 tail.
+  // The container magic is sufficient to exclude media parsing; it does not attest encryption.
+  if (bytes.length >= 8 && ascii(bytes, 0, 8) === "NCFENC1\0") return true;
   if (sniffMediaContainer(bytes.subarray(0, Math.min(bytes.length, MEDIA_SNIFF_BYTES))))
     return true;
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;

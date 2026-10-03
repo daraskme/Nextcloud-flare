@@ -14,6 +14,7 @@ import { AUDIO_GENERATOR_VERSION } from "../media/audio";
 import { IMAGE_METADATA_GENERATOR } from "../media/images/metadata";
 import { IMAGE_THUMBNAIL_GENERATOR, IMAGE_THUMBNAIL_VARIANT } from "../media/images/thumbnail";
 import { VIDEO_METADATA_GENERATOR } from "../media/video";
+import { boundedMediaRequest } from "../platform/mediaRange";
 import { parseRange } from "../platform/range";
 import {
   type AccountMutationEnv,
@@ -368,7 +369,11 @@ export async function streamBudgetedContentBlob(
       },
     ]);
   }
-  const bytes = reservedResponseBytes(plan.blob, request);
+  // Use the same bounded range for admission, R2 and Content-Range. Downloads
+  // retain the caller's original request, including an open-ended resume range.
+  const deliveryRequest =
+    plan.adminAction === "download" ? request : boundedMediaRequest(request, plan.blob);
+  const bytes = reservedResponseBytes(plan.blob, deliveryRequest);
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   request.signal.throwIfAborted();
@@ -380,7 +385,8 @@ export async function streamBudgetedContentBlob(
     bytes,
   });
   const streamed = await streamLeasedContent(
-    (signal, deadline) => streamImmutableBlob(bucket, plan.blob, request, { signal, deadline }),
+    (signal, deadline) =>
+      streamImmutableBlob(bucket, plan.blob, deliveryRequest, { signal, deadline }),
     bytes,
     lease.expiresAt,
     request.signal,

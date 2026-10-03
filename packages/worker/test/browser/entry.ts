@@ -8,6 +8,17 @@ import { dispatchOutbox } from "../../src/jobs/outbox";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
 
+const TEST_IDENTITY_COOKIE = "__Host-ncf-test-identity";
+
+function cookieIdentity(cookieHeader: string | null): "owner" | "member" | undefined {
+  const value = cookieHeader
+    ?.split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(`${TEST_IDENTITY_COOKIE}=`))
+    ?.slice(TEST_IDENTITY_COOKIE.length + 1);
+  return value === "owner" || value === "member" ? value : undefined;
+}
+
 let initialized:
   | Promise<{
       env: Env;
@@ -146,7 +157,14 @@ export default {
       const token = await ready.issueToken(identity);
       if (identity === "member") ready.memberToken = token;
       else ready.ownerToken = token;
-      return Response.json({ authenticated: true });
+      return Response.json(
+        { authenticated: true },
+        {
+          headers: {
+            "Set-Cookie": `${TEST_IDENTITY_COOKIE}=${identity}; Path=/; Secure; HttpOnly; SameSite=Strict`,
+          },
+        },
+      );
     }
     if (path === "/__test__/process-media" && request.method === "POST") {
       const nodeId = new URL(request.url).searchParams.get("nodeId") ?? "";
@@ -215,11 +233,17 @@ export default {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     const headers = new Headers(request.headers);
-    if (!headers.has("X-Test-Without-Auth"))
+    if (!headers.has("X-Test-Without-Auth")) {
+      const explicit = headers.get("X-Test-Identity");
+      const identity =
+        explicit === "member" || explicit === "owner"
+          ? explicit
+          : (cookieIdentity(headers.get("Cookie")) ?? "owner");
       headers.set(
         "Cf-Access-Jwt-Assertion",
-        headers.get("X-Test-Identity") === "member" ? ready.memberToken : ready.ownerToken,
+        identity === "member" ? ready.memberToken : ready.ownerToken,
       );
+    }
     return worker.fetch(new Request(request, { headers }), ready.env);
   },
 };

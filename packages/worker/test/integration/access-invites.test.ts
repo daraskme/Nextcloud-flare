@@ -64,7 +64,19 @@ it("requires an explicit invitation, then binds two exact emails to distinct Acc
     f.csrf,
   );
   expect(me.status).toBe(200);
-  expect(await me.json()).toMatchObject({ id: first.user_id, role: "member", email: firstEmail });
+  expect(await me.json()).toMatchObject({
+    id: first.user_id,
+    role: "member",
+    email: firstEmail,
+    clientEncryptionRequired: false,
+  });
+  const requiredMe = await handleAccountHttp(
+    new Request("https://app.invalid/api/v1/me"),
+    { ...f.app, CLIENT_ENCRYPTION_REQUIRED: "true" },
+    first,
+    f.csrf,
+  );
+  expect(await requiredMe.json()).toMatchObject({ clientEncryptionRequired: true });
   expect(first.user_id).not.toBe(second.user_id);
   expect(first.role).toBe("member");
   expect(second.role).toBe("member");

@@ -70,6 +70,10 @@ NixOSのChromeで、非公開の実ファイルをAVIF、Opus/MP4、AV1 Main 10-
 
 原本は保存したまま別ファイルへ変換した。音声はOpus 160 kbps VBR、動画はSVT-AV1 CRF 36/preset 6・5秒keyframe・faststartを採用した。動画は全5,945 frameをデコードし、24 frameごとの248点で測ったVMAF平均98.2575を確認した。この数値はサンプル測定であり、全frameの品質保証ではない。Chrome以外、mobile、12-bit、音声出力機器を通した聴取は引き続き未確認。
 
+同じ3ファイルは、隔離ローカル環境のブラウザーで暗号化してアップロードし、端末内のService Workerから復号して表示・再生・シークした。AVIF寸法、音声の再生進行、動画のデコードframe増加と、全64,932,182 bytesの復号後SHA-256一致を確認した。ChromeがM4Aに付ける`audio/x-m4a`は暗号化メタデータ内で`audio/mp4`に正規化する。サーバーは暗号化されたメディアを解析せず、原本名・MIMEは復号後の端末だけで使う。実利用者の鍵によるstaging移行は別の手順であり、このローカル試験の完了では既存の平文ファイルは暗号化されない。[暗号化設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
+
+暗号化経路の実Cloudflare確認には、別の隔離ブラウザーと一時検証鍵、repository内の公開fixture（AVIF 316 bytes・MP3 180,681 bytes・AV1+Opus WebM 170,800 bytes）を使用した。暗号化upload、表示・再生・seek、復号後SHA-256と保存byte一致が成功し、試験fixtureだけをtrash/purgeした。実利用者の鍵や既存ファイルを変更する試験ではない。SW初回取得時のAccess転送と、streamed 206のContent-Length省略の実環境差を修正したうえで、補助処理なしで確認している。
+
 仕様根拠: [AVIF brands](https://aomediacodec.github.io/av1-avif/#brands)、[AV1 codec string](https://aomediacodec.github.io/av1-isobmff/#codecsparam)、[Ogg Opus](https://www.rfc-editor.org/rfc/rfc7845.html)、[MP4 Opus](https://opus-codec.org/docs/opus_in_isobmff.html)、[Cloudflare Images の入力制限](https://developers.cloudflare.com/images/get-started/limits/)。2026-09-22 確認。
 
 ## 非公開の手元ファイルを使う追加ブラウザー試験
@@ -92,3 +96,6 @@ NCF_USER_MEDIA_MANIFEST=/absolute/private/media.json pnpm test:browser
 ```
 
 この試験は隔離したローカルWorker/D1/R2を使う。Cloudflare Access・実Queues・実R2を含むstaging確認は、別途本人がログインした専用ブラウザーで行う。
+# 2026-10-04 動画シークの追加検証
+
+native playerのopen-ended Rangeに対し、content ticketの予約・応答を最大4MiBへ揃えた。シークで中断した残り全体の過大予約が429へ達する問題を修正している。実stagingの検証用Chromeで8回連続の前後シークと映像フレーム進行を確認し、今回の試験で429は出なかった。network/decode/unsupportedを画面で区別し、明示「再試行」で新しいticketを取得する。暗号化ファイルは専用「暗号化ファイル」画面の端末内復号経路で扱い、従来のserver media索引には入れない。

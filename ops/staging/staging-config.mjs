@@ -24,9 +24,18 @@ function validateTemplate(config) {
   );
   assert(config.vars?.ENVIRONMENT === "staging", "Unexpected environment marker");
   assert(
+    config.vars.CLIENT_ENCRYPTION_REQUIRED === "true",
+    "Staging client encryption must be required",
+  );
+  assert(
     ["true", "false"].includes(config.vars.STAGING_CONTROL_OPERATOR_ENABLED) &&
       config.vars.EPOCH_FLOOR === "2",
     "Unexpected control recovery configuration",
+  );
+  assert(
+    config.vars.BACKUP_OPERATOR_ENABLED === undefined ||
+      ["true", "false"].includes(config.vars.BACKUP_OPERATOR_ENABLED),
+    "Unexpected backup operator configuration",
   );
   assert(
     config.vars.APP_ORIGIN === "https://staging-app.darask.date" &&
@@ -141,6 +150,20 @@ function setOperatorEnabled(enabled) {
   console.log(`Staging control operator ${enabled ? "enabled" : "disabled"} in generated config`);
 }
 
+function setBackupOperatorEnabled(enabled) {
+  const config = readJsonc(generatedPath);
+  validateTemplate(config);
+  assert(
+    config.d1_databases?.[0]?.database_id !== "REPLACE_WITH_STAGING_D1_UUID" &&
+      config.kv_namespaces?.[0]?.id !== "REPLACE_WITH_STAGING_KV_ID",
+    "Generate the staging config first",
+  );
+  config.vars.BACKUP_OPERATOR_ENABLED = String(enabled);
+  writeFileSync(generatedPath, `${JSON.stringify(config, null, 2)}\n`, { flag: "w", mode: 0o600 });
+  chmodSync(generatedPath, 0o600);
+  console.log(`Staging backup operator ${enabled ? "enabled" : "disabled"} in generated config`);
+}
+
 switch (process.argv[2]) {
   case "generate":
     generate();
@@ -157,8 +180,14 @@ switch (process.argv[2]) {
   case "operator-disable":
     setOperatorEnabled(false);
     break;
+  case "backup-operator-enable":
+    setBackupOperatorEnabled(true);
+    break;
+  case "backup-operator-disable":
+    setBackupOperatorEnabled(false);
+    break;
   default:
     throw new Error(
-      "Usage: node staging-config.mjs generate|check-secrets|inspect-ids|operator-enable|operator-disable [JSON files]",
+      "Usage: node staging-config.mjs generate|check-secrets|inspect-ids|operator-enable|operator-disable|backup-operator-enable|backup-operator-disable [JSON files]",
     );
 }

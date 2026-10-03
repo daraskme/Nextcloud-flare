@@ -2,6 +2,12 @@
 
 `wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、52 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。利用者による手動試験でアップロード・ダウンロードと、別アカウントのファイルが一覧に出ないことを確認済み。別利用者のファイル ID を指定した直接アクセスの拒否は別途確認する。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
 
+## 2026-10-04 暗号化・復元試験の反映
+
+最新Workerは`580f9cd8-9114-4ca7-97f5-d3e782e4a8bd`。ブラウザーの本人＋管理者暗号化を配備し、`CLIENT_ENCRYPTION_REQUIRED=true`、両operator gateはfalseを維持する。匿名HTTP smoke 9件、公開SW bootstrapのscope/no-store、実Chromeの登録と未設定upload拒否を確認した。実ChromeはSW取得時にAccess Cookieを送らないため、鍵・データを含まない単一コードだけを既存の`/public-assets/*` Bypassで配信する。Private APIと内容取得の認証は維持し、新しいBypassは追加しない。
+
+実利用者の鍵設定と既存平文の暗号化移行は未完了。[初回設定](../../docs/CLIENT_ENCRYPTION_SETUP.md)を参照する。WebDAV・公開upload・直接APIは暗号化経路ではない。今回の実R2/SQLite/原本複写の復元試験、動画8回シーク、automation GET 2経路の状況は[進捗表](../../docs/IMPLEMENTATION_STATUS.md)に記録した。
+
 ## 2026-10-03 管理者閲覧・メディア再生の反映
 
 Worker version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` に、監査付きの読み取り専用管理画面 `/admin/files` とMP3/Opus/AV1の解析・配信修正を配備した。限定CI tokenによる配備後、匿名HTTP smokeは9件すべて成功した。管理画面の操作は [ADMIN_FILES](../../docs/ADMIN_FILES.md) を参照する。
@@ -28,19 +34,19 @@ D1は適用前の50 migrations・458 triggers・管理者用tableなしを照合
 
 `vars` は staging marker、厳密な HTTPS origin、Queue 名、PBKDF2 反復回数だけを置く。`secrets.required` は必要なキー名の一覧であり、値の登録や実在を証明しない。値はリポジトリや CI ログに書かず、staging 専用の保護された secret store で管理する。`ACCESS_ISSUER`, `ACCESS_USER_AUDIENCE`, `ACCESS_SERVICE_AUDIENCE` は実際の Access application と一致させる。`BOOTSTRAP_OWNER_EMAILS` は JSON 文字列配列、`BOOTSTRAP_OWNER_IDENTITIES` は `iss`/`sub` の JSON オブジェクト配列、`BOOTSTRAP_QUOTA_BYTES` は非負の安全な整数。両 bootstrap 配列の合計は 1 件以上。CSRF、content ticket/cookie、cursor、app/share password、upload capability は用途別の key ring と active kid を揃える。`R2_INVENTORY_*` は `ncf-staging-blobs` の読み取り専用 S3 inventory 資格情報を指定する。追加の jurisdiction が必要なら `R2_INVENTORY_JURISDICTION` を明示する。
 
-`EPOCH_FLOOR=2` は初回 ControlDO 復旧後の安全な下限であり、通常配備にも残す。`STAGING_CONTROL_OPERATOR_ENABLED` は通常 `false`。`BACKUP_OPERATOR_ENABLED` は別の backup operator Worker の設定であり、この app Worker では設定しない。backup operator の遠隔 schedule と資格情報も、現行 CI の backup drill だけでは構成されない。
+`EPOCH_FLOOR=2` は初回 ControlDO 復旧後の安全な下限であり、通常配備にも残す。`STAGING_CONTROL_OPERATOR_ENABLED` と `BACKUP_OPERATOR_ENABLED` は通常 `false`。後者はこのapp Workerのprivate `BackupOperator` named entrypointのgateで、一時[backup Cron bridge](BACKUP_CRON_BRIDGE.md)を使う間だけ有効にする。backup operator の遠隔scheduleと資格情報は、現行CIのbackup drillだけでは構成されない。
 
 ## Access とアプリの入口
 
 | host / path | Access policy | Worker 側 |
 | --- | --- | --- |
 | app host の `/*`（深い SPA path、`/private-assets/*`、private `/api/v1/*` を含む） | staging user application の root Allow | user JWT と既存 user/session |
-| app の `/api/v1/automation/*` | 現在は Everyone を Deny。実装後は Service Auth を設計 | 現行 Worker に handler はなく、404。service API は未実装 |
+| app の `/api/v1/automation/*` | 現在は Everyone を Deny。運用principal登録後に限定した Service Auth を設定 | nodes一覧・詳細のGETのみ実装済み。専用principal/root/scope/credential/epochを再検査 |
 | app の `/s`, `/s/*`, `/public-assets/*`, `/api/v1/public/shares/*` | Bypass | share secret、session、CSRF、route manifest |
 | app の `/dav`, `/dav/*` | Bypass | app password Basic |
 | content host 全体 | Bypass | content ticket/cookie、host と route 検証 |
 
-app host の root Allow は `staging-app.darask.date/*` で深い SPA path も覆い、public share と DAV にはより具体的な Bypass、automation には Deny application を設定した。Access の path 優先順位と Worker route の双方で、未知 method/path が private 権限に繰り上がらないことを確認する。content host に user Access を要求すると、別 origin の ticket/cookie flow が成立しない。Service Auth は将来の automation route の入口契約であり、現行 Worker に service API はない。
+app host の root Allow は `staging-app.darask.date/*` で深い SPA path も覆い、public share と DAV にはより具体的な Bypass、automation には Deny application を設定した。Access の path 優先順位と Worker route の双方で、未知 method/path が private 権限に繰り上がらないことを確認する。content host に user Access を要求すると、別 origin の ticket/cookie flow が成立しない。実装済みautomation GET 2経路はServiceAuth専用で、一般利用者のAccess sessionでは利用できない。運用principalは未登録で、stagingでの実利用はまだ有効化していない。
 
 **追加ユーザー:** `bootstrapOwner` は最初の管理者 1 人だけを作る。Access Allow に複数メールを登録した後、管理者がアプリの設定画面から各メールを招待する。7日間有効な招待は Access が検証した正確な issuer・メール表記と一致する本人の初回ログインで一度だけ消費され、`iss+sub` と専用 space/root を原子的に固定する。一般利用者の初期 quota は1 GiB。Access Allow だけではアプリ利用者にならず、D1 への手動 `INSERT` や暗黙のメール一致登録は行わない。初回管理者と招待後の一般利用者 2 人の実ログインは確認済み。手順は [STAGING_ACCESS](../../docs/STAGING_ACCESS.md) を参照する。
 
@@ -54,7 +60,7 @@ app host の root Allow は `staging-app.darask.date/*` で深い SPA path も�
 2. GitHub repository の **Settings → Environments → New environment** で `staging` を作り、必要な reviewer と配備可能 branch を `main` に制限する。現環境では Environment の custom branch policy を `main` のみに設定済み。`staging` environment secrets に `CLOUDFLARE_ACCOUNT_ID` と限定 `CLOUDFLARE_API_TOKEN`、environment variables に実 ID の `STAGING_D1_DATABASE_ID` と `STAGING_KV_NAMESPACE_ID` を登録済み。CI token は `next-cloud-flare-staging` の Individual Workers Editor、`darask.date` の Workers Routes Read/Write、Account `darask` の Queues Read/Write を持つ。Wrangler は Queue consumer を含む deploy 時に Queue 一覧を取得するため、Workers Editor と Routes 権限だけでは認証エラーになった。secret 値は workflow file や通常の repository variables へ転記しない。workflow 自体も `main` 以外を拒否し、同時実行を 1 件に制限する。PR や一般の push job に Cloudflare 資格情報を渡さない。
 3. 初回実行前に [INITIAL_PROVISION](INITIAL_PROVISION.md) に沿って staging リソースと Access を用意し、remote D1 migration の差分と復旧手順を確認して適用する。Worker の必要 secret は保護された一時 file から初回 `wrangler deploy --secrets-file` と同時に登録し、`wrangler secret list` で名前を照合する。この workflow は既存 Worker の secret list が成功することを前提にし、初回 Worker 作成・secret 投入・migration は行わない。[`wrangler secret put`](https://developers.cloudflare.com/workers/configuration/secrets/) は新 version を即時 deploy するため、初回登録には使わない。
 4. GitHub Actions の **Staging preflight and deploy → Run workflow** で `main` を選び、まず `deploy=false` で実行する。workflow は環境 ID の形式・placeholder を検査し、gitignored の設定ファイルを生成して `pnpm check` を通し、Environment secret で Wrangler を認証して Worker の secret 名を照合する。`deploy=true` を明示した実行のみ `wrangler deploy` に進む。[Wrangler deploy](https://developers.cloudflare.com/workers/wrangler/configuration/#secrets) も `secrets.required` に挙げた secret の未設定を検出する。値の形式・Access audience との一致、Cloudflare resource や Access policy の正確さは別途人が確認する。
-5. staging deploy 後に両 host の正しい dispatch、Access user/Bypass、未実装の automation route が 404 になること、private R2、初期化済み D1 と ControlDO、Queue と DLQ、Cron、Images、rate limiter、backup 経路を実環境で smoke test する。小さい fixture と少数リクエストに限定し、失敗時は traffic を止めて復旧状態を確認する。
+5. staging deploy 後に両 host の正しい dispatch、Access user/Bypass、automation route の未認証要求が拒否されること、private R2、初期化済み D1 と ControlDO、Queue と DLQ、Cron、Images、rate limiter、backup 経路を実環境で smoke test する。小さい fixture と少数リクエストに限定し、失敗時は traffic を止めて復旧状態を確認する。
 
 Cloudflare の [GitHub Actions 配備手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)は非対話の Wrangler に account ID と API token を使用する。[Workers 権限表](https://developers.cloudflare.com/workers/authorization/)では既存 Worker の deploy は対象 Worker の Editor、新規 Worker 作成は Workers product の Admin、Custom Domain 変更は対象 zone の Workers Routes Write も要る。D1 の直接 migration と staging resource 作成にはそれぞれ別の権限が要るため、初回 provision と継続 deploy の token は用途別に分ける。
 

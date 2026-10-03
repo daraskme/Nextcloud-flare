@@ -3126,3 +3126,57 @@ h1 {
     font-size: 11px;
   }
 }
+/* The encryption workspace keeps recovery material in the browser. */
+.encryption-files {
+  display: grid;
+  gap: 1rem;
+  max-width: 1080px;
+  padding-bottom: 3rem;
+}
+.encryption-files > section {
+  padding: 1.25rem;
+  border: 1px solid var(--border, #dce2ea);
+  border-radius: 14px;
+  background: var(--surface, #fff);
+}
+.encryption-files p {
+  line-height: 1.65;
+}
+.encryption-note {
+  color: #526075;
+  font-size: 0.9rem;
+}
+.encryption-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+.encryption-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.encryption-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid #e3e8ef;
+}
+.encryption-list li > span {
+  overflow-wrap: anywhere;
+}
+.encryption-preview video,
+.encryption-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin-bottom: 1rem;
+}
+.encryption-preview audio {
+  display: block;
+  width: 100%;
+  margin-bottom: 1rem;
+}

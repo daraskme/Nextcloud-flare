@@ -13,6 +13,7 @@ import {
   type BudgetSettleRequest,
 } from "../../src/do/BudgetDO";
 import type { Env } from "../../src/env";
+import { MEDIA_RANGE_BYTES } from "../../src/platform/mediaRange";
 import { streamBudgetedContentBlob } from "../../src/services/blobRead";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { foundationFixture } from "../fixtures/foundation";
@@ -146,6 +147,103 @@ async function fixture() {
   return { f, key, boundary, grants, stub, read, http, afterBoundary };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+it("keeps repeated native media seeks within the byte budget by bounding each open range", async () => {
+  const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  const size = MEDIA_RANGE_BYTES * 4 + 31;
+  await atomicBatch(
+    env.DB,
+    f.statements.map((statement) => {
+      if (statement.sql.startsWith("INSERT INTO users") && statement.values)
+        return { ...statement, values: statement.values.map((v, i) => (i === 5 ? size * 2 : v)) };
+      if (statement.sql.startsWith("INSERT INTO blobs"))
+        return {
+          sql: "INSERT INTO blobs(id,owner_id,r2_key,size,mime_sniffed,content_etag,state,created_at) VALUES(?,?,?,?,'video/mp4',?,'committed',?)",
+          values: [
+            f.ids.blob,
+            f.ids.user,
+            `u/${f.ids.user}/b/${f.ids.blob}`,
+            size,
+            `"b-${f.ids.blob}"`,
+            Date.now() - 1000,
+          ],
+        };
+      return statement;
+    }),
+  );
+  await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
+  const key = `u/${f.ids.user}/b/${f.ids.blob}`;
+  const bytes = new Uint8Array(size).map((_, i) => i % 251);
+  const stored = await env.BLOBS.put(key, bytes);
+  if (!stored) throw new Error("fixture_put_failed");
+  try {
+    await env.DB.prepare(
+      "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,?,?,?)",
+    )
+      .bind(f.ids.blob, size, stored.etag, Date.now())
+      .run();
+    const ring = await contentKeyRing("test", {
+      test: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    });
+    const tokens = new ContentTokens(ring, ring, "https://content.invalid");
+    const issued = await issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch: 1 },
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "content",
+      Date.now() + 120000,
+    );
+    const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+    const cookie = accepted.setCookie.split(";", 1)[0]!;
+    for (let i = 0; i < 6; i++) {
+      const offset = i * 1024;
+      const request = new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
+        headers: { Cookie: cookie, Range: `bytes=${offset}-` },
+      });
+      const response = await streamBudgetedContentBlob(
+        env.DB,
+        env.BLOBS,
+        env.BUDGETS,
+        tokens,
+        cookie,
+        f.ids.space,
+        f.ids.file,
+        "content",
+        request,
+      );
+      expect(response.status).toBe(206);
+      expect(response.headers.get("Content-Length")).toBe(String(MEDIA_RANGE_BYTES));
+      expect(response.headers.get("Content-Range")).toBe(
+        `bytes ${offset}-${offset + MEDIA_RANGE_BYTES - 1}/${size}`,
+      );
+      if (i === 0)
+        expect(await crypto.subtle.digest("SHA-256", await response.arrayBuffer())).toEqual(
+          await crypto.subtle.digest("SHA-256", bytes.slice(offset, offset + MEDIA_RANGE_BYTES)),
+        );
+      else await response.body!.cancel();
+    }
+    const offset = size - 31;
+    const end = await streamBudgetedContentBlob(
+      env.DB,
+      env.BLOBS,
+      env.BUDGETS,
+      tokens,
+      cookie,
+      f.ids.space,
+      f.ids.file,
+      "content",
+      new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
+        headers: { Cookie: cookie, Range: `bytes=${offset}-` },
+      }),
+    );
+    expect(end.headers.get("Content-Range")).toBe(`bytes ${offset}-${size - 1}/${size}`);
+    expect(new Uint8Array(await end.arrayBuffer())).toEqual(bytes.slice(offset));
+  } finally {
+    await env.BLOBS.delete(key);
+  }
+});
 
 function bucket(
   f: Fixture,

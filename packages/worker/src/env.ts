@@ -19,6 +19,7 @@ export interface Env {
   SHARE_PASSWORD_IP_LIMITER: RateLimit;
   ASSETS: Fetcher;
   ENVIRONMENT: "development" | "staging" | "production";
+  CLIENT_ENCRYPTION_REQUIRED?: string;
   APP_ORIGIN: string;
   CONTENT_ORIGIN: string;
   JOBS_QUEUE_NAME: string;

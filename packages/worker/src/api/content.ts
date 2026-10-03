@@ -14,6 +14,7 @@ function cors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", origin);
   headers.set("Access-Control-Allow-Credentials", "true");
+  headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Accept-Ranges");
   headers.set("Vary", "Origin");
   return new Response(response.body, { status: response.status, headers });
 }

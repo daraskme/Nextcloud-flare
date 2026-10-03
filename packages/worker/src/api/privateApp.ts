@@ -17,6 +17,7 @@ import { handleAccountHttp } from "./account";
 import { adminBrowseRoute, handleAdminBrowseHttp } from "./adminBrowse";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
+import { automationRoute, handleAutomationHttp } from "./automation";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { groupRoute, handleGroupHttp } from "./groups";
@@ -65,6 +66,7 @@ export function privateAppRoute(request: Request): boolean {
     groupRoute(request) ||
     inviteRoute(request) ||
     adminBrowseRoute(request) ||
+    automationRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
     privateZipRoute(request) ||
@@ -84,6 +86,20 @@ export async function handlePrivateAppHttp(
   dependencies: PrivateAppDependencies,
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (automationRoute(request)) {
+    if (url.origin !== env.APP_ORIGIN || url.hash) return problem(404, "not_found");
+    try {
+      return await handleAutomationHttp(
+        request,
+        env,
+        epoch,
+        dependencies.verifier,
+        dependencies.cursors?.ring,
+      );
+    } catch {
+      return problem(503, "not_ready");
+    }
+  }
   if (
     url.origin !== env.APP_ORIGIN ||
     (url.search &&

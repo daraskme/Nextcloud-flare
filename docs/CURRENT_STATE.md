@@ -2,6 +2,8 @@
 
 更新: 2026-10-04。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
+追加checkpoint: 実stagingのR2保存世代から83table・388行を独立SQLiteへ復元し、原本6 object・64,953,590 bytesの複写照合が成功した。保守状態と一時Cron bridgeは解除・削除済み。動画シーク時の429を4MiBのRange予約へ修正し実環境で8回連続シークを確認した。読み取り専用automation GET 2経路は実装済みだがAccessでの実利用はまだ有効化していない。本人＋管理者のクライアント暗号化は単体・統合3,125件と全ブラウザー48件を通過し、stagingへ反映した。実Chrome固有のSW取得時のAccess転送は単一公開bootstrapで解消し、実登録と鍵未設定時の送信拒否を確認した。実利用者の鍵設定と移行は未実施で、既存ファイルと過去バックアップはまだ平文である。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
+
 2026-10-04 は手元の実ファイルによるAVIF・Opus/MP4・1080p 10-bit AV1+Opus/MP4のupload・表示・再生・seek・全byte照合を追加した。AVIFをMP3と誤判定してGalleryから消す問題、画像MIMEの保存不足、サーバー間の時計差による受付期限の誤拒否を修正し、stagingへ配備した。個人メディアはrepositoryに含めない。
 
 2026-10-03 の追加は、監査付き読み取り専用の [管理者ファイル閲覧](ADMIN_FILES.md) と、実upload後のMP3/Opus/AV1形式判定・再生経路の修正。現在のschemaは52 migrations（最新`0053`）、83通常table、168 route契約。stagingは配備済みで、管理者1人と一般利用者2人のログイン、upload/download、一般利用者間の一覧分離をユーザーが確認した。追加機能の配備・試験結果は進捗表と [staging runbook](../ops/staging/README.md) を参照する。

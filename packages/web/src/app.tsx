@@ -52,6 +52,7 @@ import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import { AllUserFiles } from "./features/admin/AllUserFiles";
 import { PrivateAudio } from "./features/audio/PrivateAudio";
+import { EncryptedFiles } from "./features/encryption/EncryptedFiles";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { PrivateBookshelf } from "./features/library/PrivateBookshelf";
@@ -69,6 +70,8 @@ import {
   formatBytes,
   type TrashItem,
 } from "./lib/api";
+import { clearClientMedia, installClientMediaPagehideCleanup } from "./lib/clientMediaRegistration";
+import { clearEncryptionSession, isEncryptedFile } from "./lib/encryptionSession";
 
 type Action =
   | { kind: "create" }
@@ -185,11 +188,17 @@ function UploadPanel() {
                 <Button
                   size="small"
                   onClick={() => {
+                    if (task.record.encryptedSpool) {
+                      void uploads.resume(task);
+                      return;
+                    }
                     selected.current = task;
                     input.current?.click();
                   }}
                 >
-                  元のファイルを選択・再確認
+                  {task.record.encryptedSpool
+                    ? "暗号化済みデータから再開"
+                    : "元のファイルを選択・再確認"}
                 </Button>
               )}
             </div>
@@ -1091,6 +1100,7 @@ export function App() {
   const audio = pathname === "/audio";
   const bookshelf = pathname === "/bookshelf";
   const video = pathname === "/video";
+  const encryption = pathname === "/encryption";
   const sharing = pathname === "/shares";
   const webDavSettings = pathname === "/settings/webdav";
   const adminFiles = pathname === "/admin/files";
@@ -1105,6 +1115,7 @@ export function App() {
     !audio &&
     !bookshelf &&
     !video &&
+    !encryption &&
     !sharing &&
     !webDavSettings &&
     !adminFiles;
@@ -1212,6 +1223,7 @@ export function App() {
       "shares",
       "share-groups",
       "user-nodes",
+      "encrypted-children",
     ])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
@@ -1220,7 +1232,19 @@ export function App() {
     uploads.onCompleted = refresh;
   }, [query]);
   useEffect(() => {
+    clearEncryptionSession();
+    void clearClientMedia().catch(() => undefined);
+    const remove = installClientMediaPagehideCleanup();
+    return () => {
+      remove();
+      clearEncryptionSession();
+      void clearClientMedia().catch(() => undefined);
+    };
+  }, [me?.id, me?.epoch]);
+  useEffect(() => {
     if (authExpired) {
+      clearEncryptionSession();
+      void clearClientMedia().catch(() => undefined);
       api.clear();
       void uploads.clear();
       sessionStorage.removeItem(PENDING_KEY);
@@ -1268,6 +1292,8 @@ export function App() {
     channel.current = bc;
     bc.onmessage = (event) => {
       if (event.data === "logout") {
+        clearEncryptionSession();
+        void clearClientMedia().catch(() => undefined);
         api.clear();
         query.clear();
         sessionStorage.removeItem(PENDING_KEY);
@@ -1280,6 +1306,17 @@ export function App() {
     };
   }, [query]);
   const act = (next: Action) => {
+    if (
+      "node" in next &&
+      next.node.kind === "file" &&
+      isEncryptedFile(next.node.name) &&
+      ["rename", "share", "zip", "overwrite"].includes(next.kind)
+    ) {
+      setNotice(
+        "暗号化ファイルは「暗号化ファイル」画面で復号してください。名前の変更・共有・上書きはまだ対応していません。",
+      );
+      return;
+    }
     if (sessionStorage.getItem(PENDING_KEY)) {
       setNotice("未確認の操作があります。結果を確認してから続けてください。");
       return;
@@ -1315,6 +1352,10 @@ export function App() {
       void navigation
         .then(() => recordOpen(node.id))
         .catch((error) => setNotice(errorMessage(error)));
+      return;
+    }
+    if (isEncryptedFile(node.name)) {
+      void navigate({ to: "/encryption" });
       return;
     }
     if (sharedMount && !sharedMount.actions.includes("download")) {
@@ -1359,6 +1400,8 @@ export function App() {
   };
   const logout = async () => {
     setLoggingOut(true);
+    clearEncryptionSession();
+    void clearClientMedia().catch(() => undefined);
     try {
       await api.logout();
       channel.current?.postMessage("logout");
@@ -1402,31 +1445,33 @@ export function App() {
       ? path.data?.path.slice(sharedRootIndex + 1)
       : []
     : path.data?.path.slice(1);
-  const title = trash
-    ? "ごみ箱"
-    : recent
-      ? "最近使った項目"
-      : starred
-        ? "スター付き"
-        : sharing
-          ? "内部共有"
-          : shared
-            ? sharedMount && !sharedPathInvalid
-              ? path.data?.path.at(-1)?.name || sharedMount.root.name
-              : "共有フォルダー"
-            : gallery
-              ? "ギャラリー"
-              : audio
-                ? "オーディオ"
-                : bookshelf
-                  ? "本棚"
-                  : video
-                    ? "動画"
-                    : webDavSettings
-                      ? "WebDAV 設定"
-                      : adminFiles
-                        ? "全利用者のファイル"
-                        : path.data?.path.at(-1)?.name || "マイドライブ";
+  const title = encryption
+    ? "暗号化ファイル"
+    : trash
+      ? "ごみ箱"
+      : recent
+        ? "最近使った項目"
+        : starred
+          ? "スター付き"
+          : sharing
+            ? "内部共有"
+            : shared
+              ? sharedMount && !sharedPathInvalid
+                ? path.data?.path.at(-1)?.name || sharedMount.root.name
+                : "共有フォルダー"
+              : gallery
+                ? "ギャラリー"
+                : audio
+                  ? "オーディオ"
+                  : bookshelf
+                    ? "本棚"
+                    : video
+                      ? "動画"
+                      : webDavSettings
+                        ? "WebDAV 設定"
+                        : adminFiles
+                          ? "全利用者のファイル"
+                          : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1491,6 +1536,11 @@ export function App() {
           <Link to="/video" className={video ? "nav-link active" : "nav-link"}>
             <PlaySquare size={19} />
             動画
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/encryption" className={encryption ? "nav-link active" : "nav-link"}>
+            <HardDrive size={19} />
+            暗号化ファイル
             <span className="nav-dot" />
           </Link>
           <Link to="/trash" className={trash ? "nav-link active" : "nav-link"}>
@@ -1838,6 +1888,12 @@ export function App() {
               </Button>
             </div>
           )}
+          {me?.clientEncryptionRequired && personalFiles && (
+            <p className="notice">
+              新規アップロードには端末の暗号化鍵が必要です。
+              <Link to="/encryption">暗号化設定・鍵の解除</Link>
+            </p>
+          )}
           {!me ? (
             <div className="empty-state">
               <Cloud size={40} />
@@ -1854,6 +1910,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : encryption ? (
+            <EncryptedFiles key={`${me.id}:${me.epoch}`} account={me} />
           ) : adminFiles ? (
             <AllUserFiles account={me} />
           ) : sharing ? (

@@ -190,6 +190,9 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   );
   expect(httpRead.status).toBe(200);
   expect(httpRead.headers.get("Access-Control-Allow-Origin")).toBe(contentEnv.APP_ORIGIN);
+  expect(httpRead.headers.get("Access-Control-Expose-Headers")).toBe(
+    "ETag, Content-Range, Accept-Ranges",
+  );
   expect(new TextDecoder().decode(await httpRead.arrayBuffer())).toBe("abc");
   const httpHead = await handleContentHttp(
     new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
