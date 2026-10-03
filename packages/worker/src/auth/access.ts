@@ -18,7 +18,18 @@ export interface VerifiedAccessService {
   readonly exp: number;
 }
 export class AccessAuthenticationError extends Error {
-  constructor() {
+  constructor(
+    readonly stage: "assertion" | "header" | "jwks" | "jwt" | "claims" = "assertion",
+    readonly headerCheck?: "decode" | "algorithm" | "type" | "key_id" | "extra_fields",
+    readonly jwksCheck?:
+      | "unavailable"
+      | "timeout"
+      | "invalid"
+      | "unknown_key"
+      | "rate_limited"
+      | "fetch_error"
+      | "other",
+  ) {
     super("access_authentication_failed");
   }
 }
@@ -56,6 +67,8 @@ export class AccessVerifier {
     request: Request,
     kind: "user" | "service",
   ): Promise<VerifiedAccessUser | VerifiedAccessService> {
+    let stage: AccessAuthenticationError["stage"] = "assertion";
+    let headerCheck: AccessAuthenticationError["headerCheck"];
     try {
       // Headers coalesces duplicates with commas. Only one compact JWT is accepted.
       const token = request.headers.get("Cf-Access-Jwt-Assertion");
@@ -65,19 +78,27 @@ export class AccessVerifier {
         !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)
       )
         throw new Error("invalid_assertion");
+      stage = "header";
+      headerCheck = "decode";
       const header = decodeProtectedHeader(token);
-      if (
-        header.alg !== "RS256" ||
-        header.typ !== "JWT" ||
-        !text(header.kid, 256) ||
-        Object.keys(header).some((key) => !["alg", "typ", "kid"].includes(key))
-      )
+      headerCheck = "algorithm";
+      if (header.alg !== "RS256") throw new Error("invalid_header");
+      headerCheck = "type";
+      // JWS typ is optional; require JWT when the issuer provides it.
+      if (header.typ !== undefined && header.typ !== "JWT") throw new Error("invalid_header");
+      headerCheck = "key_id";
+      if (!text(header.kid, 256)) throw new Error("invalid_header");
+      headerCheck = "extra_fields";
+      if (Object.keys(header).some((key) => !["alg", "typ", "kid"].includes(key)))
         throw new Error("invalid_header");
+      headerCheck = undefined;
       const audience = kind === "user" ? this.userAudience : this.serviceAudience;
       const currentDate = new Date(this.now());
-      const { payload } = await jwtVerify(token, await this.jwks.resolver(header.kid), {
+      stage = "jwks";
+      const resolver = await this.jwks.resolver(header.kid);
+      stage = "jwt";
+      const { payload } = await jwtVerify(token, resolver, {
         algorithms: ["RS256"],
-        typ: "JWT",
         issuer: this.jwks.issuer,
         audience,
         clockTolerance: 60,
@@ -87,6 +108,7 @@ export class AccessVerifier {
             ? ["iat", "exp", "nbf", "sub", "email", "type"]
             : ["iat", "exp", "common_name", "type"],
       });
+      stage = "claims";
       if (
         payload.type !== "app" ||
         !(
@@ -132,8 +154,26 @@ export class AccessVerifier {
         iat: payload.iat,
         exp: payload.exp,
       }) as VerifiedAccessService;
-    } catch {
-      throw new AccessAuthenticationError();
+    } catch (error) {
+      let jwksCheck: AccessAuthenticationError["jwksCheck"];
+      if (stage === "jwks") {
+        const message = error instanceof Error ? error.message : "";
+        jwksCheck =
+          message === "jwks_unavailable"
+            ? "unavailable"
+            : message === "jwks_timeout"
+              ? "timeout"
+              : message === "invalid_jwks" || message === "jwks_too_large"
+                ? "invalid"
+                : message === "unknown_kid"
+                  ? "unknown_key"
+                  : message === "jwks_refresh_limited"
+                    ? "rate_limited"
+                    : error instanceof TypeError
+                      ? "fetch_error"
+                      : "other";
+      }
+      throw new AccessAuthenticationError(stage, headerCheck, jwksCheck);
     }
   }
 }

@@ -157,6 +157,13 @@ export async function handlePrivateAppHttp(
       response.headers.set("Retry-After", "1");
       return response;
     }
+    if (error instanceof AccessAuthenticationError && env.ENVIRONMENT === "staging")
+      console.warn(
+        "staging_access_auth_rejected",
+        error.stage,
+        error.headerCheck ?? "-",
+        error.jwksCheck ?? "-",
+      );
     return error instanceof AccessAuthenticationError
       ? problem(401, "unauthorized")
       : problem(403, "forbidden");

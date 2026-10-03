@@ -32,6 +32,13 @@ export async function servePrivateApp(
       response.headers.set("Retry-After", "1");
       return response;
     }
+    if (error instanceof AccessAuthenticationError && env.ENVIRONMENT === "staging")
+      console.warn(
+        "staging_access_auth_rejected",
+        error.stage,
+        error.headerCheck ?? "-",
+        error.jwksCheck ?? "-",
+      );
     return problem(error instanceof AccessAuthenticationError ? 401 : 403, "unauthorized");
   }
   const page = privateSpaPath(url.pathname);
