@@ -14,6 +14,8 @@ const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const hash = "f".repeat(64);
 const accountId = "a".repeat(32);
 const roots = [];
+const posixOnly = process.platform === "win32" ? test.skip : test;
+const windowsOnly = process.platform === "win32" ? test : test.skip;
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -188,7 +190,7 @@ test("config has only the private named service binding and pins one operation",
   });
 });
 
-test("generated config remains private and refuses an identity switch", async () => {
+posixOnly("generated config remains private and refuses an identity switch", async () => {
   const root = await mkdtemp(join(tmpdir(), "ncf-backup-cron-test-"));
   roots.push(root);
   const path = join(root, "generated.jsonc");
@@ -206,6 +208,20 @@ test("generated config remains private and refuses an identity switch", async ()
   );
   assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
+
+windowsOnly(
+  "refuses to reuse a config when Windows cannot attest private permissions",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "ncf-backup-cron-test-"));
+    roots.push(root);
+    const path = join(root, "generated.jsonc");
+    await generateCronConfig({ accountId, id, operation: "begin" }, path);
+    assert.notEqual((await stat(path)).mode & 0o077, 0);
+    await assert.rejects(generateCronConfig({ accountId, id, operation: "begin" }, path), {
+      message: "staging_backup_cron_config_invalid",
+    });
+  },
+);
 
 test("HTTP is unavailable", () => {
   assert.equal(bridge.fetch().status, 404);

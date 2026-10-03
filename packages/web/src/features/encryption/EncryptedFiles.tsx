@@ -192,9 +192,10 @@ export function EncryptedFiles({ account }: { account: Account }) {
           redirect: "error",
         },
       );
+      const declaredLength = response.headers.get("Content-Length");
       if (
         response.status !== 200 ||
-        response.headers.get("Content-Length") !== String(node.size) ||
+        (declaredLength !== null && declaredLength !== String(node.size)) ||
         !response.body
       )
         throw new Error("migration_read_failed");
@@ -215,6 +216,21 @@ export function EncryptedFiles({ account }: { account: Account }) {
       }
       if (bytes !== node.size || getEncryptionSession(account.id) !== keys)
         throw new Error("migration_invalid");
+      const current = await api.request<
+        FileNode & { spaceId: string; ownerId: string; parentId: string }
+      >(`/api/v1/nodes/${encodeURIComponent(node.id)}`);
+      if (
+        current.id !== node.id ||
+        current.kind !== "file" ||
+        current.spaceId !== account.spaceId ||
+        current.ownerId !== account.id ||
+        current.parentId !== folderId ||
+        current.name !== node.name ||
+        current.revision !== node.revision ||
+        current.currentBlobId !== node.currentBlobId ||
+        getEncryptionSession(account.id) !== keys
+      )
+        throw new Error("元のファイルが変更されました。一覧を更新して再確認してください。");
       await uploads.enqueue(
         new File(chunks, node.name, {
           type: node.mime ?? "application/octet-stream",

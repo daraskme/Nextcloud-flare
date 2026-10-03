@@ -8,7 +8,7 @@
 - 動画のopen-ended Range予約を4MiBへ制限し、実stagingで8回連続シークを確認した。再現していた429は出ていない。ネットワークエラーとcodecエラーを分け、明示再試行を追加。詳細と検証数は進捗表を参照。
 - service principal限定のautomation GET 2経路を実装。Accessの拒否policyは維持、運用principalの登録は未完了。
 - ユーザーはファイル本体をCloudflareに読ませない暗号化と、管理者も復号できる設計を希望した。端末内の本人鍵＋別経路で確認した管理者公開鍵を使う。秘密鍵・復旧ファイルをCloudflareに保存しない。既存の平文ファイル・過去バックアップを移行済みと誤報しない。ブラウザー暗号化の設定・制限は [CLIENT_ENCRYPTION](CLIENT_ENCRYPTION.md)。強いhosting provider攻撃に対しては配信JavaScript改変の限界がある。
-- 暗号化版はWorker `580f9cd8-9114-4ca7-97f5-d3e782e4a8bd`へ反映。全ブラウザー48件と単体・Worker統合3,125件が成功。実ChromeのService Worker登録はCookieを送らずAccessに転送されたため、鍵を含まない単一の公開bootstrapへ変更し、実登録と鍵未設定時のupload送信0件を確認した。ユーザー報告では実管理者鍵の初期設定は完了し、既存ファイルの暗号化移行は進行中。移行完了は未確認で、他の所有者は本人鍵の設定が必要。復旧JSONをチャットへ求めない。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を案内する。
+- 暗号化移行修正版はWorker `3aafb739-ae57-449c-aff1-57fd389fdaea`へ反映。単体・Worker統合3,125件と従来の全ブラウザー48件が成功。移行修正後のfocused暗号化3件は成功し、全49件が8.6分で成功。実管理者の復旧ファイルを端末内だけで読み込み、既存メディア3件・64,932,182 bytesを暗号化コピーし、実stagingで復号後の全byte/SHA-256・再生/seek・映像frame増加を確認した。ユーザーの明示承認後、元の平文3件をtrash/purgeし、元nodeの404・ゴミ箱不在・暗号化コピー3件の保持を確認した。R2原本は35日以上のGC猶予で残り、過去バックアップも保持中。一般利用者2人は本人報告で鍵未設定で、各1件の空ファイルは未移行。本人鍵と管理者公開鍵を先に設定する。復旧JSONをチャットへ求めない。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を案内する。
 - さらに実配信で206のContent-Lengthが省略される差を修正した。一時検証鍵と別の隔離ブラウザーを使う実Cloudflareの3 media fixtureは、暗号化upload・復号・再生/seek・全byte保存まで補助なしで成功。fixture3件はtrash/purge、一時復旧JSONは削除済み。この試験では本人用profileの鍵を使っていない。省略Content-Lengthを再現するブラウザー回帰を追加し、focused 2件とmanifest付き全ブラウザー48件（8.0分）が成功した。
 
 ## 目標とユーザーの追加条件

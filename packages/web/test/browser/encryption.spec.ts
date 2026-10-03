@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { processTestMedia, rootFile, writeTestBytes } from "./uploadHelpers";
 
 const fixture = (name: string) =>
   resolve(import.meta.dirname, "../../../worker/test/fixtures", name);
@@ -336,59 +337,67 @@ async function encryptedHeader(page: Page, node: EncryptedNode) {
   return JSON.parse(headerPart.bytes.toString("utf8"));
 }
 
-async function simulateMissingContentLength(page: Page, node: EncryptedNode) {
-  await page.evaluate(async (target) => {
-    const me = await fetch("/api/v1/me").then((response) => response.json());
-    const contentOrigin = new URL(me.contentOrigin).origin;
-    const originalFetch = window.fetch.bind(window);
-    const probe = {
-      responses: [] as Array<{
-        contentLengthAbsent: boolean;
-        contentRangePreserved: boolean;
-        etagPreserved: boolean;
-        urlPreserved: boolean;
-        bodyPreserved: boolean;
-        statusPreserved: boolean;
-      }>,
-    };
-    Object.defineProperty(window, "__ncfMissingContentLengthProbe", {
-      configurable: true,
-      value: probe,
-    });
-    window.fetch = async (input, init) => {
-      const response = await originalFetch(input, init);
-      const responseUrl = new URL(response.url);
-      if (
-        responseUrl.origin === contentOrigin &&
-        responseUrl.pathname === `/c/${target.id}/${target.currentBlobId}` &&
-        response.status === 206
-      ) {
-        const originalBody = response.body;
-        const originalUrl = response.url;
-        const originalStatus = response.status;
-        const originalContentRange = response.headers.get("Content-Range");
-        const originalEtag = response.headers.get("ETag");
-        const pageVisibleHeaders = new Headers(response.headers);
-        pageVisibleHeaders.delete("Content-Length");
-        Object.defineProperty(response, "headers", {
-          configurable: true,
-          value: pageVisibleHeaders,
-        });
-        probe.responses.push({
-          contentLengthAbsent: response.headers.get("Content-Length") === null,
-          contentRangePreserved: response.headers.get("Content-Range") === originalContentRange,
-          etagPreserved: response.headers.get("ETag") === originalEtag,
-          urlPreserved: response.url === originalUrl,
-          bodyPreserved: response.body === originalBody,
-          statusPreserved: response.status === originalStatus,
-        });
-      }
-      return response;
-    };
-  }, node);
+async function simulateMissingContentLength(
+  page: Page,
+  node: { id: string; currentBlobId: string | null },
+  status: 200 | 206 = 206,
+) {
+  if (!node.currentBlobId) throw new Error("migration_source_blob_missing");
+  await page.evaluate(
+    async (target) => {
+      const me = await fetch("/api/v1/me").then((response) => response.json());
+      const contentOrigin = new URL(me.contentOrigin).origin;
+      const originalFetch = window.fetch.bind(window);
+      const probe = {
+        responses: [] as Array<{
+          contentLengthAbsent: boolean;
+          contentRangePreserved: boolean;
+          etagPreserved: boolean;
+          urlPreserved: boolean;
+          bodyPreserved: boolean;
+          statusPreserved: boolean;
+        }>,
+      };
+      Object.defineProperty(window, "__ncfMissingContentLengthProbe", {
+        configurable: true,
+        value: probe,
+      });
+      window.fetch = async (input, init) => {
+        const response = await originalFetch(input, init);
+        const responseUrl = new URL(response.url);
+        if (
+          responseUrl.origin === contentOrigin &&
+          responseUrl.pathname === `/c/${target.id}/${target.currentBlobId}` &&
+          response.status === target.expectedStatus
+        ) {
+          const originalBody = response.body;
+          const originalUrl = response.url;
+          const originalStatus = response.status;
+          const originalContentRange = response.headers.get("Content-Range");
+          const originalEtag = response.headers.get("ETag");
+          const pageVisibleHeaders = new Headers(response.headers);
+          pageVisibleHeaders.delete("Content-Length");
+          Object.defineProperty(response, "headers", {
+            configurable: true,
+            value: pageVisibleHeaders,
+          });
+          probe.responses.push({
+            contentLengthAbsent: response.headers.get("Content-Length") === null,
+            contentRangePreserved: response.headers.get("Content-Range") === originalContentRange,
+            etagPreserved: response.headers.get("ETag") === originalEtag,
+            urlPreserved: response.url === originalUrl,
+            bodyPreserved: response.body === originalBody,
+            statusPreserved: response.status === originalStatus,
+          });
+        }
+        return response;
+      };
+    },
+    { id: node.id, currentBlobId: node.currentBlobId, expectedStatus: status },
+  );
 }
 
-async function expectMissingContentLengthSimulation(page: Page) {
+async function expectMissingContentLengthSimulation(page: Page, minimumResponses = 2) {
   const result = await page.evaluate(() => {
     const probe = (
       window as Window & {
@@ -399,7 +408,7 @@ async function expectMissingContentLengthSimulation(page: Page) {
     ).__ncfMissingContentLengthProbe;
     return probe?.responses ?? [];
   });
-  expect(result.length).toBeGreaterThanOrEqual(2);
+  expect(result.length).toBeGreaterThanOrEqual(minimumResponses);
   for (const response of result) {
     expect(response.contentLengthAbsent).toBe(true);
     expect(response.contentRangePreserved).toBe(true);
@@ -683,6 +692,71 @@ test("encrypted files are opaque at rest and decrypt only while the member key i
         ),
       )
       .toBe(true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("existing plaintext media migrates as a verified encrypted copy without removing the source", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const directory = await mkdtemp(resolve(tmpdir(), "ncf-encryption-migration-"));
+  const originalName = `legacy-${randomUUID()}.avif`;
+  const originalBytes = await readFile(fixture("avif-still-16x12.avif"));
+  try {
+    await setIdentity(page, false);
+    await page.goto("/");
+    const uploaded = await writeTestBytes(page, originalName, new Uint8Array(originalBytes));
+    await processTestMedia(page, uploaded.id);
+    const source = await rootFile(page, originalName);
+    expect(source.name).toBe(originalName);
+    expect(source.size).toBe(originalBytes.byteLength);
+    expect(source.mime).toBe("image/avif");
+    const originalIdentity = {
+      id: source.id,
+      currentBlobId: source.currentBlobId,
+      name: source.name,
+      size: source.size,
+    };
+
+    await page.goto("/encryption");
+    await saveRecoveryFile(page, directory);
+    await expect(
+      page.getByRole("button", { name: "暗号化コピーを作成", exact: true }),
+    ).toBeVisible();
+    const before = new Set((await encryptNodes(page)).map((node) => node.id));
+    await simulateMissingContentLength(page, source, 200);
+    await page.getByRole("button", { name: "暗号化コピーを作成", exact: true }).click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "暗号化コピーの送信を開始しました" }),
+    ).toBeVisible();
+    await expect
+      .poll(async () => (await encryptNodes(page)).filter((node) => !before.has(node.id)).length, {
+        timeout: 60_000,
+        intervals: [250, 500, 1000],
+      })
+      .toBe(1);
+    await expectMissingContentLengthSimulation(page, 1);
+
+    const encrypted = (await encryptNodes(page)).find((node) => !before.has(node.id));
+    expect(encrypted).toBeTruthy();
+    expect(encrypted!.name).toMatch(/^[A-Za-z0-9_-]{22}\.ncf$/);
+    expect(encrypted!.id).not.toBe(originalIdentity.id);
+    expect(encrypted!.size).toBeGreaterThan(originalBytes.byteLength);
+    const currentSource = await rootFile(page, originalName);
+    expect(currentSource).toMatchObject(originalIdentity);
+
+    const encryptedRow = page
+      .locator(".encryption-list li")
+      .filter({ hasText: `暗号化ファイル · ${encrypted!.name.slice(0, 8)}` });
+    await encryptedRow.getByRole("button", { name: "復号して開く", exact: true }).click();
+    const preview = page.getByRole("region", { name: "復号プレビュー" });
+    await expect(preview.getByRole("heading", { name: originalName, exact: true })).toBeVisible();
+    await expectDecryptedBytes(page, originalBytes, {
+      imageDimensions: { width: 16, height: 12 },
+      verifyPlayback: false,
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

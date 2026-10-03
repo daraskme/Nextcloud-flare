@@ -2,7 +2,7 @@
 
 更新: 2026-10-04。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-追加checkpoint: 実stagingのR2保存世代から83table・388行を独立SQLiteへ復元し、原本6 object・64,953,590 bytesの複写照合が成功した。保守状態と一時Cron bridgeは解除・削除済み。動画シーク時の429を4MiBのRange予約へ修正し実環境で8回連続シークを確認した。読み取り専用automation GET 2経路は実装済みだがAccessでの実利用はまだ有効化していない。本人＋管理者のクライアント暗号化は単体・統合3,125件と全ブラウザー48件を通過し、stagingへ反映した。実Chrome固有のSW取得時のAccess転送は単一公開bootstrapで解消し、実登録と鍵未設定時の送信拒否を確認した。実利用者の鍵設定と移行は未実施で、既存ファイルと過去バックアップはまだ平文である。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
+追加checkpoint: 実stagingのR2保存世代から83table・388行を独立SQLiteへ復元し、原本6 object・64,953,590 bytesの複写照合が成功した。保守状態と一時Cron bridgeは解除・削除済み。動画シーク時の429を4MiBのRange予約へ修正し実環境で8回連続シークを確認した。読み取り専用automation GET 2経路は実装済みだがAccessでの実利用はまだ有効化していない。本人＋管理者のクライアント暗号化は単体・統合3,125件と全ブラウザー48件を通過し、stagingへ反映した。実Chrome固有のSW取得時のAccess転送は単一公開bootstrapで解消し、実登録と鍵未設定時の送信拒否を確認した。続いて実管理者の鍵で既存メディア3件・64,932,182 bytesの暗号化コピーを作り、実環境で復号後の全byte・SHA-256と再生/seekを確認した。移行修正後のfocused暗号化3件は成功し、全49件が8.6分で成功。一般利用者2人の鍵は未設定。承認を受けて管理者の元の平文3件をアプリとゴミ箱から削除したが、R2原本は35日以上のGC猶予で残り、過去バックアップも保持している。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
 
 2026-10-04 は手元の実ファイルによるAVIF・Opus/MP4・1080p 10-bit AV1+Opus/MP4のupload・表示・再生・seek・全byte照合を追加した。AVIFをMP3と誤判定してGalleryから消す問題、画像MIMEの保存不足、サーバー間の時計差による受付期限の誤拒否を修正し、stagingへ配備した。個人メディアはrepositoryに含めない。
 

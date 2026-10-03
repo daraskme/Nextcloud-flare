@@ -15,4 +15,6 @@ pnpm backup audit-blobs \
 
 CLI実行環境には、対象`BLOBS` bucketだけに限定したObject Read only S3資格情報を`R2_INVENTORY_ACCOUNT_ID`、`R2_INVENTORY_BUCKET`、`R2_INVENTORY_ACCESS_KEY_ID`、`R2_INVENTORY_SECRET_ACCESS_KEY`で渡す。必要なら`R2_INVENTORY_JURISDICTION`も指定する。秘密値を引数、ログ、追跡ファイルに入れない。SQLite、世代、コピー先はリポジトリ外の保護された保存先に置く。コピー先が既に存在する場合は拒否し、途中失敗時はこのコマンドが作成した未完成ディレクトリを削除する。
 
+この監査は、復元SQLiteと出力先のprivateなファイル権限をPOSIXのmodeで確認できるLinuxなどの環境で実行する。WindowsではNode.jsの`stat.mode`から同じ権限を確認できないため、現状の`audit-blobs`は復元SQLiteを安全と判定せず、`backup_blob_database_not_private`で拒否する。Windows上の権限確認を省略して実行しない。
+
 `manifest.json`には復元に必要なR2 keyと個別SHA-256が含まれるため、コピー先全体をprivateとして扱う。この検証は**元BLOBSが利用可能な間に原本を取り出せる**ことを示す。`BACKUPS`世代にBLOBS本体は含まれず、元bucket喪失後の独立した災害復元、派生物、未完成upload、live D1復元の証明にはならない。
