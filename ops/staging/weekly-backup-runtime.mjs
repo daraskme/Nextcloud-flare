@@ -6,7 +6,11 @@ import { chmod, copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { parseBackupPublication } from "../../packages/shared/src/backupPublication.ts";
+import {
+  BACKUP_CHUNK_BYTES,
+  BACKUP_MAX_PARTS,
+  parseBackupPublication,
+} from "../../packages/shared/src/backupPublication.ts";
 import { auditRestoredBlobBytes, S3BlobSource } from "../../scripts/backup/blobAudit.mjs";
 import { exportData } from "../../scripts/backup/export.mjs";
 import {
@@ -31,9 +35,33 @@ const bridgeSourcePath = fileURLToPath(new URL("./backup-cron.mjs", import.meta.
 const SHA256 = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const BRIDGE_NAME = "ncf-staging-backup-bridge";
+const MINUTE_MS = 60_000;
+const BRIDGE_PROPAGATION_WAIT_MS = 20 * MINUTE_MS;
+const MAX_COMPLETION_WAIT_MS = 6 * 60 * MINUTE_MS;
+const COMPLETE_CALLS_PER_TICK = 4;
 function validGeneration(state) {
   if (!UUID.test(state?.id ?? "") || !Number.isSafeInteger(state?.epoch) || state.epoch < 1)
     throw new Error("backup_generation_invalid");
+}
+
+/** Allow Cron propagation, then one scheduled tick per four verified SQL parts. */
+export function completedBridgeWaitMs(state, manifest) {
+  validGeneration(state);
+  const bytes = manifest?.data?.bytes;
+  if (
+    manifest?.generation?.id !== state.id ||
+    manifest?.generation?.epoch !== state.epoch ||
+    manifest?.data?.file !== "data.sql" ||
+    !Number.isSafeInteger(bytes) ||
+    bytes < 1 ||
+    bytes > BACKUP_CHUNK_BYTES * BACKUP_MAX_PARTS
+  )
+    throw new Error("backup_generation_conflict");
+  const parts = Math.ceil(bytes / BACKUP_CHUNK_BYTES);
+  return Math.min(
+    BRIDGE_PROPAGATION_WAIT_MS + Math.ceil(parts / COMPLETE_CALLS_PER_TICK) * MINUTE_MS,
+    MAX_COMPLETION_WAIT_MS,
+  );
 }
 
 function configured(env) {
@@ -254,7 +282,7 @@ export function createWeeklyBackupRuntime({
         if (run?.state === "failed" || (run !== undefined && run.releasedAt !== null))
           throw new Error("backup_generation_failed");
         return control.backup_frozen === 1 && run?.state === "exporting";
-      }, 300000);
+      }, BRIDGE_PROPAGATION_WAIT_MS);
     },
     async capture(state, directory) {
       await assertFrozenReceipt(env, state);
@@ -342,6 +370,9 @@ export function createWeeklyBackupRuntime({
       await runWrangler(["deploy", "--config", configPath], "backup_bridge_deploy_failed");
     },
     async waitCompleted(state) {
+      const downloaded = join(workRoot, state.id, "downloaded", state.id);
+      const manifest = await verifyGeneration(downloaded);
+      const timeoutMs = completedBridgeWaitMs(state, manifest);
       await poll(async () => {
         const { control, run } = await currentReceipt(env, state);
         if (run?.state === "failed") throw new Error("backup_generation_failed");
@@ -354,7 +385,7 @@ export function createWeeklyBackupRuntime({
           run.releasedAt !== null &&
           control.backup_frozen === 0
         );
-      }, 540000);
+      }, timeoutMs);
     },
     async deleteBridge(state) {
       validGeneration(state);
