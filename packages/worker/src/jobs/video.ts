@@ -87,7 +87,7 @@ async function mutate(
   claim: MediaOutboxClaim,
   authorized: AuthorizedNode,
   row: VideoSource,
-  statement: SqlStatement,
+  statements: readonly SqlStatement[],
   deadline: number,
 ): Promise<void> {
   const admission = await acquireSystemMutation(env, claim.ownerId, "media.project", deadline);
@@ -95,7 +95,7 @@ async function mutate(
     authorizationAssertion(authorized),
     outboxFence(claim),
     sourceFence(row),
-    statement,
+    ...statements,
   ]);
 }
 
@@ -160,9 +160,21 @@ export async function processVideoOutbox(
     authorized,
     row,
     inspection.kind === "metadata"
-      ? metadataStatement(row, inspection.metadata)
-      : {
-          sql: `INSERT INTO node_media(
+      ? [
+          metadataStatement(row, inspection.metadata),
+          {
+            sql: `UPDATE blobs SET mime_sniffed=? WHERE id=? AND owner_id=?
+              AND state IN ('committed','gc_candidate')`,
+            values: [`video/${inspection.metadata.container}`, row.blob_id, row.owner_id],
+          },
+          assertExists("SELECT 1 FROM blobs WHERE id=? AND mime_sniffed=?", [
+            row.blob_id,
+            `video/${inspection.metadata.container}`,
+          ]),
+        ]
+      : [
+          {
+            sql: `INSERT INTO node_media(
               node_id,blob_id,generator_version,projection_state,error_code
             ) VALUES(?,?,?,'failed',?)
             ON CONFLICT(node_id) DO UPDATE SET
@@ -172,8 +184,9 @@ export async function processVideoOutbox(
               dominant_color=NULL,camera_make=NULL,camera_model=NULL,
               container=NULL,video_codec=NULL,audio_codec=NULL,codec_profile=NULL,
               codec_level=NULL,codec_tier=NULL,bit_depth=NULL`,
-          values: [row.node_id, row.blob_id, VIDEO_METADATA_GENERATOR, inspection.kind],
-        },
+            values: [row.node_id, row.blob_id, VIDEO_METADATA_GENERATOR, inspection.kind],
+          },
+        ],
     deadline,
   );
   return "completed";

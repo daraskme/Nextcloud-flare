@@ -15,6 +15,11 @@ import { IMAGE_METADATA_GENERATOR } from "../media/images/metadata";
 import { IMAGE_THUMBNAIL_GENERATOR, IMAGE_THUMBNAIL_VARIANT } from "../media/images/thumbnail";
 import { VIDEO_METADATA_GENERATOR } from "../media/video";
 import { parseRange } from "../platform/range";
+import {
+  type AccountMutationEnv,
+  acquireAccountMutation,
+  commitAccountMutation,
+} from "./accountMutation";
 import { streamLeasedContent } from "./contentStream";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
 
@@ -78,6 +83,10 @@ export interface ContentBlobPlan {
   readonly budgetId: string;
   readonly sessionId: string;
   readonly epoch: number;
+  readonly adminAction?: "preview" | "download";
+  readonly adminActorId?: string;
+  readonly adminOwnerId?: string;
+  readonly adminNodeId?: string;
 }
 
 /** Resolve the signed host-only cookie to a D1 principal, then apply all content read guards. */
@@ -96,9 +105,12 @@ export async function prepareCookieBlobRead(
   const session = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
       cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,
-      cs.ticket_id AS ticketId,cs.epoch,c.kind AS credentialKind,t.purpose
+      cs.ticket_id AS ticketId,cs.epoch,c.kind AS credentialKind,t.purpose,
+      ag.actor_id AS adminActorId,ag.owner_id AS adminOwnerId,
+      ag.node_id AS adminNodeId,ag.action AS adminAction
       FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
       JOIN tickets t ON t.id=cs.ticket_id
+      LEFT JOIN admin_content_grants ag ON ag.ticket_id=t.id
       WHERE cs.id=? AND t.purpose=?`)
     .bind(sessionId, purpose)
     .first<{
@@ -110,12 +122,33 @@ export async function prepareCookieBlobRead(
       epoch: number;
       credentialKind: string;
       purpose: ContentPurpose;
+      adminActorId: string | null;
+      adminOwnerId: string | null;
+      adminNodeId: string | null;
+      adminAction: "preview" | "download" | null;
     }>();
   if (!session) throw new Error("content_not_available");
   let principal: Principal;
   if (
+    session.adminAction &&
+    session.credentialKind === "access" &&
+    session.userId &&
+    session.adminActorId === session.userId &&
+    session.adminOwnerId &&
+    session.adminNodeId === nodeId &&
+    purpose === "content"
+  ) {
+    principal = {
+      kind: "admin_read",
+      user_id: session.userId,
+      owner_id: session.adminOwnerId,
+      credential_id: session.credentialId,
+      epoch: session.epoch,
+    };
+  } else if (
     (session.credentialKind === "access" || session.credentialKind === "app_password") &&
-    session.userId
+    session.userId &&
+    !session.adminAction
   ) {
     principal = {
       kind: session.credentialKind === "access" ? "user" : "app_password",
@@ -139,7 +172,7 @@ export async function prepareCookieBlobRead(
   } else {
     throw new Error("content_not_available");
   }
-  return prepareContentBlobRead(db, bucket, principal, spaceId, nodeId, {
+  const plan = await prepareContentBlobRead(db, bucket, principal, spaceId, nodeId, {
     sessionId,
     ticketId: session.ticketId,
     purpose: session.purpose,
@@ -147,6 +180,15 @@ export async function prepareCookieBlobRead(
       ? { share: { id: session.shareId, version: session.shareVersion } }
       : {}),
   });
+  return session.adminAction && session.adminActorId && session.adminOwnerId && session.adminNodeId
+    ? Object.freeze({
+        ...plan,
+        adminAction: session.adminAction,
+        adminActorId: session.adminActorId,
+        adminOwnerId: session.adminOwnerId,
+        adminNodeId: session.adminNodeId,
+      })
+    : plan;
 }
 
 /** Verify the immutable target manifest, then recheck all D1 authority in the blob plan batch. */
@@ -270,6 +312,7 @@ export async function streamBudgetedContentBlob(
   nodeId: string,
   purpose: ContentPurpose,
   request: Request,
+  auditEnv?: AccountMutationEnv,
 ): Promise<Response> {
   request.signal.throwIfAborted();
   const plan = await prepareCookieBlobRead(
@@ -281,6 +324,50 @@ export async function streamBudgetedContentBlob(
     nodeId,
     purpose,
   );
+  if (plan.adminAction) {
+    if (!auditEnv) throw new Error("content_not_available");
+    const admission = await acquireAccountMutation(
+      auditEnv,
+      plan.adminOwnerId!,
+      plan.epoch,
+      "admin.files.read",
+    );
+    await commitAccountMutation(db, admission, plan.adminOwnerId!, [
+      assertExists(
+        `SELECT 1 FROM admin_content_grants ag
+        JOIN tickets t ON t.id=ag.ticket_id JOIN content_sessions cs ON cs.ticket_id=t.id
+        JOIN credentials c ON c.id=cs.issued_by_credential_id AND c.kind='access'
+        JOIN sessions s ON s.id=c.session_id AND s.kind='access'
+        JOIN users admin ON admin.id=s.user_id
+        JOIN nodes n ON n.id=ag.node_id AND n.owner_id=ag.owner_id
+        JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=cs.epoch AND ctl.maintenance=0
+        WHERE cs.id=? AND cs.revoked_at IS NULL AND cs.expires_at>strftime('%s','now')*1000
+          AND t.cancelled_at IS NULL AND t.expires_at>strftime('%s','now')*1000
+          AND ag.actor_id=? AND ag.owner_id=? AND ag.node_id=? AND ag.action=?
+          AND n.deleted_at IS NULL AND admin.role='app_admin' AND admin.disabled_at IS NULL
+          AND s.user_id=ag.actor_id AND s.epoch=cs.epoch AND s.revoked_at IS NULL
+          AND s.expires_at>strftime('%s','now')*1000`,
+        [
+          plan.sessionId,
+          plan.adminActorId!,
+          plan.adminOwnerId!,
+          plan.adminNodeId!,
+          plan.adminAction,
+        ],
+      ),
+      {
+        sql: `INSERT INTO admin_browse_audit(id,actor_id,owner_id,node_id,action,occurred_at)
+          VALUES(?,?,?,?,?,strftime('%s','now')*1000)`,
+        values: [
+          crypto.randomUUID(),
+          plan.adminActorId!,
+          plan.adminOwnerId!,
+          plan.adminNodeId!,
+          plan.adminAction,
+        ],
+      },
+    ]);
+  }
   const bytes = reservedResponseBytes(plan.blob, request);
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
@@ -292,13 +379,18 @@ export async function streamBudgetedContentBlob(
     epoch: plan.epoch,
     bytes,
   });
-  return streamLeasedContent(
+  const streamed = await streamLeasedContent(
     (signal, deadline) => streamImmutableBlob(bucket, plan.blob, request, { signal, deadline }),
     bytes,
     lease.expiresAt,
     request.signal,
     (deliveredBytes) => budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes }),
   );
+  if (plan.adminAction !== "download") return streamed;
+  const headers = new Headers(streamed.headers);
+  const original = headers.get("Content-Disposition") ?? "attachment";
+  headers.set("Content-Disposition", original.replace(/^(?:inline|attachment)/, "attachment"));
+  return new Response(streamed.body, { status: streamed.status, headers });
 }
 
 async function resolveBlobRead(
@@ -427,7 +519,14 @@ async function resolveAudioTrackRead(
     ...extra,
     {
       sql: `SELECT b.r2_key AS key,b.size,s.r2_etag AS r2Etag,
-        b.content_etag AS contentEtag,COALESCE(b.mime_sniffed,'application/octet-stream') AS mime,
+        b.content_etag AS contentEtag,
+        CASE
+          WHEN a.codec='mp3' AND b.mime_sniffed='audio/mpeg' THEN 'audio/mpeg'
+          WHEN a.codec='opus' AND b.mime_sniffed='audio/ogg' THEN 'audio/ogg; codecs="opus"'
+          WHEN a.codec='opus' AND b.mime_sniffed='audio/webm' THEN 'audio/webm; codecs="opus"'
+          WHEN a.codec='opus' AND b.mime_sniffed='audio/mp4' THEN 'audio/mp4; codecs="Opus"'
+          ELSE 'application/octet-stream'
+        END AS mime,
         n.name FROM nodes n JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
         JOIN blob_storage s ON s.blob_id=b.id
         JOIN node_audio a ON a.node_id=n.id AND a.blob_id=b.id AND a.generator_version=?
@@ -436,7 +535,8 @@ async function resolveAudioTrackRead(
           AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
           AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
           AND s.bytes=b.size AND s.r2_etag IS NOT NULL
-          AND a.codec='mp3'`,
+          AND ((a.codec='mp3' AND b.mime_sniffed='audio/mpeg')
+            OR (a.codec='opus' AND b.mime_sniffed IN ('audio/ogg','audio/webm','audio/mp4')))`,
       values: [
         AUDIO_GENERATOR_VERSION,
         authorized.node.id,
@@ -527,7 +627,9 @@ function validatePlan(plan: BlobReadPlan): void {
       /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(plan.mime) ||
       /^video\/(?:mp4|webm); codecs="av01\.[0-2]\.[0-9]{2}[MH]\.(?:08|10|12)(?:,(?:Opus|opus))?"$/.test(
         plan.mime,
-      )
+      ) ||
+      /^audio\/(?:ogg|webm); codecs="opus"$/.test(plan.mime) ||
+      plan.mime === 'audio/mp4; codecs="Opus"'
     ) ||
     !plan.name ||
     new TextEncoder().encode(plan.name).byteLength > 255

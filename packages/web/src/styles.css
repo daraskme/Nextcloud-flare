@@ -2899,3 +2899,230 @@ h1 {
     transition-duration: 0.01ms !important;
   }
 }
+.admin-files {
+  display: grid;
+  gap: 18px;
+  max-width: 1120px;
+}
+.admin-files-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px 14px;
+  padding: 14px 17px;
+  border: 1px solid #e9d7bb;
+  border-radius: 10px;
+  background: #fffaf1;
+  color: #745624;
+  font-size: 13px;
+}
+.admin-files-banner strong {
+  color: #634512;
+}
+.admin-files-owner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.admin-files-owner label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.admin-files-owner select {
+  width: min(100%, 420px);
+  min-height: 40px;
+  padding: 7px 35px 7px 11px;
+  border: 1px solid #dfe4e9;
+  border-radius: 8px;
+  background: white;
+  color: #394555;
+}
+.admin-files-owner-note {
+  color: #778293;
+  font-size: 12px;
+}
+.admin-files-owner-note strong {
+  color: #485467;
+}
+.admin-files-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: #798493;
+  font-size: 13px;
+}
+.admin-files-breadcrumbs button {
+  color: #9d5538;
+}
+.admin-files-breadcrumbs strong {
+  color: #445164;
+}
+.admin-files-table {
+  overflow: hidden;
+  border: 1px solid #e6e9ee;
+  border-radius: 11px;
+  background: white;
+}
+.admin-files-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 175px 100px minmax(180px, auto);
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #f0f2f5;
+  color: #536074;
+  font-size: 13px;
+}
+.admin-files-row:last-child {
+  border-bottom: 0;
+}
+.admin-files-heading {
+  min-height: 42px;
+  background: #fdfdfe;
+  color: #8c96a4;
+  font-size: 12px;
+}
+.admin-files-name,
+.admin-files-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.admin-files-folder {
+  color: #48586d;
+}
+.admin-files-folder:hover {
+  color: #c4532f;
+}
+.admin-files-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.admin-files-empty {
+  padding: 22px;
+  border: 1px dashed #dfe4ea;
+  border-radius: 10px;
+  color: #7e8998;
+  text-align: center;
+}
+.admin-files-history {
+  padding: 18px;
+  border: 1px solid #e6e9ee;
+  border-radius: 11px;
+  background: white;
+}
+.admin-files-history h2 {
+  margin: 0 0 12px;
+  color: #485467;
+  font-size: 15px;
+}
+.admin-files-history ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-files-history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid #f0f2f5;
+  color: #687587;
+  font-size: 12px;
+}
+.admin-files-history time {
+  color: #8a94a2;
+}
+.admin-media-preview-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(14 21 33 / 72%);
+}
+.admin-media-preview {
+  width: min(900px, 100%);
+  padding: 18px;
+  border-radius: 14px;
+  background: #111827;
+  color: white;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 35%);
+}
+.admin-media-preview header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.admin-media-preview header div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.admin-media-preview header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-media-preview header small {
+  color: #b6c0d1;
+}
+.admin-media-preview audio,
+.admin-media-preview video {
+  display: block;
+  width: 100%;
+  max-height: min(72vh, 640px);
+}
+.admin-media-preview video {
+  background: black;
+}
+.admin-media-preview-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
+  color: #ffd5d5;
+}
+.admin-files-notice,
+.admin-files-denied {
+  padding: 20px;
+  border: 1px solid #e6e9ee;
+  border-radius: 10px;
+  background: white;
+  color: #6b7788;
+}
+.admin-files-denied h2 {
+  margin-top: 0;
+  color: #445164;
+  font-size: 17px;
+}
+@media (max-width: 760px) {
+  .admin-files-row {
+    grid-template-columns: minmax(110px, 1fr) 96px minmax(130px, auto);
+    gap: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .admin-files-heading > :nth-child(3),
+  .admin-files-row > :nth-child(3) {
+    display: none;
+  }
+  .admin-files-actions .button {
+    padding: 6px 7px;
+    font-size: 11px;
+  }
+}

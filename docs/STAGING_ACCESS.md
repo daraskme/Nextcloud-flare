@@ -1,6 +1,6 @@
 # Staging の Cloudflare Access 設定
 
-Cloudflare Access で staging のログイン入口を絞るための runbook です。2026-10-03 時点で、下表の Access application と policy は Cloudflare API で存在を確認済みです。管理者 1 人と招待された一般利用者 2 人のログインを実 staging で確認し、D1 でも利用者 3 人、個別の所有者とルートを持つ個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件を確認しました。ファイル操作によるデータ分離は別途確認してください。
+Cloudflare Access で staging のログイン入口を絞るための runbook です。2026-10-03 時点で、下表の Access application と policy は Cloudflare API で存在を確認済みです。管理者 1 人と招待された一般利用者 2 人のログインを実 staging で確認し、D1 でも利用者 3 人、個別の所有者とルートを持つ個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件を確認しました。利用者の手動確認では、アップロード・ダウンロードが成功し、別アカウントのファイルが一覧に表示されないことを確認しました。別利用者のファイル ID を指定した直接アクセスの拒否は、この手動確認には含みません。
 
 この runbook は [DESIGN.md の §2.2](DESIGN.md) の host / Access 境界を正本とします。
 
@@ -77,6 +77,8 @@ node ops/staging/smoke-check.mjs --execute \
 - content hostの実在するfixtureで、正しいticket/session cookieだけが内容を取得でき、cookieなし・期限切れcookieは拒否されることを確認する。smoke runnerの架空ID probeはAccess Bypass経路とWorker応答を見るだけで、この認可条件は証明しない。
 
 Cloudflare の Bypass は一致 request に対する Access controls と request logging を無効にします。path precedence や host 側の設定が意図どおりであることが未確認なら、staging を利用者へ開放しないでください。[Common Access policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/)
+
+管理者の全利用者ファイル閲覧は [ADMIN_FILES](ADMIN_FILES.md) を参照する。`/admin/files` と `/api/v1/admin/*` は既存の private Access 配下で、一般利用者には Worker 側の管理者ロール検査で拒否する。管理者閲覧用の Access Bypass は追加しない。
 
 ## Service Token と Secret
 

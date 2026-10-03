@@ -254,9 +254,11 @@ export async function handleContentHttp(
       nodeId,
       suffix === "/thumb" ? "thumb" : suffix === "/track" ? "track" : "content",
       request,
+      env,
     );
     return reply(response);
   } catch (error) {
+    if (error instanceof MutationUnavailableError) return reply(problem(503, "not_ready"));
     if (error instanceof Error && error.message === "budget_exceeded")
       return reply(problem(429, "budget_exceeded"));
     if (

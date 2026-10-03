@@ -1,6 +1,6 @@
 # セッション引き継ぎ
 
-更新: 2026-10-02。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-10-03。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
 
 ## 目標とユーザーの追加条件
 
@@ -9,8 +9,16 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 - 切りのよい単位で検証後に commit / push する。`origin/main` への通常 push はユーザー承認済み。force push はしない。
 - ユーザーが事前に **画像 AVIF・動画 AV1・音声 Opus** にエンコードする。保存・配信・Gallery/player を必須対応にする。具体的なコンテナと試験条件は [MEDIA_FORMATS](MEDIA_FORMATS.md)。
-- リモート Cloudflare の resource 作成・migration・配備は実行していない。GitHub push の許可を production 配備の許可とみなさない。
+- 承認済みの Cloudflare staging は `darask.date` に配備済み。通常 push と staging の継続実装・検証を進める。production 配備は別の境界。最新の実環境状態は [staging runbook](../ops/staging/README.md) を正とする。
 - 許可済みの可逆な実装・検証は継続し、必要な情報が足りる作業で確認を挟まない。
+
+## 2026-10-03 の追加依頼
+
+管理者1人と一般利用者2人の実Accessログイン、アップロード・ダウンロード、一般利用者間の一覧分離をユーザーが確認済み。管理者には専用画面で全利用者の一覧・閲覧・ダウンロードを許可し、読み取り専用・閲覧履歴付きにすることを選択した。[ADMIN_FILES](ADMIN_FILES.md) に操作と権限を記載する。一般APIやDAVのowner/share境界を一律に緩めない。
+
+音声・動画の実再生も依頼された。AV1動画と音声のみのOpus（Ogg/WebM/MP4）を必須対象とし、拡張子やクライアント申告だけでMIMEを確定しない。実アップロードから解析・一覧・content session・デコード・シークまで確認し、ローカルfixtureと実Cloudflare、試したbrowserと未試験browserを区別する。以前の「media UI接続済み」だけで実再生確認済みと扱わない。
+
+この追加分はstaging version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` に反映済み。0052/0053を適用し、52 migrations・83通常table・168 route契約。次のmigration番号は0054以降とする。単体806件、関連統合145件、全browser45件、ビルド・静的検査、83-table backup drill、配備後の匿名smoke 9件が成功した。MP3、Opus 3 container、AV1+Opus 2 containerはローカルChromeで一般利用者・管理者双方の再生・seekを検証した。残る直近確認は、本人のログイン済みブラウザーによるstaging管理画面・メディア再生と、この変更のGitHub CI結果。別ブラウザー・長時間/高解像度の実ファイルは未試験。
 
 ## 資料の読み方
 
@@ -23,7 +31,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 `reviews/` と REVIEW_LOG は判断経緯。通常の再開時に全レビューを読み直す必要はない。
 
-## 今回の再開点
+## 2026-10-02 時点の再開点（履歴）
 
 2026-10-01のmainにはgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateのUIも統合済み。2026-10-02の前回checkpointではFiles gridの仮想化、private Gallery ticket取消し、移動Outboxの移動元親権限検査、DAV同時接続のKDF即時503、実AVIF静止画とAV1+Opus WebMの単体fixtureを統合した。`pnpm check`はNode774件・workerd2,214件、全browser39件が成功した。
 
@@ -47,7 +55,7 @@ backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで�
 
 次のschema変更は`0050`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
-## 現在動いている範囲
+## 2026-10-02 時点で動いていた範囲（履歴）
 
 Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。80通常テーブル、48 migrations（最新`0049`）、156 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
@@ -100,7 +108,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 直近の test 件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認する。資料内に self-reference の commit SHA を固定しない。
 
-## 公開・接続していないもの
+## 2026-10-02 時点の未公開・未接続事項（履歴）
 
 - content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。Files SPAは[FILES_UI](FILES_UI.md)の範囲を接続済み。156 route の存在は handler の完成を意味しない。
 - **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
@@ -115,7 +123,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - children とtrash一覧の続きには `NODE_CURSOR_KEYS` と `NODE_CURSOR_ACTIVE_KID` の専用 ring が必要。未設定時も node 詳細は使えるが両一覧 route は 503。
 - 単一uploadは専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` が必要。32-byte base64url鍵をkidで選ぶ。旧kidは有効uploadの期限まで保持する。remote secret未設定ならupload routeは503。
 
-## 次に進める順序
+## 2026-10-02 時点の後続計画（履歴）
 
 共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、private/public media/EPUB/ZIP、大規模非同期tree処理、bounded reshare、編集可能なshared DAV、内部共有管理UI、group lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateまで実装済み。次はmedia metadata検索と残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
 

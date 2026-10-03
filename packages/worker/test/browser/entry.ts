@@ -1,12 +1,21 @@
 // Local browser-test entry only. Never imported by src/index.ts or the deployed bundle.
 import { base64url, exportJWK, generateKeyPair, SignJWT } from "jose";
+import { primary } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
+import { dispatchOutbox } from "../../src/jobs/outbox";
 
 export { BudgetDO, ControlDO, LockDO, UploadDO } from "../../src/index";
 
-let initialized: Promise<{ env: Env; token: string }> | undefined;
+let initialized:
+  | Promise<{
+      env: Env;
+      ownerToken: string;
+      memberToken: string;
+      issueToken: (identity: "owner" | "member") => Promise<string>;
+    }>
+  | undefined;
 async function initialize(bindings: Env) {
   const keys = () =>
     JSON.stringify({ browser: base64url.encode(crypto.getRandomValues(new Uint8Array(32))) });
@@ -49,15 +58,25 @@ async function initialize(bindings: Env) {
       },
     }),
   );
-  const token = await new SignJWT({ type: "app", email: "local@example.invalid" })
-    .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: "browser" })
-    .setIssuer(env.ACCESS_ISSUER!)
-    .setSubject("local-browser-owner")
-    .setAudience(env.ACCESS_USER_AUDIENCE!)
-    .setIssuedAt()
-    .setNotBefore(Math.floor(Date.now() / 1000) - 1)
-    .setExpirationTime("1h")
-    .sign(pair.privateKey);
+  let lastIssuedAt = 0;
+  const accessToken = (email: string, subject: string) => {
+    const issuedAt = Math.max(Math.floor(Date.now() / 1000), lastIssuedAt + 1);
+    lastIssuedAt = issuedAt;
+    return new SignJWT({ type: "app", email })
+      .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: "browser" })
+      .setIssuer(env.ACCESS_ISSUER!)
+      .setSubject(subject)
+      .setAudience(env.ACCESS_USER_AUDIENCE!)
+      .setIssuedAt(issuedAt)
+      .setNotBefore(issuedAt - 1)
+      .setExpirationTime(issuedAt + 3_600)
+      .sign(pair.privateKey);
+  };
+  const issueToken = (identity: "owner" | "member") =>
+    identity === "owner"
+      ? accessToken("local@example.invalid", "local-browser-owner")
+      : accessToken("browser-member@example.invalid", "local-browser-member");
+  const ownerToken = await issueToken("owner");
   const control = env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
   const { epoch } = await control.recover();
   await control.beginRecoveryAudit(epoch);
@@ -70,11 +89,49 @@ async function initialize(bindings: Env) {
   // This isolated HTTP fixture starts after the post-recovery KDF cooldown.
   await env.DB.prepare("UPDATE control SET kdf_not_before=0").run();
   const response = await worker.fetch(
-    new Request(`${env.APP_ORIGIN}/api/v1/me`, { headers: { "Cf-Access-Jwt-Assertion": token } }),
+    new Request(`${env.APP_ORIGIN}/api/v1/me`, {
+      headers: { "Cf-Access-Jwt-Assertion": ownerToken },
+    }),
     env,
   );
   if (!response.ok) throw new Error("browser_bootstrap_failed");
-  return { env, token };
+  const issueCsrf = await worker.fetch(
+    new Request(`${env.APP_ORIGIN}/api/v1/csrf`, {
+      method: "POST",
+      headers: {
+        "Cf-Access-Jwt-Assertion": ownerToken,
+        Origin: env.APP_ORIGIN,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    }),
+    env,
+  );
+  if (!issueCsrf.ok) throw new Error(`browser_admin_csrf_${issueCsrf.status}`);
+  const csrf = (await issueCsrf.json<{ token: string }>()).token;
+  const invited = await worker.fetch(
+    new Request(`${env.APP_ORIGIN}/api/v1/admin/invites`, {
+      method: "POST",
+      headers: {
+        "Cf-Access-Jwt-Assertion": ownerToken,
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+        Origin: env.APP_ORIGIN,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ email: "browser-member@example.invalid" }),
+    }),
+    env,
+  );
+  if (!invited.ok) throw new Error(`browser_member_invite_${invited.status}`);
+  const memberToken = await issueToken("member");
+  const memberAccount = await worker.fetch(
+    new Request(`${env.APP_ORIGIN}/api/v1/me`, {
+      headers: { "Cf-Access-Jwt-Assertion": memberToken },
+    }),
+    env,
+  );
+  if (!memberAccount.ok) throw new Error(`browser_member_claim_${memberAccount.status}`);
+  return { env, ownerToken, memberToken, issueToken };
 }
 
 export default {
@@ -82,6 +139,73 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    if (path === "/__test__/login" && request.method === "POST") {
+      if (request.headers.get("X-Test-Without-Auth"))
+        return Response.json({ error: "unauthorized" }, { status: 403 });
+      const identity = request.headers.get("X-Test-Identity") === "member" ? "member" : "owner";
+      const token = await ready.issueToken(identity);
+      if (identity === "member") ready.memberToken = token;
+      else ready.ownerToken = token;
+      return Response.json({ authenticated: true });
+    }
+    if (path === "/__test__/process-media" && request.method === "POST") {
+      const nodeId = new URL(request.url).searchParams.get("nodeId") ?? "";
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(nodeId))
+        return Response.json({ error: "bad_node" }, { status: 400 });
+      const control = ready.env.CONTROL.get(ready.env.CONTROL.idFromName(CONTROL_NAME));
+      const { epoch } = await control.status();
+      let outbox = await primary(ready.env.DB)
+        .prepare(`SELECT outbox_id AS id,state FROM outbox
+          WHERE payload_ref=? AND kind IN ('node.created','node.updated') ORDER BY created_at DESC LIMIT 1`)
+        .bind(nodeId)
+        .first<{ id: string; state: string }>();
+      if (!outbox) return Response.json({ error: "missing_outbox" }, { status: 404 });
+      if (outbox.state !== "completed") {
+        await dispatchOutbox(ready.env, ready.env.JOBS, outbox.id, epoch);
+        outbox = await primary(ready.env.DB)
+          .prepare("SELECT outbox_id AS id,state FROM outbox WHERE outbox_id=?")
+          .bind(outbox.id)
+          .first<{ id: string; state: string }>();
+      }
+      if (!outbox) return Response.json({ error: "missing_outbox" }, { status: 404 });
+      if (outbox.state === "sent" || outbox.state === "dispatching") {
+        let acked = false;
+        let retried = false;
+        await worker.queue(
+          {
+            queue: ready.env.JOBS_QUEUE_NAME,
+            metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+            messages: [
+              {
+                id: outbox.id,
+                timestamp: new Date(),
+                attempts: 1,
+                body: { outboxId: outbox.id },
+                ack: () => {
+                  acked = true;
+                },
+                retry: () => {
+                  retried = true;
+                },
+              },
+            ],
+            ackAll: () => {
+              acked = true;
+            },
+            retryAll: () => {
+              retried = true;
+            },
+          },
+          ready.env,
+        );
+        const completed = await primary(ready.env.DB)
+          .prepare("SELECT state FROM outbox WHERE outbox_id=?")
+          .bind(outbox.id)
+          .first<{ state: string }>();
+        return Response.json({ state: completed?.state ?? outbox.state, acked, retried });
+      }
+      return Response.json({ state: outbox.state, acked: false, retried: false });
+    }
     if (path === "/__test__/control" && request.method === "GET") {
       const control = ready.env.CONTROL.get(ready.env.CONTROL.idFromName(CONTROL_NAME));
       return Response.json(await control.status());
@@ -91,7 +215,11 @@ export default {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     const headers = new Headers(request.headers);
-    if (!headers.has("X-Test-Without-Auth")) headers.set("Cf-Access-Jwt-Assertion", ready.token);
+    if (!headers.has("X-Test-Without-Auth"))
+      headers.set(
+        "Cf-Access-Jwt-Assertion",
+        headers.get("X-Test-Identity") === "member" ? ready.memberToken : ready.ownerToken,
+      );
     return worker.fetch(new Request(request, { headers }), ready.env);
   },
 };

@@ -246,6 +246,12 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/admin/locks/:lockId/force-unlock",
   ]),
   ...bindings(appAdmin, "bound", "private-app", [
+    "app GET /api/v1/admin/users",
+    "app GET /api/v1/admin/users/:userId/nodes/:nodeId",
+    "app GET /api/v1/admin/users/:userId/nodes/:nodeId/children",
+    "app GET /api/v1/admin/users/:userId/nodes/:nodeId/path",
+    "app POST /api/v1/admin/users/:userId/content-session",
+    "app GET /api/v1/admin/audit",
     "app GET /api/v1/admin/invites",
     "app POST /api/v1/admin/invites",
     "app DELETE /api/v1/admin/invites/:inviteId",
@@ -334,6 +340,7 @@ export const PRIVATE_SPA_PATHS = [
   "/trash",
   "/shares",
   "/settings/webdav",
+  "/admin/files",
 ] as const;
 const PRIVATE_FILE_PATH = /^\/files\/[A-Za-z0-9_-]{1,128}$/;
 const PRIVATE_SHARED_PATH = /^\/shared\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?$/;

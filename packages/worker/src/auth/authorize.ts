@@ -4,6 +4,13 @@ import type { AccessSession } from "./sessions";
 
 export type Principal =
   | {
+      readonly kind: "admin_read";
+      readonly user_id: string;
+      readonly owner_id: string;
+      readonly credential_id: string;
+      readonly epoch: number;
+    }
+  | {
       readonly kind: "user" | "app_password";
       readonly user_id: string;
       readonly credential_id: string;
@@ -176,15 +183,20 @@ export function authorizationAssertion(authorized: AuthorizedNode): SqlStatement
   return statement;
 }
 
-/** Pack current node proofs into ≤100 bindings per D1 statement. */
+// Ten copies of the authority query exceed workerd SQLite's compilation budget
+// after adding admin session checks (SQLITE_NOMEM), despite fitting 100 bindings.
+// Keep every proof in the same atomic batch, with five proofs per statement.
+const PROOFS_PER_STATEMENT = 5;
+
+/** Pack current node proofs within D1 binding and SQL compilation budgets. */
 export function authorizationBatchAssertions(
   authorized: readonly AuthorizedNode[],
 ): readonly SqlStatement[] {
   if (authorized.length === 0 || authorized.length > 1_000)
     throw new Error("invalid_authorization_proofs");
   const statements: SqlStatement[] = [];
-  for (let start = 0; start < authorized.length; start += 10) {
-    const group = authorized.slice(start, start + 10);
+  for (let start = 0; start < authorized.length; start += PROOFS_PER_STATEMENT) {
+    const group = authorized.slice(start, start + PROOFS_PER_STATEMENT);
     const values: (string | number | null)[] = [];
     const clauses = group.map((proof, index) => {
       const assertion = authorizationAssertion(proof);
@@ -206,7 +218,8 @@ export function authorizationBatchAssertions(
 }
 
 // All ancestry and authority reads below share one primary statement snapshot.
-// app_admin is deliberately absent: a role does not confer another owner's content rights.
+// Cross-owner admin reads require the explicit admin_read principal; ordinary
+// user principals retain owner/share authorization even when their role is admin.
 const NODE_AUTHORITY = `WITH RECURSIVE
   p AS (SELECT json_extract(?3,'$.kind') AS kind,json_extract(?3,'$.user_id') AS user_id,
     json_extract(?3,'$.credential_id') AS credential_id,json_extract(?3,'$.epoch') AS epoch,
@@ -218,6 +231,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
     json_extract(?3,'$.internal_share.recipient.group_id') AS internal_group_id,
     json_extract(?3,'$.internal_share.recipient.group_version') AS internal_group_version,
     json_extract(?3,'$.internal_share.recipient.membership_version') AS internal_membership_version,
+    json_extract(?3,'$.owner_id') AS admin_owner_id,
     json_extract(?3,'$.service_principal_id') AS service_id,json_extract(?3,'$.token_expires_at') AS token_expiry,
     json_extract(?3,'$.access_iss') AS access_iss,json_extract(?3,'$.common_name') AS common_name),
   a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
@@ -273,6 +287,14 @@ const NODE_AUTHORITY = `WITH RECURSIVE
       AND (?6<>'node.content.write' OR n.kind='file')
       AND (?6<>'search.read' OR (p.kind='user' AND n.kind IN ('root','folder') AND ctl.maintenance=0))
       AND (
+        (p.kind='admin_read' AND ?6='node.read' AND p.admin_owner_id=n.owner_id
+          AND EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
+            JOIN users admin ON admin.id=s.user_id
+            WHERE c.id=p.credential_id AND c.kind='access' AND s.kind='access'
+              AND s.user_id=p.user_id AND s.epoch=p.epoch AND s.revoked_at IS NULL
+              AND s.expires_at>strftime('%s','now')*1000 AND admin.role='app_admin'
+              AND admin.disabled_at IS NULL))
+        OR
         (p.kind IN ('user','app_password') AND ?6 IN (
           'node.read','gallery.read','audio.read','library.read','search.read',
           'node.create','node.rename','node.trash',
@@ -377,7 +399,7 @@ export async function authorizeNode(
       "automation.list",
       "automation.metadata.read",
     ].includes(request.operation) ||
-    !["user", "app_password", "link_share", "service"].includes(principal.kind) ||
+    !["user", "app_password", "link_share", "service", "admin_read"].includes(principal.kind) ||
     !validId(nodeId) ||
     !validId(request.spaceId) ||
     !validId(principal.credential_id, 256) ||
@@ -385,6 +407,7 @@ export async function authorizeNode(
     !Number.isSafeInteger(principal.epoch) ||
     principal.epoch < 1 ||
     (principal.kind !== "link_share" && !validId(principal.user_id)) ||
+    (principal.kind === "admin_read" && !validId(principal.owner_id)) ||
     (principal.kind === "app_password" &&
       principal.internal_share !== undefined &&
       (!validId(principal.internal_share.share_id) ||

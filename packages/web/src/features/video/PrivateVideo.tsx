@@ -167,7 +167,7 @@ export function PrivateVideo({ account }: { account: Account }) {
     void api.openFile(account, item, target).catch((error) => setPlayerError(errorMessage(error)));
   };
 
-  const items = query.data?.items ?? [];
+  const items = (query.data?.items ?? []).filter((item) => !item.mime?.startsWith("audio/"));
 
   if (query.isPending)
     return (

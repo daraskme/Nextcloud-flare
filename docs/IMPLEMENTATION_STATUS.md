@@ -1,7 +1,23 @@
 # 実装進捗
 
-更新: 2026-10-02。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-10-03。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
+
+## 2026-10-03 管理者の全利用者ファイル閲覧・メディア配信
+
+専用 `/admin/files` に利用者選択、フォルダー階層、読み取り専用のプレビュー・ダウンロード、閲覧履歴を追加した。管理者閲覧は Access session と現在の `app_admin` role を検査する専用 API と単一ファイル grant で行う。一般の owner/share API と DAV の権限は維持する。降格・無効化・session失効・owner無効化・異なる対象を拒否し、監査の永続化に失敗したら内容を配信しない。grant は通常の node purge を妨げず、ticket 削除に追従して消える。
+
+ブラウザー upload が `application/octet-stream` のまま残り、Audio一覧・track配信につながらない問題を修正した。共通outboxのbounded解析でMP3、Opus Ogg/WebM/MP4、AV1 MP4/WebMを判定しMIMEとcurrent projectionを確定する。Opus音声専用containerのparserとtrack配信を接続し、Ogg識別pageのCRC・OpusHead、WebM CodecPrivate、MP4 dOpsを検査する。拡張子やclient申告だけではinlineにしない。`0053` は現在の成功済み旧projectionに一致するoctet-streamだけを限定更新する。
+
+`0052`/`0053` 追加後は52 migrations、83通常table、168 route契約。認可を10件連結したSQLがworkerd SQLiteで `SQLITE_NOMEM` になる回帰も修正し、同じatomic batch内で5件ずつ検査する。単体806件、関連統合145件、全ブラウザー45件、lint・型・契約・設定検査、Web buildとWorker dry-run、0052時点の83-table実Wranglerバックアップ/復元drillが成功した。
+
+Chrome 153/NixOSで、一般利用者の実upload・解析からMP3、Opus Ogg/WebM/MP4、AV1+Opus WebM/MP4の再生・シーク後の継続・認証付き206 Rangeの原本byte一致を確認した。管理者からも同じ6形式を再生し、MP3のattachmentダウンロードは原本全体のbyte一致を検査した。全体試験で見つかった試験用outboxの他テストとの干渉と、ログアウト後のfixture JWT再利用を修正し、対象outboxの実dispatcherと明示的な再ログインを使う。実行条件と未確認範囲は [MEDIA_FORMATS](MEDIA_FORMATS.md) を参照する。
+
+stagingへ0052/0053を適用し、52 migrations・464 triggers・外部キー違反なし・epoch 2の通常受付を確認した。Worker version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` を限定CI tokenで配備し、匿名HTTP smoke 9件が成功した。新しい管理者画面・メディア再生の実Cloudflare上の本人確認はまだ完了していない。
+
+実環境では管理者1人と一般利用者2人のAccessログイン、アップロード・ダウンロード、一般利用者間の一覧分離をユーザーが確認済み。実環境の詳細は [staging runbook](../ops/staging/README.md)、管理者機能の使い方は [ADMIN_FILES](ADMIN_FILES.md) を参照する。
+
+以下は各日付時点の記録であり、以前の「remote未実施」は現在のstaging状態を表さない。
 
 ## 2026-10-02 staging 準備・Access 複数利用者
 

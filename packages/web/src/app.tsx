@@ -50,6 +50,7 @@ import {
 } from "react";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
+import { AllUserFiles } from "./features/admin/AllUserFiles";
 import { PrivateAudio } from "./features/audio/PrivateAudio";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
@@ -1092,6 +1093,7 @@ export function App() {
   const video = pathname === "/video";
   const sharing = pathname === "/shares";
   const webDavSettings = pathname === "/settings/webdav";
+  const adminFiles = pathname === "/admin/files";
   const sharedMatch = /^\/shared\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
   const shared = !!sharedMatch;
   const userState = recent || starred;
@@ -1104,7 +1106,8 @@ export function App() {
     !bookshelf &&
     !video &&
     !sharing &&
-    !webDavSettings;
+    !webDavSettings &&
+    !adminFiles;
   const personalFiles = files && !shared;
   const sharedMounts = useQuery({
     queryKey: ["shared-with-me", me?.id, me?.epoch],
@@ -1421,7 +1424,9 @@ export function App() {
                     ? "動画"
                     : webDavSettings
                       ? "WebDAV 設定"
-                      : path.data?.path.at(-1)?.name || "マイドライブ";
+                      : adminFiles
+                        ? "全利用者のファイル"
+                        : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1497,6 +1502,13 @@ export function App() {
             WebDAV 設定
             <span className="nav-dot" />
           </Link>
+          {me?.role === "app_admin" && (
+            <Link to="/admin/files" className={adminFiles ? "nav-link active" : "nav-link"}>
+              <UsersRound size={19} />
+              全利用者のファイル
+              <span className="nav-dot" />
+            </Link>
+          )}
         </nav>
         <div className="sidebar-bottom">
           <section className="storage-card" aria-label="ストレージ使用状況">
@@ -1535,7 +1547,13 @@ export function App() {
               <Cloud size={17} />
             </span>
             <span>
-              {sharing || shared ? "内部共有" : webDavSettings ? "設定" : "パーソナルスペース"}
+              {sharing || shared
+                ? "内部共有"
+                : webDavSettings
+                  ? "設定"
+                  : adminFiles
+                    ? "管理者"
+                    : "パーソナルスペース"}
             </span>
             <ChevronRight size={14} />
             <span className="muted">{title}</span>
@@ -1687,6 +1705,12 @@ export function App() {
                 WebDAV 設定
               </span>
             )}
+            {adminFiles && (
+              <span>
+                <ChevronRight size={13} />
+                全利用者のファイル
+              </span>
+            )}
           </div>
           <div className="page-heading">
             <div>
@@ -1711,7 +1735,9 @@ export function App() {
                                   ? "YOUR VIDEOS"
                                   : webDavSettings
                                     ? "PRIVATE ACCESS"
-                                    : "YOUR FILES, YOUR SPACE"}
+                                    : adminFiles
+                                      ? "ADMINISTRATOR"
+                                      : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
@@ -1735,7 +1761,9 @@ export function App() {
                                   ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
                                   : webDavSettings
                                     ? "専用の認証情報で、WebDAV クライアントのアクセスを限定できます。"
-                                    : "大切なファイルを、いつでも使いやすく。"}
+                                    : adminFiles
+                                      ? "利用者を選んでファイルを閲覧できます。閲覧は記録され、編集操作はありません。"
+                                      : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
             {me && personalFiles && (
@@ -1826,6 +1854,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : adminFiles ? (
+            <AllUserFiles account={me} />
           ) : sharing ? (
             <InternalShares account={me} />
           ) : webDavSettings ? (

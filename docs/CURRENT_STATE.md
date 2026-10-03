@@ -1,6 +1,10 @@
 # 現在の実装状態
 
-更新: 2026-10-02。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+更新: 2026-10-03。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+
+2026-10-03 の追加は、監査付き読み取り専用の [管理者ファイル閲覧](ADMIN_FILES.md) と、実upload後のMP3/Opus/AV1形式判定・再生経路の修正。現在のschemaは52 migrations（最新`0053`）、83通常table、168 route契約。stagingは配備済みで、管理者1人と一般利用者2人のログイン、upload/download、一般利用者間の一覧分離をユーザーが確認した。追加機能の配備・試験結果は進捗表と [staging runbook](../ops/staging/README.md) を参照する。
+
+以下は2026-10-02までの分野別checkpoint。以前の「remote未実施」は現在のstaging状態を表さない。
 
 最新の変更ではQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user・group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、1,001〜10,000 nodeのdurable非同期trash/restore/purge、管理者招待による複数Access利用者の作成とstaging設定案を統合した。内部共有UIはowner lifecycle、再共有ポリシー、recipient provenanceと現在有効な操作を表示する。migrationは50件（最新`0051`）、通常tableは81、route契約は162。
 

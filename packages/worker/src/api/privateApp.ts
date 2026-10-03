@@ -14,6 +14,7 @@ import type { UserNodeCursorTokens } from "../auth/userNodeCursor";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
+import { adminBrowseRoute, handleAdminBrowseHttp } from "./adminBrowse";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
@@ -63,6 +64,7 @@ export function privateAppRoute(request: Request): boolean {
     appPasswordRoute(request) ||
     groupRoute(request) ||
     inviteRoute(request) ||
+    adminBrowseRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
     privateZipRoute(request) ||
@@ -92,7 +94,8 @@ export async function handlePrivateAppHttp(
       !uploadReadRoute(request) &&
       !searchRoute(request) &&
       !userNodeStateRoute(request) &&
-      !statsRoute(request)) ||
+      !statsRoute(request) &&
+      !adminBrowseRoute(request)) ||
     url.hash
   )
     return problem(404, "not_found");
@@ -112,6 +115,7 @@ export async function handlePrivateAppHttp(
   const appPassword = appPasswordRoute(request);
   const group = groupRoute(request);
   const invite = inviteRoute(request);
+  const adminBrowse = adminBrowseRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
   const zip = privateZipRoute(request);
@@ -135,6 +139,7 @@ export async function handlePrivateAppHttp(
     !appPassword &&
     !group &&
     !invite &&
+    !adminBrowse &&
     !share &&
     !upload &&
     !zip &&
@@ -233,6 +238,15 @@ export async function handlePrivateAppHttp(
     );
   if (group) return handleGroupHttp(request, env, session, dependencies.csrf);
   if (invite) return handleInviteHttp(request, env, session, dependencies.csrf);
+  if (adminBrowse)
+    return handleAdminBrowseHttp(
+      request,
+      env,
+      session,
+      dependencies.csrf,
+      dependencies.tokens,
+      dependencies.cursors,
+    );
   if (share)
     return handleShareHttp(
       request,

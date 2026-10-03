@@ -1,6 +1,6 @@
 # Staging 初回 provision 手順
 
-この手順は初回 Worker が存在せず、`staging.yml` の `wrangler secret list` がまだ成功しない状態を埋める。`darask.date` の staging では専用リソース作成、50 件の D1 migration、初回 Worker 配備まで完了した。再実行時は各リソースと migration の現状を先に照合する。リポジトリ内の `bootstrap-plan.mjs` は Cloudflare に接続せず、現行 template と一致するリソース名・作成コマンドだけを JSON で表示する。
+この手順は初回 Worker が存在せず、`staging.yml` の `wrangler secret list` がまだ成功しない状態を埋める。`darask.date` の staging では専用リソース作成、初回50件のD1 migration、初回Worker配備まで完了した。追加migrationと最新の配備状況は [README](README.md) を参照し、再実行時は各リソースとmigrationの現状を先に照合する。リポジトリ内の `bootstrap-plan.mjs` は Cloudflare に接続せず、現行 template と一致するリソース名・作成コマンドだけを JSON で表示する。
 
 ```sh
 node ops/staging/bootstrap-plan.mjs

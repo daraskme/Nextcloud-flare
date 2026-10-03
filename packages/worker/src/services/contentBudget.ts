@@ -81,14 +81,19 @@ export async function ensureContentBudget(
         !Number.isSafeInteger(recipientVersion) ||
         recipientVersion < 0)) ||
     (principal.kind === "link_share" && (!unlockId || !ID.test(unlockId))) ||
-    (userId !== null && shareId === null && authorized.node.owner_id !== userId)
+    (userId !== null &&
+      shareId === null &&
+      authorized.node.owner_id !== userId &&
+      principal.kind !== "admin_read")
   )
     throw new Error("invalid_content_budget");
   const id =
     principal.kind === "link_share"
       ? `s:${shareId}:c:${unlockId}`
       : shareId === null
-        ? `u:${userId}`
+        ? principal.kind === "admin_read"
+          ? `a:${userId}:o:${authorized.node.owner_id}`
+          : `u:${userId}`
         : recipientVersion === 0
           ? `u:${userId}:s:${shareId}:v:${share?.version}`
           : `u:${userId}:s:${shareId}:v:${share?.version}:m:${recipientVersion}`;
@@ -124,7 +129,10 @@ export async function ensureContentBudget(
       `SELECT 1 FROM control ctl JOIN credentials c ON c.id=?
         JOIN users u ON u.id=? AND u.disabled_at IS NULL
         WHERE ctl.singleton=1 AND ctl.epoch=? AND ctl.maintenance=0
-          AND ((?='user' AND c.kind='access' AND EXISTS(
+          AND ((?='admin_read' AND c.kind='access' AND u.role='app_admin'
+            AND EXISTS(SELECT 1 FROM sessions s WHERE s.id=c.session_id AND s.kind='access'
+              AND s.user_id=u.id AND s.epoch=? AND s.revoked_at IS NULL AND s.expires_at>=?))
+            OR (?='user' AND c.kind='access' AND EXISTS(
             SELECT 1 FROM sessions s WHERE s.id=c.session_id AND s.kind='access'
               AND s.user_id=u.id AND s.epoch=? AND s.revoked_at IS NULL AND s.expires_at>=?))
             OR (?='app_password' AND c.kind='app_password' AND EXISTS(
@@ -155,6 +163,9 @@ export async function ensureContentBudget(
         principal.credential_id,
         userId,
         principal.epoch,
+        principal.kind,
+        principal.epoch,
+        expiresAt,
         principal.kind,
         principal.epoch,
         expiresAt,

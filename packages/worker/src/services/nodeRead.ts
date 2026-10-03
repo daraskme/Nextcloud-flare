@@ -121,7 +121,7 @@ export async function listNodeChildren(
   cursor?: string,
 ) {
   const cursorSubject =
-    principal.kind === "user"
+    principal.kind === "user" || principal.kind === "admin_read"
       ? principal.user_id
       : principal.kind === "link_share"
         ? principal.share_id

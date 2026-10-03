@@ -1,13 +1,17 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { searchName } from "@next-cloud-flare/shared/names";
+import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
+import { AudioCursorTokens } from "../../src/auth/audioCursor";
 import { authorizeNode } from "../../src/auth/authorize";
+import { contentKeyRing } from "../../src/auth/contentTokens";
 import { atomicBatch } from "../../src/db/primary";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { dispatchOutbox } from "../../src/jobs/outbox";
 import { processVideoOutbox } from "../../src/jobs/video";
 import { VIDEO_METADATA_BYTES, VIDEO_METADATA_GENERATOR } from "../../src/media/video";
+import { listAudio } from "../../src/services/audio";
 import { foundationFixture } from "../fixtures/foundation";
 import { grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
 
@@ -66,6 +70,26 @@ function mp4(sampleType = "av01"): Uint8Array {
   return bytes(ftyp, box("moov", box("mvhd", mvhd), videoTrack, audioTrack), box("mdat"));
 }
 
+function opusMp4(): Uint8Array {
+  const ftyp = box("ftyp", text.encode("M4A "), u32(0), text.encode("isom"));
+  const mvhd = new Uint8Array(20);
+  mvhd.set(u32(1000), 12);
+  mvhd.set(u32(9000), 16);
+  const hdlr = new Uint8Array(12);
+  hdlr.set(text.encode("soun"), 8);
+  const dops = box("dOps", Uint8Array.from([0, 2, 0, 0, 0, 0, 0xbb, 0x80, 0, 0, 0]));
+  const stsd = box("stsd", new Uint8Array(4), u32(1), box("Opus", new Uint8Array(28), dops));
+  return bytes(
+    ftyp,
+    box(
+      "moov",
+      box("mvhd", mvhd),
+      box("trak", box("mdia", box("hdlr", hdlr), box("minf", box("stbl", stsd)))),
+    ),
+    box("mdat"),
+  );
+}
+
 function id(value: number): Uint8Array {
   const octets: number[] = [];
   for (let remaining = value; remaining > 0; remaining = Math.floor(remaining / 256))
@@ -112,6 +136,50 @@ function webm(): Uint8Array {
   );
   const tracks = element(0x1654ae6b, bytes(video, audio));
   return bytes(header, id(0x18538067), Uint8Array.of(0xff), info, tracks);
+}
+
+function opusWebm(): Uint8Array {
+  const header = element(0x1a45dfa3, element(0x4282, text.encode("webm")));
+  const opusHead = Uint8Array.from([
+    ...text.encode("OpusHead"),
+    1,
+    2,
+    0,
+    0,
+    0x80,
+    0xbb,
+    0,
+    0,
+    0,
+    0,
+    0,
+  ]);
+  const audio = element(
+    0xae,
+    bytes(
+      element(0x83, Uint8Array.of(2)),
+      element(0x86, text.encode("A_OPUS")),
+      element(0x63a2, opusHead),
+    ),
+  );
+  return bytes(header, id(0x18538067), Uint8Array.of(0xff), element(0x1654ae6b, audio));
+}
+
+function corruptMarker(data: Uint8Array, marker: string): Uint8Array {
+  const encoded = text.encode(marker);
+  const at = data.findIndex((_, index) =>
+    encoded.every((value, offset) => data[index + offset] === value),
+  );
+  if (at < 0) throw new Error("missing_fixture_marker");
+  data[at] = 0;
+  return data;
+}
+
+function opusOgg(): Uint8Array {
+  // The complete identification page from a real encoded Ogg Opus fixture.
+  const page =
+    "4f6767530002000000000000000012bbf357000000005b8011dc01134f707573486561640101380180bb0000000000";
+  return Uint8Array.from(page.match(/../g)!.map((byte) => Number.parseInt(byte, 16)));
 }
 
 async function fixture(content: Uint8Array) {
@@ -209,6 +277,11 @@ it.each([
       expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
       expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
       expect(
+        await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+          .bind(f.blob)
+          .first("mime_sniffed"),
+      ).toBe(`video/${container}`);
+      expect(
         await env.DB.prepare(`SELECT blob_id AS blobId,generator_version AS generatorVersion,
         width,height,duration_ms AS durationMs,container,video_codec AS videoCodec,
         audio_codec AS audioCodec,codec_profile AS codecProfile,codec_level AS codecLevel,
@@ -239,6 +312,64 @@ it.each([
 );
 
 it.each([
+  ["mp4", opusMp4()],
+  ["webm", opusWebm()],
+  ["ogg", opusOgg()],
+] as const)("projects audio-only %s Opus into the audio library", async (container, data) => {
+  const f = await fixture(data);
+  try {
+    expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+    expect(
+      await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+        .bind(f.blob)
+        .first("mime_sniffed"),
+    ).toBe(`audio/${container}`);
+    expect(
+      await env.DB.prepare("SELECT codec FROM node_audio WHERE node_id=?")
+        .bind(f.file)
+        .first("codec"),
+    ).toBe("opus");
+    const ring = await contentKeyRing("cursor", {
+      cursor: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+    });
+    const page = await listAudio(
+      env.DB,
+      { kind: "user", user_id: f.user, credential_id: f.credential, epoch: 1 },
+      f.root,
+      true,
+      new AudioCursorTokens(ring),
+    );
+    expect(page.items).toEqual([
+      expect.objectContaining({ id: f.file, codec: "opus", mime: `audio/${container}` }),
+    ]);
+  } finally {
+    await env.BLOBS.delete(f.key);
+  }
+});
+
+it.each([
+  ["MP4 without dOps", corruptMarker(opusMp4(), "dOps")],
+  ["WebM without OpusHead", corruptMarker(opusWebm(), "OpusHead")],
+] as const)("keeps %s out of the audio library", async (_label, data) => {
+  const f = await fixture(data);
+  try {
+    expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+    expect(
+      await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+        .bind(f.blob)
+        .first("mime_sniffed"),
+    ).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM node_audio WHERE node_id=?")
+        .bind(f.file)
+        .first("n"),
+    ).toBe(0);
+  } finally {
+    await env.BLOBS.delete(f.key);
+  }
+});
+
+it.each([
   ["unsupported", mp4("hvc1")],
   [
     "malformed",
@@ -248,6 +379,11 @@ it.each([
   const f = await fixture(data);
   try {
     expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+    expect(
+      await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+        .bind(f.blob)
+        .first("mime_sniffed"),
+    ).toBeNull();
     expect(
       await env.DB.prepare(
         "SELECT projection_state AS state,error_code AS errorCode FROM node_media WHERE node_id=?",

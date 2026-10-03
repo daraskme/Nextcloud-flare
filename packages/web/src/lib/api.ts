@@ -10,6 +10,23 @@ export interface Account {
   reservedBytes: number;
   contentOrigin: string;
 }
+export interface AdminFileUser {
+  id: string;
+  email: string;
+  spaceId: string;
+  rootNodeId: string;
+  quotaBytes: number;
+  usedBytes: number;
+  disabled: boolean;
+}
+export interface AdminAuditEvent {
+  id: string;
+  actorId: string;
+  ownerId: string;
+  nodeId: string;
+  action: string;
+  occurredAt: number;
+}
 export interface FileNode {
   id: string;
   parentId?: string;
@@ -472,6 +489,89 @@ export class ApiClient {
 
   me(signal?: AbortSignal) {
     return this.request<Account>("/api/v1/me", signal ? { signal } : {});
+  }
+  adminUsers(cursor?: string | null, signal?: AbortSignal) {
+    return this.request<{ users: AdminFileUser[]; nextCursor: string | null }>(
+      `/api/v1/admin/users${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+  adminChildren(userId: string, nodeId: string, cursor?: string | null, signal?: AbortSignal) {
+    return this.request<Children>(
+      `/api/v1/admin/users/${encodeURIComponent(userId)}/nodes/${encodeURIComponent(nodeId)}/children${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+  adminPath(userId: string, nodeId: string, signal?: AbortSignal) {
+    return this.request<{ path: Breadcrumb[] }>(
+      `/api/v1/admin/users/${encodeURIComponent(userId)}/nodes/${encodeURIComponent(nodeId)}/path`,
+      signal ? { signal } : {},
+    );
+  }
+  adminAudit(cursor?: string | null, signal?: AbortSignal) {
+    return this.request<{ events: AdminAuditEvent[]; nextCursor: string | null }>(
+      `/api/v1/admin/audit${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal ? { signal } : {},
+    );
+  }
+  async prepareAdminContentSession(
+    user: AdminFileUser,
+    node: Pick<FileNode, "id" | "currentBlobId">,
+    action: "preview" | "download",
+    account: Account,
+    signal?: AbortSignal,
+  ): Promise<PreparedContentSession> {
+    if (!node.currentBlobId) throw new Error("content_not_available");
+    const origin = new URL(account.contentOrigin);
+    if (origin.protocol !== "https:" || origin.origin !== account.contentOrigin)
+      throw new Error("invalid_content_origin");
+    const issued = await this.json<{ ticket: string; ticketId: string }>(
+      `/api/v1/admin/users/${encodeURIComponent(user.id)}/content-session`,
+      "POST",
+      {
+        targets: [{ nodeId: node.id, spaceId: user.spaceId }],
+        purpose: "content",
+        action,
+        ttlSeconds: 300,
+      },
+      undefined,
+      {},
+      signal,
+    );
+    try {
+      const accepted = await fetch(`${origin.origin}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+        credentials: "include",
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.any([
+          this.#lifetime.signal,
+          AbortSignal.timeout(30_000),
+          ...(signal ? [signal] : []),
+        ]),
+      });
+      if (!accepted.ok) throw new ApiError(accepted.status, "content_session_failed");
+      let cancelled = false;
+      return {
+        ticketId: issued.ticketId,
+        url: (target) =>
+          `${origin.origin}/c/${encodeURIComponent(target.id)}/${encodeURIComponent(target.currentBlobId)}`,
+        cancel: async () => {
+          if (cancelled) return;
+          cancelled = true;
+          try {
+            await this.cancelTicket(issued.ticketId);
+          } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 404) throw error;
+          }
+        },
+      };
+    } catch (error) {
+      void this.cancelTicket(issued.ticketId).catch(() => undefined);
+      throw error;
+    }
   }
   children(id: string, cursor?: string | null, signal?: AbortSignal) {
     return this.request<Children>(

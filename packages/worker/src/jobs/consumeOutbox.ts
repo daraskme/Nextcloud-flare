@@ -8,6 +8,7 @@ import {
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { AUDIO_GENERATOR_VERSION, type AudioInspection, inspectAudioObject } from "../media/audio";
+import { inspectOpusObject, type OpusInspection } from "../media/video";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -143,6 +144,8 @@ function audioCompletionStatements(
   source: AudioSource,
   row: EventRow,
   inspection: Exclude<AudioInspection, { kind: "transient" }>,
+  verifiedNonVideo: boolean,
+  opus: Extract<OpusInspection, { kind: "metadata" }> | null,
 ): SqlStatement[] {
   if (
     source.kind !== "file" ||
@@ -153,10 +156,12 @@ function audioCompletionStatements(
   )
     return [];
   const metadata = inspection.kind === "metadata" ? inspection.metadata : null;
+  const audioCodec = opus ? "opus" : metadata && verifiedNonVideo ? "mp3" : null;
+  const audioMime = opus ? `audio/${opus.container}` : "audio/mpeg";
   const search = searchText(source.name, [
-    metadata?.title ?? null,
-    metadata?.artist ?? null,
-    metadata?.album ?? null,
+    audioCodec === "mp3" ? (metadata?.title ?? null) : null,
+    audioCodec === "mp3" ? (metadata?.artist ?? null) : null,
+    audioCodec === "mp3" ? (metadata?.album ?? null) : null,
   ]);
   return [
     assertExists(
@@ -178,6 +183,15 @@ function audioCompletionStatements(
         source.r2_etag,
       ],
     ),
+    ...(audioCodec
+      ? [
+          {
+            sql: `UPDATE blobs SET mime_sniffed=?
+              WHERE id=? AND state IN ('committed','gc_candidate')`,
+            values: [audioMime, source.blob_id],
+          },
+        ]
+      : []),
     {
       sql: `INSERT INTO search_fts(search_fts,rowid,text_norm,tokens)
         SELECT 'delete',rowid,text_norm,tokens FROM search_index
@@ -185,24 +199,26 @@ function audioCompletionStatements(
       values: [row.payload_ref, row.space_id, source.revision],
     },
     assertOneChange,
-    ...(metadata
+    ...(audioCodec
       ? [
           {
             sql: `INSERT INTO node_audio(
-              node_id,blob_id,generator_version,codec,title_extracted,artist_extracted,album_extracted
-            ) VALUES(?,?,?,'mp3',?,?,?)
+              node_id,blob_id,generator_version,codec,duration_ms,title_extracted,artist_extracted,album_extracted
+            ) VALUES(?,?,?,?,?,?,?,?)
             ON CONFLICT(node_id) DO UPDATE SET
               blob_id=excluded.blob_id,generator_version=excluded.generator_version,
-              duration_ms=NULL,codec=excluded.codec,
+              duration_ms=excluded.duration_ms,codec=excluded.codec,
               title_extracted=excluded.title_extracted,artist_extracted=excluded.artist_extracted,
               album_extracted=excluded.album_extracted,track_number=NULL,disc_number=NULL`,
             values: [
               row.payload_ref,
               source.blob_id,
               AUDIO_GENERATOR_VERSION,
-              metadata.title,
-              metadata.artist,
-              metadata.album,
+              audioCodec,
+              opus?.durationMs ?? null,
+              opus ? null : (metadata?.title ?? null),
+              opus ? null : (metadata?.artist ?? null),
+              opus ? null : (metadata?.album ?? null),
             ],
           },
         ]
@@ -400,6 +416,8 @@ export async function consumeOutbox(
     }
     const epub = await prepareEpubProjection(env, row, deadline - 4000);
     if (epub === "retry") return "retry";
+    let verifiedNonVideo = false;
+    let opus: Extract<OpusInspection, { kind: "metadata" }> | null = null;
     if ((row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS) {
       try {
         const mediaAuthorized = await authorizeNode(db, principal, {
@@ -424,6 +442,16 @@ export async function consumeOutbox(
           deadline,
         );
         if (video === "retry") return "retry";
+        verifiedNonVideo = video === "not-video";
+        if (source?.kind === "file" && source.r2_key && source.size !== null && source.r2_etag) {
+          const inspectedOpus = await inspectOpusObject(
+            env.BLOBS,
+            { key: source.r2_key, size: source.size, r2Etag: source.r2_etag },
+            deadline - 2000,
+          );
+          if (inspectedOpus.kind === "transient") return "retry";
+          if (inspectedOpus.kind === "metadata") opus = inspectedOpus;
+        }
         if (video === "not-video" && env.IMAGES) {
           const media = await processImageOutbox(
             env as MediaJobEnv,
@@ -441,7 +469,9 @@ export async function consumeOutbox(
     if (Date.now() >= deadline) throw new Error("outbox_budget");
     await commitSystemMutation(db, completion, row.owner_id, [
       ...authority,
-      ...(source && inspection ? audioCompletionStatements(source, row, inspection) : []),
+      ...(source && inspection
+        ? audioCompletionStatements(source, row, inspection, verifiedNonVideo, opus)
+        : []),
       ...epubCompletionStatements(epub),
       {
         sql: `UPDATE outbox SET state='completed',updated_at=MAX(updated_at,${clock})

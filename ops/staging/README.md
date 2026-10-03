@@ -1,6 +1,14 @@
 # Cloudflare staging 配備
 
-`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、50 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。ファイル操作によるデータ分離は未検証。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、52 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。利用者による手動試験でアップロード・ダウンロードと、別アカウントのファイルが一覧に出ないことを確認済み。別利用者のファイル ID を指定した直接アクセスの拒否は別途確認する。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+
+## 2026-10-03 管理者閲覧・メディア再生の反映
+
+Worker version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` に、監査付きの読み取り専用管理画面 `/admin/files` とMP3/Opus/AV1の解析・配信修正を配備した。限定CI tokenによる配備後、匿名HTTP smokeは9件すべて成功した。管理画面の操作は [ADMIN_FILES](../../docs/ADMIN_FILES.md) を参照する。
+
+D1は適用前の50 migrations・458 triggers・管理者用tableなしを照合し、ローカルSQLiteで検証した `0052_admin_browse.sql` と `0053_media_mime_backfill.sql` をmigration記録とともに `/import` 経由で一度だけ適用した。適用後は52 migrations・464 triggers・管理者用2 table、未適用migrationなし、記録の重複なし、foreign key違反なし。epoch 2、maintenance/gc_paused/backup_frozenはいずれも0を確認した。MIME backfillはcurrentの成功済み旧projectionに一致するoctet-streamだけを更新し、未解析の既存ファイルを自動再解析するものではない。
+
+ローカルChrome 153で全ブラウザー45件が成功し、MP3、Opus Ogg/WebM/MP4、AV1+Opus WebM/MP4を通常画面と管理者プレビューで実再生した。実Cloudflare上の新しい管理者画面・メディア再生については、本人のログイン済みブラウザーでの追加確認を待っている。試験の範囲は [MEDIA_FORMATS](../../docs/MEDIA_FORMATS.md) に記録する。
 
 ## リソース台帳と設定
 
@@ -8,7 +16,7 @@
 | --- | --- |
 | Worker | `next-cloud-flare-staging`; `workers_dev=false`, `preview_urls=false` |
 | Custom Domain | `staging-app.darask.date`, `staging-content.darask.date`; 両方とも同じ Worker の origin |
-| D1 | `ncf-staging`; 50 件の migration 適用済み。実 UUID は生成した非追跡 config と GitHub Environment variable に設定 |
+| D1 | `ncf-staging`; 52 件の migration 適用済み。実 UUID は生成した非追跡 config と GitHub Environment variable に設定 |
 | R2 | private `ncf-staging-blobs`, private `ncf-staging-backups`; public access と `r2.dev` を無効化 |
 | KV | staging 専用 `CACHE` namespace ID |
 | Durable Objects | staging Worker に属する `CONTROL`, `LOCKS`, `UPLOADS`, `BUDGETS`; `v1-sqlite-do` migration |

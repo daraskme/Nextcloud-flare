@@ -44,6 +44,7 @@ export async function acquireAccountMutation(
     | "content.issue"
     | "content.accept"
     | "content.cancel"
+    | "admin.files.read"
     | "upload.reserve"
     | "upload.single-start"
     | "upload.single-recover"

@@ -79,6 +79,61 @@ it("reconciles commit uncertainty by operation ID without issuing another mutati
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
+it("issues an audited admin content ticket and exchanges it for the owner's content session", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(
+      Response.json({ ticket: "admin-ticket", ticketId: "ticket-id" }, { status: 201 }),
+    )
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  const api = new ApiClient();
+  const owner = {
+    id: "owner/id",
+    email: "owner@example.invalid",
+    spaceId: "owner-space",
+    rootNodeId: "root",
+    quotaBytes: 100,
+    usedBytes: 1,
+    disabled: false,
+  };
+  const account = { ...accountFixture, contentOrigin: "https://content.example.invalid" };
+  const session = await api.prepareAdminContentSession(
+    owner,
+    { id: "file/id", currentBlobId: "blob/id" },
+    "download",
+    account,
+  );
+  expect(fetcher.mock.calls[1]![0]).toBe("/api/v1/admin/users/owner%2Fid/content-session");
+  expect(JSON.parse(String(fetcher.mock.calls[1]![1].body))).toEqual({
+    targets: [{ spaceId: "owner-space", nodeId: "file/id" }],
+    purpose: "content",
+    action: "download",
+    ttlSeconds: 300,
+  });
+  expect(fetcher.mock.calls[2]![0]).toBe("https://content.example.invalid/session");
+  expect(session.url({ id: "file/id", currentBlobId: "blob/id" })).toBe(
+    "https://content.example.invalid/c/file%2Fid/blob%2Fid",
+  );
+  await session.cancel();
+  expect(fetcher.mock.calls[3]![0]).toBe("/api/v1/tickets/ticket-id");
+});
+
+const accountFixture = {
+  id: "admin",
+  email: "admin@example.invalid",
+  role: "app_admin",
+  spaceId: "admin-space",
+  rootNodeId: "admin-root",
+  epoch: 1,
+  quotaBytes: 100,
+  usedBytes: 1,
+  reservedBytes: 0,
+  contentOrigin: "https://content.example.invalid",
+};
+
 it("a still-claimed operation remains uncertain", async () => {
   vi.stubGlobal(
     "fetch",
