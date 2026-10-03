@@ -6,9 +6,16 @@
 
 2026-10-03 の確認値: Workers Paid、R2 Paid、Cloudflare One Free。請求画面の契約一覧に Images Paid はないため Images Free と見込むが、画像変換試験の前に Dashboard で確定する。Cloudflare の請求期間は 2026-09-19 開始で、10-02 までのアカウント全体の billable usage は **USD 0.30**。この $0.30 は staging 配備前の基準であり、staging の費用ではない。アカウント全体のサービス別内訳と各共有枠の残量は別途 Dashboard で照合する。Cloudflare One Free は50人以下を対象とするプランで、今回の3人の Access 利用者はその範囲内である（[Cloudflare One plans](https://www.cloudflare.com/plans/zero-trust-services/)）。プランと請求期間は変更され得るため毎月確認する。
 
+Billing Read 権限を持つ token が環境変数にある NixOS では、次の読み取り専用コマンドで [Cloudflare の billable usage API](https://developers.cloudflare.com/api/resources/billing/subresources/usage/methods/paygo/) を確認できる。token や個々の請求行は表示・保存せず、アカウント全体の従量請求額を日別に集計する。`reportedPeriodEnd` は最も新しい返却行の区間終了であり、その日付の行がすべて揃った証拠ではない。2026-10-03 の照会では 10-02 分は通常より少ない 6 行だけだったため、最新日の金額を確定値として使わない。API の数値だけで staging 増分を確定せず、各専用リソースの Analytics と照合する。
+
+```sh
+source "$XDG_RUNTIME_DIR/ncf-staging-bootstrap.env"
+node ops/staging/billing-snapshot.mjs --execute
+```
+
 ## 月額の目安
 
-次は公式単価を使った概算。円換算は比較用に **USD 1 = ¥150** と仮定する（請求換算、税、カード手数料とは一致しない）。Workers Paid の $5/月はすでにアカウントで契約済みなので、今回の「追加費用」には含めない。Workers、D1、DO、KV、Queues の included usage はアカウント単位の共有枠であり、残りがあれば追加課金は $0、使い切っていれば下の超過分が追加になる。R2 の Standard 無料枠も同様にアカウント共有。
+次は公式単価を使った概算。円換算は比較用に **USD 1 = ¥150** と仮定する（請求換算、税、カード手数料とは一致しない）。Workers Paid の $5/月はすでにアカウントで契約済みなので、今回の「追加費用」には含めない。Workers、D1、DO、KV、Queues の included usage はアカウント単位の共有枠であり、残りがあれば追加課金は $0、使い切っていれば下の超過分が追加になる。R2 の Standard 無料枠も同様にアカウント共有。表の金額は記載した workload から計算できるサービス分だけで、D1/KV の実量、DO の compute duration、画像変換、その他の従量項目を含まない。したがって、未計測分があるシナリオの値は総額ではなく下限の目安である。
 
 | 月の利用例 | 月間 workload | 全包含量が残る想定 | 共有枠が残らない想定 |
 | --- | --- | ---: | ---: |
@@ -18,9 +25,9 @@
 
 「全包含量が残る」は追加費用が少なくなる側の仮定である。包含量が一部残る場合の請求額は両列の間になる。中程度シナリオは残量ありの場合 Workers $3.00 + DO $0.15 + R2 $8.70 + Queues $0.80 = $12.65、残量なしの場合 Workers $6.60 + DO $0.30 + R2 $16.95 + Queues $1.20 = $25.05。負荷試験例は同様に $126.25 / $138.50。D1 と KV の実操作量、DO の duration、画像変換は表の前提に含めておらず、超過すればさらに追加費用が生じる。実際の残量はアカウント全体の usage を見て選ぶ。
 
-少人数の手動試験は ¥10,000/月をかなり下回る見込みだが、Cloudflare は staging 単独のハード上限を提供しないため、実際の増分は請求画面とリソース別 Analytics で日次確認する。とくに R2 の繰り返し PUT/GET、Queue retry/DLQ、Cron の実 CPU と毎分の R2 inventory/list を追う。画像変換 Free は月 5,000 unique transformations までで、超過時は有料化ではなく新しい変換がエラーになる。
+少人数の手動試験は、記載 workload の範囲なら ¥10,000/月をかなり下回る見込みだが、未計測の DO duration や D1/KV 操作を含めた総額の保証ではない。Cloudflare は staging 単独のハード上限を提供しないため、実際の増分は請求画面とリソース別 Analytics で日次確認する。とくに R2 の繰り返し PUT/GET、Queue retry/DLQ、Cron の実 CPU と毎分の R2 inventory/list を追う。画像変換 Free は月 5,000 unique transformations までで、超過時は有料化ではなく新しい変換がエラーになる。
 
-簡易式（USD、全包含量が残っている前提の超過目安。共有量がゼロなら `max(0, usage - allowance)` を `usage` に置き換える）:
+簡易式（USD、全包含量が残っている前提の超過目安。共有量がゼロなら `max(0, usage - allowance)` を `usage` に置き換える）。Cloudflare はサービスと計量単位に応じて超過分を請求単位へ切り上げるため、以下は連続値で計算した概算式であり、境界付近では実請求が高くなることがある。R2 は GB-month と operation を次の billing unit へ切り上げ、DO は請求対象の request / GB-s を次の million 単位へ切り上げる:
 
 ```text
 Workers = max(0, requests - 10,000,000) / 1,000,000 * 0.30
