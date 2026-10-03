@@ -1,6 +1,6 @@
 # Cloudflare staging 配備
 
-`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、50 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。初回管理者の Access ログインと D1 bootstrap（管理者 1 人、個人スペース 1 件）は実環境で確認済み。限定 CI token による preflight と Worker deploy も成功した。招待後の一般利用者ログインとデータ分離は未検証。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、50 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。ファイル操作によるデータ分離は未検証。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
 
 ## リソース台帳と設定
 
@@ -34,7 +34,7 @@
 
 app host の root Allow は `staging-app.darask.date/*` で深い SPA path も覆い、public share と DAV にはより具体的な Bypass、automation には Deny application を設定した。Access の path 優先順位と Worker route の双方で、未知 method/path が private 権限に繰り上がらないことを確認する。content host に user Access を要求すると、別 origin の ticket/cookie flow が成立しない。Service Auth は将来の automation route の入口契約であり、現行 Worker に service API はない。
 
-**追加ユーザー:** `bootstrapOwner` は最初の管理者 1 人だけを作る。Access Allow に複数メールを登録した後、管理者がアプリの設定画面から各メールを招待する。7日間有効な招待は Access が検証した正確な issuer・メール表記と一致する本人の初回ログインで一度だけ消費され、`iss+sub` と専用 space/root を原子的に固定する。一般利用者の初期 quota は1 GiB。Access Allow だけではアプリ利用者にならず、D1 への手動 `INSERT` や暗黙のメール一致登録は行わない。初回管理者の実ログインは確認済みで、招待後の一般利用者ログインは未検証。手順は [STAGING_ACCESS](../../docs/STAGING_ACCESS.md) を参照する。
+**追加ユーザー:** `bootstrapOwner` は最初の管理者 1 人だけを作る。Access Allow に複数メールを登録した後、管理者がアプリの設定画面から各メールを招待する。7日間有効な招待は Access が検証した正確な issuer・メール表記と一致する本人の初回ログインで一度だけ消費され、`iss+sub` と専用 space/root を原子的に固定する。一般利用者の初期 quota は1 GiB。Access Allow だけではアプリ利用者にならず、D1 への手動 `INSERT` や暗黙のメール一致登録は行わない。初回管理者と招待後の一般利用者 2 人の実ログインは確認済み。手順は [STAGING_ACCESS](../../docs/STAGING_ACCESS.md) を参照する。
 
 ## 初回準備と手動配備
 

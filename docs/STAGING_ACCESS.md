@@ -1,6 +1,6 @@
 # Staging の Cloudflare Access 設定
 
-Cloudflare Access で staging のログイン入口を絞るための runbook です。2026-10-03 時点で、下表の Access application と policy は Cloudflare API で存在を確認済みです。初回管理者のログインと個人スペース作成は実 staging で確認済みです。一般利用者の招待・ログイン・データ分離は別途確認してください。
+Cloudflare Access で staging のログイン入口を絞るための runbook です。2026-10-03 時点で、下表の Access application と policy は Cloudflare API で存在を確認済みです。管理者 1 人と招待された一般利用者 2 人のログインを実 staging で確認し、D1 でも利用者 3 人、個別の所有者とルートを持つ個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件を確認しました。ファイル操作によるデータ分離は別途確認してください。
 
 この runbook は [DESIGN.md の §2.2](DESIGN.md) の host / Access 境界を正本とします。
 
@@ -8,7 +8,7 @@ Cloudflare Access で staging のログイン入口を絞るための runbook �
 
 Access ポリシーにテスターを追加しても、Nextcloud-flare の D1 `users` 行は作られません。アプリの初回 bootstrap は `BOOTSTRAP_OWNER_EMAILS` または `BOOTSTRAP_OWNER_IDENTITIES` に一致する最初の identity 1 人だけを管理者として登録します。複数の候補を bootstrap allowlist に入れても、管理者が複数作成されるわけではありません。
 
-初回管理者はアプリの「設定 → WebDAV」にある「利用者の招待」から各テスターの正確なメールアドレスを招待します。招待は7日間有効で、Access が検証した issuer とメール表記が一致する本人の初回ログイン時に一度だけ消費され、Access の subject と個人スペースに結び付きます。期限切れ後は同じメールを再招待できます。保留中招待は最大200件です。招待を受けた人は一般利用者として登録され、初期容量は1 GiBです。メールの大文字・小文字も含めて Access が返す値と一致させます。アプリは招待メールを送らず、ログイン用の One-time PIN は Cloudflare Access が送信します。初回管理者の実 Access ログインと D1 bootstrap は確認済みです。一般利用者の招待とログインは未検証です。
+初回管理者はアプリの「設定 → WebDAV」にある「利用者の招待」から各テスターの正確なメールアドレスを招待します。招待は7日間有効で、Access が検証した issuer とメール表記が一致する本人の初回ログイン時に一度だけ消費され、Access の subject と個人スペースに結び付きます。期限切れ後は同じメールを再招待できます。保留中招待は最大200件です。招待を受けた人は一般利用者として登録され、初期容量は1 GiBです。メールの大文字・小文字も含めて Access が返す値と一致させます。アプリは招待メールを送らず、ログイン用の One-time PIN は Cloudflare Access が送信します。初回管理者の D1 bootstrap と、一般利用者 2 人の招待・初回ログイン・個人スペース作成を実環境で確認済みです。
 
 ## Access 境界
 
