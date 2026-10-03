@@ -6,7 +6,7 @@
 
 最新Workerは`3aafb739-ae57-449c-aff1-57fd389fdaea`。ブラウザーの本人＋管理者暗号化を配備し、`CLIENT_ENCRYPTION_REQUIRED=true`、両operator gateはfalseを維持する。匿名HTTP smoke 9件、公開SW bootstrapのscope/no-store、実Chromeの登録と未設定upload拒否を確認した。実ChromeはSW取得時にAccess Cookieを送らないため、鍵・データを含まない単一コードだけを既存の`/public-assets/*` Bypassで配信する。Private APIと内容取得の認証は維持し、新しいBypassは追加しない。
 
-実管理者の保存済み鍵で既存メディア3件・64,932,182 bytesの暗号化コピーを作成し、実stagingで元データと復号後の全byte/SHA-256、表示・再生・seekを確認した。承認後、元の平文3件をtrash/purgeし、元nodeの404・ゴミ箱不在・暗号化コピー保持を確認した。R2原本は35日以上のGC猶予で残り、過去バックアップも保持中。一般利用者2人は鍵未設定で、各1件の空ファイルは未移行。[初回設定](../../docs/CLIENT_ENCRYPTION_SETUP.md)を参照する。WebDAV・公開upload・直接APIは暗号化経路ではない。今回の実R2/SQLite/原本複写の復元試験、動画8回シーク、automation GET 2経路の状況は[進捗表](../../docs/IMPLEMENTATION_STATUS.md)に記録した。
+実管理者の保存済み鍵で既存メディア3件・64,932,182 bytesの暗号化コピーを作成し、実stagingで元データと復号後の全byte/SHA-256、表示・再生・seekを確認した。承認後、元の平文3件をtrash/purgeし、元nodeの404・ゴミ箱不在・暗号化コピー保持を確認した。R2原本は35日以上のGC猶予で残り、過去バックアップも保持中。一般利用者2人は使わないとのユーザー指示により、鍵設定と各1件の空ファイル移行を今回の対象から除外した。現在の運用対象は管理者1人。[初回設定](../../docs/CLIENT_ENCRYPTION_SETUP.md)を参照する。WebDAV・公開upload・直接APIは暗号化経路ではない。今回の実R2/SQLite/原本複写の復元試験、動画8回シーク、automation GET 2経路の状況は[進捗表](../../docs/IMPLEMENTATION_STATUS.md)に記録した。
 
 ## 2026-10-03 管理者閲覧・メディア再生の反映
 
