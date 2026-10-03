@@ -1,12 +1,14 @@
 const ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_COMPLETE_CALLS_PER_TICK = 4;
+const EPOCH = /^[1-9][0-9]{0,14}$/;
 
 function configuration(env) {
   if (
     env.BACKUP_CRON_ENABLED !== "true" ||
     env.BACKUP_TARGET !== "next-cloud-flare-staging" ||
-    env.BACKUP_EPOCH !== "2" ||
+    !EPOCH.test(env.BACKUP_EPOCH ?? "") ||
+    !Number.isSafeInteger(Number(env.BACKUP_EPOCH)) ||
     !ID.test(env.BACKUP_ID ?? "") ||
     !["begin", "complete", "receipt"].includes(env.BACKUP_OPERATION) ||
     !env.BACKUP_CONTROL ||
@@ -15,7 +17,7 @@ function configuration(env) {
       : env.BACKUP_MANIFEST_SHA256 !== undefined)
   )
     throw new Error("staging_backup_cron_unconfigured");
-  return { control: env.BACKUP_CONTROL, id: env.BACKUP_ID, epoch: 2 };
+  return { control: env.BACKUP_CONTROL, id: env.BACKUP_ID, epoch: Number(env.BACKUP_EPOCH) };
 }
 
 /** A single fixed operator action per deployment; unknown RPC outcomes are retried with the same identity. */

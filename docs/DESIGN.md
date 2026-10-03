@@ -286,6 +286,10 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 |---|---|---|
 | `spa.read`,`public.asset.read`,`share.landing`,`reader.shell` | surface policy / public manifest | `[currentUser? ,assetManifest?,shareId?]` |
 | `account.read`,`account.logout`,`csrf.issue` | self | `[currentUser]` |
+| `encryption.key.challenge`,`encryption.key.register` | `credential:manage` | `[currentUser,recipientKey,signingKey,challenge,proof]`。現在のAccess userへ復号鍵・署名鍵の所有証明後、初回登録した公開鍵を固定する |
+| `encryption.key.read`,`encryption.admin_key.read` | `account:read` | `[currentUser,targetUser?,adminKeys?]`。公開鍵の取得は現在のuser状態/roleで制限し、clientは保存済み管理者pinを独立照合する |
+| `encryption.file.adopt` | `credential:manage` | `[currentUser,node,blob,headerHash,ownerSignature]`。既存暗号blobの実headerと所有者署名を照合してmarkerを付ける |
+| `encryption.admin.receipt` | `admin:content` | `[actor,blob,headerHash,adminSignature]`。管理者の復号検証後の署名receiptを現roleで記録する |
 | `admin.user.invite` | `admin:user` | `[actor,invite?]`。管理者が正確なメールアドレスを期限付きで承認し、初回の Access 検証時に issuer と subject へ一度だけ結び付ける |
 | `admin.users.read`,`admin.audit.read` | `admin:content` | `[actor,cursor?]`。有効な Access session と現在の管理者 role を検証する |
 | `admin.files.read` | `admin:content` | `[actor,targetUser,space,node,ancestors,cursor?]`。所有者を明示した読み取りと監査記録だけを許す |
@@ -393,6 +397,12 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/s/:shareId` | public | `share.landing` | `shareId,publicAssetManifest` | false | same-origin-json |
 | app | GET | `/api/v1/me` | access | `account.read` | `currentUser` | false | same-origin-json |
 | app | POST | `/api/v1/auth/logout` | access | `account.logout` | `currentUser` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/keys/challenge` | access | `encryption.key.challenge` | `currentUser,recipientKey,signingKey` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/keys/register` | access | `encryption.key.register` | `currentUser,challenge,proof` | false | same-origin-json |
+| app | GET | `/api/v1/encryption/keys/:accountId` | access | `encryption.key.read` | `currentUser,targetUser` | false | same-origin-json |
+| app | GET | `/api/v1/encryption/admin-keys` | access | `encryption.admin_key.read` | `currentUser,adminKeys` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/nodes/:nodeId/adopt` | access | `encryption.file.adopt` | `currentUser,node,blob,headerHash,ownerSignature` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/blobs/:blobId/admin-receipt` | access | `encryption.admin.receipt` | `actor,blob,headerHash,adminSignature` | true | same-origin-json |
 | app | POST | `/api/v1/csrf` | access | `csrf.issue` | `currentUser` | false | same-origin-json |
 | app | GET | `/api/v1/operations/:id` | access | `operation.read` | `operation,originalOperands` | false | same-origin-json |
 | app | GET | `/api/v1/search` | access | `search.read` | `scopeRoot,cursor` | false | same-origin-json |

@@ -133,6 +133,11 @@ export const ROUTE_BINDINGS = [
   ...bindings(appAccess, "bound", "private-app", [
     "app GET /api/v1/me",
     "app POST /api/v1/auth/logout",
+    "app POST /api/v1/encryption/keys/challenge",
+    "app POST /api/v1/encryption/keys/register",
+    "app GET /api/v1/encryption/keys/:accountId",
+    "app GET /api/v1/encryption/admin-keys",
+    "app POST /api/v1/encryption/nodes/:nodeId/adopt",
     "app GET /api/v1/search",
     "app GET /api/v1/recent",
     "app GET /api/v1/starred",
@@ -246,6 +251,7 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/admin/locks/:lockId/force-unlock",
   ]),
   ...bindings(appAdmin, "bound", "private-app", [
+    "app POST /api/v1/encryption/blobs/:blobId/admin-receipt",
     "app GET /api/v1/admin/users",
     "app GET /api/v1/admin/users/:userId/nodes/:nodeId",
     "app GET /api/v1/admin/users/:userId/nodes/:nodeId/children",

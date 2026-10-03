@@ -19,6 +19,11 @@ import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
 import { automationRoute, handleAutomationHttp } from "./automation";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
+import {
+  encryptionAttestationRoute,
+  handleEncryptionAttestationHttp,
+} from "./encryptionAttestations";
+import { encryptionKeyRoute, handleEncryptionKeyHttp } from "./encryptionKeys";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { groupRoute, handleGroupHttp } from "./groups";
 import { handleInviteHttp, inviteRoute } from "./invites";
@@ -66,6 +71,8 @@ export function privateAppRoute(request: Request): boolean {
     groupRoute(request) ||
     inviteRoute(request) ||
     adminBrowseRoute(request) ||
+    encryptionKeyRoute(request) ||
+    encryptionAttestationRoute(request) ||
     automationRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
@@ -132,6 +139,8 @@ export async function handlePrivateAppHttp(
   const group = groupRoute(request);
   const invite = inviteRoute(request);
   const adminBrowse = adminBrowseRoute(request);
+  const encryptionKey = encryptionKeyRoute(request);
+  const encryptionAttestation = encryptionAttestationRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
   const zip = privateZipRoute(request);
@@ -156,6 +165,8 @@ export async function handlePrivateAppHttp(
     !group &&
     !invite &&
     !adminBrowse &&
+    !encryptionKey &&
+    !encryptionAttestation &&
     !share &&
     !upload &&
     !zip &&
@@ -263,6 +274,9 @@ export async function handlePrivateAppHttp(
       dependencies.tokens,
       dependencies.cursors,
     );
+  if (encryptionKey) return handleEncryptionKeyHttp(request, env, session, dependencies.csrf);
+  if (encryptionAttestation)
+    return handleEncryptionAttestationHttp(request, env, session, dependencies.csrf);
   if (share)
     return handleShareHttp(
       request,

@@ -27,6 +27,7 @@ jobs:
       WRANGLER_SEND_METRICS: "false"
       STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
       STAGING_KV_NAMESPACE_ID: ${{ vars.STAGING_KV_NAMESPACE_ID }}
+      STAGING_WEEKLY_BACKUP_ENABLED: ${{ vars.STAGING_WEEKLY_BACKUP_ENABLED }}
     steps:
       - uses: actions/checkout@v4
         with:

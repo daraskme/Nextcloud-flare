@@ -148,11 +148,16 @@ describe("local recipient vault storage", () => {
       accountId: "admin_5",
       recipient: admin.unlocked.publicKey,
     });
-    await store.pinAdminRecipient("member_5", "admin_5", admin.unlocked.publicKey);
+    const signer = {
+      fingerprint: admin.unlocked.signing.fingerprint,
+      spki: admin.unlocked.signing.spki,
+    };
+    await store.pinAdminRecipient("member_5", "admin_5", admin.unlocked.publicKey, signer);
     expect(await store.getPinnedAdminRecipient("member_5")).toEqual({
       accountId: "member_5",
       adminAccountId: "admin_5",
       recipient: admin.unlocked.publicKey,
+      signer,
     });
     expect(await store.getPinnedAdminRecipient("member_6")).toBeNull();
     const stored = indexed.records.get("admin-recipients")?.get("member_5");

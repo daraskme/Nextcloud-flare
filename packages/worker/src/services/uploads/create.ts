@@ -10,8 +10,10 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
 } from "../accountMutation";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "../encryptionGuards";
 import { reservationStatements } from "../quota";
 import { type UploadRow, uploadAuthority, uploadFence, uploadRow, uploadStatus } from "./access";
+import { verifyDeclaredEncryptionHeader } from "./encryptionPolicy";
 
 const MAX_PUBLIC_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
 const MAX_ACTIVE_PUBLIC_UPLOADS = 8;
@@ -26,6 +28,7 @@ export interface CreateSingleUpload {
   readonly declaredSize: number;
   readonly targetId?: string;
   readonly targetRevision?: number;
+  readonly encryptionHeader?: string;
 }
 
 function publicUploadName(input: string, id: string) {
@@ -67,7 +70,7 @@ async function publicUploadExpiry(
 
 /** Reservation and immutable staging metadata are committed together before any R2 call. */
 export async function createSingleUpload(
-  env: AccountMutationEnv,
+  env: AccountMutationEnv & { CLIENT_ENCRYPTION_REQUIRED?: string },
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
 ) {
@@ -76,7 +79,7 @@ export async function createSingleUpload(
 
 /** Metadata reservation shared by multipart initialization and its recoverable HTTP receipt. */
 export async function reserveMultipartUpload(
-  env: AccountMutationEnv,
+  env: AccountMutationEnv & { CLIENT_ENCRYPTION_REQUIRED?: string },
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
 ) {
@@ -84,7 +87,7 @@ export async function reserveMultipartUpload(
 }
 
 async function reserveUpload(
-  env: AccountMutationEnv,
+  env: AccountMutationEnv & { CLIENT_ENCRYPTION_REQUIRED?: string },
   input: CreateSingleUpload,
   capabilities: UploadCapabilities,
   mode: "single" | "multipart",
@@ -110,6 +113,10 @@ async function reserveUpload(
       input.declaredSize > MAX_PUBLIC_UPLOAD_BYTES)
   )
     throw new Error("invalid_upload_create");
+  if (env.CLIENT_ENCRYPTION_REQUIRED === "true" && !input.encryptionHeader)
+    throw new Error("encryption_required");
+  if (input.encryptionHeader && input.principal.kind !== "user")
+    throw new Error("invalid_upload_encryption");
   const plan = mode === "multipart" ? multipartPlan(input.declaredSize) : null;
   if (!plan) validateLength(input.declaredSize);
   const id = `up_${await digestJson(["upload.create", input.principal.credential_id, input.requestId])}`;
@@ -125,6 +132,7 @@ async function reserveUpload(
     size: input.declaredSize,
     targetId: input.targetId ?? null,
     targetRevision: input.targetRevision ?? null,
+    encryptionHeader: input.encryptionHeader ?? null,
   });
   const replay = async () => {
     const row = await uploadRow(db, id);
@@ -165,8 +173,32 @@ async function reserveUpload(
     throw new Error("upload_target_changed");
   if (authorized.operation !== "node.create" && authorized.operation !== "node.content.write")
     throw new Error("upload_authorization_denied");
+  if (input.targetId) await assertNoEncryptedSubtree(db, input.targetId, input.spaceId);
   const owner =
     authorized.operation === "node.create" ? authorized.parent.owner_id : authorized.node.owner_id;
+  if (
+    input.encryptionHeader &&
+    input.principal.kind === "user" &&
+    owner !== input.principal.user_id
+  )
+    throw new Error("invalid_upload_encryption");
+  const encryption = input.encryptionHeader
+    ? await verifyDeclaredEncryptionHeader(db, owner, input.declaredSize, input.encryptionHeader)
+    : null;
+  const privateAncestry = encryption
+    ? [
+        assertExists(
+          `WITH RECURSIVE ancestry(id,parent_id,depth) AS (
+      SELECT id,parent_id,0 FROM nodes WHERE id=? AND owner_id=? AND deleted_at IS NULL
+      UNION ALL SELECT n.id,n.parent_id,a.depth+1 FROM nodes n JOIN ancestry a ON n.id=a.parent_id
+        WHERE n.owner_id=? AND n.deleted_at IS NULL AND a.depth<128
+    ) SELECT 1 WHERE EXISTS(SELECT 1 FROM ancestry WHERE parent_id IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM shares sh JOIN ancestry a ON sh.root_node_id=a.id
+        WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000))`,
+          [input.parentId, owner, owner],
+        ),
+      ]
+    : [];
   const now = Date.now();
   const expiresAt =
     input.principal.kind === "link_share"
@@ -197,6 +229,28 @@ async function reserveUpload(
   try {
     await commitAccountMutation(db, admission, owner, [
       authorizationAssertion(authorized),
+      ...(input.targetId ? [unencryptedSubtreeAssertion(input.targetId, input.spaceId)] : []),
+      ...privateAncestry,
+      ...(encryption
+        ? [
+            assertExists(
+              `SELECT 1 FROM encryption_keys owner_key
+          JOIN users owner_user ON owner_user.id=owner_key.account_id
+          JOIN encryption_keys admin_key ON admin_key.rsa_fingerprint=?
+          JOIN users admin_user ON admin_user.id=admin_key.account_id
+          WHERE owner_key.account_id=? AND owner_key.revoked_at IS NULL
+            AND owner_user.disabled_at IS NULL AND owner_key.rsa_fingerprint=?
+            AND owner_key.signing_fingerprint=? AND admin_key.revoked_at IS NULL
+            AND admin_user.disabled_at IS NULL AND admin_user.role='app_admin'`,
+              [
+                encryption.requiredAdminFingerprint,
+                owner,
+                encryption.signerRsaFingerprint,
+                encryption.signerFingerprint,
+              ],
+            ),
+          ]
+        : []),
       ...(input.principal.kind === "link_share"
         ? [
             assertExists(
@@ -238,8 +292,8 @@ async function reserveUpload(
       {
         sql: `INSERT INTO uploads(id,owner_id,space_id,parent_id,target_id,blob_id,credential_id,reservation_id,
         mode,state,declared_size,capability_hash,epoch,created_at,expires_at,last_progress_at,
-        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count)
-        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?)`,
+        upload_name,target_revision,request_digest,capability_kid,part_bytes,part_count,encryption_header_sha256)
+        VALUES(?,?,?,?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         values: [
           id,
           owner,
@@ -262,6 +316,7 @@ async function reserveUpload(
           identity.capability_kid,
           plan?.partBytes ?? null,
           plan?.partCount ?? null,
+          encryption?.headerSha256 ?? null,
         ],
       },
       assertExists("SELECT 1 FROM uploads WHERE id=? AND request_digest=?", [id, digest]),

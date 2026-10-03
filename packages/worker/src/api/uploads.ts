@@ -55,7 +55,8 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
   if (request.headers.get("Content-Type") !== "application/json" || !request.body)
     throw new Error("invalid_upload_body");
   const reader = request.body.getReader();
-  const bytes = new Uint8Array(8192);
+  // A signed encrypted-container header can be 16 KiB before base64url encoding.
+  const bytes = new Uint8Array(32768);
   let length = 0;
   try {
     for (;;) {
@@ -259,6 +260,7 @@ export async function handleUploadHttp(
             "declared_size",
             "targetId",
             "targetRevision",
+            "encryptionHeader",
           ].includes(key),
       ) ||
       typeof body.spaceId !== "string" ||
@@ -266,7 +268,8 @@ export async function handleUploadHttp(
       typeof body.name !== "string" ||
       typeof body.declared_size !== "number" ||
       (body.targetId !== undefined && typeof body.targetId !== "string") ||
-      (body.targetRevision !== undefined && typeof body.targetRevision !== "number")
+      (body.targetRevision !== undefined && typeof body.targetRevision !== "number") ||
+      (body.encryptionHeader !== undefined && typeof body.encryptionHeader !== "string")
     )
       return problem(400, "bad_request");
     if (body.mode !== "single" && body.mode !== "multipart") return problem(400, "bad_request");
@@ -279,6 +282,9 @@ export async function handleUploadHttp(
       declaredSize: body.declared_size,
       ...(typeof body.targetId === "string" ? { targetId: body.targetId } : {}),
       ...(typeof body.targetRevision === "number" ? { targetRevision: body.targetRevision } : {}),
+      ...(typeof body.encryptionHeader === "string"
+        ? { encryptionHeader: body.encryptionHeader }
+        : {}),
     };
     if (body.mode === "multipart") {
       const result = await createMultipartUploadReceipt(env, input, capabilities);
@@ -296,6 +302,10 @@ export async function handleUploadHttp(
       return response;
     }
     const message = error instanceof Error ? error.message : "";
+    if (message === "encrypted_operation_forbidden") return problem(409, "conflict");
+    if (message === "encryption_required") return problem(403, "forbidden");
+    if (message === "invalid_upload_encryption" || message === "invalid_signed_container")
+      return problem(400, "bad_request");
     if (/capability|authorization_denied/.test(message)) return problem(403, "forbidden");
     if (message === "upload_not_found") return problem(404, "not_found");
     if (/quota_exceeded/.test(message)) return problem(507, "insufficient_storage");

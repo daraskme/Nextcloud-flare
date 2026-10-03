@@ -1,5 +1,4 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { FileText, FolderOpen, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
@@ -10,10 +9,19 @@ import {
   type FileNode,
   type PreparedContentSession,
 } from "../../lib/api";
+import { saveClientMedia } from "../../lib/clientMediaRegistration";
+import { type OpenEncryptedContent, readEncryptedContent } from "../../lib/encryptedContent";
 import { isEncryptedFile } from "../../lib/encryptionSession";
+
+type AdminPreviewSession = PreparedContentSession | OpenEncryptedContent;
 
 const dateTime = (value: number) =>
   new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(value);
+
+async function releasePreview(session: AdminPreviewSession): Promise<void> {
+  if ("close" in session) await session.close();
+  else await session.cancel().catch(() => undefined);
+}
 
 export function AllUserFiles({ account }: { account: Account }) {
   const queryClient = useQueryClient();
@@ -27,7 +35,9 @@ export function AllUserFiles({ account }: { account: Account }) {
     node: FileNode;
     mime: string;
     url: string;
-    session: PreparedContentSession;
+    session: AdminPreviewSession;
+    encryptedContent?: OpenEncryptedContent;
+    adminReceiptRecorded?: boolean;
   } | null>(null);
   const [previewError, setPreviewError] = useState(false);
   const ownerIdRef = useRef(ownerId);
@@ -91,7 +101,7 @@ export function AllUserFiles({ account }: { account: Account }) {
   }, [ownerId]);
   useEffect(() => {
     return () => {
-      if (preview) void preview.session.cancel().catch(() => undefined);
+      if (preview) void releasePreview(preview.session);
     };
   }, [preview]);
   useEffect(() => {
@@ -114,6 +124,56 @@ export function AllUserFiles({ account }: { account: Account }) {
     const selectedOwner = owner;
     if (!selectedOwner || !node.currentBlobId) return;
     const requestGeneration = ++previewGeneration.current;
+    if (isEncryptedFile(node)) {
+      try {
+        const content = await readEncryptedContent(account, node, selectedOwner);
+        if (
+          !mounted.current ||
+          requestGeneration !== previewGeneration.current ||
+          ownerIdRef.current !== selectedOwner.id
+        ) {
+          await content.close();
+          return;
+        }
+        const mime = content.opened.metadata.mime;
+        const inlineMedia =
+          action === "preview" &&
+          (mime.startsWith("image/") ||
+            mime.startsWith("audio/") ||
+            mime === "video/mp4" ||
+            mime === "video/webm");
+        const url = inlineMedia ? await content.media("inline") : "";
+        if (
+          !mounted.current ||
+          requestGeneration !== previewGeneration.current ||
+          ownerIdRef.current !== selectedOwner.id
+        ) {
+          await content.close();
+          return;
+        }
+        setPreview({
+          name: content.opened.metadata.name,
+          ownerEmail: selectedOwner.email,
+          node,
+          mime,
+          url,
+          session: content,
+          encryptedContent: content,
+          adminReceiptRecorded: content.adminReceiptRecorded,
+        });
+        setPreviewError(false);
+        if (account.role === "app_admin" && !content.adminReceiptRecorded)
+          setNotice("復号できましたが、管理者による復号確認をサーバーに記録できませんでした。");
+        void queryClient.invalidateQueries({
+          queryKey: ["admin-file-audit", account.id, account.epoch],
+        });
+        return;
+      } catch (error) {
+        if (mounted.current && requestGeneration === previewGeneration.current)
+          setNotice(errorMessage(error));
+        return;
+      }
+    }
     const inlineMedia =
       action === "preview" &&
       (node.mime?.startsWith("audio/") || node.mime === "video/mp4" || node.mime === "video/webm");
@@ -162,6 +222,59 @@ export function AllUserFiles({ account }: { account: Account }) {
   const closePreview = () => {
     previewGeneration.current += 1;
     setPreview(null);
+  };
+
+  const downloadEncryptedPreview = async () => {
+    const content = preview?.encryptedContent;
+    if (!content) return;
+    let destination: FileSystemWritableFileStream | null = null;
+    const picker = (
+      window as Window & {
+        showSaveFilePicker?: (options: { suggestedName: string }) => Promise<FileSystemFileHandle>;
+      }
+    ).showSaveFilePicker;
+    try {
+      if (picker)
+        destination = await (
+          await picker({
+            suggestedName: content.opened.metadata.name,
+          })
+        ).createWritable();
+      if (!destination && content.opened.envelope.plainSize > 64 * 1024 * 1024)
+        throw new Error("64 MiBを超える復号保存には、保存先を選べるブラウザーを利用してください。");
+      const url = await content.media("download");
+      if (destination) {
+        await saveClientMedia(url, content.opened.envelope.plainSize, {
+          write: (bytes) => destination!.write(new Uint8Array(bytes)),
+          close: () => destination!.close(),
+          abort: (reason) => destination!.abort(reason),
+        });
+      } else {
+        const chunks: Uint8Array<ArrayBuffer>[] = [];
+        await saveClientMedia(url, content.opened.envelope.plainSize, {
+          async write(bytes) {
+            chunks.push(new Uint8Array(bytes));
+          },
+          async close() {},
+          async abort() {
+            chunks.length = 0;
+          },
+        });
+        const blobUrl = URL.createObjectURL(
+          new Blob(chunks, { type: content.opened.metadata.mime }),
+        );
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = content.opened.metadata.name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      }
+      setNotice("復号したファイルを保存しました。");
+    } catch (error) {
+      if (destination) await destination.abort(error).catch(() => undefined);
+      if (!(error instanceof DOMException && error.name === "AbortError"))
+        setNotice(errorMessage(error));
+    }
   };
 
   const events = audit.data?.pages.flatMap((page) => page.events) ?? [];
@@ -264,26 +377,22 @@ export function AllUserFiles({ account }: { account: Account }) {
               </span>
               <span role="cell" className="admin-files-actions">
                 {node.kind === "file" && node.currentBlobId ? (
-                  isEncryptedFile(node.name) ? (
-                    <Link to="/encryption">暗号化画面で復号</Link>
-                  ) : (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="small"
-                        onClick={() => void openContent(node, "preview")}
-                      >
-                        プレビュー
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="small"
-                        onClick={() => void openContent(node, "download")}
-                      >
-                        ダウンロード
-                      </Button>
-                    </>
-                  )
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="small"
+                      onClick={() => void openContent(node, "preview")}
+                    >
+                      プレビュー
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="small"
+                      onClick={() => void openContent(node, "download")}
+                    >
+                      ダウンロード
+                    </Button>
+                  </>
                 ) : (
                   "—"
                 )}
@@ -365,7 +474,14 @@ export function AllUserFiles({ account }: { account: Account }) {
                 <X size={18} />
               </Button>
             </header>
-            {preview.mime.startsWith("audio/") ? (
+            {preview.encryptedContent && !preview.url ? (
+              <div className="admin-media-preview-error">
+                <p>管理者として復号鍵を確認しました。ファイルを保存できます。</p>
+                <Button onClick={() => void downloadEncryptedPreview()}>復号して保存</Button>
+              </div>
+            ) : preview.mime.startsWith("image/") ? (
+              <img src={preview.url} alt={preview.name} />
+            ) : preview.mime.startsWith("audio/") ? (
               <audio
                 controls
                 autoPlay
@@ -390,6 +506,18 @@ export function AllUserFiles({ account }: { account: Account }) {
                 <span>このメディアを再生できませんでした。</span>
                 <Button variant="ghost" onClick={() => void openContent(preview.node, "download")}>
                   原本をダウンロード
+                </Button>
+              </div>
+            ) : null}
+            {preview.encryptedContent && preview.url ? (
+              <div className="admin-media-preview-error">
+                {preview.adminReceiptRecorded ? (
+                  <span>管理者による復号確認を記録しました。</span>
+                ) : (
+                  <span>管理者による復号確認は未記録です。</span>
+                )}
+                <Button variant="ghost" onClick={() => void downloadEncryptedPreview()}>
+                  復号して保存
                 </Button>
               </div>
             ) : null}

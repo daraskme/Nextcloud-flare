@@ -1,0 +1,22 @@
+# Local backup and billing monitor
+
+This directory contains an optional NixOS desktop monitor example. The files are not installed or enabled automatically. It reads the weekly backup runner's internal `state.json` from `NCF_BACKUP_STATE_ROOT`, fetches account-wide metered usage with the existing `ops/staging/billing-snapshot.mjs` functions, checks anonymous staging HTTP reachability with `ops/staging/smoke-check.mjs`, and stores its own state and sanitized incident log in `NCF_MONITOR_STATE_DIR`. Keep the monitor state on the internal disk so a missing external backup volume cannot erase its alert history.
+
+## Inputs and status rules
+
+The backup state file is private (`0600`) and version 1. A backup is healthy only when `phase` is `completed`, the manifest and encrypted archive hashes and byte count are valid, `archiveVerifiedAt` and `completedAt` are present, and no `lastError` exists. The default freshness limit is eight days plus twelve hours of grace to match weekly Sunday 03:30 JST runs. Change this only when the schedule changes. A missing or read-only external volume becomes a backup failure immediately through the runner's fixed `lastError` code; an overdue or unfinished generation remains unhealthy.
+
+Billing input is the existing aggregate account-wide Usage summary. It does not identify staging charges. A missing snapshot, unknown scope/attribution, unconfigured currency, or stale result is `unknown`; the monitor never reports staging as within budget. The example converts USD with a deliberately high configured rate of ¥200 per USD, subtracts the observed ¥60 baseline for the `2026-09-19` billing period, uses ¥0 as the default baseline for future periods, and signals account-wide increases at ¥5,000, ¥8,000, and ¥10,000. Review those assumptions before use and update the rate/baseline when the billing period or conservative conversion changes. Alert messages never contain raw charges, account IDs, tokens, or file paths.
+
+The HTTP check makes nine bounded unauthenticated GET/HEAD requests to the exact staging app and content hosts. It does not follow redirects or keep response bodies. The persisted verdict is only `reachable`, `failed`, or `unknown` with a fixed code; `unknown` means the check could not run and is never treated as success. A healthy initial result is silent. Failure, unknown status, and recovery notify only when the state changes. Passing probes show that the Access gate and selected public Worker paths respond as expected; they do not test a user login or every application feature. Billing and HTTP checks run independently, so a failure in one does not prevent the other from reporting.
+
+The only notification transport is the current desktop session's `org.freedesktop.Notifications` D-Bus service via `busctl --user`. State changes are deduplicated. Failed delivery remains pending for the next check; the internal `incidents.jsonl` records category/status transitions without billing amounts or credentials. The monitor does not send email or chat messages.
+
+## Optional local setup
+
+1. Copy `config.example.json` to `~/.config/nextcloud-flare/monitor.json`, review its currency rate/baselines, and set mode `0600`.
+2. Copy `monitor.env.example` to `~/.config/nextcloud-flare/monitor.env`, supply the account-wide billing API credentials through the protected local file, and set mode `0600`. If credentials are absent or the API fails, billing status stays unknown and cannot become a budget-health claim.
+3. Confirm the backup runner writes its private state to `~/.local/state/nextcloud-flare-backup/state.json`. The external encrypted archive remains on its configured external volume; monitoring state stays under `~/.local/state`.
+4. Copy the example service and timer to `~/.config/systemd/user/` only after reviewing the repository and executable paths. The timer is an hourly example; it is not enabled by this repository.
+
+The monitor has no install, enable, deploy, or send command in its tests. Unit tests inject the notification function and use temporary state directories.

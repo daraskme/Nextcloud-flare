@@ -159,6 +159,8 @@ export async function handlePrivateContentTicketHttp(
       headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === "encrypted_operation_forbidden")
+      return problem(409, "conflict");
     if (error instanceof MutationUnavailableError) {
       const response = problem(503, "not_ready");
       response.headers.set("Retry-After", "1");

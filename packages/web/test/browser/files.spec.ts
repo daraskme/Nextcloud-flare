@@ -511,6 +511,11 @@ test("private pages and every built chunk require Access and never fall back fro
   expect(response?.headers()["content-security-policy"]).not.toContain(
     "script-src 'self' 'unsafe-inline'",
   );
+  const csp = (response!.headers()["content-security-policy"] ?? "").split("; ");
+  expect(csp).toContain("script-src 'self'");
+  expect(csp).toContain("worker-src 'self'");
+  expect(csp).toContain("object-src 'none'");
+  expect(csp).toContain("media-src 'self' https://content.ncf.test:8879 blob:");
   const chunks = await page
     .locator('script[src],link[rel="modulepreload"],link[rel="stylesheet"]')
     .evaluateAll((elements) =>

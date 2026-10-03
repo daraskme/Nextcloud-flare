@@ -58,7 +58,8 @@ async function source(db: D1Database, row: EpubEvent): Promise<EpubSource | null
       WHERE n.id=? AND n.space_id=? AND n.owner_id=? AND n.kind='file'
         AND n.deleted_at IS NULL AND lower(n.name) LIKE '%.epub'
         AND b.state IN ('committed','gc_candidate') AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
-        AND bs.bytes=b.size AND bs.r2_etag IS NOT NULL`)
+        AND bs.bytes=b.size AND bs.r2_etag IS NOT NULL
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`)
     .bind(row.payload_ref, row.space_id, row.owner_id)
     .first<EpubSource>();
   return selected ? Object.freeze(selected) : null;
@@ -139,7 +140,8 @@ function sourceFence(selected: EpubSource): SqlStatement {
       WHERE n.id=? AND n.space_id=? AND n.owner_id=? AND n.name=? AND n.revision=?
         AND n.kind='file' AND n.deleted_at IS NULL AND n.current_blob_id=?
         AND b.r2_key=? AND b.size=? AND b.state IN ('committed','gc_candidate')
-        AND bs.bytes=b.size AND bs.r2_etag=?`,
+        AND bs.bytes=b.size AND bs.r2_etag=?
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`,
     [
       selected.nodeId,
       selected.spaceId,

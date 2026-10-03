@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Nextcloud-flare backup and billing status hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=nextcloud-flare-monitor.service
+
+[Install]
+WantedBy=timers.target

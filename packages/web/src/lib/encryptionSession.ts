@@ -1,10 +1,15 @@
+import type { EncryptionFileMarker } from "./api";
 import type { RecipientPublicKey, UnlockedRecipient } from "./cryptoEnvelope";
 import { EncryptionVaultStore } from "./encryptionVaultStore";
 
 export interface EncryptionSession {
   readonly owner: UnlockedRecipient;
+  /** Owner identity was matched to the current server key registry. */
+  readonly ownerRegistered: boolean;
   /** Null permits recovery reads; new writes require a pinned administrator key. */
   readonly adminRecipient: RecipientPublicKey | null;
+  /** Registry signer key paired with the administrator RSA recipient key. */
+  readonly adminSigner: RecipientPublicKey | null;
 }
 
 let active: { accountId: string; session: EncryptionSession } | null = null;
@@ -52,6 +57,9 @@ export async function encryptionConfigured(accountId: string): Promise<boolean> 
   return (await new EncryptionVaultStore().get(accountId)) !== null;
 }
 
-export function isEncryptedFile(name: string): boolean {
-  return /^[A-Za-z0-9_-]{22}\.ncf$/.test(name);
+export function isEncryptedFile(node: {
+  readonly name?: string;
+  readonly encryption?: EncryptionFileMarker | null;
+}): boolean {
+  return node.encryption !== undefined && node.encryption !== null;
 }

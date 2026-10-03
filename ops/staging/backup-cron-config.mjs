@@ -8,6 +8,7 @@ const templatePath = fileURLToPath(
 const generatedPath = fileURLToPath(new URL("./backup-cron.generated.jsonc", import.meta.url));
 const ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
+const EPOCH = /^[1-9][0-9]{0,14}$/;
 const keys = (value) =>
   Object.keys(value ?? {})
     .sort()
@@ -37,7 +38,7 @@ function fixedShape(config) {
     JSON.stringify(config.triggers.crons) === '["* * * * *"]' &&
     config.vars?.BACKUP_CRON_ENABLED === "true" &&
     config.vars.BACKUP_TARGET === "next-cloud-flare-staging" &&
-    config.vars.BACKUP_EPOCH === "2"
+    EPOCH.test(config.vars.BACKUP_EPOCH ?? "")
   );
 }
 
@@ -58,10 +59,13 @@ export function validateCronConfig(config) {
   return config;
 }
 
-export async function buildCronConfig({ accountId, id, operation, manifestSha256 }) {
+export async function buildCronConfig({ accountId, id, epoch, operation, manifestSha256 }) {
   if (
     !/^[a-f0-9]{32}$/.test(accountId ?? "") ||
     !ID.test(id ?? "") ||
+    !Number.isSafeInteger(epoch) ||
+    epoch < 1 ||
+    epoch > 999999999999999 ||
     !["begin", "complete", "receipt"].includes(operation) ||
     (operation === "complete" ? !SHA256.test(manifestSha256 ?? "") : manifestSha256 !== undefined)
   )
@@ -77,6 +81,7 @@ export async function buildCronConfig({ accountId, id, operation, manifestSha256
     throw new Error("staging_backup_cron_config_invalid");
   config.account_id = accountId;
   config.vars.BACKUP_ID = id;
+  config.vars.BACKUP_EPOCH = String(epoch);
   config.vars.BACKUP_OPERATION = operation;
   if (operation === "complete") config.vars.BACKUP_MANIFEST_SHA256 = manifestSha256;
   else delete config.vars.BACKUP_MANIFEST_SHA256;
@@ -90,7 +95,11 @@ export async function generateCronConfig(input, path = generatedPath) {
     if (!info.isFile() || (info.mode & 0o077) !== 0)
       throw new Error("staging_backup_cron_config_invalid");
     const previous = validateCronConfig(JSON.parse(await readFile(path, "utf8")));
-    if (previous.vars.BACKUP_ID !== input.id || previous.account_id !== input.accountId)
+    if (
+      previous.vars.BACKUP_ID !== input.id ||
+      previous.account_id !== input.accountId ||
+      previous.vars.BACKUP_EPOCH !== String(input.epoch)
+    )
       throw new Error("staging_backup_cron_identity_conflict");
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
@@ -111,6 +120,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     await generateCronConfig({
       accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
       id: process.env.NCF_BACKUP_ID,
+      epoch: Number(process.env.NCF_BACKUP_EPOCH),
       operation: process.argv[2],
       manifestSha256:
         process.argv[2] === "complete" ? process.env.NCF_BACKUP_MANIFEST_SHA256 : undefined,

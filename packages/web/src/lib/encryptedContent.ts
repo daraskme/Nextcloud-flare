@@ -1,4 +1,9 @@
 import {
+  adminReceiptPayload,
+  encryptionHeaderHash,
+  verifyEncryptionAttestation,
+} from "../../../shared/src/encryptionAttestation";
+import {
   type Account,
   type AdminFileUser,
   api,
@@ -11,8 +16,10 @@ import {
   revokeClientMedia,
 } from "./clientMediaRegistration";
 import {
+  decryptContainerPlainRange,
   type OpenedContainer,
-  openContainerHeader,
+  openAttestedLegacyContainerHeader,
+  openAuthenticatedContainerHeader,
   parseContainerHeader,
   readContainerHeaderLength,
 } from "./encryptedContainer";
@@ -20,6 +27,7 @@ import { getEncryptionSession, onEncryptionLock } from "./encryptionSession";
 
 export interface OpenEncryptedContent {
   readonly opened: OpenedContainer;
+  readonly adminReceiptRecorded: boolean;
   media(mode: "inline" | "download"): Promise<string>;
   close(): Promise<void>;
 }
@@ -32,7 +40,16 @@ export async function readEncryptedContent(
   signal?: AbortSignal,
 ): Promise<OpenEncryptedContent> {
   const keys = getEncryptionSession(account.id);
-  if (!keys || !node.currentBlobId || !Number.isSafeInteger(node.size) || node.size! < 12)
+  const marker = node.encryption;
+  const ownerId = owner?.id ?? node.ownerId ?? account.id;
+  if (
+    !keys ||
+    !marker ||
+    marker.ownerId !== ownerId ||
+    !node.currentBlobId ||
+    !Number.isSafeInteger(node.size) ||
+    node.size! < 12
+  )
     throw new Error("暗号化設定で復旧ファイルを読み込み、鍵を解除してください。");
   const controller = new AbortController();
   const signals = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
@@ -118,11 +135,160 @@ export async function readEncryptedContent(
     headerBytes.set(prefix);
     headerBytes.set(await range(12, length), 12);
     const header = parseContainerHeader(headerBytes);
-    if (header.totalBytes !== node.size || `${header.envelope.cryptoId}.ncf` !== node.name)
-      throw new Error("暗号化ファイルの名前またはサイズが一致しません。");
-    const opened = await openContainerHeader(header, keys.owner);
+    if (
+      header.totalBytes !== node.size ||
+      header.envelope.cryptoId !== marker.cryptoId ||
+      (await encryptionHeaderHash(new Uint8Array(headerBytes))) !== marker.headerSha256 ||
+      !marker.signerFingerprint ||
+      !marker.signerRsaFingerprint
+    )
+      throw new Error(
+        "暗号化ファイルの登録情報が一致しません。所有者または管理者に確認してください。",
+      );
+
+    const registeredOwnerKeys = (await api.encryptionKeys(ownerId)).keys.filter(
+      (entry) => entry.accountId === ownerId,
+    );
+    const ownerKey = registeredOwnerKeys[0];
+    if (
+      registeredOwnerKeys.length !== 1 ||
+      !ownerKey ||
+      ownerKey.recipient.fingerprint !== marker.signerRsaFingerprint ||
+      ownerKey.signer.fingerprint !== marker.signerFingerprint
+    )
+      throw new Error("所有者の現在の登録済み署名鍵を確認できません。暗号化ファイルを開けません。");
+    const registeredAdminKeys = (await api.encryptionAdminKeys()).keys.filter(
+      (entry) => entry.recipient.fingerprint === marker.requiredAdminFingerprint,
+    );
+    if (registeredAdminKeys.length !== 1)
+      throw new Error("現在の管理者公開鍵を確認できません。暗号化ファイルを開けません。");
+    let verifiedExistingReceipt = false;
+    if (marker.adminReceiptState === "verified") {
+      const receiptAdmin = registeredAdminKeys.find(
+        (entry) => entry.accountId === marker.adminAccountId,
+      );
+      if (
+        !receiptAdmin ||
+        !marker.adminReceiptSignature ||
+        !(await verifyEncryptionAttestation(
+          receiptAdmin.signer.spki,
+          marker.adminReceiptSignature,
+          adminReceiptPayload({
+            ownerId,
+            blobId: node.currentBlobId,
+            headerSha256: marker.headerSha256,
+            cryptoId: marker.cryptoId,
+            adminAccountId: receiptAdmin.accountId,
+            adminFingerprint: marker.requiredAdminFingerprint,
+          }),
+        ))
+      )
+        throw new Error("管理者による復号確認の署名を検証できません。");
+      verifiedExistingReceipt = true;
+    }
+
+    let opened: OpenedContainer;
+    if (marker.formatVersion === 2) {
+      opened = await openAuthenticatedContainerHeader(header, keys.owner, {
+        expectedOwnerId: ownerId,
+        expectedSize: node.size!,
+        ownerSigningSpki: ownerKey.signer.spki,
+        requiredOwnerFingerprint: marker.signerRsaFingerprint,
+        requiredAdminFingerprint: marker.requiredAdminFingerprint,
+        expectedHeaderSha256: marker.headerSha256,
+      });
+    } else {
+      if (
+        !marker.legacyAttestation ||
+        !marker.ownerSignature ||
+        marker.attestedNodeId !== node.id ||
+        marker.attestedRevision === undefined ||
+        marker.attestedRevision === null ||
+        marker.attestedRevision < 1
+      )
+        throw new Error("旧形式の送信者を確認できません。所有者による明示的な確認が必要です。");
+      opened = await openAttestedLegacyContainerHeader(header, keys.owner, {
+        attestation: {
+          ownerId,
+          nodeId: node.id,
+          blobId: node.currentBlobId,
+          revision: marker.attestedRevision,
+          headerSha256: marker.headerSha256,
+          cryptoId: marker.cryptoId,
+          requiredAdminFingerprint: marker.requiredAdminFingerprint,
+        },
+        ownerSignature: marker.ownerSignature,
+        ownerSigningSpki: ownerKey.signer.spki,
+        expectedOwnerId: ownerId,
+        expectedNodeId: node.id,
+        expectedBlobId: node.currentBlobId,
+        expectedSize: node.size!,
+        expectedOwnerFingerprint: marker.signerRsaFingerprint,
+        expectedAdminFingerprint: marker.requiredAdminFingerprint,
+      });
+    }
     signals.throwIfAborted();
     if (getEncryptionSession(account.id) !== keys) throw new Error("encryption_locked");
+    let adminReceiptRecorded = verifiedExistingReceipt;
+    if (
+      account.role === "app_admin" &&
+      keys.ownerRegistered &&
+      keys.owner.publicKey.fingerprint === marker.requiredAdminFingerprint &&
+      registeredAdminKeys.some(
+        (entry) =>
+          entry.accountId === account.id &&
+          entry.signer.fingerprint === keys.owner.signing.fingerprint &&
+          entry.signer.spki === keys.owner.signing.spki,
+      ) &&
+      keys.owner.signing.privateKey.algorithm.name === "Ed25519" &&
+      marker.adminReceiptState !== "verified"
+    ) {
+      const readCipherChunk = async (offset: number, length: number) => {
+        const output = new Uint8Array(length);
+        let received = 0;
+        while (received < length) {
+          const part = Math.min(4 * 1024 * 1024, length - received);
+          output.set(await range(offset + received, part), received);
+          received += part;
+        }
+        return output;
+      };
+      for await (const _chunk of decryptContainerPlainRange(
+        opened,
+        0,
+        Math.min(opened.envelope.plainSize, 4 * 1024 * 1024),
+        (chunk) => readCipherChunk(chunk.cipherOffset, chunk.cipherLength),
+      )) {
+        // Drop plaintext immediately; do not buffer it or expose it to UI state.
+      }
+      const payload = adminReceiptPayload({
+        ownerId,
+        blobId: node.currentBlobId,
+        headerSha256: marker.headerSha256,
+        cryptoId: marker.cryptoId,
+        adminAccountId: account.id,
+        adminFingerprint: keys.owner.publicKey.fingerprint,
+      });
+      const signature = new Uint8Array(
+        await crypto.subtle.sign("Ed25519", keys.owner.signing.privateKey, payload),
+      );
+      let binary = "";
+      for (const byte of signature) binary += String.fromCharCode(byte);
+      const signatureBase64 = btoa(binary)
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replace(/=+$/, "");
+      try {
+        await api.recordAdminEncryptionReceipt(
+          node.currentBlobId,
+          marker.headerSha256,
+          signatureBase64,
+        );
+        adminReceiptRecorded = true;
+      } catch {
+        adminReceiptRecorded = false;
+      }
+    }
     renewal = setInterval(() => {
       if (renewing || closed) return;
       renewing = true;
@@ -156,6 +322,7 @@ export async function readEncryptedContent(
     }, 180_000);
     return {
       opened,
+      adminReceiptRecorded,
       close,
       async media(mode) {
         signals.throwIfAborted();

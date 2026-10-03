@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "backupMaxAgeDays": 8,
+  "backupGraceHours": 12,
+  "billingMaxAgeHours": 96,
+  "jpyPerCurrencyUnit": {
+    "USD": 200
+  },
+  "baselineJpyByPeriod": {
+    "2026-09-19T00:00:00Z": 60
+  },
+  "baselineJpyDefault": 0,
+  "thresholdsJpy": [5000, 8000, 10000]
+}

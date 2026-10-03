@@ -37,6 +37,11 @@ export interface UploadTask {
 }
 const terminal = new Set(["failed", "aborting", "aborted", "expired"]);
 const tick = () => new Promise((resolve) => setTimeout(resolve, 1000));
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
 
 async function discardSpool(record: UploadRecord): Promise<void> {
   if (!record.encryptedSpool) return;
@@ -163,7 +168,7 @@ export class UploadManager {
         replacement.revision < 1)
     )
       throw new Error("上書き先を確認できません。一覧を更新して選び直してください。");
-    if (replacement && isEncryptedFile(replacement.name))
+    if (replacement && isEncryptedFile(replacement))
       throw new Error(
         "暗号化されたファイルの上書きはまだ利用できません。新しいファイルとして保存してください。",
       );
@@ -186,10 +191,17 @@ export class UploadManager {
         throw new Error(
           "管理者の公開鍵を固定してから暗号化アップロードしてください。既存ファイルの復号は利用できます。",
         );
+      if (!session.ownerRegistered || !session.adminSigner)
+        throw new Error(
+          "アカウントの署名鍵と管理者鍵をサーバーの登録情報で確認できません。設定画面で確認してください。",
+        );
       const recipients = [session.owner.publicKey];
       if (session.adminRecipient.fingerprint !== session.owner.publicKey.fingerprint)
         recipients.push(session.adminRecipient);
-      encrypted = await createEncryptedContainer(file, recipients, undefined, signal);
+      encrypted = await createEncryptedContainer(file, recipients, undefined, signal, {
+        ownerId: account.id,
+        signer: session.owner.signing,
+      });
       file = encrypted.file;
     }
     try {
@@ -203,6 +215,7 @@ export class UploadManager {
         name: replacement?.name ?? file.name,
         sourceName: file.name,
         ...(encrypted ? { encryptedSpool: encrypted.opaqueName } : {}),
+        ...(encrypted ? { encryptionHeader: base64Url(encrypted.headerBytes) } : {}),
         ...(replacement
           ? {
               target: {
@@ -275,6 +288,13 @@ export class UploadManager {
     }
     let file: File;
     try {
+      if (record.encryptedSpool && !record.encryptionHeader) {
+        this.#update(task, {
+          phase: "paused",
+          message: "暗号化の署名情報がありません。安全に再開できないため新規送信してください。",
+        });
+        return;
+      }
       file = record.encryptedSpool
         ? (await reopenOpfsContainerFile(record.encryptedSpool)).file
         : (selectedFile ??
@@ -330,6 +350,7 @@ export class UploadManager {
                   parentId: record.parentId,
                   name: record.name,
                   declared_size: record.size,
+                  ...(record.encryptionHeader ? { encryptionHeader: record.encryptionHeader } : {}),
                   ...(record.target
                     ? { targetId: record.target.id, targetRevision: record.target.revision }
                     : {}),

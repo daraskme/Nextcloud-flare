@@ -1763,6 +1763,69 @@ it("accepts and aborts an upload-only single file without exposing its name", as
   ).toBe(3);
 });
 
+it("allows authenticated cancellation of an old public upload after encryption becomes required", async () => {
+  const f = await uploadFixture();
+  const session = await uploadSession(f);
+  const created = await session.send(
+    `/api/v1/public/shares/${f.shareId}/uploads`,
+    "POST",
+    JSON.stringify({ mode: "single", name: "old.txt", declared_size: 3 }),
+  );
+  expect(created.status).toBe(201);
+  const receipt = (await created.json()) as { receiptId: string; statusUrl: string };
+  const capability = created.headers.get("Upload-Capability") ?? "";
+  (
+    session.app as typeof session.app & { CLIENT_ENCRYPTION_REQUIRED?: string }
+  ).CLIENT_ENCRYPTION_REQUIRED = "true";
+  expect(
+    (await session.send(receipt.statusUrl, "GET", undefined, { "Upload-Capability": capability }))
+      .status,
+  ).toBe(200);
+  expect(
+    (
+      await session.send(`${receipt.statusUrl}/content`, "PUT", "abc", {
+        "Content-Length": "3",
+        "Content-Type": "application/octet-stream",
+        "Upload-Capability": capability,
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await session.send(
+        `/api/v1/public/shares/${f.shareId}/uploads`,
+        "POST",
+        JSON.stringify({ mode: "single", name: "new.txt", declared_size: 1 }),
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (await session.send(receipt.statusUrl, "DELETE", "{}", { "Upload-Capability": "invalid" }))
+      .status,
+  ).toBe(403);
+  expect(
+    (
+      await session.send(receipt.statusUrl, "DELETE", "{}", {
+        "Upload-Capability": capability,
+        "X-CSRF-Token": "invalid",
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (await session.send(receipt.statusUrl, "DELETE", "{}", { "Upload-Capability": capability }))
+      .status,
+  ).toBe(200);
+  expect(
+    await env.DB.prepare(`SELECT u.state AS uploadState,r.state AS reservationState
+    FROM uploads u JOIN reservations r ON r.id=u.reservation_id WHERE u.id=?`)
+      .bind(receipt.receiptId)
+      .first(),
+  ).toMatchObject({
+    uploadState: "aborted",
+    reservationState: "released",
+  });
+});
+
 it("completes an upload-only single file without disclosing its stored name", async () => {
   const f = await uploadFixture();
   const session = await uploadSession(f);

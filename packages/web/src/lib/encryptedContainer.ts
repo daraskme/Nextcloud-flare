@@ -1,4 +1,19 @@
 import {
+  encryptionHeaderHash,
+  type LegacyAdoption,
+  legacyAdoptionPayload,
+  verifyEncryptionAttestation,
+} from "../../../shared/src/encryptionAttestation";
+import {
+  canonicalSignedHeader,
+  parseAndVerifySignedContainerHeader,
+  parseSignedContainerHeader,
+  type SignedContainerHeader,
+  type SignedContainerVerifyOptions,
+  serializeSignedContainerHeader,
+  signedHeaderPayload,
+} from "../../../shared/src/signedContainer";
+import {
   type CipherChunkRange,
   createFileCipher,
   decryptPlainRange,
@@ -38,6 +53,7 @@ export interface ContainerHeader {
   readonly encryptedMetadata: EncryptedMetadata;
   readonly headerEnd: number;
   readonly totalBytes: number;
+  readonly signed?: SignedContainerHeader;
 }
 export interface OpenedContainer extends ContainerHeader {
   readonly cipher: FileCipher;
@@ -136,7 +152,15 @@ function encryptedMetadata(value: unknown): EncryptedMetadata {
   return { iv: value.iv as string, data: value.data as string };
 }
 function prefixLength(bytes: Uint8Array): number {
-  if (bytes.length !== PREFIX_BYTES || MAGIC.some((byte, index) => bytes[index] !== byte))
+  if (
+    bytes.length !== PREFIX_BYTES ||
+    (MAGIC.some((byte, index) => bytes[index] !== byte) &&
+      !(
+        bytes.subarray(0, 6).every((byte, index) => byte === MAGIC[index]) &&
+        bytes[6] === 50 &&
+        bytes[7] === 0
+      ))
+  )
     invalid();
   const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(8, false);
   if (length < 1 || length > MAX_HEADER_BYTES) invalid();
@@ -155,6 +179,15 @@ export function parseContainerHeader(prefixAndHeader: Uint8Array): ContainerHead
     invalid();
   const length = prefixLength(prefixAndHeader.subarray(0, PREFIX_BYTES));
   if (prefixAndHeader.length !== PREFIX_BYTES + length) invalid();
+  if (prefixAndHeader[6] === 50) {
+    const signed = parseSignedContainerHeader(prefixAndHeader);
+    const envelope = parseFileEnvelope(signed.envelope);
+    const encrypted = encryptedMetadata(signed.encryptedMetadata);
+    const headerEnd = PREFIX_BYTES + length;
+    const totalBytes = headerEnd + envelope.cipherSize;
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_CIPHER_BYTES) invalid();
+    return { envelope, encryptedMetadata: encrypted, headerEnd, totalBytes, signed };
+  }
   const json = decoder.decode(prefixAndHeader.subarray(PREFIX_BYTES));
   let parsed: unknown;
   try {
@@ -204,9 +237,7 @@ export async function authenticateContainerMetadata(
   headerValue: ContainerHeader,
   cipher: FileCipher,
 ): Promise<EncryptedFileMetadata> {
-  const header = parseContainerHeader(
-    serializeContainerHeader(headerValue.envelope, headerValue.encryptedMetadata),
-  );
+  const header = parseContainerHeader(serializeContainerHeader(headerValue));
   if (header.headerEnd !== headerValue.headerEnd || header.totalBytes !== headerValue.totalBytes)
     invalid();
   if (JSON.stringify(header.envelope) !== JSON.stringify(parseFileEnvelope(cipher.envelope)))
@@ -238,10 +269,10 @@ export async function authenticateContainerMetadata(
 export async function openContainerHeader(
   headerValue: ContainerHeader,
   unlocked: UnlockedRecipient,
+  options: { readonly legacyUnsigned: true },
 ): Promise<OpenedContainer> {
-  const header = parseContainerHeader(
-    serializeContainerHeader(headerValue.envelope, headerValue.encryptedMetadata),
-  );
+  if (!options?.legacyUnsigned || headerValue.signed) invalid();
+  const header = parseContainerHeader(serializeContainerHeader(headerValue));
   if (header.headerEnd !== headerValue.headerEnd || header.totalBytes !== headerValue.totalBytes)
     invalid();
   const cipher = await unwrapFileCipher(header.envelope, unlocked);
@@ -249,16 +280,90 @@ export async function openContainerHeader(
   return { ...header, cipher, metadata: meta };
 }
 
-function serializeContainerHeader(
-  envelope: FileEnvelope,
-  encrypted: EncryptedMetadata,
-): Uint8Array<ArrayBuffer> {
-  const header = canonicalHeader(envelope, encrypted);
+/** Authenticated app path: caller supplies the trusted owner key and expected identity. */
+export async function openAuthenticatedContainerHeader(
+  headerValue: ContainerHeader,
+  unlocked: UnlockedRecipient,
+  options: SignedContainerVerifyOptions,
+): Promise<OpenedContainer> {
+  if (!headerValue.signed) invalid();
+  const bytes = serializeContainerHeader(headerValue);
+  await parseAndVerifySignedContainerHeader(bytes, options);
+  const header = parseContainerHeader(bytes);
+  if (header.headerEnd !== headerValue.headerEnd || header.totalBytes !== headerValue.totalBytes)
+    invalid();
+  const cipher = await unwrapFileCipher(header.envelope, unlocked);
+  const meta = await authenticateContainerMetadata(header, cipher);
+  return { ...header, cipher, metadata: meta };
+}
+
+export interface AttestedLegacyOpenOptions {
+  readonly attestation: LegacyAdoption;
+  readonly ownerSignature: string;
+  readonly ownerSigningSpki: string;
+  readonly expectedOwnerId: string;
+  readonly expectedNodeId: string;
+  readonly expectedBlobId: string;
+  readonly expectedSize: number;
+  readonly expectedOwnerFingerprint: string;
+  readonly expectedAdminFingerprint: string;
+}
+
+/** Existing v1 blobs can open only after a trusted owner approved this exact immutable header. */
+export async function openAttestedLegacyContainerHeader(
+  headerValue: ContainerHeader,
+  unlocked: UnlockedRecipient,
+  options: AttestedLegacyOpenOptions,
+): Promise<OpenedContainer> {
+  if (headerValue.signed) invalid();
+  const bytes = serializeContainerHeader(headerValue);
+  const header = parseContainerHeader(bytes);
+  const claim = options.attestation;
+  if (
+    header.headerEnd !== headerValue.headerEnd ||
+    header.totalBytes !== headerValue.totalBytes ||
+    header.totalBytes !== options.expectedSize ||
+    claim.ownerId !== options.expectedOwnerId ||
+    claim.nodeId !== options.expectedNodeId ||
+    claim.blobId !== options.expectedBlobId ||
+    claim.cryptoId !== header.envelope.cryptoId ||
+    claim.requiredAdminFingerprint !== options.expectedAdminFingerprint ||
+    claim.headerSha256 !== (await encryptionHeaderHash(bytes)) ||
+    !header.envelope.recipients.some(
+      (entry) => entry.fingerprint === options.expectedOwnerFingerprint,
+    ) ||
+    !header.envelope.recipients.some(
+      (entry) => entry.fingerprint === options.expectedAdminFingerprint,
+    ) ||
+    !(await verifyEncryptionAttestation(
+      options.ownerSigningSpki,
+      options.ownerSignature,
+      legacyAdoptionPayload(claim),
+    ))
+  )
+    invalid();
+  const cipher = await unwrapFileCipher(header.envelope, unlocked);
+  const meta = await authenticateContainerMetadata(header, cipher);
+  return { ...header, cipher, metadata: meta };
+}
+
+function serializeContainerHeader(value: ContainerHeader): Uint8Array<ArrayBuffer> {
+  if (value.signed) {
+    const checked = canonicalSignedHeader(value.signed);
+    if (
+      JSON.stringify(checked.envelope) !== JSON.stringify(parseFileEnvelope(value.envelope)) ||
+      JSON.stringify(checked.encryptedMetadata) !==
+        JSON.stringify(encryptedMetadata(value.encryptedMetadata))
+    )
+      invalid();
+    return serializeSignedContainerHeader(checked);
+  }
+  const header = canonicalHeader(value.envelope, value.encryptedMetadata);
   const bytes = new Uint8Array(PREFIX_BYTES + header.length);
   bytes.set(MAGIC);
   new DataView(bytes.buffer).setUint32(8, header.length, false);
   bytes.set(header, PREFIX_BYTES);
-  if (bytes.length + envelope.cipherSize > MAX_CIPHER_BYTES) invalid();
+  if (bytes.length + value.envelope.cipherSize > MAX_CIPHER_BYTES) invalid();
   return bytes;
 }
 
@@ -331,6 +436,9 @@ export async function createEncryptedContainer(
   recipients: readonly RecipientPublicKey[],
   writerFactory: ContainerWriterFactory = createOpfsContainerWriter,
   signal?: AbortSignal,
+  options?:
+    | { readonly ownerId: string; readonly signer: UnlockedRecipient["signing"] }
+    | { readonly legacyUnsigned: true },
 ): Promise<CompletedContainer> {
   signal?.throwIfAborted();
   const cipher = await createFileCipher(source.size, recipients);
@@ -348,7 +456,48 @@ export async function createEncryptedContainer(
       : "application/octet-stream",
     lastModified: source.lastModified,
   });
-  const headerBytes = serializeContainerHeader(cipher.envelope, encrypted);
+  let headerBytes: Uint8Array<ArrayBuffer>;
+  if (options && "legacyUnsigned" in options && options.legacyUnsigned) {
+    const legacy = canonicalHeader(cipher.envelope, encrypted);
+    headerBytes = new Uint8Array(PREFIX_BYTES + legacy.length);
+    headerBytes.set(MAGIC);
+    new DataView(headerBytes.buffer).setUint32(8, legacy.length, false);
+    headerBytes.set(legacy, PREFIX_BYTES);
+  } else if (options && "ownerId" in options) {
+    const { ownerId, signer } = options;
+    const unsigned = canonicalSignedHeader({
+      version: 2,
+      envelope: cipher.envelope,
+      encryptedMetadata: encrypted,
+      ownerId,
+      signer: { fingerprint: signer.fingerprint, spki: signer.spki },
+      signature: encodeBase64Url(new Uint8Array(64)),
+    });
+    if (
+      signer.privateKey.extractable ||
+      signer.privateKey.type !== "private" ||
+      signer.privateKey.algorithm.name !== "Ed25519"
+    )
+      invalid();
+    const signature = new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "Ed25519" },
+        signer.privateKey,
+        signedHeaderPayload(unsigned),
+      ),
+    );
+    headerBytes = serializeSignedContainerHeader({
+      ...unsigned,
+      signature: encodeBase64Url(signature),
+    });
+    await parseAndVerifySignedContainerHeader(headerBytes, {
+      expectedOwnerId: ownerId,
+      expectedSize: headerBytes.length + cipher.envelope.cipherSize,
+      ownerSigningSpki: signer.spki,
+      requiredOwnerFingerprint: cipher.envelope.recipients[0]!.fingerprint,
+      requiredAdminFingerprint: cipher.envelope.recipients.at(-1)!.fingerprint,
+    });
+  } else invalid();
   const header = parseContainerHeader(headerBytes);
   const produce = async (): Promise<CompletedContainer> => {
     const writer = await writerFactory(opaqueName);

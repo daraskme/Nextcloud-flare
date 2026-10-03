@@ -53,9 +53,11 @@ export async function servePrivateApp(
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Frame-Options", "DENY");
+  // Explicit legacy review uses local Blob URLs after bounded authenticated decryption.
+  // Permit those only as data/media; scripts and workers remain same-origin resources.
   headers.set(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: ${contentOrigin.origin}; media-src 'self' ${contentOrigin.origin}; connect-src 'self' ${contentOrigin.origin}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+    `default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: ${contentOrigin.origin} blob:; media-src 'self' ${contentOrigin.origin} blob:; connect-src 'self' ${contentOrigin.origin} blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
   );
   return new Response(request.method === "HEAD" ? null : resource.body, {
     status: resource.status,

@@ -11,6 +11,34 @@ export interface Account {
   contentOrigin: string;
   clientEncryptionRequired?: boolean;
 }
+export interface EncryptionRegisteredKey {
+  accountId: string;
+  recipient: { fingerprint: string; spki: string };
+  signer: { fingerprint: string; spki: string };
+  registeredAt: number;
+}
+export interface EncryptionFileMarker {
+  formatVersion: 1 | 2;
+  headerSha256: string;
+  cryptoId: string;
+  ownerId: string;
+  signerFingerprint: string;
+  signerRsaFingerprint: string;
+  requiredAdminFingerprint: string;
+  adminReceiptState: "pending" | "verified";
+  legacyAttestation: boolean;
+  ownerSignature: string | null;
+  attestedNodeId?: string | null;
+  attestedRevision?: number | null;
+  adminReceiptSignature?: string | null;
+  adminAccountId?: string | null;
+  adminVerifiedAt?: number | null;
+}
+export interface EncryptionKeyChallenge {
+  id: string;
+  ciphertext: string;
+  expiresAt: number;
+}
 export interface AdminFileUser {
   id: string;
   email: string;
@@ -41,6 +69,7 @@ export interface FileNode {
   mime: string | null;
   starred?: boolean;
   lastOpenedAt?: number | null;
+  encryption?: EncryptionFileMarker | null;
 }
 export interface UserNodePage {
   kind: "recent" | "starred";
@@ -490,6 +519,70 @@ export class ApiClient {
 
   me(signal?: AbortSignal) {
     return this.request<Account>("/api/v1/me", signal ? { signal } : {});
+  }
+  encryptionAdminKeys(signal?: AbortSignal) {
+    return this.request<{ keys: EncryptionRegisteredKey[] }>(
+      "/api/v1/encryption/admin-keys",
+      signal ? { signal } : {},
+    );
+  }
+  encryptionKeys(accountId: string, signal?: AbortSignal) {
+    return this.request<{ keys: EncryptionRegisteredKey[] }>(
+      `/api/v1/encryption/keys/${encodeURIComponent(accountId)}`,
+      signal ? { signal } : {},
+    );
+  }
+  createEncryptionKeyChallenge(
+    recipient: EncryptionRegisteredKey["recipient"],
+    signer: EncryptionRegisteredKey["signer"],
+    signal?: AbortSignal,
+  ) {
+    return this.json<EncryptionKeyChallenge>(
+      "/api/v1/encryption/keys/challenge",
+      "POST",
+      { recipient, signer },
+      undefined,
+      {},
+      signal,
+    );
+  }
+  registerEncryptionKey(
+    challengeId: string,
+    secret: string,
+    signature: string,
+    signal?: AbortSignal,
+  ) {
+    return this.json<EncryptionRegisteredKey>(
+      "/api/v1/encryption/keys/register",
+      "POST",
+      { challengeId, secret, signature },
+      undefined,
+      {},
+      signal,
+    );
+  }
+  adoptLegacyEncryptedNode(
+    nodeId: string,
+    input: {
+      blobId: string;
+      revision: number;
+      headerSha256: string;
+      ownerSignature: string;
+      requiredAdminFingerprint: string;
+    },
+  ) {
+    return this.json<{ encryption: EncryptionFileMarker }>(
+      `/api/v1/encryption/nodes/${encodeURIComponent(nodeId)}/adopt`,
+      "POST",
+      input,
+    );
+  }
+  recordAdminEncryptionReceipt(blobId: string, headerSha256: string, signature: string) {
+    return this.json<{ encryption: EncryptionFileMarker }>(
+      `/api/v1/encryption/blobs/${encodeURIComponent(blobId)}/admin-receipt`,
+      "POST",
+      { headerSha256, signature },
+    );
   }
   adminUsers(cursor?: string | null, signal?: AbortSignal) {
     return this.request<{ users: AdminFileUser[]; nextCursor: string | null }>(

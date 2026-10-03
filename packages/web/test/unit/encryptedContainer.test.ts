@@ -4,14 +4,25 @@ import {
   authenticateContainerMetadata,
   type ContainerWriterFactory,
   cleanupStaleOpfsContainers,
-  createEncryptedContainer,
+  createEncryptedContainer as createEncryptedContainerCore,
   decryptContainerPlainRange,
-  openContainerHeader,
+  openContainerHeader as openContainerHeaderCore,
   parseContainerHeader,
   planContainerPlainRange,
   readContainerHeader,
   readContainerHeaderLength,
 } from "../../src/lib/encryptedContainer";
+
+const createEncryptedContainer: typeof createEncryptedContainerCore = (
+  source,
+  recipients,
+  writer,
+  signal,
+) => createEncryptedContainerCore(source, recipients, writer, signal, { legacyUnsigned: true });
+const openContainerHeader = (
+  header: Parameters<typeof openContainerHeaderCore>[0],
+  unlocked: Parameters<typeof openContainerHeaderCore>[1],
+) => openContainerHeaderCore(header, unlocked, { legacyUnsigned: true });
 
 function memoryWriter(): {
   factory: ContainerWriterFactory;

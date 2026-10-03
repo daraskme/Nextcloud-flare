@@ -125,6 +125,7 @@ posixOnly(
     await assert.rejects(auditRestoredBlobBytes(options), { code: "EEXIST" });
     assert.equal((await readdir(join(directory, "objects"))).length, 2);
   },
+  30_000,
 );
 
 posixOnly(
@@ -169,6 +170,7 @@ posixOnly(
     );
     assert.equal(limited.calls.length, 0);
   },
+  30_000,
 );
 
 posixOnly(

@@ -85,7 +85,8 @@ function sourceFence(source: MediaSource): SqlStatement {
       WHERE n.id=? AND n.space_id=? AND n.owner_id=? AND n.kind='file'
         AND n.deleted_at IS NULL AND n.current_blob_id=?
         AND b.owner_id=? AND b.r2_key=? AND b.size=? AND b.state IN ('committed','gc_candidate')
-        AND s.bytes=? AND s.r2_etag=? AND s.removed_at IS NULL`,
+        AND s.bytes=? AND s.r2_etag=? AND s.removed_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`,
     [
       source.node_id,
       source.space_id,
@@ -122,7 +123,8 @@ async function source(db: D1Database, nodeId: string): Promise<MediaSource | nul
       JOIN blob_storage s ON s.blob_id=b.id
       WHERE n.id=? AND n.kind='file' AND n.deleted_at IS NULL
         AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
-        AND b.owner_id=n.owner_id AND s.bytes=b.size`)
+        AND b.owner_id=n.owner_id AND s.bytes=b.size
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`)
     .bind(nodeId)
     .first<MediaSource>();
 }

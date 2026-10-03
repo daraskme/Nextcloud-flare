@@ -4,6 +4,9 @@
 
 ## 最新checkpoint
 
+- **進行中・未配備**: `fc1ba1b` の敵対的レビューを受け、署名付き `NCFENC2`、公開鍵所持証明と現在の管理者ロールの照合、検証済み blob マーカー、サーバーでの暗号化必須ポリシー、既存 v1 の署名追加と管理者復号確認を実装中。0054 は新規3 table と upload header hash 列（計86通常table）。既存の復旧JSONを維持する。検証状況は [レビュー対応](reviews/encryption-adversarial-20261004.md)。既存3件は書き換えず、端末内で以前のplaintext SHAと全復号結果を照合してから署名を追加する予定。`.wrangler/encryption-sign-admin.mjs` はその未実行の保護済みローカル補助。新形式を実環境で確認済みと扱わない。
+- **並行準備・未設置**: ユーザー指定の週1回、`/run/media/hiroshi/ボリューム/Nextcloudflare-backups` への暗号アーカイブ保存と、復元検証・障害/費用通知を準備中。外付けNTFS UUIDは `F0D0B27ED0B24B1C`。ホスト側は元から書き込み可能であり、初回のread-only表示は実行sandboxの制限だった。フォルダー作成・書き込み/読み戻し/削除とatomic hard-link publicationの試験は成功、remountは実施していない。日曜03:30 JSTの週次timerを予定し、サービスの実設置・有効化はまだ。外付けには暗号文だけを置き、SQL・blob複写の作業領域と秘密情報は内蔵POSIX保護領域。`ops/backup` / `ops/monitoring` / `ops/staging/weekly-backup-*` は作業中。復旧JSONは定期処理へ渡さず管理者公開鍵だけで暗号化する。通知先の返答は未受領、現端末の通知と内部履歴を既定とする予定。
+
 - stagingバックアップをR2へ発行し、再取得した世代から83通常table・388行を新規SQLiteへ復元、原本6 object・64,953,590 bytesの別ディレクトリ複写照合まで成功。maintenance/gc_paused/backup_frozenは0、一時backup bridgeは削除済み、BACKUP_OPERATOR_ENABLED=false。live D1への上書き復元・元BLOBS喪失時の復旧・恒久スケジュール設置は未完了。
 - 動画のopen-ended Range予約を4MiBへ制限し、実stagingで8回連続シークを確認した。再現していた429は出ていない。ネットワークエラーとcodecエラーを分け、明示再試行を追加。詳細と検証数は進捗表を参照。
 - service principal限定のautomation GET 2経路を実装。Accessの拒否policyは維持、運用principalの登録は未完了。

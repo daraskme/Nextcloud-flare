@@ -152,6 +152,11 @@ export async function handleDavHttp(
     url.hash
   )
     return problem(404, "not_found");
+  if (
+    env.CLIENT_ENCRYPTION_REQUIRED === "true" &&
+    (request.method === "PUT" || request.method === "LOCK")
+  )
+    return problem(403, "forbidden");
   let path;
   try {
     path = parseDavPath(url.pathname);
@@ -478,6 +483,8 @@ export async function handleDavHttp(
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "dav_transfer_too_large")
         return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "encrypted_operation_forbidden")
+        return problem(409, "conflict");
       if (error instanceof Error && error.message === "dav_precondition_failed")
         return problem(412, "precondition_failed");
       if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
@@ -615,6 +622,8 @@ export async function handleDavHttp(
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "dav_transfer_too_large")
         return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "encrypted_operation_forbidden")
+        return problem(409, "conflict");
       if (error instanceof Error && error.message === "dav_precondition_failed")
         return problem(412, "precondition_failed");
       if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");

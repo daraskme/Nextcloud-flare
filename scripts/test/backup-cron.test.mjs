@@ -132,7 +132,7 @@ test("invalid and uncertain responses fail closed without a release or cancel ca
   await assert.rejects(advanceBackup(env("complete", control)), {
     message: "staging_backup_cron_unconfigured",
   });
-  await assert.rejects(advanceBackup({ ...env("begin", control), BACKUP_EPOCH: "3" }), {
+  await assert.rejects(advanceBackup({ ...env("begin", control), BACKUP_EPOCH: "0" }), {
     message: "staging_backup_cron_unconfigured",
   });
 });
@@ -160,8 +160,21 @@ test("receipt is read-only and logs state without identity or manifest", async (
   assert.equal(JSON.stringify(logs).includes(hash), false);
 });
 
+test("bridge uses the pinned generation epoch after a control epoch change", async () => {
+  const control = {
+    async begin(epoch, requestedId) {
+      assert.deepEqual([epoch, requestedId], [3, id]);
+      return { id, epoch: 3, state: "frozen" };
+    },
+  };
+  assert.deepEqual(await advanceBackup({ ...env("begin", control), BACKUP_EPOCH: "3" }), {
+    operation: "begin",
+    stage: "frozen",
+  });
+});
+
 test("config has only the private named service binding and pins one operation", async () => {
-  const begin = await buildCronConfig({ accountId, id, operation: "begin" });
+  const begin = await buildCronConfig({ accountId, id, epoch: 2, operation: "begin" });
   assert.equal(begin.services.length, 1);
   assert.equal(begin.services[0].entrypoint, "BackupOperator");
   assert.equal(begin.workers_dev, false);
@@ -173,10 +186,12 @@ test("config has only the private named service binding and pins one operation",
   const complete = await buildCronConfig({
     accountId,
     id,
+    epoch: 3,
     operation: "complete",
     manifestSha256: hash,
   });
   assert.equal(complete.vars.BACKUP_MANIFEST_SHA256, hash);
+  assert.equal(complete.vars.BACKUP_EPOCH, "3");
   assert.throws(() => validateCronConfig({ ...complete, routes: ["*"] }), {
     message: "staging_backup_cron_config_invalid",
   });
@@ -185,7 +200,7 @@ test("config has only the private named service binding and pins one operation",
       validateCronConfig({ ...complete, vars: { ...complete.vars, BACKUP_OPERATION: "begin" } }),
     { message: "staging_backup_cron_config_invalid" },
   );
-  await assert.rejects(buildCronConfig({ accountId, id, operation: "complete" }), {
+  await assert.rejects(buildCronConfig({ accountId, id, epoch: 2, operation: "complete" }), {
     message: "staging_backup_cron_config_invalid",
   });
 });
@@ -194,14 +209,20 @@ posixOnly("generated config remains private and refuses an identity switch", asy
   const root = await mkdtemp(join(tmpdir(), "ncf-backup-cron-test-"));
   roots.push(root);
   const path = join(root, "generated.jsonc");
-  await generateCronConfig({ accountId, id, operation: "begin" }, path);
+  await generateCronConfig({ accountId, id, epoch: 2, operation: "begin" }, path);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
-  await generateCronConfig({ accountId, id, operation: "complete", manifestSha256: hash }, path);
+  await generateCronConfig(
+    { accountId, id, epoch: 2, operation: "complete", manifestSha256: hash },
+    path,
+  );
   const config = validateCronConfig(JSON.parse(await readFile(path, "utf8")));
   assert.equal(config.vars.BACKUP_OPERATION, "complete");
+  await assert.rejects(generateCronConfig({ accountId, id, epoch: 3, operation: "begin" }, path), {
+    message: "staging_backup_cron_identity_conflict",
+  });
   await assert.rejects(
     generateCronConfig(
-      { accountId, id: "11111111-2222-4333-8444-555555555555", operation: "begin" },
+      { accountId, id: "11111111-2222-4333-8444-555555555555", epoch: 2, operation: "begin" },
       path,
     ),
     { message: "staging_backup_cron_identity_conflict" },
@@ -215,11 +236,14 @@ windowsOnly(
     const root = await mkdtemp(join(tmpdir(), "ncf-backup-cron-test-"));
     roots.push(root);
     const path = join(root, "generated.jsonc");
-    await generateCronConfig({ accountId, id, operation: "begin" }, path);
+    await generateCronConfig({ accountId, id, epoch: 2, operation: "begin" }, path);
     assert.notEqual((await stat(path)).mode & 0o077, 0);
-    await assert.rejects(generateCronConfig({ accountId, id, operation: "begin" }, path), {
-      message: "staging_backup_cron_config_invalid",
-    });
+    await assert.rejects(
+      generateCronConfig({ accountId, id, epoch: 2, operation: "begin" }, path),
+      {
+        message: "staging_backup_cron_config_invalid",
+      },
+    );
   },
 );
 

@@ -17,6 +17,7 @@ import {
 } from "../systemMutation";
 import { accessUpload, type UploadRow, uploadFence, uploadRow } from "./access";
 import { publishMultipartUpload } from "./complete";
+import { requireEncryptedUpload } from "./encryptionPolicy";
 import { multipartHeadCharge, multipartPartsProof } from "./multipartProof";
 
 /** R2 requires an array of etags. Build only that transient array from bounded journal pages. */
@@ -168,6 +169,7 @@ export async function completeMultipartUpload(
     "receipt",
   );
   if (row.mode !== "multipart") throw new Error("invalid_upload_complete");
+  requireEncryptedUpload(env.CLIENT_ENCRYPTION_REQUIRED, row.encryption_header_sha256);
   const request = { uploadId: id, principal, capability };
   const stub = env.UPLOADS.get(env.UPLOADS.idFromName(id));
   const publish = async () => {
@@ -200,6 +202,7 @@ export async function completeMultipartUpload(
     await stub.beginComplete(request);
     let authorized;
     ({ row, authorized } = await accessUpload(env.DB, principal, id, capability, capabilities));
+    requireEncryptedUpload(env.CLIENT_ENCRYPTION_REQUIRED, row.encryption_header_sha256);
     if (row.state !== "completing") throw new Error("upload_not_completable");
     if (!row.multipart_complete_attempt) {
       const parts = await completedManifest(env, row, principal, capability);

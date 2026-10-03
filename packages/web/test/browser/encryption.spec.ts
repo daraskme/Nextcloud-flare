@@ -1,8 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { unlockRecipientVault } from "../../src/lib/cryptoEnvelope";
+import {
+  type ContainerWriterFactory,
+  createEncryptedContainer,
+} from "../../src/lib/encryptedContainer";
 import { processTestMedia, rootFile, writeTestBytes } from "./uploadHelpers";
 
 const fixture = (name: string) =>
@@ -66,7 +71,17 @@ async function readExternalMedia(): Promise<ExternalMedia[]> {
 
 test.use({ actionTimeout: 15_000 });
 
-type EncryptedNode = { id: string; name: string; currentBlobId: string; size: number };
+type EncryptedNode = {
+  id: string;
+  name: string;
+  currentBlobId: string;
+  size: number;
+  encryption: { formatVersion: 1 | 2; adminReceiptState: "pending" | "verified" } | null;
+};
+
+// The isolated server keeps one immutable identity per fixture account across tests.
+// Preserve only synthetic recovery material in this worker; never replace its registered key.
+const fixtureRecovery = new Map<string, Buffer>();
 
 async function setIdentity(page: Page, member: boolean) {
   await page.route("https://app.ncf.test:8879/**", (route) => {
@@ -83,6 +98,16 @@ async function setIdentity(page: Page, member: boolean) {
 }
 
 async function saveRecoveryFile(page: Page, directory: string): Promise<string> {
+  const accountId = await page.evaluate(
+    async () => (await (await fetch("/api/v1/me")).json()).id as string,
+  );
+  const saved = fixtureRecovery.get(accountId);
+  if (saved) {
+    const path = resolve(directory, `recovery-${randomUUID()}.json`);
+    await writeFile(path, saved, { mode: 0o600 });
+    await unlockRecoveryFile(page, path);
+    return path;
+  }
   await expect(
     page.getByText(
       "復旧ファイル自体はパスワード保護されていません。秘密鍵として扱い、このサービスにはアップロードしないでください。",
@@ -94,6 +119,7 @@ async function saveRecoveryFile(page: Page, directory: string): Promise<string> 
   const download = await recoveryDownload;
   const path = resolve(directory, `recovery-${randomUUID()}.json`);
   await download.saveAs(path);
+  fixtureRecovery.set(accountId, await readFile(path));
   await page
     .locator('input[type="file"][accept="application/json,.json"]')
     .first()
@@ -120,8 +146,8 @@ async function encryptNodes(page: Page): Promise<EncryptedNode[]> {
     const result = await fetch(`/api/v1/nodes/${me.rootNodeId}/children`).then((response) =>
       response.json(),
     );
-    return result.children.filter((node: EncryptedNode) =>
-      /^[A-Za-z0-9_-]{22}\.ncf$/.test(node.name),
+    return result.children.filter(
+      (node: EncryptedNode) => node.encryption !== null && node.encryption !== undefined,
     );
   });
 }
@@ -327,7 +353,7 @@ async function encryptedHeader(page: Page, node: EncryptedNode) {
   const prefix = await contentRange(0, 11);
   expect(prefix.status).toBe(206);
   expect(prefix.range).toMatch(/^bytes 0-11\/\d+$/);
-  expect(prefix.bytes.subarray(0, 8)).toEqual(Buffer.from([78, 67, 70, 69, 78, 67, 49, 0]));
+  expect(prefix.bytes.subarray(0, 8)).toEqual(Buffer.from([78, 67, 70, 69, 78, 67, 50, 0]));
   const headerLength = prefix.bytes.readUInt32BE(8);
   expect(headerLength).toBeGreaterThan(0);
   expect(headerLength).toBeLessThanOrEqual(16 * 1024);
@@ -515,7 +541,22 @@ test("encrypted files are opaque at rest and decrypt only while the member key i
 
     await setIdentity(page, true);
     await page.goto("/encryption");
-    await saveRecoveryFile(page, directory);
+    const memberRecovery = await saveRecoveryFile(page, directory);
+    const adminPublic = JSON.parse(await readFile(publicKeyPath, "utf8"));
+    const memberPrivate = JSON.parse(await readFile(memberRecovery, "utf8"));
+    const forgedAdminPath = resolve(directory, "forged-admin-public-key.json");
+    await writeFile(
+      forgedAdminPath,
+      JSON.stringify({ ...adminPublic, recipient: memberPrivate.recipientVault.recipient }),
+      { mode: 0o600 },
+    );
+    const forgedChooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "管理者公開鍵ファイルを確認", exact: true }).click();
+    await (await forgedChooser).setFiles(forgedAdminPath);
+    await expect(
+      page.getByRole("alert").filter({ hasText: "管理者公開鍵ファイルを検証できませんでした" }),
+    ).toBeVisible();
+    await expect(page.getByRole("group", { name: "未固定の管理者公開鍵候補" })).toHaveCount(0);
     const keyChooser = page.waitForEvent("filechooser");
     await page.getByRole("button", { name: "管理者公開鍵ファイルを確認", exact: true }).click();
     await (await keyChooser).setFiles(publicKeyPath);
@@ -569,7 +610,7 @@ test("encrypted files are opaque at rest and decrypt only while the member key i
       expect(stored.status).toBe(200);
       expect(stored.bytes.byteLength).toBe(node.size);
       expect(stored.bytes.byteLength).toBeGreaterThan(original.byteLength);
-      expect(stored.bytes.subarray(0, 8)).toEqual(Buffer.from([78, 67, 70, 69, 78, 67, 49, 0]));
+      expect(stored.bytes.subarray(0, 8)).toEqual(Buffer.from([78, 67, 70, 69, 78, 67, 50, 0]));
       expect(stored.bytes.equals(original)).toBe(false);
 
       const headerLength = stored.bytes.readUInt32BE(8);
@@ -827,6 +868,169 @@ test("external private media decrypts and seeks in the browser", async ({ page }
       }
       await preview.getByRole("button", { name: "閉じる", exact: true }).click();
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy unsigned container requires owner review and explicit adoption", async ({ page }) => {
+  test.setTimeout(180_000);
+  const directory = await mkdtemp(resolve(tmpdir(), "ncf-legacy-adoption-"));
+  const plainName = `legacy-review-${randomUUID()}.avif`;
+  const original = await readFile(fixture("avif-still-16x12.avif"));
+  try {
+    await setIdentity(page, false);
+    await page.goto("/encryption");
+    const adminRecoveryPath = await saveRecoveryFile(page, directory);
+    const adminId = await page.evaluate(async () =>
+      fetch("/api/v1/me").then(async (response) => ((await response.json()) as { id: string }).id),
+    );
+    const adminRecovery = JSON.parse(await readFile(adminRecoveryPath, "utf8")) as {
+      recipientVault: Parameters<typeof unlockRecipientVault>[0];
+      recoveryKey: string;
+    };
+    const admin = await unlockRecipientVault(
+      adminRecovery.recipientVault,
+      adminRecovery.recoveryKey,
+      adminId,
+    );
+    const publicKeyDownload = page.waitForEvent("download");
+    await page.getByRole("button", { name: "公開鍵を保存", exact: true }).click();
+    const publicKeyPath = resolve(directory, "legacy-admin-public-key.json");
+    await (await publicKeyDownload).saveAs(publicKeyPath);
+
+    await setIdentity(page, true);
+    await page.goto("/encryption");
+    const memberRecoveryPath = await saveRecoveryFile(page, directory);
+    const memberId = await page.evaluate(async () =>
+      fetch("/api/v1/me").then(async (response) => ((await response.json()) as { id: string }).id),
+    );
+    const memberRecovery = JSON.parse(await readFile(memberRecoveryPath, "utf8")) as {
+      recipientVault: Parameters<typeof unlockRecipientVault>[0];
+      recoveryKey: string;
+    };
+    const member = await unlockRecipientVault(
+      memberRecovery.recipientVault,
+      memberRecovery.recoveryKey,
+      memberId,
+    );
+    const keyChooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "管理者公開鍵ファイルを確認", exact: true }).click();
+    await (await keyChooser).setFiles(publicKeyPath);
+    await expect(page.getByRole("group", { name: "未固定の管理者公開鍵候補" })).toBeVisible();
+    await page.getByRole("button", { name: "この公開鍵を固定", exact: true }).click();
+
+    const writer: ContainerWriterFactory = async (name) => {
+      const parts: Uint8Array<ArrayBuffer>[] = [];
+      return {
+        async write(bytes) {
+          parts.push(new Uint8Array(bytes));
+        },
+        async close() {
+          return new File(parts, name);
+        },
+        async discard() {
+          parts.length = 0;
+        },
+      };
+    };
+    const legacy = await createEncryptedContainer(
+      new File([new Uint8Array(original)], plainName, { type: "image/avif" }),
+      [member.publicKey, admin.publicKey],
+      writer,
+      undefined,
+      { legacyUnsigned: true },
+    );
+    const uploaded = await writeTestBytes(
+      page,
+      legacy.opaqueName,
+      new Uint8Array(await legacy.file.arrayBuffer()),
+    );
+    expect(uploaded.encryption).toBeNull();
+    expect(uploaded.name).toBe(legacy.opaqueName);
+    await page.getByRole("button", { name: "一覧を更新", exact: true }).click();
+    const row = page.locator(".encryption-list li").filter({ hasText: legacy.opaqueName });
+    await expect(row.getByText("未暗号化")).toBeVisible();
+    await row.getByRole("button", { name: "旧形式を確認", exact: true }).click();
+
+    const review = page.getByRole("dialog", { name: "旧形式ファイルの確認" });
+    await expect(
+      review.getByRole("heading", { name: `旧形式の内容確認: ${plainName}` }),
+    ).toBeVisible();
+    await expect(review.getByText(/過去の送信者を証明できません/)).toBeVisible();
+    const image = review.locator("img");
+    await expect(image).toBeVisible();
+    await expect
+      .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+      .toBe(16);
+    await expect
+      .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalHeight))
+      .toBe(12);
+    const previewUrl = await image.getAttribute("src");
+    if (!previewUrl) throw new Error("legacy_review_preview_missing");
+    const reviewHash = await page.evaluate(async (url) => {
+      const bytes = await fetch(url).then((response) => response.arrayBuffer());
+      return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+    }, previewUrl);
+    expect(reviewHash).toBe(createHash("sha256").update(original).digest("hex"));
+
+    const adopt = review.getByRole("button", { name: "この旧形式に所有者署名を登録", exact: true });
+    await expect(adopt).toBeDisabled();
+    await review
+      .getByLabel("この内容を確認しました。過去の送信者は証明できないことを理解しています。")
+      .check();
+    await expect(adopt).toBeEnabled();
+    await adopt.click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "過去の送信者は証明されません" }),
+    ).toBeVisible();
+    await expect
+      .poll(async () => {
+        const current = await rootFile(page, legacy.opaqueName);
+        return current.encryption?.formatVersion ?? null;
+      })
+      .toBe(1);
+
+    const adoptedRow = page
+      .locator(".encryption-list li")
+      .filter({ hasText: `暗号化ファイル · ${legacy.opaqueName.slice(0, 8)}` });
+    await adoptedRow.getByRole("button", { name: "復号して開く", exact: true }).click();
+    const normalPreview = page.getByRole("region", { name: "復号プレビュー" });
+    await expect(
+      normalPreview.getByRole("heading", { name: plainName, exact: true }),
+    ).toBeVisible();
+    await expectDecryptedBytes(page, original, {
+      imageDimensions: { width: 16, height: 12 },
+      verifyPlayback: false,
+    });
+
+    await setIdentity(page, false);
+    await page.goto("/encryption");
+    await saveRecoveryFile(page, directory);
+    const users = await page.evaluate(async () =>
+      fetch("/api/v1/admin/users").then((response) => response.json()),
+    );
+    const memberUser = users.users.find((user: { id: string }) => user.id === memberId);
+    expect(memberUser?.id).toBe(memberId);
+    await page.getByLabel("暗号化ファイルの所有者").selectOption({ label: memberUser.email });
+    const adminRow = page
+      .locator(".encryption-list li")
+      .filter({ hasText: `暗号化ファイル · ${legacy.opaqueName.slice(0, 8)}` });
+    await adminRow.getByRole("button", { name: "復号して開く", exact: true }).click();
+    const adminPreview = page.getByRole("region", { name: "復号プレビュー" });
+    await expect(adminPreview.getByRole("heading", { name: plainName, exact: true })).toBeVisible();
+    const verified = await page.evaluate(
+      async ({ memberId, nodeId }) => {
+        const response = await fetch(`/api/v1/admin/users/${memberId}/nodes/${nodeId}`);
+        if (!response.ok) return false;
+        const body = await response.json();
+        return body.encryption?.adminReceiptState === "verified";
+      },
+      { memberId, nodeId: uploaded.id },
+    );
+    expect(verified).toBe(true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -8,6 +8,7 @@ import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/pri
 import type { Env } from "../env";
 import { digestJson } from "../jobs/operations";
 import { acquireAccountMutation, commitAccountMutation } from "./accountMutation";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DAY_MS = 86_400_000;
@@ -554,6 +555,7 @@ export async function createInternalShare(
     root.node.kind !== "folder"
   )
     throw new Error("share_root_not_found");
+  await assertNoEncryptedSubtree(env.DB, root.node.id, root.node.space_id);
   if (source) {
     const withinSource = await primary(env.DB)
       .prepare(`WITH RECURSIVE ancestry(id,parent_id,depth,path) AS (
@@ -697,6 +699,7 @@ export async function createInternalShare(
   await commitAccountMutation(env.DB, admission, ownerId, [
     ...currentAccess(session),
     authorizationAssertion(root),
+    unencryptedSubtreeAssertion(root.node.id, root.node.space_id),
     ...delegationStatements,
     recipient
       ? assertExists(
@@ -962,6 +965,7 @@ export async function updateInternalShare(
     throw new Error("share_not_found");
   }
   const admission = await acquireAccountMutation(env, row.ownerId, session.epoch, "share.update");
+  await assertNoEncryptedSubtree(env.DB, row.rootNodeId, row.spaceId);
   const clock = "strftime('%s','now')*1000";
   const now = Date.now();
   const policyExpiresAt =
@@ -1077,6 +1081,7 @@ export async function updateInternalShare(
   await commitAccountMutation(env.DB, admission, row.ownerId, [
     ...currentAccess(session),
     authorizationAssertion(root),
+    unencryptedSubtreeAssertion(row.rootNodeId, row.spaceId),
     assertExists(
       `SELECT 1 FROM current_internal_shares current
         JOIN shares sh ON sh.id=current.share_id
@@ -1319,6 +1324,7 @@ export async function createShare(
     throw new Error("share_root_not_found");
   if (kind === "upload_only" && !["root", "folder"].includes(root.node.kind))
     throw new Error("share_root_not_found");
+  await assertNoEncryptedSubtree(env.DB, root.node.id, root.node.space_id);
   const active = await primary(env.DB)
     .prepare(`SELECT COUNT(*) AS count FROM shares WHERE owner_id=? AND kind IN ('link','upload_only')
       AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000)`)
@@ -1344,6 +1350,7 @@ export async function createShare(
   await commitAccountMutation(env.DB, admission, session.user_id, [
     ...currentAccess(session),
     authorizationAssertion(root),
+    unencryptedSubtreeAssertion(root.node.id, root.node.space_id),
     assertExists(
       `SELECT 1 WHERE (SELECT COUNT(*) FROM shares WHERE owner_id=? AND kind IN ('link','upload_only')
         AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>strftime('%s','now')*1000))<?`,

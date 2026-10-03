@@ -74,9 +74,13 @@ describe("client-decrypted media virtual responses", () => {
       source,
       [owner.unlocked.publicKey],
       memoryWriter,
+      undefined,
+      { legacyUnsigned: true },
     );
     bytes = new Uint8Array(await created.file.arrayBuffer());
-    const opened = await openContainerHeader(created.header, owner.unlocked);
+    const opened = await openContainerHeader(created.header, owner.unlocked, {
+      legacyUnsigned: true,
+    });
     registration = {
       headerBytes: bytes.slice(0, created.header.headerEnd),
       cipher: opened.cipher,

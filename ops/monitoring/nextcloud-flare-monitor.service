@@ -1,0 +1,19 @@
+[Unit]
+Description=Nextcloud-flare backup, billing, and public HTTP reachability monitor
+Wants=network-online.target
+After=network-online.target graphical-session.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ドキュメント/Nextcloud-flare
+Environment=NCF_MONITOR_CONFIG=%h/.config/nextcloud-flare/monitor.json
+Environment=NCF_BACKUP_STATE_ROOT=%h/.local/state/nextcloud-flare-backup
+Environment=NCF_MONITOR_STATE_DIR=%h/.local/state/nextcloud-flare-monitor
+EnvironmentFile=-%h/.config/nextcloud-flare/monitor.env
+ExecStart=/usr/bin/env node %h/ドキュメント/Nextcloud-flare/ops/monitoring/run-monitor.mjs --execute
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nextcloud-flare-monitor

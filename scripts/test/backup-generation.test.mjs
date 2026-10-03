@@ -42,6 +42,29 @@ beforeEach(async () => {
   id = randomUUID();
   const fixture = foundationFixture("backup", Date.now() - 1000);
   for (const s of fixture.statements) db.prepare(s.sql).run(...(s.values ?? []));
+  // Encryption identities and attestations must survive an offline snapshot/restore.
+  // These are opaque synthetic database values; cryptographic validation is covered separately.
+  db.prepare(`INSERT INTO encryption_keys(account_id,rsa_fingerprint,rsa_spki,signing_fingerprint,signing_spki,registered_at)
+    VALUES(?,?,?,?,?,1)`).run(
+    fixture.ids.user,
+    "r".repeat(43),
+    "r".repeat(550),
+    "s".repeat(43),
+    "s".repeat(59),
+  );
+  db.prepare(`INSERT INTO blob_encryption(blob_id,owner_id,header_sha256,signer_rsa_fingerprint,signer_signing_fingerprint,
+    required_admin_fingerprint,crypto_id,format_version,owner_signature,attested_node_id,attested_revision,admin_receipt_state,verified_at)
+    VALUES(?,?,?,?,?,?,?,1,?,?,1,'pending',1)`).run(
+    fixture.ids.blob,
+    fixture.ids.user,
+    "a".repeat(64),
+    "r".repeat(43),
+    "s".repeat(43),
+    "r".repeat(43),
+    "c".repeat(22),
+    "p".repeat(86),
+    fixture.ids.file,
+  );
   db.prepare(
     "INSERT INTO access_invites(id,access_iss,email,approved_by,created_at,expires_at) VALUES(?,'https://access.invalid','invited@example.invalid',?,?,?)",
   ).run(randomUUID(), fixture.ids.user, Date.now() - 1000, Date.now() + 86400000);
@@ -115,7 +138,7 @@ it("captures every table, verifies hashes and restores schema, accounting, termi
   const saved = snapshot(db),
     schema = schemaDigest(db.prepare(schemaQuery).all());
   const { directory: artifact, manifest } = await capture();
-  expect(manifest.tables).toHaveLength(83);
+  expect(manifest.tables).toHaveLength(86);
   expect(manifest.generation.watermark).toBe("committed-history");
   expect(await readdir(artifact)).toEqual(["data.sql", "manifest.json"]);
   expect(await verifyGeneration(artifact)).toEqual(manifest);

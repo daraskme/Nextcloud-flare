@@ -278,6 +278,8 @@ export async function handleShareHttp(
         return problem(404, "not_found");
       if (error instanceof Error && error.message === "share_authority_exceeded")
         return problem(403, "forbidden");
+      if (error instanceof Error && error.message === "encrypted_operation_forbidden")
+        return problem(409, "conflict");
       return problem(503, "not_ready");
     }
   }
@@ -327,6 +329,8 @@ export async function handleShareHttp(
       return problem(404, "not_found");
     if (error instanceof Error && error.message === "share_authority_exceeded")
       return problem(403, "forbidden");
+    if (error instanceof Error && error.message === "encrypted_operation_forbidden")
+      return problem(409, "conflict");
     if (error instanceof Error && error.message === "invalid_idempotency_key")
       return problem(400, "bad_request");
     if (error instanceof Error && error.message === "idempotency_conflict")

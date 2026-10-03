@@ -1,8 +1,18 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  encryptionHeaderHash,
+  legacyAdoptionPayload,
+} from "../../../../shared/src/encryptionAttestation";
 import { Button } from "../../components/ui/button";
 import { type Account, api, type FileNode, formatBytes } from "../../lib/api";
 import { saveClientMedia } from "../../lib/clientMediaRegistration";
+import {
+  decryptContainerPlainRange,
+  openContainerHeader,
+  parseContainerHeader,
+  readContainerHeaderLength,
+} from "../../lib/encryptedContainer";
 import { type OpenEncryptedContent, readEncryptedContent } from "../../lib/encryptedContent";
 import {
   getEncryptionSession,
@@ -16,6 +26,21 @@ import { EncryptionSettings } from "./EncryptionSettings";
 const INLINE =
   /^(?:image\/(?:avif|gif|jpeg|png|webp)|audio\/(?:mp4|mpeg|ogg|webm|wav)|video\/(?:mp4|ogg|webm))$/;
 
+interface LegacyReview {
+  readonly node: FileNode;
+  readonly name: string;
+  readonly mime: string;
+  readonly url: string;
+  readonly headerSha256: string;
+  readonly cryptoId: string;
+}
+
+function encodeBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
 /** An explicit client-decrypted view; ciphertext never enters the legacy media parsers. */
 export function EncryptedFiles({ account }: { account: Account }) {
   const queryClient = useQueryClient();
@@ -27,6 +52,8 @@ export function EncryptedFiles({ account }: { account: Account }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [active, setActive] = useState<{ content: OpenEncryptedContent; url: string } | null>(null);
+  const [legacyReview, setLegacyReview] = useState<LegacyReview | null>(null);
+  const [legacyConfirmed, setLegacyConfirmed] = useState(false);
   const activeRef = useRef<OpenEncryptedContent | null>(null);
   const generation = useRef(0);
   const input = useRef<HTMLInputElement>(null);
@@ -56,11 +83,17 @@ export function EncryptedFiles({ account }: { account: Account }) {
     enabled: !!keys && (ownerId === account.id || !!owner),
   });
   const rows = children.data?.pages.flatMap((page) => page.children) ?? [];
+  const canWriteEncrypted = Boolean(
+    keys?.ownerRegistered && keys.adminRecipient && keys.adminSigner,
+  );
   const close = () => {
     generation.current++;
     if (activeRef.current) void activeRef.current.close();
     activeRef.current = null;
     setActive(null);
+    if (legacyReview) URL.revokeObjectURL(legacyReview.url);
+    setLegacyReview(null);
+    setLegacyConfirmed(false);
   };
   useEffect(() => {
     close();
@@ -98,6 +131,188 @@ export function EncryptedFiles({ account }: { account: Account }) {
       setActive({ content, url });
     } catch (error) {
       close();
+      report(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const inspectLegacy = async (node: FileNode) => {
+    if (
+      !keys?.ownerRegistered ||
+      !keys.adminRecipient ||
+      !keys.adminSigner ||
+      ownerId !== account.id ||
+      !node.currentBlobId
+    ) {
+      setNotice("旧形式を確認するには、本人と現在の管理者の鍵を登録・固定してください。");
+      return;
+    }
+    if (node.size === null || node.size > 128 * 1024 * 1024) {
+      setNotice("128 MiBを超える旧形式は、この画面で安全に確認できません。");
+      return;
+    }
+    close();
+    const selected = generation.current;
+    setBusy(true);
+    setNotice("");
+    let content;
+    const plaintext: Uint8Array<ArrayBuffer>[] = [];
+    try {
+      content = await api.prepareContentSession(
+        account,
+        [{ id: node.id, currentBlobId: node.currentBlobId }],
+        "content",
+      );
+      const url = content.url({ id: node.id, currentBlobId: node.currentBlobId });
+      let etag = "";
+      const fetchRange = async (offset: number, length: number) => {
+        const response = await fetch(url, {
+          headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+          credentials: "include",
+          cache: "no-store",
+          redirect: "error",
+        });
+        const responseEtag = response.headers.get("ETag") ?? "";
+        if (
+          response.status !== 206 ||
+          response.url !== url ||
+          response.redirected ||
+          !/^"[A-Za-z0-9._:-]{1,200}"$/.test(responseEtag) ||
+          (etag && responseEtag !== etag) ||
+          response.headers.get("Content-Range") !==
+            `bytes ${offset}-${offset + length - 1}/${node.size}` ||
+          (response.headers.has("Content-Length") &&
+            response.headers.get("Content-Length") !== String(length)) ||
+          !response.body
+        ) {
+          await response.body?.cancel();
+          throw new Error("旧形式ファイルの配信情報を確認できません。");
+        }
+        etag = responseEtag;
+        const bytes = new Uint8Array(length);
+        const reader = response.body.getReader();
+        let count = 0;
+        try {
+          for (;;) {
+            const part = await reader.read();
+            if (part.done) break;
+            if (count + part.value.length > length) throw new Error("legacy_range_overflow");
+            bytes.set(part.value, count);
+            count += part.value.length;
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined);
+          reader.releaseLock();
+        }
+        if (count !== length) throw new Error("legacy_range_truncated");
+        return bytes;
+      };
+      const prefix = await fetchRange(0, 12);
+      const headerLength = readContainerHeaderLength(prefix);
+      const headerBytes = new Uint8Array(12 + headerLength);
+      headerBytes.set(prefix);
+      headerBytes.set(await fetchRange(12, headerLength), 12);
+      const header = parseContainerHeader(headerBytes);
+      if (
+        header.signed ||
+        header.totalBytes !== node.size ||
+        !header.envelope.recipients.some(
+          (entry) => entry.fingerprint === keys.owner.publicKey.fingerprint,
+        ) ||
+        !header.envelope.recipients.some(
+          (entry) => entry.fingerprint === keys.adminRecipient!.fingerprint,
+        )
+      )
+        throw new Error("このファイルは所有者と管理者の鍵で開ける旧形式ではありません。");
+      const opened = await openContainerHeader(header, keys.owner, { legacyUnsigned: true });
+      const readCipher = async (offset: number, length: number) => {
+        const output = new Uint8Array(length);
+        let received = 0;
+        while (received < length) {
+          const part = Math.min(4 * 1024 * 1024, length - received);
+          // decryptContainerPlainRange already includes the container header in its offsets.
+          output.set(await fetchRange(offset + received, part), received);
+          received += part;
+        }
+        return output;
+      };
+      let totalPlain = 0;
+      for await (const plain of decryptContainerPlainRange(
+        opened,
+        0,
+        opened.envelope.plainSize,
+        (chunk) => readCipher(chunk.cipherOffset, chunk.cipherLength),
+      )) {
+        totalPlain += plain.length;
+        if (totalPlain > 128 * 1024 * 1024) throw new Error("legacy_plaintext_overflow");
+        plaintext.push(new Uint8Array(plain));
+      }
+      if (selected !== generation.current || getEncryptionSession(account.id) !== keys)
+        throw new Error("暗号化鍵または選択中のファイルが変更されました。");
+      const blob = new Blob(plaintext, { type: opened.metadata.mime });
+      for (const part of plaintext) part.fill(0);
+      plaintext.length = 0;
+      setLegacyReview({
+        node,
+        name: opened.metadata.name,
+        mime: opened.metadata.mime,
+        url: URL.createObjectURL(blob),
+        headerSha256: await encryptionHeaderHash(new Uint8Array(headerBytes)),
+        cryptoId: header.envelope.cryptoId,
+      });
+      setLegacyConfirmed(false);
+    } catch (error) {
+      for (const part of plaintext) part.fill(0);
+      report(error);
+    } finally {
+      await content?.cancel().catch(() => undefined);
+      setBusy(false);
+    }
+  };
+  const adoptLegacy = async () => {
+    const candidate = legacyReview;
+    const keys = getEncryptionSession(account.id);
+    if (!candidate || !legacyConfirmed || !keys?.ownerRegistered || !keys.adminRecipient) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const { node } = candidate;
+      const current = await api.request<FileNode & { ownerId: string }>(
+        `/api/v1/nodes/${encodeURIComponent(node.id)}`,
+      );
+      if (
+        current.id !== node.id ||
+        current.ownerId !== account.id ||
+        current.revision !== node.revision ||
+        current.currentBlobId !== node.currentBlobId ||
+        current.encryption
+      )
+        throw new Error("元のファイルが変更されました。一覧を更新して確認し直してください。");
+      const payload = legacyAdoptionPayload({
+        ownerId: account.id,
+        nodeId: node.id,
+        blobId: node.currentBlobId!,
+        revision: node.revision,
+        headerSha256: candidate.headerSha256,
+        cryptoId: candidate.cryptoId,
+        requiredAdminFingerprint: keys.adminRecipient.fingerprint,
+      });
+      const signature = encodeBase64Url(
+        new Uint8Array(await crypto.subtle.sign("Ed25519", keys.owner.signing.privateKey, payload)),
+      );
+      await api.adoptLegacyEncryptedNode(node.id, {
+        blobId: node.currentBlobId!,
+        revision: node.revision,
+        headerSha256: candidate.headerSha256,
+        ownerSignature: signature,
+        requiredAdminFingerprint: keys.adminRecipient.fingerprint,
+      });
+      close();
+      setNotice(
+        "現在の内容を旧形式として明示的に確認し、所有者署名を登録しました。過去の送信者は証明されません。",
+      );
+      void queryClient.invalidateQueries({ queryKey: ["encrypted-children"] });
+    } catch (error) {
       report(error);
     } finally {
       setBusy(false);
@@ -155,7 +370,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
     }
   };
   const add = async (files: FileList | null) => {
-    if (!files || !keys?.adminRecipient || ownerId !== account.id) return;
+    if (!files || !canWriteEncrypted || ownerId !== account.id) return;
     setBusy(true);
     setNotice("");
     try {
@@ -168,7 +383,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
     }
   };
   const migrateCopy = async (node: FileNode) => {
-    if (!keys?.adminRecipient || owner || !node.currentBlobId) return;
+    if (!canWriteEncrypted || owner || !node.currentBlobId) return;
     if (node.size === null || node.size > 128 * 1024 * 1024) {
       setNotice(
         "128 MiBを超える既存ファイルは、端末にダウンロードしてから暗号化アップロードしてください。",
@@ -257,7 +472,14 @@ export function EncryptedFiles({ account }: { account: Account }) {
         onUnlocked={(value) =>
           setEncryptionSession(
             account.id,
-            value ? { owner: value.owner, adminRecipient: value.adminRecipient } : null,
+            value
+              ? {
+                  owner: value.owner,
+                  ownerRegistered: value.ownerRegistered,
+                  adminRecipient: value.adminRecipient,
+                  adminSigner: value.adminSigner,
+                }
+              : null,
           )
         }
       />
@@ -270,7 +492,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
       {notice && <p role="status">{notice}</p>}
       {keys && (
         <>
-          {!keys.adminRecipient && (
+          {!canWriteEncrypted && (
             <p role="status">
               本人の鍵で既存ファイルを復号できます。新規アップロードには管理者公開鍵の固定が必要です。
             </p>
@@ -315,10 +537,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
           </nav>
           <div className="encryption-toolbar">
             {!owner && (
-              <Button
-                disabled={busy || !keys.adminRecipient}
-                onClick={() => input.current?.click()}
-              >
+              <Button disabled={busy || !canWriteEncrypted} onClick={() => input.current?.click()}>
                 暗号化してアップロード
               </Button>
             )}
@@ -347,7 +566,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
                 <span>
                   {node.kind === "folder"
                     ? node.name
-                    : isEncryptedFile(node.name)
+                    : isEncryptedFile(node)
                       ? `暗号化ファイル · ${node.name.slice(0, 8)}`
                       : node.name}{" "}
                   {node.size !== null && formatBytes(node.size)}
@@ -356,7 +575,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
                   <Button variant="ghost" onClick={() => setFolderId(node.id)}>
                     フォルダーを開く
                   </Button>
-                ) : isEncryptedFile(node.name) ? (
+                ) : isEncryptedFile(node) ? (
                   <Button disabled={busy} onClick={() => void open(node)}>
                     復号して開く
                   </Button>
@@ -364,13 +583,22 @@ export function EncryptedFiles({ account }: { account: Account }) {
                   <span>
                     未暗号化{" "}
                     {!owner && (
-                      <Button
-                        disabled={busy || !keys.adminRecipient}
-                        variant="ghost"
-                        onClick={() => void migrateCopy(node)}
-                      >
-                        暗号化コピーを作成
-                      </Button>
+                      <>
+                        <Button
+                          disabled={busy || !canWriteEncrypted}
+                          variant="ghost"
+                          onClick={() => void migrateCopy(node)}
+                        >
+                          暗号化コピーを作成
+                        </Button>
+                        <Button
+                          disabled={busy || !canWriteEncrypted || node.size === null}
+                          variant="ghost"
+                          onClick={() => void inspectLegacy(node)}
+                        >
+                          旧形式を確認
+                        </Button>
+                      </>
                     )}
                   </span>
                 )}
@@ -419,6 +647,57 @@ export function EncryptedFiles({ account }: { account: Account }) {
             </section>
           )}
         </>
+      )}
+      {legacyReview && (
+        <section
+          className="encryption-preview"
+          role="dialog"
+          aria-modal="true"
+          aria-label="旧形式ファイルの確認"
+        >
+          <header>
+            <h2>旧形式の内容確認: {legacyReview.name}</h2>
+            <Button variant="ghost" onClick={close}>
+              閉じる
+            </Button>
+          </header>
+          <p>
+            旧形式には送信者署名がありません。復号できたことだけでは過去の送信者を証明できません。以下の内容を確認してから、このファイル固有の現在の署名を登録してください。
+          </p>
+          {legacyReview.mime.startsWith("image/") ? (
+            <img src={legacyReview.url} alt={legacyReview.name} />
+          ) : legacyReview.mime.startsWith("audio/") ? (
+            <audio
+              controls
+              preload="metadata"
+              src={legacyReview.url}
+              aria-label={legacyReview.name}
+            />
+          ) : legacyReview.mime.startsWith("video/") ? (
+            <video
+              controls
+              preload="metadata"
+              playsInline
+              src={legacyReview.url}
+              aria-label={legacyReview.name}
+            />
+          ) : (
+            <a href={legacyReview.url} download={legacyReview.name}>
+              復号した内容を保存して確認
+            </a>
+          )}
+          <label>
+            <input
+              type="checkbox"
+              checked={legacyConfirmed}
+              onChange={(event) => setLegacyConfirmed(event.currentTarget.checked)}
+            />
+            この内容を確認しました。過去の送信者は証明できないことを理解しています。
+          </label>
+          <Button disabled={busy || !legacyConfirmed} onClick={() => void adoptLegacy()}>
+            この旧形式に所有者署名を登録
+          </Button>
+        </section>
       )}
     </section>
   );

@@ -15,6 +15,7 @@ import { parseRange } from "../platform/range";
 import { storeZip, storeZipSize } from "../platform/storeZip";
 import { type BlobReadPlan, prepareAuthorizedNodeBlobRead } from "./blobRead";
 import { streamLeasedContent } from "./contentStream";
+import { assertUnencryptedBlob, unencryptedBlobAssertion } from "./encryptionGuards";
 import {
   loadTargetManifest,
   type TargetManifestRecord,
@@ -238,6 +239,7 @@ export async function planZipDownload(
     )
       throw new Error("zip_target_unavailable");
     blobIds.add(proof.node.current_blob_id);
+    await assertUnencryptedBlob(db, proof.node.current_blob_id);
     const blob = await prepareAuthorizedNodeBlobRead(db, proof);
     if (blob.size > LIMITS.zipEntryBytes) throw new Error("zip_entry_limit");
     const object = await bucket.head(blob.key);
@@ -395,6 +397,7 @@ async function prepareZipContent(
       proof.node.current_blob_id !== entry.blobId
     )
       throw new Error("content_not_available");
+    await assertUnencryptedBlob(db, entry.blobId);
     const blob = await prepareAuthorizedNodeBlobRead(db, proof);
     if (blob.size !== entry.size || blob.r2Etag !== entry.r2Etag)
       throw new Error("content_not_available");
@@ -421,6 +424,7 @@ async function prepareZipContent(
   const sessionShare = principal.kind === "link_share" ? undefined : coverageShare;
   await atomicBatch(db, [
     contentSessionAssertion(principal, sessionId, record.ticketId, "zip", sessionShare),
+    ...manifest.entries.map((entry) => unencryptedBlobAssertion(entry.blobId)),
     ...authorizationBatchAssertions(proofs),
     ...(coverageShare
       ? shareCoverageBatchAssertions(

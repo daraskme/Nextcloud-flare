@@ -2,7 +2,7 @@ import type { RecipientPublicKey, RecipientVault } from "./cryptoEnvelope";
 
 export const MAX_ENCRYPTION_FILE_BYTES = 16 * 1024;
 const DATABASE_NAME = "ncf-encryption-vaults";
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const VAULT_STORE_NAME = "recipient-vaults";
 const ADMIN_KEY_STORE_NAME = "admin-recipients";
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -23,6 +23,7 @@ export interface PinnedAdminRecipient {
   readonly accountId: string;
   readonly adminAccountId: string;
   readonly recipient: RecipientPublicKey;
+  readonly signer: RecipientPublicKey;
 }
 
 interface StoredAdminRecipient extends PinnedAdminRecipient {}
@@ -201,15 +202,30 @@ export class EncryptionVaultStore {
         (store) => store.get(accountId),
       );
       if (record === undefined) return null;
+      // Previous local pins contained only the RSA recipient key. They are not
+      // sufficient to authenticate signed container headers; discard and re-pin.
       if (
-        !exactKeys(record, ["accountId", "adminAccountId", "recipient"]) ||
+        record &&
+        typeof record === "object" &&
+        !Object.hasOwn(record, "signer") &&
+        record.accountId === accountId
+      ) {
+        await this.#request<void>(ADMIN_KEY_STORE_NAME, "readwrite", (store) =>
+          store.delete(accountId),
+        );
+        return null;
+      }
+      if (
+        !exactKeys(record, ["accountId", "adminAccountId", "recipient", "signer"]) ||
         record.accountId !== accountId ||
         !validAccountId(record.adminAccountId) ||
         record.adminAccountId === accountId ||
-        !validRecipient(record.recipient)
+        !validRecipient(record.recipient) ||
+        !validSigningKey(record.signer)
       )
         throw new Error();
       await verifyRecipientPublicKey(record.recipient);
+      await verifySigningPublicKey(record.signer);
       return structuredClone(record);
     } catch {
       throw new Error("encryption_storage_unavailable");
@@ -220,16 +236,19 @@ export class EncryptionVaultStore {
     accountId: string,
     adminAccountId: string,
     recipient: RecipientPublicKey,
+    signer: RecipientPublicKey,
   ): Promise<void> {
     if (
       !validAccountId(accountId) ||
       !validAccountId(adminAccountId) ||
       accountId === adminAccountId ||
-      !validRecipient(recipient)
+      !validRecipient(recipient) ||
+      !validSigningKey(signer)
     )
       throw new Error("invalid_encryption_public_key");
     await verifyRecipientPublicKey(recipient);
-    const record: StoredAdminRecipient = { accountId, adminAccountId, recipient };
+    await verifySigningPublicKey(signer);
+    const record: StoredAdminRecipient = { accountId, adminAccountId, recipient, signer };
     try {
       await this.#request<void>(ADMIN_KEY_STORE_NAME, "readwrite", (store) => store.put(record));
     } catch {
@@ -302,12 +321,42 @@ function validRecipient(value: unknown): value is RecipientPublicKey {
   );
 }
 
-function decodeBase64Url(value: string, minBytes: number, maxBytes: number): Uint8Array {
+function validSigningKey(value: unknown): value is RecipientPublicKey {
+  return (
+    exactKeys(value, ["fingerprint", "spki"]) &&
+    typeof value.fingerprint === "string" &&
+    /^[A-Za-z0-9_-]{43}$/.test(value.fingerprint) &&
+    typeof value.spki === "string" &&
+    /^[A-Za-z0-9_-]{54,110}$/.test(value.spki)
+  );
+}
+
+async function verifySigningPublicKey(key: RecipientPublicKey): Promise<void> {
+  const spki = decodeBase64Url(key.spki, 40, 80);
+  const fingerprint = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(spki)));
+  let binary = "";
+  for (const byte of fingerprint) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  if (encoded !== key.fingerprint) throw new Error("invalid_encryption_public_key");
+  try {
+    await crypto.subtle.importKey("spki", new Uint8Array(spki), { name: "Ed25519" }, false, [
+      "verify",
+    ]);
+  } catch {
+    throw new Error("invalid_encryption_public_key");
+  }
+}
+
+function decodeBase64Url(
+  value: string,
+  minBytes: number,
+  maxBytes: number,
+): Uint8Array<ArrayBuffer> {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid_encryption_public_key_file");
   const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/"));
   if (binary.length < minBytes || binary.length > maxBytes)
     throw new Error("invalid_encryption_public_key_file");
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const bytes = new Uint8Array(Array.from(binary, (character) => character.charCodeAt(0)));
   let canonical = "";
   for (let offset = 0; offset < bytes.length; offset += 0x4000)
     canonical += String.fromCharCode(...bytes.subarray(offset, offset + 0x4000));

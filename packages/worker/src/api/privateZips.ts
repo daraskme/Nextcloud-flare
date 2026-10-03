@@ -65,6 +65,8 @@ function zipIssueFailure(error: unknown): Response {
     return problem(400, "bad_request");
   if (error instanceof Error && error.message === "idempotency_conflict")
     return problem(409, "conflict");
+  if (error instanceof Error && error.message === "encrypted_operation_forbidden")
+    return problem(409, "conflict");
   if (error instanceof Error && ["zip_entry_limit", "zip_size_limit"].includes(error.message))
     return problem(413, "payload_too_large");
   if (

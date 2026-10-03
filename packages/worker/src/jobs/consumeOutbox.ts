@@ -171,7 +171,8 @@ function audioCompletionStatements(
       WHERE n.id=? AND n.space_id=? AND n.kind='file' AND n.name=? AND n.revision=?
         AND n.current_blob_id=? AND n.deleted_at IS NULL
         AND b.r2_key=? AND b.size=? AND b.state IN ('committed','gc_candidate')
-        AND bs.bytes=b.size AND bs.r2_etag=?`,
+        AND bs.bytes=b.size AND bs.r2_etag=?
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`,
       [
         row.payload_ref,
         row.space_id,
@@ -390,9 +391,17 @@ export async function consumeOutbox(
       assertOneChange,
     ]);
     const source = await audioSource(db, row);
+    const encrypted = source?.blob_id
+      ? Boolean(
+          await primary(db)
+            .prepare("SELECT 1 FROM blob_encryption WHERE blob_id=?")
+            .bind(source.blob_id)
+            .first(),
+        )
+      : false;
     let inspection: Exclude<AudioInspection, { kind: "transient" }> | null = null;
     if (isAudioEvent(row) && !source) return "retry";
-    if (source?.kind === "file" && source.blob_id !== null) {
+    if (!encrypted && source?.kind === "file" && source.blob_id !== null) {
       if (
         !env.BLOBS ||
         source.r2_key === null ||
@@ -414,11 +423,11 @@ export async function consumeOutbox(
       if (inspected.kind === "transient") return "retry";
       inspection = inspected;
     }
-    const epub = await prepareEpubProjection(env, row, deadline - 4000);
+    const epub = encrypted ? null : await prepareEpubProjection(env, row, deadline - 4000);
     if (epub === "retry") return "retry";
     let verifiedNonVideo = false;
     let opus: Extract<OpusInspection, { kind: "metadata" }> | null = null;
-    if ((row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS) {
+    if (!encrypted && (row.kind === "node.created" || row.kind === "node.updated") && env.BLOBS) {
       try {
         const mediaAuthorized = await authorizeNode(db, principal, {
           operation: "node.read",

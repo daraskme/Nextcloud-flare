@@ -17,7 +17,7 @@ const mocked = vi.hoisted(() => ({
 vi.mock("../../src/lib/encryptionSession", () => ({
   encryptionConfigured: mocked.configured,
   getEncryptionSession: mocked.session,
-  isEncryptedFile: (name: string) => /^[A-Za-z0-9_-]{22}\.ncf$/.test(name),
+  isEncryptedFile: (node: FileNode) => node.encryption != null,
 }));
 vi.mock("../../src/lib/encryptedContainer", () => ({
   cleanupStaleOpfsContainers: mocked.cleanup,
@@ -119,6 +119,7 @@ it("refuses replacement of an encrypted file even before this device enrolls", a
   const replacement = {
     kind: "file",
     name: `${"A".repeat(22)}.ncf`,
+    encryption: { formatVersion: 2 },
     currentBlobId: "blob",
     revision: 1,
   } as FileNode;
@@ -131,7 +132,17 @@ it("refuses replacement of an encrypted file even before this device enrolls", a
 it("persists only opaque ciphertext identity and resumes from the completed OPFS file", async () => {
   mocked.configured.mockResolvedValue(true);
   const publicKey = { fingerprint: "same", spki: "public" };
-  mocked.session.mockReturnValue({ owner: { publicKey }, adminRecipient: publicKey });
+  const signing = {
+    fingerprint: "signer",
+    spki: "signing-spki",
+    privateKey: { extractable: false, type: "private", algorithm: { name: "Ed25519" } },
+  };
+  mocked.session.mockReturnValue({
+    owner: { publicKey, signing },
+    ownerRegistered: true,
+    adminRecipient: publicKey,
+    adminSigner: { fingerprint: "admin-sign", spki: "admin-sign-spki" },
+  });
   const cipherFile = new File(["ciphertext"], "opaque_crypto_id_1234.ncf", {
     type: "application/octet-stream",
     lastModified: 77,
@@ -141,7 +152,7 @@ it("persists only opaque ciphertext identity and resumes from the completed OPFS
     opaqueName: cipherFile.name,
     discard: vi.fn(),
     header: {},
-    headerBytes: new Uint8Array(),
+    headerBytes: new Uint8Array([1]),
   });
   mocked.reopen.mockResolvedValue({ file: cipherFile, header: {} });
   mocked.fingerprint.mockResolvedValue("cipher_fingerprint");
@@ -153,6 +164,11 @@ it("persists only opaque ciphertext identity and resumes from the completed OPFS
   expect(record.name).toBe(cipherFile.name);
   expect(record.sourceName).toBe(cipherFile.name);
   expect(record.encryptedSpool).toBe(cipherFile.name);
+  expect(record.encryptionHeader).toBe("AQ");
+  expect(mocked.create).toHaveBeenCalledWith(source, [publicKey], undefined, undefined, {
+    ownerId: account.id,
+    signer: signing,
+  });
   expect(JSON.stringify(record)).not.toContain(source.name);
   expect(mocked.save).toHaveBeenCalledWith(record);
   await manager.resume(manager.snapshot()[0]!);

@@ -53,6 +53,35 @@ it("a late cancelled CSRF request cannot erase a newer deduplicated flight", asy
   expect(await api.csrf()).toBe("new");
 });
 
+it("uses the encryption registry challenge and account-scoped lookup routes", async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ keys: [] }))
+    .mockResolvedValueOnce(Response.json({ token: "csrf" }))
+    .mockResolvedValueOnce(
+      Response.json(
+        { id: "challenge-id", ciphertext: "ciphertext", expiresAt: 99 },
+        { status: 201 },
+      ),
+    )
+    .mockResolvedValueOnce(Response.json({ keys: [] }));
+  vi.stubGlobal("fetch", fetcher);
+  const client = new ApiClient();
+  await client.encryptionAdminKeys();
+  await client.createEncryptionKeyChallenge(
+    { fingerprint: "rsa-fingerprint", spki: "rsa-spki" },
+    { fingerprint: "sign-fingerprint", spki: "sign-spki" },
+  );
+  await client.encryptionKeys("owner/id");
+  expect(fetcher.mock.calls[0]![0]).toBe("/api/v1/encryption/admin-keys");
+  expect(fetcher.mock.calls[2]![0]).toBe("/api/v1/encryption/keys/challenge");
+  expect(JSON.parse(String(fetcher.mock.calls[2]![1].body))).toEqual({
+    recipient: { fingerprint: "rsa-fingerprint", spki: "rsa-spki" },
+    signer: { fingerprint: "sign-fingerprint", spki: "sign-spki" },
+  });
+  expect(fetcher.mock.calls[3]![0]).toBe("/api/v1/encryption/keys/owner%2Fid");
+});
+
 it("reconciles commit uncertainty by operation ID without issuing another mutation", async () => {
   const fetcher = vi
     .fn()

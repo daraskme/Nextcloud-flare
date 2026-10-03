@@ -1,7 +1,7 @@
 import { Download, KeyRound, LoaderCircle, ShieldCheck, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
-import type { Account } from "../../lib/api";
+import { type Account, api, type EncryptionRegisteredKey } from "../../lib/api";
 import {
   createRecipientVault,
   type RecipientPublicKey,
@@ -28,11 +28,101 @@ interface PendingSetup {
 interface AdminKeyCandidate {
   readonly accountId: string;
   readonly recipient: RecipientPublicKey;
+  readonly signer: RecipientPublicKey;
 }
 
 export interface EncryptionUnlockState {
   readonly owner: UnlockedRecipient;
+  readonly ownerRegistered: boolean;
   readonly adminRecipient: RecipientPublicKey | null;
+  readonly adminSigner: RecipientPublicKey | null;
+}
+
+const encoder = new TextEncoder();
+
+function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid_key_challenge");
+  const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/"));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  let canonical = "";
+  for (const byte of bytes) canonical += String.fromCharCode(byte);
+  if (btoa(canonical).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "") !== value)
+    throw new Error("invalid_key_challenge");
+  return bytes;
+}
+
+function encodeBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function sameKey(left: RecipientPublicKey, right: RecipientPublicKey): boolean {
+  return left.fingerprint === right.fingerprint && left.spki === right.spki;
+}
+
+function registeredKeyMatches(
+  registered: EncryptionRegisteredKey,
+  accountId: string,
+  rsa: RecipientPublicKey,
+  signer: RecipientPublicKey,
+): boolean {
+  return (
+    registered.accountId === accountId &&
+    sameKey(registered.recipient, rsa) &&
+    sameKey(registered.signer, signer)
+  );
+}
+
+async function registerAndVerifyOwnerKey(
+  accountId: string,
+  recipient: UnlockedRecipient,
+): Promise<boolean> {
+  const signer = {
+    fingerprint: recipient.signing.fingerprint,
+    spki: recipient.signing.spki,
+  };
+  const existing = (await api.encryptionKeys(accountId)).keys.filter(
+    (entry) => entry.accountId === accountId,
+  );
+  if (existing.length > 0) {
+    return (
+      existing.length === 1 &&
+      registeredKeyMatches(existing[0]!, accountId, recipient.publicKey, signer)
+    );
+  }
+  const challenge = await api.createEncryptionKeyChallenge(recipient.publicKey, signer);
+  if (challenge.expiresAt <= Date.now()) return false;
+  const secretBytes = new Uint8Array(
+    await crypto.subtle.decrypt(
+      {
+        name: "RSA-OAEP",
+        label: encoder.encode(`ncf-key-registration-v1\0${challenge.id}\0${accountId}`),
+      },
+      recipient.privateKey,
+      decodeBase64Url(challenge.ciphertext),
+    ),
+  );
+  try {
+    if (secretBytes.length !== 32) return false;
+    const secret = encodeBase64Url(secretBytes);
+    const statement = encoder.encode(
+      `ncf-encryption-key-register-v1\0${challenge.id}\0${accountId}\0${secret}\0${recipient.publicKey.fingerprint}\0${signer.fingerprint}`,
+    );
+    const signature = encodeBase64Url(
+      new Uint8Array(await crypto.subtle.sign("Ed25519", recipient.signing.privateKey, statement)),
+    );
+    await api.registerEncryptionKey(challenge.id, secret, signature);
+    const confirmed = (await api.encryptionKeys(accountId)).keys.filter(
+      (entry) => entry.accountId === accountId,
+    );
+    return (
+      confirmed.length === 1 &&
+      registeredKeyMatches(confirmed[0]!, accountId, recipient.publicKey, signer)
+    );
+  } finally {
+    secretBytes.fill(0);
+  }
 }
 
 export interface EncryptionSettingsProps {
@@ -83,6 +173,7 @@ export function EncryptionSettings({
   );
   const [pinnedAdmin, setPinnedAdmin] = useState<PinnedAdminRecipient | null>(null);
   const [adminCandidate, setAdminCandidate] = useState<AdminKeyCandidate | null>(null);
+  const [ownerRegistered, setOwnerRegistered] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [unlocked, setUnlocked] = useState(Boolean(initialUnlocked));
@@ -114,6 +205,7 @@ export function EncryptionSettings({
     setUnlockedRecipient(currentSession?.owner ?? null);
     setPinnedAdmin(null);
     setAdminCandidate(null);
+    setOwnerRegistered(false);
     setUnlocked(Boolean(currentSession));
     setFailure("");
     void Promise.all([
@@ -121,19 +213,50 @@ export function EncryptionSettings({
       account.role === "app_admin"
         ? Promise.resolve(null)
         : store.getPinnedAdminRecipient(account.id),
+      account.role === "app_admin" ? Promise.resolve(null) : api.encryptionAdminKeys(),
     ]).then(
-      ([stored, pinned]) => {
+      async ([stored, storedPin, registry]) => {
         if (!current) return;
+        let pinned = storedPin;
+        if (pinned) {
+          const authoritative = registry?.keys.filter(
+            (entry) => entry.accountId === pinned!.adminAccountId,
+          );
+          const currentEntry = authoritative?.[0];
+          if (
+            authoritative?.length !== 1 ||
+            !currentEntry ||
+            !sameKey(currentEntry.recipient, pinned.recipient) ||
+            !sameKey(currentEntry.signer, pinned.signer)
+          ) {
+            await store.deletePinnedAdminRecipient(account.id);
+            pinned = null;
+          }
+        }
         setVault(stored);
         setPublicKey(currentSession?.owner.publicKey ?? stored?.recipient ?? null);
         setPinnedAdmin(pinned);
         if (currentSession) {
+          const registered = await registerAndVerifyOwnerKey(
+            account.id,
+            currentSession.owner,
+          ).catch(() => false);
+          if (!current) return;
+          setOwnerRegistered(registered);
           const state: EncryptionUnlockState = {
             owner: currentSession.owner,
+            ownerRegistered: registered,
             adminRecipient:
               account.role === "app_admin"
                 ? currentSession.owner.publicKey
                 : (pinned?.recipient ?? null),
+            adminSigner:
+              account.role === "app_admin"
+                ? {
+                    fingerprint: currentSession.owner.signing.fingerprint,
+                    spki: currentSession.owner.signing.spki,
+                  }
+                : (pinned?.signer ?? null),
           };
           callback.current(state);
         }
@@ -208,16 +331,28 @@ export function EncryptionSettings({
       );
       if (accountId.current !== account.id) return;
       await store.put(account.id, imported.recipientVault);
+      const registered = await registerAndVerifyOwnerKey(account.id, recipient).catch(() => false);
+      if (accountId.current !== account.id) return;
       setVault(imported.recipientVault);
       setPublicKey(recipient.publicKey);
       setUnlockedRecipient(recipient);
+      setOwnerRegistered(registered);
       setPending(null);
       setUnlocked(true);
       callback.current({
         owner: recipient,
+        ownerRegistered: registered,
         adminRecipient:
           account.role === "app_admin" ? recipient.publicKey : (pinnedAdmin?.recipient ?? null),
+        adminSigner:
+          account.role === "app_admin"
+            ? { fingerprint: recipient.signing.fingerprint, spki: recipient.signing.spki }
+            : (pinnedAdmin?.signer ?? null),
       });
+      if (!registered)
+        setFailure(
+          "この鍵を現在のアカウント鍵として確認できません。暗号化アップロードを停止しました。",
+        );
     } catch {
       setFailure(
         "復旧ファイルを確認できませんでした。対象アカウント、ファイル内容、復旧鍵を確認してください。秘密値は画面やログに記録しません。",
@@ -236,7 +371,13 @@ export function EncryptionSettings({
       if (file.size > MAX_ENCRYPTION_FILE_BYTES) throw new Error();
       const candidate = await parsePublicKeyFile(await file.text(), account.id);
       if (accountId.current !== account.id) return;
-      setAdminCandidate(candidate);
+      const registry = await api.encryptionAdminKeys();
+      const matches = registry.keys.filter(
+        (entry) =>
+          entry.accountId === candidate.accountId && sameKey(entry.recipient, candidate.recipient),
+      );
+      if (matches.length !== 1) throw new Error("admin_key_registry_mismatch");
+      setAdminCandidate({ ...candidate, signer: matches[0]!.signer });
     } catch {
       setFailure(
         "管理者公開鍵ファイルを検証できませんでした。別経路で受け取った正しい公開鍵ファイルを選んでください。",
@@ -252,16 +393,27 @@ export function EncryptionSettings({
     setBusy(true);
     setFailure("");
     try {
-      await store.pinAdminRecipient(account.id, adminCandidate.accountId, adminCandidate.recipient);
+      await store.pinAdminRecipient(
+        account.id,
+        adminCandidate.accountId,
+        adminCandidate.recipient,
+        adminCandidate.signer,
+      );
       const pinned = {
         accountId: account.id,
         adminAccountId: adminCandidate.accountId,
         recipient: adminCandidate.recipient,
+        signer: adminCandidate.signer,
       };
       setPinnedAdmin(pinned);
       setAdminCandidate(null);
       if (unlockedRecipient) {
-        callback.current({ owner: unlockedRecipient, adminRecipient: pinned.recipient });
+        callback.current({
+          owner: unlockedRecipient,
+          ownerRegistered,
+          adminRecipient: pinned.recipient,
+          adminSigner: pinned.signer,
+        });
       }
     } catch {
       setFailure("管理者公開鍵をこの端末に固定できませんでした。保存領域を確認してください。");
@@ -277,7 +429,13 @@ export function EncryptionSettings({
       await store.deletePinnedAdminRecipient(account.id);
       setPinnedAdmin(null);
       setAdminCandidate(null);
-      if (unlockedRecipient) callback.current({ owner: unlockedRecipient, adminRecipient: null });
+      if (unlockedRecipient)
+        callback.current({
+          owner: unlockedRecipient,
+          ownerRegistered,
+          adminRecipient: null,
+          adminSigner: null,
+        });
     } catch {
       setFailure("固定した管理者公開鍵を解除できませんでした。保存領域を確認してください。");
     } finally {
@@ -305,6 +463,9 @@ export function EncryptionSettings({
       <p className="muted">
         復旧ファイル自体はパスワード保護されていません。秘密鍵として扱い、このサービスにはアップロードしないでください。端末外に安全に保管し、他人と共有しないでください。紛失すると暗号化したファイルを復号できません。
       </p>
+      <p className="muted">
+        配信元がプログラムを改ざんすると、鍵や復号した内容を取得される可能性があります。クライアント暗号化は、サービスの配信プログラム自体への信頼を不要にはしません。
+      </p>
       {failure && (
         <p className="form-error" role="alert">
           {failure}
@@ -321,6 +482,15 @@ export function EncryptionSettings({
       ) : unlocked ? (
         <div className="encryption-settings-actions">
           <p role="status">この端末で暗号化鍵を解除しました。</p>
+          {ownerRegistered ? (
+            <p className="muted" role="status">
+              現在のアカウント署名鍵をサーバー登録情報と照合しました。
+            </p>
+          ) : (
+            <p className="form-error" role="alert">
+              アカウント署名鍵を確認できません。新しい暗号化アップロードは停止中です。
+            </p>
+          )}
           <p className="muted">
             鍵はこのタブのメモリーだけにあります。他のタブで解除した鍵は、それぞれのタブでロックしてください。
           </p>
@@ -402,6 +572,8 @@ export function EncryptionSettings({
               固定中の管理者アカウント: <code>{pinnedAdmin.adminAccountId}</code>
               <br />
               指紋: <code>{pinnedAdmin.recipient.fingerprint}</code>
+              <br />
+              署名鍵指紋: <code>{pinnedAdmin.signer.fingerprint}</code>
             </p>
           ) : (
             <p role="status">
@@ -414,6 +586,8 @@ export function EncryptionSettings({
                 未固定の候補 — アカウント: <code>{adminCandidate.accountId}</code>
                 <br />
                 指紋: <code>{adminCandidate.recipient.fingerprint}</code>
+                <br />
+                現在登録中の署名鍵指紋: <code>{adminCandidate.signer.fingerprint}</code>
                 <br />
                 この指紋を管理者と別経路で照合してください。
               </span>

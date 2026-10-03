@@ -1309,7 +1309,7 @@ export function App() {
     if (
       "node" in next &&
       next.node.kind === "file" &&
-      isEncryptedFile(next.node.name) &&
+      isEncryptedFile(next.node) &&
       ["rename", "share", "zip", "overwrite"].includes(next.kind)
     ) {
       setNotice(
@@ -1354,7 +1354,7 @@ export function App() {
         .catch((error) => setNotice(errorMessage(error)));
       return;
     }
-    if (isEncryptedFile(node.name)) {
+    if (isEncryptedFile(node)) {
       void navigate({ to: "/encryption" });
       return;
     }

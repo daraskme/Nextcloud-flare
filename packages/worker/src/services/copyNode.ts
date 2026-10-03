@@ -19,6 +19,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_COPY_MAX_NODES = 1_000;
@@ -361,7 +362,11 @@ function copyStatements(
     },
     assertOneChange,
   );
-  return statements;
+  return [
+    unencryptedSubtreeAssertion(source.node.id, source.node.space_id),
+    ...(overwrite ? [unencryptedSubtreeAssertion(overwrite.node.id, overwrite.node.space_id)] : []),
+    ...statements,
+  ];
 }
 
 export async function copyNode(
@@ -421,6 +426,7 @@ export async function copyNode(
     source.node.owner_id !== destination.parent.owner_id
   )
     throw new Error("dav_cross_space_copy");
+  await assertNoEncryptedSubtree(env.DB, request.sourceNodeId, request.spaceId);
   const manifest = await copyManifest(env.DB, request.sourceNodeId, request.spaceId, request.depth);
   const overwrite = request.overwriteTargetId
     ? await authorizeNode(env.DB, request.principal, {
@@ -436,6 +442,7 @@ export async function copyNode(
       overwrite.node.id === source.node.id)
   )
     throw new Error("invalid_copy_authorization");
+  if (overwrite) await assertNoEncryptedSubtree(env.DB, overwrite.node.id, request.spaceId);
   const overwriteManifest = overwrite
     ? await copyManifest(env.DB, overwrite.node.id, request.spaceId, "infinity")
     : Object.freeze({ ids: [] as string[], bytes: 0, props: 0 });

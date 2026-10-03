@@ -38,6 +38,11 @@ export interface RecipientVault {
 export interface UnlockedRecipient {
   readonly publicKey: RecipientPublicKey;
   readonly privateKey: CryptoKey;
+  readonly signing: {
+    readonly fingerprint: string;
+    readonly spki: string;
+    readonly privateKey: CryptoKey;
+  };
 }
 export interface FileCipher {
   readonly envelope: FileEnvelope;
@@ -122,6 +127,15 @@ async function importPublic(value: RecipientPublicKey): Promise<CryptoKey> {
   if (algorithm.modulusLength !== 3072 || algorithm.hash.name !== "SHA-256") fail();
   return key;
 }
+/** Validate a pinned Ed25519 DER SPKI independently of RSA recipient parsing. */
+export async function verifySigningPublicKey(value: RecipientPublicKey): Promise<void> {
+  exactKeys(value, ["fingerprint", "spki"]);
+  const spki = base64UrlToBytes(value.spki, 40, 80);
+  base64UrlToBytes(value.fingerprint, 32, 32);
+  if ((await fingerprint(spki)) !== value.fingerprint) fail();
+  const key = await crypto.subtle.importKey("spki", spki, { name: "Ed25519" }, false, ["verify"]);
+  if (key.type !== "public" || key.algorithm.name !== "Ed25519") fail();
+}
 function label(cryptoId: string, recipientFingerprint: string): OwnedBytes {
   return encoder.encode(`ncf-file-key-v1\0${cryptoId}\0${recipientFingerprint}`);
 }
@@ -138,6 +152,57 @@ async function vaultKey(recovery: OwnedBytes, salt: OwnedBytes): Promise<CryptoK
     false,
     ["encrypt", "decrypt"],
   );
+}
+
+/** Separate domain from the RSA vault key; the on-disk recovery format stays version 1. */
+async function deriveOwnerSigningKey(
+  recovery: OwnedBytes,
+  salt: OwnedBytes,
+  account: string,
+  rsaFingerprint: string,
+): Promise<UnlockedRecipient["signing"]> {
+  if (recovery.length !== 32 || salt.length !== 16) fail();
+  const source = await crypto.subtle.importKey("raw", recovery, "HKDF", false, ["deriveBits"]);
+  const seed = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt,
+        info: encoder.encode(`ncf-owner-ed25519-v1\0${account}\0${rsaFingerprint}`),
+      },
+      source,
+      256,
+    ),
+  );
+  const pkcs8 = new Uint8Array(16 + seed.length);
+  pkcs8.set(
+    Uint8Array.from([
+      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
+      0x20,
+    ]),
+  );
+  pkcs8.set(seed, 16);
+  try {
+    // Export only a transient key to obtain its public coordinate; keep the live key nonextractable.
+    const temporary = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, true, [
+      "sign",
+    ]);
+    const jwk = await crypto.subtle.exportKey("jwk", temporary);
+    const x = base64UrlToBytes(jwk.x, 32, 32);
+    const spki = new Uint8Array(12 + x.length);
+    spki.set(
+      Uint8Array.from([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]),
+    );
+    spki.set(x, 12);
+    const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, [
+      "sign",
+    ]);
+    return { fingerprint: await fingerprint(spki), spki: bytesToBase64Url(spki), privateKey };
+  } finally {
+    seed.fill(0);
+    pkcs8.fill(0);
+  }
 }
 
 /** The recovery secret is returned once; neither vault nor private key is sent to a Worker. */
@@ -189,7 +254,11 @@ export async function createRecipientVault(accountValue: string): Promise<{
         encryptedPkcs8: bytesToBase64Url(encrypted),
       },
       recoveryKey: bytesToBase64Url(recovery),
-      unlocked: { publicKey, privateKey },
+      unlocked: {
+        publicKey,
+        privateKey,
+        signing: await deriveOwnerSigningKey(recovery, salt, account, publicKey.fingerprint),
+      },
     };
   } finally {
     pkcs8.fill(0);
@@ -240,7 +309,11 @@ export async function unlockRecipientVault(
     );
     if (found.length !== challenge.length || found.some((byte, index) => byte !== challenge[index]))
       fail();
-    return { publicKey, privateKey };
+    return {
+      publicKey,
+      privateKey,
+      signing: await deriveOwnerSigningKey(recovery, salt, account, publicKey.fingerprint),
+    };
   } finally {
     recovery.fill(0);
     pkcs8?.fill(0);

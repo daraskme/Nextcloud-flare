@@ -76,6 +76,16 @@ function validateTemplate(config) {
 function generate() {
   const config = readJsonc(templatePath);
   validateTemplate(config);
+  assert(
+    config.vars.STAGING_CONTROL_OPERATOR_ENABLED === "false",
+    "Staging control operator must remain disabled in generated config",
+  );
+  const weeklyBackup = process.env.STAGING_WEEKLY_BACKUP_ENABLED;
+  assert(
+    weeklyBackup === undefined || weeklyBackup === "" || ["true", "false"].includes(weeklyBackup),
+    "Invalid STAGING_WEEKLY_BACKUP_ENABLED",
+  );
+  config.vars.BACKUP_OPERATOR_ENABLED = String(weeklyBackup === "true");
   const d1 = process.env.STAGING_D1_DATABASE_ID?.trim() ?? "";
   const kv = process.env.STAGING_KV_NAMESPACE_ID?.trim() ?? "";
   assert(

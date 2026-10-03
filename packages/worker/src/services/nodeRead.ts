@@ -1,10 +1,11 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import { NodeCursorTokens } from "../auth/nodeCursor";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import { ENCRYPTION_COLUMNS, type EncryptionProjection, encryptionDto } from "./encryptionMarker";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-interface ChildRow {
+interface ChildRow extends EncryptionProjection {
   id: string;
   parentId: string;
   ownerId: string;
@@ -47,11 +48,19 @@ async function nodeProof(db: D1Database, principal: Principal, nodeId: string) {
 /** Reassert current ancestry and credential immediately before returning metadata. */
 export async function readNode(db: D1Database, principal: Principal, nodeId: string) {
   const proof = await nodeProof(db, principal, nodeId);
-  await atomicBatch(db, [
+  const result = await atomicBatch(db, [
     authorizationAssertion(proof),
     assertExists("SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=0", [
       principal.epoch,
     ]),
+    {
+      sql: `SELECT ${ENCRYPTION_COLUMNS} FROM nodes n
+        JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
+          AND b.state IN ('committed','gc_candidate')
+        LEFT JOIN blob_encryption be ON be.blob_id=b.id AND be.owner_id=n.owner_id
+        WHERE n.id=? AND n.space_id=? AND n.owner_id=? AND n.deleted_at IS NULL`,
+      values: [proof.node.id, proof.node.space_id, proof.node.owner_id],
+    },
   ]);
   return Object.freeze({
     id: proof.node.id,
@@ -63,6 +72,7 @@ export async function readNode(db: D1Database, principal: Principal, nodeId: str
     revision: proof.node.revision,
     currentBlobId: proof.node.current_blob_id,
     treeGeneration: proof.node.tree_generation,
+    encryption: encryptionDto((result[2]?.results?.[0] ?? null) as EncryptionProjection | null),
   });
 }
 
@@ -152,10 +162,12 @@ export async function listNodeChildren(
       ? {
           sql: `SELECT n.id,n.parent_id AS parentId,n.owner_id AS ownerId,n.name,
             n.name_ci AS nameCi,n.kind,n.revision,n.current_blob_id AS currentBlobId,
-            n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime,COALESCE(s.starred,0) AS starred
+            n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime,COALESCE(s.starred,0) AS starred,
+            ${ENCRYPTION_COLUMNS}
             FROM nodes n INDEXED BY nodes_children_keyset
             LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
               AND b.state IN ('committed','gc_candidate')
+            LEFT JOIN blob_encryption be ON be.blob_id=b.id AND be.owner_id=n.owner_id
             LEFT JOIN user_node_state s ON s.node_id=n.id AND s.user_id=?
             WHERE n.parent_id=? AND n.deleted_at IS NULL AND n.space_id=? AND n.owner_id=?
             ORDER BY n.name_ci,n.id LIMIT 201`,
@@ -169,10 +181,12 @@ export async function listNodeChildren(
       : {
           sql: `SELECT n.id,n.parent_id AS parentId,n.owner_id AS ownerId,n.name,
             n.name_ci AS nameCi,n.kind,n.revision,n.current_blob_id AS currentBlobId,
-            n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime,COALESCE(s.starred,0) AS starred
+            n.updated_at AS updatedAt,b.size,b.mime_sniffed AS mime,COALESCE(s.starred,0) AS starred,
+            ${ENCRYPTION_COLUMNS}
             FROM nodes n INDEXED BY nodes_children_keyset
             LEFT JOIN blobs b ON b.id=n.current_blob_id AND b.owner_id=n.owner_id
               AND b.state IN ('committed','gc_candidate')
+            LEFT JOIN blob_encryption be ON be.blob_id=b.id AND be.owner_id=n.owner_id
             LEFT JOIN user_node_state s ON s.node_id=n.id AND s.user_id=?
             WHERE n.parent_id=? AND n.deleted_at IS NULL AND n.space_id=? AND n.owner_id=?
               AND (n.name_ci>? OR (n.name_ci=? AND n.id>?))
@@ -214,10 +228,28 @@ export async function listNodeChildren(
   return Object.freeze({
     parentId: parent.id,
     treeGeneration: parent.tree_generation,
-    children: page.map(({ nameCi: _nameCi, starred, ...node }) => ({
-      ...node,
-      starred: starred === 1,
-    })),
+    children: page.map(({ nameCi: _nameCi, starred, ...node }) => {
+      const encryption = encryptionDto(node);
+      const {
+        encBlobId: _encBlobId,
+        encOwnerId: _encOwnerId,
+        encHeaderSha256: _encHeaderSha256,
+        encSignerRsaFingerprint: _encSignerRsaFingerprint,
+        encSignerSigningFingerprint: _encSignerSigningFingerprint,
+        encRequiredAdminFingerprint: _encRequiredAdminFingerprint,
+        encCryptoId: _encCryptoId,
+        encFormatVersion: _encFormatVersion,
+        encOwnerSignature: _encOwnerSignature,
+        encAttestedNodeId: _encAttestedNodeId,
+        encAttestedRevision: _encAttestedRevision,
+        encAdminReceiptState: _encAdminReceiptState,
+        encAdminReceiptSignature: _encAdminReceiptSignature,
+        encAdminAccountId: _encAdminAccountId,
+        encAdminVerifiedAt: _encAdminVerifiedAt,
+        ...visible
+      } = node;
+      return { ...visible, starred: starred === 1, encryption };
+    }),
     nextCursor,
   });
 }
