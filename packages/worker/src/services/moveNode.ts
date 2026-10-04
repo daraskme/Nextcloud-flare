@@ -113,7 +113,7 @@ function moveStatements(
           SELECT ?,?,?,?,'pending',?,${clock},${clock}+3024000000,? WHERE ? IS NOT NULL`,
         values: [
           op,
-          node.owner_id,
+          actorId,
           node.space_id,
           overwriteId,
           claim.intent.kind,

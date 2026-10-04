@@ -296,6 +296,18 @@ async function finalizeCandidate(
               WHERE isc.upload_id=uploads.id)`,
         values: [blobId],
       },
+      // A scan-bound upload keeps cleanup_pending=1 until its blob is proven
+      // absent; the settled settlement is the hold trigger's release, so the
+      // flag clears here instead of wedging the recovery audit afterwards.
+      {
+        sql: `UPDATE uploads SET cleanup_pending=0,cleanup_token=NULL,cleanup_lease_expires_at=NULL,cleanup_error=NULL
+          WHERE blob_id=? AND cleanup_pending=1 AND state IN ('expired','aborted','failed')
+            AND EXISTS(SELECT 1 FROM multipart_inventory_scans isc
+              WHERE isc.upload_id=uploads.id)
+            AND EXISTS(SELECT 1 FROM multipart_upload_settlements x
+              WHERE x.upload_id=uploads.id AND x.state='settled')`,
+        values: [blobId],
+      },
     ]);
   } catch {
     // Another collector's terminal pair can settle the result, never this grant's unknown slot.

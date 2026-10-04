@@ -86,7 +86,7 @@ function trashStatements(
       statement: {
         sql: `INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,reason,created_at,purge_after,epoch)
           VALUES(?,?,?,?,'pending',?,${clock},${clock}+3024000000,?)`,
-        values: [op, node.owner_id, node.space_id, node.id, claim.intent.kind, claim.permit.epoch],
+        values: [op, actorId, node.space_id, node.id, claim.intent.kind, claim.permit.epoch],
       },
       assertion: assertOneChange,
     },

@@ -140,7 +140,7 @@ async function pathShareBoundary(
   const scoped =
     principal.kind === "link_share" ||
     ((principal.kind === "user" || principal.kind === "app_password") &&
-      principal.user_id !== ownerId);
+      (principal.user_id !== ownerId || principal.internal_share != null));
   if (!scoped || rows.length === 0) return -1;
   const ancestorIds = rows.map((row) => row.id);
   const inList = ancestorIds.map(() => "?").join(",");

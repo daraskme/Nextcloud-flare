@@ -569,8 +569,9 @@ async function restoreFinalStatements(
     privateEncryptedRestoreAssertion(grant.trashOpId, grant.parentId, row.space_id),
     assertExists(
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-      WHERE t.op_id=? AND t.state='trashed' AND t.actor_id=? AND t.space_id=?
+      WHERE t.op_id=? AND t.state='trashed' AND t.space_id=?
         AND t.root_node_id=? AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+        AND (t.actor_id=? OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))
         AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)=?
         AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
           WHERE tm.trash_op_id=t.op_id AND
@@ -581,7 +582,7 @@ async function restoreFinalStatements(
         AND NOT EXISTS(SELECT 1 FROM trash_members tm JOIN node_versions v ON v.node_id=tm.node_id
           JOIN blobs b ON b.id=v.blob_id
           WHERE tm.trash_op_id=t.op_id AND b.state IN ('deleting','deleted'))`,
-      [grant.trashOpId, row.owner_id, row.space_id, grant.rootNodeId, row.node_count],
+      [grant.trashOpId, row.space_id, grant.rootNodeId, row.owner_id, row.owner_id, row.node_count],
     ),
     {
       sql: "UPDATE trash_ops SET state='restoring' WHERE op_id=? AND state='trashed'",
@@ -718,15 +719,17 @@ async function purgeFinalStatements(
     sourceGuard(row, grant),
     assertExists(
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-      WHERE t.op_id=? AND t.state='trashed' AND t.actor_id=? AND t.space_id=?
+      WHERE t.op_id=? AND t.state='trashed' AND t.space_id=?
         AND t.root_node_id=? AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+        AND (t.actor_id=? OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))
         AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)=?
         AND (SELECT COUNT(*) FROM purge_members WHERE purge_op_id=?)=?`,
       [
         grant.trashOpId,
-        row.owner_id,
         row.space_id,
         grant.rootNodeId,
+        row.owner_id,
+        row.owner_id,
         row.node_count,
         row.op_id,
         row.node_count,

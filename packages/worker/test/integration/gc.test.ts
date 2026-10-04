@@ -276,10 +276,11 @@ it("reclaims a gc_candidate whose multipart upload was closure-settled", async (
       .bind(f.blob)
       .first("state"),
   ).toBe("deleted");
-  // The scan-bound upload row stays frozen under the inventory hold trigger.
+  // The settled settlement releases the inventory hold: once the blob is proven
+  // absent, finalization also clears the frozen cleanup flag.
   expect(
     await env.DB.prepare("SELECT cleanup_pending FROM uploads WHERE id=?")
       .bind(f.id)
       .first("cleanup_pending"),
-  ).toBe(1);
+  ).toBe(0);
 });

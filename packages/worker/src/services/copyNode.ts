@@ -142,7 +142,7 @@ function copyStatements(
         sql: `INSERT INTO trash_ops(op_id,actor_id,space_id,root_node_id,state,reason,created_at,purge_after,epoch) SELECT ?,?,?,?,'pending',?,${clock},${clock}+3024000000,? WHERE ? IS NOT NULL`,
         values: [
           op,
-          overwrite?.node.owner_id ?? null,
+          source.principal.kind === "link_share" ? null : source.principal.user_id,
           source.node.space_id,
           overwriteId,
           claim.intent.kind,

@@ -60,9 +60,10 @@ async function snapshot(
     .prepare(`SELECT t.root_node_id AS rootId,n.name,n.revision AS rootRevision,
       (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id) AS memberCount
       FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-      WHERE t.op_id=? AND t.space_id=? AND t.actor_id=? AND t.state='trashed'
-        AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL`)
-    .bind(trashOpId, spaceId, principal.user_id)
+      WHERE t.op_id=? AND t.space_id=? AND t.state='trashed'
+        AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+        AND (t.actor_id=? OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))`)
+    .bind(trashOpId, spaceId, principal.user_id, principal.user_id)
     .first<{ rootId: string; name: string; memberCount: number; rootRevision: number }>();
   if (!row || row.memberCount < 1 || row.memberCount > ASYNC_TREE_MAX_NODES)
     throw new Error("authorization_denied");
@@ -135,8 +136,9 @@ function restoreGuard(claim: OperationClaim, rootId: string, memberCount: number
   if (typeof operands.trashOpId !== "string") throw new Error("invalid_mutation_plan");
   return assertExists(
     `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-      WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+      WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.state='trashed'
         AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+        AND (t.actor_id=? OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))
         AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)=?
         AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
           WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))
@@ -150,6 +152,7 @@ function restoreGuard(claim: OperationClaim, rootId: string, memberCount: number
       operands.trashOpId,
       claim.intent.spaceId,
       rootId,
+      claim.intent.principal.user_id,
       claim.intent.principal.user_id,
       memberCount,
       claim.permit.epoch,

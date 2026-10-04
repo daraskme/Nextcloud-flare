@@ -129,3 +129,25 @@ BEGIN SELECT RAISE(ABORT,'orphan_key_quarantined'); END;
 CREATE TRIGGER target_sets_orphan_key_update BEFORE UPDATE OF manifest_ref ON target_sets
 WHEN EXISTS(SELECT 1 FROM orphan_objects WHERE r2_key=NEW.manifest_ref)
 BEGIN SELECT RAISE(ABORT,'orphan_key_quarantined'); END;
+
+-- Rows quarantined before owner derivation existed carry NULL owner_key; heal
+-- them in place so vanished objects are still collectable (and charge their
+-- owner through orphan_objects_reconcile_charge when owner_id resolves).
+UPDATE orphan_objects SET
+  owner_key=seg.owner,
+  owner_id=(SELECT id FROM users WHERE id=seg.owner),
+  blob_key=CASE
+    WHEN substr(orphan_objects.r2_key,length(seg.owner)+4,2)='b/'
+      AND length(substr(orphan_objects.r2_key,length(seg.owner)+6)) BETWEEN 1 AND 128
+      AND instr(substr(orphan_objects.r2_key,length(seg.owner)+6),'/')=0
+    THEN substr(orphan_objects.r2_key,length(seg.owner)+6)
+    ELSE NULL
+  END
+FROM (
+  SELECT r2_key AS k,
+    substr(r2_key,3,instr(substr(r2_key,3),'/')-1) AS owner
+  FROM orphan_objects
+  WHERE owner_key IS NULL AND r2_key LIKE 'u/%/%'
+) AS seg
+WHERE orphan_objects.r2_key=seg.k
+  AND length(seg.owner) BETWEEN 1 AND 128;

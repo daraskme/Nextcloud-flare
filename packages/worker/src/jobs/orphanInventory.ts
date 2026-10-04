@@ -120,7 +120,7 @@ function observation(
   validObject(object);
   // Every u/<owner>/... object resolves its owner segment, including derived keys
   // (u/<owner>/d/..., index uploads) whose blob-level shape differs from u/<owner>/b/<blob>.
-  const ownerParsed = /^u\/([^/]{1,128})(?:\/|$)/.exec(object.key);
+  const ownerParsed = /^u\/([^/]{1,128})\//.exec(object.key);
   const blobParsed = /^u\/[^/]{1,128}\/b\/([^/]{1,128})$/.exec(object.key);
   const owner = ownerParsed?.[1] ?? null;
   const blob = blobParsed?.[1] ?? null;
@@ -389,7 +389,14 @@ async function collect(
       "SELECT 1 FROM control WHERE singleton=1 AND epoch=? AND maintenance=? AND gc_paused=?",
       [epoch, stopped ? 1 : 0, stopped ? 1 : 0],
     );
-  const due = `${stopped ? "state='deleting'" : "state<>'deleted'"} AND owner_key IS NOT NULL AND first_seen_at<=${CLOCK}-${ORPHAN_GRACE_MS}
+  // Rows whose key cannot resolve an owner (no u/<owner>/ prefix at all, or a
+  // pre-migration tombstone the object already vanished from) have no owner to
+  // charge and would otherwise block the recovery audit forever; collect them
+  // on the same grace/claim rules as owned quarantines.
+  const unowned = `(owner_key IS NOT NULL OR substr(r2_key,1,2)<>'u/'
+    OR instr(substr(r2_key,3),'/')=0
+    OR length(substr(r2_key,3,instr(substr(r2_key,3),'/')-1)) NOT BETWEEN 1 AND 128)`;
+  const due = `${stopped ? "state='deleting'" : "state<>'deleted'"} AND ${unowned} AND first_seen_at<=${CLOCK}-${ORPHAN_GRACE_MS}
     AND next_check_at<=${CLOCK} AND (claim_token IS NULL OR claim_expires_at<=${CLOCK})`;
   const rows = await primary(db)
     .prepare(`SELECT r2_key FROM orphan_objects WHERE ${due} AND epoch<=?

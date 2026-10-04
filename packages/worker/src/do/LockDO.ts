@@ -719,8 +719,9 @@ export class LockDO extends DurableObject<Env> {
       throw new Error("dav_locked");
     const restoreGuard = assertExists(
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.state='trashed'
           AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+          AND (t.actor_id=? OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))
           AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)
             BETWEEN 1 AND ${request.async ? 10_000 : 1_000}
           AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
@@ -739,6 +740,7 @@ export class LockDO extends DurableObject<Env> {
         request.trashOpId,
         request.spaceId,
         request.rootNodeId,
+        request.principal.user_id,
         request.principal.user_id,
         status.epoch,
       ],
@@ -803,13 +805,20 @@ export class LockDO extends DurableObject<Env> {
     if (authority.operation !== "node.read") throw new Error("authorization_denied");
     const purgeGuard = assertExists(
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
-        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.actor_id=? AND t.state='trashed'
+        WHERE t.op_id=? AND t.space_id=? AND t.root_node_id=? AND t.state='trashed'
           AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL
+          AND (t.actor_id=? OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))
           AND (SELECT COUNT(*) FROM trash_members WHERE trash_op_id=t.op_id)
             BETWEEN 1 AND ${request.async ? 10_000 : 1_000}
           AND NOT EXISTS(SELECT 1 FROM trash_members tm LEFT JOIN nodes m ON m.id=tm.node_id
             WHERE tm.trash_op_id=t.op_id AND (m.id IS NULL OR m.space_id<>t.space_id OR m.deleted_op_id<>t.op_id OR m.deleted_at IS NULL))`,
-      [request.trashOpId, request.spaceId, request.rootNodeId, request.principal.user_id],
+      [
+        request.trashOpId,
+        request.spaceId,
+        request.rootNodeId,
+        request.principal.user_id,
+        request.principal.user_id,
+      ],
     );
     const digest = JSON.stringify([
       "node.purge",

@@ -4,6 +4,7 @@ import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
+import { ListCursorTokens } from "../../src/auth/listCursor";
 import { atomicBatch, type SqlStatement } from "../../src/db/primary";
 import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { prepareCookieBlobRead } from "../../src/services/blobRead";
@@ -11,6 +12,7 @@ import { issueContentTicket } from "../../src/services/contentTicket";
 import { readNodePath } from "../../src/services/nodeRead";
 import { putFile } from "../../src/services/putFile";
 import { trashNode } from "../../src/services/trashNode";
+import { listTrash } from "../../src/services/trashRead";
 import { davPutFixture } from "../fixtures/davPut";
 import { foundationFixture } from "../fixtures/foundation";
 import { multipartInventoryFixture } from "../fixtures/multipartInventory";
@@ -130,9 +132,9 @@ it("denies internal-share byte delivery until the download action exists", async
   ).resolves.toMatchObject({ budgetId: issued.budgetId });
 });
 
-// H3: trash_ops.actor_id records the space owner so the owner can audit and
-// purge what a share recipient removed.
-it("records the space owner, not the share recipient, in trash_ops", async () => {
+// H3: trash_ops.actor_id keeps the initiating principal so overwrite receipts
+// reconcile, while every owner-facing read grants the space owner visibility.
+it("keeps the initiator in trash_ops while the owner sees the op", async () => {
   const { f, now } = await fixture();
   const recipient = foundationFixture(crypto.randomUUID(), now);
   const shareId = crypto.randomUUID();
@@ -169,11 +171,22 @@ it("records the space owner, not the share recipient, in trash_ops", async () =>
     lockTokens: [],
   });
   expect(trashed.kind).toBe("terminal");
+  if (trashed.kind !== "terminal") throw new Error("trash_not_terminal");
   expect(
     await env.DB.prepare("SELECT actor_id FROM trash_ops WHERE root_node_id=?")
       .bind(f.ids.file)
       .first<string>("actor_id"),
-  ).toBe(f.ids.user);
+  ).toBe(recipient.ids.user);
+  const ring = await contentKeyRing("cursor", {
+    cursor: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  });
+  const listed = await listTrash(
+    env.DB,
+    { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch: 1 },
+    new ListCursorTokens(ring),
+    f.ids.space,
+  );
+  expect(listed.items.map((item) => item.opId)).toContain(trashed.operation.id);
 });
 
 // M1: trashing a subtree revokes only the tickets/content sessions whose
