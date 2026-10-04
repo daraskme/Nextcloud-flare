@@ -8,7 +8,7 @@ import type { ContentPurpose } from "../auth/contentSession";
 import type { ContentTokens } from "../auth/contentTokens";
 import { shareCoverageAssertion, shareCoverageBatchAssertions } from "../auth/shareCoverage";
 import type { MutationAdmission } from "../db/mutationAdmission";
-import { assertExists, atomicBatch, primary } from "../db/primary";
+import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import {
   type AccountMutationEnv,
   acquireAccountMutation,
@@ -104,7 +104,7 @@ function budgetAndShareAssertion(
                 SELECT 1 FROM current_internal_shares current
                 WHERE current.share_id=sh.id AND current.version=sh.version
               ))
-              AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
+              AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='download')
               AND ((? IS NOT NULL AND sh.kind='internal' AND (
                 EXISTS(SELECT 1 FROM share_grants g
                   WHERE g.share_id=sh.id AND g.user_id=?
@@ -415,6 +415,10 @@ export async function issueContentTicket(
             iat * 1000,
           )
         : []),
+      ...targetSetNodeStatements(
+        record.id,
+        zip ? zip.entries.map((entry) => entry.nodeId) : entries.map((entry) => entry.nodeId),
+      ),
     ]);
   } catch (error) {
     const concurrentReplay = await existingPublication().catch(() => null);
@@ -426,6 +430,20 @@ export async function issueContentTicket(
     throw error;
   }
   return Object.freeze({ ...result, ticket: signed });
+}
+
+/** Durable target-set membership lets subtree operations (trash, purge) revoke only affected sessions. */
+function targetSetNodeStatements(targetSetId: string, nodeIds: readonly string[]): SqlStatement[] {
+  const unique = [...new Set(nodeIds)];
+  const statements: SqlStatement[] = [];
+  for (let start = 0; start < unique.length; start += 45) {
+    const chunk = unique.slice(start, start + 45);
+    statements.push({
+      sql: `INSERT INTO target_set_nodes(target_set_id,node_id) VALUES ${chunk.map(() => "(?,?)").join(",")}`,
+      values: chunk.flatMap((nodeId) => [targetSetId, nodeId]),
+    });
+  }
+  return statements;
 }
 
 async function closeReplayAdmission(

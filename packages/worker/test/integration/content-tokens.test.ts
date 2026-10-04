@@ -373,8 +373,8 @@ it("redeems an anonymous share ticket and rejects a changed share version", asyn
       values: [ids.share, f.ids.user, f.ids.folder, now],
     },
     {
-      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')",
-      values: [ids.share],
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+      values: [ids.share, ids.share],
     },
     {
       sql: `INSERT INTO share_sessions(id,share_id,share_version,secret_digest,epoch,issued_at,expires_at)

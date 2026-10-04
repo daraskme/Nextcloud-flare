@@ -92,7 +92,10 @@ it("binds an internal-share budget to the selected share root", async () => {
       sql: "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'internal',?)",
       values: [shareId, f.ids.user, f.ids.folder, now],
     },
-    { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [shareId] },
+    {
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+      values: [shareId, shareId],
+    },
     {
       sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
       values: [shareId, f.ids.user],
@@ -141,7 +144,10 @@ it("uses the anonymous unlock session as the budget identity and expiry fence", 
       sql: "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at,expires_at) VALUES(?,?,?,'link',?,?)",
       values: [shareId, f.ids.user, f.ids.folder, now, now + 310_000],
     },
-    { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [shareId] },
+    {
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+      values: [shareId, shareId],
+    },
     {
       sql: `INSERT INTO share_sessions(id,share_id,share_version,secret_digest,epoch,issued_at,expires_at)
         VALUES(?,?,1,?,1,?,?)`,

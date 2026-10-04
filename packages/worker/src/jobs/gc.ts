@@ -21,7 +21,9 @@ const CLOCK = "strftime('%s','now')*1000";
 const SETTLED_UPLOADS = `NOT EXISTS(SELECT 1 FROM uploads u WHERE u.blob_id=b.id AND (
   u.state NOT IN ('completed','expired','aborted','failed') OR u.cleanup_token IS NOT NULL
   OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=u.reservation_id AND r.state='reserved')
-  OR (u.mode='multipart' AND u.state<>'completed' AND u.multipart_cleanup_closed IS NULL)))`;
+  OR (u.mode='multipart' AND u.state<>'completed' AND u.multipart_cleanup_closed IS NULL
+    AND NOT EXISTS(SELECT 1 FROM multipart_upload_settlements x
+      WHERE x.upload_id=u.id AND x.state='settled'))))`;
 
 type GcMode = boolean | RestorePause;
 function modeFence(mode: GcMode, alias: string) {
@@ -287,7 +289,23 @@ async function finalizeCandidate(
         sql: `UPDATE uploads SET cleanup_pending=0,cleanup_token=NULL,cleanup_lease_expires_at=NULL,cleanup_error=NULL
           WHERE blob_id=? AND state IN ('expired','aborted','failed')
             AND (mode='single' OR (mode='multipart' AND multipart_cleanup_started_at IS NOT NULL
-              AND multipart_cleanup_closed IS NOT NULL))`,
+              AND multipart_cleanup_closed IS NOT NULL)
+              OR EXISTS(SELECT 1 FROM multipart_upload_settlements x
+                WHERE x.upload_id=uploads.id AND x.state='settled'))
+            AND NOT EXISTS(SELECT 1 FROM multipart_inventory_scans isc
+              WHERE isc.upload_id=uploads.id)`,
+        values: [blobId],
+      },
+      // A scan-bound upload keeps cleanup_pending=1 until its blob is proven
+      // absent; the settled settlement is the hold trigger's release, so the
+      // flag clears here instead of wedging the recovery audit afterwards.
+      {
+        sql: `UPDATE uploads SET cleanup_pending=0,cleanup_token=NULL,cleanup_lease_expires_at=NULL,cleanup_error=NULL
+          WHERE blob_id=? AND cleanup_pending=1 AND state IN ('expired','aborted','failed')
+            AND EXISTS(SELECT 1 FROM multipart_inventory_scans isc
+              WHERE isc.upload_id=uploads.id)
+            AND EXISTS(SELECT 1 FROM multipart_upload_settlements x
+              WHERE x.upload_id=uploads.id AND x.state='settled')`,
         values: [blobId],
       },
     ]);
@@ -299,7 +317,10 @@ async function finalizeCandidate(
       FROM blobs b JOIN gc_candidates g ON g.blob_id=b.id WHERE b.id=? AND b.r2_key=?
       AND g.claim_token IS NULL AND g.claim_epoch IS NULL
       AND NOT EXISTS(SELECT 1 FROM blob_storage WHERE blob_id=b.id AND removed_at IS NULL)
-      AND NOT EXISTS(SELECT 1 FROM uploads WHERE blob_id=b.id AND cleanup_pending<>0)`)
+      AND NOT EXISTS(SELECT 1 FROM uploads u WHERE u.blob_id=b.id AND u.cleanup_pending<>0
+        AND NOT (EXISTS(SELECT 1 FROM multipart_upload_settlements x
+          WHERE x.upload_id=u.id AND x.state='settled')
+        AND EXISTS(SELECT 1 FROM multipart_inventory_scans isc WHERE isc.upload_id=u.id)))`)
     .bind(blobId, candidate.key)
     .first<{ blobState: string; candidateState: string }>();
   return row?.blobState === "deleted" && row.candidateState === "deleted";

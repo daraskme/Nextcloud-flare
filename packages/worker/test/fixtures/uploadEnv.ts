@@ -75,6 +75,18 @@ export function admitted(db = env.DB, epoch = 1, maintenance = false): Env {
           invoke((lock) => lock.acquireCreate(r)),
         acquireNodeWrite: (r: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
           invoke((lock) => lock.acquireNodeWrite(r)),
+        acquireRename: (r: Parameters<LockDO["acquireRename"]>[0]) =>
+          invoke((lock) => lock.acquireRename(r)),
+        acquireMove: (r: Parameters<LockDO["acquireMove"]>[0]) =>
+          invoke((lock) => lock.acquireMove(r)),
+        acquireCopy: (r: Parameters<LockDO["acquireCopy"]>[0]) =>
+          invoke((lock) => lock.acquireCopy(r)),
+        acquireTrash: (r: Parameters<LockDO["acquireTrash"]>[0]) =>
+          invoke((lock) => lock.acquireTrash(r)),
+        acquireRestore: (r: Parameters<LockDO["acquireRestore"]>[0]) =>
+          invoke((lock) => lock.acquireRestore(r)),
+        acquirePurge: (r: Parameters<LockDO["acquirePurge"]>[0]) =>
+          invoke((lock) => lock.acquirePurge(r)),
         release: (id: string, permit: Parameters<LockDO["release"]>[1]) =>
           invoke((lock) => lock.release(id, permit)),
       };

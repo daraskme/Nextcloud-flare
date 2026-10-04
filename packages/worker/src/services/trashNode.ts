@@ -179,13 +179,15 @@ function trashStatements(
       affectedId: node.owner_id,
       statement: {
         sql: `UPDATE tickets SET cancelled_at=${clock} WHERE cancelled_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)`,
-        values: [node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership}))`,
+        values: [op],
       },
       assertion: assertExists(
         `SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM tickets WHERE cancelled_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?))`,
-        [node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership})))`,
+        [op],
       ),
     },
     {
@@ -193,13 +195,15 @@ function trashStatements(
       affectedId: node.owner_id,
       statement: {
         sql: `UPDATE content_sessions SET revoked_at=${clock} WHERE revoked_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)`,
-        values: [node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership}))`,
+        values: [op],
       },
       assertion: assertExists(
         `SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM content_sessions WHERE revoked_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?))`,
-        [node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership})))`,
+        [op],
       ),
     },
     {
