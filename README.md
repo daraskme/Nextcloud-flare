@@ -28,6 +28,7 @@ Cloudflare上で動かす、個人向けのファイル管理アプリです。�
 - ユーザーごとのFiles領域、フォルダー、アップロード、ダウンロード、WebDAV（暗号化必須環境での書き込み制限は後述）。
 - 期限・パスワードを設定できる読み取り専用共有と、限定されたupload-only共有。
 - 画像、音声、動画、EPUBの閲覧。AVIF、AV1、Opusの対応条件と試験範囲は[メディア形式](docs/MEDIA_FORMATS.md)を参照してください。
+- 音声への利用者別チャプター保存と時刻への移動。サーバーで解析済みの音声が対象で、暗号化音声のチャプター保存にはまだ対応していません。
 - 管理者による明示的な全利用者ファイルの読み取り・プレビュー・ダウンロードと閲覧監査。
 - ブラウザー内暗号化、鍵登録、管理者公開鍵の確認、暗号化コピー作成。
 - 週次暗号化バックアップ、オフライン復元検査、毎時ローカル監視。運用手順は[週次バックアップの導入](ops/backup/INSTALL_USER_AUTOMATION.md)と[監視](ops/monitoring/README.md)を参照してください。
@@ -51,7 +52,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev`はWebアセットをビルドしてWranglerのローカル環境を起動します。通常の開発起動はローカルbindingを使い、Cloudflareのstagingやproductionへ接続・配備しません。実値のsecretをREADMEやGitへ記録しないでください。
+`pnpm dev`はWebアセットをビルドしてWranglerのローカル環境を起動します。認証付きの画面・操作を検証する場合は、固定のテスト利用者と隔離DBを用意する`pnpm test:browser`を使います。通常の開発起動はローカルbindingを使い、Cloudflareのstagingやproductionへ接続・配備しません。実値のsecretをREADMEやGitへ記録しないでください。
 
 ## 検査コマンド
 
@@ -65,6 +66,7 @@ pnpm dev
 | `pnpm verify:contracts` / `pnpm verify:config` | 契約とCloudflare設定の検査 |
 | `pnpm build` | Web buildとWorker deploy dry-run |
 | `pnpm check` | lint、型、契約、設定、unit、integration、buildを実行 |
+| `pnpm release:gate` | ローカル検査・バックアップ復元・ブラウザー試験の実行結果を保存（[実行条件](docs/RELEASE_EVIDENCE.md)） |
 
 非公開の実ファイルを使う追加ブラウザーテストは`NCF_USER_MEDIA_MANIFEST`で別途指定できます。ファイル、manifest、traceなどの私有データをGitへ追加しないでください。ブラウザーテストの手順は[ローカル browser E2E](.agents/skills/ncf-local-browser-e2e/SKILL.md)を参照してください。
 
@@ -79,5 +81,6 @@ pnpm dev
 | 開発者: Files画面とHTTPアップロード | [Files UI](docs/FILES_UI.md)、[Upload HTTP](docs/UPLOAD_HTTP.md) |
 | 運用者: 環境ごとのリビジョン・検証 | [環境状態表](docs/ENVIRONMENT_STATUS.md) |
 | 運用者: staging設定・配備 | [staging運用](ops/staging/README.md) |
+| 運用者: 集計ヘルスチェックとリリース検証 | [Ops health](docs/OPS_HEALTH.md)、[Release evidence](docs/RELEASE_EVIDENCE.md) |
 | 運用者: バックアップと復元 | [週次バックアップの導入](ops/backup/INSTALL_USER_AUTOMATION.md)、[バックアップ世代と復元](docs/BACKUP_GENERATIONS.md)、[週次バックアップ状態](ops/monitoring/README.md) |
 | 作業再開 | [引き継ぎ資料](docs/HANDOFF.md)、[実装状況](docs/IMPLEMENTATION_STATUS.md) |
