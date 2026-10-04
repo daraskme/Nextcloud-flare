@@ -320,7 +320,6 @@ it("revokes a displayed URL on explicit close", async () => {
 it("revokes a displayed URL when navigating folders", async () => {
   await inspect();
   click(button(render(), "フォルダーを開く"));
-  render();
   expect(resolveObjectURL(urls[0]!)).toBeUndefined();
   expect(review(render())).toBeUndefined();
 });
@@ -333,7 +332,6 @@ it.each(["lock", "unmount", "folder", "close", "replace session"])(
     if (action === "unmount") unmount();
     if (action === "folder") {
       click(button(render(), "フォルダーを開く"));
-      render();
     }
     if (action === "close") {
       click(button(render(), "復号して開く"));

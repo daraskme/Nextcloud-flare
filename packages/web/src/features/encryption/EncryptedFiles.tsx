@@ -102,6 +102,10 @@ export function EncryptedFiles({ account }: { account: Account }) {
     setLegacyReview(null);
     setLegacyConfirmed(false);
   };
+  const selectFolder = (id: string) => {
+    close();
+    setFolderId(id);
+  };
   useEffect(() => {
     close();
   }, [keys, ownerId, folderId]);
@@ -523,6 +527,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
                 aria-label="暗号化ファイルの所有者"
                 value={ownerId}
                 onChange={(event) => {
+                  close();
                   const id = event.target.value;
                   setOwnerId(id);
                   setFolderId(
@@ -549,7 +554,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
           {owner && <p>管理者として読み取り専用で閲覧しています。閲覧履歴を記録します。</p>}
           <nav aria-label="暗号化フォルダー階層">
             {path.data?.path.map((item) => (
-              <Button key={item.id} variant="ghost" onClick={() => setFolderId(item.id)}>
+              <Button key={item.id} variant="ghost" onClick={() => selectFolder(item.id)}>
                 {item.name}
               </Button>
             ))}
@@ -591,7 +596,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
                   {node.size !== null && formatBytes(node.size)}
                 </span>
                 {node.kind === "folder" ? (
-                  <Button variant="ghost" onClick={() => setFolderId(node.id)}>
+                  <Button variant="ghost" onClick={() => selectFolder(node.id)}>
                     フォルダーを開く
                   </Button>
                 ) : isEncryptedFile(node) ? (
