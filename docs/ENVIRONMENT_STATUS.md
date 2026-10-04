@@ -5,7 +5,7 @@
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
 | 開発ソース | `main` merge `1073bf6`（検証済みアプリ `f131f80` と同一） | PR #37を統合済み。復元時の暗号化・共有制約、Promise診断gate、audio chapters、運用検証ツール、WebDAV認証の期限・PROPFIND互換修正を統合。追加レビューでDAV条件、プロパティ上限、共有session、ticket制限、KDF修復、tree job終端、group provenance、COPY先を補強。`0057`でshare sessionのsource digestを追加。ローカル検証は隔離SQLite/workerdの結果であり、stagingの動作を証明しない。 |
-| ローカル自動化runtime | 現行 `355f61b`（145 files）、候補 `f131f80`（155 files） | 現行版は55 migrations・88 tablesに対応。56 migrations対応候補はprepare/check済みだが、有効化は自動承認審査で拒否され、本人の明示承認待ち。切替は起きていない。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版はrollbackディレクトリへ保持。最終実行済みmonitorは02:15:30 UTCのhealthy / live reachable / pending 0。 |
+| ローカル自動化runtime | `f131f80`（155 files） | 本人の明示承認後、56 migrations・88 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版と直前の`355f61b`版はrollbackディレクトリへ保持。05:01:45 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
 | Cloudflare staging | コード `f131f80`、Worker version `35b6182f-33e4-4013-a546-aab8de1f1035` | `0057`まで適用。56 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。配備後の匿名HTTP smokeは9件成功。実WebDAV取得・暗号化fixtureの復元制約試験は下記の`1cf8681`時点の記録。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |
 
@@ -52,5 +52,7 @@ run `c4df4902-2a97-4381-84cf-9dfcf1f082aa` は専用D1、R2 2個、Queue、DLQ�
 世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch 2 は2026-10-04 00:28:25 UTCに完了した。外部アーカイブ `backup-e4312702-1f92-4b9b-aff9-35f84a84d5f2.ncf`（131,145,497 bytes）からoffline restoreし、86 tablesと19 objects（130,603,898 bytes）を検証した。実際の画像・音声・動画3件は復号後の全byte/SHA-256が既知hashと一致し、owner attestation、admin receipt、encryption markerも確認した。remote receiptは`completed/released`。maintenance、GC pause、backup freezeは解除され、一時bridgeは削除済み。
 
 復旧JSONは本人の端末内だけで扱い、Cloudflareや定期処理へ保存していない。検証用復元データと一時作業コピーは照合後に削除した。timerは日曜03:30 JST（次回2026-10-11）と毎時monitor。PC停止中に予定時刻を過ぎた場合は、ユーザーsession再開後に実行する。
+
+2026-10-04、本人の明示承認を受け、prepare/check済みの`f131f80`をローカル自動化runtimeへ有効化した。active manifestは155 files・56 migration SQL・88 tablesで一致し、backup stateはcompleted / archiveVerified=true。直前の`355f61b`版を`release.rollback-7d22580c-682e-4f80-b920-730f67088d53`へ保持し、旧86-table版も保持した。設定・資格情報・保存済みarchiveは切替対象外。切替後のmonitorは2026-10-04 05:01:45.200 UTCに正常終了し、backup healthy / live reachable / pending 0を確認した。これはruntimeと監視の確認であり、新しいバックアップ世代の作成・復元を再実行した記録ではない。
 
 monitorはhealthy/live reachable、pending通知0。デスクトップ通知2件とバックアップ正常復帰通知1件を確認した。Billing APIがアカウント全体の請求を返すためstaging追加額を厳密に帰属できず、`unattributed_below_threshold`は予算内を保証しない。自動停止するhard capもない。
