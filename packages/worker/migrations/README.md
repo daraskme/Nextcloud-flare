@@ -22,3 +22,5 @@ maintenance / GC pause / epoch bump を含む承認済み restore 手順で行�
 ローカル開発の空 DB には `pnpm exec wrangler d1 migrations apply DB --local` で適用できる。
 
 FK graph、生成順序、状態遷移、復旧境界は `docs/FOUNDATION.md` を参照。
+
+`0064` は purge の削除対象 delegation ID を保持する `purge_share_ids` と backup freeze trigger を追加する。再共有の失効状態を保ったまま、保存済み ancestry と FK 順で削除するために使う。

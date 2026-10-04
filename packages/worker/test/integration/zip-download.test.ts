@@ -479,11 +479,7 @@ it("serves a byte range with sparse R2 reads for uncovered entries", async () =>
   ]);
 });
 
-<<<<<<< HEAD
-it("does not charge or read ZIP blobs for a ranged HEAD over the central directory", async () => {
-=======
 it("charges the undelivered whole-entry reads a central-directory range requires", async () => {
->>>>>>> origin/main
   const { f, now, tokens, principal } = await fixture();
   const issued = await issueContentTicket(
     mutationEnv(),
@@ -501,7 +497,51 @@ it("charges the undelivered whole-entry reads a central-directory range requires
     APP_ORIGIN: "https://app.invalid",
     CONTENT_ORIGIN: "https://content.invalid",
   };
-<<<<<<< HEAD
+  // Layout: entry data ends at 128; the 145-byte tail is CD records + EOCD only,
+  // yet emitting both CRCs reads "abc" and "de" whole from R2.
+  const tail = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      headers: { Cookie: cookie, Range: "bytes=-145" },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(tail.status).toBe(206);
+  expect(tail.headers.get("Content-Range")).toBe("bytes 128-272/273");
+  expect((await tail.arrayBuffer()).byteLength).toBe(145);
+  const eocd = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      headers: { Cookie: cookie, Range: "bytes=-22" },
+    }),
+    contentEnv,
+    tokens,
+  );
+  expect(eocd.status).toBe(206);
+  expect((await eocd.arrayBuffer()).byteLength).toBe(22);
+  expect(await env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId)).status()).toMatchObject({
+    requests: 2,
+    bytesCharged: 145 + 3 + 2 + 22,
+  });
+});
+
+it("does not charge or read ZIP blobs for a ranged HEAD over the central directory", async () => {
+  const { f, now, tokens, principal } = await fixture();
+  const issued = await issueContentTicket(
+    mutationEnv(),
+    env.BLOBS,
+    tokens,
+    principal,
+    [{ spaceId: f.ids.space, nodeId: f.ids.folder }],
+    "zip",
+    now + 300_000,
+  );
+  const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+  const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+  const contentEnv: Env = {
+    ...mutationEnv(),
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
   const gets: string[] = [];
   const spy = new Proxy(env.BLOBS, {
     get(target, property) {
@@ -531,31 +571,5 @@ it("charges the undelivered whole-entry reads a central-directory range requires
   expect(await env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId)).status()).toMatchObject({
     requests: 1,
     bytesCharged: 0,
-=======
-  // Layout: entry data ends at 128; the 145-byte tail is CD records + EOCD only,
-  // yet emitting both CRCs reads "abc" and "de" whole from R2.
-  const tail = await handleContentHttp(
-    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
-      headers: { Cookie: cookie, Range: "bytes=-145" },
-    }),
-    contentEnv,
-    tokens,
-  );
-  expect(tail.status).toBe(206);
-  expect(tail.headers.get("Content-Range")).toBe("bytes 128-272/273");
-  expect((await tail.arrayBuffer()).byteLength).toBe(145);
-  const eocd = await handleContentHttp(
-    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
-      headers: { Cookie: cookie, Range: "bytes=-22" },
-    }),
-    contentEnv,
-    tokens,
-  );
-  expect(eocd.status).toBe(206);
-  expect((await eocd.arrayBuffer()).byteLength).toBe(22);
-  expect(await env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId)).status()).toMatchObject({
-    requests: 2,
-    bytesCharged: 145 + 3 + 2 + 22,
->>>>>>> origin/main
   });
 });

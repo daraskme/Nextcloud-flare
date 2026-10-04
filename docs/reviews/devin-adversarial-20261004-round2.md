@@ -2,7 +2,9 @@
 
 対象: `main` `143f4ec`（PR #41 ラウンド1修正込み）。方法: 12 領域の並列敵対的レビュー（ワークフロー `wfr-29e3060750514bf09286c135ce4338dd`）→ 各候補をコード/一時テストで検証 → 実在した指摘を修正 + 回帰テスト。ラウンド1（H1-H4/M1-M6/L1-L2、`devin-adversarial-20261004.md` 参照）の指摘は再掲しない。
 
-## 検証結果
+## PR #46 原版の検証結果
+
+以下は原版の記録。PR #43〜#46を統合した候補の検証は末尾に区別して記録する。
 
 - 対象実行: `adversarial-hardening.test.ts` 15 件・`audio-indexing.test.ts` 11 件・`dav-xml.test.ts`・`zip-download.test.ts` すべて緑。
 - `pnpm check` 全緑: lint / tsc (worker+web+fault) / verify:contracts / verify:config / unit 1033 合格(8 skip) / integration 2425 合格（129 ファイル、expected disconnects=0、unhandled rejections=0）/ vite build+wrangler deploy --dry-run OK。
@@ -77,3 +79,14 @@
 - LockDO の `lock_recovery_required` は回復ハンドシェーク仕様で意図通り（テスト側の fixture 不備だった）。
 - video/image の copy 未索引: 当該投影は op フィルタなしで動作済み — audio のみのギャップに限定。
 - `share_delegation_status` に残行が残るとの見立て: status/ancestry は削除済みで、残ったのは `share_delegations`（削除側述語が ancestry 削除後に空振りする設計ミス — 修正済み）。
+
+## PR 統合時の追加修正（2026-10-05）
+
+- PR #43 の ZIP 加算課金と、PR #44 の DAV 条件・音声チャプター削除、PR #45 の利用者別 admission 上限を統合。章データの削除は二重登録せず、同期処理の step 数も一致させる。
+- PR #45 が `0063_admission_principal_fairness.sql` を追加するため、purge の migration は未配備の段階で `0064_purge_share_ids.sql` へ採番し直した。
+- 再共有されたノードを元のフォルダー外へ移動してから元のフォルダーを purge すると、delegation の削除によって失効した share が通常の share として再び有効になる不具合を追加発見。削除対象の delegation とその子孫の share を先に同じ transaction で無効化する。移動先のファイル自体は保持する。
+- この再共有の回帰テストは同期と 1,001 件以上の非同期処理の両方を実行し、原版では失敗、修正版では成功することを確認した。
+- ZIP の Range 付き HEAD は本文・R2 の元 blob 読み出し・バイト課金がすべて0であることを回帰テストに追加した。
+- Cloudflare staging とローカル週次バックアップ runtime はこの PR 対応では更新していない。配備状態は [ENVIRONMENT_STATUS](../ENVIRONMENT_STATUS.md) を参照。
+- PR #45 の Windows run `37218158062` で KDF settlement 応答喪失のテストが5秒の開始期限に達して失敗した。同一 head の別 run は成功していた。専用 DO と durable storage の初期化を期限の生成前に行うようテストを調整し、実 PBKDF2・応答喪失注入・実行1回の検査を維持した。アプリの5秒制限は変更していない。
+- ローカルの schema / backup-generation は116件成功。追加の purge 回帰は2件、KDF の対象ケースは1件成功。lint・Worker / Web / fault の型検査・contracts・configも成功。統合後の全件結果は対象commitのCIで確認する。

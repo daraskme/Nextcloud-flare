@@ -777,34 +777,18 @@ export async function streamBudgetedZip(
     !notModified && (ifRange === null || ifRange === etag) ? request.headers.get("Range") : null,
     plan.outputSize,
   );
-  const spans = range.kind === "range" ? zipRangeSpans(plan.sources, plan.outputSize, range) : null;
   const bytes =
     request.method === "HEAD" || notModified || range.kind === "unsatisfiable"
       ? 0
       : range.kind === "range"
         ? range.length
         : plan.outputSize;
-<<<<<<< HEAD
-  // A range over data-descriptor or central-directory records still fetches the
-  // whole covered object (the CRC must be real), so the lease pays for what the
-  // server must read rather than only the delivered slice.
-  const fetchBytes =
-    request.method === "HEAD" || range.kind !== "range"
-      ? 0
-      : plan.sources.reduce((total, { entry }, index) => {
-          const span = spans?.[index];
-          return (
-            total + (span && !span.needsCrc ? Math.max(0, span.covEnd - span.covStart) : entry.size)
-          );
-        }, 0);
-=======
   const spans =
     range.kind === "range" && bytes > 0
       ? zipRangeSpans(plan.sources, plan.outputSize, range)
       : null;
   const amplification =
     range.kind === "range" && bytes > 0 ? undeliveredReads(plan, spans, bytes) : 0;
->>>>>>> origin/main
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   const lease = await budget.reserve({
@@ -812,11 +796,7 @@ export async function streamBudgetedZip(
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
-<<<<<<< HEAD
-    bytes: Math.max(bytes, fetchBytes),
-=======
     bytes: bytes + amplification,
->>>>>>> origin/main
   });
   return streamLeasedContent(
     async (signal, deadline) => {
@@ -896,14 +876,10 @@ export async function streamBudgetedZip(
       budget.settle({
         budgetId: plan.budgetId,
         requestId,
-<<<<<<< HEAD
-        deliveredBytes: deliveredBytes === null ? null : Math.max(deliveredBytes, fetchBytes),
-=======
         deliveredBytes:
           deliveredBytes === null || deliveredBytes === 0
             ? deliveredBytes
             : deliveredBytes + amplification,
->>>>>>> origin/main
       }),
   );
 }

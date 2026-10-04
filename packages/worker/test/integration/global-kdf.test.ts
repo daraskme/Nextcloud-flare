@@ -311,9 +311,24 @@ function settlementFault(afterCommit: boolean): D1Database {
   } as D1Database;
 }
 it("recovers a committed settlement acknowledgement without repeating crypto", async () => {
+  // Run 37218158062 exhausted the request deadline during cold Windows setup.
+  // Initialize durable storage before timing the settlement recovery itself.
+  const stub = env.CONTROL.get(env.CONTROL.idFromName(`kdf-settlement-${crypto.randomUUID()}`));
+  const db = settlementFault(true);
+  let service!: ControlKdf;
+  await runInDurableObject(stub, async (_, state) => {
+    service = new ControlKdf(
+      db,
+      admit,
+      () => {},
+      new KdfSettlements(state.storage.sql, db, () => state.storage.sync()),
+    );
+    await state.storage.sync();
+  });
   const r = request(),
     native = vi.spyOn(crypto.subtle, "deriveBits");
-  expect((await executor(settlementFault(true)).derive(r)).byteLength).toBe(32);
+  const result = await runInDurableObject(stub, async () => ({ value: await service.derive(r) }));
+  expect(result.value.byteLength).toBe(32);
   expect(await receipt(r.id)).toMatchObject({ state: "finished" });
   expect(native).toHaveBeenCalledTimes(1);
 });

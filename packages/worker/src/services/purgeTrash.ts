@@ -17,11 +17,7 @@ import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-<<<<<<< HEAD
 const BASE_STEPS = 43;
-=======
-const BASE_STEPS = 37;
->>>>>>> origin/main
 type UserPrincipal = {
   readonly kind: "user";
   readonly user_id: string;
@@ -433,7 +429,6 @@ function statements(
     ["archive_index", "archive_index", `node_id IN (${members})`],
     ["library_roots", "library_roots", `node_id IN (${members})`],
     ["node_audio", "node_audio", `node_id IN (${members})`],
-    ["audio_chapter_sets", "user_audio_chapter_sets", `node_id IN (${members})`],
     ["reading_state", "user_reading_state", `node_id IN (${members})`],
     ["playback_state", "user_playback_state", `node_id IN (${members})`],
     ["locks", "locks", `node_id IN (${members})`],
