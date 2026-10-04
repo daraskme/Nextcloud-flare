@@ -6,6 +6,11 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { assertCreateLocks, hasBlockingLocks, lockTokenHashes } from "../auth/locks";
+import {
+  assertDavMutationConditions,
+  commitDavMutation,
+  type DavMutationConditions,
+} from "../dav/conditionState";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -31,7 +36,6 @@ import {
 } from "./davUpload";
 import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 import {
-  commitMutationStatements,
   type MutationOutcome,
   type MutationPlan,
   type MutationStep,
@@ -57,6 +61,7 @@ export interface PutFileRequest {
   readonly size: number;
   readonly mime: string;
   readonly lockTokens: readonly string[];
+  readonly conditions?: DavMutationConditions;
 }
 
 /** Hash and write the request concurrently without buffering the body in Worker memory. */
@@ -381,6 +386,13 @@ export async function putFile(
   )
     throw new Error("dav_precondition_failed");
   if (!create) await assertNoEncryptedSubtree(env.DB, request.nodeId!, request.spaceId);
+  await assertDavMutationConditions(
+    env.DB,
+    request.conditions,
+    request.principal,
+    request.nodeId ?? request.parentId,
+    request.spaceId,
+  );
   const ownerId =
     authorized.operation === "node.create" ? authorized.parent.owner_id : authorized.node.owner_id;
   const previousUpload = await davUploadRow(env.DB, intent.id);
@@ -463,15 +475,31 @@ export async function putFile(
     }
     let outcome: MutationOutcome;
     if (authorized.operation === "node.create") {
-      outcome = await commitMutationStatements(env.DB, claimed.claim, [
-        ...davPublicationStatements(upload, stored),
-        ...mutationStatements(createPlan(claimed.claim, authorized, request, stored, hashes)),
-      ]);
+      outcome = await commitDavMutation(
+        env.DB,
+        claimed.claim,
+        [
+          ...davPublicationStatements(upload, stored),
+          ...mutationStatements(createPlan(claimed.claim, authorized, request, stored, hashes)),
+        ],
+        request.conditions,
+        request.principal,
+        request.nodeId ?? request.parentId,
+        request.spaceId,
+      );
     } else if (authorized.operation === "node.content.write") {
-      outcome = await commitMutationStatements(env.DB, claimed.claim, [
-        ...davPublicationStatements(upload, stored),
-        ...overwriteStatements(claimed.claim, authorized, request, stored, hashes),
-      ]);
+      outcome = await commitDavMutation(
+        env.DB,
+        claimed.claim,
+        [
+          ...davPublicationStatements(upload, stored),
+          ...overwriteStatements(claimed.claim, authorized, request, stored, hashes),
+        ],
+        request.conditions,
+        request.principal,
+        request.nodeId ?? request.parentId,
+        request.spaceId,
+      );
     } else {
       throw new Error("authorization_denied");
     }

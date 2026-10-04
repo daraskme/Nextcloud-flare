@@ -613,6 +613,26 @@ function zipRangeSpans(
   });
 }
 
+/**
+ * Source bytes a ranged response must read from R2 without delivering them:
+ * entries whose CRC is served are read whole, and a framing mismatch falls
+ * back to full serialization. Charged so a small tail Range cannot force a
+ * full-archive read for a few delivered bytes.
+ */
+function undeliveredReads(
+  plan: { sources: readonly { entry: ZipTargetEntry }[]; outputSize: number },
+  spans: readonly SparseSpan[] | null,
+  delivered: number,
+): number {
+  if (!spans) return plan.outputSize - delivered;
+  let extra = 0;
+  spans.forEach((span, index) => {
+    if (span.needsCrc)
+      extra += plan.sources[index]!.entry.size - Math.max(0, span.covEnd - span.covStart);
+  });
+  return extra;
+}
+
 function zeroStream(length: number): ReadableStream<Uint8Array> {
   let remaining = length;
   return new ReadableStream<Uint8Array>({
@@ -761,6 +781,12 @@ export async function streamBudgetedZip(
       : range.kind === "range"
         ? range.length
         : plan.outputSize;
+  const spans =
+    range.kind === "range" && bytes > 0
+      ? zipRangeSpans(plan.sources, plan.outputSize, range)
+      : null;
+  const amplification =
+    range.kind === "range" && bytes > 0 ? undeliveredReads(plan, spans, bytes) : 0;
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   const lease = await budget.reserve({
@@ -768,7 +794,7 @@ export async function streamBudgetedZip(
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
-    bytes,
+    bytes: bytes + amplification,
   });
   return streamLeasedContent(
     async (signal, deadline) => {
@@ -784,8 +810,6 @@ export async function streamBudgetedZip(
         headers.set("Content-Range", `bytes */${plan.outputSize}`);
         return new Response(null, { status: 416, headers });
       }
-      const spans =
-        range.kind === "range" ? zipRangeSpans(plan.sources, plan.outputSize, range) : null;
       const archive = storeZip(
         plan.sources.map(({ entry, blob }, index) => ({
           name: entry.path,
@@ -846,6 +870,14 @@ export async function streamBudgetedZip(
     bytes,
     lease.expiresAt,
     request.signal,
-    (deliveredBytes) => budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes }),
+    (deliveredBytes) =>
+      budget.settle({
+        budgetId: plan.budgetId,
+        requestId,
+        deliveredBytes:
+          deliveredBytes === null || deliveredBytes === 0
+            ? deliveredBytes
+            : deliveredBytes + amplification,
+      }),
   );
 }

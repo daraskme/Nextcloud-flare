@@ -226,7 +226,13 @@ export async function assertDavMutationConditions(
   nodeId: string,
   spaceId: string,
 ): Promise<void> {
-  const assertions = conditionAssertions(conditions, principal, nodeId, spaceId);
+  await assertDavConditionState(db, conditionAssertions(conditions, principal, nodeId, spaceId));
+}
+
+export async function assertDavConditionState(
+  db: D1Database,
+  assertions: readonly SqlStatement[],
+): Promise<void> {
   if (!assertions.length) return;
   try {
     await atomicBatch(db, assertions);
@@ -274,6 +280,7 @@ export async function evaluateDavRequestIf(
   principal: Principal,
   appOrigin: string,
   request: Request,
+  assertions?: SqlStatement[],
 ): Promise<readonly string[]> {
   const header = parseDavIfHeader(request.headers.get("If"));
   if (!header) return [];
@@ -289,8 +296,25 @@ export async function evaluateDavRequestIf(
   requestUrl.search = "";
   requestUrl.hash = "";
   const matches = await evaluateDavIf(header, requestUrl.href, (resource) =>
-    resourceState(db, principal, appOrigin, resource, tokenByHash),
+    resourceState(db, principal, appOrigin, resource, tokenByHash, assertions),
   );
   if (!matches) throw new Error("dav_precondition_failed");
   return header.submittedTokens;
+}
+
+/** Bind PUT's If resource snapshots to the target (or parent for a new file). */
+export async function evaluateDavPutConditions(
+  db: D1Database,
+  principal: Principal,
+  appOrigin: string,
+  request: Request,
+  mutationPrincipal: Principal,
+  nodeId: string,
+  spaceId: string,
+): Promise<{ lockTokens: readonly string[]; conditions: DavMutationConditions }> {
+  const assertions: SqlStatement[] = [];
+  const lockTokens = await evaluateDavRequestIf(db, principal, appOrigin, request, assertions);
+  const conditions = Object.freeze({ sourceNodeId: nodeId, spaceId });
+  mutationProofs.set(conditions, { principal: conditionPrincipal(mutationPrincipal), assertions });
+  return { lockTokens, conditions };
 }

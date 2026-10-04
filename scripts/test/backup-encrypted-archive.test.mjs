@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
@@ -269,6 +279,10 @@ posixTest(
     await writeFile(unrelated, "keep", { mode: 0o600, flag: "wx" });
     await writeFile(suspicious, "keep", { mode: 0o644, flag: "wx" });
     await chmod(suspicious, 0o644);
+    // mtime has sub-millisecond precision; age the files so a same-millisecond
+    // write is not treated as newer than Date.now().
+    const past = new Date(Date.now() - 60_000);
+    for (const path of [stale, unrelated, suspicious]) await utimes(path, past, past);
     assert.equal(await cleanupArchiveTemps(f.cipherFile, 0), 1);
     await assert.rejects(lstat(stale), { code: "ENOENT" });
     assert.equal(await readFile(unrelated, "utf8"), "keep");

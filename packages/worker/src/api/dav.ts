@@ -2,10 +2,18 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
 import { principalAuthorizationContext } from "../auth/authorize";
 import { KdfUnavailableError } from "../auth/kdf";
-import { evaluateDavMutationConditions, evaluateDavRequestIf } from "../dav/conditionState";
+import {
+  assertDavConditionState,
+  evaluateDavMutationConditions,
+  evaluateDavPutConditions,
+  evaluateDavRequestIf,
+} from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
 import { davEtag } from "../dav/etag";
-import { evaluateDavPutHttpPreconditions } from "../dav/httpPreconditions";
+import {
+  evaluateDavPutHttpPreconditions,
+  evaluateDavReadHttpPreconditions,
+} from "../dav/httpPreconditions";
 import { parseDavLockDepth, parseDavTimeout } from "../dav/lockProtocol";
 import {
   davReadAssertion,
@@ -32,6 +40,7 @@ import {
   parsePropfindRequest,
   parseProppatchRequest,
 } from "../dav/xml";
+import type { SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
@@ -309,10 +318,13 @@ export async function handleDavHttp(
     }
     if (target && target.node.kind !== "file") return problem(405, "method_not_allowed");
     try {
-      evaluateDavPutHttpPreconditions(request.headers, target ? davEtag(target.node) : null);
+      evaluateDavPutHttpPreconditions(
+        request.headers,
+        target ? davEtag(target.node) : null,
+        target?.node.updated_at,
+      );
       if (target && !request.headers.has("If-Match") && !request.headers.has("If"))
         return problem(428, "precondition_failed");
-      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const parent = target
         ? {
             spaceId: target.node.space_id,
@@ -324,6 +336,15 @@ export async function handleDavHttp(
             trailingSlash: true,
             shared: path.shared,
           });
+      const { lockTokens, conditions } = await evaluateDavPutConditions(
+        env.DB,
+        principal,
+        env.APP_ORIGIN,
+        request,
+        parent.principal,
+        target?.node.id ?? parent.parent.id,
+        parent.spaceId,
+      );
       const body =
         request.body ??
         new ReadableStream<Uint8Array>({
@@ -344,6 +365,7 @@ export async function handleDavHttp(
         size,
         mime: contentType,
         lockTokens,
+        conditions,
       });
       if (outcome.kind === "commit_unknown" || outcome.operation.state === "claimed") {
         const response = problem(503, "commit_unknown");
@@ -355,7 +377,9 @@ export async function handleDavHttp(
         return response;
       }
       if (outcome.operation.state === "failed")
-        return outcome.operation.errorCode === "name_conflict"
+        return ["name_conflict", "dav_precondition_failed"].includes(
+          outcome.operation.errorCode ?? "",
+        )
           ? problem(412, "precondition_failed")
           : problem(409, "conflict");
       return new Response(null, {
@@ -953,13 +977,29 @@ export async function handleDavHttp(
     )
       return problem(404, "not_found");
     try {
-      const plan = await prepareAuthorizedNodeBlobRead(
-        env.DB,
-        resolved,
-        path.shared ? [davReadAssertion(resolved)] : [],
+      evaluateDavReadHttpPreconditions(
+        request.headers,
+        davEtag(resolved.node),
+        resolved.node.updated_at,
       );
+      const assertions: SqlStatement[] = [];
+      await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request, assertions);
+      const plan = await prepareAuthorizedNodeBlobRead(env.DB, resolved, [
+        ...assertions,
+        ...(path.shared ? [davReadAssertion(resolved)] : []),
+      ]).catch(async (error) => {
+        await assertDavConditionState(env.DB, assertions);
+        throw error;
+      });
       return await streamImmutableBlob(env.BLOBS, plan, request, { etag: davEtag(resolved.node) });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "dav_precondition_failed")
+        return problem(412, "precondition_failed");
+      if (
+        error instanceof Error &&
+        ["invalid_dav_if", "invalid_dav_precondition"].includes(error.message)
+      )
+        return problem(400, "bad_request");
       return problem(503, "not_ready");
     }
   }
