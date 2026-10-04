@@ -4,8 +4,17 @@
 
 ## 最新checkpoint
 
-- **進行中・未配備**: `fc1ba1b` の敵対的レビューを受け、署名付き `NCFENC2`、公開鍵所持証明と現在の管理者ロールの照合、検証済み blob マーカー、サーバーでの暗号化必須ポリシー、既存 v1 の署名追加と管理者復号確認を実装中。0054 は新規3 table と upload header hash 列（計86通常table）。既存の復旧JSONを維持する。検証状況は [レビュー対応](reviews/encryption-adversarial-20261004.md)。既存3件は書き換えず、端末内で以前のplaintext SHAと全復号結果を照合してから署名を追加する予定。`.wrangler/encryption-sign-admin.mjs` はその未実行の保護済みローカル補助。新形式を実環境で確認済みと扱わない。
-- **並行準備・未設置**: ユーザー指定の週1回、`/run/media/hiroshi/ボリューム/Nextcloudflare-backups` への暗号アーカイブ保存と、復元検証・障害/費用通知を準備中。外付けNTFS UUIDは `F0D0B27ED0B24B1C`。ホスト側は元から書き込み可能であり、初回のread-only表示は実行sandboxの制限だった。フォルダー作成・書き込み/読み戻し/削除とatomic hard-link publicationの試験は成功、remountは実施していない。日曜03:30 JSTの週次timerを予定し、サービスの実設置・有効化はまだ。外付けには暗号文だけを置き、SQL・blob複写の作業領域と秘密情報は内蔵POSIX保護領域。`ops/backup` / `ops/monitoring` / `ops/staging/weekly-backup-*` は作業中。復旧JSONは定期処理へ渡さず管理者公開鍵だけで暗号化する。通知先の返答は未受領、現端末の通知と内部履歴を既定とする予定。
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+
+暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。 永続runtimeは `/home/hiroshi/.local/share/nextcloud-flare-automation`、外付けNTFS UUIDは `F0D0B27ED0B24B1C`（host rw）。次の操作前にはruntimeの `state/state.json` を確認し、未完了世代を自動cancel/thawしない。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。 詳細は[レビュー対応](reviews/encryption-adversarial-20261004.md)。
+
+### 以下は各記録時点の履歴（現行状態ではない）
 
 - stagingバックアップをR2へ発行し、再取得した世代から83通常table・388行を新規SQLiteへ復元、原本6 object・64,953,590 bytesの別ディレクトリ複写照合まで成功。maintenance/gc_paused/backup_frozenは0、一時backup bridgeは削除済み、BACKUP_OPERATOR_ENABLED=false。live D1への上書き復元・元BLOBS喪失時の復旧・恒久スケジュール設置は未完了。
 - 動画のopen-ended Range予約を4MiBへ制限し、実stagingで8回連続シークを確認した。再現していた429は出ていない。ネットワークエラーとcodecエラーを分け、明示再試行を追加。詳細と検証数は進捗表を参照。

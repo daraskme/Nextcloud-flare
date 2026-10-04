@@ -2,6 +2,16 @@
 
 更新: 2026-10-04。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。 詳細は[実装進捗](IMPLEMENTATION_STATUS.md)と[引き継ぎ](HANDOFF.md)。
+
+以下のcheckpointは署名追加前または各記録時点の履歴であり、現在状態ではない。
+
 追加checkpoint: 実stagingのR2保存世代から83table・388行を独立SQLiteへ復元し、原本6 object・64,953,590 bytesの複写照合が成功した。保守状態と一時Cron bridgeは解除・削除済み。動画シーク時の429を4MiBのRange予約へ修正し実環境で8回連続シークを確認した。読み取り専用automation GET 2経路は実装済みだがAccessでの実利用はまだ有効化していない。本人＋管理者のクライアント暗号化は単体・統合3,125件と全ブラウザー48件を通過し、stagingへ反映した。実Chrome固有のSW取得時のAccess転送は単一公開bootstrapで解消し、実登録と鍵未設定時の送信拒否を確認した。続いて実管理者の鍵で既存メディア3件・64,932,182 bytesの暗号化コピーを作り、実環境で復号後の全byte・SHA-256と再生/seekを確認した。移行修正後のfocused暗号化3件は成功し、全49件が8.6分で成功。一般利用者2人は使わないとのユーザー指示により暗号化設定・既存空ファイル移行を省略し、管理者1人での運用を対象とする。承認を受けて管理者の元の平文3件をアプリとゴミ箱から削除したが、R2原本は35日以上のGC猶予で残り、過去バックアップも保持している。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
 
 2026-10-04 は手元の実ファイルによるAVIF・Opus/MP4・1080p 10-bit AV1+Opus/MP4のupload・表示・再生・seek・全byte照合を追加した。AVIFをMP3と誤判定してGalleryから消す問題、画像MIMEの保存不足、サーバー間の時計差による受付期限の誤拒否を修正し、stagingへ配備した。個人メディアはrepositoryに含めない。

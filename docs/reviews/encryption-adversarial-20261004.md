@@ -1,6 +1,6 @@
 # 暗号化の敵対的レビューへの対応
 
-対象レビュー: `fc1ba1b`。レビューの指摘を受け、署名・鍵登録・暗号化必須ポリシーを修正中。以下は受け入れ条件であり、完了・配備済みの記録ではない。実行結果は末尾と `IMPLEMENTATION_STATUS.md` に記録する。
+対象レビュー: `fc1ba1b`。以下は実装時の受け入れ条件。対応状況と検証・配備結果を末尾および `IMPLEMENTATION_STATUS.md` に記録する。
 
 ## 受け入れ条件
 
@@ -32,4 +32,14 @@
 
 2026-10-04 の修正後ローカル検証で、型チェック、lint、Node 単体テスト（75 files / 918 passed、Windows 専用8 skipped）、Workerd 結合テスト（123 files / 2,270 tests）、86 table の `backup:drill` が成功した。結合テストは署名付き upload、鍵所持証明、旧形式の署名追加と R2 ETag の再照合、管理者の復号確認、API/DAV/共有/フォルダー経由の迂回拒否を含む。
 
-全ブラウザー試験は48件成功・外部メディア指定時だけ実行する2件が未指定で skip（8.4分）。署名付き暗号化、旧形式の内容確認と署名追加、管理者 receipt、全バイト照合、実 MP3/Opus/AV1 の再生と seek を含む。実 staging と暗号化バックアップの最終結果は確認中であり、この時点では配備完了を意味しない。
+全ブラウザー試験は48件成功・外部メディア指定時だけ実行する2件が未指定で skip（8.4分）。署名付き暗号化、旧形式の内容確認と署名追加、管理者 receipt、全バイト照合、実 MP3/Opus/AV1 の再生と seek を含む。
+
+コミット `785faf3` を main へ通常 push、0054 を remote D1 に適用し、staging Worker `654609ce-781a-4e0d-98d7-b047c280bb4c` へ配備した。匿名 HTTP smoke 9件が成功。管理者の既存3件・64,932,182 plaintext bytesを端末内で全復号して移行前の SHA-256 と照合し、暗号文を書き換えずに所有者署名と管理者 receipt を登録した。通常画面で画像寸法・音声/動画の再生と先頭/中間/末尾 seek・映像フレーム・全バイト SHA を再確認した。新規 NCFENC2 の小さな AVIF fixture も upload・marker・復号 SHA を確認し、平文 create の拒否を検証後、その試験 node だけを trash/purge した。復旧JSON・秘密鍵は端末外へ送信していない。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。
+
+暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。

@@ -3,15 +3,23 @@
 更新: 2026-10-04。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-## 2026-10-04 暗号化レビューへの対応（配備前）
+## 2026-10-04 暗号化レビューへの対応
 
 登録済み所有者の Ed25519 署名付き `NCFENC2`、RSA/署名鍵の所持証明、現役管理者の公開鍵照合、R2 ヘッダー・ETag に結合した暗号化マーカーを実装した。ファイル名だけでは暗号化済みと判定しない。暗号化必須の新規書き込みと確定はサーバーでも検査し、API、DAV、公開 upload の平文経路と、暗号化ファイル/祖先フォルダー経由の共有・名前変更・移動・コピー・上書きを拒否する。管理者ラップは署名対象に含め、別途、管理者端末による復号確認の署名を記録する。確認はメタデータと先頭認証チャンクへのアクセス確認であり、全ファイルやバックアップの完全性を証明するものではない。
 
-既存復旧 JSON/RSA 鍵はそのまま使える。旧形式は内容確認と明示承認を経て現在の node/blob/revision に所有者署名を追加する。実運用の既存3件は以前の平文 SHA-256 と照合してから移行する。復旧 JSON は端末内だけで扱い、配信 JavaScript を改ざんできる提供者には対抗できないことを画面と文書に明示した。詳細は [対応記録](reviews/encryption-adversarial-20261004.md)。新 migration は `0054`、全53件・通常86 table・174 route。
+既存復旧 JSON/RSA 鍵はそのまま使える。旧形式は内容確認と明示承認を経て現在の node/blob/revision に所有者署名を追加する。実運用の既存3件は以前の平文 SHA-256 と照合してから署名追加を完了した。復旧 JSON は端末内だけで扱い、配信 JavaScript を改ざんできる提供者には対抗できないことを画面と文書に明示した。詳細は [対応記録](reviews/encryption-adversarial-20261004.md)。新 migration は `0054`、全53件・通常86 table・174 route。
 
-修正後の Workerd 全結合テスト **123 files / 2,270 tests**、Node 単体 **75 files / 918 passed・Windows 専用8 skipped**、型チェック、lint、契約・設定検証、86 table の `backup:drill` が成功。全 browser は **48 passed・外部メディア未指定の2 skipped（8.4分）**。旧形式の内容確認・署名追加・所有者閲覧・管理者復号確認と、実 MP3/Opus/AV1 の再生・seek を含む。実 staging は最終確認中。
+修正後の Workerd 全結合テスト **123 files / 2,270 tests**、Node 単体 **75 files / 918 passed・Windows 専用8 skipped**、型チェック、lint544 files、契約・設定検証、86 table の `backup:drill` が成功。全 browser は **48 passed・外部メディア未指定の2 skipped（8.4分）**。旧形式の内容確認・署名追加・所有者閲覧・管理者復号確認と、実 MP3/Opus/AV1 の再生・seek を含む。
 
-週次バックアップは日曜03:30 JST、指定外部 volume へ暗号化アーカイブだけを保存する実装を追加した。停止中なら次回起動時に実行し、失敗時は同じ世代を継続する。復旧鍵をサービスに保存せず、公開鍵だけで暗号化する。別途、暗号化アーカイブから独立 SQLite と原本を復元・照合する offline verifier、デスクトップへのバックアップ失敗・HTTP 障害・費用通知を実装した。Billing API はアカウント全体のため staging 追加費用を厳密に分離できず、月1万円の自動停止上限ではない。実設置と実バックアップ/復元はこの時点では未実施。
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。 匿名HTTP smoke9件も成功した。
+
+暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。 永続runtimeは `/home/hiroshi/.local/share/nextcloud-flare-automation`。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。
 
 ## 2026-10-04 既存ファイルの暗号化移行
 

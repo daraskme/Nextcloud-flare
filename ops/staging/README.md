@@ -1,10 +1,26 @@
 # Cloudflare staging 配備
 
-`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、52 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。利用者による手動試験でアップロード・ダウンロードと、別アカウントのファイルが一覧に出ないことを確認済み。別利用者のファイル ID を指定した直接アクセスの拒否は別途確認する。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+以下の構築経緯は2026-10-03時点の記録で、現行デプロイ・現在の完了状態は後段の「現行状態」を参照する。`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、52 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。利用者による手動試験でアップロード・ダウンロードと、別アカウントのファイルが一覧に出ないことを確認済み。別利用者のファイル ID を指定した直接アクセスの拒否は別途確認する。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+
+## 現行状態（2026-10-04）
+
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+
+暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。
+
+### 過去のデプロイ・試験記録
+
+以下のversion IDと状態は、それぞれの記録時点の履歴であり、現行versionやbackup完了を示すものではない。
 
 ## 2026-10-04 暗号化・復元試験の反映
 
-最新Workerは`3aafb739-ae57-449c-aff1-57fd389fdaea`。ブラウザーの本人＋管理者暗号化を配備し、`CLIENT_ENCRYPTION_REQUIRED=true`、両operator gateはfalseを維持する。匿名HTTP smoke 9件、公開SW bootstrapのscope/no-store、実Chromeの登録と未設定upload拒否を確認した。実ChromeはSW取得時にAccess Cookieを送らないため、鍵・データを含まない単一コードだけを既存の`/public-assets/*` Bypassで配信する。Private APIと内容取得の認証は維持し、新しいBypassは追加しない。
+当時のWorker versionは`3aafb739-ae57-449c-aff1-57fd389fdaea`。ブラウザーの本人＋管理者暗号化を配備し、`CLIENT_ENCRYPTION_REQUIRED=true`、両operator gateはfalseを維持する。匿名HTTP smoke 9件、公開SW bootstrapのscope/no-store、実Chromeの登録と未設定upload拒否を確認した。実ChromeはSW取得時にAccess Cookieを送らないため、鍵・データを含まない単一コードだけを既存の`/public-assets/*` Bypassで配信する。Private APIと内容取得の認証は維持し、新しいBypassは追加しない。
 
 実管理者の保存済み鍵で既存メディア3件・64,932,182 bytesの暗号化コピーを作成し、実stagingで元データと復号後の全byte/SHA-256、表示・再生・seekを確認した。承認後、元の平文3件をtrash/purgeし、元nodeの404・ゴミ箱不在・暗号化コピー保持を確認した。R2原本は35日以上のGC猶予で残り、過去バックアップも保持中。一般利用者2人は使わないとのユーザー指示により、鍵設定と各1件の空ファイル移行を今回の対象から除外した。現在の運用対象は管理者1人。[初回設定](../../docs/CLIENT_ENCRYPTION_SETUP.md)を参照する。WebDAV・公開upload・直接APIは暗号化経路ではない。今回の実R2/SQLite/原本複写の復元試験、動画8回シーク、automation GET 2経路の状況は[進捗表](../../docs/IMPLEMENTATION_STATUS.md)に記録した。
 
