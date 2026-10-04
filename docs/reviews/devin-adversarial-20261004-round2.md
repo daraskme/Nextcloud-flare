@@ -90,3 +90,4 @@
 - Cloudflare staging とローカル週次バックアップ runtime はこの PR 対応では更新していない。配備状態は [ENVIRONMENT_STATUS](../ENVIRONMENT_STATUS.md) を参照。
 - PR #45 の Windows run `37218158062` で KDF settlement 応答喪失のテストが5秒の開始期限に達して失敗した。同一 head の別 run は成功していた。専用 DO と durable storage の初期化を期限の生成前に行うようテストを調整し、実 PBKDF2・応答喪失注入・実行1回の検査を維持した。アプリの5秒制限は変更していない。
 - ローカルの schema / backup-generation は116件成功。追加の purge 回帰は2件、KDF の対象ケースは1件成功。lint・Worker / Web / fault の型検査・contracts・configも成功。統合後の全件結果は対象commitのCIで確認する。
+- 統合候補 `c23eef9` のCIは、push/PR両方でUbuntu・Windows第2系統・browser・backupが成功。Ubuntuは単体1,034成功・8 skip、通常結合131 files / 2,452件と別実行のR2試験1件が成功し、未処理Promiseは0件。Windows第1系統は成功したsuiteを処理し続けたまま、両run（`37220099398` / `37220102707`）で30分のjob上限に達して中断した。Windowsのjob上限を40分へ変更し、個別テストとアプリの期限を維持して再検証する。
