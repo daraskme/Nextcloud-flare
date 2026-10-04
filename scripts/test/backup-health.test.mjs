@@ -218,46 +218,53 @@ it("bounds catalogue traversal and marks an unfinished scan unhealthy", async ()
   expect(verify).not.toHaveBeenCalled();
 });
 
-it("verifies five real stored SQL generations and excludes a corrupted part on the next inspection", async () => {
-  const root = await mkdtemp(join(tmpdir(), "backup-health-"));
-  const objects = new Map();
-  const store = {
-    get: async (key) => objects.get(key) ?? null,
-    put: async (key, bytes) => {
-      if (objects.has(key)) return false;
-      objects.set(key, Buffer.from(bytes));
-      return true;
-    },
-  };
-  try {
-    rows = [];
-    for (let i = 0; i < 5; i++) {
-      const artifact = await fixtureGeneration(join(root, String(i)));
-      const publication = await publishGeneration({ directory: artifact.directory, store });
-      const { id, epoch, createdAt } = artifact.manifest.generation;
-      rows.push({
-        id,
-        epoch,
-        state: "completed",
-        createdAt,
-        completedAt: createdAt,
-        releasedAt: createdAt,
-        manifestKey: manifestKey(id),
-        manifestSha256: publication.sha256,
+// CI run 37199011671 hit the 30 s limit on a shared Windows runner while
+// building five real SQLite generations; retain the complete verification.
+const storedSqlTimeoutMs = process.platform === "win32" ? 120000 : 30000;
+it(
+  "verifies five real stored SQL generations and excludes a corrupted part on the next inspection",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "backup-health-"));
+    const objects = new Map();
+    const store = {
+      get: async (key) => objects.get(key) ?? null,
+      put: async (key, bytes) => {
+        if (objects.has(key)) return false;
+        objects.set(key, Buffer.from(bytes));
+        return true;
+      },
+    };
+    try {
+      rows = [];
+      for (let i = 0; i < 5; i++) {
+        const artifact = await fixtureGeneration(join(root, String(i)));
+        const publication = await publishGeneration({ directory: artifact.directory, store });
+        const { id, epoch, createdAt } = artifact.manifest.generation;
+        rows.push({
+          id,
+          epoch,
+          state: "completed",
+          createdAt,
+          completedAt: createdAt,
+          releasedAt: createdAt,
+          manifestKey: manifestKey(id),
+          manifestSha256: publication.sha256,
+        });
+      }
+      serverNow = Date.now();
+      control = { inventory: inventory() };
+      const result = await inspectBackupHealth({ epoch: 2, control, store });
+      expect(result).toMatchObject({ healthy: true, eligible: 5, missing: 0 });
+      const part = [...objects.keys()].find((key) => key.includes("/parts/"));
+      objects.set(part, Buffer.from("corrupt"));
+      expect(await inspectBackupHealth({ epoch: 2, control, store })).toMatchObject({
+        healthy: false,
+        eligible: 4,
+        missing: 1,
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-    serverNow = Date.now();
-    control = { inventory: inventory() };
-    const result = await inspectBackupHealth({ epoch: 2, control, store });
-    expect(result).toMatchObject({ healthy: true, eligible: 5, missing: 0 });
-    const part = [...objects.keys()].find((key) => key.includes("/parts/"));
-    objects.set(part, Buffer.from("corrupt"));
-    expect(await inspectBackupHealth({ epoch: 2, control, store })).toMatchObject({
-      healthy: false,
-      eligible: 4,
-      missing: 1,
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}, 30000);
+  },
+  storedSqlTimeoutMs,
+);

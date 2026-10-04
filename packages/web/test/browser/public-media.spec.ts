@@ -294,3 +294,33 @@ test("public media failures render explicit fail-closed fallback states", async 
   await page.getByRole("button", { name: "再生" }).click();
   await expect(page.getByText("このコンテナまたはコーデック")).toBeVisible();
 });
+
+test("file-root shares only expose the files view", async ({ page }) => {
+  const requested: string[] = [];
+  const fileRoot = { ...video, id: "single", name: "Single.mp4", currentBlobId: "single-blob" };
+  await page.route("**/api/v1/public/shares/**", (route) => {
+    const url = new URL(route.request().url());
+    requested.push(url.pathname);
+    if (url.pathname === `/api/v1/public/shares/${shareId}`)
+      return json(route, {
+        id: shareId,
+        kind: "read_only",
+        version: 1,
+        expiresAt: null,
+        createdAt: 1_700_000_000_000,
+        contentOrigin: "https://content.ncf.test:8879",
+        root: fileRoot,
+        actions: ["read", "download"],
+      });
+    return route.fulfill({ status: 404 });
+  });
+  await page.goto(`/s/${shareId}`);
+  await expect(page.getByRole("tab", { name: "ファイル" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: "▤ Single.mp4" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "ギャラリー" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "オーディオ" })).toHaveCount(0);
+  expect(requested.some((path) => /\/(gallery|tracks)$/.test(path))).toBe(false);
+});

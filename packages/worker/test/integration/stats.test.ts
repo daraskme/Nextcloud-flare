@@ -149,6 +149,8 @@ it.each(["session", "maintenance", "epoch", "generation", "disabled"])(
   },
 );
 
+// Run 37199015737 exceeded the Windows 90s budget while building/reading this
+// 10,001-node fixture. Match the bounded large-tree search test's runner budget.
 it("stops a wide tree at 10,000 visited nodes and labels the result partial", async () => {
   const t = await fixture();
   await t.add(10_001, "folder");
@@ -156,7 +158,7 @@ it("stops a wide tree at 10,000 visited nodes and labels the result partial", as
   expect(result.scannedNodes).toBe(10_000);
   expect(result.fileCount + result.folderCount).toBe(9_999);
   expect(result.truncated).toBe(true);
-});
+}, 180_000);
 
 it("traverses nested siblings through absolute depth 64 and preserves the database depth guard", async () => {
   const t = await fixture();
