@@ -19,15 +19,21 @@ export interface KdfRequest {
 export function globalKdf(control: Env["CONTROL"], epoch: number): KdfDeriver {
   return async (input, salt, signal) => {
     if (signal?.aborted) throw new KdfUnavailableError();
+    const deadline = Date.now() + 5000;
     try {
       const result = await control.get(control.idFromName(CONTROL_NAME)).deriveKdf({
         id: crypto.randomUUID(),
         epoch,
-        deadline: Date.now() + 5000,
+        deadline,
         input,
         salt,
       });
-      if (signal?.aborted || !(result instanceof ArrayBuffer) || result.byteLength !== 32)
+      if (
+        signal?.aborted ||
+        Date.now() >= deadline ||
+        !(result instanceof ArrayBuffer) ||
+        result.byteLength !== 32
+      )
         throw new KdfUnavailableError();
       return result;
     } catch {
