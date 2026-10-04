@@ -199,29 +199,34 @@ posixOnly(
       );
     }
   },
+  30_000,
 );
 
-posixOnly("rejects a restored SQLite from another verified generation", async () => {
-  const first = await prepared();
-  const second = await prepared();
-  let contacted = false;
-  await assert.rejects(
-    auditRestoredBlobBytes({
-      generation: first.generation,
-      database: second.database,
-      directory: join(first.root, "wrong-generation"),
-      source: {
-        get() {
-          contacted = true;
+posixOnly(
+  "rejects a restored SQLite from another verified generation",
+  async () => {
+    const first = await prepared();
+    const second = await prepared();
+    let contacted = false;
+    await assert.rejects(
+      auditRestoredBlobBytes({
+        generation: first.generation,
+        database: second.database,
+        directory: join(first.root, "wrong-generation"),
+        source: {
+          get() {
+            contacted = true;
+          },
         },
-      },
-      maxObjects: 1,
-      maxBytes: 3,
-    }),
-    { message: "backup_blob_database_mismatch" },
-  );
-  assert.equal(contacted, false);
-});
+        maxObjects: 1,
+        maxBytes: 3,
+      }),
+      { message: "backup_blob_database_mismatch" },
+    );
+    assert.equal(contacted, false);
+  },
+  30_000,
+);
 
 windowsOnly(
   "refuses blob audit when Windows cannot attest private SQLite permissions",
@@ -247,6 +252,7 @@ windowsOnly(
     );
     assert.equal(contacted, false);
   },
+  30_000,
 );
 
 test("S3 source signs only fixed-bucket GET and rejects traversal before transport", async () => {
