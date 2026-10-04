@@ -855,6 +855,7 @@ async function purgeFinalStatements(
     ["archive_index", `node_id IN (${members})`],
     ["library_roots", `node_id IN (${members})`],
     ["node_audio", `node_id IN (${members})`],
+    ["user_audio_chapter_sets", `node_id IN (${members})`],
     ["user_reading_state", `node_id IN (${members})`],
     ["user_playback_state", `node_id IN (${members})`],
     ["locks", `node_id IN (${members})`],

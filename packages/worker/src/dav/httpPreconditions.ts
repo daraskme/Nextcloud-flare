@@ -30,12 +30,11 @@ function parseTags(raw: string): "*" | readonly Tag[] {
   return tags;
 }
 
-/** Evaluate validators on the request URI for unsafe DAV methods. */
-export function evaluateDavHttpPreconditions(
+function evaluateMatchPreconditions(
   headers: Headers,
   currentEtag: string | null,
   lastModified?: number,
-): void {
+): string | null {
   const current = currentEtag === null ? null : currentEtag.slice(1, -1);
   const ifMatch = headers.get("If-Match");
   if (ifMatch !== null) {
@@ -54,6 +53,16 @@ export function evaluateDavHttpPreconditions(
         throw new Error("dav_precondition_failed");
     }
   }
+  return current;
+}
+
+/** Evaluate validators on the request URI for unsafe DAV methods. */
+export function evaluateDavHttpPreconditions(
+  headers: Headers,
+  currentEtag: string | null,
+  lastModified?: number,
+): void {
+  const current = evaluateMatchPreconditions(headers, currentEtag, lastModified);
   const ifNoneMatch = headers.get("If-None-Match");
   if (ifNoneMatch !== null) {
     const parsed = parseTags(ifNoneMatch);
@@ -63,6 +72,17 @@ export function evaluateDavHttpPreconditions(
 }
 
 export const evaluateDavPutHttpPreconditions = evaluateDavHttpPreconditions;
+
+/** Reads leave matching If-None-Match to the immutable blob stream's 304 response. */
+export function evaluateDavReadHttpPreconditions(
+  headers: Headers,
+  currentEtag: string,
+  lastModified: number,
+): void {
+  evaluateMatchPreconditions(headers, currentEtag, lastModified);
+  const ifNoneMatch = headers.get("If-None-Match");
+  if (ifNoneMatch !== null) parseTags(ifNoneMatch);
+}
 
 function httpDate(value: string): number | null {
   const imf =

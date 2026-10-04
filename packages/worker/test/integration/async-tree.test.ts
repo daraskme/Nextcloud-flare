@@ -11,6 +11,8 @@ import { lookupOperation } from "../../src/jobs/operations";
 import { handleOutboxBatch } from "../../src/jobs/queue";
 import { dispatchTreeJob, type TreeJobSender } from "../../src/jobs/treeJobStore";
 import { processTreeJob } from "../../src/jobs/treeJobWorker";
+import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
+import { writeAudioChapters } from "../../src/services/audioChapters";
 import { purgeTrash } from "../../src/services/purgeTrash";
 import { restoreTrash } from "../../src/services/restoreTrash";
 import { trashNode } from "../../src/services/trashNode";
@@ -176,6 +178,72 @@ async function finish(operationId: string, beforeFinalize?: (jobId: string) => P
   });
   return terminal;
 }
+
+it("purges a 1,001-node tree with saved audio chapters and releases its references", async () => {
+  const rootId = `chapter_${crypto.randomUUID().replaceAll("-", "")}`;
+  const blobId = await largeTree(rootId);
+  const fileId = `${rootId}_file`;
+  await env.DB.prepare(
+    "INSERT INTO node_audio(node_id,blob_id,generator_version,duration_ms,codec) VALUES(?,?,?,10000,'mp3')",
+  )
+    .bind(fileId, blobId, AUDIO_GENERATOR_VERSION)
+    .run();
+  const saved = await writeAudioChapters(env.DB, principal(), fileId, blobId, 0, [
+    { id: "one", positionMs: 1000, title: "One" },
+  ]);
+  expect(saved.revision).toBe(1);
+  const setId = await env.DB.prepare("SELECT id FROM user_audio_chapter_sets WHERE node_id=?")
+    .bind(fileId)
+    .first<string>("id");
+  const usedBefore = await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
+    .bind(fixture.ids.user)
+    .first<number>("used_bytes");
+  const trashed = await trashNode(env as Env, {
+    principal: principal(),
+    requestId: crypto.randomUUID(),
+    spaceId: fixture.ids.space,
+    nodeId: rootId,
+    lockTokens: [],
+  });
+  if (trashed.kind !== "terminal") throw new Error("trash_not_started");
+  await finish(trashed.operation.id);
+  const purged = await purgeTrash(env as Env, {
+    principal: principal(),
+    requestId: crypto.randomUUID(),
+    spaceId: fixture.ids.space,
+    trashOpId: trashed.operation.id,
+  });
+  if (purged.kind !== "terminal") throw new Error("purge_not_started");
+  await finish(purged.operation.id);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM nodes WHERE id=? OR parent_id=?")
+      .bind(rootId, rootId)
+      .first("n"),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM user_audio_chapter_sets WHERE node_id=?")
+      .bind(fileId)
+      .first("n"),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM user_audio_chapters WHERE set_id=?")
+      .bind(setId)
+      .first("n"),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
+      .bind(fixture.ids.user)
+      .first("used_bytes"),
+  ).toBe(usedBefore! - 4);
+  expect(
+    await env.DB.prepare("SELECT state,ref_count FROM blobs WHERE id=?").bind(blobId).first(),
+  ).toEqual({ state: "gc_candidate", ref_count: 0 });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM gc_candidates WHERE blob_id=?")
+      .bind(blobId)
+      .first("n"),
+  ).toBe(1);
+});
 
 it("durably trashes, restores with conflict naming, and purges a 1,001-node tree", async () => {
   const rootId = `large_${crypto.randomUUID().replaceAll("-", "")}`;
