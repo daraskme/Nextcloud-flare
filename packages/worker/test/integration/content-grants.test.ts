@@ -43,7 +43,10 @@ async function fixture(kind: "private" | "public" = "private") {
           now + 600000,
         ],
       },
-      { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [shareId] },
+      {
+        sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+        values: [shareId, shareId],
+      },
       {
         sql: "INSERT INTO share_sessions(id,share_id,share_version,secret_digest,epoch,issued_at,expires_at) VALUES(?,?,1,?,1,?,?)",
         values: [unlock, shareId, unlock.replaceAll("-", "").repeat(2), now - 1000, now + 600000],
