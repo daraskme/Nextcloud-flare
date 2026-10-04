@@ -11,6 +11,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  principalActor,
 } from "./accountMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -207,6 +208,7 @@ export async function ensureContentBudget(
     authorized.node.owner_id,
     principal.epoch,
     "content.budget",
+    principalActor(principal),
   );
   try {
     await commitAccountMutation(db, admission, authorized.node.owner_id, [

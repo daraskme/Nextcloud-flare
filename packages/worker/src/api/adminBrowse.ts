@@ -11,6 +11,7 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
   MutationUnavailableError,
+  userActor,
 } from "../services/accountMutation";
 import { issueContentTicket } from "../services/contentTicket";
 import { listNodeChildren, readNode, readNodePath } from "../services/nodeRead";
@@ -60,7 +61,13 @@ function adminPrincipal(session: AccessSession, ownerId: string): Principal {
 }
 
 async function auditMetadata(env: Env, session: AccessSession, ownerId: string, nodeId: string) {
-  const admission = await acquireAccountMutation(env, ownerId, session.epoch, "admin.files.read");
+  const admission = await acquireAccountMutation(
+    env,
+    ownerId,
+    session.epoch,
+    "admin.files.read",
+    userActor(session.user_id),
+  );
   await commitAccountMutation(env.DB, admission, ownerId, [
     assertExists(
       `SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id

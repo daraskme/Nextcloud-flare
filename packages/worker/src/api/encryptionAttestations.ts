@@ -18,6 +18,7 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
   MutationUnavailableError,
+  userActor,
 } from "../services/accountMutation";
 import { blobEncryptionDto, readBlobEncryption } from "../services/encryptionMarker";
 
@@ -261,6 +262,7 @@ async function receipt(
     marker.ownerId,
     session.epoch,
     "encryption.admin.receipt",
+    userActor(session.user_id),
   );
   await commitAccountMutation(env.DB, admission, marker.ownerId, [
     assertLiveAccessCredential(session.credential_id, session.epoch),

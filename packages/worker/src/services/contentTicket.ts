@@ -13,6 +13,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  principalActor,
 } from "./accountMutation";
 import {
   prepareAuthorizedNodeBlobRead,
@@ -348,7 +349,13 @@ export async function issueContentTicket(
     signed = (await issueSigned(iat * 1000, result.expiresAt)).ticket;
     const publicationGuards = guards(result.expiresAt);
     await atomicBatch(db, publicationGuards);
-    admission = await acquireAccountMutation(env, ownerId, principal.epoch, "content.issue");
+    admission = await acquireAccountMutation(
+      env,
+      ownerId,
+      principal.epoch,
+      "content.issue",
+      principalActor(principal),
+    );
     await commitAccountMutation(db, admission, ownerId, [
       ...publicationGuards,
       {

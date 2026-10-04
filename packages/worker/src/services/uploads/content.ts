@@ -7,6 +7,7 @@ import {
   accountMutationStatements,
   acquireAccountMutation,
   commitAccountMutation,
+  credentialActor,
 } from "../accountMutation";
 import { observePhysicalObject } from "../physical";
 import { accessUpload, type UploadRow, uploadFence, uploadRow, uploadStatus } from "./access";
@@ -65,6 +66,7 @@ export async function writeSingleUpload(
       row.owner_id,
       row.epoch,
       "upload.single-start",
+      await credentialActor(env.DB, row.credential_id),
     );
     try {
       await atomicBatch(
@@ -118,6 +120,7 @@ export async function writeSingleUpload(
         row.owner_id,
         row.epoch,
         "upload.single-recover",
+        await credentialActor(env.DB, row.credential_id),
       );
       await atomicBatch(
         env.DB,
@@ -150,6 +153,7 @@ export async function writeSingleUpload(
     row.owner_id,
     row.epoch,
     "upload.single-verify",
+    await credentialActor(env.DB, row.credential_id),
   );
   await commitAccountMutation(env.DB, admission, row.owner_id, [
     authorizationAssertion(authorized),

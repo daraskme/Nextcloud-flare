@@ -5,6 +5,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  credentialActor,
 } from "../services/accountMutation";
 import { ContentTokens, MAX_CONTENT_GRANTS } from "./contentTokens";
 
@@ -173,7 +174,13 @@ export async function acceptContentTicket(
     .first<number>("n");
   if (activeCookies >= MAX_CONTENT_GRANTS || (count ?? 0) >= MAX_CONTENT_GRANTS)
     throw new ContentGrantLimitError();
-  const admission = await acquireAccountMutation(env, ownerId, claims.epoch, "content.accept");
+  const admission = await acquireAccountMutation(
+    env,
+    ownerId,
+    claims.epoch,
+    "content.accept",
+    await credentialActor(db, claims.credential_id),
+  );
   const sessionId = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const setCookie = await tokens.issueGrantCookie(
     sessionId,

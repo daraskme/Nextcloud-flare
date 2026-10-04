@@ -5,6 +5,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  credentialActor,
 } from "../accountMutation";
 import { accessUpload, uploadFence, uploadReceiptFence, uploadRow, uploadStatus } from "./access";
 import { readUpload } from "./read";
@@ -35,6 +36,7 @@ export async function abortMultipartUpload(
       row.owner_id,
       row.epoch,
       "upload.multipart-abort",
+      await credentialActor(db, row.credential_id),
     );
     try {
       await commitAccountMutation(db, admission, row.owner_id, [
@@ -81,6 +83,7 @@ export async function abortSingleUpload(
     row.owner_id,
     row.epoch,
     "upload.single-abort",
+    await credentialActor(db, row.credential_id),
   );
   await commitAccountMutation(db, admission, row.owner_id, [
     authorizationAssertion(authorized),

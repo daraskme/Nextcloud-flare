@@ -7,7 +7,7 @@ import { shareSecretDigest } from "../auth/shareSession";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { digestJson } from "../jobs/operations";
-import { acquireAccountMutation, commitAccountMutation } from "./accountMutation";
+import { acquireAccountMutation, commitAccountMutation, userActor } from "./accountMutation";
 import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -1000,7 +1000,13 @@ export async function updateInternalShare(
   } catch {
     throw new Error("share_not_found");
   }
-  const admission = await acquireAccountMutation(env, row.ownerId, session.epoch, "share.update");
+  const admission = await acquireAccountMutation(
+    env,
+    row.ownerId,
+    session.epoch,
+    "share.update",
+    userActor(session.user_id),
+  );
   await assertNoEncryptedSubtree(env.DB, row.rootNodeId, row.spaceId);
   const clock = "strftime('%s','now')*1000";
   const now = Date.now();
@@ -1448,7 +1454,13 @@ export async function disableShare(
         : null;
   if (managed === null) throw new Error("share_not_found");
   const ownerId = managed?.ownerId ?? exists.ownerId;
-  const admission = await acquireAccountMutation(env, ownerId, session.epoch, "share.disable");
+  const admission = await acquireAccountMutation(
+    env,
+    ownerId,
+    session.epoch,
+    "share.disable",
+    userActor(session.user_id),
+  );
   const clock = "strftime('%s','now')*1000";
   await commitAccountMutation(env.DB, admission, ownerId, [
     ...currentAccess(session),

@@ -283,6 +283,7 @@ export class ControlDO extends DurableObject<Env> {
       spaceId: request.spaceId,
       epoch: request.epoch,
       deadline: request.deadline,
+      ...(request.actor === undefined ? {} : { actor: request.actor }),
     });
     if (admission.space_id !== request.spaceId) throw new Error("mutation_unavailable");
     return { ...admission, space_id: request.spaceId };
