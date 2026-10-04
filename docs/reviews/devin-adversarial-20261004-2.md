@@ -30,13 +30,13 @@ CRC を blob ごとに D1 に保存すれば全量読みそのものを無くせ
 
 `cleanupArchiveTemps(file, 0)` は `item.mtimeMs > Date.now() - 0` の temp をスキップする。`mtimeMs` はミリ秒未満の精度を持ち、`Date.now()` は整数ミリ秒なので、同じミリ秒内に書いた temp は「未来」と判定されて削除されない（`pnpm check` の並列負荷で再現、単体では通る）。実装は正しく、テストの前提が誤り。テストで 3 ファイルの mtime を 60 秒前にしてから呼ぶよう修正。
 
-### F3（MEDIUM・M2 の残存、未修正・記録のみ）admission の公平性が space 単位で、principal 単位ではない
+### F3（MEDIUM・M2 の残存、修正済み: 0063）admission の公平性が space 単位で、principal 単位ではない
 
 `0061_admission_fairness.sql` は非 system の waiting を space ごと 64・全体 224 に制限した。ただし:
 - ユーザー 1 人に space は 1 つ（`bootstrap.ts`/`invites.ts`）なので、4 アカウントで 224 枠を埋められ、全ユーザーの非 system mutation が `mutation_unavailable` になる（system 用 32 枠は守られる）。
 - internal share の受領者による mutation は owner の `space_id` で数えるため、編集権限のある受領者 1 人が owner 本人の space 枠（64）を埋められる。
 
-完全に直すには principal 列と per-principal の上限が必要で、スキーマと API の変更になる。今回は記録だけにする。
+修正（`0063_admission_principal_fairness.sql`）: admission に actor（`u:<user>` / `s:<link share>`）と課金 account を記録し、actor ごと16・account ごと32・link share は owner ごと合計16・owner 以外は 1 space あたり48（owner 用に16を確保）の waiting 上限を足した。actor が NULL の行（旧行・owner 暗黙）は owner として数える。多数アカウントによる sybil は招待制のアカウント作成に依存する。
 
 ## 前回修正の再攻撃で棄却した候補
 
