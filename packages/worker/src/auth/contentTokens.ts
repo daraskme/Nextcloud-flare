@@ -1,6 +1,14 @@
 import { base64url, jwtVerify, SignJWT } from "jose";
 import type { ContentPurpose } from "./contentSession";
 
+export const MAX_CONTENT_GRANTS = 16;
+const COOKIE_NAME = "__Host-ncf_cs";
+
+export interface ContentCookieGrant {
+  readonly name: string;
+  readonly sessionId: string;
+}
+
 export interface ContentKeyRing {
   readonly activeKid: string;
   readonly keys: ReadonlyMap<string, CryptoKey>;
@@ -201,36 +209,66 @@ export class ContentTokens {
   }
 
   async verifyCookie(header: string | null): Promise<string> {
+    const grants = await this.verifyCookies(header);
+    if (grants.length !== 1) throw new Error("content_cookie_rejected");
+    return grants[0]!.sessionId;
+  }
+
+  async issueGrantCookie(sessionId: string, maxAgeSeconds: number): Promise<string> {
+    return (await this.issueCookie(sessionId, maxAgeSeconds)).replace(
+      `${COOKIE_NAME}=`,
+      `${COOKIE_NAME}_${sessionId}=`,
+    );
+  }
+
+  async verifyCookies(header: string | null): Promise<readonly ContentCookieGrant[]> {
     try {
       if (!header || header.length > 8192) throw new Error("invalid_cookie");
       const matches = header
         .split(";")
         .map((part) => part.trim())
-        .filter((part) => part.startsWith("__Host-ncf_cs="));
-      if (matches.length !== 1) throw new Error("invalid_cookie");
-      const value = matches[0]?.slice("__Host-ncf_cs=".length) ?? "";
-      const parts = value.split(".");
-      if (
-        parts.length !== 3 ||
-        !/^[A-Za-z0-9_-]{1,64}$/.test(parts[0] ?? "") ||
-        !/^[A-Za-z0-9_-]{43}$/.test(parts[1] ?? "") ||
-        !/^[A-Za-z0-9_-]{43}$/.test(parts[2] ?? "")
-      )
+        .filter((part) => part.startsWith(COOKIE_NAME));
+      if (matches.length < 1 || matches.length > MAX_CONTENT_GRANTS)
         throw new Error("invalid_cookie");
-      const [kid, sessionId, signature] = parts as [string, string, string];
-      if (
-        base64url.encode(base64url.decode(sessionId)) !== sessionId ||
-        base64url.encode(base64url.decode(signature)) !== signature
-      )
-        throw new Error("invalid_cookie");
-      const key = this.cookieRing.keys.get(kid);
-      if (!key) throw new Error("unknown_key");
-      const message = new TextEncoder().encode(
-        `ncf-content-cookie\0${this.origin}\0${kid}\0${sessionId}`,
-      );
-      if (!(await crypto.subtle.verify("HMAC", key, base64url.decode(signature), message)))
-        throw new Error("invalid_cookie");
-      return sessionId;
+      const names = new Set<string>();
+      const sessions = new Set<string>();
+      const grants: ContentCookieGrant[] = [];
+      for (const match of matches) {
+        const separator = match.indexOf("=");
+        const name = match.slice(0, separator);
+        const value = match.slice(separator + 1);
+        const parts = value.split(".");
+        if (
+          parts.length !== 3 ||
+          !/^[A-Za-z0-9_-]{1,64}$/.test(parts[0] ?? "") ||
+          !/^[A-Za-z0-9_-]{43}$/.test(parts[1] ?? "") ||
+          !/^[A-Za-z0-9_-]{43}$/.test(parts[2] ?? "")
+        )
+          throw new Error("invalid_cookie");
+        const [kid, sessionId, signature] = parts as [string, string, string];
+        if (
+          (name !== COOKIE_NAME && name !== `${COOKIE_NAME}_${sessionId}`) ||
+          names.has(name) ||
+          sessions.has(sessionId)
+        )
+          throw new Error("invalid_cookie");
+        names.add(name);
+        sessions.add(sessionId);
+        if (
+          base64url.encode(base64url.decode(sessionId)) !== sessionId ||
+          base64url.encode(base64url.decode(signature)) !== signature
+        )
+          throw new Error("invalid_cookie");
+        const key = this.cookieRing.keys.get(kid);
+        if (!key) throw new Error("unknown_key");
+        const message = new TextEncoder().encode(
+          `ncf-content-cookie\0${this.origin}\0${kid}\0${sessionId}`,
+        );
+        if (!(await crypto.subtle.verify("HMAC", key, base64url.decode(signature), message)))
+          throw new Error("invalid_cookie");
+        grants.push(Object.freeze({ name, sessionId }));
+      }
+      return Object.freeze(grants);
     } catch {
       throw new Error("content_cookie_rejected");
     }

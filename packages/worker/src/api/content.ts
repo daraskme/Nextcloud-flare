@@ -1,5 +1,5 @@
 import { problem } from "@next-cloud-flare/shared/errors";
-import { acceptContentTicket } from "../auth/contentAccept";
+import { acceptContentTicket, ContentGrantLimitError } from "../auth/contentAccept";
 import type { ContentTokens } from "../auth/contentTokens";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
@@ -90,22 +90,31 @@ export async function handleContentHttp(
     }
     try {
       const ticket = await ticketBody(request);
-      const accepted = await acceptContentTicket(env, tokens, ticket);
+      const accepted = await acceptContentTicket(
+        env,
+        tokens,
+        ticket,
+        request.headers.get("Cookie"),
+      );
+      const headers = new Headers({
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+      for (const cookie of [...accepted.clearCookies, accepted.setCookie])
+        headers.append("Set-Cookie", cookie);
       return cors(
         Response.json(
           { expiresAt: accepted.expiresAt },
           {
             status: 201,
-            headers: {
-              "Set-Cookie": accepted.setCookie,
-              "Cache-Control": "private, no-store",
-              "X-Content-Type-Options": "nosniff",
-            },
+            headers,
           },
         ),
         env.APP_ORIGIN,
       );
     } catch (error) {
+      if (error instanceof ContentGrantLimitError)
+        return cors(problem(429, "budget_exceeded"), env.APP_ORIGIN);
       if (
         error instanceof MutationUnavailableError ||
         (error instanceof Error && error.message === "content_session_commit_unknown")

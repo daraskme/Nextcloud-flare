@@ -184,6 +184,69 @@ it("issues, pins, redeems and streams a deterministic folder ZIP from the conten
   ).toBe(0);
 });
 
+it("selects a ZIP grant alongside another ZIP and a blob grant without widening targets or budgets", async () => {
+  const { f, now, tokens, principal, secondNode, secondBlob } = await fixture();
+  const tickets = await Promise.all([
+    issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.folder }],
+      "zip",
+      now + 300_000,
+    ),
+    issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: secondNode }],
+      "zip",
+      now + 300_000,
+    ),
+    issueContentTicket(
+      mutationEnv(),
+      env.BLOBS,
+      tokens,
+      principal,
+      [{ spaceId: f.ids.space, nodeId: f.ids.file }],
+      "content",
+      now + 300_000,
+    ),
+  ]);
+  expect(new Set(tickets.map((ticket) => ticket.budgetId)).size).toBe(1);
+  const sessions = await Promise.all(
+    tickets.map((ticket) => acceptContentTicket(mutationEnv(), tokens, ticket.ticket)),
+  );
+  const cookies = sessions.map((session) => session.setCookie.split(";", 1)[0]).join("; ");
+  const contentEnv = {
+    ...mutationEnv(),
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
+  const head = (path: string, cookie = cookies) =>
+    handleContentHttp(
+      new Request(`https://content.invalid${path}`, {
+        method: "HEAD",
+        headers: { Cookie: cookie },
+      }),
+      contentEnv,
+      tokens,
+    );
+  for (const ticket of tickets.slice(0, 2))
+    expect((await head(`/z/${ticket.targetSetId}`)).status).toBe(200);
+  expect((await head(`/c/${f.ids.file}/${f.ids.blob}`)).status).toBe(200);
+  expect((await head(`/c/${secondNode}/${secondBlob}`)).status).toBe(404);
+  expect(
+    (await head(`/z/${tickets[1]!.targetSetId}`, sessions[0]!.setCookie.split(";", 1)[0]!)).status,
+  ).toBe(404);
+  await cancelContentTicket(mutationEnv(), principal, tickets[0]!.ticketId);
+  expect((await head(`/z/${tickets[0]!.targetSetId}`)).status).toBe(404);
+  expect((await head(`/z/${tickets[1]!.targetSetId}`)).status).toBe(200);
+  expect((await head(`/c/${f.ids.file}/${f.ids.blob}`)).status).toBe(200);
+});
+
 it("removes expired ZIP pins through bounded admitted cleanup", async () => {
   const { f, now, tokens, principal } = await fixture();
   const issued = await issueContentTicket(
