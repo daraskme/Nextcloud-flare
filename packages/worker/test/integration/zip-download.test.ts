@@ -478,3 +478,53 @@ it("serves a byte range with sparse R2 reads for uncovered entries", async () =>
     { key: `u/${f.ids.user}/b/${secondBlob}`, range: { offset: 0, length: 2 } },
   ]);
 });
+
+it("does not charge or read ZIP blobs for a ranged HEAD over the central directory", async () => {
+  const { f, now, tokens, principal } = await fixture();
+  const issued = await issueContentTicket(
+    mutationEnv(),
+    env.BLOBS,
+    tokens,
+    principal,
+    [{ spaceId: f.ids.space, nodeId: f.ids.folder }],
+    "zip",
+    now + 300_000,
+  );
+  const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+  const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+  const contentEnv: Env = {
+    ...mutationEnv(),
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
+  const gets: string[] = [];
+  const spy = new Proxy(env.BLOBS, {
+    get(target, property) {
+      if (property === "get")
+        return (key: string, options?: { range?: { offset: number; length: number } }) => {
+          gets.push(key);
+          return target.get(key, options as never);
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const response = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      method: "HEAD",
+      headers: { Cookie: cookie, Range: "bytes=-145" },
+    }),
+    { ...contentEnv, BLOBS: spy },
+    tokens,
+  );
+
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Range")).toBeNull();
+  expect(response.headers.get("Content-Length")).toBe("273");
+  expect(response.body).toBeNull();
+  expect(gets.filter((key) => key.startsWith("u/"))).toEqual([]);
+  expect(await env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId)).status()).toMatchObject({
+    requests: 1,
+    bytesCharged: 0,
+  });
+});

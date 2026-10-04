@@ -853,6 +853,12 @@ async function purgeFinalStatements(
       OR EXISTS(SELECT 1 FROM share_delegation_ancestry a WHERE a.share_id=d.share_id
         AND (a.node_id IN (${members}) OR a.parent_id IN (${members})))`;
   const doomedShares = "SELECT share_id FROM purge_share_ids WHERE purge_op_id=?";
+  const affectedShares = `WITH RECURSIVE affected(share_id) AS (
+    SELECT share_id FROM purge_share_ids WHERE purge_op_id=?
+    UNION
+    SELECT child.share_id FROM share_delegations child
+    JOIN affected parent ON child.source_share_id=parent.share_id
+  ) SELECT share_id FROM affected`;
   statements.push(
     {
       sql: `INSERT INTO purge_share_ids(purge_op_id,share_id)
@@ -864,6 +870,14 @@ async function purgeFinalStatements(
         AND d.share_id NOT IN (${doomedShares})`,
       [row.op_id, row.op_id, row.op_id, row.op_id, row.op_id],
     ),
+    {
+      sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),version=version+1
+        WHERE id IN (${affectedShares}) AND disabled_at IS NULL`,
+      values: [row.op_id],
+    },
+    absent(`SELECT 1 FROM shares WHERE id IN (${affectedShares}) AND disabled_at IS NULL`, [
+      row.op_id,
+    ]),
     {
       sql: `DELETE FROM share_delegation_status WHERE share_id IN (${doomedShares})`,
       values: [row.op_id],

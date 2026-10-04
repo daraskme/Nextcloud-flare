@@ -17,7 +17,7 @@ import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const BASE_STEPS = 42;
+const BASE_STEPS = 43;
 type UserPrincipal = {
   readonly kind: "user";
   readonly user_id: string;
@@ -332,6 +332,12 @@ function statements(
       OR EXISTS(SELECT 1 FROM share_delegation_ancestry a WHERE a.share_id=d.share_id
         AND (a.node_id IN (${members}) OR a.parent_id IN (${members})))`;
   const doomedShares = "SELECT share_id FROM purge_share_ids WHERE purge_op_id=?";
+  const affectedShares = `WITH RECURSIVE affected(share_id) AS (
+    SELECT share_id FROM purge_share_ids WHERE purge_op_id=?
+    UNION
+    SELECT child.share_id FROM share_delegations child
+    JOIN affected parent ON child.source_share_id=parent.share_id
+  ) SELECT share_id FROM affected`;
   add(
     "delegation_set",
     current.rootId,
@@ -345,6 +351,19 @@ function statements(
         AND d.share_id NOT IN (${doomedShares})`,
       [op, op, op, op, op],
     ),
+  );
+  // Removing a delegation makes its share look like a direct share in
+  // current_internal_shares. Revoke every affected share first, including
+  // descendants whose own ancestry does not touch the purged nodes.
+  add(
+    "revoke_delegated_shares",
+    current.rootId,
+    {
+      sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),version=version+1
+        WHERE id IN (${affectedShares}) AND disabled_at IS NULL`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM shares WHERE id IN (${affectedShares}) AND disabled_at IS NULL`, [op]),
   );
   add(
     "share_delegation_status",

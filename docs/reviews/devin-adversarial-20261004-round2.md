@@ -13,7 +13,7 @@
 
 **R2-H1. リシェア伝達（share_delegations）を持つゴミ箱サブツリーの purge が恒久的に失敗する**
 `share_delegation_ancestry.node_id`/`parent_id` と `share_delegations.source_root_parent_id`/`delegated_root_parent_id` はいずれも `nodes(id)` への NOT NULL FK で、delegation 行は UPDATE 不可トリガ（0048）のため無効化で逃げられない。被共有者がリシェアしたフォルダをオーナーがゴミ箱に入れて purge すると、`nodes` 削除が FK で拒否され atomicBatch ごとロールバック — サブツリーは purge 不能のまま quota を占有し続ける。
-修正: ancestry 経由でしか辿れない delegation 集合を先に新規スクラッチ表 `purge_share_ids`（migration 0063）へ実体化し、status→ancestry→delegations の FK 順で削除（同期 `purgeTrash.ts`・非同期 `treeJobWorker.ts` の両経路）。ancestry 削除後に `share_delegations` の検索条件を評価すると空振りするため、ID 集合の事前実体化が必須だった（初版はこの順序バグで `share_delegations` に残行）。
+修正: ancestry 経由でしか辿れない delegation 集合を先に新規スクラッチ表 `purge_share_ids`（migration 0064）へ実体化し、status→ancestry→delegations の FK 順で削除（同期 `purgeTrash.ts`・非同期 `treeJobWorker.ts` の両経路）。ancestry 削除後に `share_delegations` の検索条件を評価すると空振りするため、ID 集合の事前実体化が必須だった（初版はこの順序バグで `share_delegations` に残行）。
 
 **R2-H2. user_audio_chapter_sets を持つノードの purge も同じく恒久的に失敗**
 `user_audio_chapter_sets.node_id` は `nodes(id)` NOT NULL FK、`user_audio_chapters.set_id` は sets への CASCADE FK。チャプター付き音声ファイルを purge すると同様に FK で wedge。同じ変更で chapters→sets の順に削除。
@@ -30,7 +30,7 @@
 `prepareZipSessionContent` の session SELECT に liveness 条件（`cs.revoked_at`/`cs.expires_at`/`t.cancelled_at`/`t.expires_at`）がなく、死んだセッションでも manifest GET + 各 entry の authorizeNode/HEAD/D1 write まで全部走ってから最終 assert で 404。WHERE に liveness 条件を追加し、計画段階で落とす（テストは R2 spy で R2 アクセス 0 を確認）。
 
 **R2-M6. ZIP Range が DD/CD を跨ぐと対象 entry を全件フル取得するのに range.length しか課金されない**
-`zipRangeSpans` が `needsCrc` の entry を非 ranged `bucket.get` で全読みする一方、reserve は `range.length` のみ（ラウンド1 M3 の残件）。`bytes=<cdStart>-` で ~76KB 課金で全 entry（最大 4GiB）の R2 fetch + CRC を踏める。lease は `max(responseBytes, fetchBytes)` で reserve し、settle も `max(delivered, fetchBytes)` に下駄を履かせる（overrun チェック非抵触）。
+`zipRangeSpans` が `needsCrc` の entry を非 ranged `bucket.get` で全読みする一方、reserve は `range.length` のみ（ラウンド1 M3 の残件）。`bytes=<cdStart>-` で ~76KB 課金で全 entry（最大 4GiB）の R2 fetch + CRC を踏める。PR #43 と統合し、lease は応答 byte と配信されない全量取得 byte の合計を reserve する。成功時の settle も同じ加算方式。HEAD・304・416 は blob を取得せず byte 課金は0。
 
 **R2-M7. depth-infinity LOCK を作成者以外が外せず、受領者ロックがオーナーを飢餓させる**
 `LockDO.#changeDavLock` の token 検査が `ap.user_id=creator` のみで、node/space オーナーの UNLOCK が `dav_lock_token_mismatch` で失敗する。share 受領者が mount ルートを Depth: infinity LOCK すると、オーナーは access 剥奪以外に回復手段がない。UNLOCK のみ space owner に `EXISTS(spaces.owner_id=?)` 経路を追加（refresh は作成者専用のまま、DO 経路のみで HTTP 権限面は不変）。
