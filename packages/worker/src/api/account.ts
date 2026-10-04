@@ -39,7 +39,12 @@ export async function handleAccountHttp(
       .first<MeRow>();
     if (!row || row.id !== session.user_id) return problem(403, "forbidden");
     return Response.json(
-      { ...row, epoch: session.epoch, contentOrigin: env.CONTENT_ORIGIN },
+      {
+        ...row,
+        epoch: session.epoch,
+        contentOrigin: env.CONTENT_ORIGIN,
+        clientEncryptionRequired: env.CLIENT_ENCRYPTION_REQUIRED === "true",
+      },
       {
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
       },

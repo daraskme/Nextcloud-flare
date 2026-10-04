@@ -71,7 +71,7 @@ async function hold() {
   return { release: released.resolve, running };
 }
 
-it("runs concurrent real PBKDF2 calls one at a time and retains valid records", async () => {
+it("rejects concurrent PBKDF2 calls for retry and retains valid records", async () => {
   const f = await fixture();
   const native = crypto.subtle.deriveBits.bind(crypto.subtle);
   let active = 0,
@@ -85,12 +85,21 @@ it("runs concurrent real PBKDF2 calls one at a time and retains valid records", 
     }
   });
   try {
-    const jobs = Array.from({ length: 8 }, (_, i) =>
-      i % 2
-        ? authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, f.ring)
-        : hashAppPassword(key(), f.ring),
+    const jobs = Array.from(
+      { length: 8 },
+      (_, i) => () =>
+        i % 2
+          ? authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, f.ring)
+          : hashAppPassword(key(), f.ring),
     );
-    expect(await Promise.all(jobs)).toHaveLength(8);
+    const results = await Promise.allSettled(jobs.map((job) => job()));
+    expect(results.some((result) => result.status === "fulfilled")).toBe(true);
+    for (let i = 0; i < jobs.length; i++) {
+      if (results[i]?.status === "rejected") {
+        expect((results[i] as PromiseRejectedResult).reason).toBeInstanceOf(KdfUnavailableError);
+        await jobs[i]!();
+      }
+    }
     expect(spy).toHaveBeenCalledTimes(8);
     expect(peak).toBe(1);
     expect(active).toBe(0);
@@ -117,6 +126,22 @@ it("returns retryable DAV overload without challenging or invalidating a valid c
     held.release();
     await held.running;
     await waiting;
+  }
+  expect((await handleDavHttp(f.request(), f.app, 1, f.ring)).status).toBe(200);
+});
+
+it("reports an unexpected HMAC failure as retryable instead of rejecting valid DAV credentials", async () => {
+  const f = await fixture();
+  const sign = vi
+    .spyOn(crypto.subtle, "sign")
+    .mockRejectedValueOnce(new Error("crypto_unavailable"));
+  try {
+    const response = await handleDavHttp(f.request(), f.app, 1, f.ring);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(response.headers.has("WWW-Authenticate")).toBe(false);
+  } finally {
+    sign.mockRestore();
   }
   expect((await handleDavHttp(f.request(), f.app, 1, f.ring)).status).toBe(200);
 });
@@ -229,38 +254,26 @@ it("checks current access and root authorization before spending KDF capacity on
 });
 
 it.each(["revoked", "maintenance"])(
-  "rechecks current authority after authentication waits for capacity (%s)",
+  "rechecks current authority when authentication retries after capacity frees (%s)",
   async (reason) => {
     const f = await fixture(),
-      held = await hold(),
-      queued = deferred();
-    const original = kdf.runKdf;
-    const spy = vi.spyOn(kdf, "runKdf").mockImplementation((action, signal) => {
-      const result = original(action, signal);
-      queued.resolve();
-      return result;
-    });
-    const attempt = authenticateAppPassword(
-      mutationEnv(env.DB),
-      f.request(),
-      f.app.APP_ORIGIN,
-      1,
-      f.ring,
-    );
-    const rejection = expect(attempt).rejects.toThrow("app_password_denied");
+      held = await hold();
     try {
-      await queued.promise;
+      await expect(
+        authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, f.ring),
+      ).rejects.toBeInstanceOf(KdfUnavailableError);
       if (reason === "revoked")
         await env.DB.prepare("UPDATE app_passwords SET revoked_at=? WHERE id=?")
           .bind(Date.now(), f.credential.id)
           .run();
       else await env.DB.prepare("UPDATE control SET maintenance=1").run();
     } finally {
-      spy.mockRestore();
       held.release();
       await held.running;
     }
-    await rejection;
+    await expect(
+      authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, f.ring),
+    ).rejects.toThrow("app_password_denied");
   },
 );
 
@@ -320,11 +333,21 @@ it("shares capacity across pepper verification, rotation and re-verification", a
     }
   });
   try {
-    const [principal] = await Promise.all([
-      authenticateAppPassword(mutationEnv(env.DB), f.request(), f.app.APP_ORIGIN, 1, ring),
-      hashAppPassword(key(), ring),
-      hashAppPassword(key(), ring),
-    ]);
+    const principal = await authenticateAppPassword(
+      mutationEnv(env.DB),
+      f.request(),
+      f.app.APP_ORIGIN,
+      1,
+      ring,
+    );
+    const hashes = Array.from({ length: 2 }, () => () => hashAppPassword(key(), ring));
+    const initial = await Promise.allSettled(hashes.map((hash) => hash()));
+    for (let i = 0; i < hashes.length; i++) {
+      if (initial[i]?.status === "rejected") {
+        expect((initial[i] as PromiseRejectedResult).reason).toBeInstanceOf(KdfUnavailableError);
+        await hashes[i]!();
+      }
+    }
     expect(principal).toMatchObject({ credential_id: f.credential.credentialId });
     expect(spy).toHaveBeenCalledTimes(5);
     expect(peak).toBe(1);

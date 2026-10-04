@@ -164,6 +164,12 @@ export async function handlePublicUploadHttp(
   const create = CREATE.exec(url.pathname);
   const match = UPLOAD.exec(url.pathname);
   if ((create?.[1] ?? match?.[1]) !== session.shareId) return problem(404, "not_found");
+  if (
+    env.CLIENT_ENCRYPTION_REQUIRED === "true" &&
+    request.method !== "GET" &&
+    request.method !== "DELETE"
+  )
+    return problem(403, "forbidden");
   const id = match?.[2];
   const action = match?.[3];
   const partNumber = match?.[4] === undefined ? undefined : Number(match[4]);

@@ -61,7 +61,17 @@ export async function acceptContentTicket(
                 AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')))
           )
           AND (
-            (? IS NULL AND ts.owner_id=?) OR
+            (? IS NULL AND ts.owner_id=? AND NOT EXISTS(
+              SELECT 1 FROM admin_content_grants ag WHERE ag.ticket_id=t.id)) OR
+            (? IS NULL AND c.kind='access' AND EXISTS(
+              SELECT 1 FROM admin_content_grants ag JOIN users admin ON admin.id=ag.actor_id
+              JOIN users owner ON owner.id=ag.owner_id AND owner.disabled_at IS NULL
+              JOIN nodes n ON n.id=ag.node_id AND n.owner_id=ag.owner_id
+              JOIN sessions s ON s.id=c.session_id AND s.kind='access'
+              WHERE ag.ticket_id=t.id AND ag.actor_id=? AND ag.owner_id=ts.owner_id
+                AND n.deleted_at IS NULL AND admin.role='app_admin' AND admin.disabled_at IS NULL
+                AND s.user_id=ag.actor_id AND s.epoch=t.epoch AND s.revoked_at IS NULL
+                AND s.expires_at>MAX(?,strftime('%s','now')*1000))) OR
             (? IS NOT NULL AND EXISTS(
               SELECT 1 FROM shares sh WHERE sh.id=? AND sh.version=?
                 AND sh.owner_id=ts.owner_id AND sh.disabled_at IS NULL
@@ -113,6 +123,9 @@ export async function acceptContentTicket(
     expiresAt,
     claims.share_id,
     claims.user_id,
+    claims.share_id,
+    claims.user_id,
+    issuedAt,
     claims.share_id,
     claims.share_id,
     claims.share_version,

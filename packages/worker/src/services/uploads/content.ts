@@ -10,6 +10,7 @@ import {
 } from "../accountMutation";
 import { observePhysicalObject } from "../physical";
 import { accessUpload, type UploadRow, uploadFence, uploadRow, uploadStatus } from "./access";
+import { requireEncryptedUpload } from "./encryptionPolicy";
 
 function metadata(row: UploadRow) {
   return {
@@ -42,7 +43,7 @@ async function recoverBody(env: Pick<Env, "DB" | "BLOBS">, row: UploadRow): Prom
 }
 
 export async function writeSingleUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "CONTROL">,
+  env: Pick<Env, "DB" | "BLOBS" | "CONTROL" | "CLIENT_ENCRYPTION_REQUIRED">,
   principal: Principal,
   id: string,
   capability: string,
@@ -51,6 +52,7 @@ export async function writeSingleUpload(
   size: number,
 ) {
   let { row, authorized } = await accessUpload(env.DB, principal, id, capability, capabilities);
+  requireEncryptedUpload(env.CLIENT_ENCRYPTION_REQUIRED, row.encryption_header_sha256);
   if (row.mode !== "single" || size !== row.declared_size) throw new Error("upload_size_mismatch");
   if (row.state === "completing" || row.state === "completed") return uploadStatus(row);
   if (row.state !== "created" && row.state !== "receiving") throw new Error("upload_not_receiving");

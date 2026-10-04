@@ -190,6 +190,7 @@ const movePolicy = {
       expectedParent: { committed: "parentId", pending: "sourceParentId" },
       when: "always",
     },
+    { operation: "node.read", operand: "sourceParentId", when: "always" },
     { operation: "node.create", operand: "parentId", when: "always" },
   ],
   adapters: ["overwrite-deletion"],

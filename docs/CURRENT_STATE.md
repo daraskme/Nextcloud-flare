@@ -1,14 +1,32 @@
 # 現在の実装状態
 
-更新: 2026-10-01。直近の到達点は[PROGRESS](PROGRESS.md)。
+更新: 2026-10-04。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
 
-最新mainはQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user・group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、1,001〜10,000 nodeのdurable非同期trash/restore/purgeを統合済みである。内部共有UIはowner lifecycle、再共有ポリシー、recipient provenanceと現在有効な操作を表示する。統合headはさらにprivate media resume state、user単位のAudio chapter設定（migration `0051`）、durable operation authority registry、読み取り専用ops health snapshot（migration `0052`のindex）、backup health webhook adapter、非配備のrelease evidence gateを含む。migrationは51件（最新`0052`、`0045`欠番）、通常tableは82、route契約は161。
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。 詳細は[実装進捗](IMPLEMENTATION_STATUS.md)と[引き継ぎ](HANDOFF.md)。
+
+以下のcheckpointは署名追加前または各記録時点の履歴であり、現在状態ではない。
+
+追加checkpoint: 実stagingのR2保存世代から83table・388行を独立SQLiteへ復元し、原本6 object・64,953,590 bytesの複写照合が成功した。保守状態と一時Cron bridgeは解除・削除済み。動画シーク時の429を4MiBのRange予約へ修正し実環境で8回連続シークを確認した。読み取り専用automation GET 2経路は実装済みだがAccessでの実利用はまだ有効化していない。本人＋管理者のクライアント暗号化は単体・統合3,125件と全ブラウザー48件を通過し、stagingへ反映した。実Chrome固有のSW取得時のAccess転送は単一公開bootstrapで解消し、実登録と鍵未設定時の送信拒否を確認した。続いて実管理者の鍵で既存メディア3件・64,932,182 bytesの暗号化コピーを作り、実環境で復号後の全byte・SHA-256と再生/seekを確認した。移行修正後のfocused暗号化3件は成功し、全49件が8.6分で成功。一般利用者2人は使わないとのユーザー指示により暗号化設定・既存空ファイル移行を省略し、管理者1人での運用を対象とする。承認を受けて管理者の元の平文3件をアプリとゴミ箱から削除したが、R2原本は35日以上のGC猶予で残り、過去バックアップも保持している。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
+
+2026-10-04 は手元の実ファイルによるAVIF・Opus/MP4・1080p 10-bit AV1+Opus/MP4のupload・表示・再生・seek・全byte照合を追加した。AVIFをMP3と誤判定してGalleryから消す問題、画像MIMEの保存不足、サーバー間の時計差による受付期限の誤拒否を修正し、stagingへ配備した。個人メディアはrepositoryに含めない。
+
+2026-10-03 の追加は、監査付き読み取り専用の [管理者ファイル閲覧](ADMIN_FILES.md) と、実upload後のMP3/Opus/AV1形式判定・再生経路の修正。現在のschemaは52 migrations（最新`0053`）、83通常table、168 route契約。stagingは配備済みで、管理者1人と一般利用者2人のログイン、upload/download、一般利用者間の一覧分離をユーザーが確認した。追加機能の配備・試験結果は進捗表と [staging runbook](../ops/staging/README.md) を参照する。
+
+以下は2026-10-02までの分野別checkpoint。以前の「remote未実施」は現在のstaging状態を表さない。
+
+最新の変更ではQueue dead-letter修復、audio/video metadata、画像metadataとimmutable `sm256` thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user・group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、1,001〜10,000 nodeのdurable非同期trash/restore/purge、管理者招待による複数Access利用者の作成とstaging設定案を統合した。内部共有UIはowner lifecycle、再共有ポリシー、recipient provenanceと現在有効な操作を表示する。migrationは50件（最新`0051`）、通常tableは81、route契約は162。
 
 video、group internal share、multipart closureのPR #16、#17、#19は全5 CIを通過してmainへ統合済みである。group shareのaction変更後は`share.version`、member削除/再追加後はmembership versionでbudget identityをrotateし、revoke済みbudgetを再利用しない。
 
-multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。backup drillは82 tableでPASSしている。
+multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。backup drillは80 tableでPASSしている。
 
-読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP delivery、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAVを既存のauthority、projection、ticket、content-origin、BudgetDO、Queueへ接続した。次はgroup lifecycle・recipient reshare・app password・Recent/Starred・private ZIPの各UI、残るoperation/Outbox/repair、復旧・運用を進める。timerの実設置・実webhook配送、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AVIF/AV1/Opusの実codecと複数browser実ファイル再生、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP delivery、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAVを既存のauthority、projection、ticket、content-origin、BudgetDO、Queueへ接続した。group lifecycle・recipient reshare・app password・Recent/Starred・private ZIPの各UIとmedia resume stateも接続済み。Files gridの仮想化、private Galleryのticket取消し、移動Outboxの移動元親権限検査に加え、現行audio投影に限定したmetadata検索とFiles UI、移動結果照会の移動元親権限・node step検査を追加した。実AVIF静止画のChromium表示も確認した。次はvideo/image metadata検索、残るoperation/Outbox/repair、復旧・運用を進める。timerの実設置・外部通知、破損・未完了世代の回収、Time Travel・live復旧、D1/全storage喪失後の信頼できる世代選択、未知KDF、AV1/Opusを含む複数browser実ファイル再生、実OS client・実環境検証・公開は未完了である。remote migration・deployは未実施。
 
 ## 状態の意味
 
@@ -26,13 +44,8 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 | 分野 | 実装済みの範囲 | 検証済みの範囲 | 残る境界 |
 |---|---|---|---|
-| Audio chapter設定 | migration `0051`、user/node/current blob単位のchapter set、最大200件・整数ms・256 byte title・一意order、optimistic revisionのwhole-list PUT、private no-store GET、PrivateAudioの設定mode（現在位置capture・編集・keyboard並べ替え・削除・seek・conflict reload） | owner CRUD/reorder、user分離、internal reader、revoke/trash/stale blob/revision/epoch/maintenance/credential/CSRF/bounds、atomic rollback、backup freeze、schema contract、Web unit、focused browser（元branch） | public/link share・app password・service principalへは非公開。実ファイル・複数browser検証は後続 |
-| durable operation authority registry | 全durable operation kindの型付きpolicy、claim/lookup共通interpreter、fail-closed operand検査、terminal result disclosure規則 | exhaustive registry、negative operand/upload-binding/terminal fixture、share revocation・app password scope・credential version・epoch・async-tree回帰 | 実行semantics・schemaは不変。`audio_chapters.write`は直接認可のまま |
-| ops health snapshot | private `OperationsOperator.inspect`、redacted/bounded集計、ControlDO/D1 mirror前後比較、backup health合成、`pnpm ops:health`終了コード0/2/1、migration `0052`のhealth index | 純粋集計・alert順序・redaction・終了コード、workerd fixture、mirror conflict、ローカルbinding drill | 実Cron/Queue/Time Travel/R2/Logpush、remote service bindingは未検証。[OPS_HEALTH](OPS_HEALTH.md) |
-| backup health通知 | `pnpm backup:monitor`、v1 redacted event、StateDirectoryの0600 state、初回/変化/recoveredのみ通知、HTTPS JSON webhook sink、systemd例の更新 | Node unit/CLI/loopback HTTP、exit 0/2/1保持、systemd-analyze verify、既存backup drill | 実webhook・timer設置・remote運用は未実施。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
-| release evidence gate | `pnpm release:gate`、clean tree/exact HEAD/Node 24.21.0/pnpm 12.4.1/frozen lockfile、順次check・backup drill・Playwright、allowlisted manifest+SHA-256、`--plan`、forbidden command静的拒否 | plan/allowlist/toolchain/clean-tree/timeout/redaction/digest/no-partial-pass unit、CIでの`--plan` | Cloudflare staging/productionは明示的に未検証。[RELEASE_EVIDENCE](RELEASE_EVIDENCE.md) |
 | 公開リンク | owner作成/一覧/参照/無効化、password/fragment unlock、share Cookie、読み取り専用metadata/children/download、Gallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entry、bounded ZIP、upload-onlyのsingle/multipart受信・owner/share予約・名前非開示、独立shell/assets、Files共有dialog | capability/session/version/epoch/root coverage、owner分離、失効、ZIP idempotency、budget再利用、content-origin交換/redirect、R2配信、media cursor/projection、EPUB projection/source/entry fence、GET/HEAD/Rangeとexact budget、upload receipt/transfer/status/complete/abort、完了再試行、衝突回避、read/list拒否、hashed assetsとexact route | stagingと実browser/media file。[PUBLIC_SHARES](PUBLIC_SHARES.md) |
-| 内部共有・shared DAV | ownerによるdirect-user/group share作成/一覧/action更新/revoke、group/member API、rename-stable mount、bounded reshare policy/delegation、owner/recipient管理UI、`/dav/Shared/<mount>`のread/create/edit/delete | active user/group/member/grant/share、membership/share/policy/delegation version、live ancestry、epoch、maintenance、action、rename/revoke後の失効、budget rotation、shared DAV context fencing | group lifecycle・recipient reshare UI、実OS client |
+| 内部共有・shared DAV | ownerによるdirect-user/group share作成/一覧/action更新/revoke、group/member API、rename-stable mount、bounded reshare policy/delegation、owner/recipient管理UI・group lifecycle・recipient reshare UI、`/dav/Shared/<mount>`のread/create/edit/delete | active user/group/member/grant/share、membership/share/policy/delegation version、live ancestry、epoch、maintenance、action、rename/revoke後の失効、budget rotation、shared DAV context fencing | 実OS client |
 | 期限切れ世代の自動走査 | sweep・永続round/cursor・既知破損の保留・maintainの明示option | Node22/workerd13追加、eviction・100件超の不在receipt・固定期限・競合、9操作のbindingドリル | timer実設置・外部通知・remote運用は後続。[BACKUP_SWEEP](BACKUP_SWEEP.md) |
 | 期限切れSQL世代の明示回収 | 専用prune・実receipt/hash/年齢照合・20部品/100RPC・manifest最終削除 | Node12/workerd26追加、境界・応答喪失・eviction・遅延DELETE、専用bindingドリル | 未完了/破損世代の回収、remote運用は後続。[BACKUP_PRUNING](BACKUP_PRUNING.md) |
 | 日次運用と世代補充 | maintain・完了ID照合・不足/鮮度補充・定時起動例 | Node18/workerd8追加、Node662件と関連87件、実5世代ドリル成功 | timer設置・外部通知・remote/live復旧は未完了。[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md) |
@@ -63,10 +76,10 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | upload予約の全体受付 | 単一/分割の新規予約、署名後取得、quota/blob/uploadと確定記録/解放を同一batch、既存receiptは読取りのみ | workerd42件追加、停止/失効/期限/quota/revision、全rollback、応答喪失、実ControlDO満杯での読取り・待機・返却 | 残るinventory/Queue/backupと実環境は後続 |
 | 配信更新の全体受付 | budget・ticket発行/交換/取消し、共有もコンテンツ所有spaceで受付、変更/確定記録/解放を同一batch、取消し証明後のmanifest削除 | workerd70件追加、4 principal・実時計・停止/失効・応答喪失・遅延公開・実ControlDO32枠・HTTP503/CORS | upload転送/Queue/backup統合、実環境未検証 |
 | Access sessionの更新受付 | migration0032、登録・初回owner・logout共有枠、既存JWTのread-only照合 | Node4/workerd22件追加、scope・移行・失効・応答喪失・実ControlDO待機、8e7243eのCI全成功 | 残る更新と実環境は未接続 |
-| schema・契約 | 51 migrations（最新`0052`）、82通常table、FTS、161 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致、82-table backup drill | 全161 routeの機能実装は未完了 |
-| 認証 | Access JWT/JWKS、user/service分離、bootstrap、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret |
+| schema・契約 | 50 migrations（最新`0051`）、81通常table、FTS、162 route契約、FK graph、会計・状態遷移trigger | SQLiteとD1 migration、FK/CHECK/trigger、生成契約一致、81-table backup drill | 全162 routeの機能実装は未完了 |
+| 認証 | Access JWT/JWKS、user/service分離、単一管理者bootstrap、明示的な7日間招待による追加利用者の`iss+sub`固定、session、logout、CSRF、app password | JWT失敗境界、鍵cache、bootstrap競合、招待の権限・期限・失効・競合、session失効、PBKDF2 | 実Access/MFA policy、remote issuer/AUD/secret、stagingでの複数利用者試験。[STAGING_ACCESS](STAGING_ACCESS.md) |
 | KDF終了記録repair | DO SQLite最大20件の送信前/終端記録、DB精算再照合、停止中内部RPC、ローカル記録の復旧fence | 新規14件、既存認証・受付再開・GC停止の回帰、全check成功 | 証明喪失した未知試行の運用収束、実環境のrepair/restore drill |
-| KDF実行制限 | Worker/ControlDO各1件・待機256件・5秒、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新と503応答 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
+| KDF実行制限 | Worker/ControlDO各1件・並行要求は予約前に即503、D1の600回/65秒予算と未精算20枠、epoch cooldown、発行/認証/鍵更新 | 新規Node7件・workerd20件、既存認証34件、実ControlDO RPC/eviction/全喪失、実browserの8同時DAV接続。詳細は[KDF_ADMISSION](KDF_ADMISSION.md) | 証明喪失試行の収束、共有password/IP制限、実CPU・処理量・切断 |
 | 認可 | private/app-password/internal-share/anonymous-shareのnode authority、祖先検査 | 4 principal、失効対commit、別owner・削除祖先拒否 | 全operation・全routeのoperand tuple |
 | namespace更新の全体受付 | migration0030、D1 active32/waiting256、ControlDO FIFO、LockDO全8許可経路、失効と最終commit fence | 新規Node4・workerd17件と全check成功。上限・再送・応答喪失・待機後認可・停止/復旧 | 他の更新経路・backup barrier・実負荷。[MUTATION_ADMISSION](MUTATION_ADMISSION.md) |
 | DAVロックの全体受付・確定記録 | migration0031、LOCK/refresh/UNLOCKの共有枠、lock変更/記録/解放の一括確定、60秒保持 | Node4・workerd22件追加。実ControlDO待機、HTTP503、失効/停止、応答喪失、別処理のunlock、rollback、旧DB移行 | HTTP応答喪失後のtoken再取得・別RPCの結果再生は未実装。実環境未検証 |
@@ -74,7 +87,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | atomic mutation | operation claim/lookup、permit、LockDO、rollback、commit unknown収束 | 同時再送、競合、失効、応答喪失、全step rollback | 実ControlDO admission下のstaging試験 |
 | Files UI | React/TanStackの一覧・操作・trash・確認付き上書き/再開upload・logout、認証付きprivate assets | ローカル実APIの19 browser scenario、NodeのCSRF競合4件 | 共有・media・実環境。検索は[SEARCH](SEARCH.md)。詳細は[FILES_UI](FILES_UI.md) |
 | フォルダー集計 | Accessのaccount stats、所有folderの再帰件数/現在のlogical bytes、1万件上限と部分結果、Files情報dialog | D1の12件と検索9件の回帰、実APIでのbrowser集計/再集計/拒否時非表示。全check成功 | 実D1予算・負荷、共有/media別集計。[FOLDER_STATS](FOLDER_STATS.md) |
-| 検索 | Access検索API、現行権限/祖先、名前の正規化、範囲10,000・page200、用途/条件付きcursor、Files検索と元の保存先の保持 | Node query/cursor、実D1階層・共有/削除/失効・旧索引・上限、実browser検索/上書き/201件pagination/世代競合 | media metadata parser/同期、索引version再構築運用、実D1予算。[SEARCH](SEARCH.md) |
+| 検索 | Access検索API、現行権限/祖先、名前とaudio title/artist/albumの正規化、現行audio blob/generator投影限定の`mode=audio`、範囲10,000・page200、mode付き署名cursor、Files検索UIと元の保存先の保持 | Node query/cursor、実D1階層・共有/削除/失効・旧索引・上限・audio投影、実browser検索/上書き/201件pagination/世代競合とmode切替 | video/image metadata検索、索引version再構築運用、実D1予算。[SEARCH](SEARCH.md) |
 | Files REST | node詳細、breadcrumb、children、folder作成、rename、trash、MOVE、COPY、operation照会 | 実D1/DO、cursor改変・期限・tree変更、Outbox provenance | 全route profile・実環境 |
 | Trash | 一覧、同期restore/purge、1,001〜10,000 nodeの非同期trash/restore/purge、別trash子退避、名前衝突解決、GC pause、D1確定後のGC candidate | 最大64層・10,000 node、冪等再送、job cursor/lease、期限/識別子/停止競合、応答喪失・再起動 | 実Queue/DLQ/Cron、実環境。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 停止中GC drain | 旧deletingのみのblob/orphan回収、claim epoch・dispatch counter、ControlDO内部RPC、前後の監査初期化 | 応答喪失、停止/epoch/lease変更、遅延削除、二重精算防止、回収後の全復旧監査 | 外部置換objectの猶予、実R2・完全restore drill |
@@ -92,7 +105,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 | quota・会計 | logical ref、pin、used/reserved/physical bytes、reservation | counter drift、上限、rollback、物理削除精算 | 実運用repairとalert |
 | Outbox | durable producer、lease再送、ID-only Queue message、consumer、共通受付と固定25秒期限、dead-letter台帳とbounded requeue、audio/image/video/EPUB projection | send/D1応答喪失、重複delivery、dead-letter再投入、各media projectionのclaim/fence収束 | 実Queue retry exhaustion/DLQ、残るevent kind |
 | 復旧基盤 | epoch履歴、quiesce、paged recovery audit、FTS rebuild、限定cleanup、受付/GCの段階再開、永続repair hold | DO eviction/全喪失、実LockDO mutation、HTTP bootstrap、応答喪失・停止競合、最終batch fence | 完全restore drill、実環境、account mutation・終了証明を失ったKDFの運用収束 |
-| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ID3 audio metadata、画像width/height・immutable `sm256` WebP、video metadata、EPUB index/entry、ZIP STORE serializer、private/public Gallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket・EPUB metadata/page/entry・bounded ZIP | format vector、audio/image/video/EPUB projection、private/public EPUB metadata/page/entry、thumbnail/track/ZIP配信、readerのstale ticket取消し、video revocation/unsupported fallback、CRC、Unicode、cancel | resume state、追加操作、実Images codec、複数browser実ファイル再生 |
+| media形式基盤 | AVIF/AV1/Opus判定、bounded sniff、ID3 audio metadata、画像width/height・immutable `sm256` WebP、video metadata、EPUB index/entry、ZIP STORE serializer、private/public Gallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket・EPUB metadata/page/entry・bounded ZIP・media resume state | format vector、audio/image/video/EPUB projection、private/public EPUB metadata/page/entry、thumbnail/track/ZIP配信、reader/ギャラリーのstale ticket取消し、video revocation/unsupported fallback、CRC、Unicode、cancel | 追加操作、実Images codec、複数browser実ファイル再生 |
 
 今回のQueue受付とS3試験修正の検証結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)に記録する。
 
@@ -112,15 +125,14 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 
 - 残るoperationの認可tuple、terminal lookup、未接続Outbox event kind。
 - 残るmedia/archive metadata parser、検索索引version再構築運用。所有folderの要求時bounded statsは[FOLDER_STATS](FOLDER_STATS.md)、名前検索APIは[SEARCH](SEARCH.md)へ接続済み。
-- group lifecycleとrecipient reshareのUI。bounded reshare API、owner policy UI、direct-user/group内部共有、編集可能なshared DAVは接続済み。
-- Recent/Starred、app password/WebDAV設定、private ZIPのUI。各backend routeやtableの一部は接続済み。
-- バックアップの定時起動の設置・実webhook配送、Time Travel手順、live restore automation。`backup:monitor`の通知adapterはローカル実装済み。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
+- 残る共有・DAV method/profile、追加のmedia/archive metadata parser。group lifecycle、recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media reading/playback resume stateは接続済み。
+- バックアップの定時起動の設置・外部通知、Time Travel手順、live restore automation。専用bindingによるrun/daily/health/maintain/prune/sweep・生成/検証・R2保存/取得・完了記録・オフライン復元はローカル実装済み。
 - `u/`以外の未追跡生成物、catalogueに残るkeyの不正置換。既存deletingの停止中blob/orphan drainは接続済み（[GC_RECOVERY](GC_RECOVERY.md)）。
 
 ### UI
 
 - File System Access handle、詳細preview。
-- group管理・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media metadata検索、大量gridの仮想化。owner/recipient internal share管理、新規読み取り専用・upload-only linkの発行/無効化/password保護は接続済み。
+- media metadata検索。group管理・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、Files gridの仮想化、owner/recipient internal share管理、新規読み取り専用・upload-only linkの発行/無効化/password保護は接続済み。
 - Gallery/Audio/Bookshelf/Videoの追加操作と実ファイル・複数browser検証。
 - AVIF/AV1/Opusの実browser再生試験とfallback。
 
@@ -129,7 +141,7 @@ multipart closureはquiet period、bounded bucket verification、immutable closu
 - account mutationの未接続経路とbackup統合（namespace・DAVロック・app password更新・session/bootstrap/logout・content budget/ticket・upload新規予約/転送/中止/検証は同時32・待機256へ接続済み）、終了証明を失ったKDFの運用収束。共有password/IP制限、KDFの全体rate/枠・isolate内制限とbackup専用barrierは接続済み。
 - operator HTTP/管理UIと実環境の停止・全復旧監査・段階再開drill。内部RPCの最終再開gateは[CONTROL_ADMISSION](CONTROL_ADMISSION.md)に実装済み。
 - staging/production resource inventory、remote migration、deploy。
-- 実環境のmonitoring、Logpush、webhook配送、capacity/費用確認。ローカルの読み取り専用`ops:health` snapshot、`backup:monitor`通知adapter、非配備の`release:gate`は実装済み。
+- monitoring、alert、Logpush、capacity/費用確認。
 - 実環境でのbackup/restore drill、release、rollback、障害対応runbookの実行。ローカルのバックアップ/隔離復元ドリルは実行済み。
 
 ## 未検証
@@ -174,11 +186,11 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 
 ### 次の優先順
 
-1. group lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIPのUIを接続する。
-2. private/public media UIを実ファイル・複数browserで検証する。
+1. private/public media UIを実ファイル・複数browserで検証する。
+2. Filesのvideo/image metadata検索と詳細previewを進める。audio metadata検索は現行投影限定で接続済み。
 3. 残るoperation/Outbox eventを復旧監査・repairへ統合する。
 4. Queueの実DLQ/retry exhaustion、account mutation / 終了証明を失ったKDFの運用収束を閉じる。
-5. Files UIの残り（media metadata検索・大量grid・詳細preview）を進める。
+5. Files UIの残り（File System Access handle・大量データ時の操作性）を進める。
 6. 定時バックアップの設置、外部通知、Time Travel/live restore drillを整備する。
 7. 実S3 lifecycle、実OS DAV client、実codec/browser mediaを検証する。
 8. staging inventory、remote migration、deploy、production gateを実施する。

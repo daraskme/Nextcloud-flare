@@ -48,7 +48,15 @@ export function contentSessionAssertion(
         AND ts.expires_at>strftime('%s','now')*1000
         AND b.state='active' AND b.expires_at>strftime('%s','now')*1000
         AND b.user_id IS cs.user_id AND b.share_id IS cs.share_id
-        AND (cs.share_id IS NOT NULL OR ts.owner_id=cs.user_id)
+        AND (cs.share_id IS NOT NULL OR ts.owner_id=cs.user_id OR
+          (?='admin_read' AND ts.owner_id=? AND EXISTS(
+            SELECT 1 FROM admin_content_grants ag JOIN users admin ON admin.id=ag.actor_id
+            JOIN credentials ac ON ac.id=cs.issued_by_credential_id AND ac.kind='access'
+            JOIN sessions s ON s.id=ac.session_id AND s.kind='access'
+            WHERE ag.ticket_id=t.id AND ag.actor_id=cs.user_id AND ag.owner_id=ts.owner_id
+              AND admin.role='app_admin' AND admin.disabled_at IS NULL
+              AND s.user_id=ag.actor_id AND s.epoch=cs.epoch AND s.revoked_at IS NULL
+              AND s.expires_at>strftime('%s','now')*1000)))
         AND (cs.share_id IS NULL OR EXISTS(
           SELECT 1 FROM shares sh WHERE sh.id=cs.share_id AND sh.version=cs.share_version
             AND sh.owner_id=ts.owner_id
@@ -83,6 +91,8 @@ export function contentSessionAssertion(
       userId,
       shareId,
       shareVersion,
+      principal.kind,
+      principal.kind === "admin_read" ? principal.owner_id : null,
     ],
   );
 }

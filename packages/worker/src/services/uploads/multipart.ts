@@ -13,6 +13,7 @@ import {
 } from "../systemMutation";
 import { accessUpload, uploadFence, uploadRow } from "./access";
 import { type CreateSingleUpload, reserveMultipartUpload } from "./create";
+import { requireEncryptedUpload } from "./encryptionPolicy";
 import { readUpload } from "./read";
 
 /** Return the durable receipt even when one-time initialization cannot be confirmed. */
@@ -77,6 +78,7 @@ export async function createMultipartUpload(
     created.capability,
     capabilities,
   );
+  requireEncryptedUpload(env.CLIENT_ENCRYPTION_REQUIRED, row.encryption_header_sha256);
   const request = { uploadId: row.id, principal: input.principal, capability: created.capability };
   const stub = env.UPLOADS.get(env.UPLOADS.idFromName(row.id));
   if (row.r2_upload_id) {
@@ -198,6 +200,15 @@ export async function writeMultipartPart(
   let started = false;
   let dispatched = false;
   try {
+    // Keep the DO's epoch/admission decision first for legacy uploads. Encryption policy
+    // can reject before the DO claim without changing the normal transfer ordering.
+    if (env.CLIENT_ENCRYPTION_REQUIRED === "true") {
+      const preflight = await uploadRow(env.DB, id);
+      requireEncryptedUpload(
+        env.CLIENT_ENCRYPTION_REQUIRED,
+        preflight?.encryption_header_sha256 ?? null,
+      );
+    }
     const lease = await stub.claimPart({ ...request, partNumber, attemptId, bytes });
     if (lease.disposition !== "dispatch") {
       await body.cancel();
@@ -206,6 +217,7 @@ export async function writeMultipartPart(
     dispatched = true;
     // Recheck the current credential and D1 state immediately before external I/O.
     const { row, authorized } = await accessUpload(env.DB, principal, id, capability, capabilities);
+    requireEncryptedUpload(env.CLIENT_ENCRYPTION_REQUIRED, row.encryption_header_sha256);
     if (row.mode !== "multipart" || !row.r2_upload_id)
       throw new Error("upload_multipart_not_initialized");
     await atomicBatch(env.DB, [

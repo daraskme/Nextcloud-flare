@@ -17,8 +17,8 @@ it("packs eleven current read proofs and rejects a blob changed after the read",
   const f = await fixture("user");
   const proof = await authorizeNode(env.DB, f.principal, f.read);
   const assertions = authorizationBatchAssertions(Array(11).fill(proof));
-  expect(assertions).toHaveLength(2);
-  expect(assertions.map((item) => item.values?.length)).toEqual([100, 10]);
+  expect(assertions).toHaveLength(3);
+  expect(assertions.map((item) => item.values?.length)).toEqual([50, 50, 10]);
   await atomicBatch(env.DB, assertions);
   await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(f.ids.file).run();
   await expect(atomicBatch(env.DB, assertions)).rejects.toThrow();

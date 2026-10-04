@@ -1,6 +1,27 @@
 # セッション引き継ぎ
 
-更新: 2026-10-01。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-10-04。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+
+## 最新checkpoint
+
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+
+暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。 永続runtimeは `/home/hiroshi/.local/share/nextcloud-flare-automation`、外付けNTFS UUIDは `F0D0B27ED0B24B1C`（host rw）。次の操作前にはruntimeの `state/state.json` を確認し、未完了世代を自動cancel/thawしない。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。 詳細は[レビュー対応](reviews/encryption-adversarial-20261004.md)。
+
+### 以下は各記録時点の履歴（現行状態ではない）
+
+- stagingバックアップをR2へ発行し、再取得した世代から83通常table・388行を新規SQLiteへ復元、原本6 object・64,953,590 bytesの別ディレクトリ複写照合まで成功。maintenance/gc_paused/backup_frozenは0、一時backup bridgeは削除済み、BACKUP_OPERATOR_ENABLED=false。live D1への上書き復元・元BLOBS喪失時の復旧・恒久スケジュール設置は未完了。
+- 動画のopen-ended Range予約を4MiBへ制限し、実stagingで8回連続シークを確認した。再現していた429は出ていない。ネットワークエラーとcodecエラーを分け、明示再試行を追加。詳細と検証数は進捗表を参照。
+- service principal限定のautomation GET 2経路を実装。Accessの拒否policyは維持、運用principalの登録は未完了。
+- ユーザーはファイル本体をCloudflareに読ませない暗号化と、管理者も復号できる設計を希望した。端末内の本人鍵＋別経路で確認した管理者公開鍵を使う。秘密鍵・復旧ファイルをCloudflareに保存しない。既存の平文ファイル・過去バックアップを移行済みと誤報しない。ブラウザー暗号化の設定・制限は [CLIENT_ENCRYPTION](CLIENT_ENCRYPTION.md)。強いhosting provider攻撃に対しては配信JavaScript改変の限界がある。
+- 暗号化移行修正版はWorker `3aafb739-ae57-449c-aff1-57fd389fdaea`へ反映。単体・Worker統合3,125件と従来の全ブラウザー48件が成功。移行修正後のfocused暗号化3件は成功し、全49件が8.6分で成功。実管理者の復旧ファイルを端末内だけで読み込み、既存メディア3件・64,932,182 bytesを暗号化コピーし、実stagingで復号後の全byte/SHA-256・再生/seek・映像frame増加を確認した。ユーザーの明示承認後、元の平文3件をtrash/purgeし、元nodeの404・ゴミ箱不在・暗号化コピー3件の保持を確認した。R2原本は35日以上のGC猶予で残り、過去バックアップも保持中。一般利用者2人は使わないとのユーザー指示により、本人鍵・管理者公開鍵の設定と各1件の空ファイルの移行を今回の運用対象から除外した。管理者1人で運用し、この2人の設定を継続作業の前提にしない。アカウントや空ファイルの削除・無効化は依頼されていない。復旧JSONをチャットへ求めない。[初回設定](CLIENT_ENCRYPTION_SETUP.md)を案内する。
+- さらに実配信で206のContent-Lengthが省略される差を修正した。一時検証鍵と別の隔離ブラウザーを使う実Cloudflareの3 media fixtureは、暗号化upload・復号・再生/seek・全byte保存まで補助なしで成功。fixture3件はtrash/purge、一時復旧JSONは削除済み。この試験では本人用profileの鍵を使っていない。省略Content-Lengthを再現するブラウザー回帰を追加し、focused 2件とmanifest付き全ブラウザー48件（8.0分）が成功した。
 
 ## 目標とユーザーの追加条件
 
@@ -9,8 +30,16 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 - 切りのよい単位で検証後に commit / push する。`origin/main` への通常 push はユーザー承認済み。force push はしない。
 - ユーザーが事前に **画像 AVIF・動画 AV1・音声 Opus** にエンコードする。保存・配信・Gallery/player を必須対応にする。具体的なコンテナと試験条件は [MEDIA_FORMATS](MEDIA_FORMATS.md)。
-- リモート Cloudflare の resource 作成・migration・配備は実行していない。GitHub push の許可を production 配備の許可とみなさない。
+- 承認済みの Cloudflare staging は `darask.date` に配備済み。通常 push と staging の継続実装・検証を進める。production 配備は別の境界。最新の実環境状態は [staging runbook](../ops/staging/README.md) を正とする。
 - 許可済みの可逆な実装・検証は継続し、必要な情報が足りる作業で確認を挟まない。
+
+## 2026-10-03 の追加依頼
+
+管理者1人と一般利用者2人の実Accessログイン、アップロード・ダウンロード、一般利用者間の一覧分離をユーザーが確認済み。管理者には専用画面で全利用者の一覧・閲覧・ダウンロードを許可し、読み取り専用・閲覧履歴付きにすることを選択した。[ADMIN_FILES](ADMIN_FILES.md) に操作と権限を記載する。一般APIやDAVのowner/share境界を一律に緩めない。
+
+音声・動画の実再生も依頼された。AV1動画と音声のみのOpus（Ogg/WebM/MP4）を必須対象とし、拡張子やクライアント申告だけでMIMEを確定しない。実アップロードから解析・一覧・content session・デコード・シークまで確認し、ローカルfixtureと実Cloudflare、試したbrowserと未試験browserを区別する。以前の「media UI接続済み」だけで実再生確認済みと扱わない。
+
+この追加分はstaging version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` に反映済み。0052/0053を適用し、52 migrations・83通常table・168 route契約。次のmigration番号は0054以降とする。単体806件、関連統合145件、全browser45件、ビルド・静的検査、83-table backup drill、配備後の匿名smoke 9件が成功した。MP3、Opus 3 container、AV1+Opus 2 containerはローカルChromeで一般利用者・管理者双方の再生・seekを検証した。残る直近確認は、本人のログイン済みブラウザーによるstaging管理画面・メディア再生と、この変更のGitHub CI結果。別ブラウザー・長時間/高解像度の実ファイルは未試験。
 
 ## 資料の読み方
 
@@ -23,27 +52,33 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 `reviews/` と REVIEW_LOG は判断経緯。通常の再開時に全レビューを読み直す必要はない。
 
-## 今回の再開点
+## 2026-10-02 時点の再開点（履歴）
+
+2026-10-01のmainにはgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateのUIも統合済み。2026-10-02の前回checkpointではFiles gridの仮想化、private Gallery ticket取消し、移動Outboxの移動元親権限検査、DAV同時接続のKDF即時503、実AVIF静止画とAV1+Opus WebMの単体fixtureを統合した。`pnpm check`はNode774件・workerd2,214件、全browser39件が成功した。
+
+同日の継続作業では、現行audio投影限定のmetadata検索をAPI・Files UIへ接続し、移動operationのterminal lookupで移動元親権限と対応node stepを再確認する。実AVIF静止画は隔離HTTPSのChromiumでthumbnail/原本とも16×12として表示できた。`pnpm check`はNode774件・workerd2,218件、全browser40件が成功した。次はvideo/image metadata検索、AV1+Opusの実再生・複数browser、残るoperation/Outbox/repairと復旧・運用を進める。実環境へのmigration・deployは未実施。
+
+Cloudflare stagingの候補hostは`staging-app.darask.date`と`staging-content.darask.date`。設定テンプレートと台帳は[ops/staging](../ops/staging/README.md)、複数テスト利用者のAccess設定は[STAGING_ACCESS](STAGING_ACCESS.md)。ユーザーの予算はstagingの追加費用で月1万円。CloudflareのBudget alertsはアカウント全体の通知で、staging単独の強制停止ではない。Cloudflare scoped API tokenをGitHub Environment `staging`から使う手動ワークフローを追加した。初回Worker/resource作成・remote migrationは別手順で、account ID・resource実ID・token/secretは未設定。remote作成・migration・deployは未実施。
+
+アプリ側は初回管理者だけをbootstrapし、管理者の7日間の明示招待をAccessの正確なissuer・メール表記と照合して、本人の初回ログインで`iss+sub`と専用space/rootへ一度だけ結び付ける。管理者設定画面には招待の追加・保留一覧・取消を接続した。アプリはメールを送らず、AccessのAllowとアプリ招待の両方が必要。一般利用者の初期quotaは1 GiB。実Cloudflare Accessでの複数利用者試験は未実施。
 
 読み取り専用/upload-only公開link、Queue dead-letter repair、audio/video metadata、画像metadata/thumbnail、bounded private/public ZIP/EPUB、private/public media UI、direct-user/group internal share、bounded reshare、編集可能なshared DAV、multipart closure settlement、大規模treeの非同期trash/restore/purgeをmainへ統合した。internal shareはowner lifecycle、rename-stable mount、recipient/action/share/policy/delegation/ancestry/epoch fenceを持ち、group shareはmembership versionも検査する。owner/recipient管理UIは現在有効な操作とprovenanceを表示し、share actionと再共有ポリシーを管理する。
 
-最新の統合headはmigration `0052`（全51件、`0045`欠番）・82通常tableで、bounded reshare authority、編集可能なshared DAV authorization context、private media resume state、user単位のAudio chapter設定を持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
+最新変更はmigration `0051`（全50件）・81通常tableで、bounded reshare authority、編集可能なshared DAV authorization context、Access招待台帳を持つ。1,000 node以下のtrash/restore/purgeは既存同期経路、1,001〜10,000 nodeはoperationに結合した`bulk_jobs`、manifest、250 node cursor、dispatch/worker leaseで処理する。RESTは202とoperation location/job progressを返し、DAV DELETEの1,001 node拒否は維持する。
 
 workerは各chunkと最終確定でepoch、maintenance、current credential/authority、owner、root/parent ancestry、revision/tree generation、operation operand、job claimを再検査する。restoreは最終確定時にGC pauseを取得しrootからdepth順に復元、purgeはD1のnamespace/ref/quota/GC candidateを先に確定してR2 bytesを直接削除しない。Queue/DLQ/Cronの実Cloudflare検証とremote migration/deployは未実施である。
 
 multipart closureはquiet period、bounded bucket verification、immutable closure run、handle/upload settlement receipt、ControlDO inspect/advance/settle、owner ledger・recovery fenceを持つ。全bucket scanやabortだけで予約・保留容量を返さず、closure proofとexact receiptの成立後だけ精算する。
 
-backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 80 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
+backup sweep、maintain、pruneとoffline restoreは引き続き実装済みで、最新schema 81 tableを生成・検証対象とする。定時起動の実設置、外部通知、Time Travel/live restore、remote運用は未実施である。
 
-読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。次はgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIPを並列実装する。並行してprivate mediaの実ファイル・複数browser検証、timer設置・実webhook配送、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
+読み取り専用public shareのGallery/Audio/Bookshelf/Video UI、thumbnail/audio/video ticket、EPUB metadata/page/entryとbounded ZIP create/redirect、idempotent manifest/ticket再発行、content-origin Range/HEAD、大規模treeの非同期trash/restore/purge、bounded reshare、編集可能なshared DAV、内部共有管理UIを接続した。private mediaの実ファイル・複数browser検証、timer設置・外部通知、破損世代、Time Travel/live復旧、未知KDF、実OS client・実環境gateを残す。remote migration・deployは未実施。
 
-2026-10-01の統合batchでAudio chapter設定（`0051`）、durable operation authority registry、読み取り専用`ops:health`（`0052`のhealth index）、`backup:monitor`、`release:gate`を接続した。すべてローカル検証のみで、実Cloudflare Cron/Queue/D1 Time Travel/R2/Logpush、実webhook、systemd設置、remote migration・deployは未実施である。詳細は[OPS_HEALTH](OPS_HEALTH.md)、[BACKUP_MAINTENANCE](BACKUP_MAINTENANCE.md)、[RELEASE_EVIDENCE](RELEASE_EVIDENCE.md)。
+次のschema変更は`0050`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
 
-次のschema変更は`0053`以後を使い、既存migrationを編集しません。`0045`が欠番でも、適用済みの`0046_multipart_closure.sql`を改名しません。日次の再実行は同じUUID/epochを継続し、不明な開始/保存結果を自動取消ししません。
+## 2026-10-02 時点で動いていた範囲（履歴）
 
-## 現在動いている範囲
-
-Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。82通常テーブル、51 migrations（最新`0052`）、161 route の契約がある。
+Phase 0 のローカル基盤、Phase 1 の大半と Files/WebDAV/共有、Phase 3 media配信基盤の一部。80通常テーブル、48 migrations（最新`0049`）、156 route の契約がある。
 JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation 認可、CSRF、quota/ref/pin/physical 会計、epoch 復旧、D1 permit、create/rename 用 LockDO、operation claim/lookup を実装済み。
 
 直近の追加: public EPUB metadata/page/entryと大規模非同期tree処理。既存Files REST/WebDAV mutation、content ticket、Cookie、R2 target manifest、current blob配信と同じD1/R2/DO authorityを維持する。直近の検証件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。ControlDO admissionは全監査後の段階再開をローカル実装済み。実環境では再開・配備していない。
@@ -94,7 +129,7 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 
 直近の test 件数と CI は [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md) を正とする。checkpoint の commit SHA と最新 CI は下記の Git コマンドで確認する。資料内に self-reference の commit SHA を固定しない。
 
-## 公開・接続していないもの
+## 2026-10-02 時点の未公開・未接続事項（履歴）
 
 - content/private/DAV HTTP handler は追加済みだが、ControlDO maintenance と署名鍵・remote secret未設定で実公開は停止中。Files SPAは[FILES_UI](FILES_UI.md)の範囲を接続済み。156 route の存在は handler の完成を意味しない。
 - **ControlDOは起動/epoch回復時に閉じる。** 全監査後の`resumeAdmission`と最後の`resumeGarbageCollection`を内部RPCで実装済み。実環境の再開・operator UIは未実施。flagsを直接変更しない。[CONTROL_ADMISSION](CONTROL_ADMISSION.md)参照。
@@ -109,9 +144,9 @@ JWT/JWKS、bootstrap、sessions、read/create/rename/content write/automation �
 - children とtrash一覧の続きには `NODE_CURSOR_KEYS` と `NODE_CURSOR_ACTIVE_KID` の専用 ring が必要。未設定時も node 詳細は使えるが両一覧 route は 503。
 - 単一uploadは専用 `UPLOAD_CAPABILITY_KEYS` / `UPLOAD_CAPABILITY_ACTIVE_KID` が必要。32-byte base64url鍵をkidで選ぶ。旧kidは有効uploadの期限まで保持する。remote secret未設定ならupload routeは503。
 
-## 次に進める順序
+## 2026-10-02 時点の後続計画（履歴）
 
-共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、private/public media/EPUB/ZIP、大規模非同期tree処理、bounded reshare、編集可能なshared DAV、内部共有管理UIまで実装済み。次はgroup lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateと残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
+共通更新受付、DAV PUTの失敗精算と不明結果の保留、multipart closure settlement、backup barrier、logical export/隔離restore drill、日次取得・補充・期限切れ回収、private/public media/EPUB/ZIP、大規模非同期tree処理、bounded reshare、編集可能なshared DAV、内部共有管理UI、group lifecycle・recipient reshare、app password/WebDAV設定、Recent/Starred、private ZIP、media resume stateまで実装済み。次はmedia metadata検索と残るQueue/repairを優先する。並行して運用通知、Time Travel/live復旧と全storage喪失後の世代選択を整備する。実環境の設置・通知・配備には具体的な環境情報が必要。
 
 以下は以前のcheckpoint記録（当時の「最新」「未実装」「CI確認予定」を含む）。
 
@@ -149,7 +184,7 @@ Accessのフォルダー配下検索APIとFiles検索画面を接続。共通正
 
 前回の追加は[確認付き上書き](UPLOAD_OVERWRITE.md)と[異なる配信対象のbudget台帳](BUDGET_ALLOWANCE.md)。上書きは対象node/revision/blobと元file名を保持し、全partのIf-Match、競合停止、完了応答喪失からのreceipt照合へ接続。配信budgetは認可manifestのpurpose/blobを重複排除し、対象追加でも使用量・回数・期限をリセットしない。同期transaction、1,024対象/lease・1 MiB上限、旧DO保存領域の期限までの制限を文書化した。実環境・共有/検索/media・全体admission等は引き続き未完了。全検証結果はIMPLEMENTATION_STATUSを参照。
 
-前回の追加は[KDF isolate内制限](KDF_ADMISSION.md)。app passwordの作成・検証・pepper更新を同時1件、待機256件・5秒へ制限した。取消し中の実計算が終わるまで枠を保持し、混雑は503 + Retry-Afterで返す。作成前のAccess/root検査と計算後の現行D1 assertionを維持する。Node/workerd/独立HTTPの試験を追加。ControlDOによる全体600回/分・20並列とmutation32並列・待ちqueueは未実装なので、local executorで完了扱いにしない。
+当時の[KDF isolate内制限](KDF_ADMISSION.md)はapp passwordの作成・検証・pepper更新を同時1件、待機256件・5秒へ制限した。現在は実browserの同時DAV接続でfetch eventをまたぐ待機が中断される問題を再現したため、Worker/ControlDOとも並行要求を即503へ返す。取消し中の実計算が終わるまで枠を保持し、作成前のAccess/root検査と計算後の現行D1 assertionを維持する。ControlDO/D1の全体600回/分・未精算20枠も接続済み。実Cloudflareの処理量・切断挙動は未検証。
 
 前回の追加は[本文なしHTTP操作](EMPTY_HTTP_BODY.md)。実HTTPで本文なしMKCOLが415になる不具合を修正し、DAVのCOPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutも共通検査へ接続した。実データ・既読/locked・失敗・取消しを拒否し、5秒・16回のreadで待機を制限する。Node境界13件、workerdの待機中失効/停止2件を追加し、既存D1/LockDO試験をclosed streamで拡張。独立HTTPでDAV作成から移動/コピー/削除/lock解除とticket取消しを検証した。`pnpm check`とbrowser試験は同一checkoutでは順番に実行する。並行buildによる開発サーバーreloadは進行中のfixtureを壊す。
 

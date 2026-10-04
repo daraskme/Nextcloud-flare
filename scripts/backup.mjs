@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { auditRestoredBlobBytes, S3BlobSource } from "./backup/blobAudit.mjs";
 import { operatorControl } from "./backup/control.mjs";
 import { captureGeneration, restoreGeneration, verifyGeneration } from "./backup/generation.mjs";
 import { inspectBackupHealth } from "./backup/health.mjs";
@@ -22,6 +23,7 @@ const usage = `Usage:
   pnpm backup capture --config PATH --database DB --local|--remote --id UUID --epoch N --directory PATH [--environment NAME]
   pnpm backup verify --directory GENERATION_PATH
   pnpm backup restore-offline --directory GENERATION_PATH --target NEW_SQLITE_FILE
+  pnpm backup audit-blobs --generation GENERATION_PATH --database RESTORED_SQLITE_FILE --directory NEW_PRIVATE_DIRECTORY --max-objects N --max-bytes N
   pnpm backup publish --directory GENERATION_PATH --local --config PATH [--environment NAME]
   pnpm backup download --id UUID --directory GENERATIONS --local --config PATH [--manifest-sha256 HEX]
   publish/download --remote use R2_BACKUP_* environment credentials instead of --local/--config.
@@ -35,6 +37,7 @@ prune deletes only the specified completed generation older than 35 days through
 sweep resumes a durable expiry scan for at most 100 steps. Exit 2 means incomplete or corrupt generations deferred; errors remain in the round summary. maintain --prune-expired runs it after healthy backup inspection.
 The private BackupOperator service binding requires an enabled target and an explicit matching environment capability.
 restore-offline creates a new frozen inspection database; it does not restore a live D1 or resume service.
+audit-blobs reads only original BLOBS from a fixed R2_INVENTORY_* bucket into a new private local directory. Source BLOBS must still exist.
 `;
 try {
   const { values, positionals } = parseArgs({
@@ -48,7 +51,10 @@ try {
       id: { type: "string" },
       epoch: { type: "string" },
       directory: { type: "string" },
+      generation: { type: "string" },
       target: { type: "string" },
+      "max-objects": { type: "string" },
+      "max-bytes": { type: "string" },
       "manifest-sha256": { type: "string" },
       "operator-config": { type: "string" },
       help: { type: "boolean" },
@@ -62,6 +68,7 @@ try {
       capture: ["directory", "config", "database", "local", "remote", "id", "epoch", "environment"],
       verify: ["directory"],
       "restore-offline": ["directory", "target"],
+      "audit-blobs": ["generation", "database", "directory", "max-objects", "max-bytes"],
       publish: ["directory", "local", "remote", "config", "environment"],
       download: ["directory", "local", "remote", "config", "environment", "id", "manifest-sha256"],
       run: [
@@ -197,6 +204,32 @@ try {
           await control.dispose();
         }
       }
+    } else if (positionals[0] === "audit-blobs") {
+      if (
+        !values.generation ||
+        !values.database ||
+        !values.directory ||
+        !/^[1-9][0-9]*$/.test(values["max-objects"] ?? "") ||
+        !/^[1-9][0-9]*$/.test(values["max-bytes"] ?? "")
+      )
+        throw new Error("invalid_backup_arguments");
+      const summary = await auditRestoredBlobBytes({
+        generation: resolve(values.generation),
+        database: resolve(values.database),
+        directory: resolve(values.directory),
+        source: new S3BlobSource(process.env),
+        maxObjects: Number(values["max-objects"]),
+        maxBytes: Number(values["max-bytes"]),
+      });
+      console.log(
+        JSON.stringify({
+          command: "audit-blobs",
+          result: "verified",
+          ...summary,
+          scope:
+            "Original BLOBS were copied from the still-available source. Independent disaster recovery and live restore are separate.",
+        }),
+      );
     } else {
       if (!values.directory) throw new Error("invalid_backup_arguments");
       const directory = resolve(values.directory);

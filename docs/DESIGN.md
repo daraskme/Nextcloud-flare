@@ -86,7 +86,7 @@ Module Worker は `fetch`、`queue`、`scheduled` と SQLite-backed DO class を
 
 | surface | path | Access | Worker auth |
 |---|---|---|---|
-| private app | `/`, `/assets/*`, private `/api/v1/*` | user app 必須 | Access user JWT |
+| private app | `/`, `/private-assets/*`, private `/api/v1/*` | user app 必須 | Access user JWT |
 | service | `/api/v1/automation/*` の完全 manifest | Service Auth | Access service JWT + mapping |
 | share | `/s`, `/s/:shareId`, public API | Bypass | share secret / session / CSRF |
 | public assets | `/public-assets/:asset` | Bypass | build manifest `auth:public` + exact file |
@@ -280,12 +280,20 @@ actor、credential、current grant、実行 claim/fence は別 field として�
 
 ### 4.2 authorize contract
 
-scope enum は `account:read,node:read,node:create,node:write,node:delete,node:star,state:write,tag:write,share:manage,upload:create,upload:write,library:read,library:write,credential:manage,job:read,job:cancel,admin:user,admin:lock,admin:dlq,admin:repair` に固定する。v1 の `app_admin` は他 user の file content read を禁止し、admin scope は列挙 operand に限る。次表が operation enum の正本で、manifest の全 operation は CI でちょうど一行へ対応させる。
+scope enum は `account:read,node:read,node:create,node:write,node:delete,node:star,state:write,tag:write,share:manage,upload:create,upload:write,library:read,library:write,credential:manage,job:read,job:cancel,admin:user,admin:content,admin:lock,admin:dlq,admin:repair` に固定する。`app_admin` は専用の管理者 API から他 user のファイル一覧・プレビュー・ダウンロードを読み取り専用で利用できる。通常の node / content-session API は owner / share の認可を維持し、管理者 role だけで通過させない。admin scope は列挙 operand に限る。次表が operation enum の正本で、manifest の全 operation は CI でちょうど一行へ対応させる。
 
 | operation | 必要 scope / share action | 必須 operand tuple |
 |---|---|---|
 | `spa.read`,`public.asset.read`,`share.landing`,`reader.shell` | surface policy / public manifest | `[currentUser? ,assetManifest?,shareId?]` |
 | `account.read`,`account.logout`,`csrf.issue` | self | `[currentUser]` |
+| `encryption.key.challenge`,`encryption.key.register` | `credential:manage` | `[currentUser,recipientKey,signingKey,challenge,proof]`。現在のAccess userへ復号鍵・署名鍵の所有証明後、初回登録した公開鍵を固定する |
+| `encryption.key.read`,`encryption.admin_key.read` | `account:read` | `[currentUser,targetUser?,adminKeys?]`。公開鍵の取得は現在のuser状態/roleで制限し、clientは保存済み管理者pinを独立照合する |
+| `encryption.file.adopt` | `credential:manage` | `[currentUser,node,blob,headerHash,ownerSignature]`。既存暗号blobの実headerと所有者署名を照合してmarkerを付ける |
+| `encryption.admin.receipt` | `admin:content` | `[actor,blob,headerHash,adminSignature]`。管理者の復号検証後の署名receiptを現roleで記録する |
+| `admin.user.invite` | `admin:user` | `[actor,invite?]`。管理者が正確なメールアドレスを期限付きで承認し、初回の Access 検証時に issuer と subject へ一度だけ結び付ける |
+| `admin.users.read`,`admin.audit.read` | `admin:content` | `[actor,cursor?]`。有効な Access session と現在の管理者 role を検証する |
+| `admin.files.read` | `admin:content` | `[actor,targetUser,space,node,ancestors,cursor?]`。所有者を明示した読み取りと監査記録だけを許す |
+| `admin.content.issue` | `admin:content` | `[actor,targetUser,node,blob,action,targetSetId,budgetId]`。単一ファイルの preview / download 専用 grant を発行する |
 | `node.read`,`search.read`,`recent.read`,`starred.read`,`shared.read`,`trash.read` | `node:read` / read | `[scopeRoot,node?,ancestors?,currentBlob?,cursor?]` |
 | `node.create` | `node:create` / create | `[parent,space]` |
 | `node.content.write` | `node:write` / edit | `[node,parent,oldBlob?,newBlob]` |
@@ -329,6 +337,12 @@ scope enum は `account:read,node:read,node:create,node:write,node:delete,node:s
 | `dav.mkcol`,`dav.proppatch`,`dav.unlock` | 対応する node scope | §7 profile の source/destination/parent/lock tuple |
 
 `Authorized<Operation>` は operation ごとの discriminated tuple を返し、一般 `Operand[]` を handler に渡さない。folder COPY は開始時に固定 manifest を作り、衝突方針、dead props 引継ぎ、全成功または部分結果なしを束縛する。route の型検査は補助であり、意味的な認可 matrix fixture を必須とする。
+
+管理者による他 user の閲覧は `/admin/files` と `/api/v1/admin/users/...` の専用経路で行う。Access で認証された現在有効な `app_admin` だけを許し、対象 owner / space / node を明示して確認する。一般利用者、app password、service token、公開共有から管理者権限へ昇格できない。編集・削除・アップロード・共有設定には管理者閲覧の権限を使用しない。
+
+管理者の content ticket は `purpose=content`、単一ファイル、`action=preview|download` に限り、既存の有効期限・budget・lease 制限を適用する。`admin_content_grants` が ticket と実際の管理者 actor、対象 owner / node、action を結び付ける。ticket 発行、content session の受取、content read の各段階で管理者 role、actor と owner の無効化、元の Access session の失効、対象ファイルを再検査する。download は content origin の応答で attachment を指定し、preview は既存の MIME / CSP 制限に従う。権限変更後の新しい要求は拒否し、既に転送中のデータは既存 lease の制限に従う。
+
+一覧・ファイル情報・preview / download は、内容を返す前に `admin_browse_audit` へ actor / owner / node / action / 時刻を永続化する。監査の保存失敗時は読み取りを拒否する。履歴は管理者専用のページング API で確認でき、秘密値、Cookie、ticket を記録しない。管理者画面は対象所有者と読み取り専用であることを常時表示する。
 
 Idempotency-Key は `(principal fingerprint,credential_id,space_id,operation kind,canonical request digest)` に束縛する。同じ key と異なる payload は 409、同じ intent は同一 operation を照合する。terminal replay は同一 principal/credential に限り、current user/credential/grant/share version と結果 node の開示権限を再検査する。成功は operation ID/HTTP status/現在見える node ID/revisionだけ、失敗は安定 error codeだけを返す。purge 済み node 名/pathは返さない。
 
@@ -384,6 +398,12 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | GET | `/s/:shareId` | public | `share.landing` | `shareId,publicAssetManifest` | false | same-origin-json |
 | app | GET | `/api/v1/me` | access | `account.read` | `currentUser` | false | same-origin-json |
 | app | POST | `/api/v1/auth/logout` | access | `account.logout` | `currentUser` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/keys/challenge` | access | `encryption.key.challenge` | `currentUser,recipientKey,signingKey` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/keys/register` | access | `encryption.key.register` | `currentUser,challenge,proof` | false | same-origin-json |
+| app | GET | `/api/v1/encryption/keys/:accountId` | access | `encryption.key.read` | `currentUser,targetUser` | false | same-origin-json |
+| app | GET | `/api/v1/encryption/admin-keys` | access | `encryption.admin_key.read` | `currentUser,adminKeys` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/nodes/:nodeId/adopt` | access | `encryption.file.adopt` | `currentUser,node,blob,headerHash,ownerSignature` | false | same-origin-json |
+| app | POST | `/api/v1/encryption/blobs/:blobId/admin-receipt` | access | `encryption.admin.receipt` | `actor,blob,headerHash,adminSignature` | true | same-origin-json |
 | app | POST | `/api/v1/csrf` | access | `csrf.issue` | `currentUser` | false | same-origin-json |
 | app | GET | `/api/v1/operations/:id` | access | `operation.read` | `operation,originalOperands` | false | same-origin-json |
 | app | GET | `/api/v1/search` | access | `search.read` | `scopeRoot,cursor` | false | same-origin-json |
@@ -465,6 +485,15 @@ share password は PBKDF2-HMAC-SHA256 **100,000回**、salt 16B、DK 32B、入�
 | app | POST | `/api/v1/jobs/:jobId/retry` | access | `job.retry` | `job,originalOperands` | false | same-origin-json |
 | app | GET | `/api/v1/admin/dlq` | access | `admin.dlq` | `dlqCursor` | true | same-origin-json |
 | app | POST | `/api/v1/admin/dlq/:jobId/requeue` | access | `admin.dlq` | `job,originalOperands` | true | same-origin-json |
+| app | GET | `/api/v1/admin/invites` | access | `admin.user.invite` | `actor` | true | same-origin-json |
+| app | POST | `/api/v1/admin/invites` | access | `admin.user.invite` | `actor,invite` | true | same-origin-json |
+| app | DELETE | `/api/v1/admin/invites/:inviteId` | access | `admin.user.invite` | `actor,invite` | true | same-origin-json |
+| app | GET | `/api/v1/admin/users` | access | `admin.users.read` | `actor,cursor` | true | same-origin-json |
+| app | GET | `/api/v1/admin/users/:userId/nodes/:nodeId` | access | `admin.files.read` | `actor,targetUser,node,ancestors` | true | same-origin-json |
+| app | GET | `/api/v1/admin/users/:userId/nodes/:nodeId/children` | access | `admin.files.read` | `actor,targetUser,node,ancestors,cursor` | true | same-origin-json |
+| app | GET | `/api/v1/admin/users/:userId/nodes/:nodeId/path` | access | `admin.files.read` | `actor,targetUser,node,ancestors` | true | same-origin-json |
+| app | POST | `/api/v1/admin/users/:userId/content-session` | access | `admin.content.issue` | `actor,targetUser,node,blob,action,targetSetId,budgetId` | true | same-origin-json |
+| app | GET | `/api/v1/admin/audit` | access | `admin.audit.read` | `actor,cursor` | true | same-origin-json |
 | app | POST | `/api/v1/admin/users/:userId/disable` | access | `admin.user.disable` | `actor,targetUser` | true | same-origin-json |
 | app | POST | `/api/v1/admin/transfer` | access | `admin.transfer` | `actor,targetUser,newAdmin` | true | same-origin-json |
 | app | POST | `/api/v1/admin/locks/:lockId/force-unlock` | access | `admin.lock.force_unlock` | `actor,lock,node` | true | same-origin-json |
@@ -1271,15 +1300,15 @@ CSP/MIMEは§10.4、CSRFは§5.1を正本とする。secret/PIIをURLに置か�
       "images": { "binding": "IMAGES" },
       "ratelimits": [
         {
-          "name": "EDGE_LIMITER", "namespace_id": "2001",
+          "name": "EDGE_LIMITER", "namespace_id": "4001",
           "simple": { "limit": 300, "period": 60 }
         },
         {
-          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "2002",
+          "name": "SHARE_PASSWORD_LIMITER", "namespace_id": "4002",
           "simple": { "limit": 10, "period": 60 }
         },
         {
-          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "2003",
+          "name": "SHARE_PASSWORD_IP_LIMITER", "namespace_id": "4003",
           "simple": { "limit": 30, "period": 60 }
         }
       ],

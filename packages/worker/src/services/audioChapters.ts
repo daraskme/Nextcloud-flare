@@ -57,12 +57,14 @@ WHERE n.id=?1 AND n.deleted_at IS NULL AND n.kind='file'
   AND b.state IN ('committed','gc_candidate')
   AND b.r2_key='u/'||n.owner_id||'/b/'||b.id
   AND bs.bytes=b.size AND bs.r2_etag IS NOT NULL
+  AND NOT EXISTS(SELECT 1 FROM blob_encryption e WHERE e.blob_id=b.id)
 ORDER BY c.sort_order`;
 
 function validUnicode(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 >= value.length) return false;
       const next = value.charCodeAt(++i);
       if (next < 0xdc00 || next > 0xdfff) return false;
     } else if (code >= 0xdc00 && code <= 0xdfff) return false;

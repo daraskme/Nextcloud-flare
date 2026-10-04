@@ -49,6 +49,61 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
+test("Files grid virtualizes rows and keeps card actions available", async ({ page }) => {
+  await page.route(/\/api\/v1\/nodes\/[^/]+\/children(?:\?.*)?$/, (route) => {
+    const parentId = new URL(route.request().url()).pathname.split("/").at(-2) ?? "";
+    return route.fulfill({
+      json: {
+        parentId,
+        treeGeneration: 1,
+        children: Array.from({ length: 70 }, (_, index) => ({
+          id: `virtual-${index}`,
+          parentId,
+          name: `virtual-${String(index).padStart(2, "0")}`,
+          kind: "folder",
+          revision: 1,
+          currentBlobId: null,
+          updatedAt: Date.now(),
+          size: null,
+          mime: null,
+        })),
+        nextCursor: null,
+      },
+    });
+  });
+  await page.goto("/files");
+  await expect(page.getByRole("heading", { name: "マイドライブ", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "グリッド表示" }).click();
+  const grid = page.getByRole("list", { name: "ファイル一覧" });
+  await expect(grid).toBeVisible();
+  await expect(grid.getByRole("listitem").first()).toBeVisible();
+  const firstCard = grid.getByRole("listitem").first();
+  const cardName = await firstCard.locator(".file-name").textContent();
+  expect(cardName).toBeTruthy();
+  await expect(firstCard.locator(".star-control")).toBeVisible();
+  const scrollHeight = await grid.evaluate((element) => element.scrollHeight);
+  const renderedCards = await grid.getByRole("listitem").count();
+  expect(scrollHeight).toBeGreaterThan(560);
+  expect(renderedCards).toBeLessThan(70);
+  await grid.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(grid.getByRole("button", { name: "virtual-69", exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await grid.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(grid.getByRole("listitem").first()).toHaveAttribute("aria-posinset", "1");
+  await expect
+    .poll(async () => {
+      const cards = grid.getByRole("listitem");
+      const first = await cards.nth(0).boundingBox();
+      const second = await cards.nth(1).boundingBox();
+      return !!first && !!second && first.y === second.y && first.x < second.x;
+    })
+    .toBe(true);
+});
+
 test("real Files API: create, rename, upload, open, trash, restore, copy and move", async ({
   page,
 }) => {
@@ -456,6 +511,11 @@ test("private pages and every built chunk require Access and never fall back fro
   expect(response?.headers()["content-security-policy"]).not.toContain(
     "script-src 'self' 'unsafe-inline'",
   );
+  const csp = (response!.headers()["content-security-policy"] ?? "").split("; ");
+  expect(csp).toContain("script-src 'self'");
+  expect(csp).toContain("worker-src 'self'");
+  expect(csp).toContain("object-src 'none'");
+  expect(csp).toContain("media-src 'self' https://content.ncf.test:8879 blob:");
   const chunks = await page
     .locator('script[src],link[rel="modulepreload"],link[rel="stylesheet"]')
     .evaluateAll((elements) =>
@@ -1053,9 +1113,16 @@ test("concurrent DAV requests share KDF capacity and a revoked app password stop
     Array.from({ length: 8 }, () => dav(issued.credential.secret)),
   );
   for (const response of responses) {
-    expect(response.status()).toBe(200);
-    expect(response.headers().dav).toBe("1");
-    expect(response.headers()["cache-control"]).toBe("private, no-store");
+    let current = response;
+    for (let retry = 0; current.status() === 503 && retry < 8; retry++) {
+      expect(current.headers()["retry-after"]).toBe("1");
+      expect(current.headers()["www-authenticate"]).toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      current = await dav(issued.credential.secret);
+    }
+    expect(current.status()).toBe(200);
+    expect(current.headers().dav).toBe("1");
+    expect(current.headers()["cache-control"]).toBe("private, no-store");
   }
   const wrong = await dav(Buffer.alloc(32).toString("base64url"));
   expect(wrong.status()).toBe(401);
@@ -1175,6 +1242,34 @@ test("search finds nested names and preserves their destination for overwrite an
   await expect(
     page.getByRole("button", { name: `更新済み-${suffix}.txtの操作`, exact: true }),
   ).toBeVisible();
+});
+
+test("Files search selects the current audio projection mode", async ({ page }) => {
+  const modes: string[] = [];
+  await page.route("**/api/v1/search?*", (route) => {
+    const url = new URL(route.request().url());
+    modes.push(url.searchParams.get("mode") ?? "name");
+    return route.fulfill({
+      json: {
+        scopeId: url.searchParams.get("scopeId"),
+        query: url.searchParams.get("q"),
+        treeGeneration: 1,
+        items: [],
+        nextCursor: null,
+        truncated: false,
+      },
+    });
+  });
+  await page.goto("/files");
+  await page.getByRole("searchbox", { name: "このフォルダー内を検索" }).fill("sonata");
+  await page.getByRole("combobox", { name: "検索対象" }).selectOption("audio");
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect.poll(() => modes.at(-1)).toBe("audio");
+  await expect(page.locator(".search-summary")).toContainText("音声ファイル");
+  await page.getByRole("combobox", { name: "検索対象" }).selectOption("name");
+  await page.getByRole("button", { name: "検索", exact: true }).click();
+  await expect.poll(() => modes.at(-1)).toBe("name");
+  await expect(page.locator(".search-summary")).not.toContainText("音声ファイル");
 });
 
 test("search pages real API results and hides stale rows after a tree change or denied refresh", async ({

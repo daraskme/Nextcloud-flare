@@ -202,6 +202,9 @@ export class ControlDO extends DurableObject<Env> {
         "system" in request
           ? this.#admission.assertSystemMutationMode(request.epoch, request.maintenance)
           : this.#admission.assertMutationOpen(request.epoch),
+      env.ENVIRONMENT === "staging"
+        ? (stage) => console.warn("staging_mutation_rejected", stage)
+        : undefined,
     );
   }
 
@@ -489,6 +492,19 @@ export class ControlDO extends DurableObject<Env> {
       .toArray()[0];
     if (!row || row.epoch !== expectedEpoch) throw new Error("recovery_audit_not_started");
     return row;
+  }
+
+  /** Read-only progress for a dedicated operator; absence never starts or resets an audit. */
+  async recoveryAuditStatus(expectedEpoch: number): Promise<RecoveryAuditStatus | null> {
+    epochNumber(expectedEpoch);
+    const status = await this.status();
+    if (status.epoch !== expectedEpoch) throw new Error("recovery_audit_epoch_conflict");
+    const row = this.ctx.storage.sql
+      .exec<AuditRow>(
+        "SELECT epoch,token,stage,after_id,pages FROM recovery_audit_v7 WHERE singleton=1",
+      )
+      .toArray()[0];
+    return row?.epoch === expectedEpoch ? this.#auditStatus(row) : null;
   }
 
   /** Explicit restart invalidates any in-flight page through the durable audit token. */

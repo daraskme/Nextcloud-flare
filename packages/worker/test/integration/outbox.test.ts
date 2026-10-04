@@ -213,6 +213,93 @@ it("keeps the original event valid after a later node mutation", async () => {
   expect(await consumeOutbox(mutationEnv(), f.id)).toBe("completed");
 });
 
+it.each(["node.move", "dav.move"])(
+  "checks the saved source parent of a %s event independently of the destination",
+  async (kind) => {
+    const f = await fixture();
+    const sourceParentId = `${f.id}-source`;
+    const destinationId = `${f.id}-destination`;
+    const eventId = `${f.id}-move`;
+    await atomicBatch(env.DB, [
+      {
+        sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,'folder',1,1)`,
+        values: [sourceParentId, f.ids.space, f.ids.user, f.ids.root, "Source", "source"],
+      },
+      {
+        sql: `INSERT INTO nodes(id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,'folder',1,1)`,
+        values: [destinationId, f.ids.space, f.ids.user, f.ids.root, "Destination", "destination"],
+      },
+      {
+        sql: "UPDATE nodes SET parent_id=?,revision=revision+1 WHERE id=?",
+        values: [destinationId, f.ids.folder],
+      },
+      {
+        sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,
+          request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,
+          created_at,updated_at,operands_json,result_json)
+          SELECT ?,principal_kind,principal_id,credential_id,space_id,?,'committed',
+            request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,1,
+            created_at,updated_at,?,? FROM operations WHERE op_id=?`,
+        values: [
+          eventId,
+          kind,
+          JSON.stringify({ parentId: destinationId, nodeId: f.ids.folder, sourceParentId }),
+          JSON.stringify({ status: 201, nodeId: f.ids.folder }),
+          f.id,
+        ],
+      },
+      {
+        sql: `INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+          VALUES(?,?,'node.renamed',?,'dispatching',1,1,1)`,
+        values: [eventId, eventId, f.ids.folder],
+      },
+      {
+        sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+        values: [eventId, f.ids.folder],
+      },
+    ]);
+    expect(await consumeOutbox(mutationEnv(), eventId)).toBe("completed");
+
+    const unavailableId = `${eventId}-unavailable`;
+    await atomicBatch(env.DB, [
+      {
+        sql: `INSERT INTO operations(op_id,principal_kind,principal_id,credential_id,space_id,kind,state,
+          request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,expected_steps,
+          created_at,updated_at,operands_json,result_json)
+          SELECT ?,principal_kind,principal_id,credential_id,space_id,kind,'committed',
+            request_digest,epoch,permit_id,permit_expires_at,claimed_expires_at,1,
+            created_at,updated_at,?,result_json FROM operations WHERE op_id=?`,
+        values: [
+          unavailableId,
+          JSON.stringify({
+            parentId: destinationId,
+            nodeId: f.ids.folder,
+            sourceParentId: `${sourceParentId}-missing`,
+          }),
+          eventId,
+        ],
+      },
+      {
+        sql: `INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at)
+          VALUES(?,?,'node.renamed',?,'dispatching',1,1,1)`,
+        values: [unavailableId, unavailableId, f.ids.folder],
+      },
+      {
+        sql: "INSERT INTO operation_steps(op_id,step_no,kind,affected_id) VALUES(?,1,'node',?)",
+        values: [unavailableId, f.ids.folder],
+      },
+    ]);
+    expect(await consumeOutbox(mutationEnv(), unavailableId)).toBe("retry");
+    expect(
+      await env.DB.prepare("SELECT claim_token FROM outbox WHERE outbox_id=?")
+        .bind(unavailableId)
+        .first("claim_token"),
+    ).toBeNull();
+  },
+);
+
 function delivery(body: unknown, loseAck = false) {
   let acked = 0;
   let retried = 0;

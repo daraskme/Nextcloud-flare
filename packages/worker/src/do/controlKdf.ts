@@ -8,7 +8,9 @@ const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/;
 
 /** One calculation per current ControlDO instance; D1 also bounds overlapping/unknown instances. */
 export class ControlKdf {
-  readonly #executor = new KdfExecutor();
+  // DO RPCs cannot safely wait on another request's in-memory continuation.
+  // Let the caller retry while keeping the active native derivation fenced.
+  readonly #executor = new KdfExecutor(0);
   constructor(
     private readonly db: D1Database,
     private readonly admit: (epoch: number) => Promise<void>,

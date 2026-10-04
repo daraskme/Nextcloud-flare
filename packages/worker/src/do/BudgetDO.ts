@@ -107,6 +107,13 @@ export class BudgetDO extends DurableObject<Env> {
           AND b.state='active' AND b.expires_at>? AND cs.revoked_at IS NULL
           AND cs.expires_at>? AND ts.expires_at>? AND t.cancelled_at IS NULL
           AND t.expires_at>? AND b.user_id IS cs.user_id AND b.share_id IS cs.share_id
+          AND (NOT EXISTS(SELECT 1 FROM admin_content_grants ag WHERE ag.ticket_id=t.id)
+            OR EXISTS(SELECT 1 FROM admin_content_grants ag
+              JOIN users admin ON admin.id=ag.actor_id
+              JOIN nodes n ON n.id=ag.node_id AND n.owner_id=ag.owner_id
+              WHERE ag.ticket_id=t.id AND ag.actor_id=cs.user_id AND ag.owner_id=b.owner_id
+                AND admin.role='app_admin' AND admin.disabled_at IS NULL
+                AND n.deleted_at IS NULL))
           AND EXISTS(SELECT 1 FROM credentials c WHERE c.id=cs.issued_by_credential_id
             AND ((c.kind='access' AND EXISTS(
               SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id

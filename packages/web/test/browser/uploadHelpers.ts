@@ -55,6 +55,58 @@ export async function writeTestFile(page: Page, name: string, value: string, tar
   return rootFile(page, name);
 }
 
+/** Uploads small binary test media through the real private upload API. */
+export async function writeTestBytes(page: Page, name: string, value: Uint8Array) {
+  const bytes = Array.from(value);
+  await page.evaluate(
+    async ({ name, bytes }) => {
+      const request = async (path: string, init?: RequestInit) => {
+        const response = await fetch(path, init);
+        if (!response.ok) throw new Error(`test_http_${response.status}_${path}`);
+        return response.json();
+      };
+      const me = await request("/api/v1/me");
+      const csrf = await request("/api/v1/csrf", { method: "POST" });
+      const headers = { "Content-Type": "application/json", "X-CSRF-Token": csrf.token };
+      const capabilityResponse = await request("/api/v1/uploads", {
+        method: "POST",
+        headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          mode: "single",
+          spaceId: me.spaceId,
+          parentId: me.rootNodeId,
+          name,
+          declared_size: bytes.length,
+        }),
+      });
+      const capability = { "Upload-Capability": capabilityResponse.capability };
+      await request(`/api/v1/uploads/${capabilityResponse.id}/content`, {
+        method: "PUT",
+        headers: capability,
+        body: Uint8Array.from(bytes),
+      });
+      await request(`/api/v1/uploads/${capabilityResponse.id}/complete`, {
+        method: "POST",
+        headers: { ...headers, ...capability, "Idempotency-Key": crypto.randomUUID() },
+        body: "{}",
+      });
+    },
+    { name, bytes },
+  );
+  return rootFile(page, name);
+}
+
+export async function processTestMedia(page: Page, nodeId: string): Promise<string> {
+  return page.evaluate(async (nodeId) => {
+    const response = await fetch(`/__test__/process-media?nodeId=${encodeURIComponent(nodeId)}`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error(`test_media_processing_${response.status}`);
+    const result = (await response.json()) as { state: string };
+    return result.state;
+  }, nodeId);
+}
+
 export async function fileContent(page: Page, node: FileNode, range?: string) {
   return page.evaluate(
     async ({ node, range }) => {

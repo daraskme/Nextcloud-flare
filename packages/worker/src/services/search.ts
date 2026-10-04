@@ -1,6 +1,7 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import type { SearchCursorTokens } from "../auth/searchCursor";
 import { assertExists, atomicBatch, primary } from "../db/primary";
+import { AUDIO_GENERATOR_VERSION } from "../media/audio";
 import { searchQuery } from "../search/query";
 import { BOUNDED_SUBTREE_CTE } from "./subtree";
 
@@ -20,7 +21,7 @@ interface SearchRow {
 }
 
 /** Scope drives rowid-constrained FTS lookups, never an unbounded global hit scan. */
-export function searchStatement(indexed: boolean): string {
+export function searchStatement(indexed: boolean, mode: "name" | "audio" = "name"): string {
   return `${BOUNDED_SUBTREE_CTE}, eligible AS MATERIALIZED (
     SELECT n.id,n.parent_id,n.owner_id,n.name,n.name_ci,n.kind,n.revision,n.current_blob_id,
       n.updated_at,si.rowid AS index_id,si.text_norm,si.normalization_version,
@@ -28,6 +29,13 @@ export function searchStatement(indexed: boolean): string {
     FROM scope s CROSS JOIN nodes n ON n.id=s.id
       LEFT JOIN search_index si ON si.node_id=n.id AND si.space_id=?2
     WHERE s.id<>?1 AND n.kind IN ('folder','file')
+      ${
+        mode === "audio"
+          ? `AND n.kind='file' AND EXISTS(SELECT 1 FROM node_audio a
+              WHERE a.node_id=n.id AND a.blob_id=n.current_blob_id
+                AND a.generator_version=?10)`
+          : ""
+      }
   ), hits AS MATERIALIZED (
     SELECT e.* FROM eligible e WHERE e.index_id IS NOT NULL
       AND e.normalization_version=?4 AND e.index_revision<=e.revision
@@ -56,6 +64,7 @@ export async function searchNodes(
   input: string,
   tokens: SearchCursorTokens,
   cursor?: string,
+  mode: "name" | "audio" = "name",
 ) {
   if (principal.kind !== "user" || !/^[A-Za-z0-9_-]{1,128}$/.test(scopeId))
     throw new Error("search_unavailable");
@@ -85,7 +94,8 @@ export async function searchNodes(
       claims.epoch !== principal.epoch ||
       claims.generation !== scope.tree_generation ||
       claims.query !== query.text ||
-      claims.version !== query.version
+      claims.version !== query.version ||
+      (claims.mode ?? "name") !== mode
     )
       throw new Error("invalid_search_cursor");
     lastName = claims.lastNameCi;
@@ -97,7 +107,7 @@ export async function searchNodes(
       principal.epoch,
     ]),
     {
-      sql: searchStatement(!!query.match),
+      sql: searchStatement(!!query.match, mode),
       values: [
         scopeId,
         spaceId,
@@ -108,6 +118,7 @@ export async function searchNodes(
         lastName,
         lastId,
         principal.user_id,
+        ...(mode === "audio" ? [AUDIO_GENERATOR_VERSION] : []),
       ],
     },
   ]);
@@ -130,6 +141,7 @@ export async function searchNodes(
           generation: scope.tree_generation,
           query: query.text,
           version: query.version,
+          ...(mode === "audio" ? { mode: "audio" as const } : {}),
           lastNameCi: last.nameCi,
           lastId: last.id,
         })

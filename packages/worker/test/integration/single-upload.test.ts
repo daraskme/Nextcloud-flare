@@ -1,5 +1,12 @@
 import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import {
+  encodeSignedBase64,
+  type SignedContainerHeader,
+  serializeSignedContainerHeader,
+  signedContainerFingerprint,
+  signedHeaderPayload,
+} from "@next-cloud-flare/shared/signedContainer";
 import { base64url } from "jose";
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { handleUploadHttp, uploadRoute } from "../../src/api/uploads";
@@ -192,6 +199,336 @@ it("reserves before storing and publishes all metadata only at complete", async 
     .bind(Date.now() + 60000, result.operation.id)
     .run();
   expect(await consumeOutbox(mutationEnv(), `${result.operation.id}_event`)).toBe("completed");
+});
+
+it("fails closed when encryption becomes required after a plaintext reservation", async () => {
+  const f = await fixture();
+  const required = { ...f.app, CLIENT_ENCRYPTION_REQUIRED: "true" };
+  await expect(write(f, "abc", required)).rejects.toThrow("encryption_required");
+  expect(await env.BLOBS.head(`u/${f.ids.user}/b/${f.created.id}_blob`)).toBeNull();
+  expect((await uploadRow(env.DB, f.created.id))?.state).toBe("created");
+  await expect(complete(f, required)).rejects.toThrow("encryption_required");
+});
+
+it("commits a signed encrypted upload only after verifying the exact R2 header", async () => {
+  const f = await fixture();
+  await env.DB.prepare("UPDATE users SET role='app_admin' WHERE id=?").bind(f.ids.user).run();
+  const rsa = (await crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 3072,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"],
+  )) as CryptoKeyPair;
+  const signer = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const rsaSpki = new Uint8Array(
+    (await crypto.subtle.exportKey("spki", rsa.publicKey)) as ArrayBuffer,
+  );
+  const signerSpki = new Uint8Array(
+    (await crypto.subtle.exportKey("spki", signer.publicKey)) as ArrayBuffer,
+  );
+  const rsaFingerprint = await signedContainerFingerprint(rsaSpki);
+  const signingFingerprint = await signedContainerFingerprint(signerSpki);
+  await env.DB.prepare(`INSERT INTO encryption_keys(account_id,rsa_fingerprint,rsa_spki,
+    signing_fingerprint,signing_spki,registered_at) VALUES(?,?,?,?,?,?)`)
+    .bind(
+      f.ids.user,
+      rsaFingerprint,
+      encodeSignedBase64(rsaSpki),
+      signingFingerprint,
+      encodeSignedBase64(signerSpki),
+      Date.now(),
+    )
+    .run();
+  const unsigned: SignedContainerHeader = {
+    version: 2,
+    envelope: {
+      version: 1,
+      cryptoId: encodeSignedBase64(crypto.getRandomValues(new Uint8Array(16))),
+      plainSize: 3,
+      chunkBytes: 4 * 1024 * 1024,
+      cipherSize: 31,
+      recipients: [
+        { fingerprint: rsaFingerprint, wrappedKey: encodeSignedBase64(new Uint8Array(384)) },
+      ],
+    },
+    encryptedMetadata: {
+      iv: encodeSignedBase64(new Uint8Array(12)),
+      data: encodeSignedBase64(new Uint8Array(16)),
+    },
+    ownerId: f.ids.user,
+    signer: { fingerprint: signingFingerprint, spki: encodeSignedBase64(signerSpki) },
+    signature: encodeSignedBase64(new Uint8Array(64)),
+  };
+  const signed: SignedContainerHeader = {
+    ...unsigned,
+    signature: encodeSignedBase64(
+      new Uint8Array(
+        await crypto.subtle.sign(
+          { name: "Ed25519" },
+          signer.privateKey,
+          signedHeaderPayload(unsigned),
+        ),
+      ),
+    ),
+  };
+  const header = serializeSignedContainerHeader(signed);
+  const bytes = new Uint8Array(header.length + 31);
+  bytes.set(header);
+  const app = { ...f.app, CLIENT_ENCRYPTION_REQUIRED: "true" };
+  const created = await createSingleUpload(
+    app,
+    {
+      ...f.input,
+      requestId: crypto.randomUUID(),
+      name: "opaque.ncf",
+      declaredSize: bytes.length,
+      encryptionHeader: encodeSignedBase64(header),
+    },
+    f.capabilities,
+  );
+  await writeSingleUpload(
+    app,
+    f.principal,
+    created.id,
+    created.capability,
+    f.capabilities,
+    new Blob([bytes]).stream(),
+    bytes.length,
+  );
+  const outcome = await completeSingleUpload(
+    app,
+    f.principal,
+    created.id,
+    created.capability,
+    f.capabilities,
+    "encrypted-complete",
+    [],
+  );
+  expect(outcome).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+  const marker = await env.DB.prepare(
+    "SELECT format_version,admin_receipt_state,owner_id FROM blob_encryption WHERE blob_id=?",
+  )
+    .bind(`${created.id}_blob`)
+    .first();
+  expect(marker).toMatchObject({
+    format_version: 2,
+    admin_receipt_state: "pending",
+    owner_id: f.ids.user,
+  });
+  const current = await env.DB.prepare("SELECT id,revision FROM nodes WHERE current_blob_id=?")
+    .bind(`${created.id}_blob`)
+    .first<{ id: string; revision: number }>();
+  expect(current).toBeTruthy();
+  await expect(
+    createSingleUpload(
+      app,
+      {
+        ...f.input,
+        requestId: crypto.randomUUID(),
+        parentId: f.ids.folder,
+        name: "opaque.ncf",
+        declaredSize: bytes.length,
+        targetId: current!.id,
+        targetRevision: current!.revision,
+        encryptionHeader: encodeSignedBase64(header),
+      },
+      f.capabilities,
+    ),
+  ).rejects.toThrow("encrypted_operation_forbidden");
+  const tampered = bytes.slice();
+  tampered[header.length - 1] = (tampered[header.length - 1] ?? 0) ^ 1;
+  const bad = await createSingleUpload(
+    app,
+    {
+      ...f.input,
+      requestId: crypto.randomUUID(),
+      name: "tampered.ncf",
+      declaredSize: bytes.length,
+      encryptionHeader: encodeSignedBase64(header),
+    },
+    f.capabilities,
+  );
+  await writeSingleUpload(
+    app,
+    f.principal,
+    bad.id,
+    bad.capability,
+    f.capabilities,
+    new Blob([tampered]).stream(),
+    tampered.length,
+  );
+  await expect(
+    completeSingleUpload(
+      app,
+      f.principal,
+      bad.id,
+      bad.capability,
+      f.capabilities,
+      "tampered-complete",
+      [],
+    ),
+  ).rejects.toThrow();
+  expect(
+    await env.DB.prepare("SELECT 1 FROM blob_encryption WHERE blob_id=?")
+      .bind(`${bad.id}_blob`)
+      .first(),
+  ).toBeNull();
+  const member = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
+  await atomicBatch(env.DB, member.statements);
+  await env.DB.prepare("UPDATE users SET role='member' WHERE id=?").bind(member.ids.user).run();
+  const memberRsa = (await crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 3072,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"],
+  )) as CryptoKeyPair;
+  const memberSigner = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const memberRsaSpki = new Uint8Array(
+    (await crypto.subtle.exportKey("spki", memberRsa.publicKey)) as ArrayBuffer,
+  );
+  const memberSignerSpki = new Uint8Array(
+    (await crypto.subtle.exportKey("spki", memberSigner.publicKey)) as ArrayBuffer,
+  );
+  const memberFingerprint = await signedContainerFingerprint(memberRsaSpki);
+  const memberSigningFingerprint = await signedContainerFingerprint(memberSignerSpki);
+  await env.DB.prepare(`INSERT INTO encryption_keys(account_id,rsa_fingerprint,rsa_spki,
+    signing_fingerprint,signing_spki,registered_at) VALUES(?,?,?,?,?,?)`)
+    .bind(
+      member.ids.user,
+      memberFingerprint,
+      encodeSignedBase64(memberRsaSpki),
+      memberSigningFingerprint,
+      encodeSignedBase64(memberSignerSpki),
+      Date.now(),
+    )
+    .run();
+  const memberUnsigned: SignedContainerHeader = {
+    ...unsigned,
+    ownerId: member.ids.user,
+    envelope: {
+      ...unsigned.envelope,
+      recipients: [rsaFingerprint, memberFingerprint].sort().map((fingerprint) => ({
+        fingerprint,
+        wrappedKey: encodeSignedBase64(new Uint8Array(384)),
+      })),
+    },
+    signer: { fingerprint: memberSigningFingerprint, spki: encodeSignedBase64(memberSignerSpki) },
+  };
+  const memberSigned: SignedContainerHeader = {
+    ...memberUnsigned,
+    signature: encodeSignedBase64(
+      new Uint8Array(
+        await crypto.subtle.sign(
+          { name: "Ed25519" },
+          memberSigner.privateKey,
+          signedHeaderPayload(memberUnsigned),
+        ),
+      ),
+    ),
+  };
+  const memberHeader = serializeSignedContainerHeader(memberSigned);
+  const memberBytes = new Uint8Array(memberHeader.length + 31);
+  memberBytes.set(memberHeader);
+  const memberPrincipal: Principal = {
+    kind: "user",
+    user_id: member.ids.user,
+    credential_id: member.ids.credential,
+    epoch: 1,
+  };
+  const memberUpload = await createSingleUpload(
+    app,
+    {
+      principal: memberPrincipal,
+      requestId: crypto.randomUUID(),
+      spaceId: member.ids.space,
+      parentId: member.ids.folder,
+      name: "member.ncf",
+      declaredSize: memberBytes.length,
+      encryptionHeader: encodeSignedBase64(memberHeader),
+    },
+    f.capabilities,
+  );
+  await writeSingleUpload(
+    app,
+    memberPrincipal,
+    memberUpload.id,
+    memberUpload.capability,
+    f.capabilities,
+    new Blob([memberBytes]).stream(),
+    memberBytes.length,
+  );
+  expect(
+    await completeSingleUpload(
+      app,
+      memberPrincipal,
+      memberUpload.id,
+      memberUpload.capability,
+      f.capabilities,
+      "member-complete",
+      [],
+    ),
+  ).toMatchObject({
+    kind: "terminal",
+    operation: { state: "committed" },
+  });
+  expect(
+    await env.DB.prepare("SELECT required_admin_fingerprint FROM blob_encryption WHERE blob_id=?")
+      .bind(`${memberUpload.id}_blob`)
+      .first(),
+  ).toMatchObject({ required_admin_fingerprint: rsaFingerprint });
+  const revoked = await createSingleUpload(
+    app,
+    {
+      ...f.input,
+      requestId: crypto.randomUUID(),
+      name: "revoked.ncf",
+      declaredSize: bytes.length,
+      encryptionHeader: encodeSignedBase64(header),
+    },
+    f.capabilities,
+  );
+  await writeSingleUpload(
+    app,
+    f.principal,
+    revoked.id,
+    revoked.capability,
+    f.capabilities,
+    new Blob([bytes]).stream(),
+    bytes.length,
+  );
+  await env.DB.prepare("UPDATE encryption_keys SET revoked_at=? WHERE account_id=?")
+    .bind(Date.now(), f.ids.user)
+    .run();
+  await expect(
+    completeSingleUpload(
+      app,
+      f.principal,
+      revoked.id,
+      revoked.capability,
+      f.capabilities,
+      "revoked-complete",
+      [],
+    ),
+  ).rejects.toThrow("invalid_upload_encryption");
+  expect(
+    await env.DB.prepare("SELECT 1 FROM blob_encryption WHERE blob_id=?")
+      .bind(`${revoked.id}_blob`)
+      .first(),
+  ).toBeNull();
 });
 
 it("supports zero-byte single uploads through complete", async () => {

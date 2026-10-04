@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { AccessVerifier } from "../../src/auth/access";
+import { AccessAuthenticationError, AccessVerifier } from "../../src/auth/access";
 import { AccessJwks } from "../../src/auth/jwks";
 import { accessFixture } from "../fixtures/access";
 
@@ -27,6 +27,38 @@ it("verifies a signed user JWT and keeps service claims on their own audience", 
   await expect(fixture.verifier.verify(request, "user")).rejects.toThrow(
     "access_authentication_failed",
   );
+});
+
+it("accepts an omitted optional typ only after signature, issuer, audience and claims verification", async () => {
+  const request = await fixture.sign({}, { typ: undefined });
+  expect(await fixture.verifier.verify(request, "user")).toMatchObject({
+    kind: "user",
+    sub: "owner",
+  });
+  const wrongAudience = await fixture.sign({ aud: ["other-audience"] }, { typ: undefined });
+  await expect(fixture.verifier.verify(wrongAudience, "user")).rejects.toThrow(
+    "access_authentication_failed",
+  );
+});
+
+it("classifies staging diagnostics without including the assertion or identity", async () => {
+  const missing = await fixture.verifier
+    .verify(new Request("https://app.invalid/"), "user")
+    .catch((error: unknown) => error);
+  expect(missing).toBeInstanceOf(AccessAuthenticationError);
+  expect(missing).toMatchObject({ stage: "assertion", message: "access_authentication_failed" });
+
+  const header = await fixture.verifier
+    .verify(await fixture.sign({}, { jku: "https://attacker.invalid/keys" }), "user")
+    .catch((error: unknown) => error);
+  expect(header).toBeInstanceOf(AccessAuthenticationError);
+  expect(header).toMatchObject({ stage: "header", headerCheck: "extra_fields" });
+
+  const claims = await fixture.verifier
+    .verify(await fixture.sign({ exp: NOW / 1000 + 86_401 }), "user")
+    .catch((error: unknown) => error);
+  expect(claims).toBeInstanceOf(AccessAuthenticationError);
+  expect(claims).toMatchObject({ stage: "claims" });
 });
 
 it.each([
@@ -109,6 +141,22 @@ describe("JWKS cache boundaries", () => {
       now: () => time,
     };
   }
+  it("calls the default fetch with the global receiver required by workerd", async () => {
+    const cache = { get: async () => null, put: async () => {} };
+    const fetcher = vi.fn(function (this: unknown, url: string, init: RequestInit) {
+      if (this !== globalThis) throw new TypeError("illegal invocation");
+      return fixture.fetcher(url, init);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await expect(new AccessJwks(fixture.issuer, cache).resolver("key-one")).resolves.toBeTypeOf(
+        "function",
+      );
+      expect(fetcher).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("coalesces concurrent refreshes and caches a known key for one hour, including across isolates via KV", async () => {
     const s = setup();
     await Promise.all(Array.from({ length: 20 }, () => s.source.resolver("key-one")));
@@ -119,7 +167,7 @@ describe("JWKS cache boundaries", () => {
     await s.source.resolver("key-one");
     expect(s.fetcher).toHaveBeenCalledTimes(2);
     expect(s.fetcher.mock.calls[0]?.[0]).toBe(`${fixture.issuer}/cdn-cgi/access/certs`);
-    expect(s.fetcher.mock.calls[0]?.[1].redirect).toBe("error");
+    expect(s.fetcher.mock.calls[0]?.[1].redirect).toBe("manual");
   });
   it("allows a known stale key only during fetch failure and never beyond 24 hours", async () => {
     const s = setup();
@@ -152,26 +200,37 @@ describe("JWKS cache boundaries", () => {
     await expect(s.source.resolver("unknown")).rejects.toThrow("unknown_kid");
     expect(s.fetcher).toHaveBeenCalledTimes(11);
   });
-  it.each(["large", "too-many", "duplicate", "private", "non-rsa", "bad-json", "unavailable"])(
-    "rejects %s key responses",
-    async (kind) => {
-      const s = setup();
-      s.fetcher.mockImplementation(async () => {
-        const key = fixture.jwks.keys[0];
-        if (kind === "large") return new Response(" ".repeat(262_145));
-        if (kind === "too-many")
-          return Response.json({
-            keys: Array.from({ length: 17 }, (_, i) => ({ ...key, kid: String(i) })),
-          });
-        if (kind === "duplicate") return Response.json({ keys: [key, key] });
-        if (kind === "private") return Response.json({ keys: [{ ...key, d: "secret" }] });
-        if (kind === "non-rsa") return Response.json({ keys: [{ ...key, kty: "EC" }] });
-        if (kind === "bad-json") return new Response("no");
-        return new Response(null, { status: 503 });
-      });
-      await expect(s.source.resolver("key-one")).rejects.toThrow();
-    },
-  );
+  it.each([
+    "large",
+    "too-many",
+    "duplicate",
+    "private",
+    "non-rsa",
+    "bad-json",
+    "unavailable",
+    "redirect",
+  ])("rejects %s key responses", async (kind) => {
+    const s = setup();
+    s.fetcher.mockImplementation(async () => {
+      const key = fixture.jwks.keys[0];
+      if (kind === "large") return new Response(" ".repeat(262_145));
+      if (kind === "too-many")
+        return Response.json({
+          keys: Array.from({ length: 17 }, (_, i) => ({ ...key, kid: String(i) })),
+        });
+      if (kind === "duplicate") return Response.json({ keys: [key, key] });
+      if (kind === "private") return Response.json({ keys: [{ ...key, d: "secret" }] });
+      if (kind === "non-rsa") return Response.json({ keys: [{ ...key, kty: "EC" }] });
+      if (kind === "bad-json") return new Response("no");
+      if (kind === "redirect")
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://attacker.invalid/" },
+        });
+      return new Response(null, { status: 503 });
+    });
+    await expect(s.source.resolver("key-one")).rejects.toThrow();
+  });
   it("times out a stalled response body within five seconds", async () => {
     vi.useFakeTimers();
     try {

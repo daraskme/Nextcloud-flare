@@ -1,6 +1,6 @@
 # OutboxとQueueの更新受付
 
-更新日: 2026-10-01。async tree jobはschema0047を使用する。
+更新日: 2026-10-02。async tree jobはschema0047を使用する。
 
 Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。
 
@@ -20,7 +20,7 @@ manifestは250 node以下でcursorと同じtransactionに保存する。Queue re
 
 ## 受信
 
-`consumeOutbox`はnode.created/updated/renamed/trashed/restored/purgedについて、元operationのkind、保存済みsource/destination/overwrite operand、result、node step、committed状態、current credential/権限を検査する。copy/moveはsource、destination、任意のoverwrite targetを独立した認可tupleとして再確認する。claimとcompletedを別々の共通枠で確定し、どちらも待機後の最終batchで全認可、principal/credential/share version、owner/space、保存済みJSON、epoch/maintenanceを再確認する。credential失効・share version変更・親変更・claim置換・lease切れでは完了を保存しない。
+`consumeOutbox`はnode.created/updated/renamed/trashed/restored/purgedについて、元operationのkind、保存済みsource/destination/overwrite operand、result、node step、committed状態、current credential/権限を検査する。copy/moveはsource、destination、任意のoverwrite targetを独立した認可tupleとして再確認する。`node.move`/`dav.move`は移動済みnodeと移動先に加え、保存済み移動元親の現在の読取り権限も独立検査する。claimとcompletedを別々の共通枠で確定し、どちらも待機後の最終batchで全認可、principal/credential/share version、owner/space、保存済みJSON、epoch/maintenanceを再確認する。credential失効・share version変更・親変更・claim置換・lease切れでは完了を保存しない。
 
 同じIDのcompleted/failedは読取りだけで再利用する。`handleOutboxBatch`はdurable terminalだけをackし、malformed・不存在・混雑・結果不明はretryする。ack自体が失われても再配信は同じterminalで収束する。batch全体で25秒期限を共有し、残りメッセージは処理開始せずretryする。実行中のQueue送信やDB I/Oを強制終了する保証ではない。
 

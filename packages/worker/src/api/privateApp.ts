@@ -14,12 +14,20 @@ import type { UserNodeCursorTokens } from "../auth/userNodeCursor";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { handleAccountHttp } from "./account";
+import { adminBrowseRoute, handleAdminBrowseHttp } from "./adminBrowse";
 import { appPasswordRoute, handleAppPasswordHttp } from "./appPasswords";
 import { audioRoute, handleAudioHttp } from "./audio";
 import { audioChaptersRoute, handleAudioChaptersHttp } from "./audioChapters";
+import { automationRoute, handleAutomationHttp } from "./automation";
 import { handlePrivateContentTicketHttp } from "./contentTickets";
+import {
+  encryptionAttestationRoute,
+  handleEncryptionAttestationHttp,
+} from "./encryptionAttestations";
+import { encryptionKeyRoute, handleEncryptionKeyHttp } from "./encryptionKeys";
 import { galleryRoute, handleGalleryHttp } from "./gallery";
 import { groupRoute, handleGroupHttp } from "./groups";
+import { handleInviteHttp, inviteRoute } from "./invites";
 import { handleLibraryHttp, libraryRoute } from "./library";
 import { handleMediaStateHttp, mediaStateRoute } from "./mediaState";
 import { handleNodeMutationHttp, nodeMutationRoute } from "./nodeMutations";
@@ -63,6 +71,11 @@ export function privateAppRoute(request: Request): boolean {
     nodeMutationRoute(request) ||
     appPasswordRoute(request) ||
     groupRoute(request) ||
+    inviteRoute(request) ||
+    adminBrowseRoute(request) ||
+    encryptionKeyRoute(request) ||
+    encryptionAttestationRoute(request) ||
+    automationRoute(request) ||
     shareRoute(request) ||
     uploadRoute(request) ||
     privateZipRoute(request) ||
@@ -82,6 +95,20 @@ export async function handlePrivateAppHttp(
   dependencies: PrivateAppDependencies,
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (automationRoute(request)) {
+    if (url.origin !== env.APP_ORIGIN || url.hash) return problem(404, "not_found");
+    try {
+      return await handleAutomationHttp(
+        request,
+        env,
+        epoch,
+        dependencies.verifier,
+        dependencies.cursors?.ring,
+      );
+    } catch {
+      return problem(503, "not_ready");
+    }
+  }
   if (
     url.origin !== env.APP_ORIGIN ||
     (url.search &&
@@ -92,7 +119,8 @@ export async function handlePrivateAppHttp(
       !uploadReadRoute(request) &&
       !searchRoute(request) &&
       !userNodeStateRoute(request) &&
-      !statsRoute(request)) ||
+      !statsRoute(request) &&
+      !adminBrowseRoute(request)) ||
     url.hash
   )
     return problem(404, "not_found");
@@ -112,6 +140,10 @@ export async function handlePrivateAppHttp(
   const nodeMutation = nodeMutationRoute(request);
   const appPassword = appPasswordRoute(request);
   const group = groupRoute(request);
+  const invite = inviteRoute(request);
+  const adminBrowse = adminBrowseRoute(request);
+  const encryptionKey = encryptionKeyRoute(request);
+  const encryptionAttestation = encryptionAttestationRoute(request);
   const share = shareRoute(request);
   const upload = uploadRoute(request);
   const zip = privateZipRoute(request);
@@ -135,6 +167,10 @@ export async function handlePrivateAppHttp(
     !nodeMutation &&
     !appPassword &&
     !group &&
+    !invite &&
+    !adminBrowse &&
+    !encryptionKey &&
+    !encryptionAttestation &&
     !share &&
     !upload &&
     !zip &&
@@ -157,6 +193,13 @@ export async function handlePrivateAppHttp(
       response.headers.set("Retry-After", "1");
       return response;
     }
+    if (error instanceof AccessAuthenticationError && env.ENVIRONMENT === "staging")
+      console.warn(
+        "staging_access_auth_rejected",
+        error.stage,
+        error.headerCheck ?? "-",
+        error.jwksCheck ?? "-",
+      );
     return error instanceof AccessAuthenticationError
       ? problem(401, "unauthorized")
       : problem(403, "forbidden");
@@ -237,6 +280,19 @@ export async function handlePrivateAppHttp(
       dependencies.appPasswordPepper,
     );
   if (group) return handleGroupHttp(request, env, session, dependencies.csrf);
+  if (invite) return handleInviteHttp(request, env, session, dependencies.csrf);
+  if (adminBrowse)
+    return handleAdminBrowseHttp(
+      request,
+      env,
+      session,
+      dependencies.csrf,
+      dependencies.tokens,
+      dependencies.cursors,
+    );
+  if (encryptionKey) return handleEncryptionKeyHttp(request, env, session, dependencies.csrf);
+  if (encryptionAttestation)
+    return handleEncryptionAttestationHttp(request, env, session, dependencies.csrf);
   if (share)
     return handleShareHttp(
       request,

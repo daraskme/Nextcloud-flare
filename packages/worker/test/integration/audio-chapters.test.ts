@@ -41,6 +41,33 @@ async function audioFixture() {
 
 const chapter = (id: string, positionMs: number, title = id) => ({ id, positionMs, title });
 
+it("refuses chapters for an encrypted blob even if an old audio projection remains", async () => {
+  const fixture = await audioFixture();
+  await writeAudioChapters(env.DB, fixture.principal, fixture.ids.file, fixture.ids.blob, 0, [
+    chapter("existing", 1000),
+  ]);
+  await env.DB.prepare(`INSERT INTO blob_encryption(
+    blob_id,owner_id,header_sha256,signer_rsa_fingerprint,signer_signing_fingerprint,
+    required_admin_fingerprint,crypto_id,format_version,admin_receipt_state,verified_at)
+    VALUES(?,?,'${"a".repeat(64)}','${"A".repeat(43)}','${"B".repeat(43)}',
+      '${"C".repeat(43)}','fixture-crypto',2,'pending',?)`)
+    .bind(fixture.ids.blob, fixture.ids.user, Date.now())
+    .run();
+  await expect(readAudioChapters(env.DB, fixture.principal, fixture.ids.file)).rejects.toThrow(
+    "audio_chapters_unavailable",
+  );
+  await expect(
+    writeAudioChapters(env.DB, fixture.principal, fixture.ids.file, fixture.ids.blob, 1, [
+      chapter("replacement", 2000),
+    ]),
+  ).rejects.toThrow("audio_chapters_unavailable");
+  expect(
+    await env.DB.prepare("SELECT revision FROM user_audio_chapter_sets WHERE node_id=?")
+      .bind(fixture.ids.file)
+      .first<number>("revision"),
+  ).toBe(1);
+});
+
 it("atomically creates, reorders, replaces, and revision-fences an owner's complete list", async () => {
   const fixture = await audioFixture();
   expect(await readAudioChapters(env.DB, fixture.principal, fixture.ids.file)).toMatchObject({

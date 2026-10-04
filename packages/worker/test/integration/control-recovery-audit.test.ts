@@ -33,6 +33,7 @@ beforeAll(async () => {
 });
 
 it("persists page progress across DO eviction and treats completion as diagnostic", async () => {
+  expect(await control().recoveryAuditStatus(2)).toBeNull();
   expect(await control().beginRecoveryAudit(2)).toEqual({
     epoch: 2,
     stage: "users",
@@ -46,6 +47,11 @@ it("persists page progress across DO eviction and treats completion as diagnosti
     completed: false,
   });
   await evictDurableObject(control());
+  expect(await control().recoveryAuditStatus(2)).toMatchObject({
+    epoch: 2,
+    pages: 1,
+    completed: false,
+  });
   expect(await control().nextRecoveryAuditPage(2, 1)).toMatchObject({
     stage: "r2",
     pages: 2,

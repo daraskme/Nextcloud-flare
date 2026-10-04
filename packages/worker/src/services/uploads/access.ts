@@ -45,6 +45,7 @@ export interface UploadRow {
   multipart_object_etag: string | null;
   multipart_cleanup_started_at: number | null;
   multipart_cleanup_closed: "aborted" | "completed" | null;
+  encryption_header_sha256: string | null;
 }
 
 export async function uploadRow(db: D1Database, id: string): Promise<UploadRow | null> {

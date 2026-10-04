@@ -6,6 +6,10 @@ export interface UploadRecord {
   parentId: string;
   name: string;
   sourceName?: string;
+  /** Completed OPFS ciphertext filename. Never store the original plaintext filename here. */
+  encryptedSpool?: string;
+  /** Signed v2 header supplied as the server's encryption intent on every create/retry. */
+  encryptionHeader?: string;
   target?: { id: string; revision: number; blobId: string };
   size: number;
   modified: number;

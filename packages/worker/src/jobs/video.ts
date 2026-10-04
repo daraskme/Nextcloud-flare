@@ -55,7 +55,8 @@ function sourceFence(source: VideoSource): SqlStatement {
       WHERE n.id=? AND n.space_id=? AND n.owner_id=? AND n.kind='file'
         AND n.deleted_at IS NULL AND n.current_blob_id=?
         AND b.owner_id=? AND b.r2_key=? AND b.size=? AND b.state IN ('committed','gc_candidate')
-        AND s.bytes=? AND s.r2_etag=? AND s.removed_at IS NULL`,
+        AND s.bytes=? AND s.r2_etag=? AND s.removed_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`,
     [
       source.node_id,
       source.space_id,
@@ -77,7 +78,8 @@ async function source(db: D1Database, nodeId: string): Promise<VideoSource | nul
       JOIN blob_storage s ON s.blob_id=b.id
       WHERE n.id=? AND n.kind='file' AND n.deleted_at IS NULL
         AND b.state IN ('committed','gc_candidate') AND s.removed_at IS NULL
-        AND b.owner_id=n.owner_id AND s.bytes=b.size`)
+        AND b.owner_id=n.owner_id AND s.bytes=b.size
+        AND NOT EXISTS(SELECT 1 FROM blob_encryption be WHERE be.blob_id=b.id)`)
     .bind(nodeId)
     .first<VideoSource>();
 }
@@ -87,7 +89,7 @@ async function mutate(
   claim: MediaOutboxClaim,
   authorized: AuthorizedNode,
   row: VideoSource,
-  statement: SqlStatement,
+  statements: readonly SqlStatement[],
   deadline: number,
 ): Promise<void> {
   const admission = await acquireSystemMutation(env, claim.ownerId, "media.project", deadline);
@@ -95,7 +97,7 @@ async function mutate(
     authorizationAssertion(authorized),
     outboxFence(claim),
     sourceFence(row),
-    statement,
+    ...statements,
   ]);
 }
 
@@ -160,9 +162,21 @@ export async function processVideoOutbox(
     authorized,
     row,
     inspection.kind === "metadata"
-      ? metadataStatement(row, inspection.metadata)
-      : {
-          sql: `INSERT INTO node_media(
+      ? [
+          metadataStatement(row, inspection.metadata),
+          {
+            sql: `UPDATE blobs SET mime_sniffed=? WHERE id=? AND owner_id=?
+              AND state IN ('committed','gc_candidate')`,
+            values: [`video/${inspection.metadata.container}`, row.blob_id, row.owner_id],
+          },
+          assertExists("SELECT 1 FROM blobs WHERE id=? AND mime_sniffed=?", [
+            row.blob_id,
+            `video/${inspection.metadata.container}`,
+          ]),
+        ]
+      : [
+          {
+            sql: `INSERT INTO node_media(
               node_id,blob_id,generator_version,projection_state,error_code
             ) VALUES(?,?,?,'failed',?)
             ON CONFLICT(node_id) DO UPDATE SET
@@ -172,8 +186,9 @@ export async function processVideoOutbox(
               dominant_color=NULL,camera_make=NULL,camera_model=NULL,
               container=NULL,video_codec=NULL,audio_codec=NULL,codec_profile=NULL,
               codec_level=NULL,codec_tier=NULL,bit_depth=NULL`,
-          values: [row.node_id, row.blob_id, VIDEO_METADATA_GENERATOR, inspection.kind],
-        },
+            values: [row.node_id, row.blob_id, VIDEO_METADATA_GENERATOR, inspection.kind],
+          },
+        ],
     deadline,
   );
   return "completed";

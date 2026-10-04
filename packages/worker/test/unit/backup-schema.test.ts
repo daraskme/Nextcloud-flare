@@ -66,10 +66,15 @@ it("guards every normal table, requiring future tables to join the backup freeze
 });
 it("rejects all control changes while frozen except a flag-only thaw in an atomic release", () => {
   migrate();
+  db.exec(`INSERT INTO access_invites(id,access_iss,email,approved_by,created_at,expires_at)
+    VALUES('invite','https://access.invalid','invited@example.invalid','f-u',1,100000)`);
   freeze();
   const saved = snapshot();
   for (const sql of [
     "UPDATE users SET quota_bytes=quota_bytes+1",
+    "INSERT INTO access_invites(id,access_iss,email,approved_by,created_at,expires_at) VALUES('another','https://access.invalid','another@example.invalid','f-u',1,100000)",
+    "UPDATE access_invites SET revoked_at=1 WHERE id='invite'",
+    "DELETE FROM access_invites WHERE id='invite'",
     "DELETE FROM nodes",
     "DELETE FROM control",
     "INSERT OR REPLACE INTO control(singleton,epoch,updated_at) VALUES(1,3,0)",

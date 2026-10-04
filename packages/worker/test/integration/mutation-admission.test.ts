@@ -46,6 +46,39 @@ const service = (db = env.DB, current = (_epoch: number) => {}) =>
     (request) => admit(request.epoch),
     (request) => current(request.epoch),
   );
+
+it("bounds an ahead-of-receiver RPC deadline without extending an earlier deadline", async () => {
+  const receivedAt = Date.now();
+  const original = { ...request(), deadline: receivedAt + 60_000 };
+  let boundedDeadline = 0;
+  let observedAt = 0;
+  const queue = new ControlMutations(
+    env.DB,
+    async (r) => {
+      observedAt = Date.now();
+      boundedDeadline = r.deadline;
+      await admit(r.epoch);
+    },
+    () => {},
+  );
+  const admission = await queue.acquire(original);
+  expect(original.deadline).toBe(receivedAt + 60_000);
+  expect(boundedDeadline).toBeLessThanOrEqual(observedAt + 5000);
+  expect(boundedDeadline).toBeGreaterThan(receivedAt);
+  const stored = await saved(admission.id);
+  expect(stored?.wait_until).toBeLessThanOrEqual(boundedDeadline);
+  expect(stored?.state).toBe("active");
+
+  const earlier = { ...request(), deadline: Date.now() + 2000 };
+  await queue.acquire(earlier);
+  expect(boundedDeadline).toBe(earlier.deadline);
+  await expect(queue.acquire({ ...request(), deadline: Date.now() })).rejects.toThrow(
+    "mutation_unavailable",
+  );
+  await expect(queue.acquire({ ...request(), deadline: Number.POSITIVE_INFINITY })).rejects.toThrow(
+    "mutation_unavailable",
+  );
+});
 async function ticket(r = request()): Promise<MutationAdmission> {
   const row = await enqueueMutation(env.DB, r);
   if (row.state !== "active" || row.expires_at === null || row.space_id !== r.spaceId)

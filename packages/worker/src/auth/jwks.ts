@@ -69,7 +69,12 @@ export class AccessJwks {
   #refreshes: number[] = [];
   #negative = new Map<string, number>();
 
-  constructor(issuer: string, cache: JwksCache, fetcher: JwksFetch = fetch, now = Date.now) {
+  constructor(
+    issuer: string,
+    cache: JwksCache,
+    fetcher: JwksFetch = (url, init) => globalThis.fetch(url, init),
+    now = Date.now,
+  ) {
     this.issuer = accessIssuer(issuer);
     this.#cacheKey = `access-jwks:v1:${issuer}`;
     this.#cache = cache;
@@ -119,7 +124,8 @@ export class AccessJwks {
     try {
       const response = await Promise.race([
         this.#fetch(`${this.issuer}/cdn-cgi/access/certs`, {
-          redirect: "error",
+          // Workerd supports manual redirects; reject any 3xx via response.ok below.
+          redirect: "manual",
           signal: controller.signal,
         }),
         timeout,

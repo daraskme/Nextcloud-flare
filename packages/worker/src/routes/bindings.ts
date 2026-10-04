@@ -133,6 +133,11 @@ export const ROUTE_BINDINGS = [
   ...bindings(appAccess, "bound", "private-app", [
     "app GET /api/v1/me",
     "app POST /api/v1/auth/logout",
+    "app POST /api/v1/encryption/keys/challenge",
+    "app POST /api/v1/encryption/keys/register",
+    "app GET /api/v1/encryption/keys/:accountId",
+    "app GET /api/v1/encryption/admin-keys",
+    "app POST /api/v1/encryption/nodes/:nodeId/adopt",
     "app GET /api/v1/search",
     "app GET /api/v1/recent",
     "app GET /api/v1/starred",
@@ -247,7 +252,19 @@ export const ROUTE_BINDINGS = [
     "app POST /api/v1/admin/transfer",
     "app POST /api/v1/admin/locks/:lockId/force-unlock",
   ]),
-  ...bindings(appService, "unavailable", "unavailable", [
+  ...bindings(appAdmin, "bound", "private-app", [
+    "app POST /api/v1/encryption/blobs/:blobId/admin-receipt",
+    "app GET /api/v1/admin/users",
+    "app GET /api/v1/admin/users/:userId/nodes/:nodeId",
+    "app GET /api/v1/admin/users/:userId/nodes/:nodeId/children",
+    "app GET /api/v1/admin/users/:userId/nodes/:nodeId/path",
+    "app POST /api/v1/admin/users/:userId/content-session",
+    "app GET /api/v1/admin/audit",
+    "app GET /api/v1/admin/invites",
+    "app POST /api/v1/admin/invites",
+    "app DELETE /api/v1/admin/invites/:inviteId",
+  ]),
+  ...bindings(appService, "bound", "private-app", [
     "app GET /api/v1/automation/nodes",
     "app GET /api/v1/automation/nodes/:nodeId",
   ]),
@@ -328,9 +345,11 @@ export const PRIVATE_SPA_PATHS = [
   "/audio",
   "/bookshelf",
   "/video",
+  "/encryption",
   "/trash",
   "/shares",
   "/settings/webdav",
+  "/admin/files",
 ] as const;
 const PRIVATE_FILE_PATH = /^\/files\/[A-Za-z0-9_-]{1,128}$/;
 const PRIVATE_SHARED_PATH = /^\/shared\/[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128})?$/;

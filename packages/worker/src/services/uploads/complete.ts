@@ -14,6 +14,7 @@ import {
   operationIntent,
   validateClaimAuthorization,
 } from "../../jobs/operations";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "../encryptionGuards";
 import {
   commitMutationStatements,
   type MutationOutcome,
@@ -21,6 +22,11 @@ import {
   mutationStatements,
 } from "../fsMutation";
 import { accessUpload, type UploadRow, uploadFence } from "./access";
+import {
+  requireEncryptedUpload,
+  type VerifiedUploadEncryption,
+  verifyStoredEncryptionHeader,
+} from "./encryptionPolicy";
 import { settleFailedCompletion } from "./failedCompletion";
 import { multipartHeadCharge, multipartObjectProof, multipartPartsProof } from "./multipartProof";
 
@@ -32,6 +38,7 @@ function steps(
   authority: AuthorizedNode,
   actor: string | null,
   uploadName = row.upload_name,
+  encryption: VerifiedUploadEncryption | null = null,
 ): MutationStep[] {
   const op = claim.intent.id;
   const create = authority.operation === "node.create";
@@ -159,6 +166,28 @@ function steps(
         values: [row.id, op],
       },
     },
+    ...(encryption
+      ? [
+          {
+            kind: "blob_encryption",
+            affectedId: row.blob_id,
+            statement: {
+              sql: `INSERT INTO blob_encryption(blob_id,owner_id,header_sha256,signer_rsa_fingerprint,
+          signer_signing_fingerprint,required_admin_fingerprint,crypto_id,format_version,
+          admin_receipt_state,verified_at) VALUES(?,?,?,?,?,?,?,2,'pending',${CLOCK})`,
+              values: [
+                row.blob_id,
+                row.owner_id,
+                encryption.headerSha256,
+                encryption.signerRsaFingerprint,
+                encryption.signerFingerprint,
+                encryption.requiredAdminFingerprint,
+                encryption.cryptoId,
+              ],
+            },
+          },
+        ]
+      : []),
     {
       kind: "activity",
       affectedId: nodeId,
@@ -207,7 +236,7 @@ async function publicCompletionName(db: D1Database, row: UploadRow): Promise<str
 }
 
 export async function completeSingleUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL" | "CLIENT_ENCRYPTION_REQUIRED">,
   principal: Principal,
   id: string,
   capability: string,
@@ -229,7 +258,7 @@ export async function completeSingleUpload(
 
 /** Internal publication after R2 multipart completion and an independently observed object proof. */
 export async function publishMultipartUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL" | "CLIENT_ENCRYPTION_REQUIRED">,
   principal: Principal,
   id: string,
   capability: string,
@@ -250,7 +279,7 @@ export async function publishMultipartUpload(
 }
 
 async function completeUpload(
-  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL">,
+  env: Pick<Env, "DB" | "BLOBS" | "LOCKS" | "CONTROL" | "CLIENT_ENCRYPTION_REQUIRED">,
   principal: Principal,
   id: string,
   capability: string,
@@ -270,6 +299,7 @@ async function completeUpload(
   );
   if (!["user", "link_share"].includes(principal.kind) || row.mode !== mode)
     throw new Error("invalid_upload_complete");
+  requireEncryptedUpload(env.CLIENT_ENCRYPTION_REQUIRED, row.encryption_header_sha256);
   if (row.completion_op_id) {
     const saved = await lookupOperation(env.DB, principal, row.completion_op_id);
     if (saved && saved.state !== "claimed") {
@@ -294,7 +324,22 @@ async function completeUpload(
     authorized.node.revision !== row.target_revision
   )
     throw new Error("upload_target_changed");
-  const expectedSteps = row.target_id ? 8 : 10;
+  if (row.target_id) await assertNoEncryptedSubtree(env.DB, row.target_id, row.space_id);
+  if (row.encryption_header_sha256) {
+    const beforeClaim = await env.BLOBS.head(`u/${row.owner_id}/b/${row.blob_id}`);
+    if (!beforeClaim || beforeClaim.size !== row.declared_size)
+      throw new Error("upload_object_mismatch");
+    await verifyStoredEncryptionHeader(
+      env.DB,
+      env.BLOBS,
+      `u/${row.owner_id}/b/${row.blob_id}`,
+      row.owner_id,
+      row.declared_size,
+      row.encryption_header_sha256,
+      beforeClaim.etag,
+    );
+  }
+  const expectedSteps = (row.target_id ? 8 : 10) + (row.encryption_header_sha256 ? 1 : 0);
   const intent = await operationIntent(
     principal,
     requestId,
@@ -356,6 +401,17 @@ async function completeUpload(
       object.customMetadata.epoch !== String(row.epoch)
     )
       throw new Error("upload_object_mismatch");
+    const encryption = row.encryption_header_sha256
+      ? await verifyStoredEncryptionHeader(
+          env.DB,
+          env.BLOBS,
+          `u/${row.owner_id}/b/${row.blob_id}`,
+          row.owner_id,
+          row.declared_size,
+          row.encryption_header_sha256,
+          object.etag,
+        )
+      : null;
     const hashes = await lockTokenHashes(lockTokens);
     const planSteps = steps(
       row,
@@ -363,9 +419,50 @@ async function completeUpload(
       authorized,
       principal.kind === "user" ? principal.user_id : null,
       uploadName,
+      encryption,
     );
     const guards: SqlStatement[] = [
       uploadFence(row, ["completing"]),
+      ...(row.target_id ? [unencryptedSubtreeAssertion(row.target_id, row.space_id)] : []),
+      ...(encryption
+        ? [
+            assertExists(
+              `SELECT 1 FROM encryption_keys owner_key
+        JOIN users owner_user ON owner_user.id=owner_key.account_id
+        JOIN encryption_keys admin_key ON admin_key.rsa_fingerprint=?
+        JOIN users admin_user ON admin_user.id=admin_key.account_id
+        WHERE owner_key.account_id=? AND owner_key.revoked_at IS NULL
+          AND owner_user.disabled_at IS NULL
+          AND owner_key.rsa_fingerprint=? AND owner_key.signing_fingerprint=?
+          AND admin_key.revoked_at IS NULL AND admin_user.disabled_at IS NULL
+          AND admin_user.role='app_admin'`,
+              [
+                encryption.requiredAdminFingerprint,
+                row.owner_id,
+                encryption.signerRsaFingerprint,
+                encryption.signerFingerprint,
+              ],
+            ),
+          ]
+        : []),
+      ...(encryption
+        ? [
+            assertExists(
+              `WITH RECURSIVE ancestry(id,parent_id,depth) AS (
+          SELECT id,parent_id,0 FROM nodes WHERE id=? AND owner_id=? AND deleted_at IS NULL
+          UNION ALL SELECT n.id,n.parent_id,a.depth+1 FROM nodes n JOIN ancestry a ON n.id=a.parent_id
+            WHERE n.owner_id=? AND n.deleted_at IS NULL AND a.depth<128
+        ) SELECT 1 WHERE EXISTS(SELECT 1 FROM ancestry WHERE parent_id IS NULL)
+          AND NOT EXISTS(SELECT 1 FROM shares sh JOIN ancestry a ON sh.root_node_id=a.id
+            WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000))`,
+              [row.parent_id, row.owner_id, row.owner_id],
+            ),
+          ]
+        : []),
+      assertExists("SELECT 1 FROM uploads WHERE id=? AND encryption_header_sha256 IS ?", [
+        row.id,
+        row.encryption_header_sha256,
+      ]),
       ...(mode === "multipart" ? [multipartPartsProof(row), multipartObjectProof(row)] : []),
       assertExists(
         `SELECT 1 FROM blobs b JOIN blob_storage s ON s.blob_id=b.id

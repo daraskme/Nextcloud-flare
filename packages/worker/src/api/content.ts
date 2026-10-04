@@ -14,6 +14,7 @@ function cors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", origin);
   headers.set("Access-Control-Allow-Credentials", "true");
+  headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Accept-Ranges");
   headers.set("Vary", "Origin");
   return new Response(response.body, { status: response.status, headers });
 }
@@ -109,6 +110,11 @@ export async function handleContentHttp(
         error instanceof MutationUnavailableError ||
         (error instanceof Error && error.message === "content_session_commit_unknown")
       ) {
+        if (env.ENVIRONMENT === "staging")
+          console.warn(
+            "staging_content_session_rejected",
+            error instanceof MutationUnavailableError ? "admission" : "commit_unknown",
+          );
         const response = problem(503, "not_ready");
         response.headers.set("Retry-After", "1");
         return cors(response, env.APP_ORIGIN);
@@ -254,9 +260,11 @@ export async function handleContentHttp(
       nodeId,
       suffix === "/thumb" ? "thumb" : suffix === "/track" ? "track" : "content",
       request,
+      env,
     );
     return reply(response);
   } catch (error) {
+    if (error instanceof MutationUnavailableError) return reply(problem(503, "not_ready"));
     if (error instanceof Error && error.message === "budget_exceeded")
       return reply(problem(429, "budget_exceeded"));
     if (

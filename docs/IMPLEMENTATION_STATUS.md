@@ -1,21 +1,117 @@
 # 実装進捗
 
-更新: 2026-10-01。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
+更新: 2026-10-04。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
 
-## 2026-10-01 completion batch（Audio chapter・operation authority registry・ops health・backup monitor・release gate）
+## 2026-10-04 暗号化レビューへの対応
 
-media resume stateとinternal share self-service UIを含む`devin/1790847719-share-self-service`を基点に、5つの独立実装branchを依存順に統合した。
+登録済み所有者の Ed25519 署名付き `NCFENC2`、RSA/署名鍵の所持証明、現役管理者の公開鍵照合、R2 ヘッダー・ETag に結合した暗号化マーカーを実装した。ファイル名だけでは暗号化済みと判定しない。暗号化必須の新規書き込みと確定はサーバーでも検査し、API、DAV、公開 upload の平文経路と、暗号化ファイル/祖先フォルダー経由の共有・名前変更・移動・コピー・上書きを拒否する。管理者ラップは署名対象に含め、別途、管理者端末による復号確認の署名を記録する。確認はメタデータと先頭認証チャンクへのアクセス確認であり、全ファイルやバックアップの完全性を証明するものではない。
 
-- Audio chapter設定: migration `0051`で`user_audio_chapter_sets`/`user_audio_chapters`を追加し、user/node/current blob単位・最大200件・整数ms・256 byte title・一意orderのchapter setをoptimistic revision付きwhole-list PUTで原子的に置換する。private no-store GET/PUT `/api/v1/nodes/:nodeId/audio-chapters`と`audio_chapters.write`（`state:write`）を追加し、authorization、current blob/duration、epoch/maintenance、ancestry/share、credential、revisionを同一D1 batchで再検査する。PrivateAudioに設定mode（現在位置capture、title/時刻編集、keyboard並べ替え、削除、seek、dirty/save/cancel、conflict reload、stale guard）を追加した。
-- durable operation authority registry: `jobs/operationAuthority.ts`に全durable operation kindの型付きpolicyとclaim/lookup共通のinterpreterを置き、operand欠落・不整合をfail-closedで拒否する。`audio_chapters.write`はdurable operationではないため、`contracts.ts`のscope mappingと`authorize.ts`の直接認可に留める。
-- ops health snapshot: private `OperationsOperator.inspect(epoch)`とBackupOperatorを合成する読み取り専用`pnpm ops:health`、migration `0052`のhealth index（元branchの`0051`を改番）、`pnpm ops:operator-drill`を追加した。
-- backup health通知: `pnpm backup:monitor`がmaintain結果をv1 redacted eventへ正規化し、StateDirectoryの0600 stateで初回unhealthy/alert変化/recoveredのみをHTTPS webhookへ送る。systemd service例と環境変数例を更新した（install/enableはしない）。
-- release evidence gate: `pnpm release:gate`がclean tree・exact HEAD・Node 24.21.0・pnpm 12.4.1・frozen lockfileを要求し、check・backup drill・Playwrightを順次実行してallowlisted manifestとSHA-256を書く。CIは`--plan`のみ実行する。
+既存復旧 JSON/RSA 鍵はそのまま使える。旧形式は内容確認と明示承認を経て現在の node/blob/revision に所有者署名を追加する。実運用の既存3件は以前の平文 SHA-256 と照合してから署名追加を完了した。復旧 JSON は端末内だけで扱い、配信 JavaScript を改ざんできる提供者には対抗できないことを画面と文書に明示した。詳細は [対応記録](reviews/encryption-adversarial-20261004.md)。新 migration は `0054`、全53件・通常86 table・174 route。
 
-統合時の調整は`package.json`のscript追記と、ops health index migrationの`0051`→`0052`改番（schema testの適用件数51）のみで、機能変更はない。route契約は161、通常tableは82、migrationは51件（最新`0052`）。
+修正後の Workerd 全結合テスト **123 files / 2,270 tests**、Node 単体 **75 files / 918 passed・Windows 専用8 skipped**、型チェック、lint544 files、契約・設定検証、86 table の `backup:drill` が成功。全 browser は **48 passed・外部メディア未指定の2 skipped（8.4分）**。旧形式の内容確認・署名追加・所有者閲覧・管理者復号確認と、実 MP3/Opus/AV1 の再生・seek を含む。
 
-検証（ローカル）: lint（479 file）、typecheck、verify:contracts、verify:config、unit 56 file/832件、integration 118 file/2217件（focused audio-chapters・schema・operations・app-password・async-tree・rename-node・backup-barrier 98件を含む）、focused release-gate/backup-monitor/backup-webhook/ops-health 47件、`pnpm ops:operator-drill`、`pnpm backup:operator-drill`（82 table PASS）、`pnpm release:gate -- --plan`、Web/Worker build（privateManifest再生成で差分なし）、`git diff --check`。browser試験は本統合では実行していない。remote migration・deploy、実Cloudflare Cron/Queue/D1 Time Travel/R2/Logpush、実webhook配送、systemd設置は未実施である。
+`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。 匿名HTTP smoke9件も成功した。
+
+暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
+
+週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
+
+保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。 永続runtimeは `/home/hiroshi/.local/share/nextcloud-flare-automation`。
+
+デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。
+
+## 2026-10-04 既存ファイルの暗号化移行
+
+管理者本人が保存した実際の復旧ファイルを、ログインCookieだけを引き継ぐ隔離Chromeで端末内に読み込んだ。既存のAVIF・Opus MP4・AV1+Opus MP4の3件、計64,932,182 bytesを同じフォルダーへ暗号化コピーし、元データのSHA-256と復号後の全byte・SHA-256の一致、画像寸法、音声/動画の再生・seek・映像frame増加を実stagingで確認した。所有者・blob・revision・親を移行前後で照合した。検証後、ユーザーの明示承認を受けて元の平文3件をtrash/purgeし、元nodeの404・ゴミ箱不在・暗号化コピー3件のID/blob/name/owner/parent保持を確認した。端末の元データは保持している。復旧JSONや秘密鍵をサーバーへ送信せず、終了時にタブをロックして隔離contextを閉じた。公開鍵だけを別のローカルJSONへ出力した。
+
+移行の元データGETにも実Cloudflareが`Content-Length`を付けない場合があるため、省略を許容しつつ、存在する不一致値・128 MiB上限超過・受信byte数の過不足を拒否する。読み取り後の現行nodeを再取得し、所有者・space・親・名前・revision・blob・鍵sessionが変わっていればuploadを止める。暗号化のfocusedブラウザー3件が成功し、全49件が8.6分で成功。移行の回帰は実AVIF原本と暗号文コピーの両方を残して全byteを検証する。型・lint514 files・route/config契約・staging dry-runが成功し、Worker `3aafb739-ae57-449c-aff1-57fd389fdaea`へ配備、匿名HTTP smoke 9件が成功した。
+
+一般利用者2人には各1件の0-byte原本があり、暗号化鍵は未設定。ユーザーがこの2人を使わないことを明示したため、鍵設定と空ファイルの移行を今回の運用対象から除外した。管理者1人の運用を進め、2人の設定を待たない。アカウントや空ファイルの削除・無効化は行っていない。元の平文3件はアプリから削除済みだが、R2原本と過去バックアップは保持しており、Cloudflareに平文が残らない状態にはまだ達していない。暗号文backupと独立した復旧鍵による復元確認も残る。
+
+既存のGC猶予は35日。今回のtrash/purgeは即時のR2消去にはならず、参照・pin・uploadなどの既存gateが解消して期限を過ぎるまで原本が残る。復元可能性を壊す直接R2削除やGC期限短縮は実施していない。
+
+先行commit `459fa8b`のCIはUbuntuとbrowserが成功したが、Windows両shardがPOSIX権限専用のbackup試験で失敗した。製品の権限検査は維持し、該当5試験をPOSIX環境に限定、Windowsで安全でない権限を拒否する2試験を追加した。変更した2 test fileはLinuxで13件成功・Windows専用2件skip、Biome・構文検査が成功した。Windows CIでの再確認は別途必要。
+
+## 2026-10-04 staging復元試験・動画シーク・自動化API
+
+実stagingのBackupOperatorを一時的な非公開Cron service bindingから開始し、epoch 2を凍結して整合した世代を取得した。R2 BACKUPSへの条件付き保存、R2から新しいディレクトリへの再取得、独立した新規SQLiteへの復元を実施し、83通常table・388行・論理SQL119,993 bytesをschema/全行hash/FK/FTSで照合した。固定世代・manifest hashのcomplete receiptが成立し、maintenance/gc_paused/backup_frozenはすべて0へ復帰した。一時Workerを削除し、アプリのBACKUP_OPERATOR_ENABLEDもfalseへ戻した。復元DBに記載された原本6 object・64,953,590 bytesは、読み取り専用R2資格情報で別ディレクトリへ複写してsize/ETag/SHAを照合した。詳細は [BACKUP_BLOB_AUDIT](BACKUP_BLOB_AUDIT.md) と [BACKUP_CRON_BRIDGE](../ops/staging/BACKUP_CRON_BRIDGE.md)。これは実D1への上書き復元・元BLOBS bucket喪失後の復旧・恒久的な日次ジョブ設置の証明ではない。
+
+native動画のopen-ended Rangeを4MiB単位に制限し、Range応答とBudgetDO予約量を一致させた。従来はシークによる中断のたびに動画の残り全体を予約し、繰り返すと429になった。認可・総budget上限・明示closed Rangeは維持する。実stagingで8回連続シーク、映像フレーム増加、429なしを確認した。PrivateVideoはnetwork/decode/unsupportedを分け、新しいticketで明示再試行できる。修正後の全ブラウザー46件が成功した。
+
+既存のServiceAuth専用GET `/api/v1/automation/nodes` と `/api/v1/automation/nodes/:nodeId` を実装した。限定root・owner・scope・credential・epochを再検査し、一覧cursorもprincipal/credential/root/tree generationへ結合する。ServiceAuthの失効・異なるsubject/issuer/AUD・root外・cursor改変を統合試験した。stagingのAccess経路は引き続き拒否設定で、実利用するservice principalの運用登録は未完了。mutation/upload APIは追加していない。
+
+## 2026-10-04 クライアント暗号化
+
+本人と管理者の端末内鍵、AES-GCM chunk container、元ファイル名の暗号化、OPFSでの同一暗号文再送、専用復号画面、同一clientに限定したService Worker Range復号を接続した。実管理者の鍵初期設定と既存メディア3件の移行結果は本書冒頭を参照。他の所有者は本人鍵の設定が必要。利用条件・脅威の境界・未対応機能は [CLIENT_ENCRYPTION](CLIENT_ENCRYPTION.md) を参照する。
+
+単体872件・Worker統合2,253件（計3,125件）、lint・型・route/config契約が成功した。本人の復旧鍵だけで既存ファイルを読む経路と、管理者公開鍵がない場合の新規暗号化upload拒否を分けた。ChromeのM4A形式別名を暗号化メタデータ内で`audio/mp4`へ正規化した。暗号化のfocusedブラウザー2件に続き、非公開manifestを含む全ブラウザー48件が成功し、下記の配信修正後も48件すべてが8.0分で成功した。本人と管理者の復号・保存・監査・鍵ロックと、実AVIF/Opus MP4/AV1+Opus MP4の暗号化upload・再生・シーク・全byte照合を確認した。この段階の実ファイル計64,932,182 bytesの照合は隔離ローカル環境の結果。その後の実管理者鍵でのstaging移行結果は本書冒頭に記録した。初回の運用手順は [CLIENT_ENCRYPTION_SETUP](CLIENT_ENCRYPTION_SETUP.md)。
+
+実ChromeのService Worker登録要求ではAccess Cookieが付かず、private scriptが302へ転送されることを確認した。復号処理コードを依存ファイルのない単一の`/public-assets/client-media-worker.js`にビルドし、既存の公開asset Bypassから配信するよう修正した。この正確なpathだけにscope `/`を許可し、`no-store`を付ける。鍵・データ・private UIは含めず、実行時の`/me`、client ID、content ticket、ETag検証を維持する。修正後の公開経路Worker統合17件、route単体15件、lint514 files・型・契約・設定、Web/Worker buildとstaging dry-runが成功した。
+
+staging Worker version `10e3ac76-2846-436b-bda1-50f20d6b479f`を配備し、匿名HTTP smoke 9件、公開bootstrapのscope/no-store、本人のログイン済みChromeでのService Worker登録・未知の復号URL拒否・鍵未設定時のupload送信0件を確認した。追加のAccess BypassやD1 migrationはない。
+
+実Cloudflareの暗号文206には`Content-Length`が付かない場合があり、page readerだけがこれを必須として復号を止めていた。省略を許容し、存在する不一致値は拒否するように修正した。正確な`Content-Range`、ETag、URL、受信byte数と暗号認証は必須のまま。実containerを使う回帰2件を追加し、最終単体872件（65 files）が成功した。ブラウザー回帰では本文・URL・ETag・Content-Rangeを保ってpage-visibleなContent-Lengthのみを省略し、focused 2件とmanifest付き全48件（8.0分）が成功した。
+
+最終Worker `580f9cd8-9114-4ca7-97f5-d3e782e4a8bd`へ修正を反映し、匿名HTTP smoke 9件が再成功した。実Cloudflareでは、ログインだけを引き継ぐ別の隔離ブラウザーと一時検証鍵を使い、公開fixtureのAVIF・MP3・AV1+Opus WebM（合計351,797 bytes）をUIから暗号化uploadした。診断用ヘッダー補助を無効にした状態で、暗号文magic、画像寸法、音声/動画の再生とseek・frame増加、復号後のSHA-256とUI保存byte一致を3件すべて確認した。試験で作った3件だけをtrash/purgeし、一時復旧ファイルも端末から削除した。この隔離試験には実利用者用ブラウザー鍵を使っていない。その後の実管理者鍵による移行結果は本書冒頭に記録した。一般利用者2人の鍵設定は、後続のユーザー指示で今回の運用対象から除外した。暗号文backup＋独立復旧鍵の復元試験は管理者の運用で引き続き必要。
+
+## 2026-10-04 実ファイルの画像・音声・動画検証
+
+画像解析で検証済みMIMEをcurrent metadataと同じ認可・outbox・blob fence内へ保存するよう修正した。AVIFはboundedなprimary AV1 itemの検査で寸法を取得し、Imagesの入力対応に依存しない。圧縮画像中のMPEG風byteをMP3と誤認して画像MIMEを上書きする問題は、既知containerの除外とraw Layer IIIの連続frame検査で修正した。既存の合成AVIFにMPEG風のfree boxを加えた恒久試験で、thumbnail生成失敗時にもGalleryの原本が残り、Audioへ混入しないことを確認する。
+
+実Cloudflareで観測した`future_deadline`による受付503は、ControlDOが受信したdeadlineを「呼出元の期限と受信時刻+5秒の短い方」へ制限して修正した。期限切れ・不正値を拒否し、D1の容量・期限・epoch・停止・認可fenceは維持する。stagingだけに固定した段階コードの診断を追加した。
+
+単体809件、画像・音声の関連統合12件、受付の関連統合22件、lint・型・契約・設定検査が成功した。任意の非公開manifestを指定する追加ブラウザー試験は、実file chooserからのupload、AVIF Gallery、Opus/MP4 Audio、1080p 10-bit AV1+Opus/MP4 Video、先頭・中間・末尾へのseek後の再生、全byteの206 Range/SHA-256一致まで成功した。focused試験の後、同じmanifestを含むブラウザー全46件が7.0分で成功した。対象の個人ファイル・ファイル名・画像・traceはrepositoryへ追加していない。再実行方法は [MEDIA_FORMATS](MEDIA_FORMATS.md) を参照する。
+
+schemaは52 migrations・83通常table・168 routeのまま。staging Worker version `cb254cbe-4cbd-42d7-9d28-a749ecba0fa1` を配備し、匿名HTTP smoke 9件が成功した。
+
+本人のAccessログイン後、実stagingの専用非公開フォルダーへ3ファイルを保存し、Gallery原本の表示、AudioとVideoの実デコード・先頭/中間/末尾へのseek、3ファイル合計64,932,182 bytesの全RangeとSHA-256一致を確認した。修正版でのこの最終検証中に受付503は再発しなかった。具体的な形式と未確認範囲は [MEDIA_FORMATS](MEDIA_FORMATS.md) に記録した。
+
+## 2026-10-03 管理者の全利用者ファイル閲覧・メディア配信
+
+専用 `/admin/files` に利用者選択、フォルダー階層、読み取り専用のプレビュー・ダウンロード、閲覧履歴を追加した。管理者閲覧は Access session と現在の `app_admin` role を検査する専用 API と単一ファイル grant で行う。一般の owner/share API と DAV の権限は維持する。降格・無効化・session失効・owner無効化・異なる対象を拒否し、監査の永続化に失敗したら内容を配信しない。grant は通常の node purge を妨げず、ticket 削除に追従して消える。
+
+ブラウザー upload が `application/octet-stream` のまま残り、Audio一覧・track配信につながらない問題を修正した。共通outboxのbounded解析でMP3、Opus Ogg/WebM/MP4、AV1 MP4/WebMを判定しMIMEとcurrent projectionを確定する。Opus音声専用containerのparserとtrack配信を接続し、Ogg識別pageのCRC・OpusHead、WebM CodecPrivate、MP4 dOpsを検査する。拡張子やclient申告だけではinlineにしない。`0053` は現在の成功済み旧projectionに一致するoctet-streamだけを限定更新する。
+
+`0052`/`0053` 追加後は52 migrations、83通常table、168 route契約。認可を10件連結したSQLがworkerd SQLiteで `SQLITE_NOMEM` になる回帰も修正し、同じatomic batch内で5件ずつ検査する。単体806件、関連統合145件、全ブラウザー45件、lint・型・契約・設定検査、Web buildとWorker dry-run、0052時点の83-table実Wranglerバックアップ/復元drillが成功した。
+
+Chrome 153/NixOSで、一般利用者の実upload・解析からMP3、Opus Ogg/WebM/MP4、AV1+Opus WebM/MP4の再生・シーク後の継続・認証付き206 Rangeの原本byte一致を確認した。管理者からも同じ6形式を再生し、MP3のattachmentダウンロードは原本全体のbyte一致を検査した。全体試験で見つかった試験用outboxの他テストとの干渉と、ログアウト後のfixture JWT再利用を修正し、対象outboxの実dispatcherと明示的な再ログインを使う。実行条件と未確認範囲は [MEDIA_FORMATS](MEDIA_FORMATS.md) を参照する。
+
+stagingへ0052/0053を適用し、52 migrations・464 triggers・外部キー違反なし・epoch 2の通常受付を確認した。Worker version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` を限定CI tokenで配備し、匿名HTTP smoke 9件が成功した。新しい管理者画面・メディア再生の実Cloudflare上の本人確認はまだ完了していない。
+
+実環境では管理者1人と一般利用者2人のAccessログイン、アップロード・ダウンロード、一般利用者間の一覧分離をユーザーが確認済み。実環境の詳細は [staging runbook](../ops/staging/README.md)、管理者機能の使い方は [ADMIN_FILES](ADMIN_FILES.md) を参照する。
+
+以下は各日付時点の記録であり、以前の「remote未実施」は現在のstaging状態を表さない。
+
+## 2026-10-02 staging 準備・Access 複数利用者
+
+`darask.date` に `staging-app` と `staging-content` を置く独立 Wrangler 設定案、必要な D1/R2/KV/DO/Queues/Images/Access/secret の台帳、Cloudflare Access の複数利用者・MFA・公開経路 Bypass 手順を追加した。staging の追加費用上限は月1万円。Cloudflare Budget alerts はアカウント全体の USD 通知で、staging 単独の強制停止ではないため、実使用量の照合と負荷の段階的制限を運用 gate とする。GitHub の手動 `workflow_dispatch` は保護された `staging` Environment の Cloudflare token と実D1/KV IDを検査し、`deploy=true` のときだけ既存 Worker を配備する。初回 resource/Worker作成・remote migrationは別手順。設定案の Wrangler dry-run は成功したが、実 ID、secret、Cloudflare リソース、GitHub staging Environment は未設定。remote migration・deploy・実 Access は未検証。
+
+初回の [provision 手順](../ops/staging/INITIAL_PROVISION.md)、現行設定から6リソースと26 secret 名を抽出するローカル計画、実 D1/KV ID の一覧照合、repo 外0600の Worker secret 下書き・構造検査、費用の基準値と日次判断表、9件に制限した読み取り専用 HTTP smoke を追加した。Cloudflare Access の private root Allow は app host 全体の `/*` とし、公開 share・DAV・content host の Bypass を別に指定する。smoke の既定動作はネットワークなしで、静的契約と予定リクエストを表示する。ローカルの9テスト、設定検証、仮 ID での Wrangler dry-run、変更した JavaScript の Biome 検査が成功した。実アカウントへの最初の操作で Cloudflare account ID と API token が必要になり、作成・migration・実 HTTP smoke は未実施。
+
+初回管理者1人の bootstrap を維持し、管理者だけが7日間有効な Access メール招待を発行・取消できるようにした。検証済み Access JWT の issuer と正確なメール表記を招待と照合し、本人の初回ログインで subject と個人 space/root を原子的に作成する。新規一般利用者の quota は1 GiB。設定画面から複数メールを招待でき、Access の Allow policy とアプリ招待の両方が必要。招待メールはアプリから送信しない。新 migration `0051` と通常 table `access_invites` を backup freeze・capture/restore に追加した。migration は全50件、通常tableは81、route契約は162。
+
+隔離HTTPSの全browser試験42件と、バックアップ/スキーマの修正対象121件が成功。途中の`pnpm check`ではNode774件、Workerd 2,228件中2,227件まで通過し、残る1件は新migrationに伴う固定期待値49→50の更新漏れだった。修正後にそのschema fileのWorkerd 7/7件、最終lint459 file、Web/Worker buildとstaging Wrangler dry-runが成功した。
+
+コミット`1d9c87a`の最終ローカル`pnpm check`はNode774件・Workerd2,228件、計3,002件、全browser42件が成功した。GitHub CIはbackup jobだけ実Wranglerドリルの旧table期待値80で失敗したため、コミット`5e367be`で81へ修正した。修正後の`backup:drill`、`backup:operator-drill`、`backup:run-drill`がローカルでPASSし、[CI run 36975405856](https://github.com/daraskme/Nextcloud-flare/actions/runs/36975405856) はUbuntu、Windows 2分割、browser、backupの5 jobすべて成功した。
+
+## 2026-10-02 audio metadata検索・移動receipt・実AVIF表示
+
+既存のaudio title/artist/album索引へ`mode=audio`を追加し、現行node blobと`AUDIO_GENERATOR_VERSION`が一致する投影だけを検索する。scope/権限・10,000 node走査・200件keysetを維持し、modeを署名cursorへ結び付けた。Filesの検索欄から通常/音声ファイルを選べる。通常検索の旧audio metadataは上書き後からOutbox更新まで残り得るため、現行投影が必要な場合はaudio modeを使う。
+
+移動操作のterminal lookupは保存済み移動元親の現在読取り権限を独立して確認し、Outboxに対応するnode stepがない確定結果を返さない。実AVIF fixtureのthumbnail/原本が隔離HTTPS上のChromiumで16×12としてデコードされることも確認した。AV1+Opusの実再生と複数browserは後続。
+
+focusedはaudio検索のNode14件・workerd10件、operation lookupのworkerd22件、ブラウザ2件が成功。`pnpm check`はlint453 file、型・route/config契約、Node774件（50 file）・workerd2,218件（117 file）、計**2,992件**、Web build・Worker dry-run buildが成功した。全browser **40/40件**が成功し、合計**3,032件**。D1 migration・依存追加なし。remote migration・deployは未実施。
+
+## 2026-10-02 Files grid・Gallery・Outbox・media実ファイル
+
+Files gridを行単位で仮想化し、表示幅に応じた列数とmobileの2列を維持した。スクロール外のcardを描画せず、各cardの操作と一覧上の位置を保持する。private Galleryのthumbnail/原本content sessionは、写真の切替・閉じる操作・画面離脱時にticketを取消す。遅れて返ったsessionも破棄し、旧画像のURLを再利用しない。
+
+`node.move`/`dav.move`のOutbox consumerは、保存済み移動元親の現在権限を移動済みnodeと移動先から独立して再検査する。実AVIF静止画とAV1+Opus WebMの小さなfixtureを追加し、前者の画像解析adapterへの受渡し、後者のcontainer metadata解析を検証した。実Images codecと複数browserの再生は引き続き未検証である。
+
+DAVの実browser同時接続で、fetch eventをまたぐKDF待機がworkerdで中断され、正しいsecretへの401/500や終了証明を持たない保留枠を生むことを再現した。WorkerとControlDOのpassword実行経路を同時1件・即時503へ変更し、予期しないHMAC失敗も401へ誤分類しない。8同時要求のfocused browser試験では503再試行が収束し、誤secret・失効後だけ401となった。
+
+`pnpm check`成功。lint453 file、型・route/config契約、Node 774件（50 file）・workerd 2,214件（117 file）、計**2,988件**、Web build・Worker dry-run buildが成功した。全browser **39/39件**が成功し、Files grid、Gallery ticket、DAV同時接続を含む。migration・依存追加なし。remote migration・deploy、実Cloudflare/Images codec・複数browser再生は実施していない。
 
 ## 2026-10-01 internal share管理UI
 
@@ -158,7 +254,7 @@ folder root向けupload-only shareをowner/public UIとWorker APIへ接続した
 | 2/3 作成receiptの回収 | 応答喪失後に対象revisionが進んでも同じkey/ID/capabilityを再取得し、中止できる。旧本文/確定は拒否し、二重予約/R2再初期化をしない | workerd HTTP追加5件、browser追加2件。最終結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) |
 | 2/3 上書きupload UI・配信対象budget | 確認付き上書き、target snapshot/元file名保持、single/全part If-Match、競合拒否、完了応答喪失/分割再開。BudgetDOの重複しない対象台帳と使用量保持、CORS error | browser追加3件、workerd追加6件と既存境界を検証。全check結果は実行記録。[UPLOAD_OVERWRITE](UPLOAD_OVERWRITE.md) / [BUDGET_ALLOWANCE](BUDGET_ALLOWANCE.md) |
 | 1/2 本文なしHTTP操作 | DAV MKCOLの415誤判定を修正。COPY/MOVE/DELETE/UNLOCK、private ticket/app-password取消し、logoutに5秒・16read上限の共通EOF検査 | Node境界13件、workerdの待機中失効/停止2件を追加。独立HTTPのDAV操作・ticket発行/交換/取消しを検証。全結果は実行記録。[EMPTY_HTTP_BODY](EMPTY_HTTP_BODY.md) |
-| 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、待機256件・5秒、取消し・例外時解放、503再試行、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件が成功。全check/browserの結果は実行記録。ControlDO/D1全体制限は上記へ接続済み。[KDF_ADMISSION](KDF_ADMISSION.md) |
+| 1 KDF isolate内制限 | app password作成・検証・pepper更新で同時1件、並行fetch eventは待機せず503、取消し・例外時解放、計算前のAccess/root検査 | Node境界8件、workerd追加9件と既存23件、8同時DAVのbrowser試験が成功。ControlDO/D1全体制限は上記へ接続済み。[KDF_ADMISSION](KDF_ADMISSION.md) |
 | 4 通常稼働中のtrash復元 | migration `0026`、永続GC pause、管理者設定保持、既存deleting drain、原子的なoperation/token/epoch/期限assertと解放alarm | 実ControlDO/LockDO/D1/R2の29件とschema制約1件を追加。連続alarm失敗6回で閉じる。実browserの復元・応答喪失再照会。詳細は[RESTORE_GC](RESTORE_GC.md) |
 | 2/3 Files UI | React/TanStack、認証付きprivate build graph、一覧・操作・trash・single/multipart再開upload・複数タブlogout | ローカル実APIのbrowser試験8件とCSRF/operationのNode4件を追加。restoreもGC稼働中のfixtureで検証。詳細・残作業は[FILES_UI](FILES_UI.md) |
 | 1/4 ControlDO受付再開 | migration `0025`、永続revision/tokenと監査proof、最終batch fence、repair hold、受付→GC段階再開 | 実ControlDO/LockDO/D1/R2、HTTP bootstrap、応答喪失・停止/epoch競合・eviction/全喪失の追加27件が成功。全check結果は実行記録。実環境・完全restore・account mutation・終了証明を失ったKDFの運用収束は未完了 |

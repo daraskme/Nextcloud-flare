@@ -22,6 +22,7 @@ import {
   type CreatedAppPassword,
   errorMessage,
 } from "../../lib/api";
+import { AdminInvites } from "./AdminInvites";
 
 const SCOPE_OPTIONS: readonly {
   scope: AppPasswordScope;
@@ -367,6 +368,7 @@ export function WebDavSettings({ account }: { account: Account }) {
 
   return (
     <div className="webdav-settings">
+      {account.role === "app_admin" && <AdminInvites account={account} />}
       <section className="settings-card webdav-guidance" aria-labelledby="webdav-connection-title">
         <div className="settings-card-heading">
           <span className="settings-icon">

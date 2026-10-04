@@ -44,6 +44,7 @@ export interface IssuedContentTicket {
 
 export interface ContentTicketIssueOptions {
   readonly idempotencyKey?: string;
+  readonly adminAction?: "preview" | "download";
 }
 
 async function idempotencySlot(credentialId: string, key: string): Promise<string> {
@@ -79,7 +80,13 @@ function budgetAndShareAssertion(
       WHERE b.id=? AND b.owner_id=? AND b.user_id IS ? AND b.share_id IS ?
         AND b.unlock_session_id IS ? AND b.epoch=? AND b.state='active'
         AND b.expires_at>=? AND ctl.maintenance=0
-        AND ((?='user' AND EXISTS(
+        AND ((?='admin_read' AND EXISTS(
+          SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
+          JOIN users admin ON admin.id=s.user_id
+          WHERE c.id=? AND c.kind='access' AND s.kind='access' AND s.user_id=?
+            AND admin.role='app_admin' AND admin.disabled_at IS NULL
+            AND s.epoch=b.epoch AND s.revoked_at IS NULL AND s.expires_at>=?))
+          OR (?='user' AND EXISTS(
           SELECT 1 FROM credentials c JOIN sessions s ON s.id=c.session_id
           WHERE c.id=? AND c.kind='access' AND s.kind='access' AND s.user_id=?
             AND s.epoch=b.epoch AND s.revoked_at IS NULL AND s.expires_at>=?))
@@ -132,6 +139,10 @@ function budgetAndShareAssertion(
       userId,
       expiresAt,
       principal.kind,
+      principal.credential_id,
+      userId,
+      expiresAt,
+      principal.kind,
       shareId,
       shareId,
       shareVersion,
@@ -173,7 +184,10 @@ export async function issueContentTicket(
     expiresAt > now + 600_000 ||
     (share !== undefined && principal.kind === "link_share") ||
     (purpose === "track" && share !== undefined) ||
-    (options.idempotencyKey !== undefined && purpose !== "zip")
+    (options.idempotencyKey !== undefined && purpose !== "zip") ||
+    (principal.kind === "admin_read") !== (options.adminAction !== undefined) ||
+    (principal.kind === "admin_read" &&
+      (purpose !== "content" || targets.length !== 1 || share !== undefined))
   )
     throw new Error("invalid_content_ticket_request");
   const selectedShare =
@@ -367,6 +381,32 @@ export async function issueContentTicket(
           result.expiresAt,
         ],
       },
+      ...(principal.kind === "admin_read"
+        ? [
+            {
+              sql: `INSERT INTO admin_content_grants(ticket_id,actor_id,owner_id,node_id,action)
+          VALUES(?,?,?,?,?)`,
+              values: [
+                ticketId,
+                principal.user_id,
+                ownerId,
+                targets[0]?.nodeId ?? "",
+                options.adminAction!,
+              ],
+            },
+            {
+              sql: `INSERT INTO admin_browse_audit(id,actor_id,owner_id,node_id,action,occurred_at)
+          VALUES(?,?,?,?,?,strftime('%s','now')*1000)`,
+              values: [
+                crypto.randomUUID(),
+                principal.user_id,
+                ownerId,
+                targets[0]?.nodeId ?? null,
+                options.adminAction!,
+              ],
+            },
+          ]
+        : []),
       ...(zip
         ? addZipPinStatements(
             record.id,

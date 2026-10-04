@@ -17,6 +17,7 @@ import {
   type OperationClaim,
   operationIntent,
 } from "../jobs/operations";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const RENAME_NODE_STEPS = 8;
@@ -204,7 +205,10 @@ export function renameMutationStatements(plan: RenamePlan): SqlStatement[] {
     },
     assertOneChange,
   );
-  return statements;
+  return [
+    unencryptedSubtreeAssertion(plan.authorized.node.id, plan.authorized.node.space_id),
+    ...statements,
+  ];
 }
 
 export async function renameNode(
@@ -219,6 +223,7 @@ export async function renameNode(
     spaceId: request.spaceId,
   });
   if (authorized.operation !== "node.rename") throw new Error("invalid_rename_authorization");
+  await assertNoEncryptedSubtree(env.DB, request.nodeId, request.spaceId);
   const intent = await operationIntent(
     request.principal,
     request.idempotencyKey,

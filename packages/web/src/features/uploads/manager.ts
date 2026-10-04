@@ -9,6 +9,18 @@ import {
   type UploadReceipt,
 } from "../../lib/api";
 import {
+  type CompletedContainer,
+  cleanupStaleOpfsContainers,
+  createEncryptedContainer,
+  discardOpfsContainerFile,
+  reopenOpfsContainerFile,
+} from "../../lib/encryptedContainer";
+import {
+  encryptionConfigured,
+  getEncryptionSession,
+  isEncryptedFile,
+} from "../../lib/encryptionSession";
+import {
   clearUploads,
   fingerprint,
   removeUpload,
@@ -25,6 +37,20 @@ export interface UploadTask {
 }
 const terminal = new Set(["failed", "aborting", "aborted", "expired"]);
 const tick = () => new Promise((resolve) => setTimeout(resolve, 1000));
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+async function discardSpool(record: UploadRecord): Promise<void> {
+  if (!record.encryptedSpool) return;
+  try {
+    await discardOpfsContainerFile(record.encryptedSpool);
+  } catch (error) {
+    if (!(error instanceof DOMException) || error.name !== "NotFoundError") throw error;
+  }
+}
 
 export class UploadManager {
   #tasks: UploadTask[] = [];
@@ -32,6 +58,7 @@ export class UploadManager {
   #controllers = new Map<string, AbortController>();
   #generation = 0;
   #loaded: string | undefined;
+  #requiredEncryption = false;
   onCompleted: () => void = () => {};
   subscribe = (fn: () => void) => {
     this.#listeners.add(fn);
@@ -77,6 +104,7 @@ export class UploadManager {
     if (this.#loaded === scope) return;
     const generation = ++this.#generation;
     this.#loaded = scope;
+    this.#requiredEncryption = account.clientEncryptionRequired === true;
     for (const controller of this.#controllers.values()) controller.abort();
     this.#controllers.clear();
     this.#tasks = [];
@@ -96,6 +124,7 @@ export class UploadManager {
         record.epoch !== account.epoch ||
         record.expiresAt < Date.now()
       ) {
+        await discardSpool(record);
         await removeUpload(record.localId);
         continue;
       }
@@ -104,13 +133,30 @@ export class UploadManager {
           record,
           phase: "paused",
           bytes: 0,
-          message: "同じファイルを選び直して続けられます",
+          message: record.encryptedSpool
+            ? "保存済みの暗号化ファイルから再開できます"
+            : "同じファイルを選び直して続けられます",
         });
     }
+    // Persisted resumable uploads are authoritative; only old unreferenced ciphertext is removed.
+    if (generation === this.#generation)
+      await cleanupStaleOpfsContainers(
+        new Set(
+          records.map((record) => record.encryptedSpool).filter((name): name is string => !!name),
+        ),
+      ).catch(() => undefined);
     this.#notify();
   }
 
-  async enqueue(file: File, account: Account, parentId: string, replacement?: FileNode) {
+  async enqueue(
+    file: File,
+    account: Account,
+    parentId: string,
+    replacement?: FileNode,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    this.#requiredEncryption = account.clientEncryptionRequired === true;
     if (this.#tasks.filter((task) => !["completed", "cancelled"].includes(task.phase)).length >= 32)
       throw new Error("同時に待機できるファイルは32件までです。");
     if (file.size > 536_870_912_000) throw new Error("1ファイルの上限は500 GBです。");
@@ -122,52 +168,149 @@ export class UploadManager {
         replacement.revision < 1)
     )
       throw new Error("上書き先を確認できません。一覧を更新して選び直してください。");
+    if (replacement && isEncryptedFile(replacement))
+      throw new Error(
+        "暗号化されたファイルの上書きはまだ利用できません。新しいファイルとして保存してください。",
+      );
     const generation = this.#generation;
-    const record: UploadRecord = {
-      localId: crypto.randomUUID(),
-      accountId: account.id,
-      epoch: account.epoch,
-      spaceId: account.spaceId,
-      parentId,
-      name: replacement?.name ?? file.name,
-      sourceName: file.name,
-      ...(replacement
-        ? {
-            target: {
-              id: replacement.id,
-              revision: replacement.revision,
-              blobId: replacement.currentBlobId!,
-            },
-          }
-        : {}),
-      size: file.size,
-      modified: file.lastModified,
-      sample: await fingerprint(file),
-      expiresAt: Date.now() + 86_400_000,
-      createKey: crypto.randomUUID(),
-      completeKey: crypto.randomUUID(),
-      mode: file.size <= 95_000_000 ? "single" : "multipart",
-      attempts: {},
-    };
-    if (generation !== this.#generation) return;
-    // Early feedback only. The server still fences every transfer and final commit.
-    await this.#assertTarget(record);
-    if (generation !== this.#generation) return;
-    await saveUpload(record);
-    if (generation !== this.#generation) {
-      await removeUpload(record.localId);
-      return;
+    let encrypted: CompletedContainer | undefined;
+    const configured = await encryptionConfigured(account.id);
+    if (configured || account.clientEncryptionRequired) {
+      if (replacement)
+        throw new Error(
+          "暗号化されたファイルの上書きはまだ利用できません。新しいファイルとして保存してください。",
+        );
+      const session = getEncryptionSession(account.id);
+      if (!session)
+        throw new Error(
+          configured
+            ? "暗号化鍵がロックされています。設定画面で解除してからアップロードしてください。"
+            : "暗号化が必須です。設定画面で鍵と復旧ファイルを準備してからアップロードしてください。",
+        );
+      if (!session.adminRecipient)
+        throw new Error(
+          "管理者の公開鍵を固定してから暗号化アップロードしてください。既存ファイルの復号は利用できます。",
+        );
+      if (!session.ownerRegistered || !session.adminSigner)
+        throw new Error(
+          "アカウントの署名鍵と管理者鍵をサーバーの登録情報で確認できません。設定画面で確認してください。",
+        );
+      const recipients = [session.owner.publicKey];
+      if (session.adminRecipient.fingerprint !== session.owner.publicKey.fingerprint)
+        recipients.push(session.adminRecipient);
+      encrypted = await createEncryptedContainer(file, recipients, undefined, signal, {
+        ownerId: account.id,
+        signer: session.owner.signing,
+      });
+      file = encrypted.file;
     }
-    const task: UploadTask = { record, phase: "queued", bytes: 0, message: "送信を準備しています" };
-    this.#tasks.push(task);
-    this.#notify();
-    void this.resume(task, file);
+    try {
+      signal?.throwIfAborted();
+      const record: UploadRecord = {
+        localId: crypto.randomUUID(),
+        accountId: account.id,
+        epoch: account.epoch,
+        spaceId: account.spaceId,
+        parentId,
+        name: replacement?.name ?? file.name,
+        sourceName: file.name,
+        ...(encrypted ? { encryptedSpool: encrypted.opaqueName } : {}),
+        ...(encrypted ? { encryptionHeader: base64Url(encrypted.headerBytes) } : {}),
+        ...(replacement
+          ? {
+              target: {
+                id: replacement.id,
+                revision: replacement.revision,
+                blobId: replacement.currentBlobId!,
+              },
+            }
+          : {}),
+        size: file.size,
+        modified: file.lastModified,
+        sample: await fingerprint(file),
+        expiresAt: Date.now() + 86_400_000,
+        createKey: crypto.randomUUID(),
+        completeKey: crypto.randomUUID(),
+        mode: file.size <= 95_000_000 ? "single" : "multipart",
+        attempts: {},
+      };
+      if (generation !== this.#generation) {
+        await encrypted?.discard();
+        return;
+      }
+      // Early feedback only. The server still fences every transfer and final commit.
+      await this.#assertTarget(record);
+      if (generation !== this.#generation) {
+        await encrypted?.discard();
+        return;
+      }
+      await saveUpload(record);
+      if (generation !== this.#generation) {
+        await removeUpload(record.localId);
+        await encrypted?.discard();
+        return;
+      }
+      const task: UploadTask = {
+        record,
+        phase: "queued",
+        bytes: 0,
+        message: "送信を準備しています",
+      };
+      this.#tasks.push(task);
+      this.#notify();
+      void this.resume(task, file);
+    } catch (error) {
+      await encrypted?.discard().catch(() => undefined);
+      throw error;
+    }
   }
 
-  async resume(task: UploadTask, file: File) {
+  async resume(task: UploadTask, selectedFile?: File) {
     const record = task.record;
     const generation = this.#generation;
     if (this.#controllers.has(record.localId)) return;
+    if (!record.encryptedSpool) {
+      let encryptionRequired: boolean;
+      try {
+        encryptionRequired =
+          this.#requiredEncryption || (await encryptionConfigured(record.accountId));
+      } catch {
+        encryptionRequired = true;
+      }
+      if (encryptionRequired) {
+        this.#update(task, {
+          phase: "paused",
+          message:
+            "この平文の送信は再開できません。中止し、暗号化して新しくアップロードしてください。",
+        });
+        return;
+      }
+    }
+    let file: File;
+    try {
+      if (record.encryptedSpool && !record.encryptionHeader) {
+        this.#update(task, {
+          phase: "paused",
+          message: "暗号化の署名情報がありません。安全に再開できないため新規送信してください。",
+        });
+        return;
+      }
+      file = record.encryptedSpool
+        ? (await reopenOpfsContainerFile(record.encryptedSpool)).file
+        : (selectedFile ??
+          (() => {
+            throw new Error("同じファイルを選び直してください");
+          })());
+    } catch (error) {
+      this.#update(task, {
+        phase: "paused",
+        message:
+          error instanceof Error && error.message === "同じファイルを選び直してください"
+            ? error.message
+            : "暗号化済みの一時ファイルを確認できません。新しくアップロードしてください。",
+      });
+      return;
+    }
     if (
       file.name !== (record.sourceName ?? record.name) ||
       file.size !== record.size ||
@@ -207,6 +350,7 @@ export class UploadManager {
                   parentId: record.parentId,
                   name: record.name,
                   declared_size: record.size,
+                  ...(record.encryptionHeader ? { encryptionHeader: record.encryptionHeader } : {}),
                   ...(record.target
                     ? { targetId: record.target.id, targetRevision: record.target.revision }
                     : {}),
@@ -406,6 +550,7 @@ export class UploadManager {
   }
 
   async #complete(task: UploadTask) {
+    await discardSpool(task.record);
     await removeUpload(task.record.localId);
     this.#update(task, {
       phase: "completed",
@@ -428,6 +573,7 @@ export class UploadManager {
         );
       else if (task.phase !== "queued")
         throw new Error("作成結果を確認するため、同じファイルを選び直してください。");
+      await discardSpool(record);
       await removeUpload(record.localId);
       this.#update(task, {
         phase: "cancelled",
@@ -449,6 +595,7 @@ export class UploadManager {
     this.#tasks = [];
     this.#loaded = undefined;
     this.#notify();
+    for (const record of await storedUploads()) await discardSpool(record);
     await clearUploads();
   }
 }

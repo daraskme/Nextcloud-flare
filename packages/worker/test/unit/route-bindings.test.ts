@@ -104,6 +104,7 @@ describe("route binding coverage", () => {
       "/",
       "/files",
       "/files/node_123",
+      "/encryption",
       "/trash",
       "/shares",
       "/settings/webdav",

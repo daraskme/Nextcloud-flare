@@ -50,7 +50,9 @@ import {
 } from "react";
 import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
+import { AllUserFiles } from "./features/admin/AllUserFiles";
 import { PrivateAudio } from "./features/audio/PrivateAudio";
+import { EncryptedFiles } from "./features/encryption/EncryptedFiles";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { PrivateBookshelf } from "./features/library/PrivateBookshelf";
@@ -68,6 +70,8 @@ import {
   formatBytes,
   type TrashItem,
 } from "./lib/api";
+import { clearClientMedia, installClientMediaPagehideCleanup } from "./lib/clientMediaRegistration";
+import { clearEncryptionSession, isEncryptedFile } from "./lib/encryptionSession";
 
 type Action =
   | { kind: "create" }
@@ -184,11 +188,17 @@ function UploadPanel() {
                 <Button
                   size="small"
                   onClick={() => {
+                    if (task.record.encryptedSpool) {
+                      void uploads.resume(task);
+                      return;
+                    }
                     selected.current = task;
                     input.current?.click();
                   }}
                 >
-                  元のファイルを選択・再確認
+                  {task.record.encryptedSpool
+                    ? "暗号化済みデータから再開"
+                    : "元のファイルを選択・再確認"}
                 </Button>
               )}
             </div>
@@ -889,6 +899,38 @@ function FileList({
   starPending: ReadonlySet<string>;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const gridScroller = useRef<HTMLDivElement>(null);
+  const [gridColumns, setGridColumns] = useState(1);
+  useEffect(() => {
+    if (view !== "grid") return;
+    const element = gridScroller.current;
+    if (!element) return;
+    const updateColumns = () => {
+      const width = element.clientWidth;
+      if (!width) return;
+      setGridColumns(
+        window.matchMedia("(max-width: 540px)").matches
+          ? 2
+          : Math.max(1, Math.floor((width + 15) / (175 + 15))),
+      );
+    };
+    updateColumns();
+    const observer = new ResizeObserver(updateColumns);
+    observer.observe(element);
+    window.addEventListener("resize", updateColumns);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateColumns);
+    };
+  }, [view]);
+  const gridRowCount = Math.ceil(rows.length / gridColumns);
+  const gridVirtual = useVirtualizer({
+    count: gridRowCount,
+    getScrollElement: () => gridScroller.current,
+    estimateSize: () => 190,
+    overscan: 3,
+    getItemKey: (index) => rows[index * gridColumns]?.id ?? `grid-row-${index}`,
+  });
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -898,37 +940,64 @@ function FileList({
   });
   if (view === "grid")
     return (
-      <div className="file-grid">
-        {rows.map((node) => (
-          <article key={node.id} className="file-card">
-            <div className="file-card-top">
-              <FileIcon node={node} />
-              <div className="file-card-actions">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="star-control"
-                  aria-label={`${node.name}を${node.starred ? "スターから外す" : "スターに追加"}`}
-                  aria-pressed={!!node.starred}
-                  disabled={starPending.has(node.id)}
-                  onClick={() => toggleStar(node)}
-                >
-                  <Star size={17} fill={node.starred ? "currentColor" : "none"} />
-                </Button>
-                {!readOnly && (!node.ownerId || node.ownerId === currentUserId) && (
-                  <NodeMenu node={node} act={act} open={() => open(node)} />
-                )}
-              </div>
+      <div ref={gridScroller} className="file-grid-scroll" role="list" aria-label="ファイル一覧">
+        <div className="file-grid-virtual" style={{ height: `${gridVirtual.getTotalSize()}px` }}>
+          {gridVirtual.getVirtualItems().map((item) => (
+            <div
+              key={item.key}
+              className="file-grid-row"
+              ref={gridVirtual.measureElement}
+              data-index={item.index}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              {rows
+                .slice(item.index * gridColumns, (item.index + 1) * gridColumns)
+                .map((node, columnIndex) => (
+                  <article
+                    key={node.id}
+                    className="file-card"
+                    role="listitem"
+                    aria-setsize={rows.length}
+                    aria-posinset={item.index * gridColumns + columnIndex + 1}
+                  >
+                    <div className="file-card-top">
+                      <FileIcon node={node} />
+                      <div className="file-card-actions">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="star-control"
+                          aria-label={`${node.name}を${node.starred ? "スターから外す" : "スターに追加"}`}
+                          aria-pressed={!!node.starred}
+                          disabled={starPending.has(node.id)}
+                          onClick={() => toggleStar(node)}
+                        >
+                          <Star size={17} fill={node.starred ? "currentColor" : "none"} />
+                        </Button>
+                        {!readOnly && (!node.ownerId || node.ownerId === currentUserId) && (
+                          <NodeMenu node={node} act={act} open={() => open(node)} />
+                        )}
+                      </div>
+                    </div>
+                    <button className="file-name" onClick={() => open(node)} title={node.name}>
+                      {node.name}
+                    </button>
+                    <p>
+                      {node.kind === "folder" ? "フォルダー" : formatBytes(node.size)}
+                      <span>{new Date(node.updatedAt).toLocaleDateString("ja-JP")}</span>
+                    </p>
+                  </article>
+                ))}
             </div>
-            <button className="file-name" onClick={() => open(node)} title={node.name}>
-              {node.name}
-            </button>
-            <p>
-              {node.kind === "folder" ? "フォルダー" : formatBytes(node.size)}
-              <span>{new Date(node.updatedAt).toLocaleDateString("ja-JP")}</span>
-            </p>
-          </article>
-        ))}
+          ))}
+        </div>
       </div>
     );
   return (
@@ -1031,8 +1100,10 @@ export function App() {
   const audio = pathname === "/audio";
   const bookshelf = pathname === "/bookshelf";
   const video = pathname === "/video";
+  const encryption = pathname === "/encryption";
   const sharing = pathname === "/shares";
   const webDavSettings = pathname === "/settings/webdav";
+  const adminFiles = pathname === "/admin/files";
   const sharedMatch = /^\/shared\/([^/]+)(?:\/([^/]+))?$/.exec(pathname);
   const shared = !!sharedMatch;
   const userState = recent || starred;
@@ -1044,8 +1115,10 @@ export function App() {
     !audio &&
     !bookshelf &&
     !video &&
+    !encryption &&
     !sharing &&
-    !webDavSettings;
+    !webDavSettings &&
+    !adminFiles;
   const personalFiles = files && !shared;
   const sharedMounts = useQuery({
     queryKey: ["shared-with-me", me?.id, me?.epoch],
@@ -1063,7 +1136,12 @@ export function App() {
       : sharedMount?.provenance.recipientVersion;
   const [view, setView] = useState<"list" | "grid">("list");
   const [filter, setFilter] = useState("");
-  const [searchTerm, setSearchTerm] = useState<{ scopeId: string; query: string } | null>(null);
+  const [searchMode, setSearchMode] = useState<"name" | "audio">("name");
+  const [searchTerm, setSearchTerm] = useState<{
+    scopeId: string;
+    query: string;
+    mode: "name" | "audio";
+  } | null>(null);
   const searching = files && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
   const [statsScope, setStatsScope] = useState<string | null>(null);
@@ -1099,10 +1177,12 @@ export function App() {
       me?.epoch,
       parentId,
       searchTerm?.query,
+      searchTerm?.mode,
       sharedMount?.shareVersion,
       mountAccessVersion,
     ],
-    queryFn: ({ pageParam, signal }) => api.search(parentId, searchTerm!.query, pageParam, signal),
+    queryFn: ({ pageParam, signal }) =>
+      api.search(parentId, searchTerm!.query, pageParam, signal, searchTerm!.mode),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
     enabled: !!me && files && !!parentId && (!shared || !!sharedMount) && searching,
@@ -1143,6 +1223,7 @@ export function App() {
       "shares",
       "share-groups",
       "user-nodes",
+      "encrypted-children",
     ])
       void query.resetQueries({ queryKey: [key] });
     void query.invalidateQueries({ queryKey: ["account"] });
@@ -1151,7 +1232,19 @@ export function App() {
     uploads.onCompleted = refresh;
   }, [query]);
   useEffect(() => {
+    clearEncryptionSession();
+    void clearClientMedia().catch(() => undefined);
+    const remove = installClientMediaPagehideCleanup();
+    return () => {
+      remove();
+      clearEncryptionSession();
+      void clearClientMedia().catch(() => undefined);
+    };
+  }, [me?.id, me?.epoch]);
+  useEffect(() => {
     if (authExpired) {
+      clearEncryptionSession();
+      void clearClientMedia().catch(() => undefined);
       api.clear();
       void uploads.clear();
       sessionStorage.removeItem(PENDING_KEY);
@@ -1199,6 +1292,8 @@ export function App() {
     channel.current = bc;
     bc.onmessage = (event) => {
       if (event.data === "logout") {
+        clearEncryptionSession();
+        void clearClientMedia().catch(() => undefined);
         api.clear();
         query.clear();
         sessionStorage.removeItem(PENDING_KEY);
@@ -1211,6 +1306,17 @@ export function App() {
     };
   }, [query]);
   const act = (next: Action) => {
+    if (
+      "node" in next &&
+      next.node.kind === "file" &&
+      isEncryptedFile(next.node) &&
+      ["rename", "share", "zip", "overwrite"].includes(next.kind)
+    ) {
+      setNotice(
+        "暗号化ファイルは「暗号化ファイル」画面で復号してください。名前の変更・共有・上書きはまだ対応していません。",
+      );
+      return;
+    }
     if (sessionStorage.getItem(PENDING_KEY)) {
       setNotice("未確認の操作があります。結果を確認してから続けてください。");
       return;
@@ -1246,6 +1352,10 @@ export function App() {
       void navigation
         .then(() => recordOpen(node.id))
         .catch((error) => setNotice(errorMessage(error)));
+      return;
+    }
+    if (isEncryptedFile(node)) {
+      void navigate({ to: "/encryption" });
       return;
     }
     if (sharedMount && !sharedMount.actions.includes("download")) {
@@ -1290,6 +1400,8 @@ export function App() {
   };
   const logout = async () => {
     setLoggingOut(true);
+    clearEncryptionSession();
+    void clearClientMedia().catch(() => undefined);
     try {
       await api.logout();
       channel.current?.postMessage("logout");
@@ -1333,29 +1445,33 @@ export function App() {
       ? path.data?.path.slice(sharedRootIndex + 1)
       : []
     : path.data?.path.slice(1);
-  const title = trash
-    ? "ごみ箱"
-    : recent
-      ? "最近使った項目"
-      : starred
-        ? "スター付き"
-        : sharing
-          ? "内部共有"
-          : shared
-            ? sharedMount && !sharedPathInvalid
-              ? path.data?.path.at(-1)?.name || sharedMount.root.name
-              : "共有フォルダー"
-            : gallery
-              ? "ギャラリー"
-              : audio
-                ? "オーディオ"
-                : bookshelf
-                  ? "本棚"
-                  : video
-                    ? "動画"
-                    : webDavSettings
-                      ? "WebDAV 設定"
-                      : path.data?.path.at(-1)?.name || "マイドライブ";
+  const title = encryption
+    ? "暗号化ファイル"
+    : trash
+      ? "ごみ箱"
+      : recent
+        ? "最近使った項目"
+        : starred
+          ? "スター付き"
+          : sharing
+            ? "内部共有"
+            : shared
+              ? sharedMount && !sharedPathInvalid
+                ? path.data?.path.at(-1)?.name || sharedMount.root.name
+                : "共有フォルダー"
+              : gallery
+                ? "ギャラリー"
+                : audio
+                  ? "オーディオ"
+                  : bookshelf
+                    ? "本棚"
+                    : video
+                      ? "動画"
+                      : webDavSettings
+                        ? "WebDAV 設定"
+                        : adminFiles
+                          ? "全利用者のファイル"
+                          : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1422,6 +1538,11 @@ export function App() {
             動画
             <span className="nav-dot" />
           </Link>
+          <Link to="/encryption" className={encryption ? "nav-link active" : "nav-link"}>
+            <HardDrive size={19} />
+            暗号化ファイル
+            <span className="nav-dot" />
+          </Link>
           <Link to="/trash" className={trash ? "nav-link active" : "nav-link"}>
             <Trash2 size={19} />
             ごみ箱
@@ -1431,6 +1552,13 @@ export function App() {
             WebDAV 設定
             <span className="nav-dot" />
           </Link>
+          {me?.role === "app_admin" && (
+            <Link to="/admin/files" className={adminFiles ? "nav-link active" : "nav-link"}>
+              <UsersRound size={19} />
+              全利用者のファイル
+              <span className="nav-dot" />
+            </Link>
+          )}
         </nav>
         <div className="sidebar-bottom">
           <section className="storage-card" aria-label="ストレージ使用状況">
@@ -1469,7 +1597,13 @@ export function App() {
               <Cloud size={17} />
             </span>
             <span>
-              {sharing || shared ? "内部共有" : webDavSettings ? "設定" : "パーソナルスペース"}
+              {sharing || shared
+                ? "内部共有"
+                : webDavSettings
+                  ? "設定"
+                  : adminFiles
+                    ? "管理者"
+                    : "パーソナルスペース"}
             </span>
             <ChevronRight size={14} />
             <span className="muted">{title}</span>
@@ -1621,6 +1755,12 @@ export function App() {
                 WebDAV 設定
               </span>
             )}
+            {adminFiles && (
+              <span>
+                <ChevronRight size={13} />
+                全利用者のファイル
+              </span>
+            )}
           </div>
           <div className="page-heading">
             <div>
@@ -1645,7 +1785,9 @@ export function App() {
                                   ? "YOUR VIDEOS"
                                   : webDavSettings
                                     ? "PRIVATE ACCESS"
-                                    : "YOUR FILES, YOUR SPACE"}
+                                    : adminFiles
+                                      ? "ADMINISTRATOR"
+                                      : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
@@ -1669,7 +1811,9 @@ export function App() {
                                   ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
                                   : webDavSettings
                                     ? "専用の認証情報で、WebDAV クライアントのアクセスを限定できます。"
-                                    : "大切なファイルを、いつでも使いやすく。"}
+                                    : adminFiles
+                                      ? "利用者を選んでファイルを閲覧できます。閲覧は記録され、編集操作はありません。"
+                                      : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
             {me && personalFiles && (
@@ -1744,6 +1888,12 @@ export function App() {
               </Button>
             </div>
           )}
+          {me?.clientEncryptionRequired && personalFiles && (
+            <p className="notice">
+              新規アップロードには端末の暗号化鍵が必要です。
+              <Link to="/encryption">暗号化設定・鍵の解除</Link>
+            </p>
+          )}
           {!me ? (
             <div className="empty-state">
               <Cloud size={40} />
@@ -1760,6 +1910,10 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : encryption ? (
+            <EncryptedFiles key={`${me.id}:${me.epoch}`} account={me} />
+          ) : adminFiles ? (
+            <AllUserFiles account={me} />
           ) : sharing ? (
             <InternalShares account={me} />
           ) : webDavSettings ? (
@@ -1848,9 +2002,11 @@ export function App() {
                       event.preventDefault();
                       if (!trash && !userState) {
                         const term = filter.trim();
-                        setSearchTerm(term ? { scopeId: parentId, query: term } : null);
+                        setSearchTerm(
+                          term ? { scopeId: parentId, query: term, mode: searchMode } : null,
+                        );
                         void query.resetQueries({
-                          queryKey: ["search", me.id, me.epoch, parentId, term],
+                          queryKey: ["search", me.id, me.epoch, parentId, term, searchMode],
                         });
                       }
                     }}
@@ -1870,6 +2026,19 @@ export function App() {
                         onChange={(event) => setFilter(event.target.value)}
                       />
                     </label>
+                    {!trash && !userState && (
+                      <select
+                        className="search-mode"
+                        aria-label="検索対象"
+                        value={searchMode}
+                        onChange={(event) =>
+                          setSearchMode(event.target.value === "audio" ? "audio" : "name")
+                        }
+                      >
+                        <option value="name">通常</option>
+                        <option value="audio">音声ファイル</option>
+                      </select>
+                    )}
                     {!trash && !userState && (
                       <Button type="submit" size="small">
                         検索
@@ -1901,7 +2070,10 @@ export function App() {
               </div>
               {searching && (
                 <div className="search-summary" role="status">
-                  <span>「{searchTerm.query}」の検索結果 · サブフォルダーも含む</span>
+                  <span>
+                    「{searchTerm.query}」の検索結果
+                    {searchTerm.mode === "audio" && " · 音声ファイル"} · サブフォルダーも含む
+                  </span>
                   <Button
                     size="small"
                     variant="ghost"

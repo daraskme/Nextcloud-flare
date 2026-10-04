@@ -105,6 +105,27 @@ it("reserves once, creates R2 once, fixes geometry, and arms the first idle alar
   });
 });
 
+it("blocks a preexisting plaintext multipart reservation after encryption is required", async () => {
+  const f = await fixture(3, false);
+  const required = { ...f.app, CLIENT_ENCRYPTION_REQUIRED: "true" };
+  await expect(createMultipartUpload(required, f.input, f.capabilities)).rejects.toThrow(
+    "encryption_required",
+  );
+  await expect(write(f, required)).rejects.toThrow("encryption_required");
+  await expect(
+    completeMultipartUpload(
+      required,
+      f.principal,
+      f.created.id,
+      f.created.capability,
+      f.capabilities,
+      "required-complete",
+      [],
+    ),
+  ).rejects.toThrow("encryption_required");
+  expect((await uploadRow(env.DB, f.created.id))?.state).toBe("created");
+});
+
 it("streams a part into real R2, mirrors its hash, and never presents it as a whole-object hash", async () => {
   const f = await fixture();
   expect(await write(f)).toMatchObject({ disposition: "completed" });

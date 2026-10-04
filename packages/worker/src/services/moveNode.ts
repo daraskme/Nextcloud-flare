@@ -19,6 +19,7 @@ import {
   operationIntent,
   operationRow,
 } from "../jobs/operations";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_MOVE_MAX_NODES = 1_000;
@@ -393,7 +394,11 @@ function moveStatements(
     },
     assertOneChange,
   );
-  return statements;
+  return [
+    unencryptedSubtreeAssertion(source.node.id, source.node.space_id),
+    ...(overwrite ? [unencryptedSubtreeAssertion(overwrite.node.id, overwrite.node.space_id)] : []),
+    ...statements,
+  ];
 }
 
 export async function moveNode(
@@ -453,6 +458,7 @@ export async function moveNode(
     source.node.space_id !== destination.spaceId
   )
     throw new Error("dav_cross_space_move");
+  await assertNoEncryptedSubtree(env.DB, request.nodeId, request.spaceId);
   const manifest = await moveManifest(env.DB, request.nodeId, request.spaceId);
   const overwrite = request.overwriteTargetId
     ? await authorizeNode(env.DB, request.principal, {
@@ -468,6 +474,7 @@ export async function moveNode(
       overwrite.node.id === source.node.id)
   )
     throw new Error("invalid_move_authorization");
+  if (overwrite) await assertNoEncryptedSubtree(env.DB, overwrite.node.id, request.spaceId);
   const overwriteManifest = overwrite
     ? await moveManifest(env.DB, overwrite.node.id, request.spaceId)
     : Object.freeze({ ids: [] as string[], bytes: 0 });

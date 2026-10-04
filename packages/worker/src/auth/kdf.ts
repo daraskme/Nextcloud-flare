@@ -22,6 +22,11 @@ export class KdfExecutor {
   #active = false;
   readonly #waiting: Waiter[] = [];
 
+  constructor(private readonly maxWaiting = KDF_QUEUE_LIMIT) {
+    if (!Number.isInteger(maxWaiting) || maxWaiting < 0 || maxWaiting > KDF_QUEUE_LIMIT)
+      throw new Error("invalid_kdf_queue_limit");
+  }
+
   async run<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     await this.#acquire(signal);
     try {
@@ -41,7 +46,7 @@ export class KdfExecutor {
       this.#active = true;
       return Promise.resolve();
     }
-    if (this.#waiting.length >= KDF_QUEUE_LIMIT) return Promise.reject(new KdfUnavailableError());
+    if (this.#waiting.length >= this.maxWaiting) return Promise.reject(new KdfUnavailableError());
     return new Promise<void>((resolve, reject) => {
       const abort = () => {
         const index = this.#waiting.indexOf(waiter);
@@ -86,6 +91,8 @@ export class KdfExecutor {
   }
 }
 
-const executor = new KdfExecutor();
+// Request contexts must not wait on a promise owned by another fetch event.
+// A busy KDF is retryable; the active native call retains the slot until it settles.
+const executor = new KdfExecutor(0);
 export const runKdf = <T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> =>
   executor.run(action, signal);

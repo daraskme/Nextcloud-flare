@@ -57,7 +57,13 @@ function id3(title: string, artist: string, album: string): Uint8Array {
 
 async function fixture(
   content: Uint8Array,
-  options: { copy?: boolean; put?: boolean; storage?: boolean; storageEtag?: string } = {},
+  options: {
+    copy?: boolean;
+    put?: boolean;
+    storage?: boolean;
+    storageEtag?: string;
+    uploadEvent?: "created" | "updated";
+  } = {},
 ) {
   const prefix = crypto.randomUUID();
   const f = foundationFixture(prefix, Date.now() - 1000);
@@ -138,16 +144,21 @@ async function fixture(
         f.ids.user,
         f.ids.credential,
         f.ids.space,
-        options.copy ? "node.copy" : "dav.put",
+        options.copy ? "node.copy" : options.uploadEvent ? "upload.complete" : "dav.put",
         permit.permit_id,
         permit.expires_at,
         permit.expires_at,
         JSON.stringify(
           options.copy
             ? { parentId: f.ids.folder, sourceNodeId }
-            : { parentId: f.ids.folder, nodeId: f.ids.file },
+            : options.uploadEvent === "created"
+              ? { parentId: f.ids.folder, uploadId: `${prefix}-upload` }
+              : { parentId: f.ids.folder, nodeId: f.ids.file },
         ),
-        JSON.stringify({ status: options.copy ? 201 : 204, nodeId: f.ids.file }),
+        JSON.stringify({
+          status: options.copy || options.uploadEvent === "created" ? 201 : 204,
+          nodeId: f.ids.file,
+        }),
       ],
     },
     {
@@ -156,7 +167,12 @@ async function fixture(
     },
     {
       sql: "INSERT INTO outbox(outbox_id,op_id,kind,payload_ref,state,epoch,created_at,updated_at) VALUES(?,?,?,?,'pending',1,1,1)",
-      values: [eventId, eventId, options.copy ? "node.created" : "node.updated", f.ids.file],
+      values: [
+        eventId,
+        eventId,
+        options.copy || options.uploadEvent === "created" ? "node.created" : "node.updated",
+        f.ids.file,
+      ],
     },
   ]);
   await env.DB.prepare("UPDATE permits SET state='released' WHERE permit_id=?")
@@ -202,6 +218,11 @@ it("indexes byte-recognized audio metadata atomically and accepts duplicate deli
   expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
   expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
   expect(
+    await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+      .bind(f.blob)
+      .first("mime_sniffed"),
+  ).toBe("audio/mpeg");
+  expect(
     await env.DB.prepare(
       "SELECT blob_id,generator_version,codec,title_extracted,artist_extracted,album_extracted,duration_ms,track_number,disc_number FROM node_audio WHERE node_id=?",
     )
@@ -232,6 +253,28 @@ it("indexes byte-recognized audio metadata atomically and accepts duplicate deli
   ).toBe(1);
 });
 
+it.each(["created", "updated"] as const)(
+  "classifies %s upload completion from verified media bytes",
+  async (uploadEvent) => {
+    const f = await fixture(id3("Uploaded", "Artist", "Album"), { uploadEvent });
+    try {
+      expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+      expect(
+        await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+          .bind(f.blob)
+          .first("mime_sniffed"),
+      ).toBe("audio/mpeg");
+      expect(
+        await env.DB.prepare("SELECT codec FROM node_audio WHERE node_id=?")
+          .bind(f.file)
+          .first("codec"),
+      ).toBe("mp3");
+    } finally {
+      await env.BLOBS.delete(f.key);
+    }
+  },
+);
+
 it.each([
   ["unsupported", new Uint8Array(256)],
   [
@@ -244,6 +287,11 @@ it.each([
     const f = await fixture(content);
     await seedStaleMetadata(f);
     expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+    expect(
+      await env.DB.prepare("SELECT mime_sniffed FROM blobs WHERE id=?")
+        .bind(f.blob)
+        .first("mime_sniffed"),
+    ).toBeNull();
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM node_audio WHERE node_id=?")
         .bind(f.file)

@@ -19,22 +19,27 @@ export async function handleSearchHttp(
     return problem(404, "not_found");
   if (!cursors) return problem(503, "not_ready");
   if (
-    [...url.searchParams.keys()].some((key) => !["scopeId", "q", "cursor"].includes(key)) ||
-    ["scopeId", "q", "cursor"].some((key) => url.searchParams.getAll(key).length > 1)
+    [...url.searchParams.keys()].some((key) => !["scopeId", "q", "cursor", "mode"].includes(key)) ||
+    ["scopeId", "q", "cursor", "mode"].some((key) => url.searchParams.getAll(key).length > 1)
   )
     return problem(400, "bad_request");
   const scopeId = url.searchParams.get("scopeId") ?? "";
   const q = url.searchParams.get("q") ?? "";
   const cursor = url.searchParams.get("cursor") ?? undefined;
+  const mode = url.searchParams.get("mode");
   if (
     !/^[A-Za-z0-9_-]{1,128}$/.test(scopeId) ||
+    (mode !== null && mode !== "audio") ||
     (cursor !== undefined && (!cursor || cursor.length > 4096))
   )
     return problem(400, "bad_request");
   try {
-    return Response.json(await searchNodes(env.DB, principal, scopeId, q, cursors, cursor), {
-      headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
-    });
+    return Response.json(
+      await searchNodes(env.DB, principal, scopeId, q, cursors, cursor, mode ?? "name"),
+      {
+        headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      },
+    );
   } catch (error) {
     if (error instanceof Error && error.message === "invalid_search_query")
       return problem(400, "bad_request");

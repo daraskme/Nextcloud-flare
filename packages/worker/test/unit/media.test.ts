@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type Av1Configuration,
   av1CodecString,
@@ -7,10 +10,16 @@ import {
   playbackSupport,
 } from "@next-cloud-flare/shared/media";
 import { expect, it, vi } from "vitest";
+import { inspectAvif } from "../../src/media/images/avif";
 import { inspectImage } from "../../src/media/images/metadata";
 import { generateThumbnail } from "../../src/media/images/thumbnail";
 import { MEDIA_SNIFF_BYTES, sniffMediaContainer } from "../../src/media/sniff";
 import { animatedPngPrefix, tinyPng } from "../fixtures/images";
+
+const avifFixturePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../fixtures/avif-still-16x12.avif",
+);
 
 function ftyp(major: string, compatible: string[] = [], extended = false) {
   const header = extended ? 16 : 8;
@@ -191,8 +200,39 @@ it("persists only bounded dimensions for a statically proven still image", async
   expect(await inspectImage({ info } as unknown as ImagesBinding, bytes)).toEqual({
     width: 1,
     height: 1,
+    mime: "image/png",
   });
   expect(info).toHaveBeenCalledOnce();
+});
+
+it("reads a real AVIF still without requiring the image-info adapter", async () => {
+  const bytes = new Uint8Array(await readFile(avifFixturePath));
+  const info = vi.fn(() => {
+    throw new Error("avif_decoder_unavailable");
+  });
+
+  expect(await inspectImage({ info } as unknown as ImagesBinding, bytes)).toEqual({
+    width: 16,
+    height: 12,
+    mime: "image/avif",
+  });
+  expect(info).not.toHaveBeenCalled();
+});
+
+it("rejects truncated and structurally mismatched AVIF primary items", async () => {
+  const valid = new Uint8Array(await readFile(avifFixturePath));
+  const badExtent = valid.slice();
+  // The fixture iloc item extent offset points to the mdat payload.
+  badExtent[0x83] = 0xff;
+  const badCodec = valid.slice();
+  badCodec[0xe9] = 0;
+  const badWidth = valid.slice();
+  badWidth[0xce] = 0;
+  const badObu = valid.slice();
+  badObu[0x122] = 0xff;
+  expect(inspectAvif(valid)).toEqual({ width: 16, height: 12 });
+  for (const bytes of [valid.subarray(0, valid.length - 1), badExtent, badCodec, badWidth, badObu])
+    expect(inspectAvif(bytes)).toBeNull();
 });
 
 it("rejects animation before invoking the Images binding", async () => {

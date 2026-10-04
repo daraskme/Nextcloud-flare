@@ -1,5 +1,6 @@
 import { LIMITS } from "@next-cloud-flare/shared/limits";
 import type { Av1Configuration } from "@next-cloud-flare/shared/media";
+import { parseOpusHead, parseOpusOgg } from "../audio/opusOgg";
 import { MEDIA_SNIFF_BYTES, sniffMediaContainer } from "../sniff";
 
 export const VIDEO_METADATA_GENERATOR = "video-av1-metadata-v1";
@@ -23,6 +24,14 @@ export interface VideoObjectSource {
 export type VideoInspection =
   | { readonly kind: "metadata"; readonly metadata: VideoMetadata }
   | { readonly kind: "not-video" | "unsupported" | "malformed" | "oversized" | "transient" };
+
+export type OpusInspection =
+  | {
+      readonly kind: "metadata";
+      readonly container: "ogg" | "webm" | "mp4";
+      readonly durationMs: number | null;
+    }
+  | { readonly kind: "unsupported" | "malformed" | "oversized" | "transient" };
 
 class InvalidVideo extends Error {
   constructor(readonly kind: "unsupported" | "malformed" | "oversized") {
@@ -156,6 +165,7 @@ function mp4Duration(bytes: Uint8Array, mvhd: Box): number | null {
 function mp4SampleEntry(
   bytes: Uint8Array,
   trak: Box,
+  strictOpus = false,
 ):
   | {
       kind: "video";
@@ -186,6 +196,26 @@ function mp4SampleEntry(
   if (!entry || entries.length !== 1) throw new InvalidVideo("malformed");
   if (handler === "soun") {
     if (entry.type !== "Opus") throw new InvalidVideo("unsupported");
+    if (strictOpus) {
+      // The Opus sample entry must carry a valid DecoderSpecificInfo box.
+      const dops = boxes(bytes, entry.payload + 28, entry.end).filter((box) => box.type === "dOps");
+      if (entry.payload + 28 > entry.end || dops.length !== 1) throw new InvalidVideo("malformed");
+      const data = bytes.subarray(dops[0]!.payload, dops[0]!.end);
+      const channels = data[1] ?? 0;
+      const family = data[10];
+      if (data.length < 11 || data[0] !== 0 || channels === 0) throw new InvalidVideo("malformed");
+      if (family === 0) {
+        if (channels > 2 || data.length !== 11) throw new InvalidVideo("malformed");
+      } else if (family === 1) {
+        if (
+          channels > 8 ||
+          data.length !== 13 + channels ||
+          !data[11] ||
+          (data[12] ?? 0) > data[11]!
+        )
+          throw new InvalidVideo("malformed");
+      } else throw new InvalidVideo("unsupported");
+    }
     return { kind: "audio", codec: "opus" };
   }
   if (entry.type !== "av01" || entry.payload + 78 > entry.end)
@@ -232,6 +262,25 @@ function parseMp4(bytes: Uint8Array): VideoMetadata {
     configuration: video.configuration,
     audio,
   };
+}
+
+function parseOpusMp4(bytes: Uint8Array): number | null {
+  const top = boxes(bytes, 0, bytes.length);
+  const moovs = top.filter((box) => box.type === "moov");
+  if (!top.some((box) => box.type === "ftyp") || moovs.length !== 1)
+    throw new InvalidVideo("malformed");
+  const moov = moovs[0]!;
+  const mvhd = child(moov, bytes, "mvhd");
+  if (!mvhd) throw new InvalidVideo("malformed");
+  let audio = false;
+  for (const trak of boxes(bytes, moov.payload, moov.end).filter((box) => box.type === "trak")) {
+    const entry = mp4SampleEntry(bytes, trak, true);
+    if (entry.kind === "video" || (entry.kind === "audio" && audio))
+      throw new InvalidVideo("unsupported");
+    if (entry.kind === "audio") audio = true;
+  }
+  if (!audio) throw new InvalidVideo("unsupported");
+  return mp4Duration(bytes, mvhd);
 }
 
 function vint(
@@ -365,6 +414,113 @@ function parseWebm(bytes: Uint8Array): VideoMetadata {
     configuration: video.configuration,
     audio,
   };
+}
+
+function parseOpusWebm(bytes: Uint8Array): number | null {
+  const top = elements(bytes, 0, bytes.length);
+  if (top[0]?.id !== 0x1a45dfa3) throw new InvalidVideo("malformed");
+  const segment = top.find((item) => item.id === 0x18538067);
+  if (!segment) throw new InvalidVideo("malformed");
+  const segmentItems = segmentMetadataElements(bytes, segment);
+  const tracks = segmentItems.find((item) => item.id === 0x1654ae6b);
+  if (!tracks) throw new InvalidVideo("malformed");
+  let audio = false;
+  for (const track of elements(bytes, tracks.payload, tracks.end).filter(
+    (item) => item.id === 0xae,
+  )) {
+    const type = element(track, bytes, 0x83);
+    const codec = element(track, bytes, 0x86);
+    if (!type || !codec) throw new InvalidVideo("malformed");
+    const trackType = uint(bytes, type.payload, type.end - type.payload);
+    const codecId = textDecoder.decode(bytes.subarray(codec.payload, codec.end));
+    if (trackType === 1 || (trackType === 2 && (audio || codecId !== "A_OPUS")))
+      throw new InvalidVideo("unsupported");
+    if (trackType === 2) {
+      const privateData = element(track, bytes, 0x63a2);
+      if (!privateData) throw new InvalidVideo("malformed");
+      try {
+        parseOpusHead(bytes.subarray(privateData.payload, privateData.end));
+      } catch {
+        throw new InvalidVideo("malformed");
+      }
+      audio = true;
+    }
+  }
+  if (!audio) throw new InvalidVideo("unsupported");
+  const info = segmentItems.find((item) => item.id === 0x1549a966) ?? null;
+  const scaleElement = info ? element(info, bytes, 0x2ad7b1) : null;
+  const durationElement = info ? element(info, bytes, 0x4489) : null;
+  const scale = scaleElement
+    ? uint(bytes, scaleElement.payload, scaleElement.end - scaleElement.payload)
+    : 1_000_000;
+  const duration = durationElement ? float(bytes, durationElement) : null;
+  const durationMs =
+    duration !== null && Number.isFinite(duration) && duration >= 0
+      ? Math.round((duration * scale) / 1_000_000)
+      : null;
+  return durationMs !== null && Number.isSafeInteger(durationMs) ? durationMs : null;
+}
+
+/** Inspect an audio-only Opus container using the same bounded R2 identity checks as AV1. */
+export async function inspectOpusObject(
+  bucket: R2Bucket,
+  source: VideoObjectSource,
+  deadline: number,
+): Promise<OpusInspection> {
+  if (
+    !source.key ||
+    source.key.length > 1024 ||
+    !Number.isSafeInteger(source.size) ||
+    source.size <= 0 ||
+    !source.r2Etag ||
+    source.r2Etag.length > 256 ||
+    !current(deadline)
+  )
+    return { kind: "transient" };
+  try {
+    const sniffPrefix = await range(
+      bucket,
+      source,
+      0,
+      Math.min(source.size, MEDIA_SNIFF_BYTES),
+      deadline,
+    );
+    if (!sniffPrefix) return { kind: "transient" };
+    const sniffed = sniffMediaContainer(sniffPrefix);
+    if (!sniffed || !["ogg", "mp4", "webm"].includes(sniffed.container))
+      return { kind: "unsupported" };
+    if (sniffed.container === "ogg") {
+      parseOpusOgg(sniffPrefix);
+      return { kind: "metadata", container: "ogg", durationMs: null };
+    }
+    const prefix =
+      source.size <= MEDIA_SNIFF_BYTES
+        ? sniffPrefix
+        : await range(bucket, source, 0, Math.min(source.size, VIDEO_METADATA_BYTES), deadline);
+    if (!prefix) return { kind: "transient" };
+    if (sniffed.container === "webm")
+      return { kind: "metadata", container: "webm", durationMs: parseOpusWebm(prefix) };
+    let window = mp4MetadataWindow(prefix);
+    if (!window && source.size > VIDEO_METADATA_BYTES) {
+      const tail = await range(
+        bucket,
+        source,
+        source.size - VIDEO_METADATA_BYTES,
+        VIDEO_METADATA_BYTES,
+        deadline,
+      );
+      if (!tail) return { kind: "transient" };
+      const moov = tailMoov(tail);
+      if (!moov) return { kind: "oversized" };
+      window = new Uint8Array(8 + moov.length);
+      window.set([0, 0, 0, 8, 102, 116, 121, 112]);
+      window.set(moov, 8);
+    }
+    if (!window) return { kind: "malformed" };
+    return { kind: "metadata", container: "mp4", durationMs: parseOpusMp4(window) };
+  } catch (error) {
+    return { kind: error instanceof InvalidVideo ? error.kind : "malformed" };
+  }
 }
 
 function validateDimensions(width: number, height: number): void {

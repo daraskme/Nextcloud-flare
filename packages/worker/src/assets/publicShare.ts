@@ -4,6 +4,7 @@ import { publicAssets } from "./publicManifest";
 
 const SHARE = /^\/s(?:\/[A-Za-z0-9_-]{1,128})?$/;
 const ASSETS = new Set<string>(publicAssets);
+const CLIENT_MEDIA_WORKER = "/public-assets/client-media-worker.js";
 
 export function publicShareAssetRoute(request: Request): boolean {
   const path = new URL(request.url).pathname;
@@ -19,7 +20,13 @@ export async function servePublicShare(request: Request, env: Env): Promise<Resp
   const resource = await env.ASSETS.fetch(new Request(url, { method: request.method }));
   if (!resource.ok) return problem(404, "not_found");
   const headers = new Headers(resource.headers);
-  headers.set("Cache-Control", shell ? "public, no-store" : "public, max-age=31536000, immutable");
+  headers.set(
+    "Cache-Control",
+    shell || url.pathname === CLIENT_MEDIA_WORKER
+      ? "public, no-store"
+      : "public, max-age=31536000, immutable",
+  );
+  if (url.pathname === CLIENT_MEDIA_WORKER) headers.set("Service-Worker-Allowed", "/");
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Frame-Options", "DENY");

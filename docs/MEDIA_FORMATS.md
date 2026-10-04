@@ -36,8 +36,68 @@ server derivative は既存の WebP / metadata 除去 / budget / claim fence に
 ## 実装と残る確認
 
 - 実装済み: bounded container sniff、AV1/Opus の MIME/codec string、native probe adapter、AVIF 原本/derivative 選択。単体20件。
-- 接続済み: private content route、track/metadata parser、Gallery/lightbox、Audio/Video player、Bookshelf/EPUB reader、public Gallery/Audio metadataとthumbnail/audio/video ticket delivery、public EPUB metadata/page/entry。実codec変換、複数browserの実ファイルE2E、public ZIPとmedia UIは後続とする。
+- 接続済み: private content route、track/metadata parser、Gallery/lightbox、Audio/Video player、Bookshelf/EPUB reader、public Gallery/Audio/Bookshelf/Video UIとthumbnail/audio/video ticket delivery、public EPUB metadata/page/entry、public/private ZIP、media reading/playback resume state。private Galleryはthumb/原本ticketを画面切替・close時に取消す。
+- 2026-10-03: 共通outboxからOpus音声専用のOgg/WebM/MP4解析を接続した。Oggは先頭識別pageのCRCとOpusHead、WebMはCodecPrivate、MP4はdOpsをboundedに検査する。MP3/Opus/AV1の解析成功時にcurrent projectionとblob MIMEを確定し、ブラウザーupload時のoctet-streamがAudio一覧やtrack配信を妨げる問題を修正した。専用管理画面もnative audio/video previewを使う。
 - 必須 fixture: AVIF 静止画/sequence、AV1 MP4/WebM（音声なし/Opus付き、8/10-bit）、Opus Ogg/WebM/MP4、偽装拡張子/truncated header、seek/Range、再生不可表示、AVIF derivative unavailable 時の原本表示。
+- AVIF静止画はboundedなprimary AV1 item・extent・property・OBUの検査から寸法を取得する。ImagesのAVIF入力対応に依存せず、検証済みMIMEと画像metadataを同じ認可・current blob・outbox fence内で保存する。thumbnail生成に失敗しても、認可された原本の詳細表示を利用できる。
+- 音声・動画の実再生用に、オリジナルの合成音・テストパターンから15秒のMP3、Opus Ogg/WebM/MP4、AV1+Opus WebM/MP4を追加した。生成方法は [fixture README](../packages/worker/test/fixtures/README-media-e2e.md) を参照する。自動変換は行わず、保存済み原本を認可済みcontent originから再生する。
 - Chrome/Edge/Firefox/Safari、desktop/mobile の実行時可否を support matrix に記録する。browser 名だけで再生成功としない。
 
+## 実再生の確認結果（2026-10-03）
+
+NixOS の Chrome 153.0.8010.52 を Playwright から起動し、隔離HTTPSのapp/content両origin、実Worker・D1・R2 fixtureで確認した。一般利用者としてupload・解析・一覧表示を行い、通常プレイヤーと他利用者を閲覧する管理者プレビューの両方を試験している。
+
+| 原本形式 | 再生とシーク後の継続 | 認証付きRangeのbyte一致 |
+|---|---|---|
+| MP3 | 成功 | 成功 |
+| Opus / Ogg | 成功 | 成功 |
+| Opus / WebM | 成功 | 成功 |
+| Opus / MP4 | 成功 | 成功 |
+| AV1 + Opus / WebM | 成功 | 成功 |
+| AV1 + Opus / MP4 | 成功 | 成功 |
+
+音声はdurationとcurrentTimeの進行、動画はさらに実デコードしたframe数の増加を検査し、8秒へのseek後も進行することを確認した。Rangeは206、Content-Range、返却byte列を原本と照合した。管理者のMP3ダウンロードではattachment指定と原本全体のbyte一致も確認した。音声のみのWebM/MP4は動画一覧に混在させない。
+
+この結果は15秒の合成fixtureに対するローカル実ブラウザー試験であり、実CloudflareのAccess/Queuesを含む試験ではない。AV1はMain 8-bit 32×24、Opusはmono 48 kHz。10/12-bit、高解像度・長時間、Firefox/Safari/Edge、mobile、音声出力機器を通した聴取は未確認。原本の自動再エンコードは行わない。
+
+### 2026-10-04 の追加確認
+
+NixOSのChromeで、非公開の実ファイルをAVIF、Opus/MP4、AV1 Main 10-bit + Opus/MP4へ変換し、ローカルと実Cloudflare stagingの両方からupload・解析・表示した。stagingは本人のAccessログインと実Queues/R2/content originを使用し、専用の非公開フォルダーに保存した。
+
+| 対象 | 実Cloudflareでの確認 |
+|---|---|
+| AVIF静止画 | Gallery一覧、原本680×383のデコード、21,408 bytesの全Range/SHA-256一致 |
+| Opus/MP4音声 | 48 kHz stereo、225.251秒、先頭・112秒・220秒からの再生進行、4,749,721 bytesの全Range/SHA-256一致 |
+| AV1+Opus/MP4動画 | 1920×1080、10-bit、24fps、247.743秒、先頭・120秒・240秒からのデコードframe増加、60,161,053 bytesの全Range/SHA-256一致 |
+
+原本は保存したまま別ファイルへ変換した。音声はOpus 160 kbps VBR、動画はSVT-AV1 CRF 36/preset 6・5秒keyframe・faststartを採用した。動画は全5,945 frameをデコードし、24 frameごとの248点で測ったVMAF平均98.2575を確認した。この数値はサンプル測定であり、全frameの品質保証ではない。Chrome以外、mobile、12-bit、音声出力機器を通した聴取は引き続き未確認。
+
+同じ3ファイルは、隔離ローカル環境のブラウザーで暗号化してアップロードし、端末内のService Workerから復号して表示・再生・シークした。AVIF寸法、音声の再生進行、動画のデコードframe増加と、全64,932,182 bytesの復号後SHA-256一致を確認した。ChromeがM4Aに付ける`audio/x-m4a`は暗号化メタデータ内で`audio/mp4`に正規化する。サーバーは暗号化されたメディアを解析せず、原本名・MIMEは復号後の端末だけで使う。実利用者の鍵によるstaging移行は別の手順であり、このローカル試験の完了では既存の平文ファイルは暗号化されない。[暗号化設定](CLIENT_ENCRYPTION_SETUP.md)を参照する。
+
+暗号化経路の実Cloudflare確認には、別の隔離ブラウザーと一時検証鍵、repository内の公開fixture（AVIF 316 bytes・MP3 180,681 bytes・AV1+Opus WebM 170,800 bytes）を使用した。暗号化upload、表示・再生・seek、復号後SHA-256と保存byte一致が成功し、試験fixtureだけをtrash/purgeした。実利用者の鍵や既存ファイルを変更する試験ではない。SW初回取得時のAccess転送と、streamed 206のContent-Length省略の実環境差を修正したうえで、補助処理なしで確認している。
+
 仕様根拠: [AVIF brands](https://aomediacodec.github.io/av1-avif/#brands)、[AV1 codec string](https://aomediacodec.github.io/av1-isobmff/#codecsparam)、[Ogg Opus](https://www.rfc-editor.org/rfc/rfc7845.html)、[MP4 Opus](https://opus-codec.org/docs/opus_in_isobmff.html)、[Cloudflare Images の入力制限](https://developers.cloudflare.com/images/get-started/limits/)。2026-09-22 確認。
+
+## 非公開の手元ファイルを使う追加ブラウザー試験
+
+`NCF_USER_MEDIA_MANIFEST` にローカルJSONの絶対パスを指定すると、画像・音声・動画の各1ファイルを実際のfile chooserでアップロードし、Gallery/Audio/Video、再生・シーク、認証付きRangeの全byteとSHA-256を確認する。未指定時はこの追加試験だけをskipする。JSON、対象ファイル、trace、スクリーンショットをrepositoryへ追加しない。
+
+```json
+{
+  "files": [
+    { "path": "/absolute/private/photo.avif", "name": "photo.avif", "kind": "image", "width": 680, "height": 383 },
+    { "path": "/absolute/private/audio.m4a", "name": "audio.m4a", "kind": "audio", "durationSeconds": 225.25 },
+    { "path": "/absolute/private/video.mp4", "name": "video.mp4", "kind": "video", "width": 1920, "height": 1080, "durationSeconds": 247.74 }
+  ]
+}
+```
+
+```sh
+pnpm install --frozen-lockfile
+NCF_USER_MEDIA_MANIFEST=/absolute/private/media.json pnpm test:browser
+```
+
+この試験は隔離したローカルWorker/D1/R2を使う。Cloudflare Access・実Queues・実R2を含むstaging確認は、別途本人がログインした専用ブラウザーで行う。
+# 2026-10-04 動画シークの追加検証
+
+native playerのopen-ended Rangeに対し、content ticketの予約・応答を最大4MiBへ揃えた。シークで中断した残り全体の過大予約が429へ達する問題を修正している。実stagingの検証用Chromeで8回連続の前後シークと映像フレーム進行を確認し、今回の試験で429は出なかった。network/decode/unsupportedを画面で区別し、明示「再試行」で新しいticketを取得する。暗号化ファイルは専用「暗号化ファイル」画面の端末内復号経路で扱い、従来のserver media索引には入れない。
