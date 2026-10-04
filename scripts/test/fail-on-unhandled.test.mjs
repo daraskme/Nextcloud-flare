@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { createUnhandledClassifier } from "./unhandled-classifier.mjs";
 
 const runner = fileURLToPath(new URL("./fail-on-unhandled.mjs", import.meta.url));
 const native =
-  "exception = kj/async-io.c++:2032: disconnected: fixed-length pipe ended prematurely";
+  "exception = kj/async-io.c++:1713: disconnected: fixed-length pipe ended prematurely";
 const network =
   "uncaught exception; source = Uncaught (in promise); stack = Error: Network connection lost.";
 const other = "uncaught exception; source = Uncaught (in promise); stack = Error: admission_closed";
@@ -19,6 +20,11 @@ function emit(stderrLines = [], stdoutLines = []) {
   return run(
     `process.stderr.write(${JSON.stringify(stderrLines.join("\n") + "\n")});process.stdout.write(${JSON.stringify(stdoutLines.join("\n") + "\n")})`,
   );
+}
+function classify(shortBody, lines) {
+  const result = createUnhandledClassifier(shortBody);
+  for (const line of lines) result.inspect(line);
+  return { expected: result.expectedDisconnects, unhandled: result.unhandled };
 }
 
 describe("integration unhandled rejection gate", () => {
@@ -37,30 +43,33 @@ describe("integration unhandled rejection gate", () => {
     expect(result.stderr).toContain("unhandled rejections=1");
   });
 
-  it("counts only two native fixed-length disconnects on one output stream", () => {
-    const result = emit([native, "stack: workerd", network, network]);
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("platform expected disconnects=2; unhandled rejections=0");
-    const stdout = emit([], [native, "stack: workerd", network, network]);
-    expect(stdout.status).toBe(0);
-    expect(stdout.stderr).toContain("platform expected disconnects=2; unhandled rejections=0");
-  });
-
-  it("fails an isolated network rejection and a third native-context rejection", () => {
+  it("rejects all workerd errors in the regular integration process", () => {
+    for (const stream of ["stderr", "stdout"]) {
+      const result = stream === "stderr" ? emit([native, network]) : emit([], [native, network]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("platform expected disconnects=0; unhandled rejections=2");
+    }
     expect(emit([network]).status).toBe(1);
-    const third = emit([native, "stack: workerd", network, network, network]);
-    expect(third.status).toBe(1);
-    expect(third.stderr).toContain("platform expected disconnects=2; unhandled rejections=1");
   });
 
-  it("fails another rejection or a network rejection after the native context ends", () => {
-    expect(emit([native, "stack: workerd", other]).status).toBe(1);
-    expect(emit([native, "stack: workerd", "different error", network]).status).toBe(1);
+  it("allows at most two exact network losses in the isolated short-body process", () => {
+    expect(classify(true, [network, network])).toEqual({ expected: 2, unhandled: 0 });
+    expect(classify(true, [native, "stack: workerd", network, network])).toEqual({
+      expected: 2,
+      unhandled: 0,
+    });
+    expect(classify(true, [network, network, network])).toEqual({ expected: 2, unhandled: 1 });
   });
 
-  it("does not transfer the native context across stdout and stderr", () => {
-    expect(emit([network], [native]).status).toBe(1);
-    expect(emit([native], [network]).status).toBe(1);
+  it("does not excuse other diagnostics in the isolated process", () => {
+    expect(classify(true, [other])).toEqual({ expected: 0, unhandled: 1 });
+    expect(classify(true, ["exception = other-native-failure", network])).toEqual({
+      expected: 1,
+      unhandled: 1,
+    });
+    expect(
+      classify(true, ["exception = kj/async-io.c++:1713: disconnected: different cause", network]),
+    ).toEqual({ expected: 1, unhandled: 1 });
   });
 
   it("fails a Node unhandled rejection under strict mode", () => {

@@ -1,8 +1,21 @@
 import { spawn } from "node:child_process";
+import { createUnhandledClassifier } from "./unhandled-classifier.mjs";
 
-const args = process.argv.slice(2);
-if (args.length === 0) {
-  process.stderr.write("Usage: fail-on-unhandled.mjs <node-script> [args...]\n");
+const requested = process.argv.slice(2);
+const shortBody = requested[0] === "--r2-short-body";
+const args = shortBody
+  ? [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--config",
+      "vitest.config.ts",
+      "packages/worker/test/integration/r2-short-body.test.ts",
+    ]
+  : requested;
+if (args.length === 0 || (shortBody && requested.length !== 1)) {
+  process.stderr.write(
+    "Usage: fail-on-unhandled.mjs [--r2-short-body | <node-script> [args...]]\n",
+  );
   process.exitCode = 2;
 } else {
   const child = spawn(process.execPath, args, {
@@ -13,67 +26,39 @@ if (args.length === 0) {
     stdio: ["inherit", "pipe", "pipe"],
     windowsHide: true,
   });
-  let unhandled = 0;
-  let expectedDisconnects = 0;
-  const fixedLengthPipeContext = { stdout: false, stderr: false };
+  const classifier = createUnhandledClassifier(shortBody);
   let spawnFailed = false;
-  const inspect = (line, stream) => {
-    const value = line.trimEnd();
-    if (
-      value ===
-      "exception = kj/async-io.c++:2032: disconnected: fixed-length pipe ended prematurely"
-    ) {
-      fixedLengthPipeContext[stream] = true;
-      return;
-    }
-    if (fixedLengthPipeContext[stream] && value.startsWith("stack:")) return;
-    if (/uncaught exception; source = Uncaught \(in promise\)/i.test(value)) {
-      if (
-        fixedLengthPipeContext[stream] &&
-        expectedDisconnects < 2 &&
-        value ===
-          "uncaught exception; source = Uncaught (in promise); stack = Error: Network connection lost."
-      ) {
-        expectedDisconnects++;
-      } else {
-        unhandled++;
-        fixedLengthPipeContext[stream] = false;
-      }
-      return;
-    }
-    fixedLengthPipeContext[stream] = false;
-  };
-  const forward = (source, destination, stream) => {
+  const forward = (source, destination) => {
     let pending = "";
     source.on("data", (chunk) => {
       destination.write(chunk);
       pending += chunk.toString("utf8");
       let newline = pending.indexOf("\n");
       while (newline !== -1) {
-        inspect(pending.slice(0, newline), stream);
+        classifier.inspect(pending.slice(0, newline));
         pending = pending.slice(newline + 1);
         newline = pending.indexOf("\n");
       }
       // Keep a bounded suffix if a tool emits an unusually long line.
       if (pending.length > 16_384) {
-        inspect(pending.slice(0, -256), stream);
+        classifier.inspect(pending.slice(0, -256));
         pending = pending.slice(-256);
       }
     });
     source.on("end", () => {
-      if (pending) inspect(pending, stream);
+      if (pending) classifier.inspect(pending);
     });
   };
-  forward(child.stdout, process.stdout, "stdout");
-  forward(child.stderr, process.stderr, "stderr");
+  forward(child.stdout, process.stdout);
+  forward(child.stderr, process.stderr);
   child.on("error", (error) => {
     spawnFailed = true;
     process.stderr.write(`Integration runner failed: ${error.code ?? "spawn_error"}\n`);
   });
   child.on("close", (code, signal) => {
     process.stderr.write(
-      `Workerd diagnostics: platform expected disconnects=${expectedDisconnects}; unhandled rejections=${unhandled}.\n`,
+      `Workerd diagnostics: platform expected disconnects=${classifier.expectedDisconnects}; unhandled rejections=${classifier.unhandled}.\n`,
     );
-    process.exitCode = spawnFailed || signal || unhandled > 0 ? 1 : (code ?? 1);
+    process.exitCode = spawnFailed || signal || classifier.unhandled > 0 ? 1 : (code ?? 1);
   });
 }

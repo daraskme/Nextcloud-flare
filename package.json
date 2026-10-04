@@ -17,7 +17,7 @@
     "build": "pnpm build:web && wrangler deploy --dry-run --outdir dist/worker",
     "test": "pnpm test:unit && pnpm test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",
-    "test:integration": "pnpm build:web && node scripts/test/fail-on-unhandled.mjs node_modules/vitest/vitest.mjs run --config vitest.config.ts",
+    "test:integration": "pnpm build:web && node scripts/test/fail-on-unhandled.mjs --r2-short-body && node scripts/test/fail-on-unhandled.mjs node_modules/vitest/vitest.mjs run --config vitest.config.ts --exclude packages/worker/test/integration/r2-short-body.test.ts",
     "verify:contracts": "node scripts/verify-contracts.mjs",
     "verify:config": "node scripts/verify-config.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm verify:contracts && pnpm verify:config && pnpm test && pnpm build",
