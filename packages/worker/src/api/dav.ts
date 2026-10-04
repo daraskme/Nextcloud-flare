@@ -3,6 +3,7 @@ import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/app
 import { principalAuthorizationContext } from "../auth/authorize";
 import { KdfUnavailableError } from "../auth/kdf";
 import {
+  assertDavConditionState,
   evaluateDavMutationConditions,
   evaluateDavPutConditions,
   evaluateDavRequestIf,
@@ -39,6 +40,7 @@ import {
   parsePropfindRequest,
   parseProppatchRequest,
 } from "../dav/xml";
+import type { SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { prepareAuthorizedNodeBlobRead, streamImmutableBlob } from "../services/blobRead";
@@ -980,12 +982,15 @@ export async function handleDavHttp(
         davEtag(resolved.node),
         resolved.node.updated_at,
       );
-      await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
-      const plan = await prepareAuthorizedNodeBlobRead(
-        env.DB,
-        resolved,
-        path.shared ? [davReadAssertion(resolved)] : [],
-      );
+      const assertions: SqlStatement[] = [];
+      await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request, assertions);
+      const plan = await prepareAuthorizedNodeBlobRead(env.DB, resolved, [
+        ...assertions,
+        ...(path.shared ? [davReadAssertion(resolved)] : []),
+      ]).catch(async (error) => {
+        await assertDavConditionState(env.DB, assertions);
+        throw error;
+      });
       return await streamImmutableBlob(env.BLOBS, plan, request, { etag: davEtag(resolved.node) });
     } catch (error) {
       if (error instanceof Error && error.message === "dav_precondition_failed")

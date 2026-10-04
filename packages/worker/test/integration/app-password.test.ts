@@ -23,6 +23,7 @@ import { createInternalShare, updateInternalShare } from "../../src/services/sha
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
+import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -382,6 +383,11 @@ it.each(["GET", "HEAD"])(
       { headers: { If: '<https://app.invalid/dav/File> (["b-stale"])' }, status: 412 },
       { headers: { "If-Match": etag, Range: "bytes=1-2" }, status: 206, body: "bc" },
       { headers: { "If-Match": "*", If: `([${etag}])` }, status: 200, body: "abc" },
+      {
+        headers: { If: `<https://app.invalid/dav/> (["c-${f.ids.folder}-1"])`, Range: "bytes=1-2" },
+        status: 206,
+        body: "bc",
+      },
       { headers: { "If-None-Match": `W/${etag}`, Range: "bytes=1-2" }, status: 304 },
       { headers: { "If-None-Match": "*" }, status: 304 },
       { headers: { "If-Match": '"b-stale"', "If-None-Match": etag }, status: 412 },
@@ -462,6 +468,90 @@ it("does not evaluate DAV read conditions before read authorization", async () =
     expect(response.status).toBe(404);
   }
 });
+
+it.each(
+  ["GET", "HEAD"].flatMap((method) => [
+    { method, cached: false },
+    { method, cached: true },
+  ]),
+)(
+  "binds $method tagged read conditions through the blob plan (cached=$cached)",
+  async ({ method, cached }) => {
+    const { f, app, headers, ring } = await writableDavFixture("R");
+    const stored = await env.BLOBS.put(`u/${f.ids.user}/b/${f.ids.blob}`, "abc");
+    if (!stored) throw new Error("fixture_object_missing");
+    await env.DB.prepare(
+      "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,?)",
+    )
+      .bind(f.ids.blob, stored.etag, Date.now())
+      .run();
+    let changed = false;
+    let reads = 0;
+    const db = injectBatch(
+      (sql) => sql.includes("SELECT b.r2_key AS key,b.size"),
+      async () => {
+        changed = true;
+        await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?")
+          .bind(f.ids.folder)
+          .run();
+      },
+      false,
+    );
+    const bucket = new Proxy(env.BLOBS, {
+      get(target, key) {
+        if (key === "get")
+          return (...args: Parameters<R2Bucket["get"]>) => {
+            reads++;
+            return target.get(...args);
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: {
+          ...headers,
+          ...(cached ? { "If-None-Match": `"b-${f.ids.blob}"` } : { Range: "bytes=0-1" }),
+          If: `<https://app.invalid/dav/> (["c-${f.ids.folder}-1"])`,
+        },
+      }),
+      { ...app, DB: db, BLOBS: bucket },
+      1,
+      ring,
+    );
+    expect(changed).toBe(true);
+    expect(response.status).toBe(412);
+    expect(response.headers.get("ETag")).toBeNull();
+    expect(response.headers.get("Content-Range")).toBeNull();
+    expect(reads).toBe(0);
+  },
+);
+
+it.each(["GET", "HEAD"])(
+  "does not turn %s blob-plan storage errors into condition errors",
+  async (method) => {
+    const { f, app, headers, ring } = await writableDavFixture("V");
+    const db = injectBatch(
+      (sql) => sql.includes("SELECT b.r2_key AS key,b.size"),
+      async () => {
+        throw new Error("D1 temporarily unavailable");
+      },
+      false,
+    );
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: { ...headers, If: `<https://app.invalid/dav/> (["c-${f.ids.folder}-1"])` },
+      }),
+      { ...app, DB: db },
+      1,
+      ring,
+    );
+    expect(response.status).toBe(503);
+  },
+);
 
 it("authenticates a live DAV Basic app password and rejects a wrong secret", async () => {
   const { f, id, secret, ring, request } = await fixture("1");

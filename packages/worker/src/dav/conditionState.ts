@@ -226,7 +226,13 @@ export async function assertDavMutationConditions(
   nodeId: string,
   spaceId: string,
 ): Promise<void> {
-  const assertions = conditionAssertions(conditions, principal, nodeId, spaceId);
+  await assertDavConditionState(db, conditionAssertions(conditions, principal, nodeId, spaceId));
+}
+
+export async function assertDavConditionState(
+  db: D1Database,
+  assertions: readonly SqlStatement[],
+): Promise<void> {
   if (!assertions.length) return;
   try {
     await atomicBatch(db, assertions);
