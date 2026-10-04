@@ -8,6 +8,7 @@ import type { Env } from "../env";
 
 export interface PublicShareDependencies {
   readonly csrf: CsrfTokens;
+  readonly sourceKey: CryptoKey;
   readonly cursors?: NodeCursorTokens;
   readonly tokens?: ContentTokens;
   readonly passwordPepper?: SharePasswordPepperRing;
@@ -66,6 +67,7 @@ export async function publicShareDependencies(
       : undefined;
   return {
     csrf: new CsrfTokens(privateRing, publicRing, env.APP_ORIGIN),
+    sourceKey: publicRing.keys.get(publicRing.activeKid)!,
     ...(cursorRing ? { cursors: new NodeCursorTokens(cursorRing) } : {}),
     ...(ticketRing && cookieRing
       ? { tokens: new ContentTokens(ticketRing, cookieRing, env.CONTENT_ORIGIN) }

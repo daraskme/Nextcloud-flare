@@ -4,7 +4,7 @@
 
 ## 2026-10-04 staging配備・検証記録
 
-この配備checkpointの正確なrevisionは[環境状態表](../../docs/ENVIRONMENT_STATUS.md)を参照する。復元時の共有迂回防止修正とPR #37の統合作業は検証中で、stagingへは未配備。
+復元時の共有迂回防止修正とPR #37のアプリ変更を追加配備済み。現在のrevision・CI・実環境検証は[環境状態表](../../docs/ENVIRONMENT_STATUS.md)を参照する。以下は追加配備前の履歴。隔離した実Cloudflareの障害試験は[FAULT_DRILL](FAULT_DRILL.md)に手順と証拠の範囲を記録した。
 
 `785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
 

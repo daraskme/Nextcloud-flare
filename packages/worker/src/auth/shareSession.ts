@@ -19,6 +19,7 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const SESSION_TTL_MS = 7 * 86_400_000;
 const ACTIVE_SESSION_LIMIT = 64;
+const SOURCE_SESSION_LIMIT = 8;
 
 interface LiveShareRow {
   id: string;
@@ -45,6 +46,8 @@ export interface ShareUnlockOptions {
   readonly passwordRing?: SharePasswordPepperRing;
   readonly signal?: AbortSignal;
   readonly admitPasswordAttempt?: () => Promise<void>;
+  readonly sourceDigest: string;
+  readonly existingCookieSecret?: string;
 }
 
 export interface ShareSession {
@@ -110,6 +113,20 @@ export function clearShareCookie(shareId: string): string {
   return `${cookieName(shareId)}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
+export function existingShareCookie(request: Request, shareId: string): string | undefined {
+  try {
+    return cookieValue(request, shareId);
+  } catch {
+    return undefined;
+  }
+}
+
+export class ShareSessionSourceLimitError extends Error {
+  constructor() {
+    super("share_session_source_limit");
+  }
+}
+
 const LIVE_SHARE = `WITH RECURSIVE a(id,parent_id,space_id,owner_id,kind,deleted_at,depth,path) AS (
   SELECT n.id,n.parent_id,n.space_id,n.owner_id,n.kind,n.deleted_at,0,'/'||n.id||'/'
     FROM shares sh JOIN nodes n ON n.id=sh.root_node_id WHERE sh.id=?1
@@ -142,10 +159,11 @@ export async function unlockShare(
   shareId: string,
   secret: string,
   epoch: number,
-  options: ShareUnlockOptions = {},
+  options: ShareUnlockOptions,
 ): Promise<{ session: ShareSession; cookieSecret: string }> {
   if (!ID.test(shareId) || !Number.isSafeInteger(epoch) || epoch < 1)
     throw new Error("share_unauthorized");
+  if (!SECRET.test(options.sourceDigest)) throw new Error("share_unauthorized");
   const digest = await shareSecretDigest(secret);
   const share = await primary(env.DB)
     .prepare(LIVE_SHARE)
@@ -211,6 +229,33 @@ export async function unlockShare(
       });
     }
   }
+  if (options.existingCookieSecret) {
+    const existing = await readShareSession(env.DB, share.id, options.existingCookieSecret, epoch);
+    if (existing && existing.shareVersion === share.version) {
+      if (passwordMutations.length > 0) {
+        const admission = await acquireAccountMutation(env, share.ownerId, epoch, "share.unlock");
+        await commitAccountMutation(env.DB, admission, share.ownerId, [
+          assertExists(LIVE_SHARE, [share.id, digest, epoch]),
+          passwordAssertion,
+          assertExists(
+            `SELECT 1 FROM share_sessions WHERE id=? AND share_id=? AND share_version=?
+              AND epoch=? AND revoked_at IS NULL AND expires_at>strftime('%s','now')*1000`,
+            [existing.id, share.id, share.version, epoch],
+          ),
+          ...passwordMutations,
+        ]);
+      }
+      return { session: existing, cookieSecret: options.existingCookieSecret };
+    }
+  }
+  const sourceActive = await primary(env.DB)
+    .prepare(`SELECT COUNT(*) AS count FROM share_sessions
+      WHERE share_id=? AND share_version=? AND epoch=? AND source_digest=?
+        AND revoked_at IS NULL AND expires_at>strftime('%s','now')*1000`)
+    .bind(share.id, share.version, epoch, options.sourceDigest)
+    .first<number>("count");
+  if (sourceActive === null || sourceActive >= SOURCE_SESSION_LIMIT)
+    throw new ShareSessionSourceLimitError();
   const active = await primary(env.DB)
     .prepare(`SELECT COUNT(*) AS count FROM share_sessions
       WHERE share_id=? AND share_version=? AND epoch=? AND revoked_at IS NULL
@@ -237,11 +282,26 @@ export async function unlockShare(
           AND expires_at>strftime('%s','now')*1000)<?`,
       [share.id, share.version, epoch, ACTIVE_SESSION_LIMIT],
     ),
+    assertExists(
+      `SELECT 1 WHERE (SELECT COUNT(*) FROM share_sessions
+        WHERE share_id=? AND share_version=? AND epoch=? AND source_digest=?
+          AND revoked_at IS NULL AND expires_at>strftime('%s','now')*1000)<?`,
+      [share.id, share.version, epoch, options.sourceDigest, SOURCE_SESSION_LIMIT],
+    ),
     {
       sql: `INSERT INTO share_sessions(
-        id,share_id,share_version,secret_digest,epoch,issued_at,expires_at
-      ) VALUES(?,?,?,?,?,?,?)`,
-      values: [sessionId, share.id, share.version, cookieDigest, epoch, now, expiresAt],
+        id,share_id,share_version,secret_digest,epoch,issued_at,expires_at,source_digest
+      ) VALUES(?,?,?,?,?,?,?,?)`,
+      values: [
+        sessionId,
+        share.id,
+        share.version,
+        cookieDigest,
+        epoch,
+        now,
+        expiresAt,
+        options.sourceDigest,
+      ],
     },
     {
       sql: "INSERT INTO credentials(id,kind,share_session_id) VALUES(?,'share',?)",

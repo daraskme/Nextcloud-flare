@@ -61,7 +61,7 @@ const executor = (db = env.DB, current = (_epoch: number) => {}, admission = adm
           db,
           admission,
           current,
-          new KdfSettlements(state.storage.sql, db),
+          new KdfSettlements(state.storage.sql, db, () => state.storage.sync()),
         );
         try {
           return { value: await service.derive(r) };
@@ -353,7 +353,12 @@ it("retains running capacity after caller cancellation until the actual result a
       return native(...args);
     });
     const derive = backend(
-        new ControlKdf(env.DB, admit, () => {}, new KdfSettlements(state.storage.sql, env.DB)),
+        new ControlKdf(
+          env.DB,
+          admit,
+          () => {},
+          new KdfSettlements(state.storage.sql, env.DB, () => state.storage.sync()),
+        ),
       ),
       r = request();
     const pending = derive(r.input, r.salt, abort.signal);

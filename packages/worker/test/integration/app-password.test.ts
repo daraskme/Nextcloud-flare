@@ -849,6 +849,99 @@ it("atomically writes DAV dead properties and rejects protected live properties"
   expect(stale.status).toBe(412);
 });
 
+it("keeps DAV dead properties within the cumulative PROPFIND limit", async () => {
+  const { f, id, ring, request } = await fixture("P");
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write'),(?,'node:read')",
+  )
+    .bind(`ap:${id}`, `ap:${id}`)
+    .run();
+  const davEnv = admittedDavEnv();
+  const headers = Object.fromEntries(request().headers);
+  const patch = async (start: number, count: number) =>
+    handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method: "PROPPATCH",
+        headers: {
+          ...headers,
+          "Content-Type": "application/xml",
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: `<D:propertyupdate xmlns:D="DAV:" xmlns:X="urn:limit"><D:set><D:prop>${Array.from(
+          { length: count },
+          (_, index) => `<X:p${start + index}>v</X:p${start + index}>`,
+        ).join("")}</D:prop></D:set></D:propertyupdate>`,
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+  for (const start of [0, 25, 50, 75]) expect((await patch(start, 25)).status).toBe(207);
+  expect((await patch(100, 1)).status).toBe(409);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM node_props WHERE node_id=?")
+      .bind(f.ids.file)
+      .first<number>("COUNT(*)"),
+  ).toBe(100);
+  const found = await handleDavHttp(
+    new Request("https://app.invalid/dav/File", {
+      method: "PROPFIND",
+      headers: { ...headers, Depth: "0" },
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(found.status).toBe(207);
+});
+
+it("rejects DAV COPY into the source collection's descendant", async () => {
+  const { f, id, ring, request } = await fixture("Q");
+  await env.DB.prepare(
+    "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:read'),(?,'node:create')",
+  )
+    .bind(`ap:${id}`, `ap:${id}`)
+    .run();
+  const source = `${f.ids.folder}-copy-source`;
+  const descendant = `${f.ids.folder}-copy-child`;
+  await env.DB.prepare(`INSERT INTO nodes(
+      id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+    ) VALUES(?,?,?,?,?,'source','folder',1,1),(?,?,?,?,?,'descendant','folder',1,1)`)
+    .bind(
+      source,
+      f.ids.space,
+      f.ids.user,
+      f.ids.folder,
+      "Source",
+      descendant,
+      f.ids.space,
+      f.ids.user,
+      source,
+      "Descendant",
+    )
+    .run();
+  const response = await handleDavHttp(
+    new Request("https://app.invalid/dav/Source/", {
+      method: "COPY",
+      headers: {
+        ...Object.fromEntries(request().headers),
+        Destination: "https://app.invalid/dav/Source/Descendant/Nested/",
+        Depth: "infinity",
+        Overwrite: "F",
+      },
+    }),
+    admittedDavEnv(),
+    1,
+    ring,
+  );
+  expect(response.status).toBe(403);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM nodes WHERE parent_id=? AND name='Nested'")
+      .bind(descendant)
+      .first<number>("COUNT(*)"),
+  ).toBe(0);
+});
+
 it("returns retryable 503 for overloaded DAV lock creation, refresh and unlock", async () => {
   const { f, id, ring, request } = await fixture("N");
   await env.DB.prepare("INSERT INTO credential_scopes(credential_id,scope) VALUES(?,'node:write')")
@@ -1286,6 +1379,33 @@ it("streams DAV PUT creates and conditional overwrites into immutable versioned 
   );
   const etag = read.headers.get("ETag");
   expect(etag).toBe(`"b-${first!.blobId}"`);
+  const staleOverwrite = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", {
+      method: "PUT",
+      headers: { ...headers, "Content-Length": "1", "If-Match": '"b-stale"' },
+      body: "x",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(staleOverwrite.status).toBe(412);
+  const createOnlyOverwrite = await handleDavHttp(
+    new Request("https://app.invalid/dav/Put.txt", {
+      method: "PUT",
+      headers: { ...headers, "Content-Length": "1", "If-None-Match": "*" },
+      body: "x",
+    }),
+    davEnv,
+    1,
+    ring,
+  );
+  expect(createOnlyOverwrite.status).toBe(412);
+  expect(
+    await env.DB.prepare("SELECT current_blob_id FROM nodes WHERE id=?")
+      .bind(first!.id)
+      .first<string>("current_blob_id"),
+  ).toBe(first!.blobId);
   const secondBody = "replacement";
   const overwritten = await handleDavHttp(
     new Request("https://app.invalid/dav/Put.txt", {

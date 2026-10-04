@@ -2,7 +2,7 @@
 
 更新: 2026-10-04。環境ごとの現在revision・配備状態の正本は[環境状態表](ENVIRONMENT_STATUS.md)、実装と検証履歴は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照する。以下の旧migration数やrevisionは、明記した日付時点の記録であり現行値として再利用しない。
 
-復元時の共有迂回防止修正とPR #37の統合作業は検証中。これらをstagingへ配備済みとは扱わない。
+復元時の共有迂回防止修正とPR #37のアプリ変更をstagingへ配備済み。PRの最終CIと統合状況、実環境の検証範囲は[環境状態表](ENVIRONMENT_STATUS.md)を参照する。
 
 2026-10-04時点のstaging checkpointでは、暗号化レビュー修正（コード`785faf3`）を適用し、所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を確認した。実管理者の既存3件は64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加した。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。正確な現行versionとmigration数は[環境状態表](ENVIRONMENT_STATUS.md)を参照。
 

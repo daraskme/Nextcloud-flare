@@ -14,6 +14,7 @@ import {
 } from "../services/accountMutation";
 import { issueContentTicket } from "../services/contentTicket";
 import { listNodeChildren, readNode, readNodePath } from "../services/nodeRead";
+import { admitContentTicketCost } from "./contentTickets";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const USERS = "/api/v1/admin/users";
@@ -283,6 +284,12 @@ export async function handleAdminBrowseHttp(
       !ID.test(target.spaceId)
     )
       return problem(400, "bad_request");
+    const ticketRateFailure = await admitContentTicketCost(
+      env,
+      adminPrincipal(session, content[1] ?? ""),
+      1,
+    );
+    if (ticketRateFailure) return ticketRateFailure;
     try {
       const issued = await issueContentTicket(
         env,

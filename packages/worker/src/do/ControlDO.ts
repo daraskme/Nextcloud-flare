@@ -154,7 +154,7 @@ export class ControlDO extends DurableObject<Env> {
       token TEXT NOT NULL,stage TEXT NOT NULL CHECK(stage IN ('users','blobs','r2','outbox','shares','credentials','credential_sources','fts','fence','complete')),
       after_id TEXT NOT NULL,pages INTEGER NOT NULL CHECK(pages>=0)
     )`);
-    this.#kdfSettlements = new KdfSettlements(ctx.storage.sql, env.DB);
+    this.#kdfSettlements = new KdfSettlements(ctx.storage.sql, env.DB, () => ctx.storage.sync());
     this.#admission = new ControlAdmission(
       ctx.storage,
       env.DB,

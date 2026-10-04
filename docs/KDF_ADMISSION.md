@@ -1,6 +1,6 @@
 # 認証KDFの実行・全体制限
 
-更新: 2026-10-02。アプリパスワードの作成・検証・pepper更新と公開share passwordの作成・unlockを、Worker内の待機制限とControlDO/D1の全体予算へ接続した。D1はmigration `0029`、ControlDO SQLiteの終了記録と修復を使用する。実CloudflareのCPU・費用・処理量・切断挙動と、共有password制限の実環境挙動は未検証。
+更新: 2026-10-04。アプリパスワードの作成・検証・pepper更新と公開share passwordの作成・unlockを、Worker内の待機制限とControlDO/D1の全体予算へ接続した。D1はmigration `0029`、ControlDO SQLiteの終了記録と修復を使用する。stagingでアプリパスワードの発行・WebDAV認証・失効を確認済み。実CloudflareのCPU・費用・処理量・切断挙動と、共有password制限の実環境挙動は未検証。
 
 ## 実行経路
 
@@ -18,12 +18,14 @@ ControlDOの`ControlKdf`は同時1件だけを受け付け、実行中の並行R
 |---|---|
 | rate | 直近65秒の受付を最大600件。送信遅延最大5秒を含め、実行開始の任意60秒で600件以下となる保守的な窓 |
 | 全体の枠 | epochをまたぐ`claimed`を最大20件。期限切れやinstance再生成だけでは解放しない |
-| 送信期限 | RPC発行から最大5秒。D1が保存した期限も再検査し、遅延ACK後には計算しない |
+| 送信期限 | callerはRPC発行から5秒で結果を失効。DOはcaller期限と自身の現在時刻+5秒の小さい方を使う。D1が保存した期限も再検査し、遅延ACK後には計算しない |
 | queue | WorkerとControlDOのpassword経路はそれぞれ同時1件、待機列なし。実行中の別要求を503で返す。期限は実行直前にも検査 |
 | 保持と掃除 | `claimed`は削除禁止。終端receiptも65秒は保持し、次の受付で古い終端だけを削除 |
 | epoch復旧 | D1のepoch変更時に65秒のcooldownを設定。既存rate・未精算行は消さない |
 
 current epoch、maintenance、cooldown、rate、枠数をD1 insert triggerで検査する。claim保存応答が確認できてから、ControlDO/D1の現在状態・同期storage fence・期限を再検査してnative cryptoを呼ぶ。同じattempt IDを再送しても再実行しない。
+
+stagingではWorkerが生成した期限がDO側の時計では5秒をわずかに超え、正当な認証が503になる問題を再現した。`2a180af`で、非整数・期限切れの拒否は維持し、未来側の期限はDO自身の5秒上限へ制限するよう修正した。D1の独立した5秒上限も維持し、callerは自身の期限後に返った結果を使わない。極端な未来期限でも枠を延長できない回帰を含む23件が成功し、修正版stagingの認証は207を返した。詳細は[レビュー対応](reviews/runtime-adversarial-20261004.md)。
 
 [CloudflareのDO lifecycle仕様](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)では、新instanceの開始後にも古いRPCがstorageを使わずに完了する場合がある。このためメモリの同時実行数だけを全体制限に使わない。最後のstorageアクセスで古いinstanceを拒否し、開始済み・結果不明の枠はD1へ残す。
 
@@ -40,18 +42,23 @@ current epoch、maintenance、cooldown、rate、枠数をD1 insert triggerで検
 
 ## 終了記録の修復
 
-ControlDO SQLiteの`control_kdf_receipts`に、id・handler token・元epoch・元送信期限・状態だけを最大20件保存する。D1 claimより前に`reserved`を保存し、枠がなければ新しいclaim/計算を始めない。native計算の実終了後は`finished`、handlerが以後送信しないと確定した場合だけ`not_started`へ一度遷移する。入力・salt・結果はここにも保存しない。
+ControlDO SQLiteの`control_kdf_receipts`に、id・handler token・元epoch・元送信期限・状態・`dispatch_started`だけを最大20件保存する。D1 claimより前に`reserved / dispatch_started=0`を保存し、枠がなければ新しいclaim/計算を始めない。native計算の直前に`dispatch_started=1`へ一度変更し、`storage.sync()`で永続化を確認した後、再びstorage fenceと期限を検査する。native計算の実終了後は`finished`、handlerが以後送信しないと確定した場合だけ`not_started`へ一度遷移する。入力・salt・結果はここにも保存しない。
 
-終了記録を保存してから、同じid/token/epochのD1行を精算する。D1終端receiptを確認した後だけローカル記録を削除する。DB書込み・読戻しの応答喪失やeviction後も、次のKDF受付前に最大20件を照合する。内部RPC `repairKdfSettlements(expectedEpoch, limit=20)`は受付を停止し、復旧監査を前後で初期化して同じ処理を行う。返す件数は`checked/reconciled/pending/unknown`。public HTTPへの公開・自動alarm再試行は行わない。復旧監査と受付再開はD1未精算行に加え、ローカル未解決記録も拒否する。
+終了記録を保存してから、同じid/token/epochのD1行を精算する。D1終端receiptを確認した後だけローカル記録を削除する。DB書込み・読戻しの応答喪失やeviction後も、次のKDF受付前に最大20件を照合する。内部RPC `repairKdfSettlements(expectedEpoch, limit=20)`は受付を停止し、復旧監査を前後で初期化して同じ処理を行う。返す件数は`checked/reconciled/pending/unknown`。`checked`は開始前・結果不明を含む照合対象数。public HTTPへの公開・自動alarm再試行は行わない。復旧監査と受付再開はD1未精算行に加え、ローカル未解決記録も拒否する。
 
 SQL cursorは`await`前に配列として読み切る。[SQLite-backed DOのstorage契約](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に従い、非同期I/Oをまたぐcursorをsnapshotとして使わない。保存とD1送信の順序は[DOのoutput gate](https://blog.cloudflare.com/durable-objects-easy-fast-correct-choose-three/)を前提とし、未確認書込みを許可する設定は使わない。
 
 D1に同じtokenの行がない場合は、primaryの書込みbatchでcontrol行に書込みを行ってから、同一transaction内で不在とDB時刻を照合する。元送信期限を過ぎている場合だけ、**既に終了または未送信が確定した**ローカル記録を削除できる。後に実行されるclaimのSQLは元期限を再検査するため拒否される。単独SELECTやWorker側の時計だけではこの判定を行わない。[D1 batchのtransaction契約](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)と[SQLiteのwrite transaction直列化](https://sqlite.org/lang_transaction.html)に基づく処理で、遅延claim・書込み応答喪失をローカル試験する。不在を確認した場合も、計算結果を成功として返さない。
 
-`reserved`のまま停止した記録は終了証明を持たないため、期限切れ・epoch変更・evictionだけでは修復も削除もしない。別handlerのtokenや異なる終端状態を上書きしない。完全なDO storage喪失、終了記録の保存前にinstanceが失われた場合、旧版が残したD1行など、証明のない試行は保留を維持する。稼働中D1 restore・時計異常・混在versionの安全な運用はstaging/restore gateに残る。
+`reserved / dispatch_started=0`は計算が始まっていない証明を持つ。repairはローカル状態を同期的に`not_started`へ変更して停止中handlerのdispatchを拒否し、同じid/tokenのD1 claimだけを精算する。D1 claimの送信前や応答喪失中でも、既存の期限・書込みbarrierによる照合が完了するまで記録を残す。
+
+`dispatch_started=1`の記録は、D1に同じid/token/epoch/期限の終了証明があれば修復できる。計算終了後にローカルstorageへアクセスできなくなったhandlerも、到達可能ならD1へその終了を記録する。旧版の記録は移行時に保守的に`dispatch_started=1`とし、開始前だったと推測しない。[storage.sync()の永続化契約](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)に依存するため、この待機を省かない。
+
+**残る制約:** 計算開始後、DOとD1のどちらにも終了証明を残せずinstanceが失われた試行は、引き続き保留し、audit/resumeを拒否する。期限切れ・epoch変更・evictionだけで解放すると、継続中かもしれないnative計算の全体20枠制約を破る。今回の修正は開始前クラッシュと終了証明の片側喪失を修復するもので、両方の証明を失った計算を安全に取り消せる仕組みではない。別handlerのtokenや異なる終端状態は上書きしない。完全なDO storage喪失、稼働中D1 restore・時計異常・混在versionの安全な運用も残る。
 
 ## 検証
 
+- 2026-10-04追加レビュー修正: `kdf-settlements` 22件と `global-kdf` 23件、計45件が成功。開始前クラッシュ、遅延claim、D1側の完了証明、dispatch永続化失敗、旧schema移行、両保存先の障害、repair中の別予約dispatch競合を含む。未処理Promise診断は0件。以下は従来の試験範囲。
 - 既存Node executor試験: FIFO、256件、5秒、例外後の回復、待機/実行中の取消し、遅延timer。
 - 新規Node budget 7件: 600/65秒境界、20枠と旧epoch、cooldown、未知枠保持、不変receipt、時計巻戻り。
 - 新規workerd 20件: 実PBKDF2・D1・ControlDO RPC、instance内直列化、重複/未知枠の全体上限、claim/精算ACK喪失、送信直前の停止・期限・storage fence、取消し、3つの認証経路、600回境界と両HTTPの503、eviction/全storage喪失後の保持。

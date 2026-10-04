@@ -464,6 +464,26 @@ function stableMountName(shareId: string, rootName: string) {
   return portableName(prefix + (suffix || "Shared"));
 }
 
+// A delegated group recipient must already be visible to the delegator through
+// an active group share from this owner, as in shared-with-me provenance.
+const RECIPIENT_GROUP_PROVENANCE = `EXISTS(
+  SELECT 1 FROM share_group_grants visible_grant
+  JOIN shares visible_share ON visible_share.id=visible_grant.share_id
+    AND visible_share.owner_id=? AND visible_share.kind='internal'
+    AND visible_share.disabled_at IS NULL
+    AND (visible_share.expires_at IS NULL OR visible_share.expires_at>strftime('%s','now')*1000)
+  JOIN current_internal_shares visible_current
+    ON visible_current.share_id=visible_share.id AND visible_current.version=visible_share.version
+  JOIN share_group_members visible_member
+    ON visible_member.group_id=visible_grant.group_id AND visible_member.user_id=?
+    AND visible_member.disabled_at IS NULL
+  JOIN users visible_user ON visible_user.id=visible_member.user_id
+    AND visible_user.disabled_at IS NULL
+  WHERE visible_grant.group_id=?
+    AND EXISTS(SELECT 1 FROM share_actions visible_action
+      WHERE visible_action.share_id=visible_share.id AND visible_action.action='read')
+)`;
+
 export async function createInternalShare(
   env: Env,
   session: AccessSession,
@@ -528,8 +548,16 @@ export async function createInternalShare(
         WHERE g.id=? AND g.owner_id=? AND g.disabled_at IS NULL
           AND (SELECT COUNT(*) FROM share_group_members gm
             JOIN users u ON u.id=gm.user_id AND u.disabled_at IS NULL
-            WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100`)
-        .bind(input.recipientGroupId, ownerId)
+            WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100
+          AND (?=0 OR ${RECIPIENT_GROUP_PROVENANCE})`)
+        .bind(
+          input.recipientGroupId,
+          ownerId,
+          source ? 1 : 0,
+          ownerId,
+          session.user_id,
+          input.recipientGroupId,
+        )
         .first<{ id: string; name: string }>()) ?? undefined;
     if (!recipientGroup) throw new Error("share_recipient_not_found");
   }
@@ -712,8 +740,16 @@ export async function createInternalShare(
             AND g.disabled_at IS NULL AND
             (SELECT COUNT(*) FROM share_group_members gm
               JOIN users u ON u.id=gm.user_id AND u.disabled_at IS NULL
-              WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100`,
-          [recipientGroup!.id, ownerId],
+              WHERE gm.group_id=g.id AND gm.disabled_at IS NULL)<=100
+              AND (?=0 OR ${RECIPIENT_GROUP_PROVENANCE})`,
+          [
+            recipientGroup!.id,
+            ownerId,
+            source ? 1 : 0,
+            ownerId,
+            session.user_id,
+            recipientGroup!.id,
+          ],
         ),
     assertExists(
       `SELECT 1 WHERE

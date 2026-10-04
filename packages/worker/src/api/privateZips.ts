@@ -6,6 +6,7 @@ import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
 import { issueContentTicket } from "../services/contentTicket";
+import { admitContentTicketCost } from "./contentTickets";
 
 const ZIP_CREATE = /^\/api\/v1\/nodes\/([A-Za-z0-9_-]{1,128})\/zip$/;
 const ZIP_READ = /^\/api\/v1\/zips\/([A-Za-z0-9_-]{1,128})$/;
@@ -155,6 +156,8 @@ export async function handlePrivateZipHttp(
   if (!(await emptyJsonObject(request))) return problem(400, "bad_request");
   const idempotencyKey = request.headers.get("Idempotency-Key");
   if (!idempotencyKey) return problem(400, "bad_request");
+  const rateFailure = await admitContentTicketCost(env, principal, 1);
+  if (rateFailure) return rateFailure;
   const nodeId = create[1] ?? "";
   const spaceId = await primary(env.DB)
     .prepare("SELECT space_id FROM nodes WHERE id=?")

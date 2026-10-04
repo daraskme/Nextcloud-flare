@@ -2,9 +2,9 @@
 
 更新: 2026-10-04。次のセッションはこの資料から開始する。環境ごとの現在revision・配備状態の正本は[環境状態表](ENVIRONMENT_STATUS.md)。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。下記の旧revision・migration数は日付付き履歴として読む。
 
-復元時の共有迂回防止修正とPR #37の統合作業は検証中で、stagingへは未配備。
+復元時の共有迂回防止修正とPR #37のアプリ変更をstagingへ配備済み。PRの統合・CI・runtimeの最新状態は[環境状態表](ENVIRONMENT_STATUS.md)、変更理由は[レビュー対応](reviews/runtime-adversarial-20261004.md)を参照する。
 
-## 最新checkpoint
+## 2026-10-04 早朝のcheckpoint（履歴）
 
 **2026-10-04 staging checkpoint:** 暗号化レビュー修正（コード`785faf3`）を配備し、所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。正確な現行version・件数は[環境状態表](ENVIRONMENT_STATUS.md)を参照する。
 
@@ -32,7 +32,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 - 切りのよい単位で検証後に commit / push する。`origin/main` への通常 push はユーザー承認済み。force push はしない。
 - ユーザーが事前に **画像 AVIF・動画 AV1・音声 Opus** にエンコードする。保存・配信・Gallery/player を必須対応にする。具体的なコンテナと試験条件は [MEDIA_FORMATS](MEDIA_FORMATS.md)。
-- 承認済みの Cloudflare staging は `darask.date` に配備済み。通常 push と staging の継続実装・検証を進める。production 配備は別の境界。最新の実環境状態は [staging runbook](../ops/staging/README.md) を正とする。
+- 承認済みの Cloudflare staging は `darask.date` に配備済み。通常 push と staging の継続実装・検証を進める。production 配備は別の境界。最新の実環境状態は [環境状態表](ENVIRONMENT_STATUS.md) を正とする。
 - 許可済みの可逆な実装・検証は継続し、必要な情報が足りる作業で確認を挟まない。
 
 ## 2026-10-03 の追加依頼

@@ -85,6 +85,33 @@ async function copyManifest(
   return Object.freeze({ ids: rows.results.map((row) => row.id), bytes, props });
 }
 
+// Walk only the destination's ancestors. Missing parents, cycles and paths deeper
+// than 64 edges fail closed instead of expanding the entire source subtree.
+const COPY_DESTINATION_OUTSIDE_SOURCE = `WITH RECURSIVE a(id,parent_id,kind,depth,path,acyclic) AS (
+  SELECT id,parent_id,kind,0,'/'||id||'/',1 FROM nodes
+    WHERE id=? AND space_id=? AND deleted_at IS NULL
+  UNION ALL
+  SELECT n.id,n.parent_id,n.kind,a.depth+1,a.path||n.id||'/',
+    CASE WHEN instr(a.path,'/'||n.id||'/')=0 THEN 1 ELSE 0 END
+  FROM nodes n JOIN a ON n.id=a.parent_id
+    WHERE a.depth<64 AND a.acyclic=1 AND n.space_id=? AND n.deleted_at IS NULL
+) SELECT 1 AS allowed WHERE EXISTS(
+  SELECT 1 FROM a WHERE kind='root' AND parent_id IS NULL AND acyclic=1
+) AND NOT EXISTS(SELECT 1 FROM a WHERE id=? OR acyclic=0)`;
+
+async function copyDestinationAllowed(
+  db: D1Database,
+  sourceNodeId: string,
+  destinationParentId: string,
+  spaceId: string,
+): Promise<boolean> {
+  const row = await primary(db)
+    .prepare(COPY_DESTINATION_OUTSIDE_SOURCE)
+    .bind(destinationParentId, spaceId, spaceId, sourceNodeId)
+    .first<number>("allowed");
+  return row === 1;
+}
+
 function copyStatements(
   claim: OperationClaim,
   source: ReadAuthority,
@@ -336,6 +363,12 @@ function copyStatements(
     authorizationAssertion(destination),
     ...(overwrite ? [authorizationAssertion(overwrite)] : []),
     assertCreateLocks(destination.parent.id, source.node.space_id, source.principal, hashes),
+    assertExists(COPY_DESTINATION_OUTSIDE_SOURCE, [
+      destination.parent.id,
+      source.node.space_id,
+      source.node.space_id,
+      source.node.id,
+    ]),
     ...(overwrite
       ? [assertTrashLocks(overwrite.node.id, source.node.space_id, source.principal, hashes)]
       : []),
@@ -426,6 +459,10 @@ export async function copyNode(
     source.node.owner_id !== destination.parent.owner_id
   )
     throw new Error("dav_cross_space_copy");
+  if (
+    !(await copyDestinationAllowed(env.DB, source.node.id, destination.parent.id, request.spaceId))
+  )
+    throw new Error("invalid_copy_authorization");
   await assertNoEncryptedSubtree(env.DB, request.sourceNodeId, request.spaceId);
   const manifest = await copyManifest(env.DB, request.sourceNodeId, request.spaceId, request.depth);
   const overwrite = request.overwriteTargetId

@@ -1003,16 +1003,18 @@ async function processFinalize(
   }
 }
 
-export async function failTreeJob(
+async function failTreeJobInternal(
   env: SystemMutationSource,
   row: TreeJobRow,
   errorCode: string,
   deadline = Date.now() + 25_000,
+  terminalGuard?: SqlStatement,
 ): Promise<"failed" | "retry"> {
   if (!/^[a-z_]{1,64}$/.test(errorCode)) errorCode = "operation_failed";
   try {
     const admission = await acquireSystemMutation(env, row.owner_id, "tree-job.fail", deadline);
     const statements: SqlStatement[] = [assertExactTreeJob(row)];
+    if (terminalGuard) statements.push(terminalGuard, assertOneChange);
     if (row.kind === "node.trash") {
       statements.push(
         {
@@ -1063,6 +1065,65 @@ export async function failTreeJob(
   }
 }
 
+export async function failTreeJob(
+  env: SystemMutationSource,
+  row: TreeJobRow,
+  errorCode: string,
+  deadline = Date.now() + 25_000,
+): Promise<"failed" | "retry"> {
+  return failTreeJobInternal(env, row, errorCode, deadline);
+}
+
+interface TreeJobExhaustionState {
+  invocation_count: number;
+  attempt: number | null;
+  lease_expired: number | null;
+}
+
+async function failExhaustedTreeJob(
+  env: SystemMutationSource,
+  row: TreeJobRow,
+  deadline: number,
+): Promise<"failed" | "retry"> {
+  const state = await primary(env.DB)
+    .prepare(`SELECT j.invocation_count,l.attempt,
+      CASE WHEN l.expires_at<=${clock} THEN 1 ELSE 0 END AS lease_expired
+      FROM bulk_jobs j LEFT JOIN job_leases l ON l.job_id=j.id WHERE j.id=?`)
+    .bind(row.id)
+    .first<TreeJobExhaustionState>();
+  if (!state) return "retry";
+
+  const exhaustedInvocations = state.invocation_count >= 200;
+  const exhaustedClaims =
+    !exhaustedInvocations &&
+    state.attempt !== null &&
+    state.attempt >= 10 &&
+    state.lease_expired === 1;
+  if (!exhaustedInvocations && !exhaustedClaims) return "retry";
+
+  const exhaustionPredicate = exhaustedInvocations
+    ? "j.invocation_count>=200"
+    : `EXISTS(SELECT 1 FROM job_leases old_lease WHERE old_lease.job_id=j.id
+        AND old_lease.attempt>=10 AND old_lease.expires_at<=${clock})`;
+  const guard: SqlStatement = {
+    sql: `UPDATE bulk_jobs SET updated_at=MAX(updated_at,${clock})
+      WHERE id=? AND epoch=? AND state IN ('pending','running')
+        AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=bulk_jobs.op_id
+          AND o.state='claimed' AND o.epoch=bulk_jobs.epoch)
+        AND ${exhaustionPredicate.replaceAll("j.", "bulk_jobs.")}
+        AND NOT EXISTS(SELECT 1 FROM job_leases active_lease
+          WHERE active_lease.job_id=bulk_jobs.id AND active_lease.expires_at>${clock})`,
+    values: [row.id, row.epoch],
+  };
+  return failTreeJobInternal(
+    env,
+    row,
+    exhaustedInvocations ? "invocation_limit_exhausted" : "claim_attempts_exhausted",
+    deadline,
+    guard,
+  );
+}
+
 export async function processTreeJob(
   env: TreeWorkerEnv,
   id: string,
@@ -1074,7 +1135,12 @@ export async function processTreeJob(
   if (initial?.state === "failed" && initial.operation_state === "failed") return "failed";
   if (!initial || initial.operation_state !== "claimed") return "retry";
   const claimed = await claimTreeJob(env, initial, deadline);
-  if (!claimed) return "busy";
+  if (!claimed) {
+    const current = await treeJobRow(env.DB, id);
+    if (current && (await failExhaustedTreeJob(env, current, deadline)) === "failed")
+      return "failed";
+    return "busy";
+  }
   const phase = parseTreeJobCheckpoint(claimed.row.checkpoint).phase;
   return phase === "manifest"
     ? processManifest(env, claimed.row, claimed.token, deadline)

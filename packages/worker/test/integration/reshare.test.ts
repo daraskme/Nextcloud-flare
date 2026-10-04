@@ -341,7 +341,7 @@ it("creates a bounded downstream group share owned by the source owner", async (
     name: "Downstream recipients",
     memberEmails: [f.bobEmail, f.carolEmail],
   });
-  const child = await createInternalShare(mutationEnv(), f.aliceSession, {
+  const request = {
     sourceShareId: source.id,
     rootNodeId: f.owner.ids.folder,
     spaceId: f.owner.ids.space,
@@ -349,8 +349,30 @@ it("creates a bounded downstream group share owned by the source owner", async (
     actions: ["read"],
     ttlDays: 5,
     idempotencyKey: "downstream-group",
+  };
+  await expect(createInternalShare(mutationEnv(), f.aliceSession, request)).rejects.toThrow(
+    "share_recipient_not_found",
+  );
+  await updateShareGroup(mutationEnv(), f.ownerSession, target.id, {
+    memberEmails: [f.aliceEmail, f.bobEmail, f.carolEmail],
   });
-  await expect(listSharedWithMe(env.DB, f.bobSession)).resolves.toEqual([
+  await createInternalShare(mutationEnv(), f.ownerSession, {
+    rootNodeId: f.owner.ids.folder,
+    spaceId: f.owner.ids.space,
+    recipientGroupId: target.id,
+    actions: ["read"],
+  });
+  const nested = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO nodes(
+    id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+  ) VALUES(?,?,?,?,'Nested','nested','folder',?,?)`)
+    .bind(nested, f.owner.ids.space, f.owner.ids.user, f.owner.ids.folder, Date.now(), Date.now())
+    .run();
+  const child = await createInternalShare(mutationEnv(), f.aliceSession, {
+    ...request,
+    rootNodeId: nested,
+  });
+  expect(await listSharedWithMe(env.DB, f.bobSession)).toContainEqual(
     expect.objectContaining({
       shareId: child.id,
       actions: ["read"],
@@ -359,14 +381,50 @@ it("creates a bounded downstream group share owned by the source owner", async (
         kind: "group",
         groupId: target.id,
         groupName: target.name,
-        groupVersion: target.version,
+        groupVersion: target.version + 1,
         membershipVersion: 1,
       },
     }),
-  ]);
-  await expect(listSharedWithMe(env.DB, f.carolSession)).resolves.toEqual([
+  );
+  expect(await listSharedWithMe(env.DB, f.carolSession)).toContainEqual(
     expect.objectContaining({ shareId: child.id }),
-  ]);
+  );
+  const racingRoot = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO nodes(
+    id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+  ) VALUES(?,?,?,?,'Racing','racing','folder',?,?)`)
+    .bind(
+      racingRoot,
+      f.owner.ids.space,
+      f.owner.ids.user,
+      f.owner.ids.folder,
+      Date.now(),
+      Date.now(),
+    )
+    .run();
+  const racingDb = injectBatch(
+    (sql) => sql.includes("INSERT INTO shares("),
+    async () => {
+      await env.DB.prepare(
+        "UPDATE share_group_members SET disabled_at=? WHERE group_id=? AND user_id=?",
+      )
+        .bind(Date.now(), target.id, f.alice.ids.user)
+        .run();
+    },
+    false,
+  );
+  await expect(
+    createInternalShare(mutationEnv(racingDb), f.aliceSession, {
+      ...request,
+      rootNodeId: racingRoot,
+      idempotencyKey: "racing-group-provenance",
+    }),
+  ).rejects.toThrow();
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM shares WHERE root_node_id=?")
+      .bind(racingRoot)
+      .first<number>("count"),
+  ).toBe(0);
 });
 
 it("invalidates group descendants and stale budgets across removal and re-addition", async () => {

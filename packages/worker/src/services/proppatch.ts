@@ -79,6 +79,13 @@ function statements(
       assertOneChange,
     );
   });
+  // Enforce the PROPFIND bound in the same transaction as the property writes.
+  // A later request must not make a previously readable node return 503.
+  result.push(
+    assertExists("SELECT 1 WHERE (SELECT COUNT(*) FROM node_props WHERE node_id=?)<=100", [
+      authorized.node.id,
+    ]),
+  );
   const clock = "strftime('%s','now')*1000";
   result.push(
     {

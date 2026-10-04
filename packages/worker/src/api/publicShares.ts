@@ -9,12 +9,15 @@ import type { SharePasswordPepperRing } from "../auth/sharePassword";
 import {
   authenticateShareSession,
   clearShareCookie,
+  existingShareCookie,
   revokeShareSession,
   SharePasswordRequiredError,
+  ShareSessionSourceLimitError,
   shareCookie,
   sharePrincipal,
   unlockShare,
 } from "../auth/shareSession";
+import { shareSourceDigest } from "../auth/shareSource";
 import { primary } from "../db/primary";
 import type { Env } from "../env";
 import { MutationUnavailableError } from "../services/accountMutation";
@@ -24,7 +27,7 @@ import { cancelContentTicket } from "../services/contentTicketCancel";
 import { listGallery } from "../services/gallery";
 import { readPrivateEpub } from "../services/library";
 import { listNodeChildren, readNode } from "../services/nodeRead";
-import { readContentTicketRequest } from "./contentTickets";
+import { admitContentTicketCost, readContentTicketRequest } from "./contentTickets";
 import { hasEmptyBody } from "./emptyBody";
 import { handlePublicUploadHttp, publicUploadRoute } from "./publicUploads";
 
@@ -55,6 +58,7 @@ const HEADERS = {
 
 export interface PublicShareDependencies {
   readonly csrf: Pick<CsrfTokens, "issue" | "verify">;
+  readonly sourceKey: CryptoKey;
   readonly cursors?: NodeCursorTokens;
   readonly tokens?: ContentTokens;
   readonly passwordPepper?: SharePasswordPepperRing;
@@ -205,8 +209,17 @@ export async function handlePublicShareHttp(
       (body.password !== undefined && typeof body.password !== "string")
     )
       return problem(400, "bad_request");
+    let sourceDigest: string;
     try {
+      sourceDigest = await shareSourceDigest(dependencies.sourceKey, shareId, ip);
+    } catch {
+      return problem(503, "not_ready");
+    }
+    try {
+      const existingCookieSecret = existingShareCookie(request, shareId);
       const { session, cookieSecret } = await unlockShare(env, shareId, body.secret, epoch, {
+        sourceDigest,
+        ...(existingCookieSecret ? { existingCookieSecret } : {}),
         ...(body.password === undefined ? {} : { password: body.password as string }),
         ...(dependencies.passwordPepper ? { passwordRing: dependencies.passwordPepper } : {}),
         signal: request.signal,
@@ -235,6 +248,11 @@ export async function handlePublicShareHttp(
       );
     } catch (error) {
       if (error instanceof SharePasswordRequiredError) return problem(401, "password_required");
+      if (error instanceof ShareSessionSourceLimitError) {
+        const response = problem(429, "rate_limited");
+        response.headers.set("Retry-After", "60");
+        return response;
+      }
       if (error instanceof SharePasswordRateLimitError) {
         const response = problem(429, "rate_limited");
         response.headers.set("Retry-After", "60");
@@ -391,6 +409,8 @@ export async function handlePublicShareHttp(
     if (Object.keys(body).length !== 0) return problem(400, "bad_request");
     const idempotencyKey = request.headers.get("Idempotency-Key");
     if (!idempotencyKey) return problem(400, "bad_request");
+    const zipRateFailure = await admitContentTicketCost(env, principal, 1);
+    if (zipRateFailure) return zipRateFailure;
     try {
       const issued = await issueContentTicket(
         env,
@@ -476,6 +496,8 @@ export async function handlePublicShareHttp(
     } catch {
       return problem(400, "bad_request");
     }
+    const ticketRateFailure = await admitContentTicketCost(env, principal, body.targets.length);
+    if (ticketRateFailure) return ticketRateFailure;
     try {
       if (body.purpose === "page") {
         const target = body.targets[0];

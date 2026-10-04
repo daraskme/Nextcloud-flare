@@ -11,6 +11,38 @@ import { hasEmptyBody } from "./emptyBody";
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PURPOSES = new Set(["content", "thumb", "page", "zip", "track"]);
 const MAX_BODY = 524_288;
+const TARGETS_PER_RATE_UNIT = 8;
+
+/** Charge bounded target work before the first per-target D1 proof or R2 HEAD. */
+export async function admitContentTicketCost(
+  env: Pick<Env, "EDGE_LIMITER">,
+  principal: Principal,
+  targetCount: number,
+): Promise<Response | null> {
+  if (!Number.isSafeInteger(targetCount) || targetCount < 1 || targetCount > 1_000)
+    return problem(400, "bad_request");
+  if (principal.kind === "service") return problem(403, "forbidden");
+  const subject =
+    principal.kind === "link_share"
+      ? `share:${principal.share_id}`
+      : principal.kind === "admin_read"
+        ? `admin:${principal.user_id}`
+        : `user:${principal.user_id}`;
+  try {
+    for (let i = 0; i < Math.ceil(targetCount / TARGETS_PER_RATE_UNIT); i++) {
+      if (!(await env.EDGE_LIMITER.limit({ key: `content-ticket:${subject}` })).success) {
+        const response = problem(429, "rate_limited");
+        response.headers.set("Retry-After", "60");
+        return response;
+      }
+    }
+  } catch {
+    const response = problem(503, "not_ready");
+    response.headers.set("Retry-After", "1");
+    return response;
+  }
+  return null;
+}
 
 export interface ContentTicketRequest {
   targets: ContentTicketTarget[];
@@ -143,6 +175,8 @@ export async function handlePrivateContentTicketHttp(
   } catch {
     return problem(400, "bad_request");
   }
+  const rateFailure = await admitContentTicketCost(env, principal, body.targets.length);
+  if (rateFailure) return rateFailure;
   try {
     const issued = await issueContentTicket(
       env,

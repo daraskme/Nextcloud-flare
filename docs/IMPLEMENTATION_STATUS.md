@@ -3,7 +3,7 @@
 更新: 2026-10-04。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
 セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書は実装状況・検証履歴の記録であり、環境revisionと配備状態の正本は[環境状態表](ENVIRONMENT_STATUS.md)。過去checkpointのmigration数・配備状態は記録日当時のもの。
 
-復元時の共有迂回防止修正とPR #37の統合作業は検証中。完了またはstaging配備済みとは扱わない。
+復元時の共有迂回防止修正とPR #37のアプリ変更をstagingへ配備済み。最終CI、実環境検証、未確認事項は[環境状態表](ENVIRONMENT_STATUS.md)と[今回のレビュー対応](reviews/runtime-adversarial-20261004.md)に記録する。
 
 ## 2026-10-04 暗号化レビューへの対応
 

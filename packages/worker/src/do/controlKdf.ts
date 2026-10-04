@@ -72,6 +72,9 @@ export class ControlKdf {
           // Storage access also fences an old DO instance after a runtime replacement.
           this.current(epoch);
           if (typeof expires !== "number" || Date.now() >= expires) throw new KdfUnavailableError();
+          await this.settlements.beginDispatch(dispatch);
+          this.current(epoch);
+          if (Date.now() >= expires) throw new KdfUnavailableError();
           dispatched = true;
           let output: ArrayBuffer;
           try {
