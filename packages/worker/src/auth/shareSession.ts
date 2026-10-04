@@ -5,6 +5,7 @@ import {
   acquireAccountMutation,
   commitAccountMutation,
   MutationUnavailableError,
+  shareActor,
 } from "../services/accountMutation";
 import type { Principal } from "./authorize";
 import { KdfUnavailableError } from "./kdf";
@@ -233,7 +234,13 @@ export async function unlockShare(
     const existing = await readShareSession(env.DB, share.id, options.existingCookieSecret, epoch);
     if (existing && existing.shareVersion === share.version) {
       if (passwordMutations.length > 0) {
-        const admission = await acquireAccountMutation(env, share.ownerId, epoch, "share.unlock");
+        const admission = await acquireAccountMutation(
+          env,
+          share.ownerId,
+          epoch,
+          "share.unlock",
+          shareActor(share.id),
+        );
         await commitAccountMutation(env.DB, admission, share.ownerId, [
           assertExists(LIVE_SHARE, [share.id, digest, epoch]),
           passwordAssertion,
@@ -270,7 +277,13 @@ export async function unlockShare(
   const credentialId = `ss:${sessionId}`;
   const cookieSecret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const cookieDigest = await shareSecretDigest(cookieSecret);
-  const admission = await acquireAccountMutation(env, share.ownerId, epoch, "share.unlock");
+  const admission = await acquireAccountMutation(
+    env,
+    share.ownerId,
+    epoch,
+    "share.unlock",
+    shareActor(share.id),
+  );
   await commitAccountMutation(env.DB, admission, share.ownerId, [
     assertExists(LIVE_SHARE, [share.id, digest, epoch]),
     assertExists("SELECT 1 FROM shares WHERE id=? AND version=?", [share.id, share.version]),
@@ -375,6 +388,7 @@ export async function revokeShareSession(env: Env, session: ShareSession): Promi
     session.ownerId,
     session.epoch,
     "share.logout",
+    shareActor(session.shareId),
   );
   const clock = "strftime('%s','now')*1000";
   await commitAccountMutation(env.DB, admission, session.ownerId, [

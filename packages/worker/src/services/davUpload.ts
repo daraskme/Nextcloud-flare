@@ -18,6 +18,7 @@ import {
   type AccountMutationEnv,
   accountMutationStatements,
   acquireAccountMutation,
+  principalActor,
 } from "./accountMutation";
 import type { PutFileRequest } from "./putFile";
 import { reservationStatements } from "./quota";
@@ -110,7 +111,13 @@ export async function startDavUpload(
     expires_at: now + 86_400_000,
     state: "receiving",
   };
-  const admission = await acquireAccountMutation(env, owner, row.epoch, "dav.put-start");
+  const admission = await acquireAccountMutation(
+    env,
+    owner,
+    row.epoch,
+    "dav.put-start",
+    principalActor(request.principal),
+  );
   await atomicBatch(
     env.DB,
     accountMutationStatements(admission, owner, [

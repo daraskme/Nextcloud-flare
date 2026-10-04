@@ -8,6 +8,7 @@ import {
   accountMutationStatements,
   acquireAccountMutation,
   commitAccountMutation,
+  credentialActor,
 } from "../accountMutation";
 import type { MutationOutcome } from "../fsMutation";
 import {
@@ -123,6 +124,7 @@ async function observeCompletedObject(
     row.owner_id,
     row.epoch,
     "upload.multipart-verify",
+    await credentialActor(env.DB, row.credential_id),
   );
   await commitAccountMutation(env.DB, admission, row.owner_id, [
     authorizationAssertion(current.authorized),
@@ -214,6 +216,7 @@ export async function completeMultipartUpload(
         row.owner_id,
         row.epoch,
         "upload.multipart-complete",
+        await credentialActor(env.DB, row.credential_id),
       );
       try {
         await atomicBatch(

@@ -9,6 +9,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  principalActor,
 } from "../accountMutation";
 import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "../encryptionGuards";
 import { reservationStatements } from "../quota";
@@ -225,6 +226,7 @@ async function reserveUpload(
     owner,
     input.principal.epoch,
     "upload.reserve",
+    principalActor(input.principal),
   );
   try {
     await commitAccountMutation(db, admission, owner, [

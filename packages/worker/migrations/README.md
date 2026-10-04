@@ -11,6 +11,7 @@ Phase 1 用の forward migrations。`0001` は identity / namespace / ledger、
 `0021` は未知の完成済みR2 objectの隔離台帳と走査cursor/lease。58通常tableのexport/purge契約に追加し、owner physical監査に隔離bytesを含める。同keyのcatalogue登録と隔離登録は相互guardで排他にし、削除後もkey tombstoneを保持する。
 `0039` は既存GC候補を移行から35日以上保護し、最後のnode/version参照が外れた候補の期限も同じtransactionで延長する。既にdeleting/deletedの対象は変更しない。physical容量は猶予中も保持する。[バックアップ用GC保護](../../../docs/BACKUP_GC_PROTECTION.md)を参照。
 `0040` はoutboxのdead-letter台帳と再投入履歴、`0041` は画像metadata・immutable derivative・生成claim、`0042` はinternal shareの安定mount名とrecipient lookup indexを追加する。
+`0063` は admission に actor（`u:<user>` / `s:<link share>`）と課金 account を記録し、actor ごと16・account ごと32・link share は owner ごと合計16・owner 以外は1 space あたり48（owner 用に16を確保）の waiting 上限を足す。actor が NULL の行（旧行・owner 暗黙）は owner として数える。
 schema contract generator は適用済み migration を再生成せず、今後の catalogue/index 変更も forward migration で追加する。
 
 テストは `readD1Migrations` + `applyD1Migrations` で隔離 D1 に適用する。
