@@ -4,7 +4,7 @@
 
 ## 呼出しと範囲
 
-`rebuildRecoveryFts(epoch)`、`releaseStaleReservations(epoch, limit=20)`、`failStaleOutbox(epoch, limit=20)`、`requeueDeadLetters(epoch, limit=20)`を使用する。更新の前後に復旧監査を再初期化し、既存の監査結果を再開証明として流用しない。
+`rebuildRecoveryFts(epoch)`、`releaseStaleReservations(epoch, limit=20)`、`failStaleOutbox(epoch, limit=20)`、`requeueDeadLetters(epoch, limit=20)`、`reconcileTreeJobs(epoch, limit=20)`を使用する。更新の前後に復旧監査を再初期化し、既存の監査結果を再開証明として流用しない。
 
 旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。
 
@@ -38,6 +38,19 @@ DLQ requeueはcurrent epoch・failed・`outbox_dead_letters.status='failed'`の�
 復旧監査とfinal fenceはledgerのorphan、outbox epoch不一致、failed/requeued状態とrequeue countの不整合を拒否する。live dispatch/consumer lease、未終了mutation受付が残る間も完了しない。
 
 ## 検証と残作業
+
+### claim後の停止・障害で残ったtree job（2026-10-04）
+
+`quiesce()`/epoch復旧がoperationを`failed/maintenance`または`failed/stale_epoch`にした後、`bulk_jobs`がpending/runningのままなら、停止中の内部RPC `reconcileTreeJobs(currentEpoch, limit=20)`を呼ぶ。これはHTTPに公開しないoperator操作であり、mutationの再実行ではない。
+
+- maintenance・GC停止・全live worker leaseのdrainを確認する。期限前のleaseを削除してはいけない。backup barrier/freeze中も修復しない。
+- job/operation/grant/stepの由来とepochを同じbatchで検証し、未公開のtrash/restore/purge setupだけを片付ける。元のtreeと公開済みtrashは保存し、対応する期限切れleaseだけを削除してjobをfailedへ収束させる。
+- `{ reconciled, audit }`を確認し、必要なら最大20件ずつ繰り返す。由来不明・epoch不一致・対象外kindはfail-closedで残す。D1のlease全削除で回避しない。
+- 修復後は先頭から完全な復旧監査を実行し、その証明でのみ`resume()`する。final fenceはlease行の有無に加え未終了bulk jobも拒否する。
+
+DLQ/exhaustionによる失敗確定は有効lease不在を原子的に確認し、live replacement workerがいればdeliveryをretryする。worker自身の失敗cleanupはexact claimを要求する。
+
+### 既存の予約・通知修復の検証
 
 workerd67件を追加（境界59件・実ControlDO8件）。追加67件（14.72s）・既存復旧23件（12.96s）と全体checkが成功。Node422件（25file、5.81s）・workerd1,847件（85file、983.56s）、計2,269件。lint・型検査・契約/設定検査・Web build・Worker dry-runも成功。schema0034/通常67table、migration・依存追加なし。 全体check後にCI試験を調整し、KDF統合20件（7.15s）・待機列Node8件（104ms）・lint・型検査を再確認しました。
 

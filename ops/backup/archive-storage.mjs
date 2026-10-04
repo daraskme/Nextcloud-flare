@@ -24,7 +24,10 @@ import {
   MAX_OBJECTS,
   MAX_TAR_BYTES,
 } from "../../scripts/backup/archiveFormat.mjs";
-import { encryptArchiveFile } from "../../scripts/backup/encryptedArchive.mjs";
+import {
+  encryptArchiveFile,
+  validateArchivePlainSize,
+} from "../../scripts/backup/encryptedArchive.mjs";
 import { restoreGeneration } from "../../scripts/backup/generation.mjs";
 import { CHUNK_BYTES, digest } from "../../scripts/backup/objectStore.mjs";
 import { encode, fileChunks } from "../../scripts/backup/publication.mjs";
@@ -240,7 +243,7 @@ export async function archiveMembers(workDirectory, id) {
     "blob-copy/manifest.json",
   ])
     if (!files.includes(required)) fail("backup_archive_missing_member");
-  archiveTarBytes(sizes);
+  await validateArchivePlainSize(archiveTarBytes(sizes));
   return files.sort();
 }
 
