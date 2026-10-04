@@ -1,15 +1,22 @@
 import { base64url } from "jose";
-import { assertExists, primary } from "../db/primary";
+import { assertExists, assertOneChange, primary } from "../db/primary";
 import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
 } from "../services/accountMutation";
-import { ContentTokens } from "./contentTokens";
+import { ContentTokens, MAX_CONTENT_GRANTS } from "./contentTokens";
+
+export class ContentGrantLimitError extends Error {
+  constructor() {
+    super("content_grant_limit");
+  }
+}
 
 export interface AcceptedContentSession {
   readonly sessionId: string;
   readonly setCookie: string;
+  readonly clearCookies: readonly string[];
   readonly expiresAt: number;
   readonly budgetId: string;
 }
@@ -19,8 +26,10 @@ export async function acceptContentTicket(
   env: AccountMutationEnv,
   tokens: ContentTokens,
   ticket: string,
+  cookieHeader: string | null = null,
 ): Promise<AcceptedContentSession> {
   const db = env.DB;
+  if (cookieHeader && cookieHeader.length > 8192) throw new Error("content_cookie_rejected");
   const claims = await tokens.verifyTicket(ticket);
   const issuedAt = tokens.now();
   const expiresAt = claims.exp * 1000;
@@ -33,7 +42,7 @@ export async function acceptContentTicket(
         JOIN control ctl ON ctl.singleton=1 AND ctl.epoch=t.epoch AND ctl.maintenance=0
         WHERE t.id=? AND t.credential_id=? AND t.target_set_id=? AND t.budget_id=?
           AND t.purpose=? AND t.epoch=? AND t.issued_at>=? AND t.issued_at<?
-          AND t.expires_at>=? AND t.cancelled_at IS NULL
+          AND t.expires_at>=? AND t.cancelled_at IS NULL AND t.redeemed_at IS NULL
           AND ts.credential_id=t.credential_id AND ts.epoch=t.epoch
           AND ts.manifest_hash=? AND ts.expires_at>=?
           AND b.epoch=t.epoch AND b.state='active' AND b.expires_at>=?
@@ -140,15 +149,55 @@ export async function acceptContentTicket(
     .bind(...authorityValues)
     .first<string>("owner_id");
   if (!ownerId) throw new Error("content_ticket_rejected");
+  const grants = cookieHeader?.includes("__Host-ncf_cs")
+    ? await tokens.verifyCookies(cookieHeader)
+    : [];
+  const clearCookies: string[] = [];
+  let activeCookies = 0;
+  for (const grant of grants) {
+    const live = await primary(db)
+      .prepare(`SELECT 1 FROM content_sessions cs
+      JOIN tickets t ON t.id=cs.ticket_id JOIN control ctl ON ctl.singleton=1
+      WHERE cs.id=? AND cs.revoked_at IS NULL AND t.cancelled_at IS NULL
+        AND cs.epoch=ctl.epoch AND cs.expires_at>? AND t.expires_at>?`)
+      .bind(grant.sessionId, issuedAt, issuedAt)
+      .first();
+    if (live) activeCookies++;
+    else clearCookies.push(`${grant.name}=; Secure; HttpOnly; SameSite=None; Path=/; Max-Age=0`);
+  }
+  const count = await primary(db)
+    .prepare(`SELECT COUNT(*) AS n FROM content_sessions
+    WHERE issued_by_credential_id=? AND revoked_at IS NULL AND expires_at>?`)
+    .bind(claims.credential_id, issuedAt)
+    .first<number>("n");
+  if (activeCookies >= MAX_CONTENT_GRANTS || (count ?? 0) >= MAX_CONTENT_GRANTS)
+    throw new ContentGrantLimitError();
   const admission = await acquireAccountMutation(env, ownerId, claims.epoch, "content.accept");
   const sessionId = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
-  const setCookie = await tokens.issueCookie(
+  const setCookie = await tokens.issueGrantCookie(
     sessionId,
     Math.floor((expiresAt - tokens.now()) / 1000),
   );
   try {
     await commitAccountMutation(db, admission, ownerId, [
       assertExists(authorityQuery + " AND ts.owner_id=?", [...authorityValues, ownerId]),
+      assertExists(
+        `SELECT 1 WHERE (SELECT COUNT(*) FROM content_sessions
+        WHERE issued_by_credential_id=? AND revoked_at IS NULL
+          AND expires_at>MAX(?,strftime('%s','now')*1000))<?`,
+        [claims.credential_id, issuedAt, MAX_CONTENT_GRANTS],
+      ),
+      {
+        sql: "UPDATE tickets SET redeemed_at=? WHERE id=? AND redeemed_at IS NULL",
+        values: [issuedAt, claims.ticket_id],
+      },
+      assertOneChange,
+      {
+        sql: `DELETE FROM content_sessions WHERE id IN (SELECT id FROM content_sessions
+          WHERE issued_by_credential_id=? AND expires_at<=strftime('%s','now')*1000
+          ORDER BY expires_at,id LIMIT 16)`,
+        values: [claims.credential_id],
+      },
       {
         sql: `INSERT INTO content_sessions
         (id,user_id,share_id,share_version,issued_by_credential_id,target_set_id,budget_id,ticket_id,epoch,issued_at,expires_at)
@@ -171,5 +220,11 @@ export async function acceptContentTicket(
   } catch (cause) {
     throw new Error("content_session_commit_unknown", { cause });
   }
-  return Object.freeze({ sessionId, setCookie, expiresAt, budgetId: claims.budget_id });
+  return Object.freeze({
+    sessionId,
+    setCookie,
+    clearCookies,
+    expiresAt,
+    budgetId: claims.budget_id,
+  });
 }

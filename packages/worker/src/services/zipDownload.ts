@@ -326,7 +326,25 @@ async function prepareZipContent(
   cookieHeader: string | null,
   targetSetId: string,
 ): Promise<ZipContentPlan> {
-  const sessionId = await tokens.verifyCookie(cookieHeader);
+  const grants = await tokens.verifyCookies(cookieHeader);
+  let unavailable: unknown = new Error("content_not_available");
+  for (const { sessionId } of grants) {
+    try {
+      return await prepareZipSessionContent(db, bucket, sessionId, targetSetId);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "content_not_available")
+        unavailable = error;
+    }
+  }
+  throw unavailable;
+}
+
+async function prepareZipSessionContent(
+  db: D1Database,
+  bucket: R2Bucket,
+  sessionId: string,
+  targetSetId: string,
+): Promise<ZipContentPlan> {
   const record = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
       cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,
