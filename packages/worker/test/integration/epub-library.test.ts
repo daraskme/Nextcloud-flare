@@ -1,4 +1,4 @@
-import { applyD1Migrations } from "cloudflare:test";
+import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { searchName } from "@next-cloud-flare/shared/names";
 import { strToU8, zipSync } from "fflate";
@@ -8,6 +8,12 @@ import { handleContentHttp } from "../../src/api/content";
 import { acceptContentTicket } from "../../src/auth/contentAccept";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { atomicBatch } from "../../src/db/primary";
+import {
+  BudgetDO,
+  type BudgetReserveRequest,
+  type BudgetSettleRequest,
+} from "../../src/do/BudgetDO";
+import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { dispatchOutbox } from "../../src/jobs/outbox";
 import { EPUB_INDEX_GENERATOR } from "../../src/media/epub/index";
@@ -157,6 +163,83 @@ async function fixture(content: Uint8Array) {
   };
 }
 
+async function pageFixture() {
+  const f = await fixture(book());
+  expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+  const publication = await readPrivateEpub(env.DB, env.BLOBS, f.principal, f.file);
+  const contentTokens = await tokens();
+  const issued = await issueContentTicket(
+    mutationEnv(),
+    env.BLOBS,
+    contentTokens,
+    f.principal,
+    [{ spaceId: f.space, nodeId: f.file }],
+    "page",
+    Date.now() + 300_000,
+  );
+  const accepted = await acceptContentTicket(mutationEnv(), contentTokens, issued.ticket);
+  const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+  const row = await env.DB.prepare(
+    "SELECT json_bytes AS indexBytes,r2_key AS indexKey FROM archive_index WHERE node_id=?",
+  )
+    .bind(f.file)
+    .first<{ indexBytes: number; indexKey: string }>();
+  if (!row) throw new Error("missing_index");
+  const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
+  const app: Env = {
+    ...mutationEnv(),
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
+  const read = (target = publication.spine[0]!, current = app) =>
+    handleContentHttp(
+      new Request(`https://content.invalid/c/${f.file}/${f.blob}/entries/${target}`, {
+        headers: { Cookie: cookie },
+      }),
+      current,
+      contentTokens,
+    );
+  return { ...f, ...row, app, budget, issued, accepted, read };
+}
+
+function observedBucket(get: (key: string) => Promise<void>, source = env.BLOBS): R2Bucket {
+  return new Proxy(source, {
+    get(target, property) {
+      if (property === "get")
+        return async (key: string, options?: R2GetOptions) => {
+          await get(key);
+          return target.get(key, options);
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function observedBudgets(beforeReserve: (request: BudgetReserveRequest) => Promise<void>) {
+  return {
+    idFromName: env.BUDGETS.idFromName.bind(env.BUDGETS),
+    get(id: DurableObjectId) {
+      const stub = env.BUDGETS.get(id);
+      return {
+        async reserve(request: BudgetReserveRequest) {
+          await beforeReserve(request);
+          const result = await runInDurableObject(stub, async (_, state) => {
+            try {
+              return { ok: true as const, lease: await new BudgetDO(state, env).reserve(request) };
+            } catch (error) {
+              return { ok: false as const, message: (error as Error).message };
+            }
+          });
+          if (!result.ok) throw new Error(result.message);
+          return result.lease;
+        },
+        settle: (request: BudgetSettleRequest) => stub.settle(request),
+      };
+    },
+  } as unknown as Env["BUDGETS"];
+}
+
 it("publishes immutable EPUB metadata and an idempotent source-bound index", async () => {
   const f = await fixture(book());
   expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
@@ -280,11 +363,13 @@ it("delivers a validated spine entry only through a page ticket, session and bud
   const chapterEntry = indexJson.entries.find((entry) => entry.path === "OPS/chapter.xhtml")!;
   const chapterBytes = new TextEncoder().encode(chapter).byteLength;
   const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
-  // A ranged request still decompresses the whole entry, so the lease pays at
-  // least the entry fetch: full GET = response bytes, Range = compressedSize.
+  // Each read admits the index first, then rechecks authority for the payload.
+  // The total remains a max-cost approximation, with the index as a floor.
   expect(await budget.status()).toMatchObject({
-    bytesCharged: Math.max(chapterBytes, chapterEntry.compressedSize) + chapterEntry.compressedSize,
-    requests: 2,
+    bytesCharged:
+      Math.max(indexRow!.indexBytes, chapterBytes, chapterEntry.compressedSize) +
+      Math.max(indexRow!.indexBytes, chapterEntry.compressedSize),
+    requests: 4,
     active: 0,
   });
   await env.DB.prepare("UPDATE nodes SET current_blob_id=NULL WHERE id=?").bind(f.file).run();
@@ -312,4 +397,95 @@ it("delivers a validated spine entry only through a page ticket, session and bud
       )
     ).status,
   ).toBe(404);
+});
+
+it("rejects exhausted EPUB admission before reading the index or entry payload", async () => {
+  const f = await pageFixture();
+  const gets: string[] = [];
+  const app = {
+    ...f.app,
+    BLOBS: observedBucket(async (key) => {
+      gets.push(key);
+    }),
+    BUDGETS: observedBudgets(async (request) => {
+      expect(request.bytes).toBe(f.indexBytes);
+      throw new Error("budget_exceeded");
+    }),
+  };
+  expect((await f.read(undefined, app)).status).toBe(429);
+  expect(gets).not.toContain(f.indexKey);
+  expect(gets).not.toContain(f.key);
+  expect(await f.budget.status()).toBeNull();
+});
+
+it("charges the EPUB index and one request when the requested entry does not exist", async () => {
+  const f = await pageFixture();
+  expect((await f.read("missing_entry")).status).toBe(404);
+  expect(await f.budget.status()).toMatchObject({
+    bytesCharged: f.indexBytes,
+    requests: 1,
+    active: 0,
+  });
+});
+
+it("keeps the index charge when payload admission fails and never fetches the entry", async () => {
+  const f = await pageFixture();
+  const gets: string[] = [];
+  let reserves = 0;
+  const app = {
+    ...f.app,
+    BLOBS: observedBucket(async (key) => {
+      gets.push(key);
+    }),
+    BUDGETS: observedBudgets(async () => {
+      if (++reserves === 2) throw new Error("budget_exceeded");
+    }),
+  };
+  expect((await f.read(undefined, app)).status).toBe(429);
+  expect(gets.filter((key) => key === f.indexKey)).toHaveLength(1);
+  expect(gets).not.toContain(f.key);
+  expect(await f.budget.status()).toMatchObject({
+    bytesCharged: f.indexBytes,
+    requests: 1,
+    active: 0,
+  });
+});
+
+it("retains the full EPUB index charge when its dispatched GET fails", async () => {
+  const f = await pageFixture();
+  const app = {
+    ...f.app,
+    BLOBS: observedBucket(async (key) => {
+      if (key === f.indexKey) throw new Error("index_read_unknown");
+    }),
+  };
+  expect((await f.read(undefined, app)).status).toBe(404);
+  // Failed setup settles asynchronously; reservation is already charged in either state.
+  expect(await f.budget.status()).toMatchObject({ bytesCharged: f.indexBytes, requests: 1 });
+});
+
+it("rechecks the current EPUB session after index delivery even for a zero-byte payload lease", async () => {
+  const f = await pageFixture();
+  const gets: string[] = [];
+  let reserves = 0;
+  const app = {
+    ...f.app,
+    BLOBS: observedBucket(async (key) => {
+      gets.push(key);
+    }),
+    BUDGETS: observedBudgets(async (request) => {
+      if (++reserves !== 2) return;
+      expect(request.bytes).toBe(0);
+      await env.DB.prepare("UPDATE content_sessions SET revoked_at=? WHERE id=?")
+        .bind(Date.now(), f.accepted.sessionId)
+        .run();
+    }),
+  };
+  expect((await f.read(undefined, app)).status).toBe(404);
+  expect(gets).not.toContain(f.key);
+  expect(await f.budget.status()).toMatchObject({
+    bytesCharged: f.indexBytes,
+    requests: 1,
+    active: 0,
+  });
 });

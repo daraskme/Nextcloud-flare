@@ -11,6 +11,7 @@ import {
   assertPrivateEncryptedRestore,
   privateEncryptedRestoreAssertion,
 } from "../services/encryptionGuards";
+import { assertPurgeUploadsSettled } from "../services/purgeUploads";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -719,6 +720,7 @@ async function purgeFinalStatements(
     leaseAssertion(row, token),
     authorizationAssertion(authorized),
     sourceGuard(row, grant),
+    assertPurgeUploadsSettled(grant.trashOpId),
     assertExists(
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
       WHERE t.op_id=? AND t.state='trashed' AND t.space_id=?

@@ -67,7 +67,7 @@ function expectedIndexKey(row: IndexRow, nodeId: string): string {
   return `u/${row.ownerId}/d/${row.blobId}/${EPUB_INDEX_GENERATOR}/index/${nodeId}-${row.indexSha256}.json`;
 }
 
-async function loadIndex(bucket: R2Bucket, nodeId: string, row: IndexRow): Promise<EpubIndex> {
+function assertIndexRow(nodeId: string, row: IndexRow): void {
   if (
     row.indexKey !== expectedIndexKey(row, nodeId) ||
     !Number.isSafeInteger(row.indexBytes) ||
@@ -78,9 +78,9 @@ async function loadIndex(bucket: R2Bucket, nodeId: string, row: IndexRow): Promi
     row.entryCount > 1_000
   )
     throw new Error("library_not_available");
-  const object = await bucket.get(row.indexKey);
-  if (!object || object.size !== row.indexBytes) throw new Error("library_not_available");
-  const bytes = new Uint8Array(await object.arrayBuffer());
+}
+
+async function parseIndex(bytes: Uint8Array, row: IndexRow): Promise<EpubIndex> {
   if (bytes.byteLength !== row.indexBytes) throw new Error("library_not_available");
   await verifyEpubIndexHash(bytes, row.indexSha256);
   const index = parseEpubIndex(bytes, {
@@ -97,6 +97,14 @@ async function loadIndex(bucket: R2Bucket, nodeId: string, row: IndexRow): Promi
   )
     throw new Error("library_not_available");
   return index;
+}
+
+async function loadIndex(bucket: R2Bucket, nodeId: string, row: IndexRow): Promise<EpubIndex> {
+  assertIndexRow(nodeId, row);
+  const object = await bucket.get(row.indexKey);
+  if (!object || object.size !== row.indexBytes) throw new Error("library_not_available");
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  return parseIndex(bytes, row);
 }
 
 const INDEX_SELECT = `SELECT n.owner_id AS ownerId,b.id AS blobId,b.r2_key AS sourceKey,
@@ -365,23 +373,56 @@ async function streamBudgetedEpubSelection(
   );
   const row = await currentIndexRow(db, nodeId, blobId, plan.blob);
   if (plan.blob.key !== `u/${row.ownerId}/b/${blobId}`) throw new Error("library_not_available");
-  const index = await loadIndex(bucket, nodeId, row);
+  assertIndexRow(nodeId, row);
+  const budget = budgets.get(budgets.idFromName(plan.budgetId));
+  const indexRequestId = crypto.randomUUID();
+  const indexLease = await budget.reserve({
+    budgetId: plan.budgetId,
+    sessionId: plan.sessionId,
+    requestId: indexRequestId,
+    epoch: plan.epoch,
+    bytes: row.indexBytes,
+  });
+  let indexDispatched = false;
+  const indexResponse = await streamLeasedContent(
+    async (signal) => {
+      signal.throwIfAborted();
+      indexDispatched = true;
+      const object = await bucket.get(row.indexKey);
+      if (!object || object.size !== row.indexBytes) {
+        void object?.body.cancel().catch(() => undefined);
+        throw new Error("library_not_available");
+      }
+      return new Response(object.body);
+    },
+    row.indexBytes,
+    indexLease.expiresAt,
+    request.signal,
+    (deliveredBytes) =>
+      budget.settle({
+        budgetId: plan.budgetId,
+        requestId: indexRequestId,
+        // Once GET was dispatched, a failed or unacknowledged read is not free.
+        deliveredBytes: indexDispatched && deliveredBytes === 0 ? null : deliveredBytes,
+      }),
+  );
+  const index = await parseIndex(new Uint8Array(await indexResponse.arrayBuffer()), row);
   const entry = select(index);
   if (!entry) throw new Error("library_not_available");
   const etag = `"epub-${blobId}-${entry.token}-${entry.crc32.toString(16)}"`;
   const bytes = responseBytes(request, entry, etag);
-  // The lease pays for what the server must read beyond the response slice:
-  // a HEAD still re-fetches the whole index document, and any byte response
-  // decompresses the full entry before a Range is applied.
-  const fetchBytes = bytes > 0 ? entry.compressedSize : row.indexBytes;
-  const budget = budgets.get(budgets.idFromName(plan.budgetId));
+  // The index is already charged. Retain the max-cost approximation, reserving
+  // only the additional payload cost; even zero bytes require fresh admission.
+  const fetchBytes = bytes > 0 ? entry.compressedSize : 0;
   const requestId = crypto.randomUUID();
+  request.signal.throwIfAborted();
+  if (Date.now() >= indexLease.expiresAt) throw new Error("content_lease_expired");
   const lease = await budget.reserve({
     budgetId: plan.budgetId,
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
-    bytes: Math.max(bytes, fetchBytes),
+    bytes: Math.max(0, Math.max(bytes, fetchBytes) - row.indexBytes),
   });
   const source: ZipObjectSource = {
     key: plan.blob.key,
@@ -399,13 +440,16 @@ async function streamBudgetedEpubSelection(
       }
     },
     bytes,
-    lease.expiresAt,
+    Math.min(indexLease.expiresAt, lease.expiresAt),
     request.signal,
     (deliveredBytes) =>
       budget.settle({
         budgetId: plan.budgetId,
         requestId,
-        deliveredBytes: deliveredBytes === null ? null : Math.max(deliveredBytes, fetchBytes),
+        deliveredBytes:
+          deliveredBytes === null
+            ? null
+            : Math.max(0, Math.max(deliveredBytes, fetchBytes) - row.indexBytes),
       }),
   );
 }

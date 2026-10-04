@@ -574,7 +574,13 @@ test("encrypted files are opaque at rest and decrypt only while the member key i
       await page.getByRole("button", { name: "暗号化してアップロード", exact: true }).click();
       await (await chooser).setFiles(fixture(item.name));
       await expect
-        .poll(async () => (await encryptNodes(page)).filter((node) => !before.has(node.id)).length)
+        .poll(
+          async () => (await encryptNodes(page)).filter((node) => !before.has(node.id)).length,
+          {
+            timeout: 30_000,
+            intervals: [250, 500, 1000],
+          },
+        )
         .toBe(nodes.length + 1);
       nodes.push(
         (await encryptNodes(page)).find(

@@ -31,6 +31,14 @@ headerを返す前の期限切れは503 `not_ready`とし、許可されたAPP_O
 
 ## 検証と残る範囲
 
+### EPUBの索引と本文
+
+EPUB content配信は、最大8MiBの索引をR2から取得する前に、その全量と1 requestを予約する。存在しないentryやページを選んだ要求も、この索引読出分を消費する。取得dispatch後の失敗・中断・応答不明は予約全額を保持する。索引の予約を拒否した場合は索引・本文を取得しない。索引検証後は、追加byteが0でも別のleaseを取得し、現在のsessionと権限・並列数を再確認する。配信期限は二つのlease期限の小さい方を使い、索引取得に使った時間を延長しない。
+
+成功した要求は2 request枠、索引取得後に無効entryを拒否した要求は1 request枠を消費する。byte課金は`max(indexBytes, responseBytes, compressedEntryBytes)`という概算で、索引と本文の取得量の単純な加算ではない。HEAD・304・416は索引量を課金する。既存の`3×blob`枠を維持するため、索引と本文を両方読むGETの全実読出量とは差が残る。索引にこの枠を使う分、小さいEPUBや繰り返し読むページは以前より早く上限に達する場合がある。
+
+認可を確定するtarget manifestの読み出しは、索引予約より前に残る。BudgetDO内部も冷起動時にmanifestを確認するため、予約拒否時の「索引・本文GETが0」は「すべてのR2要求が0」を意味しない。
+
 Node試験は、正常/空/bodyなし配信、期限切れ/事前abort、遅延setup、停止したbody、未読応答、取消しの応答喪失、5秒待機上限、長さ不一致、最終精算待ち、10分上限、HEAD/GET後のtimerとの順序競合を確認する。
 
 workerdでは実D1/R2/BudgetDOと実ticketの5秒→120秒の更新を使い、期限後のchunk拒否、古い会計期間内へのlease制限、R2 HEAD/GETの遅延、503のCORS、部分受信後のabortと全額保持、事前abortによる予約/読み込みの抑止を検証する。修正前の配信関数を使う比較試験では、期限後の3 byteが届く失敗を確認した。全体結果は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照。

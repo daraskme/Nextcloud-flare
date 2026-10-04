@@ -15,6 +15,7 @@ import {
 } from "../jobs/operations";
 import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
+import { assertPurgeUploadsSettled } from "./purgeUploads";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const BASE_STEPS = 43;
@@ -551,6 +552,7 @@ function statements(
     assertOperationClaim(claim),
     authorizationAssertion(authority),
     purgeGuard(claim, current.rootId, current.memberCount),
+    assertPurgeUploadsSettled(trashOpId),
     assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=?)", [op]),
   ];
   steps.forEach((step, index) =>
