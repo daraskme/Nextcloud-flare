@@ -77,6 +77,7 @@ export async function notifyDesktop(event, exec = execFileAsync) {
     "busctl",
     [
       "--user",
+      "--",
       "call",
       "org.freedesktop.Notifications",
       "/org/freedesktop/Notifications",

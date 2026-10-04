@@ -10,7 +10,11 @@ import {
   currentMonitorStatus,
   planNotifications,
 } from "../../ops/monitoring/monitor-core.mjs";
-import { collectHourlyObservations, runMonitorCycle } from "../../ops/monitoring/run-monitor.mjs";
+import {
+  collectHourlyObservations,
+  notifyDesktop,
+  runMonitorCycle,
+} from "../../ops/monitoring/run-monitor.mjs";
 import { runHttpProbes } from "../../ops/staging/smoke-check.mjs";
 
 const now = new Date("2026-10-04T03:00:00.000Z");
@@ -46,6 +50,20 @@ const billing = (overrides = {}) => ({
   observedAt: "2026-10-04T02:50:00.000Z",
   stagingAttribution: "unavailable",
   ...overrides,
+});
+
+test("desktop notification passes the negative persistent timeout after the busctl option delimiter", async () => {
+  let invocation;
+  await notifyDesktop(
+    { title: "Backup needs attention", body: "Open the local status." },
+    async (...args) => {
+      invocation = args;
+    },
+  );
+  assert.equal(invocation[0], "busctl");
+  assert.deepEqual(invocation[1].slice(0, 3), ["--user", "--", "call"]);
+  assert.equal(invocation[1].at(-1), "-1");
+  assert.deepEqual(invocation[2], { timeout: 5000, windowsHide: true });
 });
 
 test("backup health requires completed offline restore and verified encrypted archive, and accepts the weekly age window", () => {
