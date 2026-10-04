@@ -6,6 +6,8 @@ import { createUnhandledClassifier } from "./unhandled-classifier.mjs";
 const runner = fileURLToPath(new URL("./fail-on-unhandled.mjs", import.meta.url));
 const native =
   "exception = kj/async-io.c++:1713: disconnected: fixed-length pipe ended prematurely";
+const canceledPump =
+  "exception = workerd/api/streams/internal.c++:2643: disconnected: pump canceled";
 const network =
   "uncaught exception; source = Uncaught (in promise); stack = Error: Network connection lost.";
 const other = "uncaught exception; source = Uncaught (in promise); stack = Error: admission_closed";
@@ -43,11 +45,22 @@ describe("integration unhandled rejection gate", () => {
     expect(result.stderr).toContain("unhandled rejections=1");
   });
 
-  it("rejects all workerd errors in the regular integration process", () => {
+  it("forwards handled native stream diagnostics without calling them unhandled promises", () => {
     for (const stream of ["stderr", "stdout"]) {
-      const result = stream === "stderr" ? emit([native, network]) : emit([], [native, network]);
+      const result =
+        stream === "stderr" ? emit([native, canceledPump]) : emit([], [native, canceledPump]);
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(canceledPump);
+      expect(result.stderr).toContain("unhandled rejections=0");
+    }
+  });
+
+  it("fails explicit workerd promise markers even beside handled native diagnostics", () => {
+    for (const stream of ["stderr", "stdout"]) {
+      const result =
+        stream === "stderr" ? emit([canceledPump, network]) : emit([], [canceledPump, network]);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("platform expected disconnects=0; unhandled rejections=2");
+      expect(result.stderr).toContain("platform expected disconnects=0; unhandled rejections=1");
     }
     expect(emit([network]).status).toBe(1);
   });
@@ -61,15 +74,21 @@ describe("integration unhandled rejection gate", () => {
     expect(classify(true, [network, network, network])).toEqual({ expected: 2, unhandled: 1 });
   });
 
-  it("does not excuse other diagnostics in the isolated process", () => {
+  it("does not excuse other uncaught promises in the isolated process", () => {
     expect(classify(true, [other])).toEqual({ expected: 0, unhandled: 1 });
-    expect(classify(true, ["exception = other-native-failure", network])).toEqual({
+    expect(classify(true, ["exception = other-native-failure", network, other])).toEqual({
       expected: 1,
       unhandled: 1,
     });
-    expect(
-      classify(true, ["exception = kj/async-io.c++:1713: disconnected: different cause", network]),
-    ).toEqual({ expected: 1, unhandled: 1 });
+    expect(classify(false, [canceledPump, network])).toEqual({ expected: 0, unhandled: 1 });
+  });
+
+  it("preserves a child's nonzero exit even when it only emitted native diagnostics", () => {
+    const result = run(
+      `process.stderr.write(${JSON.stringify(canceledPump + "\n")});process.exit(17)`,
+    );
+    expect(result.status).toBe(17);
+    expect(result.stderr).toContain("unhandled rejections=0");
   });
 
   it("fails a Node unhandled rejection under strict mode", () => {
