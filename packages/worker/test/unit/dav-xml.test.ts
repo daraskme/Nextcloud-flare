@@ -41,6 +41,46 @@ it("parses empty, allprop, propname and namespace-qualified propfind bodies", as
   });
 });
 
+it("accepts rclone PROPFIND XML without Content-Type but keeps XML safety checks", async () => {
+  const xml = `<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:">
+ <d:prop>
+  <d:displayname/>
+  <d:getlastmodified/>
+  <d:getcontentlength/>
+  <d:resourcetype/>
+ </d:prop>
+</d:propfind>`;
+  const noType = (body: string) =>
+    new Request("https://app.invalid/dav/", {
+      method: "PROPFIND",
+      headers: { Depth: "1" },
+      body: new TextEncoder().encode(body),
+    });
+  expect(noType(xml).headers.has("Content-Type")).toBe(false);
+  await expect(parsePropfindRequest(noType(xml))).resolves.toEqual({
+    mode: "prop",
+    properties: [
+      { namespace: "DAV:", name: "displayname" },
+      { namespace: "DAV:", name: "getlastmodified" },
+      { namespace: "DAV:", name: "getcontentlength" },
+      { namespace: "DAV:", name: "resourcetype" },
+    ],
+  });
+  await expect(parsePropfindRequest(noType(`<!DOCTYPE x>${xml}`))).rejects.toThrow(
+    "invalid_dav_xml",
+  );
+  await expect(parsePropfindRequest(noType(`<!ENTITY x "y">${xml}`))).rejects.toThrow(
+    "invalid_dav_xml",
+  );
+  await expect(parsePropfindRequest(noType(" ".repeat(1_048_577)))).rejects.toThrow(
+    "invalid_dav_xml",
+  );
+  await expect(parsePropfindRequest(request(xml, "application/json"))).rejects.toThrow(
+    "invalid_dav_xml",
+  );
+});
+
 it("parses exclusive write LOCK bodies and empty refresh bodies", async () => {
   await expect(parseLockinfoRequest(request())).resolves.toEqual({ kind: "refresh" });
   const parsed = await parseLockinfoRequest(
