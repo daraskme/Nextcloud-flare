@@ -90,3 +90,26 @@ it("records the actor and billed account on enqueue, defaulting to the space own
   });
   await expect(enqueueMutation(env.DB, request("x:bad"))).rejects.toThrow("mutation_unavailable");
 });
+
+it("counts legacy owner-implicit rows (NULL actor) toward the owner's actor and account limits", async () => {
+  const [owner, other] = await users(2);
+  const legacy = (spaceId: string): SqlStatement => ({
+    sql: `INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until)
+      VALUES(?,?,?,1,0,0,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)`,
+    values: [crypto.randomUUID(), crypto.randomUUID(), spaceId],
+  });
+  await atomicBatch(
+    env.DB,
+    Array.from({ length: 16 }, () => legacy(owner!.space)),
+  );
+  await expect(insert(owner!.space, `u:${owner!.user}`, owner!.user)).rejects.toThrow(
+    "mutation_unavailable",
+  );
+  // Link shares bill the owner's account: 16 legacy + 16 share rows reach 32.
+  await fill(owner!.space, "s:share-legacy", owner!.user, 16);
+  await expect(insert(owner!.space, "s:share-other", owner!.user)).rejects.toThrow(
+    "mutation_unavailable",
+  );
+  // Legacy rows in the owner's space do not count against other users.
+  await insert(owner!.space, `u:${other!.user}`, other!.user);
+});

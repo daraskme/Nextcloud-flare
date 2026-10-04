@@ -675,7 +675,13 @@ export async function createInternalShare(
       (policyExpiresAt !== null && policyExpiresAt > expiresAt))
   )
     throw new Error("invalid_share_request");
-  const admission = await acquireAccountMutation(env, ownerId, session.epoch, "share.create");
+  const admission = await acquireAccountMutation(
+    env,
+    ownerId,
+    session.epoch,
+    "share.create",
+    userActor(session.user_id),
+  );
   const delegationStatements: SqlStatement[] = source
     ? [
         sourceAuthorityAssertion(session, source),

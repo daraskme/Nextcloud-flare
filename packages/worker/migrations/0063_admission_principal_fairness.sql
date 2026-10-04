@@ -6,7 +6,8 @@
 -- (account: the user, or the space owner for link shares), then bound each:
 --   actor 16 / account 32 / link shares per account 16 /
 --   non-owner actors per space 48 (owner keeps >=16 of the 64) / total 224.
--- NULL actor = legacy or owner-implicit row; counted as the owner.
+-- NULL actor = legacy or owner-implicit row; counted toward its space owner's
+-- actor/account quotas (rows cannot be backfilled: admission identity is immutable).
 ALTER TABLE mutation_admissions ADD COLUMN actor TEXT
   CHECK(actor IS NULL OR (length(actor) BETWEEN 3 AND 130 AND substr(actor,1,2) IN ('u:','s:')));
 ALTER TABLE mutation_admissions ADD COLUMN account TEXT CHECK(account IS NULL OR length(account) BETWEEN 1 AND 128);
@@ -29,9 +30,11 @@ WHEN NEW.state<>'waiting' OR NEW.granted_at IS NOT NULL
  OR (NEW.system=0 AND (SELECT COUNT(*) FROM mutation_admissions
    WHERE state='waiting' AND system=0)>=224)
  OR (NEW.actor IS NOT NULL AND (SELECT COUNT(*) FROM mutation_admissions
-   WHERE state='waiting' AND actor=NEW.actor)>=16)
+   WHERE state='waiting' AND (actor=NEW.actor OR (actor IS NULL AND system=0 AND substr(NEW.actor,1,2)='u:'
+     AND space_id IN (SELECT id FROM spaces WHERE owner_id=substr(NEW.actor,3)))))>=16)
  OR (NEW.actor IS NOT NULL AND (SELECT COUNT(*) FROM mutation_admissions
-   WHERE state='waiting' AND account=NEW.account)>=32)
+   WHERE state='waiting' AND (account=NEW.account OR (actor IS NULL AND system=0
+     AND space_id IN (SELECT id FROM spaces WHERE owner_id=NEW.account))))>=32)
  OR (substr(NEW.actor,1,2)='s:' AND (SELECT COUNT(*) FROM mutation_admissions
    WHERE state='waiting' AND account=NEW.account AND substr(actor,1,2)='s:')>=16)
  OR (NEW.actor IS NOT NULL AND NEW.actor<>'u:'||(SELECT owner_id FROM spaces WHERE id=NEW.space_id)
