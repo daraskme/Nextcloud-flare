@@ -122,6 +122,7 @@ export interface LiveNode {
   readonly kind: "root" | "folder" | "file";
   readonly revision: number;
   readonly current_blob_id: string | null;
+  readonly updated_at: number;
   readonly tree_generation: number;
 }
 export type AuthorizedNode =
@@ -274,7 +275,7 @@ const NODE_AUTHORITY = `WITH RECURSIVE
           WHERE current.share_id=sh.id AND current.version=sh.version
         ))
   )
-  SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,sp.tree_generation
+  SELECT n.id,n.space_id,n.owner_id,n.parent_id,n.name,n.kind,n.revision,n.current_blob_id,n.updated_at,sp.tree_generation
     FROM nodes n JOIN spaces sp ON sp.id=n.space_id AND sp.owner_id=n.owner_id
     JOIN users owner ON owner.id=n.owner_id AND owner.disabled_at IS NULL
     JOIN control ctl ON ctl.singleton=1 JOIN p
