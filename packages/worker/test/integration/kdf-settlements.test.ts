@@ -55,7 +55,7 @@ function fixture() {
       db = env.DB,
     ) =>
       runInDurableObject(stub, async (_, state) =>
-        action(new KdfSettlements(state.storage.sql, db), state),
+        action(new KdfSettlements(state.storage.sql, db, () => state.storage.sync()), state),
       ),
   };
 }
@@ -106,7 +106,14 @@ it("persists actual native completion, repairs after eviction, and never repeats
   await f.use(async (_, state) => {
     const row = state.storage.sql.exec("SELECT * FROM control_kdf_receipts").one();
     expect(row).toMatchObject({ id: r.id, epoch: 1, state: "finished" });
-    expect(Object.keys(row).sort()).toEqual(["deadline", "epoch", "id", "state", "token"]);
+    expect(Object.keys(row).sort()).toEqual([
+      "deadline",
+      "dispatch_started",
+      "epoch",
+      "id",
+      "state",
+      "token",
+    ]);
   });
   expect(
     await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?").bind(r.id).first("state"),
@@ -143,16 +150,17 @@ it.each(["write-ack", "read"] as const)(
   },
 );
 
-it("keeps unproven reserved work across eviction and does not repair an unrelated D1 claim", async () => {
+it("keeps unproven dispatched work across eviction and does not repair an unrelated D1 claim", async () => {
   const f = fixture(),
     r = dispatch();
   await claim(r);
   await f.use(async (store) => {
     store.reserve(r);
+    await store.beginDispatch(r);
   });
   await evictDurableObject(f.stub);
   expect(await f.use((store) => store.repair())).toEqual({
-    checked: 0,
+    checked: 1,
     reconciled: 0,
     pending: 1,
     unknown: 1,
@@ -224,7 +232,11 @@ it("bounds local outstanding records before any new claim or crypto dispatch", a
     native = vi.spyOn(crypto.subtle, "deriveBits"),
     r = request();
   await f.use(async (store, state) => {
-    for (let i = 0; i < 20; i++) store.reserve(dispatch());
+    for (let i = 0; i < 20; i++) {
+      const r = dispatch();
+      store.reserve(r);
+      await store.beginDispatch(r);
+    }
     await expect(
       new ControlKdf(
         env.DB,
@@ -289,7 +301,7 @@ it("refuses conflicting terminal receipts instead of rewriting them", async () =
   expect(await saved(r)).toMatchObject({ state: "not_started" });
 });
 
-it("does not manufacture proof when local completion storage fails", async () => {
+it("preserves actual completion in D1 when local completion storage fails", async () => {
   const f = fixture(),
     r = request();
   await f.use(async (_, state) => {
@@ -300,7 +312,7 @@ it("does not manufacture proof when local completion storage fails", async () =>
         return state.storage.sql.exec(query, ...values);
       },
     } as SqlStorage;
-    const store = new KdfSettlements(sql, env.DB);
+    const store = new KdfSettlements(sql, env.DB, () => state.storage.sync());
     await expect(
       new ControlKdf(
         env.DB,
@@ -313,13 +325,13 @@ it("does not manufacture proof when local completion storage fails", async () =>
   });
   expect(
     await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?").bind(r.id).first("state"),
-  ).toBe("claimed");
-  // This test observed native completion; only injected local persistence failed.
-  await env.DB.prepare(
-    "UPDATE kdf_attempts SET state='finished',finished_at=MAX(issued_at,strftime('%s','now')*1000) WHERE id=?",
-  )
-    .bind(r.id)
-    .run();
+  ).toBe("finished");
+  await evictDurableObject(f.stub);
+  expect(await f.use((store) => store.repair())).toMatchObject({
+    reconciled: 1,
+    pending: 0,
+    unknown: 0,
+  });
 });
 
 it("repairs old-epoch completion through ControlDO maintenance RPC and requires a new full audit", async () => {
@@ -368,13 +380,14 @@ it("repairs old-epoch completion through ControlDO maintenance RPC and requires 
   for (let i = 0; i < 20 && !done; i++) done = (await stub.nextRecoveryAuditPage(epoch)).completed;
   expect(done).toBe(true);
   await runInDurableObject(stub, async (instance, state) => {
-    // An interrupted local dispatch is also a barrier, even if no matching D1 row exists.
-    const store = new KdfSettlements(state.storage.sql, env.DB);
+    // An interrupted reservation blocks resume until repair proves it never dispatched.
+    const store = new KdfSettlements(state.storage.sql, env.DB, () => state.storage.sync());
     store.reserve({ ...dispatch(Date.now() - 60000), epoch });
     await expect(instance.resumeAdmission(epoch)).rejects.toThrow("recovery_kdf_unsettled");
   });
-  expect(await stub.repairKdfSettlements(epoch)).toMatchObject({ pending: 1, unknown: 1 });
-  expect(await stub.status()).toMatchObject({ maintenance: true });
+  expect(await stub.repairKdfSettlements(epoch)).toMatchObject({ pending: 0, unknown: 0 });
+  await audit();
+  expect(await stub.status()).toMatchObject({ maintenance: false });
 });
 
 it("recovers a local completion write whose acknowledgement was lost", async () => {
@@ -389,7 +402,7 @@ it("recovers a local completion write whose acknowledgement was lost", async () 
         return result;
       },
     } as SqlStorage;
-    const store = new KdfSettlements(sql, env.DB);
+    const store = new KdfSettlements(sql, env.DB, () => state.storage.sync());
     await expect(
       new ControlKdf(
         env.DB,
@@ -425,4 +438,194 @@ it("concurrent repeated repair preserves one terminal receipt and its rate charg
     expect(await store.repair()).toEqual({ checked: 0, reconciled: 0, pending: 0, unknown: 0 });
   });
   expect(await saved(r)).toMatchObject({ state: "finished" });
+});
+
+it("repairs a crash before dispatch even after a D1 claim, and fences the suspended handler", async () => {
+  const f = fixture(),
+    r = dispatch();
+  await claim(r);
+  await f.use(async (store) => {
+    store.reserve(r);
+  });
+  await evictDurableObject(f.stub);
+  expect(await f.use((store) => store.repair())).toEqual({
+    checked: 1,
+    reconciled: 1,
+    pending: 0,
+    unknown: 0,
+  });
+  expect(await saved(r)).toMatchObject({ state: "not_started" });
+  await f.use(async (store) => {
+    await expect(store.beginDispatch(r)).rejects.toThrow("kdf_unavailable");
+  });
+});
+
+it("keeps a repaired pre-claim reservation until a delayed claim can no longer arrive", async () => {
+  const f = fixture(),
+    r = dispatch();
+  await f.use(async (store) => {
+    store.reserve(r);
+    expect(await store.repair()).toMatchObject({ pending: 1, unknown: 0 });
+    await expect(store.beginDispatch(r)).rejects.toThrow("kdf_unavailable");
+  });
+  await claim(r);
+  expect(await f.use((store) => store.repair())).toMatchObject({ pending: 0 });
+  expect(await saved(r)).toMatchObject({ state: "not_started" });
+});
+
+it("recovers a started reservation using exact D1 terminal evidence", async () => {
+  const f = fixture(),
+    r = dispatch();
+  await claim(r);
+  await f.use(async (store) => {
+    store.reserve(r);
+    await store.beginDispatch(r);
+  });
+  await env.DB.prepare(
+    "UPDATE kdf_attempts SET state='finished',finished_at=issued_at WHERE id=? AND dispatch_token=?",
+  )
+    .bind(r.id, r.token)
+    .run();
+  await evictDurableObject(f.stub);
+  expect(await f.use((store) => store.repair())).toEqual({
+    checked: 1,
+    reconciled: 1,
+    pending: 0,
+    unknown: 0,
+  });
+});
+
+it("never calls native crypto when dispatch intent cannot be made durable", async () => {
+  const f = fixture(),
+    r = request(),
+    native = vi.spyOn(crypto.subtle, "deriveBits");
+  await f.use(async (_, state) => {
+    const store = new KdfSettlements(state.storage.sql, env.DB, async () => {
+      throw new Error("sync_failed");
+    });
+    await expect(
+      new ControlKdf(
+        env.DB,
+        async () => {},
+        () => {},
+        store,
+      ).derive(r),
+    ).rejects.toThrow("kdf_unavailable");
+  });
+  expect(native).not.toHaveBeenCalled();
+  expect(
+    await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?").bind(r.id).first("state"),
+  ).toBe("not_started");
+});
+
+it("migrates legacy reserved receipts conservatively without releasing unknown native work", async () => {
+  const f = fixture(),
+    r = dispatch();
+  await claim(r);
+  await f.use(async (_, state) => {
+    // Simulate a receipt inserted by the older binary: its new column defaults to started.
+    state.storage.sql.exec(
+      "INSERT INTO control_kdf_receipts(token,id,epoch,deadline,state) VALUES(?,?,?,?,'reserved')",
+      r.token,
+      r.id,
+      r.epoch,
+      r.deadline,
+    );
+  });
+  await evictDurableObject(f.stub);
+  expect(await f.use((store) => store.repair())).toMatchObject({ pending: 1, unknown: 1 });
+  expect(await saved(r)).toMatchObject({ state: "claimed" });
+});
+
+it("retains unknown native work when both completion stores fail", async () => {
+  const f = fixture(),
+    r = request();
+  fixtures.push(r.id);
+  await f.use(async (_, state) => {
+    const sql = {
+      exec: (query: string, ...values: SqlStorageValue[]) => {
+        if (query.startsWith("UPDATE control_kdf_receipts SET state="))
+          throw new Error("local_lost");
+        return state.storage.sql.exec(query, ...values);
+      },
+    } as SqlStorage;
+    const db = fault("write");
+    const store = new KdfSettlements(sql, db, () => state.storage.sync());
+    await expect(
+      new ControlKdf(
+        db,
+        async () => {},
+        () => {},
+        store,
+      ).derive(r),
+    ).rejects.toThrow("kdf_unavailable");
+  });
+  await evictDurableObject(f.stub);
+  expect(await f.use((store) => store.repair())).toMatchObject({ pending: 1, unknown: 1 });
+  expect(
+    await env.DB.prepare("SELECT state FROM kdf_attempts WHERE id=?").bind(r.id).first("state"),
+  ).toBe("claimed");
+});
+
+it("upgrades the old SQLite schema without treating legacy reservations as unstarted", async () => {
+  const f = fixture(),
+    r = dispatch();
+  await claim(r);
+  await runInDurableObject(f.stub, async (_, state) => {
+    state.storage.sql.exec("DROP TABLE control_kdf_receipts");
+    state.storage.sql.exec(`CREATE TABLE control_kdf_receipts(
+      token TEXT PRIMARY KEY,id TEXT NOT NULL,epoch INTEGER NOT NULL,deadline INTEGER NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('reserved','finished','not_started')))`);
+    state.storage.sql.exec(
+      "INSERT INTO control_kdf_receipts VALUES(?,?,?,?,'reserved')",
+      r.token,
+      r.id,
+      r.epoch,
+      r.deadline,
+    );
+    const store = new KdfSettlements(state.storage.sql, env.DB, () => state.storage.sync());
+    expect(
+      state.storage.sql.exec("SELECT dispatch_started FROM control_kdf_receipts").one()
+        .dispatch_started,
+    ).toBe(1);
+    expect(await store.repair()).toMatchObject({ pending: 1, unknown: 1 });
+    expect(() =>
+      state.storage.sql.exec("UPDATE control_kdf_receipts SET dispatch_started=0"),
+    ).toThrow("immutable_kdf_receipt");
+  });
+});
+
+it("does not cancel a later reservation that started while an earlier repair awaited D1", async () => {
+  const f = fixture(),
+    rows = [dispatch(), dispatch()].sort((a, b) => a.token.localeCompare(b.token));
+  for (const r of rows) await claim(r);
+  await f.use(async (_, state) => {
+    let interleaved = false;
+    let store: KdfSettlements;
+    const wrap = (statement: D1PreparedStatement, sql: string): D1PreparedStatement =>
+      new Proxy(statement, {
+        get(target, property) {
+          if (property === "bind") return (...args: unknown[]) => wrap(target.bind(...args), sql);
+          if (property === "run" && sql.startsWith("UPDATE kdf_attempts SET state="))
+            return async () => {
+              if (!interleaved) {
+                interleaved = true;
+                await store.beginDispatch(rows[1]!);
+              }
+              return target.run();
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const db = {
+      batch: env.DB.batch.bind(env.DB),
+      prepare: (sql: string) => wrap(env.DB.prepare(sql), sql),
+    } as unknown as D1Database;
+    store = new KdfSettlements(state.storage.sql, db, () => state.storage.sync());
+    for (const r of rows) store.reserve(r);
+    expect(await store.repair()).toMatchObject({ reconciled: 1, pending: 1, unknown: 1 });
+    expect(await saved(rows[0]!)).toMatchObject({ state: "not_started" });
+    expect(await saved(rows[1]!)).toMatchObject({ state: "claimed" });
+  });
 });

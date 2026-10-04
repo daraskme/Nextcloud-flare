@@ -1,15 +1,48 @@
-import { applyD1Migrations, evictDurableObject } from "cloudflare:test";
+import { applyD1Migrations, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, expect, it } from "vitest";
 import { advanceMutations } from "../../src/db/mutationAdmission";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { LockDO } from "../../src/do/LockDO";
+import type { Env } from "../../src/env";
 import { putFile } from "../../src/services/putFile";
 import { davBucket, davPutFixture } from "../fixtures/davPut";
 import { foundationFixture } from "../fixtures/foundation";
 
 const control = () => env.CONTROL.get(env.CONTROL.idFromName(CONTROL_NAME));
+const observedLocks = {
+  idFromName: env.LOCKS.idFromName.bind(env.LOCKS),
+  get(id: DurableObjectId) {
+    const stub = env.LOCKS.get(id);
+    return {
+      async acquireCreate(request: Parameters<LockDO["acquireCreate"]>[0]) {
+        // Preserve the real ControlDO and LockDO decision while transporting an
+        // expected stop refusal as a value across the test RPC boundary.
+        const result = await runInDurableObject(stub, async (_, state) => {
+          try {
+            return {
+              ok: true as const,
+              permit: await new LockDO(state, env).acquireCreate(request),
+            };
+          } catch (error) {
+            return {
+              ok: false as const,
+              message: error instanceof Error ? error.message : "lock_failed",
+            };
+          }
+        });
+        if (!result.ok) throw new Error(result.message);
+        return result.permit;
+      },
+      acquireNodeWrite: (request: Parameters<LockDO["acquireNodeWrite"]>[0]) =>
+        stub.acquireNodeWrite(request),
+      release: (requestId: string, permit: Parameters<LockDO["release"]>[1]) =>
+        stub.release(requestId, permit),
+    };
+  },
+} as unknown as Env["LOCKS"];
 let epoch = 2;
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -67,6 +100,7 @@ it.each(["evict", "stop"] as const)(
     const pending = putFile(
       {
         ...env,
+        LOCKS: observedLocks,
         BLOBS: davBucket({
           put: async (k, b, o) => {
             puts++;

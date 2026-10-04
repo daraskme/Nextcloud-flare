@@ -5,6 +5,7 @@ import { KdfUnavailableError } from "../auth/kdf";
 import { evaluateDavRequestIf } from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
 import { davEtag } from "../dav/etag";
+import { evaluateDavPutHttpPreconditions } from "../dav/httpPreconditions";
 import { parseDavLockDepth, parseDavTimeout } from "../dav/lockProtocol";
 import {
   davReadAssertion,
@@ -307,9 +308,10 @@ export async function handleDavHttp(
       target = undefined;
     }
     if (target && target.node.kind !== "file") return problem(405, "method_not_allowed");
-    if (target && !request.headers.has("If-Match") && !request.headers.has("If"))
-      return problem(428, "precondition_failed");
     try {
+      evaluateDavPutHttpPreconditions(request.headers, target ? davEtag(target.node) : null);
+      if (target && !request.headers.has("If-Match") && !request.headers.has("If"))
+        return problem(428, "precondition_failed");
       const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
       const parent = target
         ? {
@@ -374,6 +376,7 @@ export async function handleDavHttp(
         error instanceof Error &&
         [
           "invalid_dav_if",
+          "invalid_dav_precondition",
           "invalid_dav_put",
           "invalid_name",
           "name_too_long",

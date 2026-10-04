@@ -9,6 +9,7 @@ import type { Env } from "../../src/env";
 import { lookupOperation } from "../../src/jobs/operations";
 import { handleOutboxBatch } from "../../src/jobs/queue";
 import { dispatchTreeJob, type TreeJobSender } from "../../src/jobs/treeJobStore";
+import { processTreeJob } from "../../src/jobs/treeJobWorker";
 import { purgeTrash } from "../../src/services/purgeTrash";
 import { restoreTrash } from "../../src/services/restoreTrash";
 import { trashNode } from "../../src/services/trashNode";
@@ -330,4 +331,179 @@ it("durably trashes, restores with conflict naming, and purges a 1,001-node tree
       .first(),
   ).toEqual({ state: "candidate", trash_op_id: trashedAgain.operation.id });
   expect(await env.BLOBS.head(`u/${fixture.ids.user}/b/${blobId}`)).not.toBeNull();
+});
+
+async function createExhaustionTrashJob() {
+  const nodeId = `exhaust_${crypto.randomUUID().replaceAll("-", "")}`;
+  await largeTree(nodeId);
+  const result = await trashNode(env as Env, {
+    principal: principal(),
+    requestId: crypto.randomUUID(),
+    nodeId,
+    spaceId: fixture.ids.space,
+    lockTokens: [],
+  });
+  if (result.kind !== "terminal") throw new Error("trash_job_not_created");
+  const row = await env.DB.prepare("SELECT id FROM bulk_jobs WHERE op_id=?")
+    .bind(result.operation.id)
+    .first<{ id: string }>();
+  const jobId = row?.id;
+  if (!jobId) throw new Error("trash_job_not_visible");
+  return { jobId, operationId: result.operation.id };
+}
+
+it("terminalizes a tree job after its tenth claim lease expires, but preserves a live lease", async () => {
+  const { jobId, operationId } = await createExhaustionTrashJob();
+  const token = crypto.randomUUID();
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("sent");
+  await env.DB.prepare(`INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt)
+    VALUES(?,?,?,strftime('%s','now')*1000+60000,10)`)
+    .bind(jobId, token, epoch)
+    .run();
+
+  expect(await processTreeJob(env as Env, jobId)).toBe("busy");
+  expect(
+    await env.DB.prepare("SELECT claim_token,attempt FROM job_leases WHERE job_id=?")
+      .bind(jobId)
+      .first(),
+  ).toEqual({ claim_token: token, attempt: 10 });
+  expect(await lookupOperation(env.DB, principal(), operationId)).toMatchObject({
+    state: "claimed",
+  });
+
+  await env.DB.prepare(
+    "UPDATE job_leases SET expires_at=strftime('%s','now')*1000-1 WHERE job_id=?",
+  )
+    .bind(jobId)
+    .run();
+  expect(await processTreeJob(env as Env, jobId)).toBe("failed");
+  expect(await processTreeJob(env as Env, jobId)).toBe("failed");
+  expect(
+    await env.DB.prepare(`SELECT o.state AS operation_state,o.error_code AS operation_error,
+    j.state AS job_state,j.error_code AS job_error FROM operations o
+    JOIN bulk_jobs j ON j.op_id=o.op_id WHERE o.op_id=?`)
+      .bind(operationId)
+      .first(),
+  ).toEqual({
+    operation_state: "failed",
+    operation_error: "claim_attempts_exhausted",
+    job_state: "failed",
+    job_error: "claim_attempts_exhausted",
+  });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM job_leases WHERE job_id=?")
+      .bind(jobId)
+      .first("n"),
+  ).toBe(0);
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("terminal");
+});
+
+it("terminalizes a tree job when its invocation budget is exhausted", async () => {
+  const { jobId, operationId } = await createExhaustionTrashJob();
+  const token = crypto.randomUUID();
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("sent");
+  await env.DB.prepare("UPDATE bulk_jobs SET invocation_count=200 WHERE id=?").bind(jobId).run();
+  await env.DB.prepare(`INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt)
+    VALUES(?,?,?,strftime('%s','now')*1000+60000,1)`)
+    .bind(jobId, token, epoch)
+    .run();
+
+  expect(await processTreeJob(env as Env, jobId)).toBe("busy");
+  expect(
+    await env.DB.prepare("SELECT claim_token FROM job_leases WHERE job_id=?")
+      .bind(jobId)
+      .first("claim_token"),
+  ).toBe(token);
+  expect(await lookupOperation(env.DB, principal(), operationId)).toMatchObject({
+    state: "claimed",
+  });
+  await env.DB.prepare(
+    "UPDATE job_leases SET expires_at=strftime('%s','now')*1000-1 WHERE job_id=?",
+  )
+    .bind(jobId)
+    .run();
+
+  expect(await processTreeJob(env as Env, jobId)).toBe("failed");
+  expect(
+    await env.DB.prepare(`SELECT o.state AS operation_state,o.error_code AS operation_error,
+    j.state AS job_state,j.error_code AS job_error FROM operations o
+    JOIN bulk_jobs j ON j.op_id=o.op_id WHERE o.op_id=?`)
+      .bind(operationId)
+      .first(),
+  ).toEqual({
+    operation_state: "failed",
+    operation_error: "invocation_limit_exhausted",
+    job_state: "failed",
+    job_error: "invocation_limit_exhausted",
+  });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM job_leases WHERE job_id=?")
+      .bind(jobId)
+      .first("n"),
+  ).toBe(0);
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("terminal");
+});
+
+it("rechecks lease exhaustion atomically when a fresh lease races the snapshot", async () => {
+  const { jobId, operationId } = await createExhaustionTrashJob();
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("sent");
+  await env.DB.prepare(`INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt)
+    VALUES(?,?,?,strftime('%s','now')*1000-1,10)`)
+    .bind(jobId, crypto.randomUUID(), epoch)
+    .run();
+
+  let renewed = false;
+  const wrapStatement = (statement: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(statement, {
+      get(inner, method) {
+        if (method === "bind")
+          return (...values: Parameters<D1PreparedStatement["bind"]>) =>
+            wrapStatement(inner.bind(...values));
+        if (method === "first")
+          return async <T>(...args: Parameters<D1PreparedStatement["first"]>) => {
+            const snapshot = await inner.first<T>(...args);
+            if (!renewed) {
+              renewed = true;
+              await env.DB.prepare(
+                "UPDATE job_leases SET expires_at=strftime('%s','now')*1000+60000 WHERE job_id=?",
+              )
+                .bind(jobId)
+                .run();
+            }
+            return snapshot;
+          };
+        const value = Reflect.get(inner, method, inner);
+        return typeof value === "function" ? value.bind(inner) : value;
+      },
+    });
+  const raceDb = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "prepare")
+        return ((sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes("SELECT j.invocation_count,l.attempt")) return statement;
+          return wrapStatement(statement);
+        }) as typeof target.prepare;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const raceEnv = new Proxy(env as Env, {
+    get(target, property, receiver) {
+      return property === "DB" ? raceDb : Reflect.get(target, property, receiver);
+    },
+  });
+
+  const racedResult = await processTreeJob(raceEnv, jobId);
+  expect(renewed).toBe(true);
+  expect(racedResult).toBe("busy");
+  expect(await lookupOperation(env.DB, principal(), operationId)).toMatchObject({
+    state: "claimed",
+  });
+  expect(
+    await env.DB.prepare("SELECT attempt,expires_at FROM job_leases WHERE job_id=?")
+      .bind(jobId)
+      .first<{ attempt: number; expires_at: number }>(),
+  ).toMatchObject({ attempt: 10 });
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("busy");
 });

@@ -4,6 +4,12 @@
 
 WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。
 
+## DAV条件と境界
+
+既存fileへのPUTは現在のstrong ETagに一致する`If-Match`または有効なDAV `If`を要求する。`If-Match`の値と`If-None-Match`の値も本文を受け取る前に評価し、不一致は412、壊れた条件値は400にする。公開時のrevision検査も維持する。
+
+PROPPATCHのdead propertyは1回の変更件数に加え、nodeごとの保存件数を100件以下に原子的に制限する。累積上限を超える操作はrollbackされる。COPYは宛先の親から祖先を最大64段たどり、コピー元自身または子孫への配置を拒否する。祖先を最後まで確認できない状態も拒否する。
+
 migration0036で、開始時のupload/reservationを操作ID未結合のまま保持できます。実ownerのdav.put-start受付で現在の認可・lock・予約・不変attemptを一括確定し、直接ACK後だけ条件付きPUTを送ります。保存事実を記録した後に新しい短期permitを取得し、元のrevision/parent/tree/blob/credential/lockを検査して、operationへの結合とcreate10/overwrite8 stepの公開を原子的に行います。HTTPで解決した対象revisionも渡します。再送・ACK喪失・停止で本文を再送せず、未知結果の容量を保持します。
 
 ## 本文を受け取る前

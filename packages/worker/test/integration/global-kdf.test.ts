@@ -61,7 +61,7 @@ const executor = (db = env.DB, current = (_epoch: number) => {}, admission = adm
           db,
           admission,
           current,
-          new KdfSettlements(state.storage.sql, db),
+          new KdfSettlements(state.storage.sql, db, () => state.storage.sync()),
         );
         try {
           return { value: await service.derive(r) };
@@ -90,6 +90,41 @@ function backend(service: Pick<ControlKdf, "derive">) {
     1,
   );
 }
+
+it("caps a caller clock ahead of the DO to a five-second local dispatch", async () => {
+  const r = { ...request(), deadline: Date.now() + 60_000 };
+  expect((await executor().derive(r)).byteLength).toBe(32);
+  const row = (await receipt(r.id)) as { issued_at: number; expires_at: number };
+  expect(row.expires_at - row.issued_at).toBeGreaterThan(0);
+  expect(row.expires_at - row.issued_at).toBeLessThanOrEqual(5000);
+  expect(await count("state='finished'")).toBe(1);
+});
+
+it("rejects an expired RPC deadline before admission", async () => {
+  const r = { ...request(), deadline: Date.now() - 1 };
+  const admitSpy = vi.fn(async () => {});
+  await expect(executor(env.DB, () => {}, admitSpy).derive(r)).rejects.toThrow("kdf_unavailable");
+  expect(admitSpy).not.toHaveBeenCalled();
+  expect(await count()).toBe(0);
+});
+
+it("rejects a result that arrives after the caller's five-second deadline", async () => {
+  let now = 1_700_000_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const control = {
+    idFromName: () => ({}),
+    get: () => ({
+      deriveKdf: async (_request: KdfRequest) => {
+        now += 5000;
+        return new ArrayBuffer(32);
+      },
+    }),
+  } as unknown as Env["CONTROL"];
+  await expect(
+    globalKdf(control, 1)(new ArrayBuffer(32), new Uint8Array(16)),
+  ).rejects.toBeInstanceOf(KdfUnavailableError);
+});
+
 async function seed(n: number, finish = false) {
   const ids: string[] = [];
   const statements: SqlStatement[] = [];
@@ -318,7 +353,12 @@ it("retains running capacity after caller cancellation until the actual result a
       return native(...args);
     });
     const derive = backend(
-        new ControlKdf(env.DB, admit, () => {}, new KdfSettlements(state.storage.sql, env.DB)),
+        new ControlKdf(
+          env.DB,
+          admit,
+          () => {},
+          new KdfSettlements(state.storage.sql, env.DB, () => state.storage.sync()),
+        ),
       ),
       r = request();
     const pending = derive(r.input, r.salt, abort.signal);

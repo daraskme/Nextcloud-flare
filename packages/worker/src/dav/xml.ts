@@ -255,7 +255,9 @@ export async function parsePropfindRequest(request: Request): Promise<PropfindRe
   const xml = await boundedBody(request);
   if (xml === null) return { mode: "allprop", properties: [] };
   const type = request.headers.get("Content-Type")?.replace(/\s+/g, "") ?? "";
-  if (!/^(?:application|text)\/xml(?:;charset=utf-8)?$/i.test(type))
+  // rclone sends a bounded XML PROPFIND body without Content-Type. An explicit
+  // non-XML type still fails; the same strict XML parser handles both cases.
+  if (type !== "" && !/^(?:application|text)\/xml(?:;charset=utf-8)?$/i.test(type))
     throw new Error("invalid_dav_xml");
   if (
     /<!DOCTYPE|<!ENTITY/i.test(xml) ||

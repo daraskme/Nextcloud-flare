@@ -64,6 +64,7 @@ authority projection の action だけを選択肢にし、残存 depth/fan-out 
 または policy expiry まで1日未満の場合は control を出さない。TTL は share expiry と policy
 expiry の早い方までに制限する。元 owner の group を広く列挙する API は追加せず、group 宛先は
 同じ owner から現在受信中の group provenance に現れる group だけを候補にする。
+backendも委任者の現在有効な同owner group provenanceを作成前と最終D1 transactionで検査し、UIを迂回した任意のowner group IDや、確定直前にmembershipを失ったgroup宛てを拒否する。
 
 downstream 作成の直前に `shared-with-me` を再取得し、share/policy/grant/membership version、
 effective action、expiry、depth、fan-out のいずれかが dialog を開いた時点から変わっていれば

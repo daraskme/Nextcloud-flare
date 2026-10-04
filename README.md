@@ -1,100 +1,90 @@
 # Next-cloud-flare
 
-Cloudflare 上で動かすセルフホスト型ファイル管理アプリ。仕様は
-[設計書](docs/DESIGN.md)、実装順序は [実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) を参照。
+Cloudflare上で動かす、個人向けのファイル管理アプリです。ブラウザーからファイルを保存・整理し、必要に応じて共有できます。保存先や認証をCloudflareの各サービスに分け、WorkerがAPIと認可を担当します。
 
-**別セッションでの再開は [引き継ぎ資料](docs/HANDOFF.md) から。** 実装済み・未実装・検証済み・未検証の一覧は [現在状態](docs/CURRENT_STATE.md) にまとめています。
+## 構成
 
-現在は **Phase 0 のローカル検証基盤、Phase 1 の大半、Files/WebDAV/共有、Phase 3 media配信基盤の一部**を実装済み。
-80通常テーブル、48 migrations（最新は`0049`）、156経路の契約があり、主要なFiles REST/WebDAV mutation、trash/restore/purge、fenced R2 GC、content ticket/blob配信、private単一・分割uploadに加え、Queue dead-letter repair、audio/video metadata、画像thumbnail、private/public ZIP/EPUB、private Gallery/Audio/Bookshelf/Video UI、public media UI、bounded internal reshare、編集可能なshared DAVをローカル接続しています。
-アップロードは予約・R2送信・原子的確定・中止・既知IDの期限切れ回収を実装し、[private HTTP](docs/UPLOAD_HTTP.md)から接続しています。未知の完成済みobjectは[隔離・35日後の回収](docs/ORPHAN_INVENTORY.md)まで接続しています。既存uploadの未知multipart IDは[永続走査・中止](docs/MULTIPART_INVENTORY.md)まで接続しました。upload行が失われたhandleの[全bucket走査・中止とpart容量保留](docs/MULTIPART_BUCKET_INVENTORY.md)に加え、quiet period後の全体閉鎖証明、handle/upload settlement receipt、予約・保留容量の精算も接続済みです。[Files UI](docs/FILES_UI.md)の一覧・操作・再開upload、private/public Gallery/Audio/Bookshelf/Video、[公開リンク](docs/PUBLIC_SHARES.md)の作成・password unlock・folder browsing・file/ZIP download・upload-only受信、内部共有のowner/recipient管理画面をローカルAPIに接続済みです。Bookshelfはbounded EPUB metadata/page/entry ticketを章移動ごとに交換・取消し、Videoはcurrent metadataで検証したoriginal trackをnative playerへ渡します。upload-onlyは閲覧を許さず、owner quotaとshare専用上限を同時予約してsingle/multipartを受信します。content ticketは原本・audio/video track・thumbnail・private/public bounded ZIP STORE・bounded EPUB page/entryを分離content originから配信します。ControlDOは[全監査後の受付・GC段階再開](docs/CONTROL_ADMISSION.md)をローカル実装済みです。実環境の受付再開・配備は未実施で、製品としてはまだ利用できません。
-[共通の更新受付](docs/MUTATION_ADMISSION.md)は、namespace・DAVロック・app password更新・session登録/初回owner/logout・配信budgetとticketの発行/交換/取消し・upload新規予約・単一送信開始/読戻し/検証済み情報・multipart初期化/complete送信claim/検証済み情報・利用者によるupload中止を同時32件・待機256件で制御します。更新と確定記録・枠解放を一括保存します。同じ要求IDのupload予約再取得は枠を増やさず、混雑中も利用できます。以下の復旧処理とQueueも同じ枠を使います。旧epoch repairも接続済みで、[backup barrier](docs/BACKUP_BARRIER.md)をローカル実装し、logical export/restore drillは開発中です。
-物理容量の観測、multipartのHEAD予算・既知R2 ID・初期化停止・緊急abort予算を共通受付へ接続しました。復旧用の内部RPCも通常操作・bootstrapと同じ32 active/256 waiting・5秒期限を使います。安定したopen/closed状態のD1 mirrorを確認し、失効・owner無効化・maintenance後の必要な事実を記録できます。 migration0033でsystem/modeを不変にし、通常操作・namespace permitへの流用を拒否します。停止・再開・epoch更新で古い枠を閉じます。DB-onlyの応答喪失はexact receiptで回収し、外部HEAD/abortはclaim batchの直接ACKだけで許可します。結果不明や混雑でも予約容量を推測で返しません。
-UploadDOの台帳初期化・通常の台帳反映・停止時の反映・台帳喪失時の停止を共通受付へ接続しました。初期化と通常反映は現在の利用者認可、停止反映と喪失処理は復旧用system受付を使い、すべて同じ32 active/256 waiting枠を共有します。 初期化markerや部品送信につながる台帳反映は、D1 batchの直接ACKがなければローカル台帳を確定せず、送信許可も返しません。混雑・rollback・応答喪失でもdirty行、アラーム、予約容量を保持します。台帳全喪失では停止記録を回収できても再初期化しません。
-単一・分割アップロードの自動回収を共通の復旧用受付へ接続しました。停止claim、HEAD/abort予算、物理観測、既知handleの閉鎖、容量精算・GC引渡し、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 停止claimは正確なcleanup tokenで回収できますが、外部HEAD/abortは予算batchの直接ACKが必要です。確定済みDB記録はexact receiptで照合し、他の回収処理の終端記録で自分の未確定枠を返しません。待機・遅いACKで実行時間を超えた場合は外部送信を止め、予約・leaseを保持します。ControlDO内の復旧は同じinstanceの受付を直接使い、自己RPCや別枠を作りません。
-台帳に登録済みのファイルを対象に、GC（不要ファイルの物理回収）の通常実行・停止中の回収・ゴミ箱復元中の回収を共通system受付へ接続しました。claim、delete/HEAD予算、完了精算、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 deleteとHEADはそれぞれ予算batchの直接ACKが必要です。受付待ちと遅いACKの後も実行期限を確認し、pin・参照・未精算upload・lease・epoch/mode・復元token/operation/期限を再検査します。待機後のSQL時計で60秒leaseを設定し、失敗したclaimも処理上限に数えます。DB-onlyのexact receipt回収と完全な終端照合を維持し、他の回収処理の成功で自分の未確定枠を返しません。
-既存upload行に紐づく未知multipart IDの調査・回収を共通system受付へ接続しました。走査の再初期化、外部呼出し予算、物理観測、遅れて判明したID、ページ保存、中止確認、lease返却、エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 待機後にfreshなR2/S3対応証明、epoch/pause、cleanup token/lease、scan round・cursor、pin/refを同じbatchで再検査します。HEAD・S3一覧・abortはそれぞれ予算batchの直接ACKが必要で、受付待ちと遅いACKの後も実行期限を確認します。DB-onlyのexact receipt回収と既存の厳密なscan/中止照合を維持し、全ページ取得やhandle中止だけでは予約容量を返しません。
-Queueの送信・受信処理を共通system受付へ接続しました。送信claim、送信前の確認、送信済み記録、受信claim、処理完了が通常操作と同じ32 active/256 waiting枠を使います。受付対象は元operationの所有spaceで、通知を起こしたactorのspaceと混同しません。 待機後にepoch/maintenance、正確なtokenとlease、受信側の現行credential・認可・元operationの証明を再検査します。DB-onlyの記録はexact receiptで回収しますが、今回のQueue送信には別受付と直接ACKが必要です。送信応答を失った通知はlease後に同じIDで再送でき、確定済みcompleted/failedの再配信は追加受付なしで確認します。Cron・Queue batchは共通の25秒期限を使い、未処理メッセージをretryします。
-所有者を持たないR2接続確認を共通受付へ接続しました。専用global RPCは通常操作・初回登録・所有者付きsystem更新と同じ32 active/256 waiting枠を使い、架空のownerや別枠を作りません。 migration0034で既存の全確定記録、受付sequence、外部キー、索引と60秒保持を維持します。globalのscopeは明示nullで、owner/system・bootstrap・namespace許可への流用を拒否します。R2確認のclaim・各GET/条件付きPUT/S3読取り予算は直接ACKと固定25秒の開始期限が必要です。段階記録・終了はDB-onlyのexact receiptで回収し、待機後のnonce/source/token・元の60秒lease・epoch/pauseを再確認します。エラー記録も同じ確定記録方式を使い、現epoch/pauseと自己nonce/source/tokenで制限します。期限切れ後のエラー記録でも容量を返しません。ControlDO内は同一instanceの受付を使います。
-未追跡の完成済みR2 objectの調査・回収を共通global受付へ接続しました。scanのclaim・外部予算・観測・ページ保存・lease返却と、GCのclaim・外部予算・置換観測・削除確定・エラー記録が通常操作と同じ32 active/256 waiting枠を使います。 owner不在でもscopeは明示nullで、架空のspaceを作りません。待機後にepoch/mode/pause、元のtoken・60秒lease、object世代・全catalogueからの独立を再検査します。LIST・HEAD・deleteは各回の直接ACKが必要で、既定20秒/最大25秒の開始期限を受付後とACK後に確認します。DB-onlyの確定記録と既存の厳密なtoken/終端照合を維持し、他の処理の完了で自分の未確定枠を返しません。35日猶予・後日owner復元・不在確認後だけのphysical精算を維持し、ControlDO内部は同じinstanceの受付を使います。
+- **Webアプリ**: React/TypeScriptの画面。Files、メディア閲覧、暗号化設定などを提供します。
+- **Worker**: Access認証後のAPI、所有者ごとの認可、アップロード、共有、配信を処理します。
+- **D1**: アカウント、ファイル階層、共有、監査などのメタデータを保存します。
+- **R2**: ファイル本体を保存します。暗号化対象はブラウザーで暗号化したコンテナを保存します。
+- **Durable Objects / Queues**: 更新受付、配信予算、アップロード・バックアップ処理などの調整に使います。
+- **Content origin**: 認可済みのファイルをRange対応で配信します。
 
-全bucketの未完了multipart調査・中止を共通global受付へ接続しました。scanとpartの開始・外部予算・ページ保存、中止の開始・結果保存の8経路が、通常操作と同じ32 active/256 waiting枠を使います。 所有者が未復元でもscopeは明示nullです。受付待ち後にfresh proof・epoch/mode/pauseとscan/partの元のround・cursorを再検査します。S3一覧とR2 abortは直接ACK後だけ送信し、probe開始から固定25秒の開始期限を受付後・ACK後にも検査します。初期化と中止結果のDB-only更新は自分の確定記録だけを照合し、一覧の結果付きbatchは応答喪失時に推測で成功を返しません。同じ中止attemptは再送せず、64回の生涯上限と容量保留を維持します。ControlDO内部は同じinstanceの受付を使います。
+環境ごとのリビジョンと検証状態は[環境状態表](docs/ENVIRONMENT_STATUS.md)を正本とします。現在のcheckout、staging、productionの状態を確認してから、環境向けの操作を行ってください。
 
-WebDAV PUTは本文保存後に公開用の30秒permitを取得する方式へ変更しました。31秒を超える実転送でも公開でき、本文受信中にnamespace permitや共通更新枠を保持しません。 詳細は[DAV PUTの保存台帳](docs/DAV_UPLOAD.md)。
+## 現在の状態
 
-バックアップ専用の書込み停止をControlDOへ接続しました。通常操作・内部復旧・KDFの新規受付を止め、通常80テーブルを凍結して、同じバックアップ要求だけで解除します。 詳細は[バックアップ書込み停止](docs/BACKUP_BARRIER.md)。
-
-バックアップ生成・整合性検証・新規ファイルへのオフライン復元コマンドを追加しました。凍結中のDBと全80テーブルの内容が一致した世代だけをローカル保存します。 手順と残る運用範囲は[バックアップ世代](docs/BACKUP_GENERATIONS.md)。
-
-日次バックアップの不足・鮮度補充は[maintain](docs/BACKUP_MAINTENANCE.md)、35日を超えた指定世代のR2回収は[prune](docs/BACKUP_PRUNING.md)へ接続済みです。pruneはD1完了記録とmanifestを照合し、少量ずつ削除して中断後も同じ世代から再開します。全世代の自動走査は[sweep](docs/BACKUP_SWEEP.md)、健全性確認後の回収は`maintain --prune-expired`で実行できます。走査位置と破損警告を永続化し、次回へ継続します。定時起動の設置とremote運用は未実施です。
-
-単一・分割uploadで公開operationの失敗が確定した後の精算を共通system受付へ接続しました。実際の所有spaceで通常操作と同じ32 active/256 waiting枠を取得し、upload・blob・予約解放・確定記録を一つのbatchで保存します。 詳細は[公開失敗後の精算](docs/UPLOAD_FAILED_COMPLETION.md)。
-
-旧epochの予約解放・Outbox通知の停止・検索索引の再構築を共通受付へ接続しました。予約と通知は実際の所有space、索引再構築は明示null scopeで、通常操作と同じ32 active/256 waiting枠を使います。 修復の前後は従来どおり全更新の停止を要求します。更新batch内だけは自分の有効な受付IDを除外し、他のactive/waiting、permit・claim・job・GC・uploadとbootstrap管理者の条件を待機後に原子的に再検査します。自分の枠が空いても他の更新が残れば修復しません。DB-onlyの確定記録と厳密な終端・索引照合で応答喪失を扱い、他の処理の完了では自分の未確定枠を返しません。uploadへ結び付いた予約は保持し、元の行・所有者・通知のoperation由来を再検査します。予約・通知は1回最大20件、次の更新開始には固定25秒の期限を使い、ControlDO内部は同じinstanceで受け付けます。
-詳細は [Foundation 実装契約](docs/FOUNDATION.md) を参照してください。
-
-| 資料 | 用途 |
+| 環境 | 状態 |
 |---|---|
-| [HANDOFF](docs/HANDOFF.md) | セッション再開の入口・直近の作業順序 |
-| [CURRENT_STATE](docs/CURRENT_STATE.md) | 実装/検証の4区分、未完了一覧、セッション間の固定事項 |
-| [IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md) | 実装状況・検証記録・未完了 gate |
-| [FOUNDATION](docs/FOUNDATION.md) | 現在の内部サービスと DB の契約 |
-| [FILES_UI](docs/FILES_UI.md) | Files画面、再開upload、private assets、browser試験と残る制約 |
-| [PUBLIC_SHARES](docs/PUBLIC_SHARES.md) | password対応の読み取り専用・upload-only公開link、session、download/upload |
-| [UPLOAD_HTTP](docs/UPLOAD_HTTP.md) | private単一/分割アップロードのHTTPと再送契約 |
-| [ORPHAN_INVENTORY](docs/ORPHAN_INVENTORY.md) | 未追跡の完成済みobjectの隔離・会計・35日回収 |
-| [CONTROL_ADMISSION](docs/CONTROL_ADMISSION.md) | 停止・全監査・受付とGCの段階再開 |
-| [UPLOAD_OVERWRITE](docs/UPLOAD_OVERWRITE.md) | 確認付き上書き・競合拒否・元fileからの再開 |
-| [BUDGET_ALLOWANCE](docs/BUDGET_ALLOWANCE.md) | 配信対象の重複排除と共有budgetの使用量保持 |
-| [FOLDER_STATS](docs/FOLDER_STATS.md) | 要求時のファイル数・合計サイズと集計上限 |
-| [SEARCH](docs/SEARCH.md) | フォルダー配下の検索・署名cursor・範囲と件数の上限 |
-| [CONTENT_LEASES](docs/CONTENT_LEASES.md) | 配信期限の伝播・取消し・旧leaseの保持 |
-| [EMPTY_HTTP_BODY](docs/EMPTY_HTTP_BODY.md) | 本文なしHTTP操作の判定・期限・実通信試験 |
-| [KDF_ADMISSION](docs/KDF_ADMISSION.md) | app password計算のisolate内実行制限と残る全体制御 |
-| [RESTORE_GC](docs/RESTORE_GC.md) | GC稼働中のごみ箱復元・期限付き停止と解放 |
-| [GC_RECOVERY](docs/GC_RECOVERY.md) | 停止中の既存GC回収と復旧監査 |
-| [MULTIPART_BUCKET_INVENTORY](docs/MULTIPART_BUCKET_INVENTORY.md) | upload行喪失時の未完了handle走査・part容量保留・復旧gate |
-| [MULTIPART_INVENTORY](docs/MULTIPART_INVENTORY.md) | S3未完了multipart/part/lifecycleの診断と修復前提 |
-| [OUTBOX](docs/OUTBOX.md) | Queueの共通受付・確定記録・ID再送と固定batch期限 |
-| [IMPLEMENTATION_BRIEF](docs/IMPLEMENTATION_BRIEF.md) | 全体の実装順序・R6 確定条件 |
-| [DESIGN](docs/DESIGN.md) | 製品全体の設計・受入条件 |
-| [MEDIA_FORMATS](docs/MEDIA_FORMATS.md) | AVIF・AV1・Opus の追加要件 |
-| [REVIEW_LOG](docs/REVIEW_LOG.md) | 過去レビューの経緯。関連箇所だけ参照 |
+| ローカル | 開発・隔離テスト用。ローカルの成功はCloudflare環境の動作を証明しません。 |
+| staging | [環境状態表](docs/ENVIRONMENT_STATUS.md)記載のWorkerを配備済み。実ファイルの暗号化・復号確認と、暗号化バックアップからの復元確認を実施済みです。 |
+| production | 未配備。stagingの検証結果をproductionの稼働確認として扱わないでください。 |
 
-## 開発
+機能の実装状況、未完了項目、直近の作業順は[現在状態](docs/CURRENT_STATE.md)、[実装状況](docs/IMPLEMENTATION_STATUS.md)、[引き継ぎ資料](docs/HANDOFF.md)を参照してください。
 
-Node **24.21.0** / pnpm **12.4.1** を使用します。
+## 主な機能
+
+- ユーザーごとのFiles領域、フォルダー、アップロード、ダウンロード、WebDAV（暗号化必須環境での書き込み制限は後述）。
+- 期限・パスワードを設定できる読み取り専用共有と、限定されたupload-only共有。
+- 画像、音声、動画、EPUBの閲覧。AVIF、AV1、Opusの対応条件と試験範囲は[メディア形式](docs/MEDIA_FORMATS.md)を参照してください。
+- 音声への利用者別チャプター保存と時刻への移動。サーバーで解析済みの音声が対象で、暗号化音声のチャプター保存にはまだ対応していません。
+- 管理者による明示的な全利用者ファイルの読み取り・プレビュー・ダウンロードと閲覧監査。
+- ブラウザー内暗号化、鍵登録、管理者公開鍵の確認、暗号化コピー作成。
+- 週次暗号化バックアップ、オフライン復元検査、毎時ローカル監視。運用手順は[週次バックアップの導入](ops/backup/INSTALL_USER_AUTOMATION.md)と[監視](ops/monitoring/README.md)を参照してください。
+
+## 暗号化と制約
+
+暗号化アップロードでは、ファイル本文と元のファイル名をブラウザーで暗号化します。復旧JSONと秘密鍵は利用者の端末で管理し、Cloudflareや定期処理には保存しません。新しい暗号化コンテナは所有者署名・登録鍵・サーバー側マーカーで検証します。既存の署名なし形式は通常の暗号化ファイルとして自動判定・採用せず、画面上で内容を復号して確認した後、所有者が明示的に採用する必要があります。
+
+暗号化は、信頼できる配信元から届いたブラウザーコードを前提とします。配信元がJavaScriptを改ざんすると、鍵や復号後の内容を取得される可能性があります。フォルダー名、階層、サイズ、アカウント情報、アクセス履歴もサーバーに残ります。
+
+暗号化必須環境では、通常のWebDAV・公開アップロード・直接APIによる平文の書き込みをサーバー側で拒否します。外部クライアントによる暗号化アップロードには、署名付きコンテナとアップロード契約への対応が必要です。既存ファイルの移行・鍵設定・削除後の保持期間は[暗号化設定ガイド](docs/CLIENT_ENCRYPTION_SETUP.md)と[暗号化の範囲](docs/CLIENT_ENCRYPTION.md)を確認してください。
+
+WebDAVで取得する暗号化ファイルは暗号文（`.ncf`）です。閲覧・復号は、鍵を解除したアプリの画面で行います。実環境で確認したクライアントと操作は[環境状態表](docs/ENVIRONMENT_STATUS.md)に記録しています。
+
+バックアップ復元の検査は、対象世代のDBとオブジェクトを復元・照合した結果です。アプリの削除とR2上の原本回収は同時ではなく、参照のない原本は少なくとも35日間保持されます。Cloudflareの請求はアカウント全体で、staging分だけを正確に分けられず、自動停止するhard capもありません。
+
+## ローカル開発
+
+Node **24.21.0** と pnpm **12.4.1** を使います。バージョン定義は`.node-version`と`package.json`にあります。
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm check
 pnpm dev
 ```
 
-`pnpm dev` はローカル binding だけを使用します。`wrangler.jsonc` の resource ID はローカル専用です。
-リモート DB、bucket、Access policy の作成・配備は行いません。
+`pnpm dev`はWebアセットをビルドしてWranglerのローカル環境を起動します。認証付きの画面・操作を検証する場合は、固定のテスト利用者と隔離DBを用意する`pnpm test:browser`を使います。通常の開発起動はローカルbindingを使い、Cloudflareのstagingやproductionへ接続・配備しません。実値のsecretをREADMEやGitへ記録しないでください。
+
+初期化していないローカル環境ではControlDOが受付を停止しているため、`pnpm dev`だけでは503 `not_ready`になります。ブラウザー試験の起動スクリプトが隔離環境の初期化・認証fixtureを準備します。通常のアプリには公開HTTPの初期化エンドポイントを設けていません。
+
+## 検査コマンド
 
 | コマンド | 内容 |
 |---|---|
-| `pnpm lint` / `pnpm typecheck` | 静的検査 |
-| `pnpm test:unit` | Node / SQLite 単体テスト |
-| `pnpm test:integration` | assets build 後、workerd の D1 / R2 / DO / Images を検証 |
-| `pnpm test:browser` | 隔離したlocal Worker/D1/R2とChromiumでFiles画面を検証 |
-| `pnpm verify:contracts` | バージョン固定・公開日・上限・禁止 API の検査 |
-| `pnpm verify:config` | ローカル binding と外部公開設定の検査 |
-| `pnpm build` | Web build と Worker の dry-run bundle |
-| `pnpm check` | 上記の検査・テスト・build を一括実行 |
+| `pnpm lint` | Biomeによる静的検査 |
+| `pnpm typecheck` | WorkerとWebの型検査 |
+| `pnpm test:unit` | 単体テスト |
+| `pnpm test:integration` | Web build後、workerd上でD1/R2/DO等を使う統合テスト |
+| `pnpm test:browser` | 隔離したローカル環境でPlaywright/Chromiumのブラウザーテスト |
+| `pnpm verify:contracts` / `pnpm verify:config` | 契約とCloudflare設定の検査 |
+| `pnpm build` | Web buildとWorker deploy dry-run |
+| `pnpm check` | lint、型、契約、設定、unit、integration、buildを実行 |
+| `pnpm release:gate` | ローカル検査・バックアップ復元・ブラウザー試験の実行結果を保存（[実行条件](docs/RELEASE_EVIDENCE.md)） |
 
-`.dev.vars*`、`.env*`、`.wrangler/` は Git 対象外です。
-`pnpm test:browser` は隔離したローカル状態を使う別検証で、`pnpm check` には含みません。
+非公開の実ファイルを使う追加ブラウザーテストは`NCF_USER_MEDIA_MANIFEST`で別途指定できます。ファイル、manifest、traceなどの私有データをGitへ追加しないでください。ブラウザーテストの手順は[ローカル browser E2E](.agents/skills/ncf-local-browser-e2e/SKILL.md)を参照してください。
 
-## 検証の範囲
+## 参照先
 
-D1 の全 rollback、G01 の3反例、commit 応答喪失、permit/session/epoch の commit 述語、
-95MB ストリーム、SHA-256、Range、ZIP STORE、PBKDF2、binding のローカル検証を含みます。
-JWT/JWKS の失敗境界、bootstrap の競合/応答喪失、4 principal の node 認可と失効対 commit も検証しています。
-
-Cloudflare 上の実 D1、ネットワーク障害、Images の実サービス制限・codec・費用、
-Access、環境分離、Queue retention は staging gate に残っています。
-ローカルテスト合格を Phase 0 全体や製品機能のリリース判定には使いません。
-詳細と次の作業は [進捗・復旧手順](docs/IMPLEMENTATION_STATUS.md) に記録しています。
+| 読む人・目的 | 資料 |
+|---|---|
+| 利用者: 鍵の初期設定・復旧・ファイル移行 | [暗号化設定ガイド](docs/CLIENT_ENCRYPTION_SETUP.md) |
+| 利用者: 共有の動作と制約 | [公開共有](docs/PUBLIC_SHARES.md) |
+| 開発者: 全体設計・受入条件 | [設計書](docs/DESIGN.md)、[実装ブリーフ](docs/IMPLEMENTATION_BRIEF.md) |
+| 開発者: API/DBと主要契約 | [Foundation](docs/FOUNDATION.md)、[現在状態](docs/CURRENT_STATE.md) |
+| 開発者: Files画面とHTTPアップロード | [Files UI](docs/FILES_UI.md)、[Upload HTTP](docs/UPLOAD_HTTP.md) |
+| 運用者: 環境ごとのリビジョン・検証 | [環境状態表](docs/ENVIRONMENT_STATUS.md) |
+| 運用者: staging設定・配備 | [staging運用](ops/staging/README.md) |
+| 運用者: 集計ヘルスチェックとリリース検証 | [Ops health](docs/OPS_HEALTH.md)、[Release evidence](docs/RELEASE_EVIDENCE.md) |
+| 運用者: バックアップと復元 | [週次バックアップの導入](ops/backup/INSTALL_USER_AUTOMATION.md)、[バックアップ世代と復元](docs/BACKUP_GENERATIONS.md)、[週次バックアップ状態](ops/monitoring/README.md) |
+| 作業再開 | [引き継ぎ資料](docs/HANDOFF.md)、[実装状況](docs/IMPLEMENTATION_STATUS.md) |

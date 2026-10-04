@@ -19,8 +19,11 @@ import {
   sharePasswordPepperRing,
 } from "../../src/auth/sharePassword";
 import { shareSecretDigest } from "../../src/auth/shareSession";
+import { shareSourceDigest } from "../../src/auth/shareSource";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
+import type { Env } from "../../src/env";
+import worker from "../../src/index";
 import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
 import { EPUB_INDEX_GENERATOR, inspectEpubObject } from "../../src/media/epub/index";
 import { IMAGE_METADATA_GENERATOR } from "../../src/media/images/metadata";
@@ -28,7 +31,7 @@ import { VIDEO_METADATA_GENERATOR } from "../../src/media/video";
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { mutationEnv } from "../fixtures/mutationAdmission";
-import { admitted } from "../fixtures/uploadEnv";
+import { admitted, injectBatch } from "../fixtures/uploadEnv";
 
 const origin = "https://app.invalid";
 const contentOrigin = "https://content.invalid";
@@ -61,12 +64,14 @@ beforeAll(async () => {
       upload: base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
     }),
   );
+  const publicRing = await csrfKeyRing("public", { public: publicSecret });
   dependencies = {
     csrf: new CsrfTokens(
       await csrfKeyRing("private", { private: privateSecret }),
-      await csrfKeyRing("public", { public: publicSecret }),
+      publicRing,
       origin,
     ),
+    sourceKey: publicRing.keys.get(publicRing.activeKid)!,
     cursors: new NodeCursorTokens(await contentKeyRing("cursor", { cursor: cursorSecret })),
     tokens: contentTokens,
     passwordPepper: passwordRing,
@@ -399,6 +404,108 @@ it("unlocks a capability into a share-bound cookie and reads only the selected t
     dependencies,
   );
   expect(wrongShare.status).toBe(401);
+});
+
+it("reuses the current cookie and caps fresh sessions per private source without evicting others", async () => {
+  const f = await fixture();
+  const app = shareEnv();
+  const sourceRequest = (source: string, cookie?: string) => {
+    const original = unlockRequest(f.shareId, f.secret);
+    const headers = new Headers(original.headers);
+    headers.set("CF-Connecting-IP", source);
+    if (cookie) headers.set("Cookie", cookie);
+    return new Request(original, { headers });
+  };
+  const first = await handlePublicShareHttp(sourceRequest("192.0.2.1"), app, 1, dependencies);
+  expect(first.status).toBe(200);
+  const cookie = (first.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  const again = await handlePublicShareHttp(
+    sourceRequest("192.0.2.1", cookie),
+    app,
+    1,
+    dependencies,
+  );
+  expect(again.status).toBe(200);
+  expect((again.headers.get("Set-Cookie") ?? "").split(";")[0]).toBe(cookie);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
+      .bind(f.shareId)
+      .first<number>("count"),
+  ).toBe(1);
+  for (let i = 1; i < 8; i++) {
+    expect(
+      (await handlePublicShareHttp(sourceRequest("192.0.2.1"), app, 1, dependencies)).status,
+    ).toBe(200);
+  }
+  const full = await handlePublicShareHttp(sourceRequest("192.0.2.1"), app, 1, dependencies);
+  expect(full.status).toBe(429);
+  const otherSource = await handlePublicShareHttp(sourceRequest("192.0.2.2"), app, 1, dependencies);
+  expect(otherSource.status).toBe(200);
+  const otherCookie = (otherSource.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  const rows = await env.DB.prepare(
+    "SELECT source_digest AS digest FROM share_sessions WHERE share_id=? AND source_digest IS NOT NULL",
+  )
+    .bind(f.shareId)
+    .all<{ digest: string }>();
+  expect(rows.results).toHaveLength(9);
+  expect(new Set(rows.results.map((row) => row.digest)).size).toBe(2);
+  expect(rows.results[0]?.digest).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(rows.results[0]?.digest).not.toContain("192.0.2.1");
+  await env.DB.prepare(`UPDATE share_sessions SET revoked_at=strftime('%s','now')*1000
+    WHERE id=(SELECT id FROM share_sessions WHERE share_id=? AND source_digest=? LIMIT 1)`)
+    .bind(f.shareId, rows.results[0]?.digest)
+    .run();
+  expect(
+    (await handlePublicShareHttp(sourceRequest("192.0.2.1"), app, 1, dependencies)).status,
+  ).toBe(200);
+  await env.DB.prepare(`UPDATE share_sessions SET issued_at=?,expires_at=?
+    WHERE id=(SELECT id FROM share_sessions WHERE share_id=? AND source_digest=?
+      AND revoked_at IS NULL LIMIT 1)`)
+    .bind(Date.now() - 2000, Date.now() - 1000, f.shareId, rows.results[0]?.digest)
+    .run();
+  expect(
+    (await handlePublicShareHttp(sourceRequest("192.0.2.1"), app, 1, dependencies)).status,
+  ).toBe(200);
+  expect(
+    (await handlePublicShareHttp(sourceRequest("192.0.2.2", otherCookie), app, 1, dependencies))
+      .status,
+  ).toBe(200);
+}, 30_000);
+
+it("keeps the per-source cap atomic when another unlock publishes after preflight", async () => {
+  const f = await fixture();
+  const digest = await shareSourceDigest(dependencies.sourceKey, f.shareId, "192.0.2.1");
+  const now = Date.now();
+  for (let i = 0; i < 7; i++) {
+    await env.DB.prepare(`INSERT INTO share_sessions(
+      id,share_id,share_version,secret_digest,epoch,issued_at,expires_at,source_digest
+    ) VALUES(?,?,1,?,1,?,?,?)`)
+      .bind(crypto.randomUUID(), f.shareId, crypto.randomUUID(), now - 1000, now + 60_000, digest)
+      .run();
+  }
+  const racingDb = injectBatch(
+    (sql) => sql.includes("INSERT INTO share_sessions("),
+    async () => {
+      await env.DB.prepare(`INSERT INTO share_sessions(
+        id,share_id,share_version,secret_digest,epoch,issued_at,expires_at,source_digest
+      ) VALUES(?,?,1,?,1,?,?,?)`)
+        .bind(crypto.randomUUID(), f.shareId, crypto.randomUUID(), now - 1000, now + 60_000, digest)
+        .run();
+    },
+    false,
+  );
+  const response = await handlePublicShareHttp(
+    unlockRequest(f.shareId, f.secret),
+    { ...shareEnv(), DB: racingDb },
+    1,
+    dependencies,
+  );
+  expect(response.status).not.toBe(200);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
+      .bind(f.shareId)
+      .first<number>("count"),
+  ).toBe(8);
 });
 
 it("lists current public gallery and audio projections only while read access remains active", async () => {
@@ -816,6 +923,47 @@ it("rejects disabled, expired, stale-epoch, version-changed, and password-change
   expect(
     await env.DB.prepare("SELECT COUNT(*) AS count FROM share_sessions WHERE share_id=?")
       .bind(changedVersion.shareId)
+      .first<number>("count"),
+  ).toBe(0);
+});
+
+it("rejects a costly public ticket at the edge before target proof or R2 HEAD", async () => {
+  const f = await fixture();
+  const session = await readOnlySession(f);
+  const head = vi.fn(async () => {
+    throw new Error("unexpected_head");
+  });
+  const limit = vi.fn(async () => ({ success: false }));
+  const app = {
+    ...shareEnv(),
+    BLOBS: { head } as unknown as R2Bucket,
+    EDGE_LIMITER: { limit } as unknown as RateLimit,
+  };
+  const response = await handlePublicShareHttp(
+    sessionRequest(`/api/v1/public/shares/${f.shareId}/content-session`, session.cookie, {
+      method: "POST",
+      headers: {
+        Origin: origin,
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": session.token,
+      },
+      body: JSON.stringify({
+        targets: [{ spaceId: f.owner.ids.space, nodeId: f.owner.ids.file }],
+        purpose: "content",
+        ttlSeconds: 300,
+      }),
+    }),
+    app,
+    1,
+    dependencies,
+  );
+  expect(response.status).toBe(429);
+  expect(head).not.toHaveBeenCalled();
+  expect(limit).toHaveBeenCalledWith({ key: `content-ticket:share:${f.shareId}` });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS count FROM target_sets WHERE owner_id=?")
+      .bind(f.owner.ids.user)
       .first<number>("count"),
   ).toBe(0);
 });
@@ -1695,6 +1843,89 @@ it("serves an isolated no-store shell and immutable hashed public assets", async
       )
     ).status,
   ).toBe(404);
+});
+
+it("serves public static assets during maintenance but rechecks share revocation and owner state", async () => {
+  const maintenanceEnv = {
+    ...env,
+    APP_ORIGIN: origin,
+    CONTENT_ORIGIN: contentOrigin,
+    CONTROL: {
+      idFromName: () => ({ toString: () => "control" }),
+      get: () => ({ status: async () => ({ epoch: 1, maintenance: true, gcPaused: true }) }),
+    },
+  } as unknown as Env;
+  const staticPath = publicAssets.find((path) => path !== "/public-assets/client-media-worker.js");
+  expect(staticPath).toBeDefined();
+  const asset = await worker.fetch(new Request(`${origin}${staticPath}`), maintenanceEnv);
+  expect(asset.status).toBe(200);
+  expect(asset.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+  expect((await asset.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  const shareApi = await worker.fetch(
+    new Request(`${origin}/api/v1/public/shares/${crypto.randomUUID()}`),
+    maintenanceEnv,
+  );
+  expect(shareApi.status).toBe(503);
+
+  const invalidations = [
+    {
+      label: "revoked share",
+      change: (shareId: string, _ownerId: string) =>
+        env.DB.prepare("UPDATE shares SET disabled_at=? WHERE id=?")
+          .bind(Date.now(), shareId)
+          .run(),
+    },
+    {
+      label: "expired share",
+      change: (shareId: string, _ownerId: string) =>
+        env.DB.prepare("UPDATE shares SET expires_at=? WHERE id=?").bind(1, shareId).run(),
+    },
+    {
+      label: "disabled owner",
+      change: (_shareId: string, ownerId: string) =>
+        env.DB.prepare("UPDATE users SET disabled_at=? WHERE id=?").bind(Date.now(), ownerId).run(),
+    },
+  ];
+  for (const invalidation of invalidations) {
+    const f = await fixture();
+    const unlocked = await handlePublicShareHttp(
+      unlockRequest(f.shareId, f.secret),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(unlocked.status, `${invalidation.label} setup`).toBe(200);
+    const cookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}`, cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+      `${invalidation.label} initially accessible`,
+    ).toBe(200);
+
+    await invalidation.change(f.shareId, f.owner.ids.user);
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}`, cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+      `${invalidation.label} existing session reaccess`,
+    ).toBe(401);
+    expect(
+      (await handlePublicShareHttp(unlockRequest(f.shareId, f.secret), shareEnv(), 1, dependencies))
+        .status,
+      `${invalidation.label} fresh unlock`,
+    ).toBe(404);
+  }
 });
 
 it("accepts and aborts an upload-only single file without exposing its name", async () => {

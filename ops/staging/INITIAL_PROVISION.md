@@ -84,24 +84,24 @@ pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/
 
 ### 空の staging D1 で 0003 の適用後に残りをまとめて適用する
 
-この方法は **0001–0003 だけが適用済み** の空の staging D1 に限る。`0004` から `0051` の 47 ファイルを番号順に連結し、各ファイルの直後に対応する `d1_migrations` 記録を入れる。準備スクリプトは先行 3 ファイルから連結 payload の終わりまでを SQLite で実行し、全記録と最終 trigger 数を検査する。既存の `0001`–`0003` は再実行しない。
+この方法は **0001–0003 だけが適用済み** の空の staging D1 に限る。`0004` から `0057` の migration ファイルを番号順に連結し、各ファイルの直後に対応する `d1_migrations` 記録を入れる。準備スクリプトは先行 3 ファイルから連結 payload の終わりまでを SQLite で実行し、全記録と最終 trigger 数を検査する。既存の `0001`–`0003` は再実行しない。
 
-まず remote の migration 記録が `0001_foundation.sql`、`0002_content_media.sql`、`0003_invariant_guards.sql` の各 1 件だけであり、trigger が 30 個であることを確認する。`migrations list` では `0004` から `0051` がすべて未適用である必要がある。異なる状態ならこの一括 import は実行しない。
+まず remote の migration 記録が `0001_foundation.sql`、`0002_content_media.sql`、`0003_invariant_guards.sql` の各 1 件だけであり、trigger が 30 個であることを確認する。`migrations list` では `0004` から `0057` がすべて未適用である必要がある。異なる状態ならこの一括 import は実行しない。
 
 ```sh
 pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT name, COUNT(*) AS n FROM d1_migrations GROUP BY name ORDER BY name;"
 pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger';"
 pnpm exec wrangler d1 migrations list ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc
-node ops/staging/prepare-d1-trigger-import.mjs 0004_catalogue_indexes.sql 0051_access_invites.sql
+node ops/staging/prepare-d1-trigger-import.mjs 0004_catalogue_indexes.sql 0057_share_session_source.sql
 ```
 
-準備結果が `precedingMigrations: 3`、`migrations: 47`、`expectedTotalMigrations: 50`、`expectedTotalTriggers: 458` であることを確認し、出力された `path` と `sha256sum <path>` の値を照合する。次の `<path>` を出力された絶対パスに置き換えて 1 回だけ実行する。
+準備結果が `precedingMigrations: 3`、`migrations: 53`、`expectedTotalMigrations: 56`、`expectedTotalTriggers: 480` であることを確認し、出力された `path` と `sha256sum <path>` の値を照合する。次の `<path>` を出力された絶対パスに置き換えて 1 回だけ実行する。
 
 ```sh
 pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --file <path>
 ```
 
-成功後、各 migration の `n` が 1、記録の総数が 50、trigger が 458、`migrations list` に未適用ファイルがないことを確認する。import が失敗した場合は再実行前に同じ照会を行い、部分適用や記録の欠落がないことを確認する。
+成功後、各 migration の `n` が 1、記録の総数が 56、trigger が 480、`migrations list` に未適用ファイルがないことを確認する。import が失敗した場合は再実行前に同じ照会を行い、部分適用や記録の欠落がないことを確認する。
 
 ```sh
 pnpm exec wrangler d1 execute ncf-staging --remote --config ops/staging/wrangler.staging.generated.jsonc --command "SELECT name, COUNT(*) AS n FROM d1_migrations GROUP BY name ORDER BY name;"

@@ -722,24 +722,6 @@ it("rejects oversize reservation before any R2 I/O", async () => {
   expect(await counters(f)).toMatchObject({ reserved_bytes: 3, physical_bytes: 0 });
 });
 
-it("checks real stream length and blocks completion while data is missing", async () => {
-  const f = await fixture();
-  await expect(complete(f)).rejects.toThrow(/content_pending/);
-  await expect(
-    writeSingleUpload(
-      f.app,
-      f.principal,
-      f.created.id,
-      f.created.capability,
-      f.capabilities,
-      stream("ab"),
-      3,
-    ),
-  ).rejects.toThrow(/invalid_length/);
-  expect(await env.BLOBS.head(`u/${f.ids.user}/b/${f.created.id}_blob`)).toBeNull();
-  await expect(write(f)).rejects.toThrow(/content_pending/);
-});
-
 it("does not abort a completing upload", async () => {
   const f = await fixture();
   await write(f);

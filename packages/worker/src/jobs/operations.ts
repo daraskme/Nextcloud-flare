@@ -1,13 +1,17 @@
 import type { Operation } from "@next-cloud-flare/shared/contracts";
 import {
   type AuthorizedNode,
-  authorizationAssertion,
   authorizeNode,
   type Principal,
   principalAuthorizationContext,
 } from "../auth/authorize";
 import { assertOpenPermit, type Permit } from "../db/permits";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import {
+  authorizeOperationLookup,
+  claimAuthorityAssertions,
+  operationAuthorityPlan,
+} from "./operationAuthority";
 import { validateOutboxContract } from "./outboxContract";
 
 export interface OperationIntent {
@@ -185,83 +189,9 @@ export function validateClaimAuthorization(
   steps: number,
 ): readonly SqlStatement[] {
   const authorized = Array.isArray(authorization) ? authorization : [authorization];
-  const operands = JSON.parse(intent.operands) as {
-    parentId?: unknown;
-    overwriteTargetId?: unknown;
-    sourceNodeId?: unknown;
-    sourceParentId?: unknown;
-    nodeId?: unknown;
-  };
-  const create = ["node.create", "dav.mkcol", "dav.lock", "dav.put", "upload.complete"].includes(
-    intent.kind,
-  );
-  const contentWrite =
-    ["dav.put", "upload.complete"].includes(intent.kind) &&
-    authorized[0]?.operation === "node.content.write";
-  const trash = ["node.trash", "dav.delete"].includes(intent.kind);
-  const move = ["node.move", "dav.move"].includes(intent.kind);
-  const copy = ["node.copy", "dav.copy"].includes(intent.kind);
-  const restore = intent.kind === "node.restore";
-  const purge = intent.kind === "node.purge";
-  const primaryAuthorization = authorized[0];
-  const targetMatches =
-    (create &&
-      primaryAuthorization?.operation === "node.create" &&
-      primaryAuthorization.parent.id === operands.parentId &&
-      primaryAuthorization.spaceId === intent.spaceId) ||
-    (contentWrite &&
-      primaryAuthorization?.node.id === operands.nodeId &&
-      primaryAuthorization.parentId === operands.parentId &&
-      primaryAuthorization.node.space_id === intent.spaceId) ||
-    (trash &&
-      primaryAuthorization?.operation === "node.trash" &&
-      primaryAuthorization.node.id === operands.nodeId &&
-      primaryAuthorization.parentId === operands.parentId &&
-      primaryAuthorization.node.space_id === intent.spaceId) ||
-    (move &&
-      primaryAuthorization?.operation === "node.rename" &&
-      primaryAuthorization.node.id === operands.nodeId &&
-      primaryAuthorization.parentId === operands.sourceParentId &&
-      primaryAuthorization.node.space_id === intent.spaceId &&
-      authorized[1]?.operation === "node.create" &&
-      authorized[1].parent.id === operands.parentId &&
-      authorized[1].spaceId === intent.spaceId &&
-      (typeof operands.overwriteTargetId !== "string" ||
-        (authorized[2]?.operation === "node.trash" &&
-          authorized[2].node.id === operands.overwriteTargetId &&
-          authorized[2].parentId === operands.parentId))) ||
-    (copy &&
-      primaryAuthorization?.operation === "node.read" &&
-      primaryAuthorization.node.id === operands.sourceNodeId &&
-      primaryAuthorization.node.space_id === intent.spaceId &&
-      authorized[1]?.operation === "node.create" &&
-      authorized[1].parent.id === operands.parentId &&
-      authorized[1].spaceId === intent.spaceId &&
-      (typeof operands.overwriteTargetId !== "string" ||
-        (authorized[2]?.operation === "node.trash" &&
-          authorized[2].node.id === operands.overwriteTargetId &&
-          authorized[2].parentId === operands.parentId))) ||
-    (restore &&
-      primaryAuthorization?.operation === "node.create" &&
-      primaryAuthorization.parent.id === operands.parentId &&
-      primaryAuthorization.spaceId === intent.spaceId) ||
-    (purge &&
-      primaryAuthorization?.operation === "node.read" &&
-      primaryAuthorization.node.id === operands.parentId &&
-      primaryAuthorization.node.space_id === intent.spaceId) ||
-    (intent.kind === "node.rename" &&
-      primaryAuthorization?.operation === "node.rename" &&
-      primaryAuthorization.node.id === operands.nodeId &&
-      primaryAuthorization.parentId === operands.parentId &&
-      primaryAuthorization.node.space_id === intent.spaceId) ||
-    (intent.kind === "dav.proppatch" &&
-      primaryAuthorization?.operation === "node.props.write" &&
-      primaryAuthorization.node.id === operands.nodeId &&
-      primaryAuthorization.node.space_id === intent.spaceId);
+  const plan = operationAuthorityPlan(intent.kind, intent.operands, "claimed");
   if (
-    !targetMatches ||
-    authorized.length !==
-      (move || copy ? (typeof operands.overwriteTargetId === "string" ? 3 : 2) : 1) ||
+    !plan ||
     authorized.some(
       (proof) =>
         proof.principal.kind !== intent.principal.kind ||
@@ -282,8 +212,7 @@ export function validateClaimAuthorization(
     steps > 1000
   )
     throw new Error("invalid_operation_claim");
-  // Validate the request-local proof before any operation read or write.
-  return authorized.map(authorizationAssertion);
+  return claimAuthorityAssertions(plan, authorized, intent.spaceId);
 }
 
 /** A claim is not a namespace commit. Resume is restricted to the same permit. */
@@ -358,21 +287,6 @@ export interface VisibleOperation {
   };
 }
 
-async function hasCredentialScope(
-  db: D1Database,
-  principal: Principal,
-  scope: string,
-): Promise<boolean> {
-  if (principal.kind === "user") return true;
-  if (principal.kind !== "app_password") return false;
-  return (
-    (await primary(db)
-      .prepare("SELECT 1 FROM credential_scopes WHERE credential_id=? AND scope=?")
-      .bind(principal.credential_id, scope)
-      .first<number>()) !== null
-  );
-}
-
 /** R6 operation lookup uses the exact initiating credential, then current original-operand authorization. */
 export async function lookupOperation(
   db: D1Database,
@@ -404,46 +318,20 @@ export async function lookupOperation(
     row.principal_id !== principalId(principal) ||
     row.epoch !== principal.epoch ||
     row.credential_version !== (principal.kind === "link_share" ? principal.share_version : null) ||
-    row.authorization_context !== principalAuthorizationContext(authorizedPrincipal) ||
-    (row.kind !== "node.create" &&
-      row.kind !== "dav.mkcol" &&
-      row.kind !== "dav.lock" &&
-      row.kind !== "dav.put" &&
-      row.kind !== "upload.complete" &&
-      row.kind !== "dav.delete" &&
-      row.kind !== "dav.copy" &&
-      row.kind !== "dav.move" &&
-      row.kind !== "node.copy" &&
-      row.kind !== "node.move" &&
-      row.kind !== "node.trash" &&
-      row.kind !== "node.restore" &&
-      row.kind !== "node.purge" &&
-      row.kind !== "node.rename" &&
-      row.kind !== "dav.proppatch")
+    row.authorization_context !== principalAuthorizationContext(authorizedPrincipal)
   )
     return null;
   try {
-    const operands = JSON.parse(row.operands_json) as {
-      parentId?: unknown;
-      uploadId?: unknown;
-      overwriteTargetId?: unknown;
-      sourceNodeId?: unknown;
-      sourceParentId?: unknown;
-      nodeId?: unknown;
-    };
+    const plan = operationAuthorityPlan(row.kind, row.operands_json, row.state);
+    if (!plan) return null;
     if (row.state !== "committed" && row.result_json !== null) return null;
     let terminalResult: { status: number; nodeId: string; revision?: number } | null = null;
     if (row.state === "committed") {
       if (!row.result_json) return null;
-      if (row.kind === "dav.proppatch") {
+      if (plan.terminalResult === "proppatch") {
         const result = JSON.parse(row.result_json) as Record<string, unknown>;
-        if (
-          result.status !== 207 ||
-          typeof operands.nodeId !== "string" ||
-          result.nodeId !== operands.nodeId
-        )
-          return null;
-        terminalResult = { status: 207, nodeId: operands.nodeId };
+        if (result.status !== 207 || result.nodeId !== plan.operands.nodeId) return null;
+        terminalResult = { status: 207, nodeId: plan.operands.nodeId! };
       } else {
         const events = await primary(db)
           .prepare(
@@ -468,196 +356,14 @@ export async function lookupOperation(
         terminalResult = contract.result;
       }
     }
-    const create = ["node.create", "dav.mkcol", "dav.lock"].includes(row.kind);
-    if (row.kind === "upload.complete") {
-      if (typeof operands.uploadId !== "string" || typeof operands.parentId !== "string")
-        return null;
-      const bound = await primary(db)
-        .prepare(`SELECT 1 FROM uploads WHERE id=? AND completion_op_id=?
-        AND credential_id=? AND epoch=? AND space_id=? AND parent_id=? AND target_id IS ?
-        AND (?<>'committed' OR state='completed')`)
-        .bind(
-          operands.uploadId,
-          row.op_id,
-          row.credential_id,
-          row.epoch,
-          row.space_id,
-          operands.parentId,
-          typeof operands.nodeId === "string" ? operands.nodeId : null,
-          row.state,
-        )
-        .first();
-      if (!bound) return null;
-    }
-    if (row.kind === "dav.copy" || row.kind === "node.copy") {
-      if (typeof operands.sourceNodeId !== "string" || typeof operands.parentId !== "string")
-        return null;
-      await authorizeNode(db, authorizedPrincipal, {
-        operation: "node.read",
-        nodeId: operands.sourceNodeId,
-        spaceId: row.space_id,
-      });
-      await authorizeNode(db, authorizedPrincipal, {
-        operation: "node.create",
-        parentId: operands.parentId,
-        spaceId: row.space_id,
-      });
-    } else if (
-      create ||
-      (row.kind === "node.restore" && row.state !== "committed") ||
-      row.kind === "node.purge"
-    ) {
-      if (typeof operands.parentId !== "string") return null;
-      if (row.kind === "node.purge")
-        await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.read",
-          nodeId: operands.parentId,
-          spaceId: row.space_id,
-        });
-      else
-        await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.create",
-          parentId: operands.parentId,
-          spaceId: row.space_id,
-        });
-      if (row.kind === "node.restore" || row.kind === "node.purge") {
-        if (
-          principal.kind !== "user" ||
-          typeof (operands as { trashOpId?: unknown }).trashOpId !== "string"
-        )
-          return null;
-        const visible = await primary(db)
-          .prepare(
-            `SELECT 1 AS ok FROM trash_ops WHERE op_id=? AND space_id=? AND actor_id=?
-              AND state IN ('trashed','purged')`,
-          )
-          .bind((operands as { trashOpId: string }).trashOpId, row.space_id, principal.user_id)
-          .first<number>("ok");
-        if (visible !== 1) return null;
-      }
-    } else if (["node.rename", "node.move", "dav.move", "node.restore"].includes(row.kind)) {
-      if (typeof operands.parentId !== "string") return null;
-      if (typeof operands.nodeId !== "string") return null;
-      const authorized = await authorizeNode(db, authorizedPrincipal, {
-        operation: "node.rename",
-        nodeId: operands.nodeId,
-        spaceId: row.space_id,
-      });
-      const expectedParent =
-        ["node.move", "dav.move"].includes(row.kind) && row.state !== "committed"
-          ? operands.sourceParentId
-          : operands.parentId;
-      if (authorized.operation !== "node.rename" || authorized.parentId !== expectedParent)
-        return null;
-      if (row.kind === "node.move" || row.kind === "dav.move") {
-        if (typeof operands.sourceParentId !== "string") return null;
-        await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.read",
-          nodeId: operands.sourceParentId,
-          spaceId: row.space_id,
-        });
-        await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.create",
-          parentId: operands.parentId,
-          spaceId: row.space_id,
-        });
-      }
-    } else if (row.kind === "dav.delete" || row.kind === "node.trash") {
-      if (typeof operands.parentId !== "string" || typeof operands.nodeId !== "string") return null;
-      const parent = await authorizeNode(db, authorizedPrincipal, {
-        operation: "node.read",
-        nodeId: operands.parentId,
-        spaceId: row.space_id,
-      });
-      if (authorizedPrincipal.kind === "app_password" && authorizedPrincipal.internal_share)
-        await atomicBatch(db, [
-          authorizationAssertion(parent),
-          assertExists(
-            `SELECT 1 FROM current_internal_shares current
-              JOIN share_actions a ON a.share_id=current.share_id
-              JOIN credential_scopes cs
-              ON cs.credential_id=? AND cs.scope='node:delete'
-              WHERE current.share_id=? AND current.version=? AND a.action='edit'`,
-            [
-              authorizedPrincipal.credential_id,
-              authorizedPrincipal.internal_share.share_id,
-              authorizedPrincipal.internal_share.share_version,
-            ],
-          ),
-        ]);
-      else if (!(await hasCredentialScope(db, authorizedPrincipal, "node:delete"))) return null;
-    } else if (row.kind === "dav.put" || row.kind === "upload.complete") {
-      if (typeof operands.nodeId === "string") {
-        const authorized = await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.content.write",
-          nodeId: operands.nodeId,
-          spaceId: row.space_id,
-        });
-        if (
-          authorized.operation !== "node.content.write" ||
-          authorized.parentId !== operands.parentId
-        )
-          return null;
-      } else {
-        if (typeof operands.parentId !== "string") return null;
-        await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.create",
-          parentId: operands.parentId,
-          spaceId: row.space_id,
-        });
-      }
-    } else {
-      if (typeof operands.nodeId !== "string") return null;
-      await authorizeNode(db, authorizedPrincipal, {
-        operation: "node.props.write",
-        nodeId: operands.nodeId,
-        spaceId: row.space_id,
-      });
-    }
-    if (typeof operands.overwriteTargetId === "string") {
-      if (principal.kind !== "user" && principal.kind !== "app_password") return null;
-      const overwrite = await primary(db)
-        .prepare(`SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id
-          JOIN spaces s ON s.id=t.space_id AND s.owner_id=n.owner_id
-          WHERE t.op_id=? AND t.actor_id=? AND t.space_id=? AND t.root_node_id=?
-            AND t.state IN ('trashed','purging','purged') AND t.epoch=?
-            AND n.deleted_op_id=t.op_id AND n.deleted_at IS NOT NULL AND n.orig_parent_id=?
-            AND (?<>'app_password' OR EXISTS(SELECT 1 FROM credential_scopes
-              WHERE credential_id=? AND scope='node:delete'))`)
-        .bind(
-          row.op_id,
-          principal.user_id,
-          row.space_id,
-          operands.overwriteTargetId,
-          row.epoch,
-          operands.parentId,
-          principal.kind,
-          principal.credential_id,
-        )
-        .first();
-      if (!overwrite) return null;
-      if (
-        authorizedPrincipal.kind === "app_password" &&
-        authorizedPrincipal.internal_share &&
-        !(await primary(db)
-          .prepare(`SELECT 1 FROM current_internal_shares current
-            JOIN share_actions action ON action.share_id=current.share_id AND action.action='edit'
-            WHERE current.share_id=? AND current.version=?`)
-          .bind(
-            authorizedPrincipal.internal_share.share_id,
-            authorizedPrincipal.internal_share.share_version,
-          )
-          .first())
-      )
-        return null;
-    }
+    await authorizeOperationLookup(db, authorizedPrincipal, row, plan);
     let visible: VisibleOperation["result"] = terminalResult
       ? { status: terminalResult.status }
       : null;
     if (terminalResult) {
       try {
         const proof = await authorizeNode(db, authorizedPrincipal, {
-          operation: "node.read",
+          operation: plan.resultAuthority,
           nodeId: terminalResult.nodeId,
           spaceId: row.space_id,
         });

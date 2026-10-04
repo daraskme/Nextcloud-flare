@@ -22,6 +22,15 @@ export async function consumeKnownLength<T>(
   const digest = new crypto.DigestStream("SHA-256");
   const hashWriter = digest.getWriter();
   const reader = source.getReader();
+  // Web Streams reject these separate lifetime promises on abort/error, even when
+  // every read, write, close, consumer and digest promise below is awaited.
+  // The operation failures still propagate through `settled`; observe only the
+  // redundant lifetime notifications so a rejected upload has no detached promise.
+  void reader.closed.catch(() => undefined);
+  void writer.closed.catch(() => undefined);
+  void writer.ready.catch(() => undefined);
+  void hashWriter.closed.catch(() => undefined);
+  void hashWriter.ready.catch(() => undefined);
   let stopped = false;
   let stopReason: unknown;
   let bytes = 0;

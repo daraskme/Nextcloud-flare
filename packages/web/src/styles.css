@@ -2063,6 +2063,83 @@ h1 {
   box-shadow: 0 12px 34px #24344b1a;
   backdrop-filter: blur(18px);
 }
+.audio-chapters {
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid #dfe4ea;
+  border-radius: 14px;
+  background: #fff;
+}
+.audio-chapters > header,
+.audio-chapters > footer,
+.audio-chapter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.audio-chapters > header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.audio-chapters > header small,
+.audio-chapter-actions span,
+.audio-chapter-empty {
+  color: #7d8795;
+  font-size: 12px;
+}
+.audio-chapter-status,
+.audio-chapter-empty {
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.audio-chapter-actions {
+  margin: 16px 0 12px;
+}
+.audio-chapter-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid #edf0f3;
+  border-radius: 10px;
+}
+.audio-chapter-list li {
+  display: grid;
+  grid-template-columns: 28px minmax(140px, 1fr) 104px repeat(4, 36px);
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid #edf0f3;
+}
+.audio-chapter-list li:last-child {
+  border-bottom: 0;
+}
+.audio-chapter-number {
+  color: #8b95a3;
+  text-align: center;
+  font-size: 12px;
+}
+.audio-chapter-title,
+.audio-chapter-time {
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid #dfe4ea;
+  border-radius: 7px;
+  background: #fff;
+  color: #364154;
+}
+.audio-chapter-time {
+  font-variant-numeric: tabular-nums;
+}
+.audio-chapters > footer {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
 .audio-now {
   min-width: 0;
   display: flex;

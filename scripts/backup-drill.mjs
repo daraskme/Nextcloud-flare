@@ -231,7 +231,7 @@ const status = JSON.parse(
 );
 assert.deepEqual(status[0].results, [{ backup_frozen: 1, backup_token: token }]);
 const manifest = JSON.parse(await readFile(join(generation, "manifest.json"), "utf8"));
-assert.equal(manifest.tables.length, 86);
+assert.equal(manifest.tables.length, 88);
 const report = {
   result: "PASS",
   directory,

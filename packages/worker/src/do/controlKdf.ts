@@ -19,6 +19,7 @@ export class ControlKdf {
   ) {}
 
   async derive(request: KdfRequest): Promise<ArrayBuffer> {
+    const now = Date.now();
     if (
       !request ||
       typeof request.id !== "string" ||
@@ -26,15 +27,17 @@ export class ControlKdf {
       !Number.isSafeInteger(request.epoch) ||
       request.epoch < 1 ||
       !Number.isSafeInteger(request.deadline) ||
-      request.deadline <= Date.now() ||
-      request.deadline > Date.now() + 5000 ||
+      request.deadline <= now ||
       !(request.input instanceof ArrayBuffer) ||
       request.input.byteLength !== 32 ||
       !(request.salt instanceof Uint8Array) ||
       request.salt.byteLength !== 16
     )
       throw new KdfUnavailableError();
-    const { id, epoch, deadline } = request;
+    const { id, epoch } = request;
+    // The caller's clock may be slightly ahead of this DO's clock. Preserve its
+    // earlier deadline while capping every local dispatch to five seconds here.
+    const deadline = Math.min(request.deadline, now + 5000);
     const input = request.input.slice(0),
       salt = request.salt.slice();
     try {
@@ -69,6 +72,9 @@ export class ControlKdf {
           // Storage access also fences an old DO instance after a runtime replacement.
           this.current(epoch);
           if (typeof expires !== "number" || Date.now() >= expires) throw new KdfUnavailableError();
+          await this.settlements.beginDispatch(dispatch);
+          this.current(epoch);
+          if (Date.now() >= expires) throw new KdfUnavailableError();
           dispatched = true;
           let output: ArrayBuffer;
           try {

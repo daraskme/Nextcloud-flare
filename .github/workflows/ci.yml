@@ -38,6 +38,8 @@ jobs:
       - run: npm install --global pnpm@12.4.1
       - run: pnpm install --frozen-lockfile
       - if: matrix.shard == ''
+        run: pnpm release:gate -- --plan
+      - if: matrix.shard == ''
         run: pnpm check
       - if: matrix.shard != ''
         run: pnpm lint

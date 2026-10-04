@@ -6,6 +6,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Settings2,
   SkipBack,
   SkipForward,
   Volume2,
@@ -20,6 +21,7 @@ import {
   type PreparedContentSession,
 } from "../../lib/api";
 import { type DebouncedWriter, debouncedWriter } from "../../lib/mediaResume";
+import { AudioChaptersPanel } from "./AudioChaptersPanel";
 
 const clock = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -50,6 +52,7 @@ export function PrivateAudio({ account }: { account: Account }) {
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.8);
   const [playerError, setPlayerError] = useState("");
+  const [chapterSettings, setChapterSettings] = useState(false);
   const activeIndex = tracks.findIndex((track) => track.id === activeId);
   const active = activeIndex >= 0 ? tracks[activeIndex] : undefined;
 
@@ -103,6 +106,7 @@ export function PrivateAudio({ account }: { account: Account }) {
     terminal.current = false;
     const selected = ++selection.current;
     activeRef.current = track;
+    setChapterSettings(false);
     setActiveId(track.id);
     setPreparing(true);
     setPlayerError("");
@@ -245,14 +249,25 @@ export function PrivateAudio({ account }: { account: Account }) {
         <span>
           <strong>{tracks.length}</strong> 曲{query.hasNextPage && "以上"}
         </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="オーディオを更新"
-          onClick={() => void query.refetch()}
-        >
-          <RefreshCw size={17} className={query.isFetching ? "spin" : ""} />
-        </Button>
+        <span className="media-toolbar-actions">
+          <Button
+            variant="ghost"
+            aria-label="チャプター設定を開く"
+            disabled={!active || active.durationMs === null}
+            onClick={() => setChapterSettings(true)}
+          >
+            <Settings2 size={16} />
+            チャプター
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="オーディオを更新"
+            onClick={() => void query.refetch()}
+          >
+            <RefreshCw size={17} className={query.isFetching ? "spin" : ""} />
+          </Button>
+        </span>
       </div>
       {playerError && (
         <div className="notice" role="alert">
@@ -295,6 +310,20 @@ export function PrivateAudio({ account }: { account: Account }) {
             <ArrowRight size={15} />
           </Button>
         </div>
+      )}
+      {chapterSettings && active && (
+        <AudioChaptersPanel
+          key={`${active.id}:${active.currentBlobId}`}
+          track={active}
+          currentPositionMs={currentPositionMs}
+          seek={(positionMs) => {
+            const element = audio.current;
+            if (!element) return;
+            element.currentTime = Math.min(positionMs / 1_000, element.duration || 0);
+            setPosition(element.currentTime);
+          }}
+          close={() => setChapterSettings(false)}
+        />
       )}
       <div className="audio-player">
         <div className="audio-now">

@@ -149,6 +149,8 @@ export const ROUTE_BINDINGS = [
     "app GET /api/v1/nodes/:nodeId/tracks",
     "app GET /api/v1/nodes/:nodeId/playback-state",
     "app PUT /api/v1/nodes/:nodeId/playback-state",
+    "app GET /api/v1/nodes/:nodeId/audio-chapters",
+    "app PUT /api/v1/nodes/:nodeId/audio-chapters",
     "app POST /api/v1/nodes",
     "app PUT /api/v1/nodes/:nodeId/star",
     "app PUT /api/v1/nodes/:nodeId/recent",

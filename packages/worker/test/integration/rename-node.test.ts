@@ -909,6 +909,33 @@ it("rejects moving a collection into its own descendant without changing the tre
   ).toBe(before);
 });
 
+it("rejects copying a collection into its own descendant", async () => {
+  const { f, principal } = await seeded();
+  const descendant = `${f.ids.folder}-copy-descendant`;
+  await env.DB.prepare(`INSERT INTO nodes(
+      id,space_id,owner_id,parent_id,name,name_ci,kind,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,'folder',1,1)`)
+    .bind(descendant, f.ids.space, f.ids.user, f.ids.folder, "Descendant", "descendant")
+    .run();
+  await expect(
+    copyNode(admitted(), {
+      principal,
+      requestId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      sourceNodeId: f.ids.folder,
+      destinationParentId: descendant,
+      name: "nested-copy",
+      depth: "infinity",
+      lockTokens: [],
+    }),
+  ).rejects.toThrow("invalid_copy_authorization");
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) FROM nodes WHERE parent_id=? AND name='nested-copy'")
+      .bind(descendant)
+      .first<number>("COUNT(*)"),
+  ).toBe(0);
+});
+
 it("renames through LockDO and replays the same idempotency key", async () => {
   const { f, principal } = await seeded();
   const request = {

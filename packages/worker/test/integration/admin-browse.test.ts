@@ -1,4 +1,4 @@
-import { applyD1Migrations } from "cloudflare:test";
+import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { base64url } from "jose";
 import { beforeAll, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { authorizeNode } from "../../src/auth/authorize";
 import { ContentTokens, contentKeyRing } from "../../src/auth/contentTokens";
 import { NodeCursorTokens } from "../../src/auth/nodeCursor";
 import { atomicBatch } from "../../src/db/primary";
+import { BudgetDO } from "../../src/do/BudgetDO";
 import type { Env } from "../../src/env";
 import { issueContentTicket } from "../../src/services/contentTicket";
 import { foundationFixture } from "../fixtures/foundation";
@@ -41,7 +42,30 @@ async function setup() {
     APP_ORIGIN: "https://app.invalid",
     CONTENT_ORIGIN: "https://content.invalid",
     BLOBS: env.BLOBS,
-    BUDGETS: env.BUDGETS,
+    BUDGETS: {
+      idFromName: env.BUDGETS.idFromName.bind(env.BUDGETS),
+      get(id: DurableObjectId) {
+        const stub = env.BUDGETS.get(id);
+        return {
+          async reserve(input: Parameters<BudgetDO["reserve"]>[0]) {
+            const result = await runInDurableObject(stub, async (_, state) => {
+              try {
+                return { ok: true as const, lease: await new BudgetDO(state, env).reserve(input) };
+              } catch (error) {
+                return {
+                  ok: false as const,
+                  message: error instanceof Error ? error.message : "budget_failed",
+                };
+              }
+            });
+            if (!result.ok) throw new Error(result.message);
+            return result.lease;
+          },
+          settle: (request: Parameters<BudgetDO["settle"]>[0]) => stub.settle(request),
+          status: () => stub.status(),
+        };
+      },
+    } as unknown as Env["BUDGETS"],
   } as Env;
   const session = {
     credential_id: admin.ids.credential,
