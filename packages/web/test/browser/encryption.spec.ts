@@ -763,12 +763,14 @@ test("existing plaintext media migrates as a verified encrypted copy without rem
 
     await page.goto("/encryption");
     await saveRecoveryFile(page, directory);
-    await expect(
-      page.getByRole("button", { name: "暗号化コピーを作成", exact: true }),
-    ).toBeVisible();
+    const migrateButton = page
+      .locator(".encryption-list li")
+      .filter({ hasText: originalName })
+      .getByRole("button", { name: "暗号化コピーを作成", exact: true });
+    await expect(migrateButton).toBeVisible();
     const before = new Set((await encryptNodes(page)).map((node) => node.id));
     await simulateMissingContentLength(page, source, 200);
-    await page.getByRole("button", { name: "暗号化コピーを作成", exact: true }).click();
+    await migrateButton.click();
     await expect(
       page.getByRole("status").filter({ hasText: "暗号化コピーの送信を開始しました" }),
     ).toBeVisible();

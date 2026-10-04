@@ -76,7 +76,7 @@ test("concurrent tabs retain distinct content grants, Range reads and independen
     return (
       await fetch(`/api/v1/tickets/${id}`, {
         method: "DELETE",
-        headers: { "X-CSRF-Token": csrf.token },
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.token },
       })
     ).status;
   }, grantA.ticketId);
