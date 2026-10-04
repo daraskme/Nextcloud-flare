@@ -10,6 +10,13 @@ test("real public share downloads exact uploaded bytes anonymously and rejects a
   const contentOrigin = "https://content.ncf.test:8879";
   const filename = `public-bytes-${crypto.randomUUID()}.bin`;
   const original = Buffer.from(Array.from({ length: 16_384 }, (_, index) => (index * 31) % 256));
+  // The preceding logout case revokes the shared harness identity; begin with a fresh login.
+  await page.goto("/__test__/ready");
+  expect(
+    await page.evaluate(() =>
+      fetch("/__test__/login", { method: "POST" }).then((response) => response.status),
+    ),
+  ).toBe(200);
   await page.goto("/files");
   await expect(page.getByRole("heading", { name: "マイドライブ", exact: true })).toBeVisible();
   const node = await writeTestBytes(page, filename, original);

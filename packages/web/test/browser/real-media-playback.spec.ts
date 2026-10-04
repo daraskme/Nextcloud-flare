@@ -144,6 +144,7 @@ test("real MP3 and Opus audio plus AV1 video decode, seek, and stream authentica
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.click();
     const audio = page.locator("audio");
+    await expect(audio).toHaveAttribute("src", new RegExp(uploaded.get(item.name)!.id));
     await expect
       .poll(() => audio.evaluate((element) => (element as HTMLAudioElement).duration), {
         timeout: 15_000,

@@ -4,7 +4,7 @@
 
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
-| 開発ソース | この checkout（PR #43〜#46 の統合内容） | ZIP の取得費用計上、WebDAV 条件検査、章・再共有データの完全削除、利用者別 admission 上限を更新。`0064` までの63 migrations・90通常tables。CI は対象 commit の GitHub Actions 結果を参照し、下記の配備済み版とは区別する。 |
+| 開発ソース | この checkout（PR #43〜#46 と最終レビューの修正） | ZIP の取得費用計上、WebDAV 条件検査、章・再共有データの完全削除、利用者別 admission 上限に加え、EPUB の取得前予算予約と未確定 upload の purge 拒否を実装。`0064` までの63 migrations・90通常tables。[最終レビュー](reviews/astra-final-20261005.md)と対象 commit の CI を参照し、下記の配備済み版とは区別する。 |
 | ローカル自動化runtime | `f131f80`（155 files） | 本人の明示承認後、56 migrations・88 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版と直前の`355f61b`版はrollbackディレクトリへ保持。05:01:45 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
 | Cloudflare staging | コード `f131f80`、Worker version `35b6182f-33e4-4013-a546-aab8de1f1035` | `0057`まで適用。56 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。配備後の匿名HTTP smokeは9件成功。実WebDAV取得・暗号化fixtureの復元制約試験は下記の`1cf8681`時点の記録。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |

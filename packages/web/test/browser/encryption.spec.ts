@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
@@ -80,8 +80,12 @@ type EncryptedNode = {
 };
 
 // The isolated server keeps one immutable identity per fixture account across tests.
-// Preserve only synthetic recovery material in this worker; never replace its registered key.
-const fixtureRecovery = new Map<string, Buffer>();
+// Keep synthetic recovery material with the harness state so a restarted Playwright worker
+// reuses the registered key. browser-server.mjs clears this directory before each suite.
+const fixtureRecoveryDirectory = resolve(
+  import.meta.dirname,
+  "../../../../.wrangler/browser-tests/recovery-fixtures",
+);
 
 async function setIdentity(page: Page, member: boolean) {
   await page.route("https://app.ncf.test:8879/**", (route) => {
@@ -101,7 +105,14 @@ async function saveRecoveryFile(page: Page, directory: string): Promise<string> 
   const accountId = await page.evaluate(
     async () => (await (await fetch("/api/v1/me")).json()).id as string,
   );
-  const saved = fixtureRecovery.get(accountId);
+  const fixturePath = resolve(
+    fixtureRecoveryDirectory,
+    `${createHash("sha256").update(accountId).digest("hex")}.json`,
+  );
+  const saved = await readFile(fixturePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
   if (saved) {
     const path = resolve(directory, `recovery-${randomUUID()}.json`);
     await writeFile(path, saved, { mode: 0o600 });
@@ -119,7 +130,8 @@ async function saveRecoveryFile(page: Page, directory: string): Promise<string> 
   const download = await recoveryDownload;
   const path = resolve(directory, `recovery-${randomUUID()}.json`);
   await download.saveAs(path);
-  fixtureRecovery.set(accountId, await readFile(path));
+  await mkdir(fixtureRecoveryDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(fixturePath, await readFile(path), { mode: 0o600, flag: "wx" });
   await page
     .locator('input[type="file"][accept="application/json,.json"]')
     .first()
@@ -704,7 +716,7 @@ test("encrypted files are opaque at rest and decrypt only while the member key i
     const adminPreview = page.getByRole("region", { name: "復号プレビュー" });
     await expect(
       adminPreview.getByRole("heading", { name: media[0]!.name, exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 30_000 });
     await expectDecryptedBytes(page, originals[0]!);
     await downloadAndCompare(page, adminPreview, originals[0]!, directory, "admin-image");
     await expect
