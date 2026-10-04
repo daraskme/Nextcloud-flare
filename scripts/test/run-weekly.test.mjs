@@ -38,10 +38,15 @@ beforeEach(async () => {
       calls.push(["local-storage", path]);
     }),
     publishArchive: vi.fn(),
+    verifyArchive: vi.fn(),
   }));
   runtimeFactory = vi.fn((config) => {
     calls.push(["runtime-configured", Boolean(config.env), config.workRoot]);
-    return { verifyStorage: config.verifyStorage, publishArchive: config.publishArchive };
+    return {
+      verifyStorage: config.verifyStorage,
+      verifyArchive: config.verifyArchive,
+      publishArchive: config.publishArchive,
+    };
   });
   runner = vi.fn(async (options) => {
     calls.push(["runner", options.stateRoot]);
@@ -83,6 +88,9 @@ posixIt(
       workRoot: env.NCF_BACKUP_WORK_ROOT,
       backupRoot: env.NCF_BACKUP_EXTERNAL_ROOT,
     });
+    expect(runner.mock.calls[0][0].runtime.verifyArchive).toBe(
+      storageFactory.mock.results[0].value.verifyArchive,
+    );
   },
 );
 
