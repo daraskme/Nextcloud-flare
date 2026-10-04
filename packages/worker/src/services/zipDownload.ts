@@ -768,7 +768,7 @@ export async function streamBudgetedZip(
   // whole covered object (the CRC must be real), so the lease pays for what the
   // server must read rather than only the delivered slice.
   const fetchBytes =
-    range.kind !== "range"
+    request.method === "HEAD" || range.kind !== "range"
       ? 0
       : plan.sources.reduce((total, { entry }, index) => {
           const span = spans?.[index];
