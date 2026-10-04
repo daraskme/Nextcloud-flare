@@ -7,6 +7,10 @@ import { assertRestorePause, type RestorePause } from "../db/restorePause";
 import { CONTROL_NAME } from "../do/ControlDO";
 import type { Env } from "../env";
 import {
+  assertPrivateEncryptedRestore,
+  privateEncryptedRestoreAssertion,
+} from "../services/encryptionGuards";
+import {
   acquireSystemMutation,
   commitSystemMutation,
   type SystemMutationSource,
@@ -239,6 +243,7 @@ async function currentAuthorization(
       authorized.parent.revision !== grant.parentRevision
     )
       throw new Error("authorization_denied");
+    await assertPrivateEncryptedRestore(db, grant.trashOpId, grant.parentId, row.space_id);
     return authorized;
   }
   const authorized = await authorizeNode(db, principal, {
@@ -559,6 +564,7 @@ async function restoreFinalStatements(
     sourceGuard(row, grant),
     assertCreateLocks(grant.parentId, row.space_id, authorized.principal, grant.lockTokenHashes),
     assertRestorePause(pause, row.op_id),
+    privateEncryptedRestoreAssertion(grant.trashOpId, grant.parentId, row.space_id),
     assertExists(
       `SELECT 1 FROM trash_ops t JOIN nodes n ON n.id=t.root_node_id AND n.space_id=t.space_id
       WHERE t.op_id=? AND t.state='trashed' AND t.actor_id=? AND t.space_id=?

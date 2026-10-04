@@ -18,6 +18,8 @@ public session は各 request で次を再検査する。
 - ControlDO mirror の current epoch と maintenance。
 - share action と、選択 root 配下の node coverage。
 
+公開shellとmanifestに列挙した静的assetは、共有データを含まない公開リソースであるため、maintenance中も配信する。Workerの`GET /public-assets/:asset`と`GET /s/:shareId`は`admittedEpoch`を通さない。共有一覧・ticket・contentなどのAPIはadmissionを通し、maintenance中は利用できない。maintenance解除後も、各share requestでcurrent epoch、maintenance、shareの失効/期限、owner停止、session状態を再検査するため、公開shellやassetを保持していても失効したshareを再利用できない。
+
 接続済み public API は次の23経路である。
 
 - `POST /api/v1/public/shares/:shareId/unlock`
