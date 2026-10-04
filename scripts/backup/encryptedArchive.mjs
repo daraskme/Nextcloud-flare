@@ -27,7 +27,7 @@ async function cryptoFunctions() {
       stdin: {
         contents: [
           'export { createEncryptedContainer, readContainerHeader, openContainerHeader, decryptContainerPlainRange } from "./encryptedContainer.ts";',
-          'export { unlockRecipientVault } from "./cryptoEnvelope.ts";',
+          'export { unlockRecipientVault, cipherSize, MAX_CIPHER_BYTES } from "./cryptoEnvelope.ts";',
           'export { parseRecoveryFile, verifyRecipientPublicKey } from "./encryptionVaultStore.ts";',
         ].join("\n"),
         resolveDir: fileURLToPath(root),
@@ -175,12 +175,28 @@ async function publicRecipient(path, accountId, verifyRecipientPublicKey) {
   return value.recipient;
 }
 
+/** Reserve the complete bounded header before hashing or packing a large archive. */
+export async function validateArchivePlainSize(bytes) {
+  const crypto = await cryptoFunctions();
+  try {
+    if (
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0 ||
+      crypto.cipherSize(bytes) + 12 + 16 * 1024 > crypto.MAX_CIPHER_BYTES
+    )
+      fail("backup_archive_container_limit");
+  } catch {
+    fail("backup_archive_container_limit");
+  }
+}
+
 /** Encrypt one already-packed private tar into the existing NCFENC1 container. */
 export async function encryptArchiveFile({ sourceFile, publicKeyFile, outputFile, accountId }) {
   checkedAccount(accountId);
   await privateOutput(outputFile);
   const sourceStat = await regularFile(sourceFile, MAX_CONTAINER_BYTES, true);
   if (sourceFile === outputFile) fail("backup_archive_path_invalid");
+  await validateArchivePlainSize(Number(sourceStat.size));
   const sourceHash = await hashFile(sourceFile, MAX_CONTAINER_BYTES);
   if (sourceHash.bytes !== Number(sourceStat.size)) fail("backup_archive_source_changed");
   const crypto = await cryptoFunctions();

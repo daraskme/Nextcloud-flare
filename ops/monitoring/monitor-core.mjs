@@ -31,7 +31,10 @@ function safeBackupError(code) {
   return "backup_failed";
 }
 
-export function assessBackupState(state, { now = new Date(), maxAgeMs = 8.5 * 86_400_000 } = {}) {
+export function assessBackupState(
+  state,
+  { now = new Date(), maxAgeMs = 8.5 * 86_400_000, archiveObservation } = {},
+) {
   if (
     !state ||
     typeof state !== "object" ||
@@ -45,8 +48,17 @@ export function assessBackupState(state, { now = new Date(), maxAgeMs = 8.5 * 86
     !PHASES.has(state.phase)
   )
     return { state: "unknown", code: "backup_state_missing_or_invalid" };
-  if (Object.hasOwn(state, "lastError"))
+  if (Object.hasOwn(state, "lastError")) {
+    if (
+      [
+        "backup_weekly_storage_unavailable",
+        "backup_volume_unavailable",
+        "backup_archive_unavailable",
+      ].includes(state.lastError?.code)
+    )
+      return { state: "unknown", code: "archive_storage_unavailable" };
     return { state: "failed", code: safeBackupError(state.lastError?.code) };
+  }
 
   if (state.phase === "completed") {
     if (
@@ -66,6 +78,10 @@ export function assessBackupState(state, { now = new Date(), maxAgeMs = 8.5 * 86
       archiveVerifiedAt > now.getTime() + 60_000
     )
       return { state: "unknown", code: "backup_timestamp_invalid" };
+    if (archiveObservation?.state !== "healthy")
+      return archiveObservation?.state === "failed"
+        ? { state: "failed", code: archiveObservation.code }
+        : { state: "unknown", code: "archive_storage_unavailable" };
     if (now.getTime() - completedAt > maxAgeMs) return { state: "stale", code: "backup_stale" };
     return { state: "healthy", code: "backup_verified" };
   }
@@ -164,7 +180,14 @@ export function assessLiveCheck(liveCheck) {
   return { state: "unknown", code: "http_probes_not_run" };
 }
 
-export function currentMonitorStatus({ backup, billing, liveCheck, config, now = new Date() }) {
+export function currentMonitorStatus({
+  backup,
+  billing,
+  liveCheck,
+  config,
+  archiveObservation,
+  now = new Date(),
+}) {
   const backupMaxAgeDays = Number.isFinite(config?.backupMaxAgeDays) ? config.backupMaxAgeDays : 8;
   const backupGraceHours = Number.isFinite(config?.backupGraceHours) ? config.backupGraceHours : 12;
   const backupStatus =
@@ -174,6 +197,7 @@ export function currentMonitorStatus({ backup, billing, liveCheck, config, now =
     backupGraceHours <= 48
       ? assessBackupState(backup, {
           now,
+          archiveObservation,
           maxAgeMs: (backupMaxAgeDays + backupGraceHours / 24) * 86_400_000,
         })
       : { state: "unknown", code: "backup_monitor_config_invalid" };

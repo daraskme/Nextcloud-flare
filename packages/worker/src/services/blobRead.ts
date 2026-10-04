@@ -102,7 +102,37 @@ export async function prepareCookieBlobRead(
 ): Promise<ContentBlobPlan> {
   if (!["content", "thumb", "page", "zip", "track"].includes(purpose))
     throw new Error("content_not_available");
-  const sessionId = await tokens.verifyCookie(cookieHeader, purpose);
+  const grants = await tokens.verifyCookies(cookieHeader, purpose);
+  const sessions = await primary(db)
+    .prepare(
+      `SELECT id FROM content_sessions WHERE id IN (${grants.map(() => "?").join(",")})
+       ORDER BY issued_at DESC,rowid DESC`,
+    )
+    .bind(...grants.map((grant) => grant.sessionId))
+    .all<{ id: string }>();
+  let unavailable: unknown = new Error("content_not_available");
+  for (const { id: sessionId } of sessions.results) {
+    try {
+      return await prepareCookieSessionBlobRead(db, bucket, sessionId, spaceId, nodeId, purpose);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !["content_not_available", "authorization_denied"].includes(error.message)
+      )
+        unavailable = error;
+    }
+  }
+  throw unavailable;
+}
+
+async function prepareCookieSessionBlobRead(
+  db: D1Database,
+  bucket: R2Bucket,
+  sessionId: string,
+  spaceId: string,
+  nodeId: string,
+  purpose: ContentPurpose,
+): Promise<ContentBlobPlan> {
   const session = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
       cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,
@@ -112,7 +142,9 @@ export async function prepareCookieBlobRead(
       FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
       JOIN tickets t ON t.id=cs.ticket_id
       LEFT JOIN admin_content_grants ag ON ag.ticket_id=t.id
-      WHERE cs.id=? AND t.purpose=?`)
+      WHERE cs.id=? AND t.purpose=? AND cs.revoked_at IS NULL
+        AND cs.expires_at>strftime('%s','now')*1000
+        AND t.cancelled_at IS NULL AND t.expires_at>strftime('%s','now')*1000`)
     .bind(sessionId, purpose)
     .first<{
       userId: string | null;

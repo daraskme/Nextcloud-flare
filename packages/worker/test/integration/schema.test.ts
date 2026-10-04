@@ -13,7 +13,12 @@ beforeAll(async () => {
 it("applies the production migrations on D1 with every foreign key enabled", async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); // idempotent runner, not repeated SQL
   expect((await env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(56);
+  const applied = await env.DB.prepare("SELECT name FROM d1_migrations ORDER BY id").all<{
+    name: string;
+  }>();
+  expect(applied.results.map(({ name }) => name)).toEqual(
+    env.TEST_MIGRATIONS.map(({ name }) => name),
+  );
   const graph = [];
   for (const name of exportTables) {
     const result = await env.DB.prepare(`PRAGMA foreign_key_list('${name}')`).all<ForeignKey>();

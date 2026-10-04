@@ -243,12 +243,14 @@ export function createWeeklyBackupRuntime({
   env = process.env,
   workRoot,
   verifyStorage,
+  verifyArchive,
   publishArchive,
   cleanupInternal = async (_state, directory) => rm(directory, { recursive: true, force: true }),
 }) {
   configured(env);
   if (
     !verifyStorage ||
+    !verifyArchive ||
     !publishArchive ||
     !isAbsolute(workRoot ?? "") ||
     resolve(workRoot) !== workRoot
@@ -260,6 +262,7 @@ export function createWeeklyBackupRuntime({
   };
   return {
     verifyStorage,
+    verifyArchive,
     publishArchive,
     cleanupInternal,
     async currentEpoch() {

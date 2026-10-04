@@ -5,6 +5,7 @@ import { GC_NOT_BEFORE_SQL } from "../db/gcGrace";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import { assertRestorePause, type RestorePause } from "../db/restorePause";
 import { CONTROL_NAME } from "../do/ControlDO";
+import { repairFence } from "../do/recoveryAudit";
 import type { Env } from "../env";
 import {
   assertPrivateEncryptedRestore,
@@ -301,12 +302,13 @@ async function processManifest(
   const checkpoint = parseTreeJobCheckpoint(row.checkpoint);
   if (checkpoint.phase !== "manifest") return "retry";
   const principal = savedPrincipal(row);
-  if (!principal) return failTreeJob(env, row, "mutation_rejected", deadline);
+  if (!principal)
+    return failTreeJobInternal(env, row, "mutation_rejected", deadline, undefined, token);
   let authorized;
   try {
     authorized = await currentAuthorization(env.DB, row, grant, principal);
   } catch {
-    return failTreeJob(env, row, "mutation_rejected", deadline);
+    return failTreeJobInternal(env, row, "mutation_rejected", deadline, undefined, token);
   }
   const result =
     row.kind === "node.trash"
@@ -318,9 +320,9 @@ async function processManifest(
     row.node_count + members.length > ASYNC_TREE_MAX_NODES ||
     (row.node_count + members.length === ASYNC_TREE_MAX_NODES && hasMore)
   )
-    return failTreeJob(env, row, "tree_too_large", deadline);
+    return failTreeJobInternal(env, row, "tree_too_large", deadline, undefined, token);
   if (members.length === 0 && row.node_count < 1)
-    return failTreeJob(env, row, "mutation_rejected", deadline);
+    return failTreeJobInternal(env, row, "mutation_rejected", deadline, undefined, token);
   const nextCursor = members.at(-1)?.id ?? checkpoint.cursor;
   const nextPhase = hasMore ? "manifest" : "finalize";
   const manifest =
@@ -949,14 +951,15 @@ async function processFinalize(
     row.node_count <= 1_000 ||
     row.node_count > ASYNC_TREE_MAX_NODES
   )
-    return failTreeJob(env, row, "mutation_rejected", deadline);
+    return failTreeJobInternal(env, row, "mutation_rejected", deadline, undefined, token);
   const principal = savedPrincipal(row);
-  if (!principal) return failTreeJob(env, row, "mutation_rejected", deadline);
+  if (!principal)
+    return failTreeJobInternal(env, row, "mutation_rejected", deadline, undefined, token);
   let authorized;
   try {
     authorized = await currentAuthorization(env.DB, row, grant, principal);
   } catch {
-    return failTreeJob(env, row, "mutation_rejected", deadline);
+    return failTreeJobInternal(env, row, "mutation_rejected", deadline, undefined, token);
   }
   let pause: (RestorePause & { ready: boolean }) | null = null;
   try {
@@ -983,11 +986,13 @@ async function processFinalize(
       error instanceof Error &&
       ["authorization_denied", "name_conflict", "blob_unrecoverable"].includes(error.message)
     )
-      return failTreeJob(
+      return failTreeJobInternal(
         env,
         row,
         error.message === "authorization_denied" ? "mutation_rejected" : error.message,
         deadline,
+        undefined,
+        token,
       );
     return "retry";
   } finally {
@@ -1009,11 +1014,17 @@ async function failTreeJobInternal(
   errorCode: string,
   deadline = Date.now() + 25_000,
   terminalGuard?: SqlStatement,
+  claimToken?: string,
 ): Promise<"failed" | "retry"> {
   if (!/^[a-z_]{1,64}$/.test(errorCode)) errorCode = "operation_failed";
   try {
     const admission = await acquireSystemMutation(env, row.owner_id, "tree-job.fail", deadline);
     const statements: SqlStatement[] = [assertExactTreeJob(row)];
+    statements.push(
+      claimToken
+        ? leaseAssertion(row, claimToken)
+        : absent(`SELECT 1 FROM job_leases WHERE job_id=? AND expires_at>${clock}`, [row.id]),
+    );
     if (terminalGuard) statements.push(terminalGuard, assertOneChange);
     if (row.kind === "node.trash") {
       statements.push(
@@ -1167,4 +1178,116 @@ export async function failStaleTreeJobs(
     if (row && (await failTreeJob(env, row, "stale_epoch")) === "failed") failed++;
   }
   return failed;
+}
+
+/** Stopped jobs retain their source tree; only uncommitted setup is discarded. */
+export async function reconcileStoppedTreeJobs(
+  env: SystemMutationSource,
+  epoch: number,
+  limit = 20,
+): Promise<number> {
+  if (
+    !Number.isSafeInteger(epoch) ||
+    epoch < 1 ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 20
+  )
+    throw new Error("invalid_tree_job_repair");
+  const deadline = Date.now() + 25_000;
+  const rows = await primary(env.DB)
+    .prepare(`SELECT id FROM bulk_jobs WHERE kind IN ('node.trash','node.restore','node.purge')
+      AND state IN ('pending','running') ORDER BY id LIMIT ?`)
+    .bind(limit)
+    .all<{ id: string }>();
+  let reconciled = 0;
+  for (const { id } of rows.results) {
+    if (Date.now() >= deadline) break;
+    const row = await treeJobRow(env.DB, id);
+    if (!row || row.operation_state !== "failed") throw new Error("recovery_tree_job_provenance");
+    const grant = parseTreeJobGrant(row.grant_snapshot);
+    const checkpoint = parseTreeJobCheckpoint(row.checkpoint);
+    if (!["manifest", "finalize"].includes(checkpoint.phase))
+      throw new Error("recovery_tree_job_provenance");
+    const admission = await acquireSystemMutation(env, row.owner_id, "tree-job.fail", deadline);
+    if (admission.epoch !== epoch || admission.maintenance !== 1)
+      throw new Error("recovery_tree_job_not_stopped");
+    if (Date.now() >= deadline) throw new Error("recovery_repair_budget");
+    const statements: SqlStatement[] = [
+      repairFence(epoch, admission),
+      assertExactTreeJob(row),
+      assertExists(
+        `SELECT 1 FROM control WHERE singleton=1 AND epoch=?
+        AND maintenance=1 AND gc_paused=1 AND backup_token IS NULL AND backup_frozen=0 AND gc_hold_token IS NULL
+        AND gc_hold_operation IS NULL AND gc_hold_expires_at IS NULL`,
+        [epoch],
+      ),
+      assertExists(
+        `SELECT 1 FROM bulk_jobs j JOIN operations o ON o.op_id=j.op_id
+        JOIN spaces s ON s.id=o.space_id WHERE j.id=?
+          AND j.id='job_'||substr(o.op_id,4) AND o.kind=j.kind AND o.epoch=j.epoch AND j.epoch<=?
+          AND o.state='failed' AND o.error_code IN ('maintenance','stale_epoch','backup')
+          AND o.principal_kind='user' AND o.principal_id=j.owner_id AND s.owner_id=j.owner_id
+          AND o.credential_id=j.credential_id AND o.expected_steps=1
+          AND json_extract(o.operands_json,'$.nodeId')=?
+          AND json_extract(o.operands_json,'$.parentId')=?
+          AND (j.kind='node.trash' OR json_extract(o.operands_json,'$.trashOpId')=?)`,
+        [id, epoch, grant.rootNodeId, grant.parentId, grant.trashOpId],
+      ),
+      absent(`SELECT 1 FROM job_leases WHERE job_id=? AND (epoch<>? OR expires_at>${clock})`, [
+        id,
+        row.epoch,
+      ]),
+      assertExists(
+        `SELECT 1 FROM operation_steps WHERE op_id=? AND step_no=1
+        AND kind='node' AND affected_id=?`,
+        [row.op_id, grant.rootNodeId],
+      ),
+      absent("SELECT 1 FROM operation_steps WHERE op_id=? AND step_no<>1", [row.op_id]),
+      absent("SELECT 1 FROM outbox WHERE op_id=?", [row.op_id]),
+      absent("SELECT 1 FROM nodes WHERE deleted_op_id=?", [row.op_id]),
+    ];
+    if (row.kind === "node.trash") {
+      if (grant.trashOpId !== row.op_id) throw new Error("recovery_tree_job_provenance");
+      statements.push(
+        assertExists(
+          `SELECT 1 FROM trash_ops WHERE op_id=? AND state='pending'
+          AND actor_id=? AND space_id=? AND root_node_id=? AND epoch=? AND reason='node.trash'`,
+          [row.op_id, row.owner_id, row.space_id, grant.rootNodeId, row.epoch],
+        ),
+        { sql: "DELETE FROM trash_members WHERE trash_op_id=?", values: [row.op_id] },
+        { sql: "DELETE FROM trash_ops WHERE op_id=? AND state='pending'", values: [row.op_id] },
+        assertOneChange,
+      );
+    } else {
+      statements.push(
+        assertExists(
+          `SELECT 1 FROM trash_ops WHERE op_id=? AND state='trashed'
+          AND actor_id=? AND space_id=? AND root_node_id=? AND epoch<=?`,
+          [grant.trashOpId, row.owner_id, row.space_id, grant.rootNodeId, row.epoch],
+        ),
+      );
+      if (row.kind === "node.purge")
+        statements.push(
+          { sql: "DELETE FROM purge_blobs WHERE purge_op_id=?", values: [row.op_id] },
+          { sql: "DELETE FROM purge_members WHERE purge_op_id=?", values: [row.op_id] },
+        );
+    }
+    statements.push(
+      {
+        sql: `DELETE FROM job_leases WHERE job_id=? AND epoch=? AND expires_at<=${clock}`,
+        values: [id, row.epoch],
+      },
+      {
+        sql: `UPDATE bulk_jobs SET state='failed',error_code=(SELECT error_code FROM operations WHERE op_id=bulk_jobs.op_id),
+        checkpoint=?,dispatch_state='failed',dispatch_token=NULL,dispatch_expires_at=NULL,
+        updated_at=MAX(updated_at,${clock}) WHERE id=? AND state IN ('pending','running')`,
+        values: [JSON.stringify({ phase: "failed", cursor: checkpoint.cursor }), id],
+      },
+      assertOneChange,
+    );
+    await commitSystemMutation(env.DB, admission, row.owner_id, statements);
+    reconciled++;
+  }
+  return reconciled;
 }

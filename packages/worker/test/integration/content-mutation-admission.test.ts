@@ -215,6 +215,16 @@ async function fixture(identity: Identity = "owner") {
     selected,
   );
   const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+  const acceptance = await issueContentTicket(
+    mutationEnv(),
+    bucket,
+    tokens,
+    principal,
+    [target],
+    "content",
+    expiresAt,
+    selected,
+  );
   const proof = await authorizeNode(env.DB, principal, { operation: "node.read", ...target });
   const baseline = await env.DB.prepare(
     "SELECT MAX(seq) AS n FROM mutation_admissions",
@@ -244,7 +254,7 @@ async function fixture(identity: Identity = "owner") {
             selected,
           )
         : action === "accept"
-          ? acceptContentTicket(configured, tokens, issued.ticket)
+          ? acceptContentTicket(configured, tokens, acceptance.ticket)
           : cancelContentTicket(configured, principal, issued.ticketId);
   const rows = (action: Action) =>
     env.DB.prepare(
@@ -282,6 +292,7 @@ async function fixture(identity: Identity = "owner") {
     target,
     issued,
     accepted,
+    acceptance,
     expiresAt,
     app,
     run,
@@ -428,6 +439,7 @@ it.each(actions)(
   "does not replay %s after losing the acknowledgement and receipt read",
   async (action) => {
     const f = await fixture();
+    const before = await f.snapshot();
     const fault = database({
       action,
       failReceiptRead: true,
@@ -446,7 +458,7 @@ it.each(actions)(
           .bind(f.f.ids.user)
           .all<{ manifest_ref: string }>()
       ).results;
-      expect(targets).toHaveLength(2);
+      expect(targets).toHaveLength(before[1]!.length + 1);
       for (const target of targets)
         expect(await env.BLOBS.head(target.manifest_ref)).not.toBeNull();
     }
@@ -616,7 +628,7 @@ it.each(["issue", "accept", "cancel"] as const)(
           : {
               body: JSON.stringify(
                 action === "accept"
-                  ? { ticket: f.issued.ticket }
+                  ? { ticket: f.acceptance.ticket }
                   : { targets: [f.target], purpose: "content", ttlSeconds: 60 },
               ),
             }),

@@ -6,6 +6,7 @@ Phase 1 用の forward migrations。`0001` は identity / namespace / ledger、
 `0005` は reservation/参照 counter trigger と R2 実在会計行。非0の旧 physical counter は個別 inventory 移行が必要なため拒否する。
 `0006` は permit identity と open 一意性。適用前に全 open permit を収束させる。
 `0009` は content session を発行元 ticket に束縛する。旧 session 行の `ticket_id` は NULL のまま残り、content read assertion では拒否するため、短い TTL の満了後に cleanup する。
+`0058` は ticket の交換済み時刻を保存する。既存 session がある ticket は交換済みへ backfill し、既存 session/cookie 自体は失効させない。session cleanup 後も ticket は再交換できない。新規交換は credential ごとに最大16有効session、期限切れsessionの削除は交換batchごとに最大16行。
 `0011` は DAV lock の取得時 display href を追加する。適用前に最大1時間の既存 lock を全て収束させる。
 `0021` は未知の完成済みR2 objectの隔離台帳と走査cursor/lease。58通常tableのexport/purge契約に追加し、owner physical監査に隔離bytesを含める。同keyのcatalogue登録と隔離登録は相互guardで排他にし、削除後もkey tombstoneを保持する。
 `0039` は既存GC候補を移行から35日以上保護し、最後のnode/version参照が外れた候補の期限も同じtransactionで延長する。既にdeleting/deletedの対象は変更しない。physical容量は猶予中も保持する。[バックアップ用GC保護](../../../docs/BACKUP_GC_PROTECTION.md)を参照。

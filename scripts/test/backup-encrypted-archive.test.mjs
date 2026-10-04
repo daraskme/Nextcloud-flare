@@ -5,7 +5,11 @@ import { chmod, lstat, mkdtemp, open, readdir, readFile, rm, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
-import { createRecipientVault } from "../../packages/web/src/lib/cryptoEnvelope.ts";
+import {
+  cipherSize,
+  createRecipientVault,
+  MAX_CIPHER_BYTES,
+} from "../../packages/web/src/lib/cryptoEnvelope.ts";
 import {
   publicKeyFileJson,
   recoveryFileJson,
@@ -15,10 +19,46 @@ import {
   decryptArchiveFile,
   encryptArchiveFile,
   runEncryptedArchiveCli,
+  validateArchivePlainSize,
 } from "../backup/encryptedArchive.mjs";
 
 const roots = [];
 const posixTest = test.skipIf(process.platform === "win32");
+
+test("archive preflight reserves the real cipher overhead and the bounded container header", async () => {
+  await validateArchivePlainSize(8 * 1024 ** 3);
+  const headerBytes = 12 + 16 * 1024;
+  const nearLimit = MAX_CIPHER_BYTES - 4 * 1024 * 1024;
+  assert.ok(cipherSize(nearLimit) + headerBytes <= MAX_CIPHER_BYTES);
+  await validateArchivePlainSize(nearLimit);
+  const overflow = MAX_CIPHER_BYTES - 1024;
+  await assert.rejects(validateArchivePlainSize(overflow), /backup_archive_container_limit/);
+  await assert.rejects(validateArchivePlainSize(-1), /backup_archive_container_limit/);
+  await assert.rejects(
+    validateArchivePlainSize(Number.MAX_SAFE_INTEGER),
+    /backup_archive_container_limit/,
+  );
+});
+
+posixTest("oversized tar is refused before hashing or reading recipient keys", async () => {
+  const f = await fixture(0);
+  const file = await open(f.sourceFile, "r+");
+  try {
+    await file.truncate(MAX_CIPHER_BYTES - 1024);
+  } finally {
+    await file.close();
+  }
+  await assert.rejects(
+    encryptArchiveFile({
+      sourceFile: f.sourceFile,
+      publicKeyFile: join(f.root, "missing-public.json"),
+      outputFile: f.cipherFile,
+      accountId: "admin_fixture",
+    }),
+    /backup_archive_container_limit/,
+  );
+  await assert.rejects(lstat(f.cipherFile), { code: "ENOENT" });
+});
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });

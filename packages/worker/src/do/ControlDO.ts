@@ -53,6 +53,7 @@ import {
   scanOrphanObjects,
 } from "../jobs/orphanInventory";
 import { type BindingVerification, withVerifiedR2Inventory } from "../jobs/r2BindingVerification";
+import { reconcileStoppedTreeJobs } from "../jobs/treeJobWorker";
 import { repairSingleUploads, type UploadCleanupResult } from "../jobs/uploadCleanup";
 import { R2S3Inventory } from "../r2/s3Inventory";
 import { ControlAdmission } from "./controlAdmission";
@@ -783,6 +784,17 @@ export class ControlDO extends DurableObject<Env> {
       ),
     );
     return { settlement, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
+  }
+
+  /** Discard only uncommitted tree-job setup after all worker leases have drained. */
+  async reconcileTreeJobs(
+    expectedEpoch: number,
+    limit = 20,
+  ): Promise<{ reconciled: number; audit: RecoveryAuditStatus }> {
+    const reconciled = await this.#maintenance(expectedEpoch, () =>
+      reconcileStoppedTreeJobs({ DB: this.env.DB, systemControl: this }, expectedEpoch, limit),
+    );
+    return { reconciled, audit: this.#auditStatus(this.#auditRow(expectedEpoch)) };
   }
 
   /** Bounded old-epoch node notification repair; other event kinds require their own cleanup. */

@@ -447,6 +447,15 @@ export async function resolveDavConditionPath(db: D1Database, principal: Princip
   return Object.freeze({ ...row, assertion: davPathAssertion(principal, path, row) });
 }
 
+export function davConditionAbsentAssertion(principal: Principal, path: DavPath): SqlStatement {
+  if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");
+  return {
+    sql: `${pathCte(path)} INSERT INTO _assert(v) SELECT 1 WHERE EXISTS(
+      SELECT 1 FROM path WHERE depth=json_array_length(?4))`,
+    values: pathValues(principal, path, "read"),
+  };
+}
+
 /** Resolve the target parent without requiring read scope on a write-only app password. */
 export async function resolveDavCreateParent(db: D1Database, principal: Principal, path: DavPath) {
   if (principal.kind !== "app_password") throw new Error("dav_node_unavailable");

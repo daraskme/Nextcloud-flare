@@ -1,10 +1,11 @@
 import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { validateCronConfig } from "../../ops/staging/backup-cron-config.mjs";
 import {
   completedBridgeWaitMs,
+  createWeeklyBackupRuntime,
   preparePrivateBridgeConfig,
 } from "../../ops/staging/weekly-backup-runtime.mjs";
 
@@ -22,6 +23,33 @@ const roots = [];
 const posixIt = it.skipIf(process.platform === "win32");
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+it("requires and forwards the real archive verifier instead of completing from metadata", async () => {
+  const options = {
+    env: {
+      CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+      STAGING_D1_DATABASE_ID: completionState.id,
+      CLOUDFLARE_API_TOKEN: "test-fixture",
+      R2_INVENTORY_ACCOUNT_ID: "a".repeat(32),
+      R2_INVENTORY_BUCKET: "ncf-staging-blobs",
+      R2_INVENTORY_ACCESS_KEY_ID: "test-fixture",
+      R2_INVENTORY_SECRET_ACCESS_KEY: "test-fixture",
+      NCF_BACKUP_AUDIT_MAX_OBJECTS: "1",
+      NCF_BACKUP_AUDIT_MAX_BYTES: "3",
+    },
+    workRoot: tmpdir(),
+    verifyStorage: vi.fn(),
+    publishArchive: vi.fn(),
+    verifyArchive: vi.fn(async () => ({ verified: true })),
+  };
+  expect(() => createWeeklyBackupRuntime({ ...options, verifyArchive: undefined })).toThrow(
+    "backup_weekly_unconfigured",
+  );
+  const runtime = createWeeklyBackupRuntime(options);
+  expect(runtime.verifyArchive).toBe(options.verifyArchive);
+  expect(await runtime.verifyArchive(completionState, "fixture-root")).toEqual({ verified: true });
+  expect(options.verifyArchive).toHaveBeenCalledWith(completionState, "fixture-root");
 });
 
 it("budgets propagation and one cron tick per four SQL parts, excluding blob copy size", () => {
