@@ -615,6 +615,26 @@ function zipRangeSpans(
   });
 }
 
+/**
+ * Source bytes a ranged response must read from R2 without delivering them:
+ * entries whose CRC is served are read whole, and a framing mismatch falls
+ * back to full serialization. Charged so a small tail Range cannot force a
+ * full-archive read for a few delivered bytes.
+ */
+function undeliveredReads(
+  plan: { sources: readonly { entry: ZipTargetEntry }[]; outputSize: number },
+  spans: readonly SparseSpan[] | null,
+  delivered: number,
+): number {
+  if (!spans) return plan.outputSize - delivered;
+  let extra = 0;
+  spans.forEach((span, index) => {
+    if (span.needsCrc)
+      extra += plan.sources[index]!.entry.size - Math.max(0, span.covEnd - span.covStart);
+  });
+  return extra;
+}
+
 function zeroStream(length: number): ReadableStream<Uint8Array> {
   let remaining = length;
   return new ReadableStream<Uint8Array>({
@@ -764,6 +784,7 @@ export async function streamBudgetedZip(
       : range.kind === "range"
         ? range.length
         : plan.outputSize;
+<<<<<<< HEAD
   // A range over data-descriptor or central-directory records still fetches the
   // whole covered object (the CRC must be real), so the lease pays for what the
   // server must read rather than only the delivered slice.
@@ -776,6 +797,14 @@ export async function streamBudgetedZip(
             total + (span && !span.needsCrc ? Math.max(0, span.covEnd - span.covStart) : entry.size)
           );
         }, 0);
+=======
+  const spans =
+    range.kind === "range" && bytes > 0
+      ? zipRangeSpans(plan.sources, plan.outputSize, range)
+      : null;
+  const amplification =
+    range.kind === "range" && bytes > 0 ? undeliveredReads(plan, spans, bytes) : 0;
+>>>>>>> origin/main
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   const lease = await budget.reserve({
@@ -783,7 +812,11 @@ export async function streamBudgetedZip(
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
+<<<<<<< HEAD
     bytes: Math.max(bytes, fetchBytes),
+=======
+    bytes: bytes + amplification,
+>>>>>>> origin/main
   });
   return streamLeasedContent(
     async (signal, deadline) => {
@@ -863,7 +896,14 @@ export async function streamBudgetedZip(
       budget.settle({
         budgetId: plan.budgetId,
         requestId,
+<<<<<<< HEAD
         deliveredBytes: deliveredBytes === null ? null : Math.max(deliveredBytes, fetchBytes),
+=======
+        deliveredBytes:
+          deliveredBytes === null || deliveredBytes === 0
+            ? deliveredBytes
+            : deliveredBytes + amplification,
+>>>>>>> origin/main
       }),
   );
 }

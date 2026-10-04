@@ -23,6 +23,7 @@ import { createInternalShare, updateInternalShare } from "../../src/services/sha
 import { foundationFixture } from "../fixtures/foundation";
 import { localKdf } from "../fixtures/kdf";
 import { acquireMutation, grantPermit, mutationEnv } from "../fixtures/mutationAdmission";
+import { injectBatch } from "../fixtures/uploadEnv";
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 beforeEach(async () => env.DB.prepare("UPDATE control SET epoch=1,maintenance=0").run());
@@ -99,7 +100,7 @@ function admittedDavEnv(overloaded = false): Env {
 async function fixture(suffix: string) {
   const f = foundationFixture(crypto.randomUUID(), Date.now() - 1000);
   await atomicBatch(env.DB, f.statements);
-  const id = `ap_${"0".repeat(25)}${suffix}`;
+  const id = `ap_${suffix.padStart(26, "0")}`;
   const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const pepper = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
   const ring = await appPasswordPepperRing("v1", { v1: pepper }, localKdf);
@@ -132,6 +133,425 @@ async function fixture(suffix: string) {
     });
   return { f, id, secret, pepper, ring, request };
 }
+
+let conditionFixtureId = 0;
+async function writableDavFixture(suffix: string) {
+  const result = await fixture(`${suffix}${++conditionFixtureId}`);
+  const { f, id } = result;
+  const search = searchName("File");
+  await atomicBatch(env.DB, [
+    ...["node:read", "node:write", "node:create"].map((scope) => ({
+      sql: "INSERT INTO credential_scopes(credential_id,scope) VALUES(?,?)",
+      values: [`ap:${id}`, scope],
+    })),
+    {
+      sql: "INSERT INTO search_index(node_id,space_id,text_norm,tokens,normalization_version,revision) VALUES(?,?,?,?,?,1)",
+      values: [f.ids.file, f.ids.space, search.textNorm, search.tokens, search.version],
+    },
+    {
+      sql: "INSERT INTO search_fts(rowid,text_norm,tokens) SELECT rowid,text_norm,tokens FROM search_index WHERE node_id=?",
+      values: [f.ids.file],
+    },
+  ]);
+  return {
+    ...result,
+    app: admittedDavEnv(),
+    headers: Object.fromEntries(result.request().headers),
+  };
+}
+
+it.each([
+  { date: "Sat, 01 Jan 2000 00:00:00 GMT", match: false, status: 412 },
+  { date: "Fri, 01 Jan 2100 00:00:00 GMT", match: false, status: 204 },
+  { date: "Sat, 01 Jan 2000 00:00:00 GMT", match: true, status: 204 },
+])(
+  "honors locked PUT's date condition ($date, If-Match=$match)",
+  async ({ date, match, status }) => {
+    const { f, app, headers, ring } = await writableDavFixture("Z");
+    const locked = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method: "LOCK",
+        headers: { ...headers, "Content-Type": "application/xml", Depth: "0" },
+        body: '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>',
+      }),
+      app,
+      1,
+      ring,
+    );
+    expect(locked.status).toBe(200);
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method: "PUT",
+        headers: {
+          ...headers,
+          "Content-Length": "3",
+          "Content-Type": "text/plain",
+          If: `(${locked.headers.get("Lock-Token")})`,
+          "If-Unmodified-Since": date,
+          ...(match ? { "If-Match": `"b-${f.ids.blob}"` } : {}),
+        },
+        body: "new",
+      }),
+      app,
+      1,
+      ring,
+    );
+    expect(response.status).toBe(status);
+    const row = await env.DB.prepare("SELECT current_blob_id,revision FROM nodes WHERE id=?")
+      .bind(f.ids.file)
+      .first<{ current_blob_id: string; revision: number }>();
+    expect(row?.revision).toBe(status === 412 ? 1 : 2);
+    if (status === 412) {
+      expect(row?.current_blob_id).toBe(f.ids.blob);
+      expect(
+        await env.DB.prepare("SELECT COUNT(*) AS n FROM uploads WHERE owner_id=?")
+          .bind(f.ids.user)
+          .first("n"),
+      ).toBe(0);
+    } else expect(row?.current_blob_id).not.toBe(f.ids.blob);
+  },
+);
+
+it.each([
+  { overwrite: false, timing: "body" },
+  { overwrite: true, timing: "body" },
+  { overwrite: false, timing: "publication" },
+  { overwrite: true, timing: "publication" },
+])("binds tagged PUT If through $timing (overwrite=$overwrite)", async ({ overwrite, timing }) => {
+  const { f, app, headers, ring } = await writableDavFixture("X");
+  const beforeEtag = `"b-${f.ids.blob}"`;
+  const sendPut = (path: string, extra: Record<string, string>, davEnv = app, body = "new") =>
+    handleDavHttp(
+      new Request(`https://app.invalid/dav/${path}`, {
+        method: "PUT",
+        headers: { ...headers, "Content-Length": "3", "Content-Type": "text/plain", ...extra },
+        body,
+      }),
+      davEnv,
+      1,
+      ring,
+    );
+  if (overwrite) expect((await sendPut("New.txt", {}, app, "old")).status).toBe(201);
+  const folderRevision = await env.DB.prepare("SELECT revision FROM nodes WHERE id=?")
+    .bind(f.ids.folder)
+    .first<number>("revision");
+  const original = await env.DB.prepare(
+    "SELECT current_blob_id AS blobId,revision FROM nodes WHERE parent_id=? AND name='New.txt'",
+  )
+    .bind(f.ids.folder)
+    .first<{ blobId: string; revision: number }>();
+  const usedBefore = await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
+    .bind(f.ids.user)
+    .first("used_bytes");
+  let changed = false;
+  const changeFile = async () => {
+    expect(changed).toBe(false);
+    changed = true;
+    if (timing === "publication")
+      await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?")
+        .bind(f.ids.folder)
+        .run();
+    else expect((await sendPut("File", { "If-Match": beforeEtag }, app, "xyz")).status).toBe(204);
+  };
+  const bucket = new Proxy(env.BLOBS, {
+    get(target, key) {
+      if (key === "put")
+        return async (...args: Parameters<R2Bucket["put"]>) => {
+          if (timing === "body") await changeFile();
+          return target.put(...args);
+        };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const publication = new WeakSet<D1PreparedStatement>();
+  const db = new Proxy(env.DB, {
+    get(target, key) {
+      if (key === "prepare")
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.startsWith("UPDATE reservations SET op_id=?")) return statement;
+          return new Proxy(statement, {
+            get(prepared, property) {
+              if (property === "bind")
+                return (...values: Parameters<D1PreparedStatement["bind"]>) => {
+                  const bound = prepared.bind(...values);
+                  publication.add(bound);
+                  return bound;
+                };
+              const value = Reflect.get(prepared, property, prepared);
+              return typeof value === "function" ? value.bind(prepared) : value;
+            },
+          });
+        };
+      if (key === "batch")
+        return async (statements: D1PreparedStatement[]) => {
+          if (
+            timing === "publication" &&
+            statements.some((statement) => publication.has(statement))
+          )
+            await changeFile();
+          return target.batch(statements);
+        };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const response = await sendPut(
+    "New.txt",
+    {
+      If:
+        timing === "publication"
+          ? `<https://app.invalid/dav/> (["c-${f.ids.folder}-${folderRevision}"])`
+          : `<https://app.invalid/dav/File> ([${beforeEtag}])`,
+      ...(original ? { "If-Match": `"b-${original.blobId}"` } : {}),
+    },
+    { ...app, BLOBS: bucket, DB: db },
+  );
+  expect(changed).toBe(true);
+  expect(response.status).toBe(412);
+  if (timing === "body")
+    expect(
+      await env.DB.prepare("SELECT current_blob_id FROM nodes WHERE id=?")
+        .bind(f.ids.file)
+        .first("current_blob_id"),
+    ).not.toBe(f.ids.blob);
+  else
+    expect(
+      await env.DB.prepare("SELECT revision FROM nodes WHERE id=?")
+        .bind(f.ids.folder)
+        .first("revision"),
+    ).toBe(folderRevision! + 1);
+  expect(
+    await env.DB.prepare(
+      "SELECT current_blob_id AS blobId,revision FROM nodes WHERE parent_id=? AND name='New.txt'",
+    )
+      .bind(f.ids.folder)
+      .first(),
+  ).toEqual(original);
+  expect(
+    await env.DB.prepare("SELECT used_bytes FROM users WHERE id=?")
+      .bind(f.ids.user)
+      .first("used_bytes"),
+  ).toBe(Number(usedBefore) + (timing === "body" ? 3 : 0));
+  const failed =
+    await env.DB.prepare(`SELECT u.id,u.blob_id AS blobId,u.state AS uploadState,u.cleanup_pending,
+    b.state AS blobState,b.ref_count,r.state AS reservationState,o.state AS operationState,
+    (SELECT COUNT(*) FROM operation_steps st WHERE st.op_id=o.op_id) AS steps
+    FROM uploads u JOIN blobs b ON b.id=u.blob_id JOIN reservations r ON r.id=u.reservation_id
+    JOIN operations o ON o.op_id=substr(u.id,5) WHERE u.owner_id=? AND o.state='failed'`)
+      .bind(f.ids.user)
+      .first<{ id: string; blobId: string }>();
+  expect(failed).toMatchObject({
+    uploadState: "failed",
+    cleanup_pending: 1,
+    blobState: "orphan",
+    ref_count: 0,
+    reservationState: "released",
+    operationState: "failed",
+    steps: 0,
+  });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM gc_candidates WHERE blob_id=?")
+      .bind(failed!.blobId)
+      .first("n"),
+  ).toBe(1);
+  expect(
+    await env.DB.prepare("SELECT bytes FROM blob_storage WHERE blob_id=? AND removed_at IS NULL")
+      .bind(failed!.blobId)
+      .first("bytes"),
+  ).toBe(3);
+  expect((await env.BLOBS.get(`u/${f.ids.user}/b/${failed!.blobId}`))?.size).toBe(3);
+});
+
+it.each(["GET", "HEAD"])(
+  "evaluates DAV %s conditions before ranges, streaming and 304",
+  async (method) => {
+    const { f, app, headers, ring } = await writableDavFixture("R");
+    const stored = await env.BLOBS.put(`u/${f.ids.user}/b/${f.ids.blob}`, "abc");
+    if (!stored) throw new Error("fixture_object_missing");
+    await env.DB.prepare(
+      "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,?)",
+    )
+      .bind(f.ids.blob, stored.etag, Date.now())
+      .run();
+    const etag = `"b-${f.ids.blob}"`;
+    const cases: { headers: Record<string, string>; status: number; body?: string }[] = [
+      { headers: { "If-Match": '"b-stale"', Range: "bytes=1-2" }, status: 412 },
+      { headers: { "If-Match": `W/${etag}` }, status: 412 },
+      { headers: { If: '(["b-stale"])', Range: "bytes=1-2" }, status: 412 },
+      { headers: { If: '<https://app.invalid/dav/File> (["b-stale"])' }, status: 412 },
+      { headers: { "If-Match": etag, Range: "bytes=1-2" }, status: 206, body: "bc" },
+      { headers: { "If-Match": "*", If: `([${etag}])` }, status: 200, body: "abc" },
+      {
+        headers: { If: `<https://app.invalid/dav/> (["c-${f.ids.folder}-1"])`, Range: "bytes=1-2" },
+        status: 206,
+        body: "bc",
+      },
+      { headers: { "If-None-Match": `W/${etag}`, Range: "bytes=1-2" }, status: 304 },
+      { headers: { "If-None-Match": "*" }, status: 304 },
+      { headers: { "If-Match": '"b-stale"', "If-None-Match": etag }, status: 412 },
+      { headers: { If: '(["b-stale"])', "If-None-Match": etag }, status: 412 },
+      {
+        headers: { "If-Match": etag, "If-Range": '"b-stale"', Range: "bytes=1-2" },
+        status: 200,
+        body: "abc",
+      },
+      {
+        headers: { "If-Match": etag, "If-Range": etag, Range: "bytes=1-2" },
+        status: 206,
+        body: "bc",
+      },
+      { headers: { "If-Unmodified-Since": "Sat, 01 Jan 2000 00:00:00 GMT" }, status: 412 },
+      {
+        headers: { "If-Match": etag, "If-Unmodified-Since": "Sat, 01 Jan 2000 00:00:00 GMT" },
+        status: 200,
+        body: "abc",
+      },
+      { headers: { If: "garbage" }, status: 400 },
+      { headers: { "If-Match": "garbage" }, status: 400 },
+    ];
+    let reads = 0;
+    const bucket = new Proxy(env.BLOBS, {
+      get(target, key) {
+        if (key === "get")
+          return (...args: Parameters<R2Bucket["get"]>) => {
+            reads++;
+            return target.get(...args);
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    for (const test of cases) {
+      const before = reads;
+      const response = await handleDavHttp(
+        new Request("https://app.invalid/dav/File", {
+          method,
+          headers: { ...headers, ...test.headers },
+        }),
+        { ...app, BLOBS: bucket },
+        1,
+        ring,
+      );
+      const status = method === "HEAD" && test.status === 206 ? 200 : test.status;
+      expect(response.status, JSON.stringify(test.headers)).toBe(status);
+      if (status === 200 || status === 206 || status === 304) {
+        expect(response.headers.get("ETag")).toBe(etag);
+        expect(new TextDecoder().decode(await response.arrayBuffer())).toBe(
+          method === "HEAD" || status === 304 ? "" : test.body,
+        );
+      }
+      if (method === "HEAD" || status >= 300) {
+        expect(reads).toBe(before);
+        expect(response.headers.get("Content-Range")).toBeNull();
+      } else expect(reads).toBe(before + 1);
+    }
+  },
+);
+
+it("does not evaluate DAV read conditions before read authorization", async () => {
+  const { app, headers, ring, id } = await writableDavFixture("T");
+  await env.DB.prepare("DELETE FROM credential_scopes WHERE credential_id=? AND scope='node:read'")
+    .bind(`ap:${id}`)
+    .run();
+  for (const method of ["GET", "HEAD"]) {
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: { ...headers, "If-Match": "malformed", If: "malformed" },
+      }),
+      app,
+      1,
+      ring,
+    );
+    expect(response.status).toBe(404);
+  }
+});
+
+it.each(
+  ["GET", "HEAD"].flatMap((method) => [
+    { method, cached: false },
+    { method, cached: true },
+  ]),
+)(
+  "binds $method tagged read conditions through the blob plan (cached=$cached)",
+  async ({ method, cached }) => {
+    const { f, app, headers, ring } = await writableDavFixture("R");
+    const stored = await env.BLOBS.put(`u/${f.ids.user}/b/${f.ids.blob}`, "abc");
+    if (!stored) throw new Error("fixture_object_missing");
+    await env.DB.prepare(
+      "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,?)",
+    )
+      .bind(f.ids.blob, stored.etag, Date.now())
+      .run();
+    let changed = false;
+    let reads = 0;
+    const db = injectBatch(
+      (sql) => sql.includes("SELECT b.r2_key AS key,b.size"),
+      async () => {
+        changed = true;
+        await env.DB.prepare("UPDATE nodes SET revision=revision+1 WHERE id=?")
+          .bind(f.ids.folder)
+          .run();
+      },
+      false,
+    );
+    const bucket = new Proxy(env.BLOBS, {
+      get(target, key) {
+        if (key === "get")
+          return (...args: Parameters<R2Bucket["get"]>) => {
+            reads++;
+            return target.get(...args);
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: {
+          ...headers,
+          ...(cached ? { "If-None-Match": `"b-${f.ids.blob}"` } : { Range: "bytes=0-1" }),
+          If: `<https://app.invalid/dav/> (["c-${f.ids.folder}-1"])`,
+        },
+      }),
+      { ...app, DB: db, BLOBS: bucket },
+      1,
+      ring,
+    );
+    expect(changed).toBe(true);
+    expect(response.status).toBe(412);
+    expect(response.headers.get("ETag")).toBeNull();
+    expect(response.headers.get("Content-Range")).toBeNull();
+    expect(reads).toBe(0);
+  },
+);
+
+it.each(["GET", "HEAD"])(
+  "does not turn %s blob-plan storage errors into condition errors",
+  async (method) => {
+    const { f, app, headers, ring } = await writableDavFixture("V");
+    const db = injectBatch(
+      (sql) => sql.includes("SELECT b.r2_key AS key,b.size"),
+      async () => {
+        throw new Error("D1 temporarily unavailable");
+      },
+      false,
+    );
+    const response = await handleDavHttp(
+      new Request("https://app.invalid/dav/File", {
+        method,
+        headers: { ...headers, If: `<https://app.invalid/dav/> (["c-${f.ids.folder}-1"])` },
+      }),
+      { ...app, DB: db },
+      1,
+      ring,
+    );
+    expect(response.status).toBe(503);
+  },
+);
 
 it("authenticates a live DAV Basic app password and rejects a wrong secret", async () => {
   const { f, id, secret, ring, request } = await fixture("1");
