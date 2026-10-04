@@ -4,29 +4,32 @@
 
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
-| 開発ソース | PR #37（親 `1cf8681`）への追加レビュー修正 | 復元時の暗号化・共有制約、Promise診断gate、audio chapters、運用検証ツール、WebDAV認証の期限・PROPFIND互換修正を統合。追加レビューでDAV条件、プロパティ上限、共有session、ticket制限、KDF修復、tree job終端、group provenance、COPY先を補強。追加migration `0057` は下記staging記録にはまだ含まない。ローカル検証は隔離SQLite/workerdの結果であり、stagingの動作を証明しない。 |
-| ローカル自動化runtime | `355f61b`（145 files） | 55 migrations・88 tablesに対応する版へ更新。旧86-table版はrollbackディレクトリへ保持。日曜backup・毎時monitorのtimerはactive、02:15:30 UTCのmonitorはhealthy / live reachable / pending 0。 |
-| Cloudflare staging | コード `1cf8681`、Worker version `05347196-f689-4579-a88b-cb4389547087` | `0055`・`0056`を追加適用。55 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。匿名HTTP smokeは9件成功。署名済み暗号化fixtureで実WebDAV取得と復元制約を確認（下記）。 |
+| 開発ソース | `main` merge `1073bf6`（検証済みアプリ `f131f80` と同一） | PR #37を統合済み。復元時の暗号化・共有制約、Promise診断gate、audio chapters、運用検証ツール、WebDAV認証の期限・PROPFIND互換修正を統合。追加レビューでDAV条件、プロパティ上限、共有session、ticket制限、KDF修復、tree job終端、group provenance、COPY先を補強。`0057`でshare sessionのsource digestを追加。ローカル検証は隔離SQLite/workerdの結果であり、stagingの動作を証明しない。 |
+| ローカル自動化runtime | 現行 `355f61b`（145 files）、候補 `f131f80`（155 files） | 現行版は55 migrations・88 tablesに対応。56 migrations対応候補はprepare/check済みだが、有効化は自動承認審査で拒否され、本人の明示承認待ち。切替は起きていない。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版はrollbackディレクトリへ保持。最終実行済みmonitorは02:15:30 UTCのhealthy / live reachable / pending 0。 |
+| Cloudflare staging | コード `f131f80`、Worker version `35b6182f-33e4-4013-a546-aab8de1f1035` | `0057`まで適用。56 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。配備後の匿名HTTP smokeは9件成功。実WebDAV取得・暗号化fixtureの復元制約試験は下記の`1cf8681`時点の記録。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |
 
 ## 2026-10-04 レビューとPRの検証
 
 READMEを利用者・開発者・運用者向けに整理し、各文書の古い配備記録を履歴として区別した。[レビュー対応](reviews/runtime-adversarial-20261004.md)に修正理由と検証範囲を記録する。
 
-- 追加レビュー前の候補は`1cf8681`。CI [push run 37172124186](https://github.com/daraskme/Nextcloud-flare/actions/runs/37172124186) と [PR run 37172126899](https://github.com/daraskme/Nextcloud-flare/actions/runs/37172126899) は全5 jobs成功。追加8件の修正は作業中で、このCIの検証範囲には含まない。過去候補`c920122`・`355f61b`はテスト本体が通ったが診断gateが失敗したため、green runとして扱わない。
-- 最終PRのUbuntu `pnpm check`成功。Node単体83 files / 991成功・8 skip。統合は専用R2短尺1件と通常125 files / 2,288件の合計2,289件成功。専用プロセスの既知platformメッセージは2件、通常プロセスの未処理Promiseは0件。lint・型・契約・設定・ビルドも成功。
+[PR #37](https://github.com/daraskme/Nextcloud-flare/pull/37)は2026-10-04 04:53:18 UTCに`main`へマージした（`1073bf6df82feb495eade040aa6ee45f6d24607a`）。マージ直前にhead `f131f80`・base `1aa4317`・push/PR合計10 checksの成功を照合した。マージ後のGit treeは検証済みheadと同一。この表への最終結果追記は文書のみの変更である。
+
+- 追加レビュー前の候補は`1cf8681`。CI [push run 37172124186](https://github.com/daraskme/Nextcloud-flare/actions/runs/37172124186) と [PR run 37172126899](https://github.com/daraskme/Nextcloud-flare/actions/runs/37172126899) は全5 jobs成功。追加8件の対応は後続の`09e489a`に含まれ、この旧候補のCI検証範囲には含まない。過去候補`c920122`・`355f61b`はテスト本体が通ったが診断gateが失敗したため、green runとして扱わない。
+- 候補`1cf8681`のUbuntu `pnpm check`成功。Node単体83 files / 991成功・8 skip。統合は専用R2短尺1件と通常125 files / 2,288件の合計2,289件成功。専用プロセスの既知platformメッセージは2件、通常プロセスの未処理Promiseは0件。lint・型・契約・設定・ビルドも成功。
 - ローカルの全ブラウザー試験は49成功・追加実メディア未指定2 skip。88-table backup drill成功。隔離試験ツール追加後のlint、Worker/Web/試験Workerの型検査、contracts、configとハーネス4テストも成功。
 - 暗号化ファイルを共有親へ復元する迂回は実ControlDO/LockDOを使うローカル回帰で再現し、同期commitと非同期tree job両方に制約を追加。共有を途中で変更する競合も拒否する。修正後の関連4 suites / 42 tests成功。
 
-### 添付レビューの追加修正（ローカル）
+### 添付レビューの追加修正
 
 - lint・Worker/Web/試験Worker型検査・contracts・config成功。Node単体86 files / 998成功・8 skip。
 - KDF修復と実行開始競合は45件成功、未処理Promise診断0件。公開共有・ticket・再共有の関連統合108件、DAV/renameの関連統合44件も成功。
 - `0057`のprepare検証で56 migrations・88通常tables・480 triggers。stagingの事前read-only検査では旧55 migrations、100件超のnode_propsは0、claimed KDFは0、epoch 2・各停止flagは0。
 - 計算開始後に両保存先の完了証明を失ったKDFは安全のため停止を維持する。sessionの単一source枯渇は抑えるが、分散sourceによる全体64枠の枯渇は残る。詳細はレビュー文書と各契約文書を参照。
-- tree jobの上限・有効lease・再取得競合4件成功。88-table backup drillは0057適用後のcapture/verify/ローカルBACKUPS配布/offline restore/FK・FTS検査まで成功し、復元先の追加列・indexも確認。全体CIとbrowserはこの追加revisionで検証中。
+- tree jobの上限・有効lease・再取得競合4件成功。88-table backup drillは0057適用後のcapture/verify/ローカルBACKUPS配布/offline restore/FK・FTS検査まで成功し、復元先の追加列・indexも確認。全browserは49成功・外部媒体未指定2 skip（7.7分）。`09e489a`のCIは2,304件成功・migration件数の期待値1件失敗（未処理Promise0）で止まったため成功扱いにしない。`f131f80`で55→56へ合わせ、schema 8件成功。
+- 最終候補`f131f80`のCIは [push 37176688104](https://github.com/daraskme/Nextcloud-flare/actions/runs/37176688104) / [PR 37176689710](https://github.com/daraskme/Nextcloud-flare/actions/runs/37176689710)の両runで全5 jobs成功（Ubuntu、Windows 2 shards、browser、backup）。UbuntuのNode単体は86 files / 998成功・8 skip、通常統合は125 files / 2,305件、専用R2短尺は1件成功。専用プロセスの既知platformメッセージは2件、通常プロセスは0件で、両方とも未処理Promiseは0件。lint・型・契約・設定・ビルドと、CIのbackup / operator / run drillも成功。
 
-### stagingの暗号化復元とWebDAV
+### stagingの暗号化復元とWebDAV（`1cf8681`時点）
 
 実管理者の専用テストフォルダーへ小さな署名済みNCFENC2画像を保存し、NixOSのrclone 1.75.1で一覧・全暗号文取得を確認した。Content origin経由の取得との全byte SHA-256が一致し、読み取り専用の一時app passwordを失効させるとアクセスは拒否された。
 
