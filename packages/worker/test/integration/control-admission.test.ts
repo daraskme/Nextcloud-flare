@@ -20,6 +20,7 @@ import { grantPermit as grantAdmittedPermit } from "../../src/db/permits";
 import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME, ControlDO } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
+import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { createAppPassword, revokeAppPassword } from "../../src/services/appPasswords";
 import { ensureContentBudget } from "../../src/services/contentBudget";
@@ -347,16 +348,33 @@ it("runs a real namespace mutation through real LockDO and ControlDO after resum
       .first(),
   ).not.toBeNull();
   await control().quiesce(epoch);
-  await expect(
-    createFolder(env, {
-      principal: { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch },
-      idempotencyKey: crypto.randomUUID(),
-      spaceId: f.ids.space,
-      parentId: f.ids.root,
-      name: "停止中には作成不可",
-      lockTokens: [],
-    }),
-  ).rejects.toThrow();
+  // Convert the expected DO refusal to a value before crossing the test RPC boundary.
+  // A rejected callback is otherwise logged by workerd as an uncaught promise even
+  // when Vitest awaits the caller's rejection.
+  const blockedRequest = crypto.randomUUID();
+  const refusal = await runInDurableObject(
+    env.LOCKS.get(env.LOCKS.idFromName(f.ids.space)),
+    async (_, state) => {
+      try {
+        await new LockDO(state, env).acquireCreate({
+          requestId: blockedRequest,
+          spaceId: f.ids.space,
+          parentId: f.ids.root,
+          principal: { kind: "user", user_id: f.ids.user, credential_id: f.ids.credential, epoch },
+          lockTokens: [],
+        });
+        return "admitted";
+      } catch (error) {
+        return error instanceof Error ? error.message : "unexpected_error";
+      }
+    },
+  );
+  expect(refusal).toBe("admission_closed");
+  expect(
+    await env.DB.prepare("SELECT 1 FROM permits WHERE permit_id=?")
+      .bind(`p:${blockedRequest}`)
+      .first(),
+  ).toBeNull();
   await audited();
 });
 
