@@ -17,6 +17,10 @@ import {
   operationRow,
 } from "../jobs/operations";
 import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
+import {
+  assertPrivateEncryptedRestore,
+  privateEncryptedRestoreAssertion,
+} from "./encryptionGuards";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -303,6 +307,7 @@ function statements(
     authorizationAssertion(destination),
     assertCreateLocks(destination.parent.id, claim.intent.spaceId, destination.principal, hashes),
     restoreGuard(claim, rootId, memberCount),
+    privateEncryptedRestoreAssertion(trashOpId, destination.parent.id, claim.intent.spaceId),
     assertRestorePause(gcPause, claim.intent.id),
     assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=?)", [op]),
   ];
@@ -393,6 +398,12 @@ export async function restoreTrash(
     parentId: request.destinationParentId,
     spaceId: request.spaceId,
   });
+  await assertPrivateEncryptedRestore(
+    env.DB,
+    request.trashOpId,
+    request.destinationParentId,
+    request.spaceId,
+  );
   const lost = await primary(env.DB)
     .prepare(`SELECT 1 FROM trash_members tm JOIN nodes n ON n.id=tm.node_id
     JOIN blobs b ON b.id=n.current_blob_id WHERE tm.trash_op_id=? AND b.state IN ('deleting','deleted')
@@ -440,15 +451,27 @@ export async function restoreTrash(
         .bind(destination.parent.id, request.spaceId)
         .first<number>("revision");
       if (parentRevision === null) throw new Error("authorization_denied");
-      const operation = await startTreeJob(env.DB, claimed.claim, principal.user_id, {
-        rootNodeId: initial.rootId,
-        parentId: destination.parent.id,
-        trashOpId: request.trashOpId,
-        sourceTreeGeneration: destination.parent.tree_generation,
-        sourceRevision: initial.rootRevision,
-        parentRevision,
-        lockTokenHashes: await lockTokenHashes(request.lockTokens),
-      });
+      const operation = await startTreeJob(
+        env.DB,
+        claimed.claim,
+        principal.user_id,
+        {
+          rootNodeId: initial.rootId,
+          parentId: destination.parent.id,
+          trashOpId: request.trashOpId,
+          sourceTreeGeneration: destination.parent.tree_generation,
+          sourceRevision: initial.rootRevision,
+          parentRevision,
+          lockTokenHashes: await lockTokenHashes(request.lockTokens),
+        },
+        [
+          privateEncryptedRestoreAssertion(
+            request.trashOpId,
+            destination.parent.id,
+            request.spaceId,
+          ),
+        ],
+      );
       created = true;
       return { kind: "terminal", operation };
     } finally {

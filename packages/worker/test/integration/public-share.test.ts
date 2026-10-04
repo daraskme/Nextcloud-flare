@@ -21,6 +21,8 @@ import {
 import { shareSecretDigest } from "../../src/auth/shareSession";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
+import type { Env } from "../../src/env";
+import worker from "../../src/index";
 import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
 import { EPUB_INDEX_GENERATOR, inspectEpubObject } from "../../src/media/epub/index";
 import { IMAGE_METADATA_GENERATOR } from "../../src/media/images/metadata";
@@ -1695,6 +1697,89 @@ it("serves an isolated no-store shell and immutable hashed public assets", async
       )
     ).status,
   ).toBe(404);
+});
+
+it("serves public static assets during maintenance but rechecks share revocation and owner state", async () => {
+  const maintenanceEnv = {
+    ...env,
+    APP_ORIGIN: origin,
+    CONTENT_ORIGIN: contentOrigin,
+    CONTROL: {
+      idFromName: () => ({ toString: () => "control" }),
+      get: () => ({ status: async () => ({ epoch: 1, maintenance: true, gcPaused: true }) }),
+    },
+  } as unknown as Env;
+  const staticPath = publicAssets.find((path) => path !== "/public-assets/client-media-worker.js");
+  expect(staticPath).toBeDefined();
+  const asset = await worker.fetch(new Request(`${origin}${staticPath}`), maintenanceEnv);
+  expect(asset.status).toBe(200);
+  expect(asset.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+  expect((await asset.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  const shareApi = await worker.fetch(
+    new Request(`${origin}/api/v1/public/shares/${crypto.randomUUID()}`),
+    maintenanceEnv,
+  );
+  expect(shareApi.status).toBe(503);
+
+  const invalidations = [
+    {
+      label: "revoked share",
+      change: (shareId: string, _ownerId: string) =>
+        env.DB.prepare("UPDATE shares SET disabled_at=? WHERE id=?")
+          .bind(Date.now(), shareId)
+          .run(),
+    },
+    {
+      label: "expired share",
+      change: (shareId: string, _ownerId: string) =>
+        env.DB.prepare("UPDATE shares SET expires_at=? WHERE id=?").bind(1, shareId).run(),
+    },
+    {
+      label: "disabled owner",
+      change: (_shareId: string, ownerId: string) =>
+        env.DB.prepare("UPDATE users SET disabled_at=? WHERE id=?").bind(Date.now(), ownerId).run(),
+    },
+  ];
+  for (const invalidation of invalidations) {
+    const f = await fixture();
+    const unlocked = await handlePublicShareHttp(
+      unlockRequest(f.shareId, f.secret),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(unlocked.status, `${invalidation.label} setup`).toBe(200);
+    const cookie = (unlocked.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}`, cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+      `${invalidation.label} initially accessible`,
+    ).toBe(200);
+
+    await invalidation.change(f.shareId, f.owner.ids.user);
+    expect(
+      (
+        await handlePublicShareHttp(
+          sessionRequest(`/api/v1/public/shares/${f.shareId}`, cookie),
+          shareEnv(),
+          1,
+          dependencies,
+        )
+      ).status,
+      `${invalidation.label} existing session reaccess`,
+    ).toBe(401);
+    expect(
+      (await handlePublicShareHttp(unlockRequest(f.shareId, f.secret), shareEnv(), 1, dependencies))
+        .status,
+      `${invalidation.label} fresh unlock`,
+    ).toBe(404);
+  }
 });
 
 it("accepts and aborts an upload-only single file without exposing its name", async () => {
