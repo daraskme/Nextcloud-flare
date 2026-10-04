@@ -104,6 +104,54 @@ async function fixture(kind: "private" | "public" = "private") {
 
 const cookie = (response: Response) => response.headers.get("Set-Cookie")!.split(";", 1)[0]!;
 
+it.each(["constraint", "transport"] as const)(
+  "distinguishes a grant-cap %s failure without treating an ambiguous commit as capacity rejection",
+  async (failure) => {
+    const x = await fixture();
+    for (let i = 0; i < MAX_CONTENT_GRANTS - 1; i++)
+      expect((await x.accept((await x.issue()).ticket)).status).toBe(201);
+    const contender = await x.issue();
+    const issued = await x.issue();
+    let raced = false;
+    const db = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop === "batch")
+          return async (statements: D1PreparedStatement[]) => {
+            if (!raced) {
+              raced = true;
+              expect((await x.accept(contender.ticket)).status).toBe(201);
+            }
+            if (failure === "transport") throw new Error("D1_ERROR: transport_timeout");
+            return target.batch(statements);
+          };
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const response = await handleContentHttp(
+      new Request("https://content.invalid/session", {
+        method: "POST",
+        headers: { Origin: x.app.APP_ORIGIN, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+      }),
+      { ...x.app, DB: db },
+      x.tokens,
+    );
+    expect(raced).toBe(true);
+    expect(response.status).toBe(failure === "constraint" ? 429 : 503);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM content_sessions WHERE ticket_id=?")
+        .bind(issued.ticketId)
+        .first("n"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare("SELECT redeemed_at FROM tickets WHERE id=?")
+        .bind(issued.ticketId)
+        .first("redeemed_at"),
+    ).toBeNull();
+  },
+);
+
 it.each(["private", "public"] as const)(
   "bounds %s replay to one session and no repeat mutation admissions",
   async (kind) => {
@@ -185,6 +233,33 @@ it("keeps concurrent distinct targets and legacy cookies without mixing purpose 
   await x.read(header, nodeB);
 });
 
+it("selects the newest authorized target grant independently of cookie order and falls back after cancellation", async () => {
+  const x = await fixture();
+  const a = await x.issue();
+  const first = await x.accept(a.ticket);
+  const b = await x.issue();
+  const second = await x.accept(b.ticket, cookie(first));
+  expect([first.status, second.status]).toEqual([201, 201]);
+  const oldId = await x.tokens.verifyCookie(cookie(first));
+  const newId = await x.tokens.verifyCookie(cookie(second));
+  await env.DB.prepare("UPDATE content_sessions SET issued_at=? WHERE id IN (?,?)")
+    .bind(x.now, oldId, newId)
+    .run();
+  for (const header of [
+    `${cookie(first)}; ${cookie(second)}`,
+    `${cookie(second)}; ${cookie(first)}`,
+  ])
+    expect((await x.read(header)).sessionId).toBe(newId);
+  await env.DB.prepare("UPDATE tickets SET cancelled_at=? WHERE id=?")
+    .bind(x.now, b.ticketId)
+    .run();
+  expect((await x.read(`${cookie(first)}; ${cookie(second)}`)).sessionId).toBe(oldId);
+  await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE id=?")
+    .bind(x.now, x.f.ids.session)
+    .run();
+  await expect(x.read(`${cookie(first)}; ${cookie(second)}`)).rejects.toThrow();
+});
+
 it("rejects malformed, duplicate, oversized and over-capacity grant cookies", async () => {
   const x = await fixture();
   const issued = await x.issue();
@@ -217,6 +292,7 @@ it.each(["private", "public"] as const)(
     const contenders = await Promise.all([x.issue(), x.issue()]);
     const replies = await Promise.all(contenders.map((ticket) => x.accept(ticket.ticket)));
     expect(replies.filter((r) => r.status === 201)).toHaveLength(1);
+    expect(replies.filter((r) => r.status !== 201).map((r) => r.status)).toEqual([429]);
     responses.push(replies.find((r) => r.status === 201)!);
     expect(
       await env.DB.prepare(

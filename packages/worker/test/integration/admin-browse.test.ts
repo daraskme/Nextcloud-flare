@@ -416,7 +416,37 @@ it("rejects ticket redemption and metadata audit after the owner is disabled", a
 it("issues an explicit admin download ticket, forces attachment, audits each read and revokes with role", async () => {
   const f = await setup();
   let targetSetId: string | undefined;
+  let previewTargetSetId: string | undefined;
   try {
+    const previewIssuedResponse = await f.handle(
+      new Request(`https://app.invalid/api/v1/admin/users/${f.member.ids.user}/content-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targets: [{ spaceId: f.member.ids.space, nodeId: f.member.ids.file }],
+          purpose: "content",
+          ttlSeconds: 120,
+          action: "preview",
+        }),
+      }),
+    );
+    expect(previewIssuedResponse.status).toBe(201);
+    const previewIssued = await previewIssuedResponse.json<{
+      ticket: string;
+      targetSetId: string;
+    }>();
+    previewTargetSetId = previewIssued.targetSetId;
+    const previewAccepted = await handleContentHttp(
+      new Request("https://content.invalid/session", {
+        method: "POST",
+        headers: { Origin: "https://app.invalid", "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: previewIssued.ticket }),
+      }),
+      f.app,
+      f.tokens,
+    );
+    expect(previewAccepted.status).toBe(201);
+    const previewCookie = previewAccepted.headers.get("Set-Cookie")!.split(";", 1)[0]!;
     const issuedResponse = await f.handle(
       new Request(`https://app.invalid/api/v1/admin/users/${f.member.ids.user}/content-session`, {
         method: "POST",
@@ -446,7 +476,11 @@ it("issues an explicit admin download ticket, forces attachment, audits each rea
     expect(cookie).toBeTruthy();
     const url = `https://content.invalid/c/${f.member.ids.file}/${f.member.ids.blob}`;
     const read = () =>
-      handleContentHttp(new Request(url, { headers: { Cookie: cookie! } }), f.app, f.tokens);
+      handleContentHttp(
+        new Request(url, { headers: { Cookie: `${previewCookie}; ${cookie!}` } }),
+        f.app,
+        f.tokens,
+      );
     const response = await read();
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Disposition")).toMatch(/^attachment/);
@@ -462,6 +496,7 @@ it("issues an explicit admin download ticket, forces attachment, audits each rea
     expect((await read()).status).toBe(404);
   } finally {
     await env.BLOBS.delete(f.blobKey);
+    if (previewTargetSetId) await env.BLOBS.delete(`target-sets/${previewTargetSetId}`);
     if (targetSetId) await env.BLOBS.delete(`target-sets/${targetSetId}`);
   }
 });

@@ -103,8 +103,15 @@ export async function prepareCookieBlobRead(
   if (!["content", "thumb", "page", "zip", "track"].includes(purpose))
     throw new Error("content_not_available");
   const grants = await tokens.verifyCookies(cookieHeader);
+  const sessions = await primary(db)
+    .prepare(
+      `SELECT id FROM content_sessions WHERE id IN (${grants.map(() => "?").join(",")})
+       ORDER BY issued_at DESC,rowid DESC`,
+    )
+    .bind(...grants.map((grant) => grant.sessionId))
+    .all<{ id: string }>();
   let unavailable: unknown = new Error("content_not_available");
-  for (const { sessionId } of grants) {
+  for (const { id: sessionId } of sessions.results) {
     try {
       return await prepareCookieSessionBlobRead(db, bucket, sessionId, spaceId, nodeId, purpose);
     } catch (error) {

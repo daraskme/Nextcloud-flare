@@ -1,4 +1,5 @@
 import { base64url } from "jose";
+import { classifyBatchFailure } from "../db/outcome";
 import { assertExists, assertOneChange, primary } from "../db/primary";
 import {
   type AccountMutationEnv,
@@ -218,6 +219,18 @@ export async function acceptContentTicket(
       },
     ]);
   } catch (cause) {
+    if (classifyBatchFailure(cause) === "rolled_back") {
+      const limitedOwner = await primary(db)
+        .prepare(
+          `${authorityQuery} AND (SELECT COUNT(*) FROM content_sessions
+          WHERE issued_by_credential_id=? AND revoked_at IS NULL
+            AND expires_at>MAX(?,strftime('%s','now')*1000))>=?`,
+        )
+        .bind(...authorityValues, claims.credential_id, issuedAt, MAX_CONTENT_GRANTS)
+        .first<string>("owner_id")
+        .catch(() => null);
+      if (limitedOwner === ownerId) throw new ContentGrantLimitError();
+    }
     throw new Error("content_session_commit_unknown", { cause });
   }
   return Object.freeze({

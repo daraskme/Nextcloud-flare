@@ -197,6 +197,43 @@ it.each([false, true])(
   },
 );
 
+it("reconciles an unclaimed tree job stopped by a released backup barrier", async () => {
+  const { id, epoch, control, root } = await dispatchedJob();
+  const backupId = crypto.randomUUID();
+  expect((await control.beginBackup(epoch, backupId)).state).toBe("frozen");
+  try {
+    expect(await treeJobRow(env.DB, id)).toMatchObject({
+      state: "pending",
+      operation_state: "failed",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT error_code FROM operations WHERE op_id=(SELECT op_id FROM bulk_jobs WHERE id=?)",
+      )
+        .bind(id)
+        .first("error_code"),
+    ).toBe("backup");
+  } finally {
+    await control.cancelBackup(epoch, backupId);
+  }
+  await control.quiesce(epoch);
+  await expect(inspectRecoveryFinalFence(env.DB, epoch)).rejects.toThrow("recovery_final_fence");
+  expect((await control.reconcileTreeJobs(epoch)).reconciled).toBe(1);
+  expect(await treeJobRow(env.DB, id)).toMatchObject({
+    state: "failed",
+    error_code: "backup",
+  });
+  expect(
+    await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM nodes WHERE (id=? OR parent_id=?) AND deleted_at IS NULL",
+    )
+      .bind(root, root)
+      .first("n"),
+  ).toBe(1001);
+  await audit(control, epoch);
+  expect((await control.resumeAdmission(epoch)).maintenance).toBe(false);
+});
+
 it("reconciles partial trash manifests without a lease and leaves the tree unchanged", async () => {
   const { id, epoch, control, root } = await dispatchedJob();
   expect(await processTreeJob(env, id)).toBe("progressed");

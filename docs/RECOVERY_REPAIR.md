@@ -41,7 +41,7 @@ DLQ requeueはcurrent epoch・failed・`outbox_dead_letters.status='failed'`の�
 
 ### claim後の停止・障害で残ったtree job（2026-10-04）
 
-`quiesce()`/epoch復旧がoperationを`failed/maintenance`または`failed/stale_epoch`にした後、`bulk_jobs`がpending/runningのままなら、停止中の内部RPC `reconcileTreeJobs(currentEpoch, limit=20)`を呼ぶ。これはHTTPに公開しないoperator操作であり、mutationの再実行ではない。
+`quiesce()`/epoch復旧がoperationを`failed/maintenance`または`failed/stale_epoch`にした後、あるいはbackup barrierで`failed/backup`になりbarrierを解除した後、`bulk_jobs`がpending/runningのままなら、停止中の内部RPC `reconcileTreeJobs(currentEpoch, limit=20)`を呼ぶ。これはHTTPに公開しないoperator操作であり、mutationの再実行ではない。
 
 - maintenance・GC停止・全live worker leaseのdrainを確認する。期限前のleaseを削除してはいけない。backup barrier/freeze中も修復しない。
 - job/operation/grant/stepの由来とepochを同じbatchで検証し、未公開のtrash/restore/purge setupだけを片付ける。元のtreeと公開済みtrashは保存し、対応する期限切れleaseだけを削除してjobをfailedへ収束させる。

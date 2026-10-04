@@ -1015,6 +1015,11 @@ test("legacy unsigned container requires owner review and explicit adoption", as
     await expect(review).toHaveCount(0);
     await expectRevoked(unmountedUrl);
     await page.locator('a.nav-link[href="/encryption"]').click();
+    await expect(
+      page.getByRole("status").filter({
+        hasText: "現在のアカウント署名鍵をサーバー登録情報と照合しました。",
+      }),
+    ).toBeVisible();
     const adoptedUrl = await reopenReview();
 
     const adopt = review.getByRole("button", { name: "この旧形式に所有者署名を登録", exact: true });

@@ -1226,7 +1226,7 @@ export async function reconcileStoppedTreeJobs(
         `SELECT 1 FROM bulk_jobs j JOIN operations o ON o.op_id=j.op_id
         JOIN spaces s ON s.id=o.space_id WHERE j.id=?
           AND j.id='job_'||substr(o.op_id,4) AND o.kind=j.kind AND o.epoch=j.epoch AND j.epoch<=?
-          AND o.state='failed' AND o.error_code IN ('maintenance','stale_epoch')
+          AND o.state='failed' AND o.error_code IN ('maintenance','stale_epoch','backup')
           AND o.principal_kind='user' AND o.principal_id=j.owner_id AND s.owner_id=j.owner_id
           AND o.credential_id=j.credential_id AND o.expected_steps=1
           AND json_extract(o.operands_json,'$.nodeId')=?
