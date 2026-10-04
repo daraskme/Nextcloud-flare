@@ -84,6 +84,7 @@ pnpm dev
 | 開発者: API/DBと主要契約 | [Foundation](docs/FOUNDATION.md)、[現在状態](docs/CURRENT_STATE.md) |
 | 開発者: Files画面とHTTPアップロード | [Files UI](docs/FILES_UI.md)、[Upload HTTP](docs/UPLOAD_HTTP.md) |
 | 運用者: 環境ごとのリビジョン・検証 | [環境状態表](docs/ENVIRONMENT_STATUS.md) |
+| 最終レビュー: 修正・試験結果・残る制約 | [Astra Ultra レビュー](docs/reviews/astra-final-20261005.md) |
 | 運用者: staging設定・配備 | [staging運用](ops/staging/README.md) |
 | 運用者: 集計ヘルスチェックとリリース検証 | [Ops health](docs/OPS_HEALTH.md)、[Release evidence](docs/RELEASE_EVIDENCE.md) |
 | 運用者: バックアップと復元 | [週次バックアップの導入](ops/backup/INSTALL_USER_AUTOMATION.md)、[バックアップ世代と復元](docs/BACKUP_GENERATIONS.md)、[週次バックアップ状態](ops/monitoring/README.md) |

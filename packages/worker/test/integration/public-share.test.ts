@@ -1,4 +1,4 @@
-import { applyD1Migrations } from "cloudflare:test";
+import { applyD1Migrations, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { portableName } from "@next-cloud-flare/shared/names";
 import { strToU8, unzipSync, zipSync } from "fflate";
@@ -22,6 +22,11 @@ import { shareSecretDigest } from "../../src/auth/shareSession";
 import { shareSourceDigest } from "../../src/auth/shareSource";
 import { UploadCapabilities } from "../../src/auth/uploadCapability";
 import { atomicBatch } from "../../src/db/primary";
+import {
+  BudgetDO,
+  type BudgetReserveRequest,
+  type BudgetSettleRequest,
+} from "../../src/do/BudgetDO";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
 import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
@@ -130,6 +135,31 @@ function shareEnv() {
     SHARE_PASSWORD_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
     SHARE_PASSWORD_IP_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
   };
+}
+
+function rejectionSafeBudgets(): Env["BUDGETS"] {
+  return {
+    idFromName: env.BUDGETS.idFromName.bind(env.BUDGETS),
+    get(id: DurableObjectId) {
+      const stub = env.BUDGETS.get(id);
+      return {
+        async reserve(request: BudgetReserveRequest) {
+          // Catch the real DO decision before the test RPC boundary: native
+          // rejected RPCs also emit a workerd diagnostic despite caller catch.
+          const result = await runInDurableObject(stub, async (_, state) => {
+            try {
+              return { ok: true as const, lease: await new BudgetDO(state, env).reserve(request) };
+            } catch (error) {
+              return { ok: false as const, message: (error as Error).message };
+            }
+          });
+          if (!result.ok) throw new Error(result.message);
+          return result.lease;
+        },
+        settle: (request: BudgetSettleRequest) => stub.settle(request),
+      };
+    },
+  } as unknown as Env["BUDGETS"];
 }
 
 function uploadShareEnv() {
@@ -312,6 +342,8 @@ async function projectEpub(target: ReturnType<typeof foundationFixture>, chapter
     key,
     indexKey,
     blobId,
+    bytes: bytes.byteLength,
+    indexBytes: inspection.bytes.byteLength,
     entryToken: inspection.index.spine[0] ?? "",
     chapter: chapter ?? "<html><body>Public chapter</body></html>",
   };
@@ -1475,7 +1507,12 @@ it("does not expose media reads or ZIP tickets to upload-only share sessions", a
 
 it("delivers public EPUB metadata and bounded page and entry targets through a page budget", async () => {
   const f = await fixture();
-  const publication = await projectEpub(f.owner);
+  // Enough varied chapter data for all four reads, including their index costs,
+  // to fit within the real 3x source-byte allowance without enlarging the budget.
+  const chapter = `<html><body>${Array.from({ length: 512 }, (_, i) =>
+    (Math.imul(i + 1, 0x9e3779b1) >>> 0).toString(36),
+  ).join(" ")}</body></html>`;
+  const publication = await projectEpub(f.owner, chapter);
   const outside = await projectEpub(f.outside, "<html><body>Outside</body></html>");
   try {
     const session = await readOnlySession(f);
@@ -1660,14 +1697,15 @@ it("delivers public EPUB metadata and bounded page and entry targets through a p
     const chapterEntry = indexJson.entries.find((entry) => entry.token === publication.entryToken)!;
     const chapterBytes = new TextEncoder().encode(publication.chapter).byteLength;
     const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
-    // GET charges the response bytes; HEAD charges the index refetch; a range
-    // pays the whole compressed entry it still has to decompress.
+    // Every read pays for its index. GET and range reserve any further response
+    // or compressed-entry cost, including a fresh zero-byte lease for each HEAD.
     expect(await budget.status()).toMatchObject({
       bytesCharged:
-        Math.max(chapterBytes, chapterEntry.compressedSize) +
+        Math.max(indexRow!.indexBytes, chapterBytes, chapterEntry.compressedSize) +
         indexRow!.indexBytes * 2 +
-        chapterEntry.compressedSize,
-      requests: 4,
+        Math.max(indexRow!.indexBytes, 6, chapterEntry.compressedSize),
+      byteLimit: publication.bytes * 3,
+      requests: 8,
       active: 0,
     });
 
@@ -1695,6 +1733,96 @@ it("delivers public EPUB metadata and bounded page and entry targets through a p
     ).toBe(404);
   } finally {
     await env.BLOBS.delete([publication.key, publication.indexKey, outside.key, outside.indexKey]);
+  }
+});
+
+it("returns 429 before reading an exhausted public EPUB index or entry", async () => {
+  const f = await fixture();
+  const publication = await projectEpub(f.owner);
+  try {
+    const session = await readOnlySession(f);
+    const issuedResponse = await handlePublicShareHttp(
+      sessionRequest(`/api/v1/public/shares/${f.shareId}/tickets`, session.cookie, {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": session.token,
+        },
+        body: JSON.stringify({
+          targets: [{ spaceId: f.owner.ids.space, nodeId: f.owner.ids.file }],
+          purpose: "page",
+          ttlSeconds: 300,
+        }),
+      }),
+      shareEnv(),
+      1,
+      dependencies,
+    );
+    expect(issuedResponse.status).toBe(201);
+    const issued = (await issuedResponse.json()) as { ticket: string; budgetId: string };
+    const accepted = await handleContentHttp(
+      new Request(`${contentOrigin}/session`, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: issued.ticket }),
+      }),
+      shareEnv(),
+      contentTokens,
+    );
+    expect(accepted.status).toBe(201);
+    const contentCookie = (accepted.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const gets: string[] = [];
+    const app: Env = {
+      ...shareEnv(),
+      BUDGETS: rejectionSafeBudgets(),
+      BLOBS: new Proxy(env.BLOBS, {
+        get(target, property) {
+          if (property === "get")
+            return (key: string, options?: R2GetOptions) => {
+              gets.push(key);
+              return target.get(key, options);
+            };
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    };
+    const read = () =>
+      handleContentHttp(
+        new Request(
+          `${contentOrigin}/c/${f.owner.ids.file}/${publication.blobId}/entries/${publication.entryToken}`,
+          { method: "HEAD", headers: { Cookie: contentCookie } },
+        ),
+        app,
+        contentTokens,
+      );
+    const readsWithinLimit = Math.floor((publication.bytes * 3) / publication.indexBytes);
+    expect(readsWithinLimit).toBe(2);
+    for (let i = 0; i < readsWithinLimit; i++) {
+      const response = await read();
+      expect(response.status).toBe(200);
+      expect((await response.arrayBuffer()).byteLength).toBe(0);
+    }
+    const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
+    const spent = {
+      bytesCharged: publication.indexBytes * readsWithinLimit,
+      byteLimit: publication.bytes * 3,
+      requests: readsWithinLimit * 2,
+      active: 0,
+    };
+    expect(await budget.status()).toEqual(spent);
+    gets.length = 0;
+    const denied = await read();
+    expect(denied.status).toBe(429);
+    expect(await denied.json()).toMatchObject({ title: "budget_exceeded" });
+    // Authorization can still read the target manifest before index admission.
+    expect(gets).not.toContain(publication.indexKey);
+    expect(gets).not.toContain(publication.key);
+    expect(await budget.status()).toEqual(spent);
+  } finally {
+    await env.BLOBS.delete([publication.key, publication.indexKey]);
   }
 });
 

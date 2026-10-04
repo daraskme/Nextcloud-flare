@@ -41,7 +41,9 @@
 `readNodePath` は祖先を share root で打ち切るが、`readNode` は `parentId: proof.node.parent_id` を素で返すため、file-rooted share の受領者は共有範囲外の親フォルダ node id を取得できる。share 境界プリンシパルには親への `node.read` を再検査し、失格なら `parentId: null`。
 
 **R2-M9. EPUB 配信が応答 byte だけ課金し、実コスト（index 再読+全 inflate）は無料**
-`streamBudgetedEpubSelection` は `bytes=responseBytes(range)` で reserve するが、毎リクエスト index 全体を再 fetch し GET は entry を全 inflate してから range を切る。lease は `max(responseBytes, fetchBytes)` で reserve するよう変更: byte 応答（GET/Range）は `entry.compressedSize`（全 inflate コスト）、HEAD は `row.indexBytes`（index 再読コスト）を下回らない。zip と同じく settle にも同じ下駄を掛ける。残余: 通常 GET の index 再読分は未課金（byte_limit=3×blob の allowance モデルを壊さない範囲で最大の非対称を潰した）— indexBytes は ≤8MiB、REQUEST_LIMIT=1024 で bound。
+`streamBudgetedEpubSelection` は `bytes=responseBytes(range)` で reserve するが、毎リクエスト index 全体を再 fetch し GET は entry を全 inflate してから range を切る。lease は `max(responseBytes, fetchBytes)` で reserve するよう変更: byte 応答（GET/Range）は `entry.compressedSize`（全 inflate コスト）、HEAD は `row.indexBytes`（index 再読コスト）を下回らない。zip と同じく settle にも同じ下駄を掛ける。
+
+2026-10-05の追加ソース確認で、この時点ではindexを予約前に読んでおり、無効entryや上限到達後の要求にREQUEST_LIMIT=1024が効かないことを確認した。現在はindexBytesを先に予約・精算し、有効entryでは追加byteが0でも本文leaseを取得する。合計は`max(indexBytes,responseBytes,compressedEntryBytes)`、成功2 request・無効entry1 request。最初の期限を引き継ぐ。索引と本文の加算課金は行わず、認可用target manifestの予約前読出は残る。境界と検証は[CONTENT_LEASES](../CONTENT_LEASES.md)を参照。
 
 **R2-M10. `node.copy`/`dav.copy` 由来の `node.created` が音声 indexing をスキップ**
 `consumeOutbox.isAudioEvent` の `node.created` 許可 op が `dav.put`/`upload.complete` のみで、コピーされた音声ファイルは `node_audio` に載らずチャプター/書誌抽出が起きない。`node.copy`/`dav.copy` を追加（video/image projection は op フィルタなしで既に動作）。共有 blob を再利用するコピーの indexing は同一 R2 オブジェクトを参照して動く（回帰テスト追加）。フォルダ配下のコピーは `node.created` がルート 1 件のみで配下を網羅しない既知の制限として記録。
