@@ -1214,11 +1214,15 @@ function renderShare() {
   zipStatus.setAttribute("role", "status");
   const tabs = element("nav", { className: "media-tabs" });
   tabs.setAttribute("aria-label", "共有コンテンツ");
-  for (const [view, label] of [
-    ["files", "ファイル"],
-    ["gallery", "ギャラリー"],
-    ["audio", "オーディオ"],
-  ]) {
+  const views =
+    state.share.root.kind === "file"
+      ? [["files", "ファイル"]]
+      : [
+          ["files", "ファイル"],
+          ["gallery", "ギャラリー"],
+          ["audio", "オーディオ"],
+        ];
+  for (const [view, label] of views) {
     const tab = element("button", { className: "media-tab", text: label });
     tab.type = "button";
     tab.dataset.view = view;
