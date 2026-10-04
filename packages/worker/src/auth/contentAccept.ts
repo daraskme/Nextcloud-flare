@@ -178,6 +178,7 @@ export async function acceptContentTicket(
   const setCookie = await tokens.issueGrantCookie(
     sessionId,
     Math.floor((expiresAt - tokens.now()) / 1000),
+    claims.purpose,
   );
   try {
     await commitAccountMutation(db, admission, ownerId, [

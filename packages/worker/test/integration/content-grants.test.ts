@@ -233,6 +233,36 @@ it("keeps concurrent distinct targets and legacy cookies without mixing purpose 
   await x.read(header, nodeB);
 });
 
+it("reads prior per-purpose cookies beside current grants without accepting renamed-purpose tokens", async () => {
+  const x = await fixture();
+  const a = await x.issue();
+  const first = await x.accept(a.ticket);
+  const oldId = await x.tokens.verifyCookie(cookie(first), "content");
+  const prior = (await x.tokens.issueCookie(oldId, 300, "content")).split(";", 1)[0]!;
+  expect((await x.read(prior)).sessionId).toBe(oldId);
+  const b = await x.issue();
+  const second = await x.accept(b.ticket, prior);
+  expect(second.status).toBe(201);
+  const newId = await x.tokens.verifyCookie(cookie(second), "content");
+  for (const header of [`${prior}; ${cookie(second)}`, `${cookie(second)}; ${prior}`])
+    expect((await x.read(header)).sessionId).toBe(newId);
+  for (const forged of [
+    prior.replace("__Host-ncf_cs_content=", "__Host-ncf_cs_thumb="),
+    prior.replace("__Host-ncf_cs_content=", "__Host-ncf_cs="),
+    cookie(second).replace("__Host-ncf_cs_content_", "__Host-ncf_cs_thumb_"),
+    `${prior}; ${cookie(first)}`,
+  ])
+    await expect(x.tokens.verifyCookies(forged)).rejects.toThrow("content_cookie_rejected");
+  await env.DB.prepare("UPDATE tickets SET cancelled_at=? WHERE id=?")
+    .bind(x.now, b.ticketId)
+    .run();
+  expect((await x.read(`${cookie(second)}; ${prior}`)).sessionId).toBe(oldId);
+  await env.DB.prepare("UPDATE tickets SET cancelled_at=? WHERE id=?")
+    .bind(x.now, a.ticketId)
+    .run();
+  await expect(x.read(prior)).rejects.toThrow();
+});
+
 it("selects the newest authorized target grant independently of cookie order and falls back after cancellation", async () => {
   const x = await fixture();
   const a = await x.issue();

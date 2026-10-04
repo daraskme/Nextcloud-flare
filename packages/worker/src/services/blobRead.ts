@@ -102,7 +102,7 @@ export async function prepareCookieBlobRead(
 ): Promise<ContentBlobPlan> {
   if (!["content", "thumb", "page", "zip", "track"].includes(purpose))
     throw new Error("content_not_available");
-  const grants = await tokens.verifyCookies(cookieHeader);
+  const grants = await tokens.verifyCookies(cookieHeader, purpose);
   const sessions = await primary(db)
     .prepare(
       `SELECT id FROM content_sessions WHERE id IN (${grants.map(() => "?").join(",")})

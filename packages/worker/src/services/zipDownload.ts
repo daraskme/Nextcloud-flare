@@ -326,7 +326,7 @@ async function prepareZipContent(
   cookieHeader: string | null,
   targetSetId: string,
 ): Promise<ZipContentPlan> {
-  const grants = await tokens.verifyCookies(cookieHeader);
+  const grants = await tokens.verifyCookies(cookieHeader, "zip");
   let unavailable: unknown = new Error("content_not_available");
   for (const { sessionId } of grants) {
     try {

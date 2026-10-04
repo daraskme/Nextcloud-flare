@@ -3,6 +3,11 @@ import type { ContentPurpose } from "./contentSession";
 
 export const MAX_CONTENT_GRANTS = 16;
 const COOKIE_NAME = "__Host-ncf_cs";
+const CONTENT_PURPOSES: readonly ContentPurpose[] = ["content", "thumb", "page", "zip", "track"];
+
+export function contentCookieName(purpose: ContentPurpose): string {
+  return `${COOKIE_NAME}_${purpose}`;
+}
 
 export interface ContentCookieGrant {
   readonly name: string;
@@ -188,8 +193,13 @@ export class ContentTokens {
     }
   }
 
-  async issueCookie(sessionId: string, maxAgeSeconds: number): Promise<string> {
+  async issueCookie(
+    sessionId: string,
+    maxAgeSeconds: number,
+    purpose?: ContentPurpose,
+  ): Promise<string> {
     if (
+      (purpose !== undefined && !CONTENT_PURPOSES.includes(purpose)) ||
       !/^[A-Za-z0-9_-]{43}$/.test(sessionId) ||
       !Number.isSafeInteger(maxAgeSeconds) ||
       maxAgeSeconds < 1 ||
@@ -199,30 +209,42 @@ export class ContentTokens {
     const kid = this.cookieRing.activeKid;
     const key = this.cookieRing.keys.get(kid);
     if (!key) throw new Error("invalid_content_key_ring");
+    const scope = purpose === undefined ? "" : `${purpose}\0`;
     const message = new TextEncoder().encode(
-      `ncf-content-cookie\0${this.origin}\0${kid}\0${sessionId}`,
+      `ncf-content-cookie\0${this.origin}\0${scope}${kid}\0${sessionId}`,
     );
     const signature = base64url.encode(
       new Uint8Array(await crypto.subtle.sign("HMAC", key, message)),
     );
-    return `__Host-ncf_cs=${kid}.${sessionId}.${signature}; Secure; HttpOnly; SameSite=None; Path=/; Max-Age=${maxAgeSeconds}`;
+    const name = purpose === undefined ? COOKIE_NAME : contentCookieName(purpose);
+    return `${name}=${kid}.${sessionId}.${signature}; Secure; HttpOnly; SameSite=None; Path=/; Max-Age=${maxAgeSeconds}`;
   }
 
-  async verifyCookie(header: string | null): Promise<string> {
-    const grants = await this.verifyCookies(header);
+  async verifyCookie(header: string | null, purpose?: ContentPurpose): Promise<string> {
+    const grants = await this.verifyCookies(header, purpose);
     if (grants.length !== 1) throw new Error("content_cookie_rejected");
     return grants[0]!.sessionId;
   }
 
-  async issueGrantCookie(sessionId: string, maxAgeSeconds: number): Promise<string> {
-    return (await this.issueCookie(sessionId, maxAgeSeconds)).replace(
-      `${COOKIE_NAME}=`,
-      `${COOKIE_NAME}_${sessionId}=`,
+  async issueGrantCookie(
+    sessionId: string,
+    maxAgeSeconds: number,
+    purpose: ContentPurpose,
+  ): Promise<string> {
+    const name = contentCookieName(purpose);
+    return (await this.issueCookie(sessionId, maxAgeSeconds, purpose)).replace(
+      `${name}=`,
+      `${name}_${sessionId}=`,
     );
   }
 
-  async verifyCookies(header: string | null): Promise<readonly ContentCookieGrant[]> {
+  async verifyCookies(
+    header: string | null,
+    purpose?: ContentPurpose,
+  ): Promise<readonly ContentCookieGrant[]> {
     try {
+      if (purpose !== undefined && !CONTENT_PURPOSES.includes(purpose))
+        throw new Error("invalid_purpose");
       if (!header || header.length > 8192) throw new Error("invalid_cookie");
       const matches = header
         .split(";")
@@ -246,14 +268,19 @@ export class ContentTokens {
         )
           throw new Error("invalid_cookie");
         const [kid, sessionId, signature] = parts as [string, string, string];
-        if (
-          (name !== COOKIE_NAME && name !== `${COOKIE_NAME}_${sessionId}`) ||
-          names.has(name) ||
-          sessions.has(sessionId)
-        )
-          throw new Error("invalid_cookie");
+        let cookiePurpose: ContentPurpose | undefined;
+        if (name !== COOKIE_NAME && name !== `${COOKIE_NAME}_${sessionId}`) {
+          cookiePurpose = CONTENT_PURPOSES.find(
+            (candidate) =>
+              name === contentCookieName(candidate) ||
+              name === `${contentCookieName(candidate)}_${sessionId}`,
+          );
+          if (cookiePurpose === undefined) throw new Error("invalid_cookie");
+        }
+        const sessionKey = `${cookiePurpose ?? "legacy"}:${sessionId}`;
+        if (names.has(name) || sessions.has(sessionKey)) throw new Error("invalid_cookie");
         names.add(name);
-        sessions.add(sessionId);
+        sessions.add(sessionKey);
         if (
           base64url.encode(base64url.decode(sessionId)) !== sessionId ||
           base64url.encode(base64url.decode(signature)) !== signature
@@ -261,13 +288,16 @@ export class ContentTokens {
           throw new Error("invalid_cookie");
         const key = this.cookieRing.keys.get(kid);
         if (!key) throw new Error("unknown_key");
+        const scope = cookiePurpose === undefined ? "" : `${cookiePurpose}\0`;
         const message = new TextEncoder().encode(
-          `ncf-content-cookie\0${this.origin}\0${kid}\0${sessionId}`,
+          `ncf-content-cookie\0${this.origin}\0${scope}${kid}\0${sessionId}`,
         );
         if (!(await crypto.subtle.verify("HMAC", key, base64url.decode(signature), message)))
           throw new Error("invalid_cookie");
-        grants.push(Object.freeze({ name, sessionId }));
+        if (purpose === undefined || cookiePurpose === undefined || cookiePurpose === purpose)
+          grants.push(Object.freeze({ name, sessionId }));
       }
+      if (grants.length === 0) throw new Error("invalid_cookie");
       return Object.freeze(grants);
     } catch {
       throw new Error("content_cookie_rejected");
