@@ -95,7 +95,7 @@ async function seed(
   const statements: SqlStatement[] = ids.map((id, index) => ({
     sql: `INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,requested_at,wait_until)
       VALUES(?,?,?,1,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)`,
-    values: [id, system ? `global:${id}` : id, spaces[index % spaces.length], system],
+    values: [id, system ? `global:${id}` : id, spaces[index % spaces.length] ?? null, system],
   }));
   await atomicBatch(env.DB, statements);
   if (active) await advanceMutations(env.DB);
@@ -108,7 +108,10 @@ it("caps active grants at 32 globally and persists a FIFO of at most 256 waiting
   const extra = await Promise.all(
     Array.from({ length: 4 }, () => foundationFixture(crypto.randomUUID(), Date.now() - 1000)),
   );
-  await atomicBatch(env.DB, extra.flatMap((fixture) => fixture.statements));
+  await atomicBatch(
+    env.DB,
+    extra.flatMap((fixture) => fixture.statements),
+  );
   const spaces = [f.ids.space, ...extra.map((fixture) => fixture.ids.space)];
   const active = await seed(32, true);
   const waiting = await seed(224, false, spaces);
