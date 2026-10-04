@@ -196,13 +196,15 @@ function moveStatements(
       affectedId: node.owner_id,
       statement: {
         sql: `UPDATE tickets SET cancelled_at=${clock} WHERE ? IS NOT NULL AND cancelled_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)`,
-        values: [overwriteId, node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership}))`,
+        values: [overwriteId, op],
       },
       assertion: assertExists(
         `SELECT 1 WHERE ? IS NULL OR NOT EXISTS(SELECT 1 FROM tickets WHERE cancelled_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?))`,
-        [overwriteId, node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership})))`,
+        [overwriteId, op],
       ),
     },
     {
@@ -210,13 +212,15 @@ function moveStatements(
       affectedId: node.owner_id,
       statement: {
         sql: `UPDATE content_sessions SET revoked_at=${clock} WHERE ? IS NOT NULL AND revoked_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)`,
-        values: [overwriteId, node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership}))`,
+        values: [overwriteId, op],
       },
       assertion: assertExists(
         `SELECT 1 WHERE ? IS NULL OR NOT EXISTS(SELECT 1 FROM content_sessions WHERE revoked_at IS NULL
-          AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?))`,
-        [overwriteId, node.owner_id],
+          AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+            WHERE tn.node_id IN (${membership})))`,
+        [overwriteId, op],
       ),
     },
     {

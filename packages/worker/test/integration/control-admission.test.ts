@@ -667,6 +667,10 @@ it.each(["budget", "issue", "accept", "cancel"] as const)(
           sql: "DELETE FROM tickets WHERE target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)",
           values: [f.ids.user],
         },
+        {
+          sql: "DELETE FROM target_set_nodes WHERE target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)",
+          values: [f.ids.user],
+        },
         { sql: "DELETE FROM target_sets WHERE owner_id=?", values: [f.ids.user] },
         { sql: "DELETE FROM budgets WHERE owner_id=?", values: [f.ids.user] },
       ]);

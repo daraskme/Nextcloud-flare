@@ -478,6 +478,8 @@ it("rotates group-share budgets when share actions change", async () => {
 
   const updated = await updateInternalShareActions(mutationEnv(), f.ownerSession, share.id, [
     "read",
+    "download",
+    "create",
   ]);
   expect(
     await env.DB.prepare("SELECT state FROM budgets WHERE id=?")

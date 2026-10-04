@@ -111,7 +111,7 @@ export async function ensureContentBudget(
           AND sh.owner_id=? AND sh.kind='link' AND sh.version=ss.share_version
           AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
           AND (sh.expires_at IS NULL OR sh.expires_at>=?)
-          AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')`,
+          AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='download')`,
       [
         principal.credential_id,
         principal.epoch,
@@ -158,7 +158,7 @@ export async function ensureContentBudget(
                 ))
               )
               AND EXISTS(SELECT 1 FROM share_actions sa
-                WHERE sa.share_id=sh.id AND sa.action='read')))`,
+                WHERE sa.share_id=sh.id AND sa.action='download')))`,
       [
         principal.credential_id,
         userId,

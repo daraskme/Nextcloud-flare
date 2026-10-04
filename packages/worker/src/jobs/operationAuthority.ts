@@ -478,10 +478,11 @@ async function applyAdapter(
     if (principal.kind !== "user") throw new Error("authorization_denied");
     const visible = await primary(db)
       .prepare(
-        `SELECT 1 AS ok FROM trash_ops WHERE op_id=? AND space_id=? AND actor_id=?
-          AND state IN ('trashed','purged')`,
+        `SELECT 1 AS ok FROM trash_ops t WHERE t.op_id=? AND t.space_id=? AND (t.actor_id=?
+          OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=t.space_id AND s.owner_id=?))
+          AND t.state IN ('trashed','purged')`,
       )
-      .bind(plan.operands.trashOpId, row.space_id, principal.user_id)
+      .bind(plan.operands.trashOpId, row.space_id, principal.user_id, principal.user_id)
       .first<number>("ok");
     if (visible !== 1) throw new Error("authorization_denied");
     return;

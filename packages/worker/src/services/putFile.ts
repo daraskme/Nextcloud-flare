@@ -29,6 +29,7 @@ import {
   settleFailedDavUpload,
   startDavUpload,
 } from "./davUpload";
+import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
 import {
   commitMutationStatements,
   type MutationOutcome,
@@ -285,6 +286,7 @@ function overwriteStatements(
     assertOperationClaim(claim),
     authorizationAssertion(authorized),
     assertCreateLocks(node.id, node.space_id, request.principal, hashes),
+    unencryptedSubtreeAssertion(node.id, node.space_id),
     assertExists("SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM operation_steps WHERE op_id=?)", [op]),
   ];
   steps.forEach((step, index) =>
@@ -378,6 +380,7 @@ export async function putFile(
       authorized.node.revision !== request.expectedRevision)
   )
     throw new Error("dav_precondition_failed");
+  if (!create) await assertNoEncryptedSubtree(env.DB, request.nodeId!, request.spaceId);
   const ownerId =
     authorized.operation === "node.create" ? authorized.parent.owner_id : authorized.node.owner_id;
   const previousUpload = await davUploadRow(env.DB, intent.id);

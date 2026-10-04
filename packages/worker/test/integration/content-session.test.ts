@@ -107,7 +107,10 @@ it("asserts current private content session, ticket, target set and budget in D1
       sql: "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,'internal',?)",
       values: [internalShare, f.ids.user, f.ids.folder, now],
     },
-    { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [internalShare] },
+    {
+      sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')",
+      values: [internalShare, internalShare],
+    },
     {
       sql: "INSERT INTO share_grants(share_id,user_id,version) VALUES(?,?,1)",
       values: [internalShare, f.ids.user],

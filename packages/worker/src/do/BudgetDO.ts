@@ -136,7 +136,7 @@ export class BudgetDO extends DurableObject<Env> {
                 SELECT 1 FROM current_internal_shares current
                 WHERE current.share_id=sh.id AND current.version=sh.version
               ))
-              AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
+              AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='download')
               AND ((cs.user_id IS NULL AND sh.kind='link') OR
                 (cs.user_id IS NOT NULL AND sh.kind='internal' AND (
                   EXISTS(SELECT 1 FROM share_grants g

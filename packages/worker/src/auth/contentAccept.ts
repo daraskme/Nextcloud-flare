@@ -68,7 +68,7 @@ export async function acceptContentTicket(
                 AND sh.disabled_at IS NULL AND owner.disabled_at IS NULL
                 AND (sh.expires_at IS NULL OR sh.expires_at>=?)
                 AND sh.owner_id=ts.owner_id
-                AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')))
+                AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='download')))
           )
           AND (
             (? IS NULL AND ts.owner_id=? AND NOT EXISTS(
@@ -103,7 +103,7 @@ export async function acceptContentTicket(
                         AND gm.disabled_at IS NULL
                       WHERE gg.share_id=sh.id
                     ))))
-                AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')))
+                AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='download')))
           ) AND ?>strftime('%s','now')*1000`;
   const authorityValues = [
     claims.ticket_id,

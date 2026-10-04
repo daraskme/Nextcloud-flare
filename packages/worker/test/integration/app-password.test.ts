@@ -1567,6 +1567,10 @@ it("atomically trashes a bounded DAV subtree and revokes its locks and shares", 
       values: [`${child}-targets`, f.ids.user, credential, now + 600_000],
     },
     {
+      sql: "INSERT INTO target_set_nodes(target_set_id,node_id) VALUES(?,?)",
+      values: [`${child}-targets`, child],
+    },
+    {
       sql: `INSERT INTO tickets(id,credential_id,target_set_id,budget_id,purpose,epoch,issued_at,expires_at)
         VALUES(?,?,?,?, 'content',1,?,?)`,
       values: [
