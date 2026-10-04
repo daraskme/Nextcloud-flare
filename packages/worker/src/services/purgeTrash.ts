@@ -17,7 +17,7 @@ import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const BASE_STEPS = 36;
+const BASE_STEPS = 42;
 type UserPrincipal = {
   readonly kind: "user";
   readonly user_id: string;
@@ -322,6 +322,83 @@ function statements(
       op,
       op,
     ]),
+  );
+  // Reshare delegations and per-user chapter sets hard-reference purged member
+  // nodes; the delegation rows are update-immutable, so they are removed in
+  // FK order (status -> ancestry -> delegation). Some delegations are only
+  // reachable through their ancestry rows, which this sequence deletes, so
+  // the doomed share ids are captured into purge_share_ids first.
+  const delegationSet = `d.source_root_parent_id IN (${members}) OR d.delegated_root_parent_id IN (${members})
+      OR EXISTS(SELECT 1 FROM share_delegation_ancestry a WHERE a.share_id=d.share_id
+        AND (a.node_id IN (${members}) OR a.parent_id IN (${members})))`;
+  const doomedShares = "SELECT share_id FROM purge_share_ids WHERE purge_op_id=?";
+  add(
+    "delegation_set",
+    current.rootId,
+    {
+      sql: `INSERT INTO purge_share_ids(purge_op_id,share_id)
+        SELECT ?,d.share_id FROM share_delegations d WHERE ${delegationSet}`,
+      values: [op, op, op, op, op],
+    },
+    absent(
+      `SELECT 1 FROM share_delegations d WHERE (${delegationSet})
+        AND d.share_id NOT IN (${doomedShares})`,
+      [op, op, op, op, op],
+    ),
+  );
+  add(
+    "share_delegation_status",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_delegation_status WHERE share_id IN (${doomedShares})`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM share_delegation_status WHERE share_id IN (${doomedShares})`, [op]),
+  );
+  add(
+    "share_delegation_ancestry",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_delegation_ancestry WHERE share_id IN (${doomedShares})`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM share_delegation_ancestry WHERE share_id IN (${doomedShares})`, [op]),
+  );
+  add(
+    "share_delegations",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_delegations WHERE share_id IN (${doomedShares})`,
+      values: [op],
+    },
+    absent(
+      `SELECT 1 FROM share_delegations d WHERE (${delegationSet})
+        OR d.share_id IN (${doomedShares})`,
+      [op, op, op, op, op],
+    ),
+  );
+  add(
+    "audio_chapters",
+    current.rootId,
+    {
+      sql: `DELETE FROM user_audio_chapters WHERE set_id IN
+        (SELECT id FROM user_audio_chapter_sets WHERE node_id IN (${members}))`,
+      values: [op],
+    },
+    absent(
+      `SELECT 1 FROM user_audio_chapters c JOIN user_audio_chapter_sets s ON s.id=c.set_id
+        WHERE s.node_id IN (${members})`,
+      [op],
+    ),
+  );
+  add(
+    "audio_chapter_sets",
+    current.rootId,
+    {
+      sql: `DELETE FROM user_audio_chapter_sets WHERE node_id IN (${members})`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM user_audio_chapter_sets WHERE node_id IN (${members})`, [op]),
   );
   const deletes: readonly [string, string, string][] = [
     ["copy_members", "copy_members", `source_node_id IN (${members})`],

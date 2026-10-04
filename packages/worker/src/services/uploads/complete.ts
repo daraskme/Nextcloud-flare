@@ -455,7 +455,7 @@ async function completeUpload(
         ) SELECT 1 WHERE EXISTS(SELECT 1 FROM ancestry WHERE parent_id IS NULL)
           AND NOT EXISTS(SELECT 1 FROM shares sh JOIN ancestry a ON sh.root_node_id=a.id
             WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000))`,
-              [row.parent_id, row.owner_id, row.owner_id],
+              [row.target_id ?? row.parent_id, row.owner_id, row.owner_id],
             ),
           ]
         : []),

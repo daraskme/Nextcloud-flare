@@ -344,10 +344,32 @@ it.each(["missing", "identity", "deadline"] as const)(
   },
 );
 
-it("completes logical copy events without requiring a new R2 object", async () => {
+// R2: a copied file shares the source blob, so its node.created event can be
+// indexed in place — the audio gate now accepts node.copy/dav.copy ops.
+it("indexes a logical copy from the shared source object", async () => {
   const f = await fixture(id3("Copied title", "Copied artist", "Copied album"), {
     copy: true,
-    put: false,
+  });
+  expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
+  expect(
+    await env.DB.prepare(
+      "SELECT title_extracted,artist_extracted,album_extracted FROM node_audio WHERE node_id=?",
+    )
+      .bind(f.file)
+      .first(),
+  ).toMatchObject({
+    title_extracted: "Copied title",
+    artist_extracted: "Copied artist",
+    album_extracted: "Copied album",
+  });
+});
+
+// R2: a copy whose shared blob has no active storage observation completes
+// without indexing — like a non-audio event — rather than wedging the outbox
+// on a blob that can never be inspected.
+it("completes a copy event without indexing when the shared blob is unobserved", async () => {
+  const f = await fixture(id3("Copied title", "Copied artist", "Copied album"), {
+    copy: true,
     storage: false,
   });
   expect(await consumeOutbox(mutationEnv(), f.eventId)).toBe("completed");
@@ -356,11 +378,6 @@ it("completes logical copy events without requiring a new R2 object", async () =
       .bind(f.file)
       .first("n"),
   ).toBe(0);
-  expect(
-    await env.DB.prepare("SELECT text_norm FROM search_index WHERE node_id=?")
-      .bind(f.file)
-      .first("text_norm"),
-  ).toBe("file");
 });
 
 it("fences an extraction result when the node changes to a newer blob", async () => {

@@ -1649,9 +1649,24 @@ it("delivers public EPUB metadata and bounded page and entry targets through a p
     expect(new TextDecoder().decode(await ranged.arrayBuffer())).toBe(
       publication.chapter.slice(0, 6),
     );
+    const indexRow = await env.DB.prepare(
+      "SELECT json_bytes AS indexBytes,r2_key AS indexKey FROM archive_index WHERE node_id=?",
+    )
+      .bind(f.owner.ids.file)
+      .first<{ indexBytes: number; indexKey: string }>();
+    const indexJson = (await (await env.BLOBS.get(indexRow!.indexKey))!.json()) as {
+      entries: { token: string; compressedSize: number }[];
+    };
+    const chapterEntry = indexJson.entries.find((entry) => entry.token === publication.entryToken)!;
+    const chapterBytes = new TextEncoder().encode(publication.chapter).byteLength;
     const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
+    // GET charges the response bytes; HEAD charges the index refetch; a range
+    // pays the whole compressed entry it still has to decompress.
     expect(await budget.status()).toMatchObject({
-      bytesCharged: new TextEncoder().encode(publication.chapter).byteLength + 6,
+      bytesCharged:
+        Math.max(chapterBytes, chapterEntry.compressedSize) +
+        indexRow!.indexBytes * 2 +
+        chapterEntry.compressedSize,
       requests: 4,
       active: 0,
     });

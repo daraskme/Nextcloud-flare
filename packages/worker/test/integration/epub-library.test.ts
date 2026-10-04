@@ -268,9 +268,22 @@ it("delivers a validated spine entry only through a page ticket, session and bud
   );
   expect(partial.status).toBe(206);
   expect(new TextDecoder().decode(await partial.arrayBuffer())).toBe(chapter.slice(0, 6));
+  const indexRow = await env.DB.prepare(
+    "SELECT json_bytes AS indexBytes,r2_key AS indexKey FROM archive_index WHERE node_id=?",
+  )
+    .bind(f.file)
+    .first<{ indexBytes: number; indexKey: string }>();
+  const indexObject = await env.BLOBS.get(indexRow!.indexKey);
+  const indexJson = (await indexObject!.json()) as {
+    entries: { path: string; compressedSize: number }[];
+  };
+  const chapterEntry = indexJson.entries.find((entry) => entry.path === "OPS/chapter.xhtml")!;
+  const chapterBytes = new TextEncoder().encode(chapter).byteLength;
   const budget = env.BUDGETS.get(env.BUDGETS.idFromName(issued.budgetId));
+  // A ranged request still decompresses the whole entry, so the lease pays at
+  // least the entry fetch: full GET = response bytes, Range = compressedSize.
   expect(await budget.status()).toMatchObject({
-    bytesCharged: new TextEncoder().encode(chapter).byteLength + 6,
+    bytesCharged: Math.max(chapterBytes, chapterEntry.compressedSize) + chapterEntry.compressedSize,
     requests: 2,
     active: 0,
   });

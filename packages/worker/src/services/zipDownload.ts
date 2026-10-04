@@ -354,7 +354,9 @@ async function prepareZipSessionContent(
       FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
       JOIN tickets t ON t.id=cs.ticket_id AND t.target_set_id=cs.target_set_id
       JOIN target_sets ts ON ts.id=cs.target_set_id
-      WHERE cs.id=? AND cs.target_set_id=? AND t.purpose='zip'`)
+      WHERE cs.id=? AND cs.target_set_id=? AND t.purpose='zip'
+        AND cs.revoked_at IS NULL AND cs.expires_at>strftime('%s','now')*1000
+        AND t.cancelled_at IS NULL AND t.expires_at>strftime('%s','now')*1000`)
     .bind(sessionId, targetSetId)
     .first<
       TargetManifestRecord & {
@@ -755,12 +757,25 @@ export async function streamBudgetedZip(
     !notModified && (ifRange === null || ifRange === etag) ? request.headers.get("Range") : null,
     plan.outputSize,
   );
+  const spans = range.kind === "range" ? zipRangeSpans(plan.sources, plan.outputSize, range) : null;
   const bytes =
     request.method === "HEAD" || notModified || range.kind === "unsatisfiable"
       ? 0
       : range.kind === "range"
         ? range.length
         : plan.outputSize;
+  // A range over data-descriptor or central-directory records still fetches the
+  // whole covered object (the CRC must be real), so the lease pays for what the
+  // server must read rather than only the delivered slice.
+  const fetchBytes =
+    range.kind !== "range"
+      ? 0
+      : plan.sources.reduce((total, { entry }, index) => {
+          const span = spans?.[index];
+          return (
+            total + (span && !span.needsCrc ? Math.max(0, span.covEnd - span.covStart) : entry.size)
+          );
+        }, 0);
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   const lease = await budget.reserve({
@@ -768,7 +783,7 @@ export async function streamBudgetedZip(
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
-    bytes,
+    bytes: Math.max(bytes, fetchBytes),
   });
   return streamLeasedContent(
     async (signal, deadline) => {
@@ -784,8 +799,6 @@ export async function streamBudgetedZip(
         headers.set("Content-Range", `bytes */${plan.outputSize}`);
         return new Response(null, { status: 416, headers });
       }
-      const spans =
-        range.kind === "range" ? zipRangeSpans(plan.sources, plan.outputSize, range) : null;
       const archive = storeZip(
         plan.sources.map(({ entry, blob }, index) => ({
           name: entry.path,
@@ -846,6 +859,11 @@ export async function streamBudgetedZip(
     bytes,
     lease.expiresAt,
     request.signal,
-    (deliveredBytes) => budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes }),
+    (deliveredBytes) =>
+      budget.settle({
+        budgetId: plan.budgetId,
+        requestId,
+        deliveredBytes: deliveredBytes === null ? null : Math.max(deliveredBytes, fetchBytes),
+      }),
   );
 }
