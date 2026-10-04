@@ -103,10 +103,21 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   const accepted = await acceptContentTicket(mutationEnv(), tokens, ticket);
   expect(accepted.budgetId).toBe(ids.budget);
   expect(accepted.setCookie).toMatch(
-    /^__Host-ncf_cs=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}; Secure; HttpOnly; SameSite=None; Path=\/; Max-Age=/,
+    /^__Host-ncf_cs_content_[A-Za-z0-9_-]{43}=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}; Secure; HttpOnly; SameSite=None; Path=\/; Max-Age=/,
   );
   const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
-  expect(await tokens.verifyCookie(cookie)).toBe(accepted.sessionId);
+  expect(await tokens.verifyCookie(cookie, "content")).toBe(accepted.sessionId);
+  const thumbCookie =
+    (await tokens.issueCookie(accepted.sessionId, 60, "thumb")).split(";", 1)[0] ?? "";
+  expect(thumbCookie.startsWith("__Host-ncf_cs_thumb=")).toBe(true);
+  expect(await tokens.verifyCookie(`${thumbCookie}; ${cookie}`, "content")).toBe(
+    accepted.sessionId,
+  );
+  expect(await tokens.verifyCookie(`${cookie}; ${thumbCookie}`, "thumb")).toBe(accepted.sessionId);
+  await expect(tokens.verifyCookie(cookie, "thumb")).rejects.toThrow(/content_cookie_rejected/);
+  await expect(
+    tokens.verifyCookie(cookie.replace("__Host-ncf_cs_content_", "__Host-ncf_cs_thumb_"), "thumb"),
+  ).rejects.toThrow(/content_cookie_rejected/);
   const plan = await prepareCookieBlobRead(
     env.DB,
     env.BLOBS,
@@ -178,8 +189,9 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
     contentEnv,
     tokens,
   );
-  expect(sessionResponse.status).toBe(201);
-  const httpCookie = sessionResponse.headers.get("Set-Cookie")?.split(";", 1)[0] ?? "";
+  expect(sessionResponse.status).toBe(400);
+  expect(sessionResponse.headers.has("Set-Cookie")).toBe(false);
+  const httpCookie = cookie;
   expect(await tokens.verifyCookie(httpCookie)).toBeTruthy();
   const httpRead = await handleContentHttp(
     new Request(`https://content.invalid/c/${f.ids.file}/${f.ids.blob}`, {
@@ -287,18 +299,19 @@ it("redeems a signed ticket into an opaque cookie and current D1 content session
   await env.DB.prepare("UPDATE control SET maintenance=1 WHERE singleton=1").run();
   await expect(acceptContentTicket(mutationEnv(), tokens, ticket)).rejects.toThrow();
   await env.DB.prepare("UPDATE control SET maintenance=0 WHERE singleton=1").run();
-  await expect(tokens.verifyCookie(`${cookie}; ${cookie}`)).rejects.toThrow(
+  await expect(tokens.verifyCookie(`${cookie}; ${cookie}`, "content")).rejects.toThrow(
     /content_cookie_rejected/,
   );
   const cookieParts = cookie.split(".");
   const cookieSignature = cookieParts[2] ?? "";
   cookieParts[2] = `${cookieSignature.startsWith("A") ? "B" : "A"}${cookieSignature.slice(1)}`;
-  await expect(tokens.verifyCookie(cookieParts.join("."))).rejects.toThrow(
+  await expect(tokens.verifyCookie(cookieParts.join("."), "content")).rejects.toThrow(
     /content_cookie_rejected/,
   );
   await expect(
     tokens.verifyCookie(
       `${cookieParts[0]}.${cookieParts[1]}.${nonCanonicalSignature(cookieSignature)}`,
+      "content",
     ),
   ).rejects.toThrow(/content_cookie_rejected/);
   const pieces = ticket.split(".");
@@ -453,6 +466,7 @@ it("bounds token lifetime and accepts old keys only while retained", async () =>
   const cookie = await original.issueCookie(
     base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
     600,
+    "content",
   );
   const newTicket = await contentKeyRing("ticket-2", {
     "ticket-2": base64url.encode(crypto.getRandomValues(new Uint8Array(32))),
@@ -473,10 +487,10 @@ it("bounds token lifetime and accepts old keys only while retained", async () =>
     () => now,
   );
   await retained.verifyTicket(ticket);
-  await retained.verifyCookie(cookie.split(";", 1)[0] ?? "");
+  await retained.verifyCookie(cookie.split(";", 1)[0] ?? "", "content");
   const dropped = new ContentTokens(newTicket, newCookie, original.origin, () => now);
   await expect(dropped.verifyTicket(ticket)).rejects.toThrow(/content_ticket_rejected/);
-  await expect(dropped.verifyCookie(cookie.split(";", 1)[0] ?? "")).rejects.toThrow(
+  await expect(dropped.verifyCookie(cookie.split(";", 1)[0] ?? "", "content")).rejects.toThrow(
     /content_cookie_rejected/,
   );
   await expect(

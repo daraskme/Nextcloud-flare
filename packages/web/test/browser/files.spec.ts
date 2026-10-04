@@ -1029,7 +1029,11 @@ test("body-less DAV mutations and content ticket cancellation work over real HTT
     const children = async (id: string) => {
       const response = await fetch(`/api/v1/nodes/${encodeURIComponent(id)}/children`);
       if (!response.ok) throw new Error(`children_http_${response.status}`);
-      return (await response.json()).children as { id: string; name: string }[];
+      return (await response.json()).children as {
+        id: string;
+        name: string;
+        currentBlobId: string;
+      }[];
     };
     const root = await children(me.rootNodeId);
     const folder = root.find((node) => node.name === "dav-transport")!;
@@ -1056,26 +1060,38 @@ test("body-less DAV mutations and content ticket cancellation work over real HTT
         })
       ).status;
     const before = await exchange();
+    const read = () =>
+      fetch(`${me.contentOrigin}/c/${source.id}/${source.currentBlobId}`, {
+        credentials: "include",
+      });
     const url = `/api/v1/tickets/${issued.ticketId}`;
     const rejected = await fetch(url, { method: "DELETE", headers, body: "{}" });
     const afterRejected = await exchange();
+    const retained = await read();
+    const retainedBody = await retained.text();
     const cancelled = await fetch(url, { method: "DELETE", headers });
     return {
       issued: created.status,
       before,
       rejected: rejected.status,
       afterRejected,
+      retained: retained.status,
+      retainedBody,
       cancelled: cancelled.status,
       afterCancelled: await exchange(),
+      afterCancelledRead: (await read()).status,
     };
   });
   expect(ticket).toEqual({
     issued: 201,
     before: 201,
     rejected: 400,
-    afterRejected: 201,
+    afterRejected: 400,
+    retained: 200,
+    retainedBody: payload,
     cancelled: 204,
     afterCancelled: 400,
+    afterCancelledRead: 404,
   });
   expect((await send("DELETE", moved, {}, "{}")).status()).toBe(400);
   expect(await (await send("GET", moved)).text()).toBe(payload);

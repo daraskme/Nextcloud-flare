@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { verifyPublishedArchive } from "../backup/archive-storage.mjs";
 import { fetchBillableUsage, summarizeBillableUsage } from "../staging/billing-snapshot.mjs";
 import { runHttpProbes } from "../staging/smoke-check.mjs";
 import {
@@ -105,18 +106,48 @@ export async function runMonitorCycle({
   stateDirectory,
   now = new Date(),
   notify = notifyDesktop,
+  storageConfiguration,
+  archiveVerifier = verifyPublishedArchive,
 }) {
   await ensurePrivateDirectory(stateDirectory);
   const statePath = join(stateDirectory, "state.json");
   const incidentPath = join(stateDirectory, "incidents.jsonl");
   const old = await readPrivateJson(statePath, 64 * 1024);
   const previous = old?.version === 1 ? old.status : null;
+  let archiveObservation;
+  let archiveCheck;
+  if (backupState?.phase === "completed") {
+    try {
+      archiveCheck = await archiveVerifier(storageConfiguration, backupState, {
+        previous: old?.archiveCheck,
+        now,
+      });
+      archiveObservation =
+        archiveCheck?.verified === true
+          ? { state: "healthy", code: "archive_verified" }
+          : { state: "unknown", code: "archive_storage_unavailable" };
+    } catch (error) {
+      archiveObservation = [
+        "backup_archive_missing",
+        "backup_archive_mismatch",
+        "backup_volume_read_only",
+        "backup_volume_write_failed",
+      ].includes(error.message)
+        ? {
+            state: "failed",
+            code:
+              error.message === "backup_archive_missing" ? "archive_missing" : "archive_mismatch",
+          }
+        : { state: "unknown", code: "archive_storage_unavailable" };
+    }
+  }
   const status = currentMonitorStatus({
     backup: backupState,
     billing: billingSnapshot,
     liveCheck,
     config,
     now,
+    archiveObservation,
   });
   const events = planNotifications(previous, status);
   const pending = [
@@ -136,6 +167,7 @@ export async function runMonitorCycle({
     version: 1,
     checkedAt: now.toISOString(),
     status,
+    ...(archiveCheck?.verified === true ? { archiveCheck } : {}),
     pending,
   };
   await writePrivateJson(statePath, saved);
@@ -229,6 +261,11 @@ async function main() {
     liveCheck,
     config: fallbackConfig,
     stateDirectory,
+    storageConfiguration: {
+      mountPoint: process.env.NCF_BACKUP_MOUNT_POINT,
+      volumeUuid: process.env.NCF_BACKUP_VOLUME_UUID,
+      backupRoot: process.env.NCF_BACKUP_EXTERNAL_ROOT,
+    },
   });
   console.log(JSON.stringify(result));
 }

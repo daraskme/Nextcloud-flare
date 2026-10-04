@@ -6,6 +6,11 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { assertCreateLocks, assertTrashLocks, lockTokenHashes } from "../auth/locks";
+import {
+  assertDavMutationConditions,
+  commitDavMutation,
+  type DavMutationConditions,
+} from "../dav/conditionState";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -20,7 +25,7 @@ import {
   operationRow,
 } from "../jobs/operations";
 import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
-import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
+import { type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_COPY_MAX_NODES = 1_000;
 export const DAV_COPY_MAX_BYTES = 10 * 1024 * 1024 * 1024;
@@ -42,6 +47,7 @@ export interface CopyNodeRequest {
   readonly depth: "0" | "infinity";
   readonly overwriteTargetId?: string;
   readonly lockTokens: readonly string[];
+  readonly conditions?: DavMutationConditions;
   readonly operation?: "node.copy" | "dav.copy";
 }
 
@@ -443,6 +449,13 @@ export async function copyNode(
     if (!operation) throw new Error("authorization_denied");
     return { kind: "terminal", operation };
   }
+  await assertDavMutationConditions(
+    env.DB,
+    request.conditions,
+    request.principal,
+    request.sourceNodeId,
+    request.spaceId,
+  );
   const source = await authorizeNode(env.DB, request.principal, {
     operation: "node.read",
     nodeId: request.sourceNodeId,
@@ -532,6 +545,13 @@ export async function copyNode(
   });
   let terminal = false;
   try {
+    await assertDavMutationConditions(
+      env.DB,
+      request.conditions,
+      request.principal,
+      request.sourceNodeId,
+      request.spaceId,
+    );
     const currentSource = await authorizeNode(env.DB, request.principal, {
       operation: "node.read",
       nodeId: request.sourceNodeId,
@@ -595,7 +615,7 @@ export async function copyNode(
       .bind(currentDestination.parent.id, request.spaceId)
       .first<number>("revision");
     if (revision === null) throw new Error("authorization_denied");
-    const outcome = await commitMutationStatements(
+    const outcome = await commitDavMutation(
       env.DB,
       claimed.claim,
       copyStatements(
@@ -611,9 +631,16 @@ export async function copyNode(
         current.props,
         await lockTokenHashes(request.lockTokens),
       ),
+      request.conditions,
+      request.principal,
+      request.sourceNodeId,
+      request.spaceId,
     );
     terminal = outcome.kind === "terminal";
     return outcome;
+  } catch (error) {
+    if (error instanceof Error && error.message === "dav_precondition_failed") terminal = true;
+    throw error;
   } finally {
     if (terminal)
       try {

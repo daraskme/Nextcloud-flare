@@ -6,6 +6,11 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { assertCreateLocks, assertTrashLocks, lockTokenHashes } from "../auth/locks";
+import {
+  assertDavMutationConditions,
+  commitDavMutation,
+  type DavMutationConditions,
+} from "../dav/conditionState";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -20,7 +25,7 @@ import {
   operationRow,
 } from "../jobs/operations";
 import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "./encryptionGuards";
-import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
+import { type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_MOVE_MAX_NODES = 1_000;
 export const DAV_MOVE_MAX_BYTES = 10 * 1024 * 1024 * 1024;
@@ -38,6 +43,7 @@ export interface MoveNodeRequest {
   readonly overwriteTargetId?: string;
   readonly name: string;
   readonly lockTokens: readonly string[];
+  readonly conditions?: DavMutationConditions;
   readonly operation?: "node.move" | "dav.move";
 }
 
@@ -445,6 +451,13 @@ export async function moveNode(
     if (!operation) throw new Error("authorization_denied");
     return { kind: "terminal", operation };
   }
+  await assertDavMutationConditions(
+    env.DB,
+    request.conditions,
+    request.principal,
+    request.nodeId,
+    request.spaceId,
+  );
   const source = await authorizeNode(env.DB, request.principal, {
     operation: "node.rename",
     nodeId: request.nodeId,
@@ -530,6 +543,13 @@ export async function moveNode(
   });
   let terminal = false;
   try {
+    await assertDavMutationConditions(
+      env.DB,
+      request.conditions,
+      request.principal,
+      request.nodeId,
+      request.spaceId,
+    );
     const currentSource = await authorizeNode(env.DB, request.principal, {
       operation: "node.rename",
       nodeId: request.nodeId,
@@ -594,7 +614,7 @@ export async function moveNode(
     const destinationRevision = byId.get(currentDestination.parent.id);
     if (sourceRevision === undefined || destinationRevision === undefined)
       throw new Error("authorization_denied");
-    const outcome = await commitMutationStatements(
+    const outcome = await commitDavMutation(
       env.DB,
       claimed.claim,
       moveStatements(
@@ -608,9 +628,16 @@ export async function moveNode(
         name.name,
         await lockTokenHashes(request.lockTokens),
       ),
+      request.conditions,
+      request.principal,
+      request.nodeId,
+      request.spaceId,
     );
     terminal = outcome.kind === "terminal";
     return outcome;
+  } catch (error) {
+    if (error instanceof Error && error.message === "dav_precondition_failed") terminal = true;
+    throw error;
   } finally {
     if (terminal)
       try {

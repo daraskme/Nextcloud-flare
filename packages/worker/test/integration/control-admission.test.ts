@@ -561,7 +561,7 @@ it.each(["budget", "issue", "accept", "cancel"] as const)(
       "content",
       expiresAt,
     );
-    await acceptContentTicket(env, tokens, issued.ticket);
+    if (action !== "accept") await acceptContentTicket(env, tokens, issued.ticket);
     const proof = await authorizeNode(env.DB, principal, { operation: "node.read", ...target });
     const baseline = await env.DB.prepare(
       "SELECT MAX(seq) AS n FROM mutation_admissions",
@@ -626,6 +626,16 @@ it.each(["budget", "issue", "accept", "cancel"] as const)(
           .bind(baseline, "content." + action + ":%")
           .first(),
       ).toEqual({ state: "closed", committed_at: expect.any(Number) });
+      if (action === "accept") {
+        expect(
+          await env.DB.prepare("SELECT redeemed_at FROM tickets WHERE id=?")
+            .bind(issued.ticketId)
+            .first(),
+        ).toEqual({ redeemed_at: expect.any(Number) });
+        await expect(acceptContentTicket(env, tokens, issued.ticket)).rejects.toThrow(
+          "content_ticket_rejected",
+        );
+      }
       expect(
         await env.DB.prepare(
           "SELECT COUNT(*) AS n FROM mutation_admissions WHERE state='active'",

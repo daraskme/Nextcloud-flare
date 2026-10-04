@@ -161,7 +161,10 @@ function quiescenceQuery(ownAdmission = false): string {
 }
 
 /** The common wrapper proves this one exempted receipt is active/current in the same batch. */
-function repairFence(epoch: number, admission: MutationAdmission<string | null>): SqlStatement {
+export function repairFence(
+  epoch: number,
+  admission: MutationAdmission<string | null>,
+): SqlStatement {
   return assertExists(
     quiescenceQuery(true) +
       ` AND (
@@ -272,6 +275,7 @@ export const RECOVERY_FINAL_QUERY = `SELECT 1 FROM control c WHERE c.singleton=1
         AND (SELECT COUNT(*) FROM outbox_dead_letters d
           WHERE d.outbox_id=b.outbox_id AND d.status='failed')<>1)
       AND NOT EXISTS(SELECT 1 FROM job_leases)
+      AND NOT EXISTS(SELECT 1 FROM bulk_jobs WHERE state IN ('pending','running'))
       AND NOT EXISTS(SELECT 1 FROM gc_candidates WHERE state='deleting')
       AND NOT EXISTS(SELECT 1 FROM orphan_objects WHERE state='deleting' OR claim_token IS NOT NULL
         OR (state<>'deleted' AND (owner_key IS NULL OR epoch>c.epoch

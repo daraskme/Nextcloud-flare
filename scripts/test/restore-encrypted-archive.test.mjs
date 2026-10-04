@@ -12,6 +12,7 @@ import {
   publicKeyFileJson,
   recoveryFileJson,
 } from "../../packages/web/src/lib/encryptionVaultStore.ts";
+import { archiveTarArguments } from "../backup/archiveFormat.mjs";
 import { auditRestoredBlobBytes } from "../backup/blobAudit.mjs";
 import { encryptArchiveFile } from "../backup/encryptedArchive.mjs";
 import { restoreGeneration } from "../backup/generation.mjs";
@@ -78,24 +79,12 @@ async function fixture() {
   return { root, work, id, accountId, publicKeyFile, recoveryFile };
 }
 
-async function packed(f, name = "backup") {
+async function packed(f, name = "backup", legacy = false) {
   const sourceFile = join(f.root, `${name}.tar`);
   const files = await archiveMembers(f.work, f.id);
-  await execute("tar", [
-    "--create",
-    "--format=ustar",
-    "--sort=name",
-    "--mtime=@0",
-    "--owner=0",
-    "--group=0",
-    "--numeric-owner",
-    "--file",
-    sourceFile,
-    "--directory",
-    f.work,
-    "--",
-    ...files,
-  ]);
+  const args = archiveTarArguments(f.work, sourceFile, files);
+  if (legacy) args.splice(1, 2, "--format=ustar");
+  await execute("tar", args);
   await chmod(sourceFile, 0o600);
   const cipherFile = join(f.root, `${name}.ncf`);
   const encrypted = await encryptArchiveFile({
@@ -164,6 +153,25 @@ posixTest(
     assert.equal(exit, 0, JSON.stringify(errors));
     assert.equal(JSON.parse(output[0]).verified, true);
     assert.ok(!output[0].includes(f.root));
+  },
+  30_000,
+);
+
+posixTest(
+  "restores historical ustar ciphertext with the new constrained pax reader",
+  async () => {
+    const f = await fixture();
+    const archive = await packed(f, "legacy", true);
+    const result = await restoreEncryptedArchive({
+      cipherFile: archive.cipherFile,
+      recoveryFile: f.recoveryFile,
+      accountId: f.accountId,
+      expectedCipherSha256: archive.encrypted.cipherSha256,
+      generationId: f.id,
+      destination: join(f.root, "legacy-restored"),
+    });
+    assert.equal(result.bytes, 3);
+    assert.equal(result.objects, 1);
   },
   30_000,
 );

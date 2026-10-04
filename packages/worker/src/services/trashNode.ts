@@ -5,6 +5,11 @@ import {
   type Principal,
 } from "../auth/authorize";
 import { assertTrashLocks, lockTokenHashes } from "../auth/locks";
+import {
+  assertDavMutationConditions,
+  commitDavMutation,
+  type DavMutationConditions,
+} from "../dav/conditionState";
 import { assertOpenPermit } from "../db/permits";
 import { assertExists, assertOneChange, primary, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
@@ -19,7 +24,7 @@ import {
   operationRow,
 } from "../jobs/operations";
 import { startTreeJob } from "../jobs/treeJobStore";
-import { commitMutationStatements, type MutationOutcome, type MutationStep } from "./fsMutation";
+import { type MutationOutcome, type MutationStep } from "./fsMutation";
 
 export const DAV_DELETE_MAX_NODES = 1_000;
 export const TRASH_NODE_STEPS = 13;
@@ -31,6 +36,7 @@ export interface TrashNodeRequest {
   readonly spaceId: string;
   readonly nodeId: string;
   readonly lockTokens: readonly string[];
+  readonly conditions?: DavMutationConditions;
   readonly operation?: "node.trash" | "dav.delete";
 }
 
@@ -295,6 +301,13 @@ export async function trashNode(
     if (!operation) throw new Error("authorization_denied");
     return { kind: "terminal", operation };
   }
+  await assertDavMutationConditions(
+    env.DB,
+    request.conditions,
+    request.principal,
+    request.nodeId,
+    request.spaceId,
+  );
   const initial = await authorizeNode(env.DB, request.principal, {
     operation: "node.trash",
     nodeId: request.nodeId,
@@ -336,6 +349,13 @@ export async function trashNode(
   });
   let terminal = false;
   try {
+    await assertDavMutationConditions(
+      env.DB,
+      request.conditions,
+      request.principal,
+      request.nodeId,
+      request.spaceId,
+    );
     const authorized = await authorizeNode(env.DB, request.principal, {
       operation: "node.trash",
       nodeId: request.nodeId,
@@ -398,7 +418,7 @@ export async function trashNode(
       terminal = true;
       return { kind: "terminal", operation };
     }
-    const outcome = await commitMutationStatements(
+    const outcome = await commitDavMutation(
       env.DB,
       claimed.claim,
       trashStatements(
@@ -408,9 +428,16 @@ export async function trashNode(
         parentRevision,
         await lockTokenHashes(request.lockTokens),
       ),
+      request.conditions,
+      request.principal,
+      request.nodeId,
+      request.spaceId,
     );
     terminal = outcome.kind === "terminal";
     return outcome;
+  } catch (error) {
+    if (error instanceof Error && error.message === "dav_precondition_failed") terminal = true;
+    throw error;
   } finally {
     if (terminal)
       try {

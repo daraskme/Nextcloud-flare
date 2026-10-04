@@ -17,6 +17,7 @@ import { type OpenEncryptedContent, readEncryptedContent } from "../../lib/encry
 import {
   getEncryptionSession,
   isEncryptedFile,
+  onEncryptionLock,
   setEncryptionSession,
   subscribeEncryptionSession,
 } from "../../lib/encryptionSession";
@@ -55,6 +56,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
   const [legacyReview, setLegacyReview] = useState<LegacyReview | null>(null);
   const [legacyConfirmed, setLegacyConfirmed] = useState(false);
   const activeRef = useRef<OpenEncryptedContent | null>(null);
+  const legacyUrlRef = useRef<string | null>(null);
   const generation = useRef(0);
   const input = useRef<HTMLInputElement>(null);
   const ownerList = useInfiniteQuery({
@@ -86,25 +88,34 @@ export function EncryptedFiles({ account }: { account: Account }) {
   const canWriteEncrypted = Boolean(
     keys?.ownerRegistered && keys.adminRecipient && keys.adminSigner,
   );
-  const close = () => {
+  const releasePreview = () => {
     generation.current++;
     if (activeRef.current) void activeRef.current.close();
     activeRef.current = null;
+    if (legacyUrlRef.current) URL.revokeObjectURL(legacyUrlRef.current);
+    legacyUrlRef.current = null;
+  };
+  const close = () => {
+    releasePreview();
+    setBusy(false);
     setActive(null);
-    if (legacyReview) URL.revokeObjectURL(legacyReview.url);
     setLegacyReview(null);
     setLegacyConfirmed(false);
+  };
+  const selectFolder = (id: string) => {
+    close();
+    setFolderId(id);
   };
   useEffect(() => {
     close();
   }, [keys, ownerId, folderId]);
-  useEffect(
-    () => () => {
-      generation.current++;
-      void activeRef.current?.close();
-    },
-    [],
-  );
+  useEffect(() => {
+    const unsubscribe = onEncryptionLock(close);
+    return () => {
+      unsubscribe();
+      releasePreview();
+    };
+  }, []);
   const report = (error: unknown) =>
     setNotice(
       error instanceof Error && /[\u3000-\u9fff]/.test(error.message)
@@ -243,30 +254,42 @@ export function EncryptedFiles({ account }: { account: Account }) {
         opened.envelope.plainSize,
         (chunk) => readCipher(chunk.cipherOffset, chunk.cipherLength),
       )) {
-        totalPlain += plain.length;
-        if (totalPlain > 128 * 1024 * 1024) throw new Error("legacy_plaintext_overflow");
-        plaintext.push(new Uint8Array(plain));
+        try {
+          totalPlain += plain.length;
+          if (totalPlain > 128 * 1024 * 1024) throw new Error("legacy_plaintext_overflow");
+          plaintext.push(new Uint8Array(plain));
+        } finally {
+          plain.fill(0);
+        }
       }
       if (selected !== generation.current || getEncryptionSession(account.id) !== keys)
         throw new Error("暗号化鍵または選択中のファイルが変更されました。");
       const blob = new Blob(plaintext, { type: opened.metadata.mime });
       for (const part of plaintext) part.fill(0);
       plaintext.length = 0;
+      const headerSha256 = await encryptionHeaderHash(new Uint8Array(headerBytes));
+      if (selected !== generation.current || getEncryptionSession(account.id) !== keys) return;
+      const previewUrl = URL.createObjectURL(blob);
+      legacyUrlRef.current = previewUrl;
       setLegacyReview({
         node,
         name: opened.metadata.name,
         mime: opened.metadata.mime,
-        url: URL.createObjectURL(blob),
-        headerSha256: await encryptionHeaderHash(new Uint8Array(headerBytes)),
+        url: previewUrl,
+        headerSha256,
         cryptoId: header.envelope.cryptoId,
       });
       setLegacyConfirmed(false);
     } catch (error) {
-      for (const part of plaintext) part.fill(0);
-      report(error);
+      if (selected === generation.current) {
+        close();
+        report(error);
+      }
     } finally {
+      for (const part of plaintext) part.fill(0);
+      plaintext.length = 0;
       await content?.cancel().catch(() => undefined);
-      setBusy(false);
+      if (selected === generation.current) setBusy(false);
     }
   };
   const adoptLegacy = async () => {
@@ -504,6 +527,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
                 aria-label="暗号化ファイルの所有者"
                 value={ownerId}
                 onChange={(event) => {
+                  close();
                   const id = event.target.value;
                   setOwnerId(id);
                   setFolderId(
@@ -530,7 +554,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
           {owner && <p>管理者として読み取り専用で閲覧しています。閲覧履歴を記録します。</p>}
           <nav aria-label="暗号化フォルダー階層">
             {path.data?.path.map((item) => (
-              <Button key={item.id} variant="ghost" onClick={() => setFolderId(item.id)}>
+              <Button key={item.id} variant="ghost" onClick={() => selectFolder(item.id)}>
                 {item.name}
               </Button>
             ))}
@@ -572,7 +596,7 @@ export function EncryptedFiles({ account }: { account: Account }) {
                   {node.size !== null && formatBytes(node.size)}
                 </span>
                 {node.kind === "folder" ? (
-                  <Button variant="ghost" onClick={() => setFolderId(node.id)}>
+                  <Button variant="ghost" onClick={() => selectFolder(node.id)}>
                     フォルダーを開く
                   </Button>
                 ) : isEncryptedFile(node) ? (

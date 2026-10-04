@@ -12,17 +12,32 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { encryptArchiveFile } from "../../scripts/backup/encryptedArchive.mjs";
+import {
+  archiveMemberAllowed,
+  archiveTarArguments,
+  archiveTarBytes,
+  MAX_OBJECTS,
+  MAX_TAR_BYTES,
+} from "../../scripts/backup/archiveFormat.mjs";
+import {
+  encryptArchiveFile,
+  validateArchivePlainSize,
+} from "../../scripts/backup/encryptedArchive.mjs";
+import { restoreGeneration } from "../../scripts/backup/generation.mjs";
+import { CHUNK_BYTES, digest } from "../../scripts/backup/objectStore.mjs";
+import { encode, fileChunks } from "../../scripts/backup/publication.mjs";
+import { verifyExtractedBlobs } from "../../scripts/backup/restoreEncryptedArchive.mjs";
 
 const execFile = promisify(execute);
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAGIC = Buffer.from([78, 67, 70, 69, 78, 67, 49, 0]);
+const activeArchives = new Set();
 const fail = (code) => {
   throw new Error(code);
 };
@@ -114,6 +129,8 @@ export async function fileDigest(path, { ciphertext = false } = {}) {
     bytes !== info.size ||
     after.size !== info.size ||
     after.mtimeMs !== info.mtimeMs ||
+    after.ctimeMs !== info.ctimeMs ||
+    after.dev !== info.dev ||
     after.ino !== info.ino ||
     (ciphertext && bytes < 12)
   )
@@ -132,12 +149,76 @@ async function privateDirectory(path) {
     fail("backup_archive_private_directory");
 }
 
+/** Check current storage, not a historical success receipt. Cache only an unchanged daily digest. */
+export async function verifyPublishedArchive(
+  configuration,
+  state,
+  { command = execFile, previous, now = new Date() } = {},
+) {
+  if (
+    !ID.test(state?.id ?? "") ||
+    !HASH.test(state?.archiveSha256 ?? "") ||
+    !Number.isSafeInteger(state?.archiveBytes) ||
+    state.archiveBytes < 12
+  )
+    fail("backup_archive_receipt_invalid");
+  await verifyMountedStorage(configuration, { command });
+  const path = join(configuration.backupRoot, `backup-${state.id}.ncf`);
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (error.code === "ENOENT") fail("backup_archive_missing");
+    fail("backup_archive_unavailable");
+  }
+  if (!info.isFile() || info.isSymbolicLink() || info.size !== state.archiveBytes)
+    fail("backup_archive_mismatch");
+  const signature = [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs];
+  const verifiedAt = Date.parse(previous?.digestVerifiedAt);
+  const cached =
+    previous?.id === state.id &&
+    previous?.sha256 === state.archiveSha256 &&
+    previous?.bytes === state.archiveBytes &&
+    JSON.stringify(previous?.signature) === JSON.stringify(signature) &&
+    Number.isFinite(verifiedAt) &&
+    verifiedAt <= now.getTime() &&
+    now.getTime() - verifiedAt < 86_400_000;
+  if (!cached) {
+    let actual;
+    try {
+      actual = await fileDigest(path, { ciphertext: true });
+    } catch (error) {
+      if (error.code === "ENOENT") fail("backup_archive_missing");
+      if (
+        [
+          "backup_archive_not_file",
+          "backup_archive_not_ciphertext",
+          "backup_archive_changed",
+        ].includes(error.message)
+      )
+        fail("backup_archive_mismatch");
+      fail("backup_archive_unavailable");
+    }
+    if (actual.bytes !== state.archiveBytes || actual.sha256 !== state.archiveSha256)
+      fail("backup_archive_mismatch");
+  }
+  return {
+    id: state.id,
+    bytes: state.archiveBytes,
+    sha256: state.archiveSha256,
+    signature,
+    digestVerifiedAt: cached ? previous.digestVerifiedAt : now.toISOString(),
+    verified: true,
+  };
+}
+
 /** Fixed archive members; filenames and plaintext metadata are encrypted inside the archive. */
 export async function archiveMembers(workDirectory, id) {
   if (!ID.test(id)) fail("backup_archive_identity");
   await privateDirectory(workDirectory);
   const roots = [`downloaded/${id}`, "blob-copy"];
   const files = [];
+  const sizes = [];
   const walk = async (relative) => {
     const path = join(workDirectory, relative);
     const info = await lstat(path);
@@ -148,17 +229,11 @@ export async function archiveMembers(workDirectory, id) {
         await walk(`${relative}/${name}`);
       }
     } else if (info.isFile()) {
-      if (
-        !(
-          relative === `downloaded/${id}/manifest.json` ||
-          relative === `downloaded/${id}/data.sql` ||
-          relative === "blob-copy/manifest.json" ||
-          /^blob-copy\/objects\/[0-9]{8}\.bin$/.test(relative)
-        )
-      )
-        fail("backup_archive_unsafe_member");
+      if (info.size > MAX_TAR_BYTES) fail("backup_archive_member_limit");
+      if (!archiveMemberAllowed(relative, id)) fail("backup_archive_unsafe_member");
       files.push(relative);
-      if (files.length > 100_003) fail("backup_archive_member_limit");
+      sizes.push(info.size);
+      if (files.length > MAX_OBJECTS + 3) fail("backup_archive_member_limit");
     } else fail("backup_archive_unsafe_member");
   };
   for (const root of roots) await walk(root);
@@ -168,6 +243,7 @@ export async function archiveMembers(workDirectory, id) {
     "blob-copy/manifest.json",
   ])
     if (!files.includes(required)) fail("backup_archive_missing_member");
+  await validateArchivePlainSize(archiveTarBytes(sizes));
   return files.sort();
 }
 
@@ -220,13 +296,89 @@ export async function publishCiphertext(source, target, expected) {
   }
 }
 
-export function createArchiveStorage(configuration) {
+async function syncDirectory(path) {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function saveReceipt(path, receipt) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(receipt)}\n`);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(temporary, path);
+    await syncDirectory(dirname(path));
+  } finally {
+    await unlink(temporary).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+}
+
+async function memberDigests(workDirectory, members) {
+  const results = [];
+  for (const member of members) results.push(await fileDigest(join(workDirectory, member)));
+  return results;
+}
+
+/** Reconstruct the pinned publication and audit copied blobs, never infer it from ciphertext. */
+async function verifyArchiveInputs(state, workDirectory, members, staging) {
+  const database = join(staging, `verify-${randomUUID()}.sqlite`);
+  try {
+    const { manifest } = await restoreGeneration({
+      directory: join(workDirectory, "downloaded", state.id),
+      target: database,
+    });
+    if (manifest.generation.id !== state.id || manifest.generation.epoch !== state.epoch)
+      fail("backup_archive_identity");
+    const handle = await open(join(workDirectory, "downloaded", state.id, "data.sql"), "r");
+    const parts = [];
+    try {
+      for await (const bytes of fileChunks(handle, manifest.data.bytes))
+        parts.push({ bytes: bytes.length, sha256: digest(bytes) });
+    } finally {
+      await handle.close();
+    }
+    const publication = encode({
+      format: "nextcloud-flare.r2-backup",
+      version: 1,
+      chunkBytes: CHUNK_BYTES,
+      manifest,
+      parts,
+    });
+    if (digest(publication) !== state.manifestSha256) fail("backup_publication_hash_mismatch");
+    await verifyExtractedBlobs({
+      tree: workDirectory,
+      database,
+      generationManifest: manifest,
+      members: new Set(members),
+    });
+    return await memberDigests(workDirectory, members);
+  } finally {
+    await rm(database, { force: true });
+  }
+}
+
+export function createArchiveStorage(configuration, { command = execFile } = {}) {
   const verifyStorage = async (requestedRoot) => {
     if (requestedRoot !== configuration.backupRoot) fail("backup_volume_configuration");
-    await verifyMountedStorage(configuration);
+    await verifyMountedStorage(configuration, { command });
   };
   return {
     verifyStorage,
+    async verifyArchive(state, requestedRoot) {
+      if (requestedRoot !== configuration.backupRoot) fail("backup_volume_configuration");
+      return verifyPublishedArchive(configuration, state, { command });
+    },
     async publishArchive(state, workDirectory, requestedRoot) {
       await verifyStorage(requestedRoot);
       if (!ID.test(state.id) || !HASH.test(state.manifestSha256)) fail("backup_archive_identity");
@@ -236,76 +388,87 @@ export function createArchiveStorage(configuration) {
         if (e.code !== "EEXIST") throw e;
       });
       await privateDirectory(staging);
-      const plain = join(staging, "backup.tar");
-      const cipher = join(staging, "backup.ncf");
-      const receiptPath = join(staging, "receipt.json");
-      let receipt;
+      // Cross-process serialization belongs to the runner's existing flock service wrapper.
+      if (activeArchives.has(staging)) fail("backup_archive_busy");
+      activeArchives.add(staging);
       try {
-        receipt = JSON.parse(await readFile(receiptPath, "utf8"));
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-      if (!receipt) {
-        let exists = false;
+        const plain = join(staging, "backup.tar");
+        const cipher = join(staging, "backup.ncf");
+        const receiptPath = join(staging, "receipt.json");
+        let receipt;
         try {
-          await lstat(cipher);
-          exists = true;
+          const info = await lstat(receiptPath);
+          if (!info.isFile() || info.isSymbolicLink() || info.mode & 0o077 || info.size > 4096)
+            fail("backup_archive_receipt_invalid");
+          receipt = JSON.parse(await readFile(receiptPath, "utf8"));
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
         }
-        if (exists) fail("backup_archive_untracked_cipher");
-        const temporary = join(staging, `backup-${randomUUID()}.tar`);
-        try {
-          await execFile(
-            "tar",
-            [
-              "--create",
-              "--format=ustar",
-              "--sort=name",
-              "--mtime=@0",
-              "--owner=0",
-              "--group=0",
-              "--numeric-owner",
-              "--file",
-              temporary,
-              "--directory",
-              workDirectory,
-              "--",
-              ...members,
-            ],
-            { timeout: 600_000, maxBuffer: 4096 },
-          );
-          await chmod(temporary, 0o600);
-          await rename(temporary, plain);
-        } catch {
-          fail("backup_archive_pack_failed");
-        } finally {
-          await unlink(temporary).catch((e) => {
+        if (!receipt) {
+          const inputs = await verifyArchiveInputs(state, workDirectory, members, staging);
+          let exists = false;
+          try {
+            const info = await lstat(cipher);
+            if (!info.isFile() || info.isSymbolicLink() || info.mode & 0o077)
+              fail("backup_archive_untracked_cipher");
+            exists = true;
+          } catch (e) {
             if (e.code !== "ENOENT") throw e;
+          }
+          if (exists) {
+            // An external generation without its receipt must never be overwritten or guessed.
+            try {
+              await lstat(join(requestedRoot, `backup-${state.id}.ncf`));
+              fail("backup_archive_untracked_cipher");
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+            await unlink(cipher);
+            await syncDirectory(staging);
+          }
+          const temporary = join(staging, `backup-${randomUUID()}.tar`);
+          try {
+            await execFile("tar", archiveTarArguments(workDirectory, temporary, members), {
+              timeout: 600_000,
+              maxBuffer: 4096,
+            });
+            await chmod(temporary, 0o600);
+            await rename(temporary, plain);
+          } catch {
+            fail("backup_archive_pack_failed");
+          } finally {
+            await unlink(temporary).catch((e) => {
+              if (e.code !== "ENOENT") throw e;
+            });
+          }
+          const result = await encryptArchiveFile({
+            sourceFile: plain,
+            publicKeyFile: configuration.publicKeyFile,
+            outputFile: cipher,
+            accountId: configuration.accountId,
           });
+          const after = await memberDigests(workDirectory, members);
+          if (JSON.stringify(after) !== JSON.stringify(inputs))
+            fail("backup_archive_inputs_changed");
+          receipt = {
+            id: state.id,
+            manifestSha256: state.manifestSha256,
+            bytes: result.cipherBytes,
+            sha256: result.cipherSha256,
+            plainBytes: result.plainBytes,
+            plainSha256: result.plainSha256,
+          };
+          await saveReceipt(receiptPath, receipt);
         }
-        const result = await encryptArchiveFile({
-          sourceFile: plain,
-          publicKeyFile: configuration.publicKeyFile,
-          outputFile: cipher,
-          accountId: configuration.accountId,
-        });
-        receipt = {
-          id: state.id,
-          manifestSha256: state.manifestSha256,
-          bytes: result.cipherBytes,
-          sha256: result.cipherSha256,
-          plainBytes: result.plainBytes,
-          plainSha256: result.plainSha256,
-        };
-        await writeFile(receiptPath, JSON.stringify(receipt) + "\n", { flag: "wx", mode: 0o600 });
+        if (receipt.id !== state.id || receipt.manifestSha256 !== state.manifestSha256)
+          fail("backup_archive_receipt_invalid");
+        await verifyStorage(requestedRoot);
+        const target = join(requestedRoot, `backup-${state.id}.ncf`);
+        const result = await publishCiphertext(cipher, target, receipt);
+        return { bytes: result.bytes, sha256: result.sha256, verified: true };
+      } finally {
+        activeArchives.delete(staging);
       }
-      if (receipt.id !== state.id || receipt.manifestSha256 !== state.manifestSha256)
-        fail("backup_archive_receipt_invalid");
-      await verifyStorage(requestedRoot);
-      const target = join(requestedRoot, `backup-${state.id}.ncf`);
-      const result = await publishCiphertext(cipher, target, receipt);
-      return { bytes: result.bytes, sha256: result.sha256, verified: true };
     },
   };
 }

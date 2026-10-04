@@ -763,12 +763,14 @@ test("existing plaintext media migrates as a verified encrypted copy without rem
 
     await page.goto("/encryption");
     await saveRecoveryFile(page, directory);
-    await expect(
-      page.getByRole("button", { name: "暗号化コピーを作成", exact: true }),
-    ).toBeVisible();
+    const migrateButton = page
+      .locator(".encryption-list li")
+      .filter({ hasText: originalName })
+      .getByRole("button", { name: "暗号化コピーを作成", exact: true });
+    await expect(migrateButton).toBeVisible();
     const before = new Set((await encryptNodes(page)).map((node) => node.id));
     await simulateMissingContentLength(page, source, 200);
-    await page.getByRole("button", { name: "暗号化コピーを作成", exact: true }).click();
+    await migrateButton.click();
     await expect(
       page.getByRole("status").filter({ hasText: "暗号化コピーの送信を開始しました" }),
     ).toBeVisible();
@@ -976,6 +978,50 @@ test("legacy unsigned container requires owner review and explicit adoption", as
     }, previewUrl);
     expect(reviewHash).toBe(createHash("sha256").update(original).digest("hex"));
 
+    const expectRevoked = async (url: string) => {
+      await expect
+        .poll(() =>
+          page.evaluate(async (url) => {
+            try {
+              await fetch(url);
+              return false;
+            } catch {
+              return true;
+            }
+          }, url),
+        )
+        .toBe(true);
+    };
+    const reopenReview = async () => {
+      await row.getByRole("button", { name: "旧形式を確認", exact: true }).click();
+      await expect(review).toBeVisible();
+      const url = await review.locator("img").getAttribute("src");
+      if (!url) throw new Error("legacy_review_preview_missing");
+      return url;
+    };
+
+    await review.getByRole("button", { name: "閉じる", exact: true }).click();
+    await expect(review).toHaveCount(0);
+    await expectRevoked(previewUrl);
+
+    const lockedUrl = await reopenReview();
+    await page.getByRole("button", { name: "このタブでロック", exact: true }).click();
+    await expect(review).toHaveCount(0);
+    await expectRevoked(lockedUrl);
+    await unlockRecoveryFile(page, memberRecoveryPath);
+
+    const unmountedUrl = await reopenReview();
+    await page.locator('a.nav-link[href="/files"]').click();
+    await expect(review).toHaveCount(0);
+    await expectRevoked(unmountedUrl);
+    await page.locator('a.nav-link[href="/encryption"]').click();
+    await expect(
+      page.getByRole("status").filter({
+        hasText: "現在のアカウント署名鍵をサーバー登録情報と照合しました。",
+      }),
+    ).toBeVisible();
+    const adoptedUrl = await reopenReview();
+
     const adopt = review.getByRole("button", { name: "この旧形式に所有者署名を登録", exact: true });
     await expect(adopt).toBeDisabled();
     await review
@@ -986,6 +1032,8 @@ test("legacy unsigned container requires owner review and explicit adoption", as
     await expect(
       page.getByRole("status").filter({ hasText: "過去の送信者は証明されません" }),
     ).toBeVisible();
+    await expect(review).toHaveCount(0);
+    await expectRevoked(adoptedUrl);
     await expect
       .poll(async () => {
         const current = await rootFile(page, legacy.opaqueName);

@@ -2,7 +2,7 @@ import { problem } from "@next-cloud-flare/shared/errors";
 import { type AppPasswordPepperRing, authenticateAppPassword } from "../auth/appPassword";
 import { principalAuthorizationContext } from "../auth/authorize";
 import { KdfUnavailableError } from "../auth/kdf";
-import { evaluateDavRequestIf } from "../dav/conditionState";
+import { evaluateDavMutationConditions, evaluateDavRequestIf } from "../dav/conditionState";
 import { parseDavLockTokenHeader } from "../dav/conditions";
 import { davEtag } from "../dav/etag";
 import { evaluateDavPutHttpPreconditions } from "../dav/httpPreconditions";
@@ -435,8 +435,16 @@ export async function handleDavHttp(
       if (!sameDavAuthority(resolved, target.parent)) return problem(403, "forbidden");
       if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
       if (target.target && !overwrite) return problem(412, "precondition_failed");
-      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const { lockTokens, conditions } = await evaluateDavMutationConditions(
+        env.DB,
+        principal,
+        env.APP_ORIGIN,
+        request,
+        resolved.node,
+        resolved.principal,
+      );
       const outcome = await copyNode(env, {
+        conditions,
         principal: resolved.principal,
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
@@ -456,7 +464,10 @@ export async function handleDavHttp(
         response.headers.set("Retry-After", "1");
         return response;
       }
-      if (outcome.operation.state === "failed") return problem(409, "conflict");
+      if (outcome.operation.state === "failed")
+        return outcome.operation.errorCode === "dav_precondition_failed"
+          ? problem(412, "precondition_failed")
+          : problem(409, "conflict");
       return new Response(null, {
         status: target.target ? 204 : 201,
         headers: {
@@ -478,6 +489,7 @@ export async function handleDavHttp(
           "invalid_dav_depth",
           "invalid_dav_overwrite",
           "invalid_dav_if",
+          "invalid_dav_precondition",
           "invalid_name",
           "name_too_long",
           "reserved_name",
@@ -510,8 +522,16 @@ export async function handleDavHttp(
     )
       return problem(400, "bad_request");
     try {
-      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const { lockTokens, conditions } = await evaluateDavMutationConditions(
+        env.DB,
+        principal,
+        env.APP_ORIGIN,
+        request,
+        resolved.node,
+        resolved.principal,
+      );
       const outcome = await trashNode(env, {
+        conditions,
         principal: resolved.principal,
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
@@ -528,7 +548,10 @@ export async function handleDavHttp(
         response.headers.set("Retry-After", "1");
         return response;
       }
-      if (outcome.operation.state === "failed") return problem(409, "conflict");
+      if (outcome.operation.state === "failed")
+        return outcome.operation.errorCode === "dav_precondition_failed"
+          ? problem(412, "precondition_failed")
+          : problem(409, "conflict");
       return new Response(null, {
         status: 204,
         headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
@@ -543,7 +566,10 @@ export async function handleDavHttp(
         return problem(403, "forbidden");
       if (error instanceof Error && error.message === "dav_precondition_failed")
         return problem(412, "precondition_failed");
-      if (error instanceof Error && error.message === "invalid_dav_if")
+      if (
+        error instanceof Error &&
+        ["invalid_dav_if", "invalid_dav_precondition"].includes(error.message)
+      )
         return problem(400, "bad_request");
       if (error instanceof Error && error.message === "dav_locked") return problem(423, "locked");
       if (error instanceof Error && error.message === "authorization_denied")
@@ -572,8 +598,16 @@ export async function handleDavHttp(
       if (!sameDavAuthority(resolved, target.parent)) return problem(403, "forbidden");
       if (target.target?.node.id === resolved.node.id) return problem(403, "forbidden");
       if (target.target && !overwrite) return problem(412, "precondition_failed");
-      const lockTokens = await evaluateDavRequestIf(env.DB, principal, env.APP_ORIGIN, request);
+      const { lockTokens, conditions } = await evaluateDavMutationConditions(
+        env.DB,
+        principal,
+        env.APP_ORIGIN,
+        request,
+        resolved.node,
+        resolved.principal,
+      );
       const outcome = await moveNode(env, {
+        conditions,
         principal: resolved.principal,
         requestId: crypto.randomUUID(),
         spaceId: resolved.node.space_id,
@@ -593,7 +627,9 @@ export async function handleDavHttp(
         return response;
       }
       if (outcome.operation.state === "failed")
-        return outcome.operation.errorCode === "name_conflict"
+        return ["name_conflict", "dav_precondition_failed"].includes(
+          outcome.operation.errorCode ?? "",
+        )
           ? problem(412, "precondition_failed")
           : problem(409, "conflict");
       return new Response(null, {
@@ -617,6 +653,7 @@ export async function handleDavHttp(
           "invalid_dav_depth",
           "invalid_dav_overwrite",
           "invalid_dav_if",
+          "invalid_dav_precondition",
           "invalid_name",
           "name_too_long",
           "reserved_name",
