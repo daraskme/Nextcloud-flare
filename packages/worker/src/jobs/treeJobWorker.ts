@@ -845,6 +845,78 @@ async function purgeFinalStatements(
       row.op_id,
     ]),
   ];
+  // Same FK-order cleanup as the synchronous purge path: update-immutable
+  // reshare delegations and per-user chapter sets reference member nodes.
+  // Delegations only reachable through their ancestry rows are captured into
+  // purge_share_ids before the ancestry rows are deleted.
+  const delegationSet = `d.source_root_parent_id IN (${members}) OR d.delegated_root_parent_id IN (${members})
+      OR EXISTS(SELECT 1 FROM share_delegation_ancestry a WHERE a.share_id=d.share_id
+        AND (a.node_id IN (${members}) OR a.parent_id IN (${members})))`;
+  const doomedShares = "SELECT share_id FROM purge_share_ids WHERE purge_op_id=?";
+  const affectedShares = `WITH RECURSIVE affected(share_id) AS (
+    SELECT share_id FROM purge_share_ids WHERE purge_op_id=?
+    UNION
+    SELECT child.share_id FROM share_delegations child
+    JOIN affected parent ON child.source_share_id=parent.share_id
+  ) SELECT share_id FROM affected`;
+  statements.push(
+    {
+      sql: `INSERT INTO purge_share_ids(purge_op_id,share_id)
+        SELECT ?,d.share_id FROM share_delegations d WHERE ${delegationSet}`,
+      values: [row.op_id, row.op_id, row.op_id, row.op_id, row.op_id],
+    },
+    absent(
+      `SELECT 1 FROM share_delegations d WHERE (${delegationSet})
+        AND d.share_id NOT IN (${doomedShares})`,
+      [row.op_id, row.op_id, row.op_id, row.op_id, row.op_id],
+    ),
+    {
+      sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),version=version+1
+        WHERE id IN (${affectedShares}) AND disabled_at IS NULL`,
+      values: [row.op_id],
+    },
+    absent(`SELECT 1 FROM shares WHERE id IN (${affectedShares}) AND disabled_at IS NULL`, [
+      row.op_id,
+    ]),
+    {
+      sql: `DELETE FROM share_delegation_status WHERE share_id IN (${doomedShares})`,
+      values: [row.op_id],
+    },
+    absent(`SELECT 1 FROM share_delegation_status WHERE share_id IN (${doomedShares})`, [
+      row.op_id,
+    ]),
+    {
+      sql: `DELETE FROM share_delegation_ancestry WHERE share_id IN (${doomedShares})`,
+      values: [row.op_id],
+    },
+    absent(`SELECT 1 FROM share_delegation_ancestry WHERE share_id IN (${doomedShares})`, [
+      row.op_id,
+    ]),
+    {
+      sql: `DELETE FROM share_delegations WHERE share_id IN (${doomedShares})`,
+      values: [row.op_id],
+    },
+    absent(
+      `SELECT 1 FROM share_delegations d WHERE (${delegationSet})
+        OR d.share_id IN (${doomedShares})`,
+      [row.op_id, row.op_id, row.op_id, row.op_id, row.op_id],
+    ),
+    {
+      sql: `DELETE FROM user_audio_chapters WHERE set_id IN
+        (SELECT id FROM user_audio_chapter_sets WHERE node_id IN (${members}))`,
+      values: [row.op_id],
+    },
+    absent(
+      `SELECT 1 FROM user_audio_chapters c JOIN user_audio_chapter_sets s ON s.id=c.set_id
+        WHERE s.node_id IN (${members})`,
+      [row.op_id],
+    ),
+    {
+      sql: `DELETE FROM user_audio_chapter_sets WHERE node_id IN (${members})`,
+      values: [row.op_id],
+    },
+    absent(`SELECT 1 FROM user_audio_chapter_sets WHERE node_id IN (${members})`, [row.op_id]),
+  );
   const deletes: readonly [string, string][] = [
     ["copy_members", `source_node_id IN (${members})`],
     ["node_props", `node_id IN (${members})`],
@@ -855,7 +927,6 @@ async function purgeFinalStatements(
     ["archive_index", `node_id IN (${members})`],
     ["library_roots", `node_id IN (${members})`],
     ["node_audio", `node_id IN (${members})`],
-    ["user_audio_chapter_sets", `node_id IN (${members})`],
     ["user_reading_state", `node_id IN (${members})`],
     ["user_playback_state", `node_id IN (${members})`],
     ["locks", `node_id IN (${members})`],
@@ -1047,6 +1118,7 @@ async function failTreeJobInternal(
     } else if (row.kind === "node.purge") {
       statements.push(
         { sql: "DELETE FROM purge_blobs WHERE purge_op_id=?", values: [row.op_id] },
+        { sql: "DELETE FROM purge_share_ids WHERE purge_op_id=?", values: [row.op_id] },
         { sql: "DELETE FROM purge_members WHERE purge_op_id=?", values: [row.op_id] },
       );
     }
@@ -1300,6 +1372,7 @@ export async function reconcileStoppedTreeJobs(
       if (row.kind === "node.purge")
         statements.push(
           { sql: "DELETE FROM purge_blobs WHERE purge_op_id=?", values: [row.op_id] },
+          { sql: "DELETE FROM purge_share_ids WHERE purge_op_id=?", values: [row.op_id] },
           { sql: "DELETE FROM purge_members WHERE purge_op_id=?", values: [row.op_id] },
         );
     }

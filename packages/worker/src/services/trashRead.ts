@@ -1,6 +1,7 @@
 import { authorizationAssertion, authorizeNode, type Principal } from "../auth/authorize";
 import type { ListCursorTokens } from "../auth/listCursor";
 import { assertExists, atomicBatch, primary, type SqlStatement } from "../db/primary";
+import { ASYNC_TREE_MAX_NODES } from "../jobs/treeJobStore";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -114,7 +115,7 @@ export async function listTrash(
         !ID.test(row.rootNodeId) ||
         !Number.isSafeInteger(row.memberCount) ||
         row.memberCount < 1 ||
-        row.memberCount > 1_000,
+        row.memberCount > ASYNC_TREE_MAX_NODES,
     )
   )
     throw new Error("trash_unavailable");

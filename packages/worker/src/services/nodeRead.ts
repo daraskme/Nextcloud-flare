@@ -62,11 +62,32 @@ export async function readNode(db: D1Database, principal: Principal, nodeId: str
       values: [proof.node.id, proof.node.space_id, proof.node.owner_id],
     },
   ]);
+  // A share-bound principal has no read authority above its share root, so the
+  // parent id of the share's root node stays out of the DTO like the ancestor
+  // names readNodePath already truncates.
+  let parentId = proof.node.parent_id;
+  if (
+    parentId !== null &&
+    (principal.kind === "link_share" ||
+      ((principal.kind === "user" || principal.kind === "app_password") &&
+        (principal.user_id !== proof.node.owner_id || principal.internal_share != null)))
+  ) {
+    try {
+      const parent = await authorizeNode(db, principal, {
+        operation: "node.read",
+        spaceId: proof.node.space_id,
+        nodeId: parentId,
+      });
+      if (parent.operation !== "node.read") parentId = null;
+    } catch {
+      parentId = null;
+    }
+  }
   return Object.freeze({
     id: proof.node.id,
     spaceId: proof.node.space_id,
     ownerId: proof.node.owner_id,
-    parentId: proof.node.parent_id,
+    parentId,
     name: proof.node.name,
     kind: proof.node.kind,
     revision: proof.node.revision,

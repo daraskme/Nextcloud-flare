@@ -5,7 +5,11 @@ import { CONTROL_NAME } from "../../do/ControlDO";
 import { UPLOAD_LIMITS } from "../../do/uploadPlan";
 import type { Env } from "../../env";
 import { consumeKnownLength } from "../../platform/stream";
-import { accountMutationStatements, acquireAccountMutation } from "../accountMutation";
+import {
+  accountMutationStatements,
+  acquireAccountMutation,
+  credentialActor,
+} from "../accountMutation";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -93,6 +97,7 @@ export async function createMultipartUpload(
     row.owner_id,
     row.epoch,
     "upload.multipart-start",
+    await credentialActor(env.DB, row.credential_id),
   );
   // Only this confirmed claim permits createMultipartUpload. Retrying the same request never
   // creates another R2 upload ID, even when the first call or its acknowledgement was lost.

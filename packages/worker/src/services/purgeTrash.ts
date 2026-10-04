@@ -17,7 +17,7 @@ import { ASYNC_TREE_MAX_NODES, startTreeJob } from "../jobs/treeJobStore";
 import { commitMutationStatements, type MutationOutcome } from "./fsMutation";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const BASE_STEPS = 37;
+const BASE_STEPS = 43;
 type UserPrincipal = {
   readonly kind: "user";
   readonly user_id: string;
@@ -323,6 +323,102 @@ function statements(
       op,
     ]),
   );
+  // Reshare delegations and per-user chapter sets hard-reference purged member
+  // nodes; the delegation rows are update-immutable, so they are removed in
+  // FK order (status -> ancestry -> delegation). Some delegations are only
+  // reachable through their ancestry rows, which this sequence deletes, so
+  // the doomed share ids are captured into purge_share_ids first.
+  const delegationSet = `d.source_root_parent_id IN (${members}) OR d.delegated_root_parent_id IN (${members})
+      OR EXISTS(SELECT 1 FROM share_delegation_ancestry a WHERE a.share_id=d.share_id
+        AND (a.node_id IN (${members}) OR a.parent_id IN (${members})))`;
+  const doomedShares = "SELECT share_id FROM purge_share_ids WHERE purge_op_id=?";
+  const affectedShares = `WITH RECURSIVE affected(share_id) AS (
+    SELECT share_id FROM purge_share_ids WHERE purge_op_id=?
+    UNION
+    SELECT child.share_id FROM share_delegations child
+    JOIN affected parent ON child.source_share_id=parent.share_id
+  ) SELECT share_id FROM affected`;
+  add(
+    "delegation_set",
+    current.rootId,
+    {
+      sql: `INSERT INTO purge_share_ids(purge_op_id,share_id)
+        SELECT ?,d.share_id FROM share_delegations d WHERE ${delegationSet}`,
+      values: [op, op, op, op, op],
+    },
+    absent(
+      `SELECT 1 FROM share_delegations d WHERE (${delegationSet})
+        AND d.share_id NOT IN (${doomedShares})`,
+      [op, op, op, op, op],
+    ),
+  );
+  // Removing a delegation makes its share look like a direct share in
+  // current_internal_shares. Revoke every affected share first, including
+  // descendants whose own ancestry does not touch the purged nodes.
+  add(
+    "revoke_delegated_shares",
+    current.rootId,
+    {
+      sql: `UPDATE shares SET disabled_at=COALESCE(disabled_at,${clock}),version=version+1
+        WHERE id IN (${affectedShares}) AND disabled_at IS NULL`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM shares WHERE id IN (${affectedShares}) AND disabled_at IS NULL`, [op]),
+  );
+  add(
+    "share_delegation_status",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_delegation_status WHERE share_id IN (${doomedShares})`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM share_delegation_status WHERE share_id IN (${doomedShares})`, [op]),
+  );
+  add(
+    "share_delegation_ancestry",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_delegation_ancestry WHERE share_id IN (${doomedShares})`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM share_delegation_ancestry WHERE share_id IN (${doomedShares})`, [op]),
+  );
+  add(
+    "share_delegations",
+    current.rootId,
+    {
+      sql: `DELETE FROM share_delegations WHERE share_id IN (${doomedShares})`,
+      values: [op],
+    },
+    absent(
+      `SELECT 1 FROM share_delegations d WHERE (${delegationSet})
+        OR d.share_id IN (${doomedShares})`,
+      [op, op, op, op, op],
+    ),
+  );
+  add(
+    "audio_chapters",
+    current.rootId,
+    {
+      sql: `DELETE FROM user_audio_chapters WHERE set_id IN
+        (SELECT id FROM user_audio_chapter_sets WHERE node_id IN (${members}))`,
+      values: [op],
+    },
+    absent(
+      `SELECT 1 FROM user_audio_chapters c JOIN user_audio_chapter_sets s ON s.id=c.set_id
+        WHERE s.node_id IN (${members})`,
+      [op],
+    ),
+  );
+  add(
+    "audio_chapter_sets",
+    current.rootId,
+    {
+      sql: `DELETE FROM user_audio_chapter_sets WHERE node_id IN (${members})`,
+      values: [op],
+    },
+    absent(`SELECT 1 FROM user_audio_chapter_sets WHERE node_id IN (${members})`, [op]),
+  );
   const deletes: readonly [string, string, string][] = [
     ["copy_members", "copy_members", `source_node_id IN (${members})`],
     ["node_props", "node_props", `node_id IN (${members})`],
@@ -333,7 +429,6 @@ function statements(
     ["archive_index", "archive_index", `node_id IN (${members})`],
     ["library_roots", "library_roots", `node_id IN (${members})`],
     ["node_audio", "node_audio", `node_id IN (${members})`],
-    ["audio_chapter_sets", "user_audio_chapter_sets", `node_id IN (${members})`],
     ["reading_state", "user_reading_state", `node_id IN (${members})`],
     ["playback_state", "user_playback_state", `node_id IN (${members})`],
     ["locks", "locks", `node_id IN (${members})`],

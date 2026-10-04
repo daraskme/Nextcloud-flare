@@ -88,7 +88,8 @@ function savedPrincipal(row: EventRow): Principal | null {
 function isAudioEvent(row: EventRow): boolean {
   return (
     row.kind === "node.updated" ||
-    (row.kind === "node.created" && ["dav.put", "upload.complete"].includes(row.op_kind))
+    (row.kind === "node.created" &&
+      ["dav.put", "upload.complete", "node.copy", "dav.copy"].includes(row.op_kind))
   );
 }
 
@@ -409,19 +410,24 @@ export async function consumeOutbox(
         source.r2_etag === null ||
         !["committed", "gc_candidate"].includes(source.blob_state ?? "") ||
         source.size < 0
-      )
-        return "retry";
-      const inspected = await inspectAudioObject(
-        env.BLOBS,
-        {
-          key: source.r2_key,
-          size: source.size,
-          r2Etag: source.r2_etag,
-        },
-        deadline - 6000,
-      );
-      if (inspected.kind === "transient") return "retry";
-      inspection = inspected;
+      ) {
+        // A copy event shares the source blob; when its storage was never
+        // observed there is nothing new to inspect, so it completes like a
+        // non-audio event instead of wedging on the upload-path retry gate.
+        if (row.op_kind !== "node.copy" && row.op_kind !== "dav.copy") return "retry";
+      } else {
+        const inspected = await inspectAudioObject(
+          env.BLOBS,
+          {
+            key: source.r2_key,
+            size: source.size,
+            r2Etag: source.r2_etag,
+          },
+          deadline - 6000,
+        );
+        if (inspected.kind === "transient") return "retry";
+        inspection = inspected;
+      }
     }
     const epub = encrypted ? null : await prepareEpubProjection(env, row, deadline - 4000);
     if (epub === "retry") return "retry";

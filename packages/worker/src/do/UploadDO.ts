@@ -4,7 +4,11 @@ import { authorizationAssertion, type Principal } from "../auth/authorize";
 import { assertExists, assertOneChange, atomicBatch, type SqlStatement } from "../db/primary";
 import type { Env } from "../env";
 import { digestJson } from "../jobs/operations";
-import { accountMutationStatements, acquireAccountMutation } from "../services/accountMutation";
+import {
+  accountMutationStatements,
+  acquireAccountMutation,
+  credentialActor,
+} from "../services/accountMutation";
 import {
   acquireSystemMutation,
   commitSystemMutation,
@@ -112,6 +116,7 @@ export class UploadDO extends DurableObject<Env> {
         row.owner_id,
         row.epoch,
         "upload.multipart-journal-init",
+        await credentialActor(this.env.DB, row.credential_id),
       );
       // A lost acknowledgement deliberately leaves an unrecoverable initialization gap.
       // Neither the failed caller nor a replay may start a new ledger from that marker.
@@ -244,6 +249,7 @@ export class UploadDO extends DurableObject<Env> {
             row.owner_id,
             row.epoch,
             "upload.multipart-journal-mirror",
+            await credentialActor(this.env.DB, row.credential_id),
           ),
           row.owner_id,
           statements,

@@ -26,7 +26,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Run 36060684164 passed every test/build but hit 30m during Windows cleanup.
     # Split only integration files; every shard retains the other check gates.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 15 }}
+    # Runs 37220099398 / 37220102707 hit 30m with shard 1 still passing suites.
+    # Allow the full shard and cleanup to finish; test/application deadlines stay unchanged.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 15 }}
     env:
       CI: "true"
       WRANGLER_SEND_METRICS: "false"

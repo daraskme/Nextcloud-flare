@@ -20,6 +20,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  userActor,
 } from "./accountMutation";
 import { streamLeasedContent } from "./contentStream";
 import { loadTargetManifest, manifestContains, type TargetManifestRecord } from "./targetManifest";
@@ -364,6 +365,7 @@ export async function streamBudgetedContentBlob(
       plan.adminOwnerId!,
       plan.epoch,
       "admin.files.read",
+      userActor(plan.adminActorId!),
     );
     await commitAccountMutation(db, admission, plan.adminOwnerId!, [
       assertExists(

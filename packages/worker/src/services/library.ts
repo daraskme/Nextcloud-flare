@@ -370,6 +370,10 @@ async function streamBudgetedEpubSelection(
   if (!entry) throw new Error("library_not_available");
   const etag = `"epub-${blobId}-${entry.token}-${entry.crc32.toString(16)}"`;
   const bytes = responseBytes(request, entry, etag);
+  // The lease pays for what the server must read beyond the response slice:
+  // a HEAD still re-fetches the whole index document, and any byte response
+  // decompresses the full entry before a Range is applied.
+  const fetchBytes = bytes > 0 ? entry.compressedSize : row.indexBytes;
   const budget = budgets.get(budgets.idFromName(plan.budgetId));
   const requestId = crypto.randomUUID();
   const lease = await budget.reserve({
@@ -377,7 +381,7 @@ async function streamBudgetedEpubSelection(
     sessionId: plan.sessionId,
     requestId,
     epoch: plan.epoch,
-    bytes,
+    bytes: Math.max(bytes, fetchBytes),
   });
   const source: ZipObjectSource = {
     key: plan.blob.key,
@@ -397,6 +401,11 @@ async function streamBudgetedEpubSelection(
     bytes,
     lease.expiresAt,
     request.signal,
-    (deliveredBytes) => budget.settle({ budgetId: plan.budgetId, requestId, deliveredBytes }),
+    (deliveredBytes) =>
+      budget.settle({
+        budgetId: plan.budgetId,
+        requestId,
+        deliveredBytes: deliveredBytes === null ? null : Math.max(deliveredBytes, fetchBytes),
+      }),
   );
 }

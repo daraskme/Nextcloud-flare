@@ -115,24 +115,38 @@ function mixedElement(node: OrderedNode): {
   };
 }
 
+function xmlLegal(codepoint: number): boolean {
+  return (
+    codepoint === 0x9 ||
+    codepoint === 0xa ||
+    codepoint === 0xd ||
+    (codepoint >= 0x20 && codepoint <= 0xd7ff) ||
+    (codepoint >= 0xe000 && codepoint <= 0xfffd) ||
+    (codepoint >= 0x10000 && codepoint <= 0x10ffff)
+  );
+}
+
 function decodeEntities(value: string): string {
-  return value.replace(/&(?:amp|lt|gt|apos|quot|#\d{1,7}|#x[0-9a-fA-F]{1,6});/g, (entity) => {
-    if (entity === "&amp;") return "&";
-    if (entity === "&lt;") return "<";
-    if (entity === "&gt;") return ">";
-    if (entity === "&apos;") return "'";
-    if (entity === "&quot;") return '"';
-    const hex = entity.startsWith("&#x");
-    const codepoint = Number.parseInt(entity.slice(hex ? 3 : 2, -1), hex ? 16 : 10);
-    if (
-      !Number.isInteger(codepoint) ||
-      codepoint < 1 ||
-      codepoint > 0x10ffff ||
-      (codepoint >= 0xd800 && codepoint <= 0xdfff)
-    )
-      throw new Error("invalid_dav_xml");
-    return String.fromCodePoint(codepoint);
-  });
+  const decoded = value.replace(
+    /&(?:amp|lt|gt|apos|quot|#\d{1,7}|#x[0-9a-fA-F]{1,6});/g,
+    (entity) => {
+      if (entity === "&amp;") return "&";
+      if (entity === "&lt;") return "<";
+      if (entity === "&gt;") return ">";
+      if (entity === "&apos;") return "'";
+      if (entity === "&quot;") return '"';
+      const hex = entity.startsWith("&#x");
+      const codepoint = Number.parseInt(entity.slice(hex ? 3 : 2, -1), hex ? 16 : 10);
+      if (!Number.isInteger(codepoint) || !xmlLegal(codepoint)) throw new Error("invalid_dav_xml");
+      return String.fromCodePoint(codepoint);
+    },
+  );
+  // XML 1.0 legal characters only: numeric entities decode before this check,
+  // so &#1; and a literal control byte are both rejected.
+  for (const char of decoded) {
+    if (!xmlLegal(char.codePointAt(0)!)) throw new Error("invalid_dav_xml");
+  }
+  return decoded;
 }
 
 function namespaces(attrs: OrderedNode, parent: ReadonlyMap<string, string>) {

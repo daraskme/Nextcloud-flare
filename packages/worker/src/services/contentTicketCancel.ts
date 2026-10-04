@@ -4,6 +4,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  principalActor,
 } from "./accountMutation";
 import { removeZipPinStatements } from "./refs";
 
@@ -68,6 +69,7 @@ export async function cancelContentTicket(
     ticket.owner_id,
     principal.epoch,
     "content.cancel",
+    principalActor(principal),
   );
   try {
     await commitAccountMutation(db, admission, ticket.owner_id, [

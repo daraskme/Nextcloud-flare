@@ -9,6 +9,7 @@ import {
   type AccountMutationEnv,
   acquireAccountMutation,
   commitAccountMutation,
+  principalActor,
 } from "../accountMutation";
 import { assertNoEncryptedSubtree, unencryptedSubtreeAssertion } from "../encryptionGuards";
 import { reservationStatements } from "../quota";
@@ -195,7 +196,7 @@ async function reserveUpload(
     ) SELECT 1 WHERE EXISTS(SELECT 1 FROM ancestry WHERE parent_id IS NULL)
       AND NOT EXISTS(SELECT 1 FROM shares sh JOIN ancestry a ON sh.root_node_id=a.id
         WHERE sh.disabled_at IS NULL AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000))`,
-          [input.parentId, owner, owner],
+          [input.targetId ?? input.parentId, owner, owner],
         ),
       ]
     : [];
@@ -225,6 +226,7 @@ async function reserveUpload(
     owner,
     input.principal.epoch,
     "upload.reserve",
+    principalActor(input.principal),
   );
   try {
     await commitAccountMutation(db, admission, owner, [

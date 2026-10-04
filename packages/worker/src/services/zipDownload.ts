@@ -354,7 +354,9 @@ async function prepareZipSessionContent(
       FROM content_sessions cs JOIN credentials c ON c.id=cs.issued_by_credential_id
       JOIN tickets t ON t.id=cs.ticket_id AND t.target_set_id=cs.target_set_id
       JOIN target_sets ts ON ts.id=cs.target_set_id
-      WHERE cs.id=? AND cs.target_set_id=? AND t.purpose='zip'`)
+      WHERE cs.id=? AND cs.target_set_id=? AND t.purpose='zip'
+        AND cs.revoked_at IS NULL AND cs.expires_at>strftime('%s','now')*1000
+        AND t.cancelled_at IS NULL AND t.expires_at>strftime('%s','now')*1000`)
     .bind(sessionId, targetSetId)
     .first<
       TargetManifestRecord & {

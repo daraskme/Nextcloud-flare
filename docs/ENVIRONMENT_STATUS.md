@@ -4,7 +4,7 @@
 
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
-| 開発ソース | `main` merge `1073bf6`（検証済みアプリ `f131f80` と同一） | PR #37を統合済み。復元時の暗号化・共有制約、Promise診断gate、audio chapters、運用検証ツール、WebDAV認証の期限・PROPFIND互換修正を統合。追加レビューでDAV条件、プロパティ上限、共有session、ticket制限、KDF修復、tree job終端、group provenance、COPY先を補強。`0057`でshare sessionのsource digestを追加。ローカル検証は隔離SQLite/workerdの結果であり、stagingの動作を証明しない。 |
+| 開発ソース | この checkout（PR #43〜#46 の統合内容） | ZIP の取得費用計上、WebDAV 条件検査、章・再共有データの完全削除、利用者別 admission 上限を更新。`0064` までの63 migrations・90通常tables。CI は対象 commit の GitHub Actions 結果を参照し、下記の配備済み版とは区別する。 |
 | ローカル自動化runtime | `f131f80`（155 files） | 本人の明示承認後、56 migrations・88 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版と直前の`355f61b`版はrollbackディレクトリへ保持。05:01:45 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
 | Cloudflare staging | コード `f131f80`、Worker version `35b6182f-33e4-4013-a546-aab8de1f1035` | `0057`まで適用。56 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。配備後の匿名HTTP smokeは9件成功。実WebDAV取得・暗号化fixtureの復元制約試験は下記の`1cf8681`時点の記録。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |

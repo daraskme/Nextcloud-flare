@@ -1,3 +1,4 @@
+import type { Principal } from "../auth/authorize";
 import {
   assertMutationAdmission,
   commitMutationAdmission,
@@ -16,7 +17,31 @@ export class MutationUnavailableError extends Error {
   }
 }
 
-/** Call after current authentication/preflight and expensive work. Shared content uses its owner, not the viewer. */
+/** Admission fairness key: the acting user, or the link share for anonymous public access. */
+export function principalActor(principal: Principal): string {
+  return principal.kind === "link_share" ? `s:${principal.share_id}` : `u:${principal.user_id}`;
+}
+export const userActor = (userId: string): string => `u:${userId}`;
+export const shareActor = (shareId: string): string => `s:${shareId}`;
+
+/** Resolve the actor behind a stored credential; unknown credentials fall back to the owner. */
+export async function credentialActor(
+  db: D1Database,
+  credentialId: string,
+): Promise<string | undefined> {
+  const row = await primary(db)
+    .prepare(`SELECT COALESCE(
+      'u:'||(SELECT s.user_id FROM sessions s WHERE s.id=c.session_id),
+      'u:'||(SELECT ap.user_id FROM app_passwords ap WHERE ap.id=c.app_password_id),
+      CASE WHEN ss.user_id IS NOT NULL THEN 'u:'||ss.user_id ELSE 's:'||ss.share_id END,
+      'u:'||(SELECT sp.mapped_user_id FROM service_principals sp WHERE sp.id=c.service_principal_id)
+    ) AS actor FROM credentials c LEFT JOIN share_sessions ss ON ss.id=c.share_session_id WHERE c.id=?`)
+    .bind(credentialId)
+    .first<string | null>("actor");
+  return row ?? undefined;
+}
+
+/** Call after current authentication/preflight and expensive work. Shared content is billed to its owner's space; `actor` names who is asking (default: the owner). */
 export async function acquireAccountMutation(
   env: AccountMutationEnv,
   ownerId: string,
@@ -61,6 +86,7 @@ export async function acquireAccountMutation(
     | "upload.multipart-journal-init"
     | "upload.multipart-journal-mirror"
     | "dav.put-start",
+  actor?: string,
 ): Promise<MutationAdmission> {
   const spaceId = await primary(env.DB)
     .prepare(
@@ -76,6 +102,7 @@ export async function acquireAccountMutation(
       spaceId,
       epoch,
       deadline: Date.now() + 5000,
+      ...(actor === undefined ? {} : { actor }),
     });
     if (
       admission.permit_id !== permitId ||

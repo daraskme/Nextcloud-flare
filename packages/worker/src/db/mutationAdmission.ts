@@ -7,7 +7,10 @@ export interface MutationRequest<Space extends string | null = string> {
   spaceId: Space;
   epoch: number;
   deadline: number;
+  /** Who is asking: `u:<user>` or `s:<link share>`. Defaults to the space owner. */
+  actor?: string;
 }
+const ACTOR = /^[us]:[0-9A-Za-z_-]{1,128}$/;
 export interface MutationAdmission<Space extends string | null = string> {
   id: string;
   permit_id: string;
@@ -247,10 +250,13 @@ async function enqueue(
     request.epoch < 1 ||
     !Number.isSafeInteger(request.deadline) ||
     request.deadline <= Date.now() ||
-    request.deadline > Date.now() + MUTATION_WAIT_MS
+    request.deadline > Date.now() + MUTATION_WAIT_MS ||
+    (request.actor !== undefined &&
+      (system === 1 || request.spaceId === null || !ACTOR.test(request.actor)))
   )
     throw new Error("mutation_unavailable");
   const { permitId, spaceId, epoch, deadline } = request;
+  const actor = system === 1 || spaceId === null ? null : (request.actor ?? null);
   const identity =
     "permit_id=? AND space_id IS ? AND epoch=? AND system=? AND maintenance=? AND state<>'closed'";
   const rows = await atomicBatch(db, [
@@ -261,18 +267,14 @@ async function enqueue(
     ...cleanup(),
     promote(),
     {
-      sql: `INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until)
-      SELECT ?,?,?,?,?,?,${clock},MIN(?,${clock}+5000) WHERE NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE permit_id=? AND state<>'closed')`,
-      values: [
-        crypto.randomUUID(),
-        permitId,
-        spaceId,
-        epoch,
-        system,
-        maintenance,
-        deadline,
-        permitId,
-      ],
+      sql: `INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,maintenance,requested_at,wait_until,actor,account)
+      SELECT ?1,?2,?3,?4,?5,?6,${clock},MIN(?7,${clock}+5000),actor,
+        CASE WHEN actor IS NULL THEN NULL WHEN substr(actor,1,2)='u:' THEN substr(actor,3)
+          ELSE (SELECT owner_id FROM spaces WHERE id=?3) END
+      FROM (SELECT CASE WHEN ?5=1 OR ?3 IS NULL THEN NULL
+          ELSE COALESCE(?8,'u:'||(SELECT owner_id FROM spaces WHERE id=?3)) END AS actor)
+      WHERE NOT EXISTS(SELECT 1 FROM mutation_admissions WHERE permit_id=?2 AND state<>'closed')`,
+      values: [crypto.randomUUID(), permitId, spaceId, epoch, system, maintenance, deadline, actor],
     },
     assertExists(`SELECT 1 FROM mutation_admissions WHERE ${identity}`, [
       permitId,
