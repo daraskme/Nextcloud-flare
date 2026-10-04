@@ -8,7 +8,7 @@
 
 週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
 
-保存先は `/run/media/hiroshi/ボリューム/Nextcloudflare-backups`、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。
+保存先は `$NCF_BACKUP_ROOT`（ローカル外部ボリューム上のバックアップ保存先）、毎週日曜03:30 JST（次回2026-10-11）。ユーザーsession再開時の取り逃し実行と、失敗時の同じ世代からの再試行に対応する。完了後のremote receiptはcompleted/released、maintenance・gc_paused・backup_frozenは0、一時bridgeは削除済み。`BACKUP_OPERATOR_ENABLED=true`、`CLIENT_ENCRYPTION_REQUIRED=true`、`STAGING_CONTROL_OPERATOR_ENABLED=false`、GitHub staging Environmentの`STAGING_WEEKLY_BACKUP_ENABLED=true`を確認した。
 
 デスクトップ通知2件、重複抑止（重複0件・pending 0件）、バックアップ正常復帰通知1件の送達を確認。monitorはbackup healthy・live reachable・pending 0件。Billing APIの結果は`unattributed_below_threshold`で、アカウント全体の請求からstaging追加費用を厳密に分離できない。費用通知は月1万円で自動停止する仕組みではない。 詳細は[実装進捗](IMPLEMENTATION_STATUS.md)と[引き継ぎ](HANDOFF.md)。
 
@@ -200,7 +200,7 @@ Foundationだけで完了扱いにせず、[DESIGN](DESIGN.md) と [IMPLEMENTATI
 ### 次回開始時の確認
 
 ```sh
-cd /home/hiroshi/ドキュメント/Nextcloud-flare
+cd $NCF_WORKSPACE
 git status --short
 git diff
 git log -5 --oneline

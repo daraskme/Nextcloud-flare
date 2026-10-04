@@ -326,7 +326,7 @@ async function prepareZipContent(
   cookieHeader: string | null,
   targetSetId: string,
 ): Promise<ZipContentPlan> {
-  const sessionId = await tokens.verifyCookie(cookieHeader);
+  const sessionId = await tokens.verifyCookie(cookieHeader, "zip");
   const record = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
       cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,

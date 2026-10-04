@@ -1,6 +1,13 @@
 import { base64url, jwtVerify, SignJWT } from "jose";
 import type { ContentPurpose } from "./contentSession";
 
+const CONTENT_PURPOSES: readonly ContentPurpose[] = ["content", "thumb", "page", "zip", "track"];
+
+/** One host-only cookie per purpose so concurrent thumb/content/page/track/zip sessions do not overwrite each other. */
+export function contentCookieName(purpose: ContentPurpose): string {
+  return `__Host-ncf_cs_${purpose}`;
+}
+
 export interface ContentKeyRing {
   readonly activeKid: string;
   readonly keys: ReadonlyMap<string, CryptoKey>;
@@ -180,8 +187,13 @@ export class ContentTokens {
     }
   }
 
-  async issueCookie(sessionId: string, maxAgeSeconds: number): Promise<string> {
+  async issueCookie(
+    sessionId: string,
+    maxAgeSeconds: number,
+    purpose: ContentPurpose,
+  ): Promise<string> {
     if (
+      !CONTENT_PURPOSES.includes(purpose) ||
       !/^[A-Za-z0-9_-]{43}$/.test(sessionId) ||
       !Number.isSafeInteger(maxAgeSeconds) ||
       maxAgeSeconds < 1 ||
@@ -192,23 +204,25 @@ export class ContentTokens {
     const key = this.cookieRing.keys.get(kid);
     if (!key) throw new Error("invalid_content_key_ring");
     const message = new TextEncoder().encode(
-      `ncf-content-cookie\0${this.origin}\0${kid}\0${sessionId}`,
+      `ncf-content-cookie\0${this.origin}\0${purpose}\0${kid}\0${sessionId}`,
     );
     const signature = base64url.encode(
       new Uint8Array(await crypto.subtle.sign("HMAC", key, message)),
     );
-    return `__Host-ncf_cs=${kid}.${sessionId}.${signature}; Secure; HttpOnly; SameSite=None; Path=/; Max-Age=${maxAgeSeconds}`;
+    return `${contentCookieName(purpose)}=${kid}.${sessionId}.${signature}; Secure; HttpOnly; SameSite=None; Path=/; Max-Age=${maxAgeSeconds}`;
   }
 
-  async verifyCookie(header: string | null): Promise<string> {
+  async verifyCookie(header: string | null, purpose: ContentPurpose): Promise<string> {
     try {
+      if (!CONTENT_PURPOSES.includes(purpose)) throw new Error("invalid_purpose");
       if (!header || header.length > 8192) throw new Error("invalid_cookie");
+      const prefix = `${contentCookieName(purpose)}=`;
       const matches = header
         .split(";")
         .map((part) => part.trim())
-        .filter((part) => part.startsWith("__Host-ncf_cs="));
+        .filter((part) => part.startsWith(prefix));
       if (matches.length !== 1) throw new Error("invalid_cookie");
-      const value = matches[0]?.slice("__Host-ncf_cs=".length) ?? "";
+      const value = matches[0]?.slice(prefix.length) ?? "";
       const parts = value.split(".");
       if (
         parts.length !== 3 ||
@@ -226,7 +240,7 @@ export class ContentTokens {
       const key = this.cookieRing.keys.get(kid);
       if (!key) throw new Error("unknown_key");
       const message = new TextEncoder().encode(
-        `ncf-content-cookie\0${this.origin}\0${kid}\0${sessionId}`,
+        `ncf-content-cookie\0${this.origin}\0${purpose}\0${kid}\0${sessionId}`,
       );
       if (!(await crypto.subtle.verify("HMAC", key, base64url.decode(signature), message)))
         throw new Error("invalid_cookie");

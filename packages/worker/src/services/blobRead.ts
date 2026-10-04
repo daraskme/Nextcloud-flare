@@ -102,7 +102,7 @@ export async function prepareCookieBlobRead(
 ): Promise<ContentBlobPlan> {
   if (!["content", "thumb", "page", "zip", "track"].includes(purpose))
     throw new Error("content_not_available");
-  const sessionId = await tokens.verifyCookie(cookieHeader);
+  const sessionId = await tokens.verifyCookie(cookieHeader, purpose);
   const session = await primary(db)
     .prepare(`SELECT cs.user_id AS userId,cs.share_id AS shareId,
       cs.share_version AS shareVersion,cs.issued_by_credential_id AS credentialId,
