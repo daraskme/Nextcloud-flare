@@ -1,17 +1,19 @@
 # 実装進捗
 
 更新: 2026-10-04。設計 v0.6 + IMPLEMENTATION_BRIEF §8 を実装契約とする。
-セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書を実装状況・テスト件数の正本とする。
+セッションの再開手順は [`HANDOFF.md`](HANDOFF.md)。本書は実装状況・検証履歴の記録であり、環境revisionと配備状態の正本は[環境状態表](ENVIRONMENT_STATUS.md)。過去checkpointのmigration数・配備状態は記録日当時のもの。
+
+復元時の共有迂回防止修正とPR #37の統合作業は検証中。完了またはstaging配備済みとは扱わない。
 
 ## 2026-10-04 暗号化レビューへの対応
 
 登録済み所有者の Ed25519 署名付き `NCFENC2`、RSA/署名鍵の所持証明、現役管理者の公開鍵照合、R2 ヘッダー・ETag に結合した暗号化マーカーを実装した。ファイル名だけでは暗号化済みと判定しない。暗号化必須の新規書き込みと確定はサーバーでも検査し、API、DAV、公開 upload の平文経路と、暗号化ファイル/祖先フォルダー経由の共有・名前変更・移動・コピー・上書きを拒否する。管理者ラップは署名対象に含め、別途、管理者端末による復号確認の署名を記録する。確認はメタデータと先頭認証チャンクへのアクセス確認であり、全ファイルやバックアップの完全性を証明するものではない。
 
-既存復旧 JSON/RSA 鍵はそのまま使える。旧形式は内容確認と明示承認を経て現在の node/blob/revision に所有者署名を追加する。実運用の既存3件は以前の平文 SHA-256 と照合してから署名追加を完了した。復旧 JSON は端末内だけで扱い、配信 JavaScript を改ざんできる提供者には対抗できないことを画面と文書に明示した。詳細は [対応記録](reviews/encryption-adversarial-20261004.md)。新 migration は `0054`、全53件・通常86 table・174 route。
+既存復旧 JSON/RSA 鍵はそのまま使える。旧形式は内容確認と明示承認を経て現在の node/blob/revision に所有者署名を追加する。実運用の既存3件は以前の平文 SHA-256 と照合してから署名追加を完了した。復旧 JSON は端末内だけで扱い、配信 JavaScript を改ざんできる提供者には対抗できないことを画面と文書に明示した。詳細は [対応記録](reviews/encryption-adversarial-20261004.md)。この検証checkpointで追加したmigrationは`0054`、当時の全数は53 migrations・通常86 table・174 route。現在の適用数は[環境状態表](ENVIRONMENT_STATUS.md)を参照。
 
 修正後の Workerd 全結合テスト **123 files / 2,270 tests**、Node 単体 **75 files / 918 passed・Windows 専用8 skipped**、型チェック、lint544 files、契約・設定検証、86 table の `backup:drill` が成功。全 browser は **48 passed・外部メディア未指定の2 skipped（8.4分）**。旧形式の内容確認・署名追加・所有者閲覧・管理者復号確認と、実 MP3/Opus/AV1 の再生・seek を含む。
 
-`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。 匿名HTTP smoke9件も成功した。
+**2026-10-04 staging検証記録（コード`785faf3`）:** 暗号化レビュー修正を反映し、所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。匿名HTTP smoke9件も成功した。正確な現行revisionは[環境状態表](ENVIRONMENT_STATUS.md)を参照。
 
 暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
 
@@ -71,9 +73,9 @@ schemaは52 migrations・83通常table・168 routeのまま。staging Worker ver
 
 専用 `/admin/files` に利用者選択、フォルダー階層、読み取り専用のプレビュー・ダウンロード、閲覧履歴を追加した。管理者閲覧は Access session と現在の `app_admin` role を検査する専用 API と単一ファイル grant で行う。一般の owner/share API と DAV の権限は維持する。降格・無効化・session失効・owner無効化・異なる対象を拒否し、監査の永続化に失敗したら内容を配信しない。grant は通常の node purge を妨げず、ticket 削除に追従して消える。
 
-ブラウザー upload が `application/octet-stream` のまま残り、Audio一覧・track配信につながらない問題を修正した。共通outboxのbounded解析でMP3、Opus Ogg/WebM/MP4、AV1 MP4/WebMを判定しMIMEとcurrent projectionを確定する。Opus音声専用containerのparserとtrack配信を接続し、Ogg識別pageのCRC・OpusHead、WebM CodecPrivate、MP4 dOpsを検査する。拡張子やclient申告だけではinlineにしない。`0053` は現在の成功済み旧projectionに一致するoctet-streamだけを限定更新する。
+ブラウザー upload が `application/octet-stream` のまま残り、Audio一覧・track配信につながらない問題を修正した。共通outboxのbounded解析でMP3、Opus Ogg/WebM/MP4、AV1 MP4/WebMを判定しMIMEとcurrent projectionを確定する。Opus音声専用containerのparserとtrack配信を接続し、Ogg識別pageのCRC・OpusHead、WebM CodecPrivate、MP4 dOpsを検査する。拡張子やclient申告だけではinlineにしない。2026-10-03に適用した`0053`は、その時点で成功済みの旧projectionに一致するoctet-streamだけを限定更新した。
 
-`0052`/`0053` 追加後は52 migrations、83通常table、168 route契約。認可を10件連結したSQLがworkerd SQLiteで `SQLITE_NOMEM` になる回帰も修正し、同じatomic batch内で5件ずつ検査する。単体806件、関連統合145件、全ブラウザー45件、lint・型・契約・設定検査、Web buildとWorker dry-run、0052時点の83-table実Wranglerバックアップ/復元drillが成功した。
+当時`0052`/`0053`追加後は52 migrations、83通常table、168 route契約だった。認可を10件連結したSQLがworkerd SQLiteで `SQLITE_NOMEM` になる回帰も修正し、同じatomic batch内で5件ずつ検査した。単体806件、関連統合145件、全ブラウザー45件、lint・型・契約・設定検査、Web buildとWorker dry-run、0052時点の83-table実Wranglerバックアップ/復元drillが成功した。これは2026-10-03の履歴であり、現行値ではない。
 
 Chrome 153/NixOSで、一般利用者の実upload・解析からMP3、Opus Ogg/WebM/MP4、AV1+Opus WebM/MP4の再生・シーク後の継続・認証付き206 Rangeの原本byte一致を確認した。管理者からも同じ6形式を再生し、MP3のattachmentダウンロードは原本全体のbyte一致を検査した。全体試験で見つかった試験用outboxの他テストとの干渉と、ログアウト後のfixture JWT再利用を修正し、対象outboxの実dispatcherと明示的な再ログインを使う。実行条件と未確認範囲は [MEDIA_FORMATS](MEDIA_FORMATS.md) を参照する。
 

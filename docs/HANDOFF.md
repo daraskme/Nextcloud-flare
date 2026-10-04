@@ -1,10 +1,12 @@
 # セッション引き継ぎ
 
-更新: 2026-10-04。次のセッションはこの資料から開始する。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。
+更新: 2026-10-04。次のセッションはこの資料から開始する。環境ごとの現在revision・配備状態の正本は[環境状態表](ENVIRONMENT_STATUS.md)。実際の `git status` / `git log` とコードを正とし、過去の会話だけで作業状態を推測しない。下記の旧revision・migration数は日付付き履歴として読む。
+
+復元時の共有迂回防止修正とPR #37の統合作業は検証中で、stagingへは未配備。
 
 ## 最新checkpoint
 
-`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+**2026-10-04 staging checkpoint:** 暗号化レビュー修正（コード`785faf3`）を配備し、所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。正確な現行version・件数は[環境状態表](ENVIRONMENT_STATUS.md)を参照する。
 
 暗号化修正の検証はNode918件、Workerd2,270件、browser48件成功（外部media未指定2件skip）、86-table backup drill成功。GitHub Actions [37162606409](https://github.com/daraskme/Nextcloud-flare/actions/runs/37162606409)（785faf3）と[37163402437](https://github.com/daraskme/Nextcloud-flare/actions/runs/37163402437)（Cron待機修正4acd5bd）はそれぞれ全5 job成功。`3566415` でデスクトップ通知のbusctl引数を修正し、設置済みruntimeへ適用した。
 
@@ -39,7 +41,7 @@ Cloudflare 上のファイル管理アプリを設計の完了条件まで実装
 
 音声・動画の実再生も依頼された。AV1動画と音声のみのOpus（Ogg/WebM/MP4）を必須対象とし、拡張子やクライアント申告だけでMIMEを確定しない。実アップロードから解析・一覧・content session・デコード・シークまで確認し、ローカルfixtureと実Cloudflare、試したbrowserと未試験browserを区別する。以前の「media UI接続済み」だけで実再生確認済みと扱わない。
 
-この追加分はstaging version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` に反映済み。0052/0053を適用し、52 migrations・83通常table・168 route契約。次のmigration番号は0054以降とする。単体806件、関連統合145件、全browser45件、ビルド・静的検査、83-table backup drill、配備後の匿名smoke 9件が成功した。MP3、Opus 3 container、AV1+Opus 2 containerはローカルChromeで一般利用者・管理者双方の再生・seekを検証した。残る直近確認は、本人のログイン済みブラウザーによるstaging管理画面・メディア再生と、この変更のGitHub CI結果。別ブラウザー・長時間/高解像度の実ファイルは未試験。
+**2026-10-03の履歴:** この追加分はstaging version `02bf2b69-a687-42a4-a1ad-9855a8fd2ea6` に反映済み。0052/0053を適用し、当時は52 migrations・83通常table・168 route契約だった。単体806件、関連統合145件、全browser45件、ビルド・静的検査、83-table backup drill、配備後の匿名smoke 9件が成功した。MP3、Opus 3 container、AV1+Opus 2 containerはローカルChromeで一般利用者・管理者双方の再生・seekを検証した。残る直近確認は、本人のログイン済みブラウザーによるstaging管理画面・メディア再生と、この変更のGitHub CI結果。別ブラウザー・長時間/高解像度の実ファイルは未試験。現行状態ではない。
 
 ## 資料の読み方
 

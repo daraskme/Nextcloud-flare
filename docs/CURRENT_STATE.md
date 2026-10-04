@@ -1,8 +1,10 @@
 # 現在の実装状態
 
-更新: 2026-10-04。直近の到達点は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)。
+更新: 2026-10-04。環境ごとの現在revision・配備状態の正本は[環境状態表](ENVIRONMENT_STATUS.md)、実装と検証履歴は[IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)を参照する。以下の旧migration数やrevisionは、明記した日付時点の記録であり現行値として再利用しない。
 
-`785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
+復元時の共有迂回防止修正とPR #37の統合作業は検証中。これらをstagingへ配備済みとは扱わない。
+
+2026-10-04時点のstaging checkpointでは、暗号化レビュー修正（コード`785faf3`）を適用し、所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を確認した。実管理者の既存3件は64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加した。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。正確な現行versionとmigration数は[環境状態表](ENVIRONMENT_STATUS.md)を参照。
 
 週次暗号化バックアップと毎時monitorを設置済み。初回世代 `e4312702-1f92-4b9b-aff9-35f84a84d5f2` / epoch2 は2026-10-04 09:28:25 JSTに完了した。外付けの暗号化アーカイブ131,145,497 bytesから独立したローカルSQLiteとファイル領域へ実際に復元し、86 tables・19 objects（130,603,898 bytes）を検証。復元した画像・音声・動画3件の全復号SHA-256も以前の記録と一致し、所有者署名・管理者receipt・markerを確認した。検証用の復元データと定期処理の作業コピーは削除済み。復旧JSONは元の端末内に保持し、Cloudflareや定期処理へ保存していない。
 
@@ -16,7 +18,7 @@
 
 2026-10-04 は手元の実ファイルによるAVIF・Opus/MP4・1080p 10-bit AV1+Opus/MP4のupload・表示・再生・seek・全byte照合を追加した。AVIFをMP3と誤判定してGalleryから消す問題、画像MIMEの保存不足、サーバー間の時計差による受付期限の誤拒否を修正し、stagingへ配備した。個人メディアはrepositoryに含めない。
 
-2026-10-03 の追加は、監査付き読み取り専用の [管理者ファイル閲覧](ADMIN_FILES.md) と、実upload後のMP3/Opus/AV1形式判定・再生経路の修正。現在のschemaは52 migrations（最新`0053`）、83通常table、168 route契約。stagingは配備済みで、管理者1人と一般利用者2人のログイン、upload/download、一般利用者間の一覧分離をユーザーが確認した。追加機能の配備・試験結果は進捗表と [staging runbook](../ops/staging/README.md) を参照する。
+2026-10-03 の履歴には、監査付き読み取り専用の [管理者ファイル閲覧](ADMIN_FILES.md) と、実upload後のMP3/Opus/AV1形式判定・再生経路の修正を記録している。当時は52 migrations（最新`0053`）、83通常table、168 route契約でstagingへ配備し、管理者1人と一般利用者2人のログイン、upload/download、一般利用者間の一覧分離を確認した。これは当時の件数であり、現行値は[環境状態表](ENVIRONMENT_STATUS.md)を参照する。
 
 以下は2026-10-02までの分野別checkpoint。以前の「remote未実施」は現在のstaging状態を表さない。
 
