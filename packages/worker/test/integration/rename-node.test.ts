@@ -12,6 +12,8 @@ import { LockDO } from "../../src/do/LockDO";
 import type { Env } from "../../src/env";
 import { consumeOutbox } from "../../src/jobs/consumeOutbox";
 import { claimOperation, operationIntent } from "../../src/jobs/operations";
+import { AUDIO_GENERATOR_VERSION } from "../../src/media/audio";
+import { writeAudioChapters } from "../../src/services/audioChapters";
 import { copyNode } from "../../src/services/copyNode";
 import { createFolder } from "../../src/services/createFolder";
 import { commitMutationStatements } from "../../src/services/fsMutation";
@@ -165,6 +167,86 @@ function admitted(overloaded = false): Pick<Env, "DB" | "LOCKS" | "CONTROL"> {
     } as unknown as Env["LOCKS"],
   };
 }
+
+it.each(["saved", "empty", "unsaved"] as const)(
+  "purges an audio file with %s chapters and releases its references",
+  async (chapters) => {
+    const { f, principal } = await seeded();
+    if (principal.kind !== "user") throw new Error("fixture_user_required");
+    const object = await env.BLOBS.put(`u/${f.ids.user}/b/${f.ids.blob}`, "abc");
+    if (!object) throw new Error("fixture_object_missing");
+    await atomicBatch(env.DB, [
+      {
+        sql: "INSERT INTO blob_storage(blob_id,bytes,r2_etag,observed_at) VALUES(?,3,?,1)",
+        values: [f.ids.blob, object.etag],
+      },
+      {
+        sql: "INSERT INTO node_audio(node_id,blob_id,generator_version,duration_ms,codec) VALUES(?,?,?,10000,'mp3')",
+        values: [f.ids.file, f.ids.blob, AUDIO_GENERATOR_VERSION],
+      },
+    ]);
+    if (chapters !== "unsaved")
+      await writeAudioChapters(
+        env.DB,
+        { ...principal, kind: "user" },
+        f.ids.file,
+        f.ids.blob,
+        0,
+        chapters === "empty" ? [] : [{ id: "one", positionMs: 1000, title: "One" }],
+      );
+    const sets = await env.DB.prepare("SELECT id FROM user_audio_chapter_sets WHERE node_id=?")
+      .bind(f.ids.file)
+      .all<{ id: string }>();
+    const trashed = await trashNode(admitted(), {
+      principal,
+      requestId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      nodeId: f.ids.file,
+      lockTokens: [],
+    });
+    if (trashed.kind !== "terminal" || trashed.operation.state !== "committed")
+      throw new Error("trash_not_committed");
+    const purged = await purgeTrash(admitted(), {
+      principal,
+      requestId: crypto.randomUUID(),
+      spaceId: f.ids.space,
+      trashOpId: trashed.operation.id,
+    });
+    expect(purged).toMatchObject({ kind: "terminal", operation: { state: "committed" } });
+    expect(
+      await env.DB.prepare("SELECT id FROM nodes WHERE id=?").bind(f.ids.file).first(),
+    ).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT state FROM trash_ops WHERE op_id=?")
+        .bind(trashed.operation.id)
+        .first("state"),
+    ).toBe("purged");
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM user_audio_chapter_sets WHERE node_id=?")
+        .bind(f.ids.file)
+        .first("n"),
+    ).toBe(0);
+    for (const set of sets.results)
+      expect(
+        await env.DB.prepare("SELECT COUNT(*) AS n FROM user_audio_chapters WHERE set_id=?")
+          .bind(set.id)
+          .first("n"),
+      ).toBe(0);
+    expect(
+      await env.DB.prepare("SELECT used_bytes,physical_bytes FROM users WHERE id=?")
+        .bind(f.ids.user)
+        .first(),
+    ).toEqual({ used_bytes: 0, physical_bytes: 3 });
+    expect(
+      await env.DB.prepare("SELECT state,ref_count FROM blobs WHERE id=?").bind(f.ids.blob).first(),
+    ).toEqual({ state: "gc_candidate", ref_count: 0 });
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM gc_candidates WHERE blob_id=?")
+        .bind(f.ids.blob)
+        .first("n"),
+    ).toBe(1);
+  },
+);
 
 it("returns a retryable HTTP 503 without modifying the node when mutation admission is full", async () => {
   const { f, principal } = await seeded();
