@@ -1,8 +1,10 @@
 # Cloudflare staging 配備
 
-以下の構築経緯は2026-10-03時点の記録で、現行デプロイ・現在の完了状態は後段の「現行状態」を参照する。`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、52 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。利用者による手動試験でアップロード・ダウンロードと、別アカウントのファイルが一覧に出ないことを確認済み。別利用者のファイル ID を指定した直接アクセスの拒否は別途確認する。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
+環境ごとの現在revisionと配備状態の正本は[環境状態表](../../docs/ENVIRONMENT_STATUS.md)。このREADMEはstagingの運用手順と日付付き配備記録を扱い、revision情報を重複管理しない。以下の構築経緯は2026-10-03時点の記録で、`wrangler.staging.example.jsonc` はレビュー用の独立した設定である。D1 と KV の ID は意図的に無効な値にしてある。2026-10-03 時点で `darask.date` の専用リソース、52 件の D1 migration、Worker secret、Access policy、初回 deploy、ControlDO 復旧は完了した。匿名の HTTP smoke 9 件も通過した。管理者 1 人と招待された一般利用者 2 人の Access ログインを実環境で確認済み。D1 は利用者 3 人、所有者とルートがそれぞれ異なる個人スペース 3 件、消費済み招待 2 件、保留中招待 0 件だった。限定 CI token による preflight と Worker deploy も成功した。利用者による手動試験でアップロード・ダウンロードと、別アカウントのファイルが一覧に出ないことを確認済み。別利用者のファイル ID を指定した直接アクセスの拒否は別途確認する。`.github/workflows/staging.yml` は手動起動の preflight と明示 input 時だけの deploy を定義する。ローカル `wrangler.jsonc` と同じ Worker entry、compatibility date、binding、毎分 Cron、primary Queue と DLQ の consumer 設定を使用する。
 
-## 現行状態（2026-10-04）
+## 2026-10-04 staging配備・検証記録
+
+この配備checkpointの正確なrevisionは[環境状態表](../../docs/ENVIRONMENT_STATUS.md)を参照する。復元時の共有迂回防止修正とPR #37の統合作業は検証中で、stagingへは未配備。
 
 `785faf3` の暗号化レビュー修正をstagingへ反映済み（Worker `654609ce-781a-4e0d-98d7-b047c280bb4c`、0054適用、53 migrations・86通常table・174 routes）。所有者署名、管理者鍵照合、検証済みblobマーカー、サーバーでの暗号化必須と迂回拒否を導入した。実管理者の既存3件は、64,932,182 bytesを全復号して以前のSHA-256と照合してから署名と管理者receiptを追加。実画面の画像表示・音声/動画再生・seek、新規v2 uploadと平文拒否も成功した。
 
@@ -38,7 +40,7 @@ D1は適用前の50 migrations・458 triggers・管理者用tableなしを照合
 | --- | --- |
 | Worker | `next-cloud-flare-staging`; `workers_dev=false`, `preview_urls=false` |
 | Custom Domain | `staging-app.darask.date`, `staging-content.darask.date`; 両方とも同じ Worker の origin |
-| D1 | `ncf-staging`; 52 件の migration 適用済み。実 UUID は生成した非追跡 config と GitHub Environment variable に設定 |
+| D1 | `ncf-staging`; 2026-10-03の台帳記録では52件のmigration。現行の適用件数は[環境状態表](../../docs/ENVIRONMENT_STATUS.md)を参照。実 UUID は生成した非追跡 config と GitHub Environment variable に設定 |
 | R2 | private `ncf-staging-blobs`, private `ncf-staging-backups`; public access と `r2.dev` を無効化 |
 | KV | staging 専用 `CACHE` namespace ID |
 | Durable Objects | staging Worker に属する `CONTROL`, `LOCKS`, `UPLOADS`, `BUDGETS`; `v1-sqlite-do` migration |
