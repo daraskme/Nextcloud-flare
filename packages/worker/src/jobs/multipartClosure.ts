@@ -531,10 +531,9 @@ async function claimUpload(
       sql: `INSERT INTO multipart_upload_settlements(
         upload_id,closure_id,owner_id,reservation_id,share_id,token,lease_expires_at,state,claimed_at
       ) VALUES(?,?,?,?,?,?,${CLOCK}+?,'claimed',${CLOCK})
-      ON CONFLICT(upload_id) DO UPDATE SET token=excluded.token,
+      ON CONFLICT(upload_id) DO UPDATE SET closure_id=excluded.closure_id,token=excluded.token,
         lease_expires_at=excluded.lease_expires_at,error=NULL
       WHERE multipart_upload_settlements.state='claimed'
-        AND multipart_upload_settlements.closure_id=excluded.closure_id
         AND multipart_upload_settlements.owner_id=excluded.owner_id
         AND multipart_upload_settlements.reservation_id=excluded.reservation_id
         AND multipart_upload_settlements.share_id IS excluded.share_id

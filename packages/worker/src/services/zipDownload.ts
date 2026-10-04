@@ -529,6 +529,127 @@ function sliceZip(
   );
 }
 
+interface SparseSpan {
+  /** Byte range inside the entry's data region to fetch from R2: [covStart, covEnd). */
+  readonly covStart: number;
+  readonly covEnd: number;
+  /**
+   * The served range emits this entry's data descriptor or central-directory
+   * record, so a real CRC (hence the full object) is required.
+   */
+  readonly needsCrc: boolean;
+}
+
+const ZIP_LOCAL_HEADER = 30;
+const ZIP_DATA_DESCRIPTOR = 16;
+const ZIP_CENTRAL_RECORD = 46;
+const ZIP_END_RECORD = 22;
+const ZERO_CHUNK = new Uint8Array(65_536);
+
+/**
+ * The STORE serializer's framing is deterministic per entry:
+ * LFH(30+nameBytes) + data + DD(16), then CD records (46+nameBytes) and EOCD(22).
+ * Map a byte range onto those regions so fully skipped entries never touch R2
+ * and partially served entries fetch only their covered slice. Returns null
+ * when the computed framing diverges from the measured archive size; callers
+ * then fall back to full serialization.
+ */
+function zipRangeSpans(
+  sources: readonly { entry: ZipTargetEntry }[],
+  outputSize: number,
+  range: { offset: number; length: number },
+): SparseSpan[] | null {
+  const encoder = new TextEncoder();
+  const rangeEnd = range.offset + range.length;
+  const dataRegions: { start: number; end: number }[] = [];
+  const ddRegions: { start: number; end: number }[] = [];
+  const cdRegions: { start: number; end: number }[] = [];
+  let position = 0;
+  for (const { entry } of sources) {
+    const nameBytes = encoder.encode(entry.path.normalize("NFC")).length;
+    const start = position + ZIP_LOCAL_HEADER + nameBytes;
+    dataRegions.push({ start, end: start + entry.size });
+    ddRegions.push({ start: start + entry.size, end: start + entry.size + ZIP_DATA_DESCRIPTOR });
+    position = start + entry.size + ZIP_DATA_DESCRIPTOR;
+  }
+  for (const { entry } of sources) {
+    const nameBytes = encoder.encode(entry.path.normalize("NFC")).length;
+    cdRegions.push({ start: position, end: position + ZIP_CENTRAL_RECORD + nameBytes });
+    position += ZIP_CENTRAL_RECORD + nameBytes;
+  }
+  if (position + ZIP_END_RECORD !== outputSize) return null;
+  return sources.map((_, index) => {
+    const data = dataRegions[index]!;
+    const dd = ddRegions[index]!;
+    const cd = cdRegions[index]!;
+    const needsCrc =
+      (range.offset < dd.end && rangeEnd > dd.start) ||
+      (range.offset < cd.end && rangeEnd > cd.start);
+    const covStart = Math.max(range.offset, data.start);
+    const covEnd = Math.min(rangeEnd, data.end);
+    return {
+      covStart: Math.max(0, covStart - data.start),
+      covEnd: Math.max(0, covEnd - data.start),
+      needsCrc,
+    };
+  });
+}
+
+function zeroStream(length: number): ReadableStream<Uint8Array> {
+  let remaining = length;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (remaining <= 0) {
+        controller.close();
+        return;
+      }
+      const take = Math.min(remaining, ZERO_CHUNK.byteLength);
+      controller.enqueue(ZERO_CHUNK.subarray(0, take));
+      remaining -= take;
+    },
+  });
+}
+
+/** Emit `head` zero bytes, then the covered body bytes, then `tail` zero bytes. */
+function paddedStream(
+  head: number,
+  body: ReadableStream<Uint8Array>,
+  tail: number,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let headLeft = head;
+  let tailLeft = tail;
+  let bodyDone = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (headLeft > 0) {
+        const take = Math.min(headLeft, ZERO_CHUNK.byteLength);
+        controller.enqueue(ZERO_CHUNK.subarray(0, take));
+        headLeft -= take;
+        return;
+      }
+      if (!bodyDone) {
+        const next = await reader.read();
+        if (!next.done) {
+          controller.enqueue(next.value);
+          return;
+        }
+        bodyDone = true;
+      }
+      if (tailLeft > 0) {
+        const take = Math.min(tailLeft, ZERO_CHUNK.byteLength);
+        controller.enqueue(ZERO_CHUNK.subarray(0, take));
+        tailLeft -= take;
+        return;
+      }
+      controller.close();
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+}
+
 function watchZipAuthority(
   source: ReadableStream<Uint8Array>,
   signal: AbortSignal,
@@ -645,14 +766,24 @@ export async function streamBudgetedZip(
         headers.set("Content-Range", `bytes */${plan.outputSize}`);
         return new Response(null, { status: 416, headers });
       }
+      const spans =
+        range.kind === "range" ? zipRangeSpans(plan.sources, plan.outputSize, range) : null;
       const archive = storeZip(
-        plan.sources.map(({ entry, blob }) => ({
+        plan.sources.map(({ entry, blob }, index) => ({
           name: entry.path,
           size: entry.size,
           open: async () => {
             signal.throwIfAborted();
             if (Date.now() >= deadline) throw new Error("content_lease_expired");
-            const object = await bucket.get(blob.key);
+            const span = spans?.[index];
+            if (span && !span.needsCrc && span.covEnd <= span.covStart)
+              return zeroStream(entry.size);
+            const object =
+              span && !span.needsCrc
+                ? await bucket.get(blob.key, {
+                    range: { offset: span.covStart, length: span.covEnd - span.covStart },
+                  })
+                : await bucket.get(blob.key);
             if (!object || object.size !== entry.size || object.etag !== entry.r2Etag) {
               void object?.body.cancel().catch(() => undefined);
               throw new Error("blob_storage_mismatch");
@@ -661,7 +792,9 @@ export async function streamBudgetedZip(
               void object.body.cancel(signal.reason).catch(() => undefined);
               signal.throwIfAborted();
             }
-            return object.body;
+            return span && !span.needsCrc
+              ? paddedStream(span.covStart, object.body, entry.size - span.covEnd)
+              : object.body;
           },
         })),
       );

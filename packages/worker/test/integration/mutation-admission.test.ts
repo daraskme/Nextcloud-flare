@@ -85,12 +85,17 @@ async function ticket(r = request()): Promise<MutationAdmission> {
     throw new Error("missing_ticket");
   return { ...row, space_id: r.spaceId, expires_at: row.expires_at };
 }
-async function seed(n: number, active = false) {
+async function seed(
+  n: number,
+  active = false,
+  spaces: (string | null)[] = [f.ids.space],
+  system = 0,
+) {
   const ids = Array.from({ length: n }, () => crypto.randomUUID());
-  const statements: SqlStatement[] = ids.map((id) => ({
-    sql: `INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,requested_at,wait_until)
-      VALUES(?,?,?,1,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)`,
-    values: [id, id, f.ids.space],
+  const statements: SqlStatement[] = ids.map((id, index) => ({
+    sql: `INSERT INTO mutation_admissions(id,permit_id,space_id,epoch,system,requested_at,wait_until)
+      VALUES(?,?,?,1,?,strftime('%s','now')*1000,strftime('%s','now')*1000+5000)`,
+    values: [id, system ? `global:${id}` : id, spaces[index % spaces.length], system],
   }));
   await atomicBatch(env.DB, statements);
   if (active) await advanceMutations(env.DB);
@@ -98,8 +103,16 @@ async function seed(n: number, active = false) {
 }
 
 it("caps active grants at 32 globally and persists a FIFO of at most 256 waiting attempts", async () => {
+  // Per-space fairness caps one space at 64 waiting slots; reach the 256-deep
+  // global FIFO by spreading callers across five spaces.
+  const extra = await Promise.all(
+    Array.from({ length: 4 }, () => foundationFixture(crypto.randomUUID(), Date.now() - 1000)),
+  );
+  await atomicBatch(env.DB, extra.flatMap((fixture) => fixture.statements));
+  const spaces = [f.ids.space, ...extra.map((fixture) => fixture.ids.space)];
   const active = await seed(32, true);
-  const waiting = await seed(256);
+  const waiting = await seed(224, false, spaces);
+  await seed(32, false, [null], 1); // system work fills the reserved remainder
   expect(await count("active")).toBe(32);
   expect(await count("waiting")).toBe(256);
   await expect(enqueueMutation(env.DB, request())).rejects.toThrow("mutation_unavailable");

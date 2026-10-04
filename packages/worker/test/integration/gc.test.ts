@@ -5,9 +5,12 @@ import { atomicBatch } from "../../src/db/primary";
 import type { Env } from "../../src/env";
 import worker from "../../src/index";
 import { runGarbageCollection } from "../../src/jobs/gc";
+import { R2S3Inventory } from "../../src/r2/s3Inventory";
 import { observePhysicalObject } from "../../src/services/physical";
 import { foundationFixture } from "../fixtures/foundation";
+import { multipartInventoryFixture } from "../fixtures/multipartInventory";
 import { acquireSystemMutation, mutationEnv } from "../fixtures/mutationAdmission";
+import { inventoryEnv } from "../fixtures/s3Inventory";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -216,4 +219,67 @@ it("runs from Cron only after ControlDO and D1 admit GC", async () => {
       .bind(f.ids.blob)
       .first("state"),
   ).toBe("deleted");
+});
+
+it("reclaims a gc_candidate whose multipart upload was closure-settled", async () => {
+  const f = await multipartInventoryFixture({ known: true });
+  await f.handle.abort();
+  const now = Date.now();
+  const source = JSON.stringify(new R2S3Inventory(inventoryEnv).source);
+  const run = crypto.randomUUID();
+  await atomicBatch(env.DB, [
+    {
+      sql: `UPDATE uploads SET state='failed',accept_parts=0,in_flight=0,cleanup_pending=1,
+        multipart_cleanup_started_at=? WHERE id=?`,
+      values: [now, f.id],
+    },
+    { sql: "UPDATE blobs SET state='orphan' WHERE id=?", values: [f.blob] },
+    {
+      sql: `INSERT INTO multipart_inventory_scans(
+        upload_id,r2_key,source,epoch,round_id,pages,completed_at,next_scan_at
+      ) VALUES(?,?,?,?,?,1,?,0)`,
+      values: [f.id, f.key, source, 1, crypto.randomUUID(), now],
+    },
+    {
+      sql: `INSERT INTO multipart_closure_runs(id,source,epoch,phase,not_before,scan_round_id,proven_at,created_at,updated_at)
+        VALUES(?,?,1,'proven',0,'scan',?,?,?)`,
+      values: [run, source, now - 10, now - 10, now - 10],
+    },
+    {
+      sql: `INSERT INTO multipart_upload_settlements(upload_id,closure_id,owner_id,reservation_id,token,lease_expires_at,claimed_at,state)
+        VALUES(?,?,?,?,?,1,?,'claimed')`,
+      values: [f.id, run, f.ids.user, f.reservation, crypto.randomUUID(), now - 10],
+    },
+  ]);
+  await atomicBatch(env.DB, [
+    { sql: "UPDATE reservations SET state='released' WHERE id=?", values: [f.reservation] },
+    {
+      sql: `UPDATE multipart_upload_settlements
+        SET state='settled',object_state='absent',settled_at=? WHERE upload_id=?`,
+      values: [now, f.id],
+    },
+    { sql: "UPDATE blobs SET state='gc_candidate' WHERE id=?", values: [f.blob] },
+    {
+      sql: "INSERT INTO gc_candidates(blob_id,state,not_before) VALUES(?,'candidate',0)",
+      values: [f.blob],
+    },
+  ]);
+  expect(await runGarbageCollection(mutationEnv(), env.BLOBS, 1, { maxBlobs: 1 })).toMatchObject({
+    claimed: 1,
+    deleted: 1,
+  });
+  expect(
+    await env.DB.prepare("SELECT state FROM blobs WHERE id=?").bind(f.blob).first("state"),
+  ).toBe("deleted");
+  expect(
+    await env.DB.prepare("SELECT state FROM gc_candidates WHERE blob_id=?")
+      .bind(f.blob)
+      .first("state"),
+  ).toBe("deleted");
+  // The scan-bound upload row stays frozen under the inventory hold trigger.
+  expect(
+    await env.DB.prepare("SELECT cleanup_pending FROM uploads WHERE id=?")
+      .bind(f.id)
+      .first("cleanup_pending"),
+  ).toBe(1);
 });

@@ -6,7 +6,7 @@ import {
 } from "../services/systemMutation";
 import { OUTBOX_PROVENANCE_SQL, validateOutboxContract } from "./outboxContract";
 import { treeJobRow } from "./treeJobStore";
-import { failTreeJob } from "./treeJobWorker";
+import { failDeadLetteredTreeJob } from "./treeJobWorker";
 
 export interface DeadLetterDelivery {
   readonly id: string;
@@ -231,7 +231,7 @@ export async function handleDeadLetterBatch(
           !row ||
           row.state === "completed" ||
           row.state === "failed" ||
-          (await failTreeJob(env, row, "queue_exhausted", deadline)) === "failed"
+          (await failDeadLetteredTreeJob(env, row, "queue_exhausted", deadline)) === "failed"
         ) {
           message.ack();
           acked++;

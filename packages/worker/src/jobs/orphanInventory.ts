@@ -118,9 +118,12 @@ function observation(
   expected?: ObservedOrphan | null,
 ): SqlStatement {
   validObject(object);
-  const parsed = /^u\/([^/]{1,128})\/b\/([^/]{1,128})$/.exec(object.key);
-  const owner = parsed?.[1] ?? null;
-  const blob = parsed?.[2] ?? null;
+  // Every u/<owner>/... object resolves its owner segment, including derived keys
+  // (u/<owner>/d/..., index uploads) whose blob-level shape differs from u/<owner>/b/<blob>.
+  const ownerParsed = /^u\/([^/]{1,128})(?:\/|$)/.exec(object.key);
+  const blobParsed = /^u\/[^/]{1,128}\/b\/([^/]{1,128})$/.exec(object.key);
+  const owner = ownerParsed?.[1] ?? null;
+  const blob = blobParsed?.[1] ?? null;
   const changed = `(orphan_objects.state='deleted' OR orphan_objects.bytes<>excluded.bytes
     OR orphan_objects.r2_etag<>excluded.r2_etag OR orphan_objects.r2_version<>excluded.r2_version
     OR orphan_objects.uploaded_at<>excluded.uploaded_at)`;
@@ -156,6 +159,8 @@ function observation(
       ON CONFLICT(r2_key) DO UPDATE SET bytes=excluded.bytes,r2_etag=excluded.r2_etag,
         r2_version=excluded.r2_version,uploaded_at=excluded.uploaded_at,
         owner_id=COALESCE(orphan_objects.owner_id,excluded.owner_id),
+        owner_key=COALESCE(orphan_objects.owner_key,excluded.owner_key),
+        blob_key=COALESCE(orphan_objects.blob_key,excluded.blob_key),
         first_seen_at=CASE WHEN ${changed} THEN MAX(orphan_objects.last_seen_at,${CLOCK}) ELSE orphan_objects.first_seen_at END,
         last_seen_at=MAX(orphan_objects.last_seen_at,${CLOCK}),epoch=excluded.epoch,
         state=CASE WHEN orphan_objects.state='deleted' THEN 'quarantined' ELSE orphan_objects.state END,

@@ -362,3 +362,56 @@ it("rejects overlapping selections and portable case-fold collisions", async () 
     ),
   ).rejects.toThrow(/zip_path_collision/);
 });
+
+it("serves a byte range with sparse R2 reads for uncovered entries", async () => {
+  const { f, now, secondBlob, tokens, principal } = await fixture();
+  const issued = await issueContentTicket(
+    mutationEnv(),
+    env.BLOBS,
+    tokens,
+    principal,
+    [{ spaceId: f.ids.space, nodeId: f.ids.folder }],
+    "zip",
+    now + 300_000,
+  );
+  const accepted = await acceptContentTicket(mutationEnv(), tokens, issued.ticket);
+  const cookie = accepted.setCookie.split(";", 1)[0] ?? "";
+  const contentEnv: Env = {
+    ...mutationEnv(),
+    APP_ORIGIN: "https://app.invalid",
+    CONTENT_ORIGIN: "https://content.invalid",
+  };
+  const full = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      headers: { Cookie: cookie },
+    }),
+    contentEnv,
+    tokens,
+  );
+  const archive = new Uint8Array(await full.arrayBuffer());
+  // Layout: LFH(30+11) | "abc"@41..44 | DD@44..60 | LFH(30+20)@60..110 | "de"@110..112
+  const gets: { key: string; range: { offset: number; length: number } | undefined }[] = [];
+  const spy = new Proxy(env.BLOBS, {
+    get(target, property) {
+      if (property === "get")
+        return (key: string, options?: { range?: { offset: number; length: number } }) => {
+          gets.push({ key, range: options?.range });
+          return target.get(key, options as never);
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const ranged = await handleContentHttp(
+    new Request(`https://content.invalid/z/${issued.targetSetId}`, {
+      headers: { Cookie: cookie, Range: "bytes=110-111" },
+    }),
+    { ...contentEnv, BLOBS: spy },
+    tokens,
+  );
+  expect(ranged.status).toBe(206);
+  expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(archive.subarray(110, 112));
+  expect(gets.filter((entry) => entry.key.startsWith("u/"))).toEqual([
+    { key: `u/${f.ids.user}/b/${secondBlob}`, range: { offset: 0, length: 2 } },
+  ]);
+});

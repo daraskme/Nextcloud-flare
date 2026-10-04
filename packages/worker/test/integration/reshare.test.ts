@@ -437,10 +437,10 @@ it("invalidates group descendants and stale budgets across removal and re-additi
     rootNodeId: f.owner.ids.folder,
     spaceId: f.owner.ids.space,
     recipientGroupId: group.id,
-    actions: ["read"],
+    actions: ["read", "download"],
     resharePolicy: {
       enabled: true,
-      actions: ["read"],
+      actions: ["read", "download"],
       maxDepth: 2,
       maxFanout: 2,
     },
@@ -450,7 +450,7 @@ it("invalidates group descendants and stale budgets across removal and re-additi
     rootNodeId: f.owner.ids.folder,
     spaceId: f.owner.ids.space,
     recipientEmail: f.bobEmail,
-    actions: ["read"],
+    actions: ["read", "download"],
     idempotencyKey: "group-child",
   });
   const grandchild = await createInternalShare(mutationEnv(), f.bobSession, {
@@ -458,7 +458,7 @@ it("invalidates group descendants and stale budgets across removal and re-additi
     rootNodeId: f.owner.ids.folder,
     spaceId: f.owner.ids.space,
     recipientEmail: f.carolEmail,
-    actions: ["read"],
+    actions: ["read", "download"],
     idempotencyKey: "group-grandchild",
   });
   const authorized = await authorizeNode(env.DB, accessPrincipal(f.bobSession), {

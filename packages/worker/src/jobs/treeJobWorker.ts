@@ -495,13 +495,15 @@ function trashFinalStatements(
     },
     {
       sql: `UPDATE tickets SET cancelled_at=${clock} WHERE cancelled_at IS NULL
-        AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)`,
-      values: [row.owner_id],
+        AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+          WHERE tn.node_id IN (${members}))`,
+      values: [row.op_id],
     },
     {
       sql: `UPDATE content_sessions SET revoked_at=${clock} WHERE revoked_at IS NULL
-        AND target_set_id IN (SELECT id FROM target_sets WHERE owner_id=?)`,
-      values: [row.owner_id],
+        AND target_set_id IN (SELECT tn.target_set_id FROM target_set_nodes tn
+          WHERE tn.node_id IN (${members}))`,
+      values: [row.op_id],
     },
     {
       sql: `INSERT INTO activity(id,op_id,actor_id,kind,affected_id,created_at)
@@ -1122,6 +1124,30 @@ async function failExhaustedTreeJob(
     deadline,
     guard,
   );
+}
+
+/**
+ * Dead-letter delivery arrives without any lease of its own; failing a job is only
+ * provable when no live worker lease still references it. The lease is the
+ * authoritative liveness signal: a worker that claims later cannot renew its lease
+ * on a job that already failed.
+ */
+export async function failDeadLetteredTreeJob(
+  env: SystemMutationSource,
+  row: TreeJobRow,
+  errorCode: string,
+  deadline = Date.now() + 25_000,
+): Promise<"failed" | "retry"> {
+  const guard: SqlStatement = {
+    sql: `UPDATE bulk_jobs SET updated_at=MAX(updated_at,${clock})
+      WHERE id=? AND epoch=? AND state IN ('pending','running')
+        AND EXISTS(SELECT 1 FROM operations o WHERE o.op_id=bulk_jobs.op_id
+          AND o.state='claimed' AND o.epoch=bulk_jobs.epoch)
+        AND NOT EXISTS(SELECT 1 FROM job_leases active_lease
+          WHERE active_lease.job_id=bulk_jobs.id AND active_lease.expires_at>${clock})`,
+    values: [row.id, row.epoch],
+  };
+  return failTreeJobInternal(env, row, errorCode, deadline, guard);
 }
 
 export async function processTreeJob(

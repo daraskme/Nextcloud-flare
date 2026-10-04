@@ -115,11 +115,87 @@ export async function readNodePath(db: D1Database, principal: Principal, nodeId:
     rows.some((row, index) => index > 0 && row.parentId !== rows[index - 1]?.id)
   )
     throw new Error("node_path_unavailable");
+  // Share-bound principals see their share root as the mount root: ancestors
+  // above it are outside their authority and stay hidden.
+  const boundary = await pathShareBoundary(db, principal, proof.node.owner_id, rows);
+  const view = boundary >= 0 ? rows.slice(boundary) : boundary === -2 ? rows.slice(-1) : rows;
   return Object.freeze({
     nodeId: proof.node.id,
     treeGeneration: proof.node.tree_generation,
-    path: rows.map(({ parentId: _parentId, depth: _depth, ...node }) => node),
+    path: view.map(({ parentId: _parentId, depth: _depth, ...node }) => node),
   });
+}
+
+/**
+ * Deepest share root covering this principal's read authority, as an index into
+ * the root-first ancestor rows: -1 when the principal is unscoped, -2 when no
+ * covering share root exists (leaf-only view), >=0 the slice boundary.
+ */
+async function pathShareBoundary(
+  db: D1Database,
+  principal: Principal,
+  ownerId: string,
+  rows: PathRow[],
+): Promise<number> {
+  const scoped =
+    principal.kind === "link_share" ||
+    ((principal.kind === "user" || principal.kind === "app_password") &&
+      principal.user_id !== ownerId);
+  if (!scoped || rows.length === 0) return -1;
+  const ancestorIds = rows.map((row) => row.id);
+  const inList = ancestorIds.map(() => "?").join(",");
+  let roots: { root_id: string }[];
+  if (principal.kind === "link_share") {
+    const { results } = await primary(db)
+      .prepare(
+        `SELECT sh.root_node_id AS root_id FROM shares sh
+          JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
+          WHERE sh.id=? AND sh.version=? AND sh.kind='link' AND sh.disabled_at IS NULL
+            AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+            AND sh.root_node_id IN (${inList})
+            AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')`,
+      )
+      .bind(principal.share_id, principal.share_version, ...ancestorIds)
+      .all<{ root_id: string }>();
+    roots = results ?? [];
+  } else if (principal.kind === "user" || principal.kind === "app_password") {
+    const bound = principal.internal_share?.share_id ?? null;
+    const { results } = await primary(db)
+      .prepare(
+        `SELECT DISTINCT sh.root_node_id AS root_id FROM shares sh
+          JOIN users owner ON owner.id=sh.owner_id AND owner.disabled_at IS NULL
+          WHERE sh.kind='internal' AND sh.disabled_at IS NULL
+            AND (sh.expires_at IS NULL OR sh.expires_at>strftime('%s','now')*1000)
+            AND sh.owner_id=? AND sh.root_node_id IN (${inList})
+            AND EXISTS(SELECT 1 FROM share_actions sa WHERE sa.share_id=sh.id AND sa.action='read')
+            AND EXISTS(SELECT 1 FROM current_internal_shares c
+              WHERE c.share_id=sh.id AND c.version=sh.version)
+            AND (
+              EXISTS(SELECT 1 FROM share_grants g WHERE g.share_id=sh.id AND g.user_id=?
+                AND g.disabled_at IS NULL AND g.version=sh.version)
+              OR (? IS NULL AND EXISTS(
+                SELECT 1 FROM share_group_grants gg
+                JOIN share_groups sg ON sg.id=gg.group_id AND sg.owner_id=sh.owner_id
+                  AND sg.disabled_at IS NULL
+                JOIN share_group_members gm ON gm.group_id=sg.id AND gm.user_id=?
+                  AND gm.disabled_at IS NULL
+                JOIN users member ON member.id=gm.user_id AND member.disabled_at IS NULL
+                WHERE gg.share_id=sh.id))
+              OR (? IS NOT NULL AND sh.id=?)
+            )`,
+      )
+      .bind(ownerId, ...ancestorIds, principal.user_id, bound, principal.user_id, bound, bound)
+      .all<{ root_id: string }>();
+    roots = results ?? [];
+  } else {
+    return -1;
+  }
+  const covering = new Set(roots.map((row) => row.root_id));
+  let index = -1;
+  rows.forEach((row, position) => {
+    if (covering.has(row.id)) index = position;
+  });
+  return index >= 0 ? index : -2;
 }
 
 /** Parent proof and bounded keyset SELECT execute in one D1 transaction. */

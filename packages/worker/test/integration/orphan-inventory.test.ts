@@ -282,11 +282,13 @@ it("quarantines malformed keys without deleting them", async () => {
   const key = `u/${f.ids.user}/foreign/data`;
   await env.BLOBS.put(key, "x");
   await scanOrphanObjects(mutationEnv(), f.bucket, 1);
+  // Derived/foreign shapes keep their owner segment so collection and recovery
+  // audit can reconcile them; blob_key stays NULL since the key is not a blob key.
   expect(
     await env.DB.prepare("SELECT owner_key,blob_key FROM orphan_objects WHERE r2_key=?")
       .bind(key)
       .first(),
-  ).toEqual({ owner_key: null, blob_key: null });
+  ).toEqual({ owner_key: f.ids.user, blob_key: null });
   expect(await collectOrphanObjects(mutationEnv(), env.BLOBS, 1)).toMatchObject({ claimed: 0 });
   expect(await env.BLOBS.head(key)).not.toBeNull();
 });
@@ -645,3 +647,25 @@ it.each(["replacement", "removal"])(
     );
   },
 );
+
+it("resolves the owner segment on derived keys and heals NULL tombstones", async () => {
+  const f = await fixture();
+  const derived = `u/${f.ids.user}/d/${crypto.randomUUID()}/gen/thumb.webp`;
+  await env.BLOBS.put(derived, "xy");
+  // Pre-fix tombstone: a re-observed derived key whose owner columns were NULL.
+  await env.DB.prepare(`INSERT INTO orphan_objects(r2_key,owner_key,blob_key,owner_id,bytes,r2_etag,
+    r2_version,uploaded_at,first_seen_at,last_seen_at,epoch) VALUES(?,NULL,NULL,NULL,0,'e','v',0,1,1,1)`)
+    .bind(derived)
+    .run();
+  expect(await scanOrphanObjects(mutationEnv(), f.bucket, 1)).toMatchObject({ examined: 2 });
+  const healed = await env.DB.prepare(
+    "SELECT owner_key,blob_key,owner_id FROM orphan_objects WHERE r2_key=?",
+  )
+    .bind(derived)
+    .first<{ owner_key: string | null; blob_key: string | null; owner_id: string | null }>();
+  expect(healed).toMatchObject({
+    owner_key: f.ids.user,
+    blob_key: null,
+    owner_id: f.ids.user,
+  });
+});

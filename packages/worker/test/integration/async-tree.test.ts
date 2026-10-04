@@ -6,6 +6,7 @@ import { atomicBatch } from "../../src/db/primary";
 import { CONTROL_NAME } from "../../src/do/ControlDO";
 import { EPOCH_PREFIX } from "../../src/do/epochHistory";
 import type { Env } from "../../src/env";
+import { handleDeadLetterBatch } from "../../src/jobs/deadLetter";
 import { lookupOperation } from "../../src/jobs/operations";
 import { handleOutboxBatch } from "../../src/jobs/queue";
 import { dispatchTreeJob, type TreeJobSender } from "../../src/jobs/treeJobStore";
@@ -506,4 +507,55 @@ it("rechecks lease exhaustion atomically when a fresh lease races the snapshot",
       .first<{ attempt: number; expires_at: number }>(),
   ).toMatchObject({ attempt: 10 });
   expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("busy");
+});
+
+it("retries a dead-lettered tree job while a worker lease is live", async () => {
+  const { jobId, operationId } = await createExhaustionTrashJob();
+  expect(await dispatchTreeJob(env, queue, jobId, epoch)).toBe("sent");
+  const token = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO job_leases(job_id,claim_token,epoch,expires_at,attempt)
+    VALUES(?,?,?,strftime('%s','now')*1000+60000,1)`)
+    .bind(jobId, token, epoch)
+    .run();
+  const deliver = async (id: string) => {
+    const marks = { acked: false, retried: false };
+    const handled = await handleDeadLetterBatch(env as Env, {
+      messages: [
+        {
+          id,
+          attempts: 2,
+          body: { treeJobId: jobId },
+          ack() {
+            marks.acked = true;
+          },
+          retry() {
+            marks.retried = true;
+          },
+        },
+      ],
+    });
+    return { handled, marks };
+  };
+  // A live worker lease means the job may still complete: keep the delivery.
+  const live = await deliver("dlq-1");
+  expect(live.handled).toEqual({ acked: 0, retried: 1 });
+  expect(live.marks).toEqual({ acked: false, retried: true });
+  expect(await lookupOperation(env.DB, principal(), operationId)).toMatchObject({
+    state: "claimed",
+  });
+  expect(
+    await env.DB.prepare("SELECT claim_token FROM job_leases WHERE job_id=?")
+      .bind(jobId)
+      .first("claim_token"),
+  ).toBe(token);
+  // Once the lease expires the dead letter can terminalize the job.
+  await env.DB.prepare("UPDATE job_leases SET expires_at=1 WHERE job_id=?").bind(jobId).run();
+  const expired = await deliver("dlq-2");
+  expect(expired.handled).toEqual({ acked: 1, retried: 0 });
+  expect(
+    await env.DB.prepare(`SELECT o.state AS op_state,o.error_code,j.state AS job_state
+      FROM operations o JOIN bulk_jobs j ON j.op_id=o.op_id WHERE o.op_id=?`)
+      .bind(operationId)
+      .first(),
+  ).toEqual({ op_state: "failed", error_code: "queue_exhausted", job_state: "failed" });
 });

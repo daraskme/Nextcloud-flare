@@ -157,7 +157,7 @@ async function fixture(identity: Identity = "owner") {
         sql: "INSERT INTO shares(id,owner_id,root_node_id,kind,created_at) VALUES(?,?,?,?,?)",
         values: [id, f.ids.user, f.ids.folder, identity === "internal" ? "internal" : "link", now],
       },
-      { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read')", values: [id] },
+      { sql: "INSERT INTO share_actions(share_id,action) VALUES(?,'read'),(?,'download')", values: [id, id] },
     ]);
     if (identity === "internal") {
       const recipient = foundationFixture(crypto.randomUUID(), now - 1000);
