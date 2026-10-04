@@ -4,6 +4,13 @@ import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import {
+  MAX_OBJECTS,
+  MAX_TAR_BYTES,
+  parseArchivePaxSize,
+  parseArchiveTarHeader,
+  TAR_BLOCK,
+} from "./archiveFormat.mjs";
 import { decryptArchiveFile } from "./encryptedArchive.mjs";
 import { restoreGeneration } from "./generation.mjs";
 
@@ -11,9 +18,6 @@ const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const ETAG = /^[A-Za-z0-9._-]{1,256}$/;
-const TAR_BLOCK = 512;
-const MAX_TAR_BYTES = 536_870_912_000;
-const MAX_OBJECTS = 100_000;
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 
 function fail(code) {
@@ -52,30 +56,6 @@ async function createdPrivateDirectory(path) {
     fail("backup_restore_private_directory_required");
 }
 
-function memberAllowed(path, id) {
-  return (
-    path === `downloaded/${id}/manifest.json` ||
-    path === `downloaded/${id}/data.sql` ||
-    path === "blob-copy/manifest.json" ||
-    /^blob-copy\/objects\/[0-9]{8}\.bin$/.test(path)
-  );
-}
-
-function tarText(bytes) {
-  const zero = bytes.indexOf(0);
-  const data = zero < 0 ? bytes : bytes.subarray(0, zero);
-  if (data.some((byte) => byte < 0x20 || byte > 0x7e)) fail("backup_restore_tar_invalid");
-  return Buffer.from(data).toString("ascii");
-}
-
-function tarOctal(bytes) {
-  const text = tarText(bytes).trim();
-  if (!/^[0-7]{1,16}$/.test(text)) fail("backup_restore_tar_invalid");
-  const value = Number.parseInt(text, 8);
-  if (!Number.isSafeInteger(value)) fail("backup_restore_tar_invalid");
-  return value;
-}
-
 async function readExactly(handle, offset, length) {
   const buffer = Buffer.alloc(length);
   let read = 0;
@@ -87,7 +67,7 @@ async function readExactly(handle, offset, length) {
   return buffer;
 }
 
-/** Parse only regular ustar members, with fixed names and exact bounds. */
+/** Parse regular ustar and size-only pax members, with fixed names and exact bounds. */
 export async function extractArchiveTar(tarFile, destination, id) {
   if (!UUID.test(id)) fail("backup_restore_identity_invalid");
   exactPath(tarFile);
@@ -112,9 +92,11 @@ export async function extractArchiveTar(tarFile, destination, id) {
     const names = new Set();
     let offset = 0;
     let endSeen = false;
+    let paxSize = null;
     while (offset < source.size) {
       const header = await readExactly(handle, offset, TAR_BLOCK);
       if (header.every((byte) => byte === 0)) {
+        if (paxSize !== null) fail("backup_restore_tar_invalid");
         if (offset + 2 * TAR_BLOCK > source.size) fail("backup_restore_tar_truncated");
         const tail = Buffer.alloc(TAR_BLOCK);
         for (let position = offset; position < source.size; position += TAR_BLOCK) {
@@ -124,24 +106,19 @@ export async function extractArchiveTar(tarFile, destination, id) {
         endSeen = true;
         break;
       }
-      const checksum = tarOctal(header.subarray(148, 156));
-      let actual = 0;
-      for (let index = 0; index < TAR_BLOCK; index++)
-        actual += index >= 148 && index < 156 ? 0x20 : header[index];
-      const name = tarText(header.subarray(0, 100));
-      const prefix = tarText(header.subarray(345, 500));
-      const type = header[156];
-      const bytes = tarOctal(header.subarray(124, 136));
-      if (
-        actual !== checksum ||
-        (type !== 0 && type !== 0x30) ||
-        tarText(header.subarray(257, 263)) !== "ustar" ||
-        prefix ||
-        !memberAllowed(name, id) ||
-        names.has(name) ||
-        names.size >= MAX_OBJECTS + 3 ||
-        bytes > MAX_TAR_BYTES
-      )
+      const { name, bytes, extended } = parseArchiveTarHeader(header, id, paxSize);
+      if (extended) {
+        if (names.size >= MAX_OBJECTS + 3 || offset + 2 * TAR_BLOCK > source.size)
+          fail("backup_restore_tar_invalid");
+        const payload = await readExactly(handle, offset + TAR_BLOCK, TAR_BLOCK);
+        if (!payload.subarray(bytes).every((byte) => byte === 0))
+          fail("backup_restore_tar_invalid");
+        paxSize = parseArchivePaxSize(payload.subarray(0, bytes));
+        offset += 2 * TAR_BLOCK;
+        continue;
+      }
+      paxSize = null;
+      if (names.has(name) || names.size >= MAX_OBJECTS + 3 || bytes > MAX_TAR_BYTES)
         fail("backup_restore_tar_invalid");
       const padded = Math.ceil(bytes / TAR_BLOCK) * TAR_BLOCK;
       if (!Number.isSafeInteger(padded) || offset + TAR_BLOCK + padded > source.size)

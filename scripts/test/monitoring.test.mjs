@@ -18,6 +18,7 @@ import {
 import { runHttpProbes } from "../../ops/staging/smoke-check.mjs";
 
 const now = new Date("2026-10-04T03:00:00.000Z");
+const archiveObservation = { state: "healthy", code: "archive_verified" };
 const config = {
   version: 1,
   backupMaxAgeDays: 8,
@@ -67,7 +68,7 @@ test("desktop notification passes the negative persistent timeout after the busc
 });
 
 test("backup health requires completed offline restore and verified encrypted archive, and accepts the weekly age window", () => {
-  assert.deepEqual(assessBackupState(backup, { now }), {
+  assert.deepEqual(assessBackupState(backup, { now, archiveObservation }), {
     state: "healthy",
     code: "backup_verified",
   });
@@ -78,7 +79,7 @@ test("backup health requires completed offline restore and verified encrypted ar
         archiveVerifiedAt: "2026-09-24T23:00:00.000Z",
         completedAt: "2026-09-25T00:00:00.000Z",
       },
-      { now },
+      { now, archiveObservation },
     ).state,
     "stale",
   );
@@ -96,7 +97,10 @@ test("backup health requires completed offline restore and verified encrypted ar
     { state: "failed", code: "volume_read_only" },
   );
   assert.equal(assessBackupState(null, { now }).state, "unknown");
-  assert.equal(assessBackupState({ ...backup, epoch: 3 }, { now }).state, "healthy");
+  assert.equal(
+    assessBackupState({ ...backup, epoch: 3 }, { now, archiveObservation }).state,
+    "healthy",
+  );
   assert.equal(assessBackupState({ ...backup, epoch: null }, { now }).state, "unknown");
   assert.deepEqual(
     assessBackupState(
@@ -108,8 +112,15 @@ test("backup health requires completed offline restore and verified encrypted ar
       },
       { now },
     ),
-    { state: "failed", code: "volume_unavailable" },
+    { state: "unknown", code: "archive_storage_unavailable" },
   );
+});
+
+test("a historical completed receipt without current storage evidence is never healthy", () => {
+  assert.deepEqual(assessBackupState(backup, { now }), {
+    state: "unknown",
+    code: "archive_storage_unavailable",
+  });
 });
 
 test("billing converts account-wide costs conservatively, subtracts the configured baseline, and alerts at the three configured levels", () => {
@@ -258,7 +269,13 @@ test("notifications are deduplicated and recovery does not claim staging attribu
   assert.ok(initial.every((event) => !JSON.stringify(event).includes("25.3")));
   assert.deepEqual(planNotifications(first, first), []);
 
-  const high = currentMonitorStatus({ backup, billing: billing({ billed: 50.31 }), config, now });
+  const high = currentMonitorStatus({
+    backup,
+    billing: billing({ billed: 50.31 }),
+    config,
+    now,
+    archiveObservation,
+  });
   const recovered = planNotifications(high, first);
   const billingRecovery = recovered.find((event) => event.category === "billing");
   assert.match(billingRecovery.body, /stagingの利用額は個別に帰属できない/);
@@ -288,6 +305,7 @@ test.skipIf(process.platform === "win32")(
         stateDirectory: directory,
         now,
         notify: async (event) => sent.push(event),
+        archiveVerifier: async () => ({ verified: true }),
       };
       const first = await runMonitorCycle(input);
       assert.equal(first.notificationsDelivered, 1);

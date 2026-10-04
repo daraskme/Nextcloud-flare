@@ -173,7 +173,19 @@ export async function runStagingWeeklyBackup({
     throw new Error(code);
   }
   if (state.phase === "completed") {
-    if (state.lastError?.code.startsWith("backup_weekly_storage_")) {
+    try {
+      const observed = await runtime.verifyArchive(state, backupRoot);
+      if (observed?.verified !== true) throw new Error("backup_weekly_archive_unverified");
+    } catch (error) {
+      state = {
+        ...state,
+        lastError: { code: safeError(error), at: now().toISOString() },
+        updatedAt: now().toISOString(),
+      };
+      await save(statePath, state);
+      throw new Error(state.lastError.code);
+    }
+    if (state.lastError) {
       state = { ...state, updatedAt: now().toISOString() };
       delete state.lastError;
       await save(statePath, state);
@@ -249,6 +261,8 @@ export async function runStagingWeeklyBackup({
       });
     }
     if (state.phase === "archive_verified") {
+      const observed = await runtime.verifyArchive(state, backupRoot);
+      if (observed?.verified !== true) throw new Error("backup_weekly_archive_unverified");
       await runtime.cleanupInternal(state, runDirectory);
       await advance("completed", { completedAt: now().toISOString() });
     }

@@ -20,6 +20,7 @@ beforeEach(async () => {
   runtime = Object.fromEntries(
     [
       "verifyStorage",
+      "verifyArchive",
       "currentEpoch",
       "deployBegin",
       "waitFrozen",
@@ -39,6 +40,7 @@ beforeEach(async () => {
         if (step === "currentEpoch") return 7;
         if (step === "publish") return HASH;
         if (step === "publishArchive") return { bytes: 123, sha256: HASH, verified: true };
+        if (step === "verifyArchive") return { verified: true };
       }),
     ]),
   );
