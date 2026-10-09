@@ -4,16 +4,24 @@
 
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
-| 開発ソース | この checkout（PR #43〜#46、最終レビューと下記2026-10-09の修正） | ZIP の取得費用計上、WebDAV 条件検査、章・再共有データの完全削除、利用者別 admission 上限に加え、EPUB の取得前予算予約と未確定 upload の purge 拒否を実装。`0064` までの63 migrations・90通常tables。[最終レビュー](reviews/astra-final-20261005.md)と対象 commit の CI を参照し、下記の配備済み版とは区別する。 |
-| ローカル自動化runtime | `f131f80`（155 files） | 本人の明示承認後、56 migrations・88 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版と直前の`355f61b`版はrollbackディレクトリへ保持。05:01:45 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
-| Cloudflare staging | コード `f131f80`、Worker version `35b6182f-33e4-4013-a546-aab8de1f1035` | `0057`まで適用。56 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。配備後の匿名HTTP smokeは9件成功。実WebDAV取得・暗号化fixtureの復元制約試験は下記の`1cf8681`時点の記録。 |
+| 開発ソース | `45c57df`（PR #48、mainのmerge `0dc81b8`と同一tree） | PR #43〜#47のレビュー修正に加え、フォルダー送信・小説・解除状態の保存・ゴミ箱の修正を実装。push/PR合計10 checks成功。`0064`までの63 migrations・90通常tables。 |
+| ローカル自動化runtime | `45c57df`（165 files） | 63 migrations・90 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。直前の`f131f80`を含む旧版をrollbackディレクトリへ保持。2026-10-09 01:19:05 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
+| Cloudflare staging | コード `45c57df`、Worker version `777e7b9e-9994-4dce-953b-e5b55551290f` | 2026-10-09配備。`0064`まで適用、63 migrations・90通常tables・486 triggers。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。匿名HTTP smoke 9件と本人のログイン済み画面を確認。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |
 
-## 2026-10-09 フォルダー送信・復号表示・小説・完全削除（未配備）
+## 2026-10-09 フォルダー送信・復号表示・小説・完全削除（配備済み）
 
 フォルダー選択とドラッグからの階層付きアップロード、ごみ箱の一括完全削除、ブラウザー保存領域からの解除状態の復元、マイドライブの元の名前・サイズ・種類での表示、小説タブを追加した。保存データの暗号化は維持し、ロック・ログアウト時は保存済みの解除状態を消す。小説の文字サイズと読書位置は端末内に保存する。
 
-複数の検索索引を持つフォルダーのpurgeで、FTS5特殊削除の直後に`changes()`をINSERT内で検査すると誤って拒否される条件を再現した。同期・非同期の両経路で索引元の件数を直接検査するよう修正し、削除済みファイルのアップロード履歴が残るケースとFTS整合性を確認した。実環境への配備、migration適用、利用者のファイル削除は行っていない。
+複数の検索索引を持つフォルダーのpurgeで、FTS5特殊削除の直後に`changes()`をINSERT内で検査すると誤って拒否される条件を再現した。同期・非同期の両経路で索引元の件数を直接検査するよう修正し、削除済みファイルのアップロード履歴が残るケースとFTS整合性を確認した。実環境の報告対象も検索索引4件を持つ条件に一致した。利用者のファイルの完全削除は実行していない。
+
+[PR #48](https://github.com/daraskme/Nextcloud-flare/pull/48)を`main`へマージした（`0dc81b82c4ee587fd42592549079ed057de486a3`）。マージ直前にhead `45c57df`・base `a67e9d6`とpush/PR合計10 checksの成功を照合し、マージ後のtreeが検証済みheadと同一であることを確認した。[push 37865568700](https://github.com/daraskme/Nextcloud-flare/actions/runs/37865568700) / [PR 37865624634](https://github.com/daraskme/Nextcloud-flare/actions/runs/37865624634)ともUbuntu、Windows 2 shards、browser、backupが成功。browserは55成功・外部メディア未指定2 skip、90-table backup / operator / run drillも成功した。
+
+本人の実環境更新依頼に基づき、ControlDOで書き込みとGCを停止した。進行中backup・claimed operation・有効job lease・削除中orphanがないことと既存56件のmigrationを照合し、Time Travel復旧地点を記録。検証済みの`0058`〜`0064`を`/import`経路で一度だけ適用した。全63件のmigration記録がソースと完全一致し、90通常tables・486 triggers・FK違反0を確認した。01:14:17 UTCに上記Worker versionを配備し、復旧監査後に書き込みとGCを再開。非公開の一時管理Workerは削除済み。
+
+配備後は匿名HTTP smoke 9件成功。本人のログイン済みChromeで小説タブ、`/novels`直接表示・再読み込み・一覧の読み込み、フォルダー送信ボタン、ゴミ箱を空にする確認画面と未確認時の削除ボタン無効化を確認した。JavaScriptエラー0件。解除状態の保存、復号本文・ダウンロード、実際の完全削除は以下のローカル/CI検証範囲であり、配備後に利用者の鍵や実ファイルを操作した記録ではない。
+
+定期バックアップruntimeも同じ`45c57df`の165 filesへ切り替え、旧版・資格情報・設定・既存archiveを保持した。切替後のmonitorはbackup healthy / live reachable / notifications pending 0で正常終了した。新しいバックアップ世代の作成や実データの復元は今回再実行していない。
 
 - lint、Worker/Web/試験の型検査、contracts、config、Webビルド成功。単体91 files / 1,041成功・8 skip、関連するpurge・非同期tree jobの統合2 files / 19件成功。
 - 全ブラウザー実行は54成功・2 skip・1失敗。失敗した既存の`real MP3 and Opus audio plus AV1 video decode, seek, and stream authenticated ranges`はテストサーバーの`POST /api/v1/content-session`接続切断によるもので、コード変更なしの単独再実行は成功した。外部メディア未指定の2件は未実施。全体実行が一度で成功した記録とは区別する。
