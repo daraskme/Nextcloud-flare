@@ -15,6 +15,7 @@ import {
   discardOpfsContainerFile,
   reopenOpfsContainerFile,
 } from "../../lib/encryptedContainer";
+import { cacheEncryptedHeader } from "../../lib/encryptedMetadataCache";
 import {
   encryptionConfigured,
   getEncryptionSession,
@@ -202,6 +203,7 @@ export class UploadManager {
         ownerId: account.id,
         signer: session.owner.signing,
       });
+      await cacheEncryptedHeader(account, encrypted.headerBytes);
       file = encrypted.file;
     }
     try {

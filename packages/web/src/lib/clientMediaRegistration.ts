@@ -5,31 +5,46 @@ import type {
 } from "./clientMediaServiceWorker";
 
 const WORKER_PATH = "/public-assets/client-media-worker.js";
+let preparation: Promise<void> | undefined;
 
-/** Register the exact private build asset. First use waits for clients.claim(). */
-export async function ensureClientMediaWorker(): Promise<void> {
+/** Check for updates once per document and wait for that worker to claim this window. */
+export function ensureClientMediaWorker(): Promise<void> {
+  preparation ??= prepareClientMediaWorker().catch((error) => {
+    preparation = undefined;
+    throw error;
+  });
+  return preparation;
+}
+
+async function prepareClientMediaWorker(): Promise<void> {
   if (!navigator.serviceWorker) throw new Error("client_media_worker_unavailable");
   const script = new URL(WORKER_PATH, location.origin);
   if (script.origin !== location.origin || script.pathname !== WORKER_PATH)
     throw new Error("client_media_worker_invalid_asset");
-  await navigator.serviceWorker.register(script.href, {
+  const registration = await navigator.serviceWorker.register(script.href, {
     scope: "/",
     type: "module",
     updateViaCache: "none",
   });
-  if (navigator.serviceWorker.controller) return;
+  await registration.update();
+  const target = registration.installing ?? registration.waiting ?? registration.active;
+  if (!target) throw new Error("client_media_worker_unavailable");
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      navigator.serviceWorker.removeEventListener("controllerchange", changed);
-      reject(new Error("client_media_worker_unavailable"));
-    }, 30_000);
-    const changed = () => {
-      if (!navigator.serviceWorker.controller) return;
+    const finish = (error?: Error) => {
       clearTimeout(timer);
       navigator.serviceWorker.removeEventListener("controllerchange", changed);
-      resolve();
+      target.removeEventListener("statechange", changed);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error("client_media_worker_unavailable")), 30_000);
+    const changed = () => {
+      if (target.state === "redundant") return finish(new Error("client_media_worker_unavailable"));
+      if (target.state === "installed") target.postMessage({ kind: "ncf-client-media-activate" });
+      if (target.state === "activated" && navigator.serviceWorker.controller === target) finish();
     };
     navigator.serviceWorker.addEventListener("controllerchange", changed);
+    target.addEventListener("statechange", changed);
     changed();
   });
 }

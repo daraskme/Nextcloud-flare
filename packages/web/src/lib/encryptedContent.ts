@@ -23,6 +23,7 @@ import {
   parseContainerHeader,
   readContainerHeaderLength,
 } from "./encryptedContainer";
+import { cacheEncryptedHeader } from "./encryptedMetadataCache";
 import { getEncryptionSession, onEncryptionLock } from "./encryptionSession";
 
 export interface OpenEncryptedContent {
@@ -232,6 +233,7 @@ export async function readEncryptedContent(
     }
     signals.throwIfAborted();
     if (getEncryptionSession(account.id) !== keys) throw new Error("encryption_locked");
+    void cacheEncryptedHeader(account, headerBytes);
     let adminReceiptRecorded = verifiedExistingReceipt;
     if (
       account.role === "app_admin" &&

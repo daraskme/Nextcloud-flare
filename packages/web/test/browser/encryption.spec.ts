@@ -1102,59 +1102,91 @@ test("legacy unsigned container requires owner review and explicit adoption", as
   }
 });
 
-test("cached unlock survives reload and My Drive and novels show original encrypted text", async ({
-  page,
-}) => {
-  test.setTimeout(120_000);
-  const directory = await mkdtemp(resolve(tmpdir(), "ncf-cached-unlock-"));
-  const name = `小説-${randomUUID()}.txt`;
-  const original = Buffer.from("第一章\n\n鍵を解除すると読める物語です。\n".repeat(100));
-  try {
-    await setIdentity(page, false);
-    await page.goto("/encryption");
-    await saveRecoveryFile(page, directory);
-    await expect(
-      page.getByRole("button", { name: "暗号化してアップロード", exact: true }),
-    ).toBeEnabled();
-    await page.getByRole("link", { name: "マイドライブ", exact: true }).click();
-    await expect(page.getByText("新規アップロードには端末の暗号化鍵が必要です。")).toHaveCount(0);
-    const chooser = page.waitForEvent("filechooser");
-    await page.getByRole("button", { name: "アップロード", exact: true }).click();
-    await (await chooser).setFiles({ name, mimeType: "text/plain", buffer: original });
-    await expect(page.locator(".upload-task").filter({ hasText: "アップロード完了" })).toHaveCount(
-      1,
-      { timeout: 30_000 },
-    );
-    await expect(page.getByRole("button", { name: `${name} ファイル`, exact: true })).toBeVisible();
-    await page.reload();
-    await expect(page.getByRole("button", { name: `${name} ファイル`, exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-    await page.getByRole("button", { name: `${name} ファイル`, exact: true }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog.getByLabel("本文")).toContainText("鍵を解除すると読める物語です。");
-    const download = page.waitForEvent("download");
-    await dialog.getByRole("button", { name: "ダウンロード", exact: true }).click();
-    const file = await download;
-    expect(file.suggestedFilename()).toBe(name);
-    expect(await readFile((await file.path())!)).toEqual(original);
-    await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
-    await page.getByRole("link", { name: "小説", exact: true }).click();
-    await expect(page.locator(".novel-card").filter({ hasText: name })).toBeVisible();
-    await page.getByRole("link", { name: "暗号化ファイル", exact: true }).click();
-    await expect(
-      page.getByRole("status").filter({ hasText: "この端末で暗号化鍵を解除しました" }),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "この端末でロック", exact: true }).click();
-    await page.reload();
-    await expect(
-      page.getByRole("button", { name: "暗号化してアップロード", exact: true }),
-    ).toHaveCount(0);
-    await page.getByRole("link", { name: "マイドライブ", exact: true }).click();
-    await expect(page.getByRole("button", { name: `${name} ファイル`, exact: true })).toHaveCount(
-      0,
-    );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+for (const previewRoute of ["drive", "novels"] as const)
+  test(`cached unlock restores filenames without content reads and opens encrypted text in ${previewRoute}`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const directory = await mkdtemp(resolve(tmpdir(), "ncf-cached-unlock-"));
+    const name = `小説-${randomUUID()}.txt`;
+    const original = Buffer.from("第一章\n\n鍵を解除すると読める物語です。\n".repeat(100));
+    try {
+      await setIdentity(page, false);
+      await page.goto("/encryption");
+      await saveRecoveryFile(page, directory);
+      await expect(
+        page.getByRole("button", { name: "暗号化してアップロード", exact: true }),
+      ).toBeEnabled();
+      await page.getByRole("link", { name: "マイドライブ", exact: true }).click();
+      await expect(page.getByText("新規アップロードには端末の暗号化鍵が必要です。")).toHaveCount(0);
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: "アップロード", exact: true }).click();
+      await (await chooser).setFiles({ name, mimeType: "text/plain", buffer: original });
+      await expect(
+        page.locator(".upload-task").filter({ hasText: "アップロード完了" }),
+      ).toHaveCount(1, { timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: `${name} ファイル`, exact: true }),
+      ).toBeVisible();
+      // A reload must restore the original filename from locally verified encrypted headers,
+      // even when downloading headers again is unavailable.
+      await page.route("**/api/v1/content-session", (route) => route.abort("failed"));
+      await page.reload();
+      await expect(page.getByRole("button", { name: `${name} ファイル`, exact: true })).toBeVisible(
+        {
+          timeout: 30_000,
+        },
+      );
+      await expect(
+        page.locator(".file-name").filter({ hasText: /[a-f0-9-]{32,}\.ncf/ }),
+      ).toHaveCount(0);
+      await page.unroute("**/api/v1/content-session");
+      if (previewRoute === "novels") {
+        await page.getByRole("link", { name: "小説", exact: true }).click();
+        // Reload so the Service Worker's client URL is /novels, not the earlier /files document.
+        await page.reload();
+        await page.evaluate(async () => {
+          await navigator.serviceWorker.register("/__test__/legacy-media-worker.js", {
+            scope: "/",
+          });
+          await navigator.serviceWorker.ready;
+        });
+        await expect
+          .poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL))
+          .toContain("/__test__/legacy-media-worker.js");
+        await page.locator(".novel-card").filter({ hasText: name }).click();
+      } else {
+        await page.getByRole("button", { name: `${name} ファイル`, exact: true }).click();
+      }
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByLabel("本文")).toContainText("鍵を解除すると読める物語です。", {
+        timeout: 35_000,
+      });
+      await expect
+        .poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL))
+        .toContain("/public-assets/client-media-worker.js");
+      const download = page.waitForEvent("download");
+      await dialog.getByRole("button", { name: "ダウンロード", exact: true }).click();
+      const file = await download;
+      expect(file.suggestedFilename()).toBe(name);
+      expect(await readFile((await file.path())!)).toEqual(original);
+      await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
+      await page.getByRole("link", { name: "小説", exact: true }).click();
+      await expect(page.locator(".novel-card").filter({ hasText: name })).toBeVisible();
+      await page.getByRole("link", { name: "暗号化ファイル", exact: true }).click();
+      await expect(
+        page.getByRole("status").filter({ hasText: "この端末で暗号化鍵を解除しました" }),
+      ).toBeVisible();
+      await page.getByRole("button", { name: "この端末でロック", exact: true }).click();
+      await page.reload();
+      await expect(
+        page.getByRole("button", { name: "暗号化してアップロード", exact: true }),
+      ).toHaveCount(0);
+      await page.getByRole("link", { name: "マイドライブ", exact: true }).click();
+      await expect(page.getByRole("button", { name: `${name} ファイル`, exact: true })).toHaveCount(
+        0,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });

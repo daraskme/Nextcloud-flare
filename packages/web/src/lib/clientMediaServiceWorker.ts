@@ -62,11 +62,11 @@ export interface ClientMediaWorkerOptions {
   readonly now?: () => number;
 }
 
-function privateClient(urlValue: string, hostOrigin: string): boolean {
+export function privateMediaClient(urlValue: string, hostOrigin: string): boolean {
   try {
     const url = new URL(urlValue);
     if (url.origin !== hostOrigin || url.username || url.password || url.hash) return false;
-    return /^\/(?:files(?:\/[A-Za-z0-9_-]+)?|gallery|audio|video|bookshelf|encryption|admin\/files)\/?$/.test(
+    return /^\/(?:files(?:\/[A-Za-z0-9_-]+)?|gallery|audio|video|bookshelf|novels|encryption|admin\/files)\/?$/.test(
       url.pathname,
     );
   } catch {
@@ -174,7 +174,7 @@ export class ClientMediaWorker {
   private async trustedClient(clientId: string): Promise<boolean> {
     if (!clientId) return false;
     const client = await this.options.lookupClient(clientId);
-    return !!client && privateClient(client.url, this.hostOrigin);
+    return !!client && privateMediaClient(client.url, this.hostOrigin);
   }
 
   private async authorizedEntry(entry: Entry, clientId: string): Promise<boolean> {
