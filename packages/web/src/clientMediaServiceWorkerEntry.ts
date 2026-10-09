@@ -1,4 +1,4 @@
-import { ClientMediaWorker } from "./lib/clientMediaServiceWorker";
+import { ClientMediaWorker, privateMediaClient } from "./lib/clientMediaServiceWorker";
 
 interface WindowClientLike {
   readonly id: string;
@@ -7,6 +7,7 @@ interface WindowClientLike {
 }
 interface MediaWorkerScope {
   readonly location: Location;
+  skipWaiting(): Promise<void>;
   readonly clients: {
     get(id: string): Promise<WindowClientLike | undefined>;
     claim(): Promise<void>;
@@ -94,7 +95,23 @@ scope.addEventListener("activate", (event) => {
 scope.addEventListener("message", (event) => {
   const port = event.ports[0];
   const id = event.source?.id;
-  if (!port || !id) return;
+  if (!id) return;
+  if (
+    event.data &&
+    typeof event.data === "object" &&
+    "kind" in event.data &&
+    event.data.kind === "ncf-client-media-activate"
+  ) {
+    event.waitUntil(
+      (async () => {
+        const client = await scope.clients.get(id);
+        if (client?.type === "window" && privateMediaClient(client.url, scope.location.origin))
+          await scope.skipWaiting();
+      })(),
+    );
+    return;
+  }
+  if (!port) return;
   event.waitUntil(
     (async () => {
       try {

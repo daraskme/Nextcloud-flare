@@ -150,6 +150,23 @@ export default {
     const ready = await (initialized ??= initialize(bindings));
     const path = new URL(request.url).pathname;
     if (path === "/__test__/ready") return Response.json({ ready: true });
+    if (path === "/__test__/legacy-media-worker.js") {
+      if (new URL(request.url).origin !== ready.env.APP_ORIGIN || request.method !== "GET")
+        return new Response(null, { status: 404 });
+      // Existing browser controller that cannot register the new reader's media.
+      // Only this isolated entry serves it; production never imports this fixture.
+      return new Response(
+        `self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
+         self.addEventListener("message", event => event.ports[0]?.postMessage({ok:false}));`,
+        {
+          headers: {
+            "Content-Type": "text/javascript",
+            "Cache-Control": "no-store",
+            "Service-Worker-Allowed": "/",
+          },
+        },
+      );
+    }
     if (path === "/__test__/login" && request.method === "POST") {
       if (request.headers.get("X-Test-Without-Auth"))
         return Response.json({ error: "unauthorized" }, { status: 403 });

@@ -174,6 +174,30 @@ describe("client-decrypted media virtual responses", () => {
     ).toBe(true);
   }, 30_000);
 
+  it.each(["/novels", "/novels/"])("opens decrypted content from %s", async (path) => {
+    setup();
+    clientUrl = `${HOST}${path}`;
+    const url = await worker.register(CLIENT, registration);
+    const response = await worker.handleFetch(
+      new Request(url, { headers: { Range: "bytes=0-10" } }),
+      CLIENT,
+    );
+    expect(response.status).toBe(206);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(plain.slice(0, 11));
+  });
+
+  it.each(["/novels/public", "/novels-other", "/s/novels", "/public-assets/novels"])(
+    "does not trust an unrelated page at %s",
+    async (path) => {
+      setup();
+      clientUrl = `${HOST}${path}`;
+      await expect(worker.register(CLIENT, registration)).rejects.toThrow(
+        "client_media_registration_rejected",
+      );
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+
   it("binds the default global fetch receiver before contacting content origin", async () => {
     setup();
     const original = globalThis.fetch;
