@@ -4,12 +4,24 @@
 
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
-| 開発ソース | `45c57df`（PR #48、mainのmerge `0dc81b8`と同一tree） | PR #43〜#47のレビュー修正に加え、フォルダー送信・小説・解除状態の保存・ゴミ箱の修正を実装。push/PR合計10 checks成功。`0064`までの63 migrations・90通常tables。 |
+| 開発ソース | `5bf9472`（PR #49、mainのmerge `2f95257`と同一tree） | 小説からの暗号化本文表示と、解除後のファイル名キャッシュを修正。単体1,053件・統合2,472件・browser 56件成功。CIの一部は下記のとおり実行中。`0064`までの63 migrations・90通常tables。 |
 | ローカル自動化runtime | `45c57df`（165 files） | 63 migrations・90 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。直前の`f131f80`を含む旧版をrollbackディレクトリへ保持。2026-10-09 01:19:05 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
-| Cloudflare staging | コード `45c57df`、Worker version `777e7b9e-9994-4dce-953b-e5b55551290f` | 2026-10-09配備。`0064`まで適用、63 migrations・90通常tables・486 triggers。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。匿名HTTP smoke 9件と本人のログイン済み画面を確認。 |
+| Cloudflare staging | コード `5bf9472`、Worker version `85737ac8-c20c-4cea-af26-9650f9e23f2a` | 2026-10-09 02:13:08 UTC配備。63 migrations・90通常tables・486 triggers、FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。匿名HTTP smoke 9件と配信コードの一致を確認。実環境での今回の本文復号は未確認。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |
 
-## 2026-10-09 フォルダー送信・復号表示・小説・完全削除（配備済み）
+## 2026-10-09 小説の接続エラーとファイル名の表示速度（配備済み）
+
+新しいdocumentとして開いた`/novels`が復号用Service Workerの許可対象から漏れ、登録拒否が接続エラーとして表示される不具合を修正した。旧版Workerが残っている場合は、新版の有効化とwindowの制御開始を待ってから復号内容を登録する。
+
+元のファイル名は、鍵を解除したsessionのメモリと、端末内に保存した署名付き暗号化ヘッダーから復元する。アップロード時にもヘッダーを保存する。永続キャッシュは最大1,000件で、平文の名前やファイル鍵は保存しない。再利用前にaccount・epoch・登録鍵・ヘッダーhash・サイズなどを照合する。未取得の名前は並列取得して順次表示し、マイドライブで長いopaqueな`.ncf`名を表示しない。
+
+[PR #49](https://github.com/daraskme/Nextcloud-flare/pull/49)をmainへマージした（`2f95257a56582882f2438f8e13e05e537975c43f`）。マージ後のtreeは検証済みhead `5bf9472e1484af8c472293fc3ba46a4a039843a0`と同一。02:13:08 UTCに上記Worker versionを配備した。migrationとbackup runtimeの変更はない。
+
+- 修正前に小説routeの2件の失敗を再現。修正後の型・lint・contracts・config・build成功。ローカルの全browserは56成功・外部メディア未指定2 skip（10.0分）。古いWorkerからの更新、マイドライブと小説での本文表示、元データと完全一致するダウンロード、再取得通信を遮断した状態でのキャッシュ名表示、再読み込み後の鍵復元とロックを確認した。
+- [push run 37871613231](https://github.com/daraskme/Nextcloud-flare/actions/runs/37871613231)のUbuntu一式成功。Node単体93 files / 1,053成功・8 skip、通常統合132 files / 2,471件と専用R2短尺1件が成功し、通常統合の未処理Promiseは0。push/PR両方のbrowserは56成功・2 skip、Windows shard 2/2も両方成功した。[PR run 37871635489](https://github.com/daraskme/Nextcloud-flare/actions/runs/37871635489)のUbuntuは成功中の統合試験途中で15分上限に達しcancelled。配備後の02:14 UTC時点では両runのWindows shard 1/2とbackupが実行中であり、全CI完了とは扱わない。
+- 配備後の匿名HTTP smokeは9件成功。ログイン済みの専用Chromeで新しいprivate entryとService WorkerコードのSHA-256一致、小説routeの直接表示・再読み込み・一覧取得を確認し、JavaScriptエラーは0。確認用プロフィールの鍵はロックされていたため、実環境での本文復号や実ファイルのダウンロードは未確認。ローカル/CIの復号確認と区別する。
+
+## 2026-10-09 フォルダー送信・復号表示・小説・完全削除（初回配備の記録）
 
 フォルダー選択とドラッグからの階層付きアップロード、ごみ箱の一括完全削除、ブラウザー保存領域からの解除状態の復元、マイドライブの元の名前・サイズ・種類での表示、小説タブを追加した。保存データの暗号化は維持し、ロック・ログアウト時は保存済みの解除状態を消す。小説の文字サイズと読書位置は端末内に保存する。
 
@@ -17,7 +29,7 @@
 
 [PR #48](https://github.com/daraskme/Nextcloud-flare/pull/48)を`main`へマージした（`0dc81b82c4ee587fd42592549079ed057de486a3`）。マージ直前にhead `45c57df`・base `a67e9d6`とpush/PR合計10 checksの成功を照合し、マージ後のtreeが検証済みheadと同一であることを確認した。[push 37865568700](https://github.com/daraskme/Nextcloud-flare/actions/runs/37865568700) / [PR 37865624634](https://github.com/daraskme/Nextcloud-flare/actions/runs/37865624634)ともUbuntu、Windows 2 shards、browser、backupが成功。browserは55成功・外部メディア未指定2 skip、90-table backup / operator / run drillも成功した。
 
-本人の実環境更新依頼に基づき、ControlDOで書き込みとGCを停止した。進行中backup・claimed operation・有効job lease・削除中orphanがないことと既存56件のmigrationを照合し、Time Travel復旧地点を記録。検証済みの`0058`〜`0064`を`/import`経路で一度だけ適用した。全63件のmigration記録がソースと完全一致し、90通常tables・486 triggers・FK違反0を確認した。01:14:17 UTCに上記Worker versionを配備し、復旧監査後に書き込みとGCを再開。非公開の一時管理Workerは削除済み。
+本人の実環境更新依頼に基づき、ControlDOで書き込みとGCを停止した。進行中backup・claimed operation・有効job lease・削除中orphanがないことと既存56件のmigrationを照合し、Time Travel復旧地点を記録。検証済みの`0058`〜`0064`を`/import`経路で一度だけ適用した。全63件のmigration記録がソースと完全一致し、90通常tables・486 triggers・FK違反0を確認した。01:14:17 UTCに当時のWorker version `777e7b9e-9994-4dce-953b-e5b55551290f`を配備し、復旧監査後に書き込みとGCを再開。非公開の一時管理Workerは削除済み。
 
 配備後は匿名HTTP smoke 9件成功。本人のログイン済みChromeで小説タブ、`/novels`直接表示・再読み込み・一覧の読み込み、フォルダー送信ボタン、ゴミ箱を空にする確認画面と未確認時の削除ボタン無効化を確認した。JavaScriptエラー0件。解除状態の保存、復号本文・ダウンロード、実際の完全削除は以下のローカル/CI検証範囲であり、配備後に利用者の鍵や実ファイルを操作した記録ではない。
 
