@@ -192,6 +192,7 @@ export function EncryptionSettings({
     setUnlockedRecipient(initialUnlocked?.owner ?? null);
     setPublicKey(initialUnlocked?.owner.publicKey ?? null);
     setUnlocked(Boolean(initialUnlocked));
+    setOwnerRegistered(initialUnlocked?.ownerRegistered ?? false);
   }, [initialUnlocked]);
 
   useEffect(() => {
@@ -492,14 +493,14 @@ export function EncryptionSettings({
             </p>
           )}
           <p className="muted">
-            鍵はこのタブのメモリーだけにあります。他のタブで解除した鍵は、それぞれのタブでロックしてください。
+            このブラウザーに解除状態を保存し、次に開いたときも利用します。ロックすると保存した解除状態も消去します。
           </p>
           <Button onClick={downloadPublicKey}>
             <Download size={16} />
             公開鍵を保存
           </Button>
           <Button variant="ghost" onClick={lock}>
-            このタブでロック
+            この端末でロック
           </Button>
         </div>
       ) : pending ? (

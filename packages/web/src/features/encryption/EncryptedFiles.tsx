@@ -503,11 +503,12 @@ export function EncryptedFiles({ account }: { account: Account }) {
                   adminSigner: value.adminSigner,
                 }
               : null,
+            account.epoch,
           )
         }
       />
       <p className="encryption-note">
-        設定済みのこのブラウザーでは、新規アップロードを本人と管理者の鍵で暗号化します。鍵は再読み込み時にロックされます。既存の平文ファイル・WebDAV・公開共有は自動では暗号化されません。
+        設定済みのこのブラウザーでは、新規アップロードを本人と管理者の鍵で暗号化します。解除状態はこの端末の保存領域に保持されます。ロック・ログアウト・サイトデータの削除で解除状態を消去します。既存の平文ファイル・WebDAV・公開共有は自動では暗号化されません。
       </p>
       <p className="encryption-note">
         フォルダー名・サイズ・アクセス記録はCloudflareに見えます。配信されるアプリの改変や、サービスの停止・削除を防ぐ機能ではありません。

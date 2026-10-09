@@ -265,6 +265,36 @@ export class UploadManager {
     }
   }
 
+  async waitForCapacity(signal: AbortSignal): Promise<void> {
+    const full = () =>
+      this.#tasks.filter((task) => !["completed", "cancelled"].includes(task.phase)).length >= 32;
+    while (full()) {
+      signal.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          unsubscribe();
+          signal.removeEventListener("abort", abort);
+        };
+        const abort = () => {
+          cleanup();
+          reject(signal.reason);
+        };
+        const unsubscribe = this.subscribe(() => {
+          if (!full()) {
+            cleanup();
+            resolve();
+          }
+        });
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+        else if (!full()) {
+          cleanup();
+          resolve();
+        }
+      });
+    }
+  }
+
   async resume(task: UploadTask, selectedFile?: File) {
     const record = task.record;
     const generation = this.#generation;

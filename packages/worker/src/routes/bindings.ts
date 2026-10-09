@@ -344,6 +344,7 @@ export const PRIVATE_SPA_PATHS = [
   "/gallery",
   "/audio",
   "/bookshelf",
+  "/novels",
   "/video",
   "/encryption",
   "/trash",

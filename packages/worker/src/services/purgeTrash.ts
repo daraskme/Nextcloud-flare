@@ -450,7 +450,13 @@ function statements(
       SELECT 'delete',rowid,text_norm,tokens FROM search_index WHERE node_id IN (${members})`,
       values: [op],
     },
-    { sql: "INSERT INTO _assert(v) SELECT 1 WHERE changes()<>?", values: [current.searchCount] },
+    // Validate the source set directly. FTS5's special delete command is not
+    // a regular table write; its changes() inside an INSERT guard is unreliable
+    // for multiple postings and can reject an otherwise successful purge.
+    assertExists(
+      `SELECT 1 WHERE (SELECT COUNT(*) FROM search_index WHERE node_id IN (${members}))=?`,
+      [op, current.searchCount],
+    ),
   );
   add(
     "search_index",

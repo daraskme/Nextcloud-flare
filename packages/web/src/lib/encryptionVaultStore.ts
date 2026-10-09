@@ -1,8 +1,10 @@
 import type { RecipientPublicKey, RecipientVault } from "./cryptoEnvelope";
+import type { EncryptionSession } from "./encryptionSession";
 
 export const MAX_ENCRYPTION_FILE_BYTES = 16 * 1024;
 const DATABASE_NAME = "ncf-encryption-vaults";
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
+const SESSION_STORE_NAME = "unlocked-sessions";
 const VAULT_STORE_NAME = "recipient-vaults";
 const ADMIN_KEY_STORE_NAME = "admin-recipients";
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -152,6 +154,22 @@ export class EncryptionVaultStore {
     this.#factory = factory;
   }
 
+  getSession(accountId: string) {
+    return this.#request<
+      { accountId: string; epoch: number; session: EncryptionSession } | undefined
+    >(SESSION_STORE_NAME, "readonly", (store) => store.get(accountId));
+  }
+
+  putSession(accountId: string, epoch: number, session: EncryptionSession) {
+    return this.#request<void>(SESSION_STORE_NAME, "readwrite", (store) =>
+      store.put({ accountId, epoch, session }),
+    );
+  }
+
+  clearSessions() {
+    return this.#request<void>(SESSION_STORE_NAME, "readwrite", (store) => store.clear());
+  }
+
   async get(accountId: string): Promise<RecipientVault | null> {
     if (!validAccountId(accountId)) throw new Error("encryption_storage_unavailable");
     try {
@@ -272,6 +290,8 @@ export class EncryptionVaultStore {
       try {
         const request = this.#factory.open(DATABASE_NAME, DATABASE_VERSION);
         request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains(SESSION_STORE_NAME))
+            request.result.createObjectStore(SESSION_STORE_NAME, { keyPath: "accountId" });
           if (!request.result.objectStoreNames.contains(VAULT_STORE_NAME))
             request.result.createObjectStore(VAULT_STORE_NAME, { keyPath: "accountId" });
           if (!request.result.objectStoreNames.contains(ADMIN_KEY_STORE_NAME))

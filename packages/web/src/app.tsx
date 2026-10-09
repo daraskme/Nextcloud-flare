@@ -53,11 +53,20 @@ import { Dialog } from "./components/ui/dialog";
 import { AllUserFiles } from "./features/admin/AllUserFiles";
 import { PrivateAudio } from "./features/audio/PrivateAudio";
 import { EncryptedFiles } from "./features/encryption/EncryptedFiles";
+import { EmptyTrashDialog } from "./features/files/EmptyTrashDialog";
+import { FilePreview } from "./features/files/FilePreview";
 import { FolderStatsDialog } from "./features/files/FolderStatsDialog";
 import { PrivateGallery } from "./features/gallery/PrivateGallery";
 import { PrivateBookshelf } from "./features/library/PrivateBookshelf";
+import { PrivateNovels } from "./features/library/PrivateNovels";
 import { WebDavSettings } from "./features/settings/WebDavSettings";
 import { InternalShares } from "./features/shares/InternalShares";
+import {
+  droppedEntries,
+  selectedEntries,
+  type UploadEntry,
+  uploadEntries,
+} from "./features/uploads/folders";
 import { type UploadTask, uploads } from "./features/uploads/manager";
 import { OverwriteDialog } from "./features/uploads/OverwriteDialog";
 import { PrivateVideo } from "./features/video/PrivateVideo";
@@ -71,7 +80,14 @@ import {
   type TrashItem,
 } from "./lib/api";
 import { clearClientMedia, installClientMediaPagehideCleanup } from "./lib/clientMediaRegistration";
-import { clearEncryptionSession, isEncryptedFile } from "./lib/encryptionSession";
+import { isTextFile, useDisplayFiles } from "./lib/decryptedFiles";
+import {
+  clearEncryptionSession,
+  getEncryptionSession,
+  isEncryptedFile,
+  restoreEncryptionSession,
+  subscribeEncryptionSession,
+} from "./lib/encryptionSession";
 
 type Action =
   | { kind: "create" }
@@ -368,7 +384,10 @@ function OperationDialog({
     } catch (error) {
       const unknown = !(error instanceof ApiError) || error.status >= 500;
       setUncertain(unknown);
-      if (!unknown) sessionStorage.removeItem(PENDING_KEY);
+      if (!unknown) {
+        sessionStorage.removeItem(PENDING_KEY);
+        setKey(crypto.randomUUID());
+      }
       setFailure(errorMessage(error));
     } finally {
       setPending(false);
@@ -1099,6 +1118,7 @@ export function App() {
   const gallery = pathname === "/gallery";
   const audio = pathname === "/audio";
   const bookshelf = pathname === "/bookshelf";
+  const novels = pathname === "/novels";
   const video = pathname === "/video";
   const encryption = pathname === "/encryption";
   const sharing = pathname === "/shares";
@@ -1114,6 +1134,7 @@ export function App() {
     !gallery &&
     !audio &&
     !bookshelf &&
+    !novels &&
     !video &&
     !encryption &&
     !sharing &&
@@ -1144,6 +1165,14 @@ export function App() {
   } | null>(null);
   const searching = files && searchTerm?.scopeId === parentId && !!searchTerm.query;
   const [action, setAction] = useState<Action | null>(null);
+  const [preview, setPreview] = useState<FileNode | null>(null);
+  const [emptyTrash, setEmptyTrash] = useState(false);
+  const keys = useSyncExternalStore(subscribeEncryptionSession, () =>
+    me ? getEncryptionSession(me.id) : null,
+  );
+  const directoryInput = useRef<HTMLInputElement>(null);
+  const batch = useRef<AbortController | null>(null);
+  const [batchMessage, setBatchMessage] = useState("");
   const [statsScope, setStatsScope] = useState<string | null>(null);
   useEffect(() => setStatsScope(null), [pathname]);
   const [notice, setNotice] = useState("");
@@ -1232,12 +1261,14 @@ export function App() {
     uploads.onCompleted = refresh;
   }, [query]);
   useEffect(() => {
-    clearEncryptionSession();
+    clearEncryptionSession(false);
+    if (me) void restoreEncryptionSession(me).catch(() => undefined);
     void clearClientMedia().catch(() => undefined);
     const remove = installClientMediaPagehideCleanup();
     return () => {
       remove();
-      clearEncryptionSession();
+      clearEncryptionSession(false);
+      batch.current?.abort();
       void clearClientMedia().catch(() => undefined);
     };
   }, [me?.id, me?.epoch]);
@@ -1279,10 +1310,12 @@ export function App() {
     setSearchTerm(null);
     setSidebar(false);
     setAction(null);
+    setPreview(null);
+    setEmptyTrash(false);
   }, [pathname]);
   useEffect(() => {
     const listener = (event: BeforeUnloadEvent) => {
-      if (uploads.active) {
+      if (uploads.active || batch.current) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -1323,17 +1356,24 @@ export function App() {
     }
     setAction(next);
   };
-  const addFiles = async (selectedFiles: FileList | null) => {
-    if (!selectedFiles || !me || !personalFiles) return;
-    for (const file of Array.from(selectedFiles)) {
-      try {
-        await uploads.enqueue(file, me, parentId);
-      } catch (error) {
+  const addEntries = async (entries: Promise<UploadEntry[]> | UploadEntry[]) => {
+    if (!me || !personalFiles || batch.current) return;
+    const controller = new AbortController();
+    batch.current = controller;
+    setBatchMessage("アップロードする項目を確認しています…");
+    try {
+      await uploadEntries(await entries, me, parentId, setBatchMessage, controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted)
         setNotice(error instanceof Error ? error.message : "アップロードを開始できません。");
-        break;
-      }
+    } finally {
+      batch.current = null;
+      setBatchMessage("");
+      refresh();
     }
   };
+  const addFiles = (selectedFiles: FileList | null) =>
+    selectedFiles && addEntries(selectedEntries(selectedFiles));
   const recordOpen = (nodeId: string) => {
     if (!me) return;
     void api
@@ -1355,11 +1395,19 @@ export function App() {
       return;
     }
     if (isEncryptedFile(node)) {
+      if (keys) {
+        setPreview(node);
+        return;
+      }
       void navigate({ to: "/encryption" });
       return;
     }
     if (sharedMount && !sharedMount.actions.includes("download")) {
       setNotice("この共有ではファイルのダウンロードが許可されていません。");
+      return;
+    }
+    if (isTextFile(node)) {
+      setPreview(node);
       return;
     }
     const target = window.open("about:blank", "_blank");
@@ -1400,6 +1448,7 @@ export function App() {
   };
   const logout = async () => {
     setLoggingOut(true);
+    batch.current?.abort();
     clearEncryptionSession();
     void clearClientMedia().catch(() => undefined);
     try {
@@ -1434,6 +1483,7 @@ export function App() {
   const filteredTrash = items.filter((item) =>
     item.name.toLocaleLowerCase("ja-JP").includes(filter.toLocaleLowerCase("ja-JP")),
   );
+  const displayRows = useDisplayFiles(me, filtered);
   const data = trash ? trashed : userState ? userNodes : searching ? results : listing;
   const truncated = searching && results.data?.pages.some((page) => page.truncated);
   const sharedRootIndex = sharedMount
@@ -1445,33 +1495,35 @@ export function App() {
       ? path.data?.path.slice(sharedRootIndex + 1)
       : []
     : path.data?.path.slice(1);
-  const title = encryption
-    ? "暗号化ファイル"
-    : trash
-      ? "ごみ箱"
-      : recent
-        ? "最近使った項目"
-        : starred
-          ? "スター付き"
-          : sharing
-            ? "内部共有"
-            : shared
-              ? sharedMount && !sharedPathInvalid
-                ? path.data?.path.at(-1)?.name || sharedMount.root.name
-                : "共有フォルダー"
-              : gallery
-                ? "ギャラリー"
-                : audio
-                  ? "オーディオ"
-                  : bookshelf
-                    ? "本棚"
-                    : video
-                      ? "動画"
-                      : webDavSettings
-                        ? "WebDAV 設定"
-                        : adminFiles
-                          ? "全利用者のファイル"
-                          : path.data?.path.at(-1)?.name || "マイドライブ";
+  const title = novels
+    ? "小説"
+    : encryption
+      ? "暗号化ファイル"
+      : trash
+        ? "ごみ箱"
+        : recent
+          ? "最近使った項目"
+          : starred
+            ? "スター付き"
+            : sharing
+              ? "内部共有"
+              : shared
+                ? sharedMount && !sharedPathInvalid
+                  ? path.data?.path.at(-1)?.name || sharedMount.root.name
+                  : "共有フォルダー"
+                : gallery
+                  ? "ギャラリー"
+                  : audio
+                    ? "オーディオ"
+                    : bookshelf
+                      ? "本棚"
+                      : video
+                        ? "動画"
+                        : webDavSettings
+                          ? "WebDAV 設定"
+                          : adminFiles
+                            ? "全利用者のファイル"
+                            : path.data?.path.at(-1)?.name || "マイドライブ";
   const percent = me?.quotaBytes
     ? Math.min(100, ((me.usedBytes + me.reservedBytes) / me.quotaBytes) * 100)
     : 0;
@@ -1531,6 +1583,11 @@ export function App() {
           <Link to="/bookshelf" className={bookshelf ? "nav-link active" : "nav-link"}>
             <BookOpen size={19} />
             本棚
+            <span className="nav-dot" />
+          </Link>
+          <Link to="/novels" className={novels ? "nav-link active" : "nav-link"}>
+            <FileText size={19} />
+            小説
             <span className="nav-dot" />
           </Link>
           <Link to="/video" className={video ? "nav-link active" : "nav-link"}>
@@ -1657,7 +1714,8 @@ export function App() {
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
-            void addFiles(event.dataTransfer.files);
+            if (personalFiles && !batch.current)
+              void addEntries(droppedEntries(event.dataTransfer));
           }}
         >
           {dragging && (
@@ -1743,6 +1801,12 @@ export function App() {
                 本棚
               </span>
             )}
+            {novels && (
+              <span>
+                <ChevronRight size={13} />
+                小説
+              </span>
+            )}
             {video && (
               <span>
                 <ChevronRight size={13} />
@@ -1765,55 +1829,59 @@ export function App() {
           <div className="page-heading">
             <div>
               <p className="eyebrow">
-                {trash
-                  ? "TRASH"
-                  : recent
-                    ? "RECENT"
-                    : starred
-                      ? "STARRED"
-                      : sharing
-                        ? "PRIVATE SHARING"
-                        : shared
-                          ? "SHARED FOLDER"
-                          : gallery
-                            ? "YOUR PHOTOS"
-                            : audio
-                              ? "YOUR MUSIC"
-                              : bookshelf
-                                ? "YOUR BOOKS"
-                                : video
-                                  ? "YOUR VIDEOS"
-                                  : webDavSettings
-                                    ? "PRIVATE ACCESS"
-                                    : adminFiles
-                                      ? "ADMINISTRATOR"
-                                      : "YOUR FILES, YOUR SPACE"}
+                {novels
+                  ? "YOUR STORIES"
+                  : trash
+                    ? "TRASH"
+                    : recent
+                      ? "RECENT"
+                      : starred
+                        ? "STARRED"
+                        : sharing
+                          ? "PRIVATE SHARING"
+                          : shared
+                            ? "SHARED FOLDER"
+                            : gallery
+                              ? "YOUR PHOTOS"
+                              : audio
+                                ? "YOUR MUSIC"
+                                : bookshelf
+                                  ? "YOUR BOOKS"
+                                  : video
+                                    ? "YOUR VIDEOS"
+                                    : webDavSettings
+                                      ? "PRIVATE ACCESS"
+                                      : adminFiles
+                                        ? "ADMINISTRATOR"
+                                        : "YOUR FILES, YOUR SPACE"}
               </p>
               <h1>{title}</h1>
               <p>
-                {trash
-                  ? "不要になったファイルを確認・復元できます。"
-                  : recent
-                    ? "最近開いた項目を、現在のアクセス権で確認できます。"
-                    : starred
-                      ? "自分だけのスターを付けた項目をまとめて確認できます。"
-                      : sharing
-                        ? "ログイン済みのユーザーとグループに、フォルダーを安全に共有できます。"
-                        : shared
-                          ? "所有者が許可した現在の操作だけを利用できます。"
-                          : gallery
-                            ? "アップロードした写真を、サムネイルからすばやく探せます。"
-                            : audio
-                              ? "プライベートなオーディオを、このスペースから再生できます。"
-                              : bookshelf
-                                ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
-                                : video
-                                  ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
-                                  : webDavSettings
-                                    ? "専用の認証情報で、WebDAV クライアントのアクセスを限定できます。"
-                                    : adminFiles
-                                      ? "利用者を選んでファイルを閲覧できます。閲覧は記録され、編集操作はありません。"
-                                      : "大切なファイルを、いつでも使いやすく。"}
+                {novels
+                  ? "長いテキストを、読みやすい文字サイズで。読書位置はこの端末に保存します。"
+                  : trash
+                    ? "不要になったファイルを確認・復元できます。"
+                    : recent
+                      ? "最近開いた項目を、現在のアクセス権で確認できます。"
+                      : starred
+                        ? "自分だけのスターを付けた項目をまとめて確認できます。"
+                        : sharing
+                          ? "ログイン済みのユーザーとグループに、フォルダーを安全に共有できます。"
+                          : shared
+                            ? "所有者が許可した現在の操作だけを利用できます。"
+                            : gallery
+                              ? "アップロードした写真を、サムネイルからすばやく探せます。"
+                              : audio
+                                ? "プライベートなオーディオを、このスペースから再生できます。"
+                                : bookshelf
+                                  ? "プライベートな EPUB を、安全な章ごとのセッションで読めます。"
+                                  : video
+                                    ? "元の AV1 動画を、対応するブラウザーでそのまま再生できます。"
+                                    : webDavSettings
+                                      ? "専用の認証情報で、WebDAV クライアントのアクセスを限定できます。"
+                                      : adminFiles
+                                        ? "利用者を選んでファイルを閲覧できます。閲覧は記録され、編集操作はありません。"
+                                        : "大切なファイルを、いつでも使いやすく。"}
               </p>
             </div>
             {me && personalFiles && (
@@ -1840,11 +1908,29 @@ export function App() {
                   <FolderPlus size={17} />
                   新規フォルダー
                 </Button>
-                <Button variant="primary" onClick={() => input.current?.click()}>
+                <Button disabled={!!batchMessage} onClick={() => directoryInput.current?.click()}>
+                  <FolderOpen size={17} />
+                  フォルダーをアップロード
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={!!batchMessage}
+                  onClick={() => input.current?.click()}
+                >
                   <Upload size={17} />
                   アップロード
                 </Button>
               </div>
+            )}
+            {me && trash && (
+              <Button
+                variant="danger"
+                disabled={!!recovery || !items.length || !!trashed.error}
+                onClick={() => setEmptyTrash(true)}
+              >
+                <Trash2 size={17} />
+                ゴミ箱を空にする
+              </Button>
             )}
           </div>
           {notice && (
@@ -1888,12 +1974,22 @@ export function App() {
               </Button>
             </div>
           )}
-          {me?.clientEncryptionRequired && personalFiles && (
-            <p className="notice">
-              新規アップロードには端末の暗号化鍵が必要です。
-              <Link to="/encryption">暗号化設定・鍵の解除</Link>
-            </p>
+          {batchMessage && (
+            <div className="notice" role="status">
+              <span>{batchMessage}</span>
+              <Button onClick={() => batch.current?.abort()}>残りの追加を中止</Button>
+            </div>
           )}
+          {me?.clientEncryptionRequired &&
+            personalFiles &&
+            !(keys?.ownerRegistered && keys.adminRecipient && keys.adminSigner) && (
+              <p className="notice">
+                {keys
+                  ? "新規アップロードには登録済みの本人鍵と管理者公開鍵の確認が必要です。"
+                  : "新規アップロードには端末の暗号化鍵が必要です。"}
+                <Link to="/encryption">暗号化設定・鍵の解除</Link>
+              </p>
+            )}
           {!me ? (
             <div className="empty-state">
               <Cloud size={40} />
@@ -1910,6 +2006,8 @@ export function App() {
                 </Button>
               )}
             </div>
+          ) : novels ? (
+            <PrivateNovels account={me} />
           ) : encryption ? (
             <EncryptedFiles key={`${me.id}:${me.epoch}`} account={me} />
           ) : adminFiles ? (
@@ -2188,10 +2286,21 @@ export function App() {
                 </div>
               ) : (
                 <FileList
-                  rows={filtered}
+                  rows={displayRows}
                   view={view}
-                  act={act}
-                  open={openNode}
+                  act={(next) =>
+                    act(
+                      "node" in next
+                        ? ({
+                            ...next,
+                            node: filtered.find((node) => node.id === next.node.id) ?? next.node,
+                          } as Action)
+                        : next,
+                    )
+                  }
+                  open={(node) =>
+                    openNode(filtered.find((source) => source.id === node.id) ?? node)
+                  }
                   readOnly={shared}
                   currentUserId={me.id}
                   toggleStar={toggleStar}
@@ -2234,9 +2343,24 @@ export function App() {
               event.target.value = "";
             }}
           />
+          <input
+            ref={directoryInput}
+            type="file"
+            hidden
+            multiple
+            {...{ webkitdirectory: "" }}
+            onChange={(event) => {
+              void addFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
         </main>
       </div>
       <UploadPanel />
+      {preview && me && <FilePreview account={me} node={preview} close={() => setPreview(null)} />}
+      {emptyTrash && me && (
+        <EmptyTrashDialog account={me} close={() => setEmptyTrash(false)} refresh={refresh} />
+      )}
       {action?.kind === "overwrite" && me && (
         <OverwriteDialog
           key={JSON.stringify(action)}
