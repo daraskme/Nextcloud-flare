@@ -291,3 +291,78 @@ it("rechecks transfer state in the purge transaction", async () => {
       .first(),
   ).toEqual({ in_flight: 1, state: "reserved" });
 });
+
+it.each(["sync", "async"] as const)(
+  "purges indexed files and retained completed upload history (%s)",
+  async (mode) => {
+    const f = await uploadFixture();
+    for (let index = 0; index < 6; index++) {
+      const upload =
+        index === 0
+          ? f.upload
+          : await createSingleUpload(
+              mutationEnv(),
+              {
+                principal: principal(f),
+                requestId: crypto.randomUUID(),
+                spaceId: f.ids.space,
+                parentId: f.ids.folder,
+                name: `media-${index}.txt`,
+                declaredSize: 3,
+              },
+              f.capabilities,
+            );
+      await writeSingleUpload(
+        admitted(),
+        principal(f),
+        upload.id,
+        upload.capability,
+        f.capabilities,
+        new Blob(["abc"]).stream(),
+        3,
+      );
+      const completed = await completeSingleUpload(
+        admitted(),
+        principal(f),
+        upload.id,
+        upload.capability,
+        f.capabilities,
+        crypto.randomUUID(),
+        [],
+      );
+      if (completed.kind !== "terminal" || !completed.operation.result?.nodeId)
+        throw new Error("fixture_upload_failed");
+      const nodeId = completed.operation.result.nodeId;
+      if (index < 3) {
+        const deleted = await trashNode(admitted(), {
+          principal: principal(f),
+          requestId: crypto.randomUUID(),
+          spaceId: f.ids.space,
+          nodeId,
+          lockTokens: [],
+        });
+        if (deleted.kind !== "terminal") throw new Error("fixture_trash_failed");
+        expect(await purge(f, deleted.operation.id)).toMatchObject({
+          operation: { state: "committed" },
+        });
+      }
+    }
+    const trashOpId = await trash(f, mode);
+    const deleted = await purge(f, trashOpId);
+    if (deleted.kind !== "terminal") throw new Error("fixture_purge_failed");
+    if (mode === "async") expect(await progress(deleted.operation.id)).toBe("completed");
+    else expect(deleted.operation.state).toBe("committed");
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS count FROM search_index WHERE space_id=?")
+        .bind(f.ids.space)
+        .first("count"),
+    ).toBe(0);
+    // FTS5's integrity command verifies both postings and external content rows.
+    await env.DB.prepare(
+      "INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1)",
+    ).run();
+    expect(
+      await env.DB.prepare("SELECT id FROM nodes WHERE id=?").bind(f.ids.folder).first(),
+    ).toBeNull();
+  },
+);

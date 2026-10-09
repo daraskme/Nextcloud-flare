@@ -38,6 +38,7 @@ export async function readEncryptedContent(
   node: FileNode,
   owner?: AdminFileUser,
   signal?: AbortSignal,
+  metadataSession?: PreparedContentSession,
 ): Promise<OpenEncryptedContent> {
   const keys = getEncryptionSession(account.id);
   const marker = node.encryption;
@@ -54,21 +55,23 @@ export async function readEncryptedContent(
   const controller = new AbortController();
   const signals = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
   let action: "preview" | "download" = "preview";
-  const content = owner
-    ? await api.prepareAdminContentSession(owner, node, action, account, signals)
-    : await api.prepareContentSession(
-        account,
-        [{ id: node.id, currentBlobId: node.currentBlobId }],
-        "content",
-        signals,
-      );
+  const content =
+    metadataSession ??
+    (owner
+      ? await api.prepareAdminContentSession(owner, node, action, account, signals)
+      : await api.prepareContentSession(
+          account,
+          [{ id: node.id, currentBlobId: node.currentBlobId }],
+          "content",
+          signals,
+        ));
   const url = content.url({ id: node.id, currentBlobId: node.currentBlobId });
   const virtual = new Map<"inline" | "download", string>();
   let closed = false;
   let expiresAt = Date.now() + 270_000;
-  const sessions: { session: PreparedContentSession; at: number }[] = [
-    { session: content, at: Date.now() },
-  ];
+  const sessions: { session: PreparedContentSession; at: number }[] = metadataSession
+    ? []
+    : [{ session: content, at: Date.now() }];
   let renewal: ReturnType<typeof setInterval> | undefined;
   let renewing = false;
   let detach = () => {};
@@ -232,6 +235,7 @@ export async function readEncryptedContent(
     let adminReceiptRecorded = verifiedExistingReceipt;
     if (
       account.role === "app_admin" &&
+      !metadataSession &&
       keys.ownerRegistered &&
       keys.owner.publicKey.fingerprint === marker.requiredAdminFingerprint &&
       registeredAdminKeys.some(
@@ -289,42 +293,44 @@ export async function readEncryptedContent(
         adminReceiptRecorded = false;
       }
     }
-    renewal = setInterval(() => {
-      if (renewing || closed) return;
-      renewing = true;
-      void (async () => {
-        if (getEncryptionSession(account.id) !== keys) throw new Error("encryption_locked");
-        const next = owner
-          ? await api.prepareAdminContentSession(owner, node, action, account, signals)
-          : await api.prepareContentSession(
-              account,
-              [{ id: node.id, currentBlobId: node.currentBlobId! }],
-              "content",
-              signals,
-            );
-        if (closed) {
-          await next.cancel();
-          return;
-        }
-        sessions.push({ session: next, at: Date.now() });
-        expiresAt = Date.now() + 270_000;
-        for (const media of virtual.values()) await renewClientMedia(media, expiresAt);
-        // Let old in-flight ranges finish before discarding naturally expired tickets.
-        while (sessions[0] && sessions[0].at < Date.now() - 300_000) {
-          const expired = sessions.shift()!;
-          await expired.session.cancel().catch(() => undefined);
-        }
-      })()
-        .catch(() => close())
-        .finally(() => {
-          renewing = false;
-        });
-    }, 180_000);
+    if (!metadataSession)
+      renewal = setInterval(() => {
+        if (renewing || closed) return;
+        renewing = true;
+        void (async () => {
+          if (getEncryptionSession(account.id) !== keys) throw new Error("encryption_locked");
+          const next = owner
+            ? await api.prepareAdminContentSession(owner, node, action, account, signals)
+            : await api.prepareContentSession(
+                account,
+                [{ id: node.id, currentBlobId: node.currentBlobId! }],
+                "content",
+                signals,
+              );
+          if (closed) {
+            await next.cancel();
+            return;
+          }
+          sessions.push({ session: next, at: Date.now() });
+          expiresAt = Date.now() + 270_000;
+          for (const media of virtual.values()) await renewClientMedia(media, expiresAt);
+          // Let old in-flight ranges finish before discarding naturally expired tickets.
+          while (sessions[0] && sessions[0].at < Date.now() - 300_000) {
+            const expired = sessions.shift()!;
+            await expired.session.cancel().catch(() => undefined);
+          }
+        })()
+          .catch(() => close())
+          .finally(() => {
+            renewing = false;
+          });
+      }, 180_000);
     return {
       opened,
       adminReceiptRecorded,
       close,
       async media(mode) {
+        if (metadataSession) throw new Error("metadata_session_cannot_stream");
         signals.throwIfAborted();
         if (owner && mode === "download") {
           const download = await api.prepareAdminContentSession(

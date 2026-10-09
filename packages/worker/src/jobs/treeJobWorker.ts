@@ -947,7 +947,10 @@ async function purgeFinalStatements(
         WHERE node_id IN (${members})`,
       values: [row.op_id],
     },
-    { sql: "INSERT INTO _assert(v) SELECT 1 WHERE changes()<>?", values: [searchCount] },
+    assertExists(
+      `SELECT 1 WHERE (SELECT COUNT(*) FROM search_index WHERE node_id IN (${members}))=?`,
+      [row.op_id, searchCount],
+    ),
     {
       sql: `DELETE FROM search_index WHERE node_id IN (${members})`,
       values: [row.op_id],

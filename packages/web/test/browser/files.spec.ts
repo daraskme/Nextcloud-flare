@@ -241,16 +241,18 @@ test("real Files API: create, rename, upload, open, trash, restore, copy and mov
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "コピーしたメモ.txtの操作" })).toHaveCount(0);
   await page.getByRole("button", { name: "保存したメモ.txtの操作" }).click();
-  const opened = page.waitForEvent("popup");
   await page.getByRole("menuitem", { name: "ファイルを開く・保存" }).click();
-  const popup = await opened;
-  const download = await popup.waitForEvent("download");
+  const reader = page.getByRole("dialog");
+  await expect(reader.getByLabel("本文")).toContainText("Nextcloud flare browser upload");
+  const downloaded = page.waitForEvent("download");
+  await reader.getByRole("link", { name: "ダウンロード", exact: true }).click();
+  const download = await downloaded;
   expect(download.suggestedFilename()).toBe("保存したメモ.txt");
   const stream = await download.createReadStream();
   const chunks: Buffer[] = [];
   for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
   expect(Buffer.concat(chunks).toString()).toBe("Nextcloud flare browser upload\n");
-  await popup.close();
+  await reader.getByRole("button", { name: "閉じる", exact: true }).click();
 });
 
 test("Recent and Starred use authoritative private node state", async ({ page }) => {

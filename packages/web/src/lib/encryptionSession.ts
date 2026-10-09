@@ -1,4 +1,4 @@
-import type { EncryptionFileMarker } from "./api";
+import { type Account, api, type EncryptionFileMarker } from "./api";
 import type { RecipientPublicKey, UnlockedRecipient } from "./cryptoEnvelope";
 import { EncryptionVaultStore } from "./encryptionVaultStore";
 
@@ -15,19 +15,48 @@ export interface EncryptionSession {
 let active: { accountId: string; session: EncryptionSession } | null = null;
 const listeners = new Set<() => void>();
 const revokers = new Set<() => void>();
+let generation = 0;
+let storageWork = Promise.resolve();
+const LOCK_EVENT = "ncf-encryption-lock";
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === LOCK_EVENT) clearEncryptionSession(false);
+  });
+}
+function save(work: (store: EncryptionVaultStore) => Promise<void>) {
+  storageWork = storageWork.then(() => work(new EncryptionVaultStore())).catch(() => undefined);
+}
 
 export function getEncryptionSession(accountId: string): EncryptionSession | null {
   return active?.accountId === accountId ? active.session : null;
 }
 
-export function setEncryptionSession(accountId: string, session: EncryptionSession | null): void {
-  clearEncryptionSession();
+export function setEncryptionSession(
+  accountId: string,
+  session: EncryptionSession | null,
+  epoch = 0,
+): void {
+  clearEncryptionSession(!session);
   if (session) active = { accountId, session };
+  const version = generation;
+  if (session)
+    save((store) =>
+      generation === version ? store.putSession(accountId, epoch, session) : Promise.resolve(),
+    );
   for (const listener of listeners) listener();
 }
 
-export function clearEncryptionSession(): void {
+export function clearEncryptionSession(forget = true): void {
+  generation++;
   active = null;
+  if (forget) {
+    save((store) => store.clearSessions());
+    try {
+      localStorage.setItem(LOCK_EVENT, crypto.randomUUID());
+    } catch {
+      /* Storage can be unavailable. */
+    }
+  }
   for (const revoke of revokers) {
     try {
       revoke();
@@ -35,6 +64,57 @@ export function clearEncryptionSession(): void {
       /* Continue clearing every independently registered resource. */
     }
   }
+  for (const listener of listeners) listener();
+}
+
+/** Cached non-exportable CryptoKeys are scoped to the account and current epoch. */
+export async function restoreEncryptionSession(account: Account): Promise<void> {
+  const version = generation;
+  await storageWork;
+  const store = new EncryptionVaultStore();
+  const [cached, vault] = await Promise.all([store.getSession(account.id), store.get(account.id)]);
+  if (!cached || cached.epoch !== account.epoch || !vault || version !== generation) return;
+  const { session } = cached;
+  if (
+    session.owner.privateKey.extractable ||
+    session.owner.signing.privateKey.extractable ||
+    session.owner.publicKey.fingerprint !== vault.recipient.fingerprint
+  )
+    return;
+  const [owners, admins, pin] = await Promise.all([
+    api.encryptionKeys(account.id),
+    api.encryptionAdminKeys(),
+    account.role === "app_admin"
+      ? Promise.resolve(null)
+      : store.getPinnedAdminRecipient(account.id),
+  ]);
+  const matches = (left: RecipientPublicKey, right: RecipientPublicKey) =>
+    left.fingerprint === right.fingerprint && left.spki === right.spki;
+  const ownerRegistered =
+    owners.keys.length === 1 &&
+    owners.keys[0]!.accountId === account.id &&
+    matches(owners.keys[0]!.recipient, session.owner.publicKey) &&
+    matches(owners.keys[0]!.signer, session.owner.signing);
+  const admin = admins.keys.find((key) =>
+    account.role === "app_admin"
+      ? key.accountId === account.id &&
+        matches(key.recipient, session.owner.publicKey) &&
+        matches(key.signer, session.owner.signing)
+      : pin &&
+        key.accountId === pin.adminAccountId &&
+        matches(key.recipient, pin.recipient) &&
+        matches(key.signer, pin.signer),
+  );
+  if (version !== generation) return;
+  active = {
+    accountId: account.id,
+    session: {
+      ...session,
+      ownerRegistered,
+      adminRecipient: admin?.recipient ?? null,
+      adminSigner: admin?.signer ?? null,
+    },
+  };
   for (const listener of listeners) listener();
 }
 

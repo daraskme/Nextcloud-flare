@@ -4,10 +4,20 @@
 
 | 環境 | リビジョン | 状態と確認済み範囲 |
 |---|---|---|
-| 開発ソース | この checkout（PR #43〜#46 と最終レビューの修正） | ZIP の取得費用計上、WebDAV 条件検査、章・再共有データの完全削除、利用者別 admission 上限に加え、EPUB の取得前予算予約と未確定 upload の purge 拒否を実装。`0064` までの63 migrations・90通常tables。[最終レビュー](reviews/astra-final-20261005.md)と対象 commit の CI を参照し、下記の配備済み版とは区別する。 |
+| 開発ソース | この checkout（PR #43〜#46、最終レビューと下記2026-10-09の修正） | ZIP の取得費用計上、WebDAV 条件検査、章・再共有データの完全削除、利用者別 admission 上限に加え、EPUB の取得前予算予約と未確定 upload の purge 拒否を実装。`0064` までの63 migrations・90通常tables。[最終レビュー](reviews/astra-final-20261005.md)と対象 commit の CI を参照し、下記の配備済み版とは区別する。 |
 | ローカル自動化runtime | `f131f80`（155 files） | 本人の明示承認後、56 migrations・88 tables対応版へ切替済み。日曜backup・毎時monitorのtimerはactive、両serviceはinactive。旧86-table版と直前の`355f61b`版はrollbackディレクトリへ保持。05:01:45 UTCのmonitorはhealthy / live reachable / pending 0、終了コード0。 |
 | Cloudflare staging | コード `f131f80`、Worker version `35b6182f-33e4-4013-a546-aab8de1f1035` | `0057`まで適用。56 migrations・88通常tables・480 triggers・176 routes。FK違反0、epoch 2、maintenance / gc_paused / backup_frozenはいずれも0。配備後の匿名HTTP smokeは9件成功。実WebDAV取得・暗号化fixtureの復元制約試験は下記の`1cf8681`時点の記録。 |
 | Production | なし | Productionへのmigration・Worker deployは未実施。stagingまたはlocalの成功をproductionの稼働確認として扱わない。 |
+
+## 2026-10-09 フォルダー送信・復号表示・小説・完全削除（未配備）
+
+フォルダー選択とドラッグからの階層付きアップロード、ごみ箱の一括完全削除、ブラウザー保存領域からの解除状態の復元、マイドライブの元の名前・サイズ・種類での表示、小説タブを追加した。保存データの暗号化は維持し、ロック・ログアウト時は保存済みの解除状態を消す。小説の文字サイズと読書位置は端末内に保存する。
+
+複数の検索索引を持つフォルダーのpurgeで、FTS5特殊削除の直後に`changes()`をINSERT内で検査すると誤って拒否される条件を再現した。同期・非同期の両経路で索引元の件数を直接検査するよう修正し、削除済みファイルのアップロード履歴が残るケースとFTS整合性を確認した。実環境への配備、migration適用、利用者のファイル削除は行っていない。
+
+- lint、Worker/Web/試験の型検査、contracts、config、Webビルド成功。単体91 files / 1,041成功・8 skip、関連するpurge・非同期tree jobの統合2 files / 19件成功。
+- 全ブラウザー実行は54成功・2 skip・1失敗。失敗した既存の`real MP3 and Opus audio plus AV1 video decode, seek, and stream authenticated ranges`はテストサーバーの`POST /api/v1/content-session`接続切断によるもので、コード変更なしの単独再実行は成功した。外部メディア未指定の2件は未実施。全体実行が一度で成功した記録とは区別する。
+- 35ファイルの階層・全内容、再読み込み後の鍵の復元、元の名前と復号本文、テキストのダウンロード、文字サイズの復元、ごみ箱全ページの削除と未完了分だけの再試行を確認した。失敗時のtraceと画像はローカルの`.wrangler/ui-fix-20261009-*-browser/`へ保持した。
 
 ## 2026-10-04 レビューとPRの検証
 

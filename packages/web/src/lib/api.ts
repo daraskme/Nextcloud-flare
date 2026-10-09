@@ -232,6 +232,7 @@ export interface Operation {
   state: "claimed" | "committed" | "failed";
   result: { nodeId?: string; status?: number } | null;
   errorCode?: string;
+  job?: { state: "pending" | "running" | "completed" | "failed" | "cancelled" };
 }
 export interface Part {
   partNumber: number;
@@ -417,6 +418,8 @@ export function errorMessage(error: unknown): string {
     return "削除が進行済みのデータを含むため、この項目は復元できません。";
   if (error.code === "commit_unknown")
     return "処理結果を確認中です。同じ操作のまま再確認してください。";
+  if (error.code === "mutation_rejected")
+    return "関連する処理やデータの状態により操作を完了できませんでした。時間をおいて再試行してください。";
   if (error.status === 401) return "ログインの有効期限が切れました。もう一度ログインしてください。";
   if (error.status === 403) return "この操作の権限、またはセッションの有効期限を確認してください。";
   if (error.status === 404)
@@ -524,8 +527,19 @@ export class ApiClient {
         `/api/v1/operations/${encodeURIComponent(error.operationId)}`,
       );
     }
+    for (
+      let attempt = 0;
+      operation.state === "claimed" && operation.job && attempt < 30;
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      operation = await this.request<Operation>(
+        `/api/v1/operations/${encodeURIComponent(operation.id)}`,
+      );
+    }
     if (operation.state === "claimed") throw new ApiError(503, "commit_unknown", operation.id);
-    if (operation.state !== "committed") throw new ApiError(409, "conflict", operation.id);
+    if (operation.state !== "committed")
+      throw new ApiError(409, operation.errorCode ?? "conflict", operation.id);
     return operation;
   }
 
